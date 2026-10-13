@@ -76,6 +76,34 @@ def _scoped_breakout_results(
     )
 
 
+def _load_cuped_breakout_frames(
+    src: MomentSource,
+    configs: Sequence[Any],
+    methods_by_metric: Mapping[str, list[Method]],
+    dimension: str,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Sequence[Any]],
+    dict[str, dict[str, Literal["decision", "sensitivity"]]],
+]:
+    frames: dict[str, Any] = {}
+    covariates = {config.metric.name: config.covariates for config in configs}
+    roles = {
+        config.metric.name: _runtime_method_roles(methods_by_metric[config.metric.name])
+        for config in configs
+    }
+    for config in configs:
+        name = config.metric.name
+        if any(method.variance_reduction == "cuped_linear" for method in methods_by_metric[name]):
+            frames[name] = src.unit_frame(
+                config.metric,
+                covariates=tuple(
+                    dict.fromkeys((dimension, *(item.name for item in config.covariates)))
+                ),
+            )
+    return frames, covariates, roles
+
+
 def breakout(
     src: MomentSource,
     dimension: str,
@@ -256,9 +284,9 @@ def breakout(
     methods_by_metric = {
         config.metric.name: _runtime_methods(config, design) for config in resolved_configs
     }
-    roles_by_metric = {
-        name: _runtime_method_roles(methods) for name, methods in methods_by_metric.items()
-    }
+    unit_frames_by_metric, covariates_by_metric, roles_by_metric = _load_cuped_breakout_frames(
+        src, resolved_configs, methods_by_metric, dimension
+    )
     if design.mechanism == "encouragement":
         requested_estimands = estimands if estimands is not None else ESTIMANDS
         unknown = set(requested_estimands) - set(ESTIMANDS)
@@ -360,6 +388,8 @@ def breakout(
                 method_roles_by_metric=roles_by_metric,
                 methods_by_metric=methods_by_metric,
                 policy_name="compiled_plan",
+                unit_frames_by_metric=unit_frames_by_metric,
+                covariates_by_metric=covariates_by_metric,
             )
         )
     else:
@@ -382,6 +412,8 @@ def breakout(
                     inference=inference,
                     method_roles=roles_by_metric[metric.name],
                     policy_name="compiled_plan",
+                    unit_frames_by_metric=unit_frames_by_metric,
+                    covariates_by_metric=covariates_by_metric,
                 )
             )
     return scoped(stamp_multiplicity_status(results))

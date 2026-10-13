@@ -1119,6 +1119,7 @@ def _configs_from_compiled_plan(
                 prior_is_global=runtime_procedure.prior_is_global
                 if runtime_procedure.prior is not None
                 else fallback_by_name[metric.name].prior_is_global,
+                covariates=fallback_by_name[metric.name].covariates,
                 methods_explicitly_empty=runtime_procedure.methods_explicitly_empty,
             )
         )
@@ -1384,7 +1385,11 @@ class MomentsSource(SequentialSourceMixin):
         *,
         covariates: Sequence[str] = (),
         outcome_stage: Literal["transformed", "raw"] = "transformed",
-    ) -> NoReturn:
+    ) -> Any:
+        if self._source is not None and hasattr(self._source, "unit_frame"):
+            return self._source.unit_frame(
+                metric, covariates=covariates, outcome_stage=outcome_stage
+            )
         if outcome_stage == "raw":
             from increment.winsor import winsor_refuse
 

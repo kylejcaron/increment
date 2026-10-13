@@ -3086,6 +3086,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 path="warehouse",
                 _trusted_trigger_name=self.context.trigger_name,
                 _source_snapshot_evidence=self._session.source_snapshot_evidence,
+                _source=self,
+                configs=self.context.configs,
                 _source_identity_record=identity_record,
             )
         from increment.sources import MomentsSource
@@ -3101,6 +3103,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             _trusted_trigger_name=self.context.trigger_name,
             _source_snapshot_evidence=self._session.source_snapshot_evidence,
             _source_identity_record=identity_record,
+            _source=self,
+            configs=self.context.configs,
         )
 
     def build_panel_for_metric(

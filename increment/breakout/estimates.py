@@ -1980,7 +1980,64 @@ def _estimate_lift_computation_or_reason(
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     route_alpha: float | None = None,
+    unit_frame: Any | None = None,
+    covariates: Sequence[Any] = (),
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
+    linear_methods = [
+        method for method in methods or () if method.variance_reduction == "cuped_linear"
+    ]
+    if linear_methods:
+        from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
+        from increment.errors import CodedError
+        from increment.estimation.engine import estimate_cuped_linear
+
+        if unit_frame is None:
+            return None, "per-unit evidence is unavailable for this breakout cell"
+        results: list[LiftEstimate] = []
+        failures: dict[Any, Any] = {}
+        evidence: dict[Any, Any] = {}
+        advisories: dict[Any, Any] = {}
+        for method in linear_methods:
+            role = (method_roles or {}).get(method.name, "decision")
+            try:
+                bundle = estimate_cuped_linear(
+                    metric,
+                    unit_frame,
+                    control_group=control_group,
+                    method=method,
+                    method_role=role,
+                    covariates=covariates,
+                    alpha=alpha,
+                    alternative=alternative,
+                    prior=prior,
+                )
+                results.extend(bundle.results)
+                evidence.update(bundle.evidence)
+                advisories.update(bundle.advisories)
+                failures.update(bundle.failures)
+            except CodedError as exc:
+                if not exc.code.startswith("estimation.cuped_linear.") or exc.code == (
+                    "estimation.cuped_linear.covariate_input"
+                ):
+                    raise
+                groups = {
+                    str(value)
+                    for value in nw.from_native(unit_frame, eager_only=True)
+                    .get_column("group_id")
+                    .to_list()
+                    if str(value) != control_group
+                }
+                for group_id in groups:
+                    hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
+                    failures[hypothesis] = DecisionFailure(
+                        hypothesis, exc.code, {**exc.context, "method": method.name}
+                    )
+        return DecisionComputation[LiftEstimate](
+            results=tuple(results),
+            evidence=evidence,
+            failures=failures,
+            advisories=advisories,
+        ), None
     try:
         computation = _estimate_lift(
             metrics=[metric],
@@ -2349,6 +2406,8 @@ class _BreakoutContext(NamedTuple):
     # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
     # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
     route_alpha: float | None
+    unit_frames_by_metric: Mapping[str, Any] | None
+    covariates_by_metric: Mapping[str, Sequence[Any]] | None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2629,6 +2688,11 @@ def _warn_breakout_route2_pairs(
         )
 
 
+def _cuped_breakout_cell_frame(unit_frame: Any, *, dimension: str, value: str) -> Any:
+    frame = nw.from_native(unit_frame, eager_only=True)
+    return frame.filter(nw.col(dimension).cast(nw.String) == value).drop(dimension).to_native()
+
+
 def _estimate_breakout_slice_metrics(  # noqa: PLR0915
     prepared: _PreparedLiftSlice,
     context: _BreakoutContext,
@@ -2682,6 +2746,12 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                 prior=metric_prior,
             )
             groups = list(mixed_groups) if mixed_groups is not None else [configured]
+            if mixed_groups is not None:
+                groups = list(mixed_groups)
+            else:
+                ordinary = [m for m in configured if m.variance_reduction != "cuped_linear"]
+                linear = [m for m in configured if m.variance_reduction == "cuped_linear"]
+                groups = [group for group in (ordinary, linear) if group]
             for group_index, method_group in enumerate(groups):
                 method_rows = rows
                 if mixed_groups is not None and group_index == 0:
@@ -2712,8 +2782,21 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     alternative=context.alternative,
                     methods=method_group,
                     inference=context.inference,
-                    method_roles=resolved_roles,
                     route_alpha=context.route_alpha,
+                    method_roles={
+                        method.name: resolved_roles[method.name] for method in method_group
+                    },
+                    unit_frame=(
+                        _cuped_breakout_cell_frame(
+                            context.unit_frames_by_metric[metric.name],
+                            dimension=context.dimension,
+                            value=context.segment_value,
+                        )
+                        if context.unit_frames_by_metric is not None
+                        and metric.name in context.unit_frames_by_metric
+                        else None
+                    ),
+                    covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
                 )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
@@ -2957,6 +3040,14 @@ def _apply_breakout_family_correction(
             (method for method in metric_methods if method.name == decision_name),
             metric_methods[0] if metric_methods else Method(name="unadjusted"),
         )
+        if decision_method.variance_reduction == "cuped_linear":
+            selected_alpha = _fcr_alpha_for(alternative, outcome.fcr_alpha)
+            reestimated[(segment_value, metric_name)] = [
+                row.reintervalize(selected_alpha, interval_alternative=alternative)
+                for (cell_segment, cell_metric, _group), row in canonical_rows.items()
+                if cell_segment == segment_value and cell_metric == metric_name
+            ]
+            continue
         re_estimates, _reason, _failures = _estimate_lift_or_reason(
             metrics=[metrics_by_name[metric_name]],
             summary=metric_rows,
@@ -3118,6 +3209,8 @@ def run_breakout(  # noqa: PLR0913
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
     _prior_by_metric: Mapping[str, Prior | None] | None = None,
+    unit_frames_by_metric: Mapping[str, Any] | None = None,
+    covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
 ) -> BreakoutEstimates:
     """Estimate lift for every distinct value of a dimension. Partitions
@@ -3156,6 +3249,11 @@ def run_breakout(  # noqa: PLR0913
         Per-arm floor flagging ``low_reliability=True`` (default 50).
     _prior_by_metric : Mapping[str, Prior | None] | None
         Internal per-metric prior override used by compiled-plan callers.
+    unit_frames_by_metric : Mapping[str, Any] | None
+        Optional per-unit evidence frames for CUPED metrics, partitioned by
+        the requested breakout dimension before fitting each segment.
+    covariates_by_metric : Mapping[str, Sequence[Any]] | None
+        Declared covariates corresponding to ``unit_frames_by_metric``.
 
     Raises
     ------
@@ -3275,6 +3373,8 @@ def run_breakout(  # noqa: PLR0913
             reliability_floor,
             resolved_methods,
             route_alpha,
+            unit_frames_by_metric,
+            covariates_by_metric,
         )
         prepared = _prepare_lift_slice(
             segment_rows,

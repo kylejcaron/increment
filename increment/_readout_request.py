@@ -414,12 +414,12 @@ def validate_request(request: ReadoutRequest) -> None:
     from increment.sequential_source import validate_sequential_request
     from increment.sources import validate_readout_source
 
-    validate_sequential_request(request)
     validate_readout_plan(request)
     # Semantic/engine validators run before source capability checks so a
     # request's established metric/test refusal wins over a missing grain or
     # breakout dimension.
     validate_readout_engine(request)
+    validate_sequential_request(request)
     if request.view == "daily":
         validate_readout_source(request)
         return

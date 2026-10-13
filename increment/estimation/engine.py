@@ -46,7 +46,11 @@ from increment.errors import (
 )
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
-from increment.estimation._tails import two_sided_critical_value, wald_bounds
+from increment.estimation._tails import (
+    resolvable_expm1,
+    two_sided_critical_value,
+    wald_bounds,
+)
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import (
     ArmStats,
@@ -1464,6 +1468,7 @@ def _lift_decision_bundle(  # noqa: PLR0915
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     sequential_snapshot=None,
     cuped_advisory: ReadoutAdvisory | None = None,
+    cuped_failures: Sequence[tuple[str, str, str, str, Mapping[str, Any]]] = (),
 ) -> DecisionComputation[LiftEstimate]:
     """Attach one typed decision value to every decision presentation row."""
     from increment.estimation.decision_types import (
@@ -1623,6 +1628,9 @@ def _lift_decision_bundle(  # noqa: PLR0915
             failures[hypothesis] = failure_row
         else:
             evidence[hypothesis] = evidence_row
+    for metric, group_id, estimand, code, context in cuped_failures:
+        hypothesis = ArmHypothesisKey(metric, group_id, estimand)
+        failures[hypothesis] = DecisionFailure(hypothesis, code, dict(context))
     advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = (
         {
             ArmHypothesisKey(result.metric, result.group_id, result.estimand): (cuped_advisory,)
@@ -3161,6 +3169,7 @@ def estimate_cuped_linear(
     alternative: str,
     null_lift: float = 0.0,
     null_abs: float | None = None,
+    prior: Prior | None = None,
 ) -> Any:
     """Fit mixed-covariate CUPED once and project one randomized metric."""
     import numpy as np
@@ -3209,27 +3218,93 @@ def estimate_cuped_linear(
             f"maximum leverage {fit.max_leverage:.3g}, reference df {fit.dof:.3g}."
         ),
     )
+    cuped_failures = []
     for arm in arm_order:
         if arm == control_group:
             continue
-        absolute = (
-            fit.ratio(arm, scale="absolute", alpha=alpha_eff)
-            if ratio
-            else fit.absolute(arm, alpha=alpha_eff)
-        )
-        relative = (
-            fit.ratio(arm, scale="log", alpha=alpha_eff)
-            if ratio
-            else fit.relative(arm, alpha=alpha_eff)
-        )
-        lift = Estimate(
-            value=math.expm1(relative.estimate),
-            lb=math.expm1(relative.lower),
-            ub=math.expm1(relative.upper),
-            level=1.0 - alpha_eff,
-            alpha=alpha_eff,
-            log_mean=relative.estimate,
-            log_se=relative.se,
+        absolute = None
+        absolute_error = None
+        try:
+            absolute = (
+                fit.ratio(arm, scale="absolute", alpha=alpha_eff)
+                if ratio
+                else fit.absolute(arm, alpha=alpha_eff)
+            )
+        except CodedError as exc:
+            absolute_error = exc
+        try:
+            relative = (
+                fit.ratio(arm, scale="log", alpha=alpha_eff)
+                if ratio
+                else fit.relative(arm, alpha=alpha_eff)
+            )
+        except CodedError as exc:
+            failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
+            results.append(
+                LiftEstimate(
+                    metric=metric.name,
+                    group_id=arm,
+                    method=method.name,
+                    method_role=method_role,
+                    estimand="itt",
+                    alternative=alternative,
+                    preferred_direction=metric.declared_preferred_direction,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
+                    failure_code=exc.code,
+                    failure_context=failure_context,
+                )
+            )
+            if method_role == "decision":
+                cuped_failures.append((metric.name, arm, "itt", exc.code, failure_context))
+            continue
+        if absolute_error is not None and null_abs is not None and method_role == "decision":
+            failure_context = {
+                **absolute_error.context,
+                "metric": metric.name,
+                "group_id": arm,
+                "projection": "absolute",
+            }
+            cuped_failures.append((metric.name, arm, "itt", absolute_error.code, failure_context))
+        try:
+            lift = Estimate(
+                value=resolvable_expm1(relative.estimate, what="CUPED relative point estimate"),
+                lb=resolvable_expm1(relative.lower, what="CUPED relative lower bound"),
+                ub=resolvable_expm1(relative.upper, what="CUPED relative upper bound"),
+                level=1.0 - alpha_eff,
+                alpha=alpha_eff,
+                log_mean=relative.estimate,
+                log_se=relative.se,
+            )
+        except CodedError as exc:
+            failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
+            results.append(
+                LiftEstimate(
+                    metric=metric.name,
+                    group_id=arm,
+                    method=method.name,
+                    method_role=method_role,
+                    estimand="itt",
+                    alternative=alternative,
+                    preferred_direction=metric.declared_preferred_direction,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
+                    failure_code=exc.code,
+                    failure_context=failure_context,
+                )
+            )
+            if method_role == "decision":
+                cuped_failures.append((metric.name, arm, "itt", exc.code, failure_context))
+            continue
+        posterior_context = (
+            {
+                "metric": metric.name,
+                "group_id": arm,
+                "reference_df": relative.dof,
+                "missing": "HC2/BM score statistics needed to compose the declared prior",
+            }
+            if prior is not None
+            else None
         )
         results.append(
             LiftEstimate(
@@ -3240,22 +3315,35 @@ def estimate_cuped_linear(
                 estimand="itt",
                 lift=lift,
                 alternative=alternative,
+                preferred_direction=metric.declared_preferred_direction,
                 null_lift=null_lift,
                 null_abs=null_abs,
-                abs_diff=absolute.estimate,
-                abs_se=absolute.se,
-                abs_lb=absolute.lower,
-                abs_ub=absolute.upper,
-                abs_reference_kind="t",
-                abs_reference_df=absolute.dof,
-                abs_alpha=alpha_eff,
+                abs_diff=None if absolute is None else absolute.estimate,
+                abs_se=None if absolute is None else absolute.se,
+                abs_lb=None if absolute is None else absolute.lower,
+                abs_ub=None if absolute is None else absolute.upper,
+                abs_reference_kind="t" if absolute is not None else None,
+                abs_reference_df=None if absolute is None else absolute.dof,
+                abs_alpha=alpha_eff if absolute is not None else None,
                 reference_kind="t",
                 reference_df=relative.dof,
                 dof=relative.dof,
                 scale="log",
+                posterior_available=False if prior is not None else None,
+                posterior_reason_code=(
+                    "estimation.results.lift.t_posterior_sufficient_statistics"
+                    if prior is not None
+                    else None
+                ),
+                posterior_reason_context=posterior_context,
             )
         )
-    return _lift_decision_bundle(results, inference=None, cuped_advisory=advisory)
+    return _lift_decision_bundle(
+        results,
+        inference=None,
+        cuped_advisory=advisory,
+        cuped_failures=cuped_failures,
+    )
 
 
 def estimate_lift(  # noqa: PLR0913

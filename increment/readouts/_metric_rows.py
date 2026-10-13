@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -32,7 +33,12 @@ def _frame_digest_and_arms(frame):
     from increment.estimation.readout_types import StreamingDigest
 
     digest = StreamingDigest()
-    digest.update_rows(frame.iter_rows(named=True))
+
+    for row in frame.iter_rows(named=True):
+        for name, value in row.items():
+            if isinstance(value, float) and math.isnan(value):
+                row[name] = None
+        digest.update(row)
     arms: set[str] = set()
     if "group_id" in frame.columns:
         arms = {

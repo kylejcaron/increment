@@ -223,6 +223,56 @@ def _secondary_group_ids(nominal, computation, observed_groups, is_quantile):
     return groups
 
 
+def _reintervalize_cuped_secondary(  # noqa: PLR0913
+    src,
+    metric,
+    test,
+    config,
+    design,
+    methods,
+    nominal_rows,
+    evidence,
+    selected_alpha,
+    selected_alternative,
+    effective_inference,
+    advisory_seen,
+    computations,
+    is_quantile,
+):
+    cuped_names = {method.name for method in methods if method.variance_reduction == "cuped_linear"}
+    rows = [
+        row.reintervalize(selected_alpha, interval_alternative=selected_alternative)
+        if row.method in cuped_names and row.method_role == "decision" and row.lift is not None
+        else row
+        for row in nominal_rows
+    ]
+    decision_names = {row.method for row in nominal_rows if row.method_role == "decision"}
+    ordinary_decision_methods = [
+        method
+        for method in methods
+        if method.name in decision_names and method.variance_reduction != "cuped_linear"
+    ]
+    if not ordinary_decision_methods:
+        return rows, []
+    ordinary_rows, refused, computation = _estimate_pass(
+        src,
+        metric,
+        evidence,
+        test,
+        config,
+        design,
+        alpha_for=selected_alpha,
+        role="secondary",
+        inference=None if is_quantile else effective_inference,
+        advisory_seen=advisory_seen,
+        methods=ordinary_decision_methods,
+    )
+    computations.append(computation)
+    return [
+        row for row in rows if row.method_role != "decision" or row.method in cuped_names
+    ] + ordinary_rows, refused
+
+
 def _estimate_randomized_secondary_family(
     src: MomentSource,
     secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
@@ -332,20 +382,32 @@ def _estimate_randomized_secondary_family(
     for metric, config, test, is_quantile, _metric_methods in family:
         if metric.name not in selected_names:
             continue
-        selected_alpha = _fcr_alpha_for(
+        selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])
-            else test.alternative,
-            fcr_alpha,
+            else test.alternative
         )
+        selected_alpha = _fcr_alpha_for(selected_alternative, fcr_alpha)
         metric_rows = loaded[metric.name]
         if metric_rows.unit_frame is not None and any(
             method.variance_reduction == "cuped_linear" for method in _metric_methods
         ):
-            reestimated[metric.name] = [
-                row.reintervalize(selected_alpha) for row in nominal_by_metric[metric.name]
-            ]
-            refused = []
+            reestimated[metric.name], refused = _reintervalize_cuped_secondary(
+                src,
+                metric,
+                test,
+                config,
+                design,
+                _metric_methods,
+                nominal_by_metric[metric.name],
+                evidence_by_metric[metric.name],
+                selected_alpha,
+                selected_alternative,
+                effective_inference,
+                advisory_seen,
+                computations,
+                is_quantile,
+            )
         else:
             reestimated[metric.name], refused, computation = _estimate_pass(
                 src,
@@ -364,7 +426,6 @@ def _estimate_randomized_secondary_family(
         reestimated[metric.name] = [
             open_bound_from_two_sided_at_target(r) for r in reestimated[metric.name]
         ]
-        computations.append(computation)
         refused_cells.extend(refused)
     out.extend(
         _stamp_fcr_selected_rows(

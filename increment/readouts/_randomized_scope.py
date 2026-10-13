@@ -28,7 +28,15 @@ def _randomized_source(
     components = []
 
     for metric in selected:
-        for kind, digest, count in evidence_components[metric.name]:
+        component_set = evidence_components[metric.name]
+        if (
+            len(component_set) == 3
+            and isinstance(component_set[0], str)
+            and isinstance(component_set[1], str)
+            and isinstance(component_set[2], int)
+        ):
+            component_set = (component_set,)
+        for kind, digest, count in component_set:
             item = component(
                 kind=kind,
                 metric=metric.name,

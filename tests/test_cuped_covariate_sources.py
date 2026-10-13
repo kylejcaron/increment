@@ -5,6 +5,7 @@ from typing import Any, cast
 import narwhals as nw
 
 from increment.analysis import Analysis
+from increment.estimation.results import LiftEstimate
 from increment.semantics import load
 from tests.analysis_factory import _moment_source
 from tests.covariate_cases import categorical_defs_and_con
@@ -638,3 +639,69 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
     finally:
         analysis.close()
         con.disconnect()
+
+
+def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_path):
+    import pyarrow as pa
+    import pytest
+
+    from increment import AnalysisPlan
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from tests.covariate_cases import covariate_defs_and_con
+
+    defs_path, con, tenure, groups, revenue = covariate_defs_and_con(tmp_path)
+    text = defs_path.read_text().replace(
+        "    plan: {secondaries: [revenue]}",
+        "    plan: {primary: {metric: revenue, "
+        "decision_method: {name: linear, variance_reduction: cuped_linear}, "
+        "covariates: [{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}",
+    )
+    defs_path.write_text(text)
+
+    native = Analysis.from_definitions("cov_test", defs_path, con)
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cov_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = native.publish_unit_day_artifact(store)
+    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    assert native._src.context.configs[0].covariates[0].name == "pre_tenure"
+    table = pa.Table.from_pylist(
+        [
+            {
+                "unit": unit,
+                "group": groups[unit],
+                "revenue": revenue[unit],
+                "pre_tenure": tenure[unit],
+            }
+            for unit in sorted(groups)
+        ]
+    )
+    dataframe = Analysis.from_unit_summary(
+        table,
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+                covariates=(CupedCovariate(name="pre_tenure", kind="continuous"),),
+            )
+        ],
+        plan=AnalysisPlan(primary="revenue"),
+    )
+
+    frame_result = cast(list[LiftEstimate], list(dataframe.run()))
+    native_result = cast(list[LiftEstimate], list(native.run()))
+    artifact_result = cast(list[LiftEstimate], list(restored.run()))
+    expected = next(row for row in frame_result if row.group_id == "treatment").require_lift()
+    for result in (native_result, artifact_result):
+        actual = next(row for row in result if row.group_id == "treatment").require_lift()
+        assert actual.value == pytest.approx(expected.value, rel=1e-10, abs=1e-10)
+        assert actual.lb == pytest.approx(expected.lb, rel=1e-10, abs=1e-10)
+        assert actual.ub == pytest.approx(expected.ub, rel=1e-10, abs=1e-10)

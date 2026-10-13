@@ -478,7 +478,9 @@ def _estimate_pass(  # noqa: PLR0913
                 preferred_direction=metric.declared_preferred_direction,
                 cluster=src.context.cluster,
                 advisory_seen=advisory_seen,
-                method_roles=_runtime_method_roles(ordinary_methods),
+                method_roles={
+                    method.name: method_roles[method.name] for method in ordinary_methods
+                },
                 family=retry == "family",
                 route_alpha=route_alpha,
             )
@@ -498,8 +500,9 @@ def _estimate_pass(  # noqa: PLR0913
                     covariates=config.covariates,
                     alpha=alpha_for,
                     alternative=test.alternative,
-                    null_lift=getattr(test, "null_lift", 0.0),
                     null_abs=getattr(test, "null_abs", None),
+                    null_lift=getattr(test, "null_lift", 0.0),
+                    prior=config.prior,
                 )
             except CodedError as exc:
                 if exc.code not in _CELL_ESTIMATION_GUARD_CODES:

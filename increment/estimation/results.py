@@ -1476,7 +1476,9 @@ class LiftEstimate(_RowIdentity):
         """The estimate exploratory-family evidence and FCR reissue read: this row itself."""
         return self
 
-    def reintervalize(self, alpha: float) -> LiftEstimate:
+    def reintervalize(
+        self, alpha: float, *, interval_alternative: str | None = None
+    ) -> LiftEstimate:
         """Reinvert persisted inference; bootstrap roots are never regenerated."""
         if (
             self.reference_kind == "t"
@@ -1485,15 +1487,19 @@ class LiftEstimate(_RowIdentity):
             and self.lift.log_se is not None
             and self.reference_df is not None
         ):
-            critical = float(_t.isf(alpha / 2.0, self.reference_df))
-            log_mean = self.lift.log_mean
-            log_se = self.lift.log_se
+            alternative = interval_alternative or self.alternative
+            alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+            critical = float(_t.isf(alpha_eff / 2.0, self.reference_df))
+            location = self.lift.log_mean
+            scale = self.lift.log_se
+            lower = location - critical * scale
+            upper = location + critical * scale
             lift = self.lift.model_copy(
                 update={
-                    "lb": math.expm1(log_mean - critical * log_se),
-                    "ub": math.expm1(log_mean + critical * log_se),
-                    "alpha": alpha,
-                    "level": 1.0 - alpha,
+                    "lb": math.expm1(lower) if self.scale == "log" else lower,
+                    "ub": math.expm1(upper) if self.scale == "log" else upper,
+                    "alpha": alpha_eff,
+                    "level": 1.0 - alpha_eff,
                 }
             )
             abs_lb = self.abs_lb
@@ -1503,7 +1509,7 @@ class LiftEstimate(_RowIdentity):
                 and self.abs_se is not None
                 and self.abs_reference_df is not None
             ):
-                abs_critical = float(_t.isf(alpha / 2.0, self.abs_reference_df))
+                abs_critical = float(_t.isf(alpha_eff / 2.0, self.abs_reference_df))
                 abs_lb = self.abs_diff - abs_critical * self.abs_se
                 abs_ub = self.abs_diff + abs_critical * self.abs_se
             return self.model_copy(
@@ -1511,7 +1517,7 @@ class LiftEstimate(_RowIdentity):
                     "lift": lift,
                     "abs_lb": abs_lb,
                     "abs_ub": abs_ub,
-                    "abs_alpha": alpha if abs_lb is not None else None,
+                    "abs_alpha": alpha_eff if abs_lb is not None else None,
                 }
             )
         if self.confidence_set is None:
@@ -1884,11 +1890,7 @@ class LiftEstimate(_RowIdentity):
         against ``null_abs`` -- split out of ``p_value`` purely to keep
         that method's branch count readable; see its docstring for the
         contract."""
-        if (
-            self.reference_kind == "t"
-            or self.abs_reference_kind == "t"
-            or self.n_clusters is not None
-        ):
+        if self.n_clusters is not None:
             _raise(
                 "estimation.results.lift.p_value_cluster_robust_null_abs",
                 reference_df=self.abs_reference_df
@@ -1905,11 +1907,25 @@ class LiftEstimate(_RowIdentity):
             )
         assert self.null_abs is not None
         z_abs = (self.null_abs - self.abs_diff) / self.abs_se
+        abs_kind = self.abs_reference_kind or self.reference_kind
+        if abs_kind == "t":
+            if self.abs_reference_df is None:
+                _raise(
+                    "estimation.results.lift.p_value_cluster_robust_null_abs",
+                    reference_df=None,
+                    group_id=self.group_id,
+                    metric=self.metric,
+                )
+            from scipy.stats import t as distribution
+
+            distribution = distribution(df=self.abs_reference_df)
+        else:
+            distribution = _norm
         if self.alternative == "greater":
-            return float(_norm.cdf(z_abs))
+            return float(distribution.cdf(z_abs))
         if self.alternative == "less":
-            return float(_norm.sf(z_abs))
-        return float(2.0 * min(_norm.cdf(z_abs), _norm.sf(z_abs)))
+            return float(distribution.sf(z_abs))
+        return float(2.0 * min(distribution.cdf(z_abs), distribution.sf(z_abs)))
 
     def p_value(self) -> float | None:
         """Return a presentation-only sampling p-value for this displayed result.
