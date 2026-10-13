@@ -105,6 +105,7 @@ from increment.query.integrity import (
 )
 from increment.query.native_contract import (
     _NATIVE_COVARIATE_RESERVED,
+    _SITEWIDE_OUTCOMES_INCOMPLETE,
     DayEvidenceSource,
     SitewideEvidence,
 )
@@ -1045,6 +1046,36 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Return the effective event edge and optional certification edge for one metric."""
         evidence = self._require_source_snapshot_evidence(operation="triggered_observation_edges")
         return self._metric_snapshot_edges(metric, evidence)
+
+    def _require_sitewide_outcome_completeness(self, metric: Metric) -> None:
+        end_day = self._experiment.end_day
+        _, certified_edge = self.triggered_observation_edges(metric)
+        if end_day is None or certified_edge is None or certified_edge < end_day:
+            _refuse(
+                _SITEWIDE_OUTCOMES_INCOMPLETE,
+                route="re-run after the outcome feeds are complete through the experiment end.",
+            )
+
+    def _validate_triggered_sitewide_metric(self, metric: Metric) -> None:
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        if self._experiment.end is None or any(
+            getattr(component, "window_days", None) is not None
+            or getattr(component, "aggregation", None) != "sum"
+            for component in components
+        ):
+            _refuse_operation(
+                operation="sitewide_evidence",
+                request={
+                    "metric": metric.name,
+                    "window_days": getattr(metric, "window_days", None),
+                    "aggregation": getattr(metric, "aggregation", None),
+                },
+                offered={"calendar_window": "unwindowed sum"},
+                route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
+            )
+        self._require_sitewide_outcome_completeness(metric)
 
     def triggered_health_evidence(self) -> Any:
         from increment._source_operations import TriggeredHealthEvidence, TriggeredHealthFeed
@@ -2219,8 +2250,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return self._con.to_pyarrow(volume).to_pylist()[0]
 
-    def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> SitewideEvidence:
-        """Prepare typed, assignment-anchored evidence for ``sitewide``."""
+    def sitewide_evidence(
+        self,
+        metric: Metric,
+        *,
+        include_ratio: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> SitewideEvidence:
+        """Prepare calendar-window evidence for assigned or triggered units."""
         if isinstance(metric, RatioMetric) and not include_ratio:
             _refuse_operation(
                 operation="sitewide_evidence",
@@ -2250,8 +2287,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 ),
             )
         validate_site_volume_metric(metric)
-        self._note_reduction()
+        if population == "triggered":
+            self._validate_triggered_sitewide_metric(metric)
+        if population == "triggered":
+            self._validate_trigger_capability(operation="sitewide_evidence")
+            self._validate_mixed_assignments()
+        else:
+            self._note_reduction()
         exposures = self._get_exposures()
+        if population == "triggered":
+            members = self._get_trigger_population(operation="sitewide_evidence")
+            exposures = exposures.join(members.select("unit_id"), "unit_id")
         cluster = self._experiment.cluster
         cluster_counts: dict[str, int] | None = None
         unit_counts: dict[str, int] | None = None
@@ -2265,30 +2311,73 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_events, uptake_window_days = self._resolve_uptake(
             cluster, operation="sitewide_evidence"
         )
-        _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
-            self._build_panel_for_metric(exposures, metric)
-        )
-        summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
-            metric,
-            exposures,
-            spine,
-            stats,
-            den_events,
-            fact_tbl,
-            value_col,
-            data_as_of,
-            cluster=cluster,
-            uptake_events=uptake_events,
-            uptake_window_days=uptake_window_days,
-            warn_on_censoring=True,
-        )
+        original_experiment = self._experiment
+        if population == "triggered":
+            self._experiment = self._experiment.model_copy(
+                update={"observation_end": self._experiment.end}
+            )
+        try:
+            _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
+                self._build_panel_for_metric(exposures, metric, use_cache=False)
+            )
+            summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
+                metric,
+                exposures,
+                spine,
+                stats,
+                den_events,
+                fact_tbl,
+                value_col,
+                data_as_of,
+                cluster=cluster,
+                uptake_events=uptake_events,
+                uptake_window_days=uptake_window_days,
+                warn_on_censoring=True,
+            )
+        finally:
+            self._experiment = original_experiment
         from increment.estimation.engine import _df_to_arms
 
         row = self._site_volume_row(metric)
+        arm_stats = tuple(_df_to_arms(summary.to_pyarrow()))
+        assigned_counts: dict[str, int] = {}
+        all_exposures = self._get_exposures()
+        count_rows = self._con.to_pyarrow(
+            all_exposures.group_by("group_id").aggregate(n_units=all_exposures.unit_id.nunique())
+        ).to_pylist()
+        for count_row in count_rows:
+            group_id = count_row["group_id"]
+            if group_id is not None:
+                assigned_counts[str(group_id)] = int(count_row["n_units"])
+        population_counts: dict[str, int] = {}
+        population_count_rows = self._con.to_pyarrow(
+            exposures.group_by("group_id").aggregate(n_units=exposures.unit_id.nunique())
+        ).to_pylist()
+        for count_row in population_count_rows:
+            group_id = count_row["group_id"]
+            if group_id is not None:
+                population_counts[str(group_id)] = int(count_row["n_units"])
+        for group_id in assigned_counts:
+            population_counts.setdefault(group_id, 0)
+        snapshot = self._session.source_snapshot_evidence
+        snapshot_id = None
+        if snapshot is not None:
+            from hashlib import sha256
+
+            from increment._canonical import canonical_json_bytes
+
+            snapshot_identity = {
+                "observation_cutoff_ts": snapshot.observation_cutoff_ts.isoformat(),
+                "complete_through_by_feed": {
+                    feed: None if instant is None else instant.isoformat()
+                    for feed, instant in sorted(snapshot.complete_through_by_feed.items())
+                },
+            }
+            snapshot_id = "sha256:" + sha256(canonical_json_bytes(snapshot_identity)).hexdigest()
         return SitewideEvidence(
             metric=metric,
             site_total=float(row["y"]),
-            arm_stats=tuple(_df_to_arms(summary.to_pyarrow())),
+            arm_stats=arm_stats,
             control_group=self._experiment.control_group,
             cluster=cluster,
             site_total_denominator=(
@@ -2296,6 +2385,23 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             ),
             cluster_counts=cluster_counts,
             unit_counts=unit_counts,
+            analysis_population=population,
+            window=(
+                None
+                if self._experiment.end is None
+                else (
+                    self._experiment.start_day,
+                    self._experiment.end_day or self._experiment.start_day,
+                )
+            ),
+            membership_cutoff=(
+                None
+                if population == "assigned" or snapshot is None
+                else snapshot.observation_cutoff_ts
+            ),
+            snapshot_id=snapshot_id,
+            population_counts=population_counts,
+            assigned_counts=assigned_counts,
         )
 
     def _day_axis_source(

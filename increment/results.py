@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from increment.estimation.diagnostics import AllocationBand, NotApplicable, SRMResult
     from increment.estimation.health import ExperimentHealth, HealthCheck
     from increment.estimation.results import BinomialConfidenceSet, Estimate, LiftEstimate
-    from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
+    from increment.estimation.sitewide import AllocationBalance, SitewideImpact, SitewideRatioImpact
     from increment.estimation.targeting import (
         CateEvaluationPopulation,
         CateValidation,
@@ -127,6 +127,7 @@ __all__ = [
     "MetricTrend",
     "SitewideImpact",
     "SitewideRatioImpact",
+    "AllocationBalance",
     "PolicyValueContrast",
     "ExperimentHealth",
     "HealthCheck",
@@ -194,6 +195,7 @@ _LAZY_IMPORTS = {
     "CateEvaluationPopulation": ("increment.estimation.targeting", "CateEvaluationPopulation"),
     "MetricTrend": ("increment.reporting", "MetricTrend"),
     "SitewideImpact": ("increment.estimation.sitewide", "SitewideImpact"),
+    "AllocationBalance": ("increment.estimation.sitewide", "AllocationBalance"),
     "SitewideRatioImpact": ("increment.estimation.sitewide", "SitewideRatioImpact"),
     "PolicyValueContrast": ("increment.logged_policy", "PolicyValueContrast"),
     "ExperimentHealth": ("increment.estimation.health", "ExperimentHealth"),

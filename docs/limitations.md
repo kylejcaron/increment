@@ -274,10 +274,70 @@ histories use the declared cluster uptake sufficient state.
 
 ### Triggered-population sitewide impact needs an external assumption
 
-`Analysis.sitewide(population="triggered")` is not offered: triggered lift
-scaled by triggered units represents whole-site impact only if units that
-never trigger are unaffected. The assigned-population whole-site impact
-remains available.
+`Analysis.sitewide(population="triggered")` reports a conditional, fixed-
+membership estimate: the triggered-stratum lift is scaled by the number of
+enrolled units in finalized trigger membership, while the site-volume
+counterfactual remains full-site. Reading it as the whole-site impact
+requires that trigger membership is independent of treatment and that
+never-triggered units are unaffected. The allocation balance diagnostic can
+detect some treatment-dependent trigger rates, but its non-rejection does not
+prove either assumption; equal marginal trigger rates do not rule out
+treatment-dependent membership or timing.
+
+It supports unwindowed mean and ratio metrics with sum-aggregated components
+and randomized, unit-randomized, fixed-horizon experiments with a declared
+end. Every numerator and denominator outcome feed must be certified complete
+through that experiment calendar end; otherwise the triggered request refuses
+before reduction and can be retried after those feeds are complete. A
+conversion counts converted units while the site total counts events, so
+conversions refuse; clustered experiments, observational and encouragement
+designs, registered sequential plans and winsorized metrics also refuse.
+
+The estimate omits any reach effect among never-triggered units and does not
+adjust for multiplicity or provide anytime-valid inference. It uses
+assignment-anchored experiment-calendar outcomes rather than `run()`'s
+trigger-anchored windows. Use the assigned-population sitewide result when
+these conditional assumptions are not defensible.
+
+Population counts retain every assigned arm, including explicit zero counts
+for arms with no triggered members. The estimator scales all triggered members
+in the complete requested roster; `unobserved_members` counts members across
+that full roster omitted from the reductions and is zero when the required
+complete outcome certificates are present.
+
+The full calibration gates use two-arm, unclustered designs with 20% trigger
+reach and measure coverage against realized potential-outcome site totals;
+each gated statistic uses 107,100 replications. Run the campaign with an
+explicit new output directory:
+
+```bash
+python -m calibration.triggered_sitewide --campaign full \
+  --output .cache/triggered-sitewide-calibration
+```
+
+For sum metrics (20% and 100% of the site enrolled) and a benign ratio metric,
+the assigned and triggered readings each covered 95.12%–95.66% for absolute
+and relative impact at nominal 95%; every Clopper–Pearson lower bound, at a
+family-allocated error of 7.5e-5, cleared 94.5%. The campaign checks the
+Normal-reference intervals the sitewide functions report; it does not cover
+multi-arm netting, clustered designs, or uncertainty about future traffic or
+trigger reach.
+
+Calibration does not establish the real-world assumptions needed to interpret
+the triggered result as whole-site impact. The explicit assumption-failure
+simulations demonstrate this limitation: when never-triggered units have a
+0.1 effect, the triggered reading undercounts by the omitted complement total
+(about −800 of a true 1,400) and covers 3%, while the assigned reading still
+covers 95%. When membership depends on treatment despite equal trigger rates,
+the triggered reading covers almost never, while the triggered sample-ratio
+check rejects in only 4.7% of runs.
+
+Precision relative to the assigned reading was measured separately in the T3
+descriptive designs: 10% trigger reach and 4,000 replications for each
+variance ratio. The observed ratios were 0.91, 0.65 and 0.10 for a binary
+post-trigger-only outcome, a lognormal post-trigger-only outcome and a broad
+metric respectively. Each was within 5% of
+$p\sigma_T^2 / (p\sigma_T^2 + (1-p)\sigma_{NT}^2 + p(1-p)(\mu_T-\mu_{NT})^2)$.
 
 The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
 reference over the two arms' own cluster-ratio variance components. Measured by
@@ -1665,8 +1725,10 @@ are warehouse-native operations: the former preserves pre-assignment property
 values, while the latter dates triggered cohorts at their first eligible
 trigger. Artifacts do not retain the raw enrollment timeline or provide the
 dashboard aggregation operation, so those reads refuse with source-specific
-capability reasons. Sitewide impacts cannot isolate triggered units from
-whole-site volumes and likewise refuse triggered requests. CATE, CATE
+capability reasons. Triggered sitewide is available only for aligned sum
+metrics with explicit trigger and site-volume evidence; it uses calendar-
+window outcomes restricted to finalized membership and remains conditional on
+the assumptions above. CATE, CATE
 validation, and targeting use the triggered unit population when the source
 provides triggered outcomes and pre-assignment covariates; artifacts require
 the corresponding trigger, metric, and unit-covariate evidence. Missing

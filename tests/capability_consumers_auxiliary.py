@@ -225,24 +225,40 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     _evidence,
                 ),
                 _expectation(
-                    "sitewide_triggered_population_refused",
+                    "sitewide_definitions_triggered_supported",
                     _operation,
                     "from_definitions",
                     "sitewide requested with population='triggered' on an experiment that declares a trigger",
-                    "refused",
-                    _evidence,
-                    codes=("analysis.sitewide.triggered_population_unsupported",),
-                    reason="The triggered-population sitewide estimand is not offered.",
+                    "supported",
+                    "tests.test_triggered_sitewide::test_triggered_sitewide_result_discloses_population_and_provenance",
                 ),
                 _expectation(
-                    "sitewide_artifact_triggered_population_refused",
+                    "sitewide_artifact_triggered_supported",
                     _operation,
                     "from_unit_day_artifact",
-                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
+                    "sitewide requested with population='triggered' and published trigger/site-volume evidence",
+                    "supported",
+                    "tests.test_triggered_sitewide::test_triggered_sitewide_artifact_matches_native_evidence",
+                ),
+                _expectation(
+                    "sitewide_triggered_observational_refused",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with population='triggered' on an observational trigger experiment",
                     "refused",
-                    _evidence,
-                    codes=("analysis.sitewide.triggered_population_unsupported",),
-                    reason="The triggered-population sitewide estimand is not offered.",
+                    "tests.test_triggered_sitewide::test_triggered_sitewide_observational_design_refuses_before_evidence",
+                    codes=("facade.analysis.sitewide_requires_randomized",),
+                    reason="Triggered sitewide has no adjusted observational construction.",
+                ),
+                _expectation(
+                    "sitewide_triggered_incomplete_outcomes_refused",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with population='triggered' before outcome feeds cover experiment end",
+                    "refused",
+                    "tests.test_triggered_sitewide::test_triggered_sitewide_refuses_incomplete_calendar_outcomes",
+                    codes=("facade.analysis.sitewide_outcomes_incomplete",),
+                    reason="Sitewide outcomes and site volume must use the same complete calendar interval.",
                 ),
                 *(
                     _expectation(
@@ -252,8 +268,12 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                         "sitewide requested with population='triggered'",
                         "refused",
                         "tests.test_analysis_trigger::test_sitewide_triggered_population_refuses_before_loading_on_every_ingress",
-                        codes=("analysis.sitewide.triggered_population_unsupported",),
-                        reason="The triggered-population sitewide estimand is not offered.",
+                        codes=(
+                            ("facade.analysis.contrast_unavailable",)
+                            if ingress == "from_switchback_panel"
+                            else ("facade.analysis.operation",)
+                        ),
+                        reason="This source cannot provide triggered sitewide evidence.",
                     )
                     for ingress in (
                         "from_unit_summary",

@@ -1038,6 +1038,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         pre_stats: ir.Table | None = None,
         population_units: frozenset[str] | None = None,
         completed_windows_only: bool = False,
+        calendar_end: dt.date | None = None,
     ) -> list[dict[str, Any]]:
         query = self._reduction_query(
             metric,
@@ -1049,6 +1050,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             pre_stats=pre_stats,
             population_units=population_units,
             completed_windows_only=completed_windows_only,
+            calendar_end=calendar_end,
         )
         return _rows(self._snapshot.execute(query))
 
@@ -1211,6 +1213,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         completed_windows_only: bool = False,
         trigger_inputs: _TriggeredReductionInputs | None = None,
         finalized_as_of: dt.date | None = None,
+        calendar_end: dt.date | None = None,
     ) -> ir.Table:
         """Reduce every artifact source through the same observation spine."""
         if cluster is not None and grain not in ("total", "unit"):
@@ -1266,6 +1269,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
             plan=AnalysisPlan(),
         )
         declared_end = self._declared_observation_end()
+        if calendar_end is not None:
+            experiment = experiment.model_copy(
+                update={
+                    "end": dt.datetime.combine(calendar_end, dt.time()),
+                    "observation_end": dt.datetime.combine(calendar_end, dt.time()),
+                }
+            )
+            declared_end = calendar_end if declared_end is None else min(calendar_end, declared_end)
         if trigger_inputs is not None:
             observed_end = trigger_inputs.observed_edge
             if declared_end is not None:

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
-from increment._source_operations import SitewideEvidenceOperation
+from increment._source_operations import SitewideEvidenceOperation, TriggeredCountsOperation
 from increment._source_types import classify_source
 from increment._whole_window import (
     _ANALYSIS_OPERATION,
@@ -15,6 +15,7 @@ from increment._whole_window import (
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.estimation.sitewide import (
+    AllocationBalance,
     SitewideContrast,
     SitewideRatioContrast,
     _validate_alpha,
@@ -22,10 +23,11 @@ from increment.estimation.sitewide import (
     sitewide_impact_ratio,
 )
 from increment.query.builders import check_cluster_size_balance, validate_site_volume_metric
-from increment.semantics.models import RatioMetric
+from increment.semantics.models import Metric, RatioMetric
 
 if TYPE_CHECKING:
     from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
+    from increment.query.native_contract import SitewideEvidence
     from increment.semantics.models import Experiment
     from increment.sources import MomentSource
 
@@ -81,6 +83,28 @@ _SITEWIDE_ARM_NOT_ENROLLED = RefusalSpec(
     template="arm {arm!r} is not an enrolled non-control arm for metric {metric!r} (control_group is {control_group!r}). Enrolled non-control arms: {arms!r}",
 )
 
+
+_TRIGGERED_SITEWIDE_METRIC_UNALIGNED = RefusalSpec(
+    "facade.analysis.sitewide_triggered_metric_unaligned",
+    CapabilityError,
+    template="triggered sitewide requires an unwindowed mean or ratio metric with sum-aggregated components and a declared experiment end; {metric!r} has {metric_type!r}, window_days={window_days!r}, aggregation={aggregation!r}. A conversion counts converted units, which the event-count site total cannot match. Use an unwindowed sum metric over the experiment window.",
+)
+
+_TRIGGERED_SITEWIDE_CLUSTER = RefusalSpec(
+    "facade.analysis.sitewide_triggered_cluster_unsupported",
+    CapabilityError,
+    template="triggered sitewide does not support cluster-randomized experiment {cluster!r}; use unit-randomized definitions.",
+)
+_TRIGGERED_SITEWIDE_SEQUENTIAL = RefusalSpec(
+    "facade.analysis.sitewide_triggered_sequential_unsupported",
+    CapabilityError,
+    template="triggered sitewide is fixed-horizon and cannot use a registered sequential plan; use a fixed-horizon plan.",
+)
+_SITEWIDE_REQUIRES_RANDOMIZED = RefusalSpec(
+    "facade.analysis.sitewide_requires_randomized",
+    CapabilityError,
+    template="sitewide() requires a randomized identification design; observational and encouragement designs are unsupported. Use run() for their estimands.",
+)
 # Retention and quantile are refused by validate_site_volume_metric.
 _CLUSTER_COMPATIBLE_METRIC_TYPES = ("mean", "conversion", "ratio")
 
@@ -90,12 +114,107 @@ class SitewideRequest:
     metric_name: str
     arm: str | None
     alpha: float
+    population: Literal["assigned", "triggered"] = "assigned"
 
 
 class SitewideReadouts:
     def __init__(self, *, src: MomentSource, experiment: Experiment | None) -> None:
         self._src = src
         self._experiment = experiment
+
+    def _with_provenance(
+        self,
+        result: SitewideImpact | SitewideRatioImpact,
+        evidence: SitewideEvidence,
+        population: Literal["assigned", "triggered"],
+    ) -> SitewideImpact | SitewideRatioImpact:
+        allocation_balance = None
+        population_counts = evidence.population_counts or {}
+        if population == "triggered":
+            from increment.estimation.diagnostics import (
+                complete_srm_support,
+                sample_ratio_mismatch,
+            )
+
+            grain, triggered_counts, unit_counts = cast(
+                "TriggeredCountsOperation", self._src
+            ).triggered_counts()
+            expected = getattr(self._src.context.design, "allocation", None)
+            # An assigned arm nobody in which triggered is a zero, not a missing arm.
+            support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
+            srm = sample_ratio_mismatch(
+                complete_srm_support(support, expected=expected),
+                expected=expected,
+                inference="fixed",
+                alpha=0.001,
+                grain=grain,
+                unit_counts=unit_counts,
+            )
+            allocation_balance = AllocationBalance(
+                statistic=srm.chi2_stat,
+                p_value=srm.fixed_p_value,
+                status="failed" if srm.is_srm else "passed",
+            )
+        assumptions = (
+            (
+                "membership_independent_of_treatment",
+                "never_triggered_unaffected",
+                "enrolled_units_exhaust_exposure",
+            )
+            if population == "triggered"
+            else ("enrolled_units_exhaust_exposure",)
+        )
+        # Every enrolled arm is scaled (n_enrolled); cluster-grain populations are
+        # normalized floats, so round before reporting a unit count.
+        scaled_units = round(result.n_enrolled)
+        return result.model_copy(
+            update={
+                "analysis_population": population,
+                "window": evidence.window,
+                "membership_cutoff": evidence.membership_cutoff,
+                "snapshot_id": evidence.snapshot_id,
+                "scaled_units": scaled_units,
+                "unobserved_members": max(0, sum(population_counts.values()) - scaled_units),
+                "multiplicity_status": "exploratory_unadjusted",
+                "adjustment": "unadjusted",
+                "assumptions": assumptions,
+                "allocation_balance": allocation_balance,
+            }
+        )
+
+    def _validate_triggered_metric(self, metric_name: str, metric: Metric) -> None:
+        experiment = self._experiment
+        assert experiment is not None
+        if experiment.resolved_design().mechanism != "randomized":
+            _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
+        if experiment.cluster is not None:
+            _refuse(
+                _TRIGGERED_SITEWIDE_CLUSTER,
+                cluster=experiment.cluster,
+            )
+        if experiment.plan.inference is not None:
+            _refuse(_TRIGGERED_SITEWIDE_SEQUENTIAL)
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        aggregation = getattr(metric, "aggregation", None)
+        window_days = getattr(metric, "window_days", None)
+        if (
+            experiment.end is None
+            or metric.type not in ("mean", "ratio")
+            or any(
+                getattr(component, "window_days", None) is not None
+                or getattr(component, "aggregation", None) != "sum"
+                for component in components
+            )
+        ):
+            _refuse(
+                _TRIGGERED_SITEWIDE_METRIC_UNALIGNED,
+                metric=metric_name,
+                metric_type=metric.type,
+                window_days=window_days,
+                aggregation=aggregation,
+            )
 
     def run(self, req: SitewideRequest) -> SitewideImpact | SitewideRatioImpact:
         _validate_alpha(req.alpha)
@@ -128,6 +247,8 @@ class SitewideReadouts:
         if getattr(metric, "winsorization", None) is not None:
             _refuse(_SITEWIDE_WINSORIZED_METRIC, metric=req.metric_name)
         assert self._experiment is not None
+        if req.population == "triggered":
+            self._validate_triggered_metric(req.metric_name, metric)
         cluster = self._experiment.cluster
         if cluster is not None and metric.type not in _CLUSTER_COMPATIBLE_METRIC_TYPES:
             _refuse(
@@ -137,7 +258,11 @@ class SitewideReadouts:
                 cluster=cluster,
             )
         validate_site_volume_metric(metric)
-        evidence = src.sitewide_evidence(metric, include_ratio=isinstance(metric, RatioMetric))
+        evidence = src.sitewide_evidence(
+            metric,
+            include_ratio=isinstance(metric, RatioMetric),
+            population=req.population,
+        )
         arms = evidence.arm_stats
         control_group = evidence.control_group
         control_arms = [item for item in arms if item.group_id == control_group]
@@ -194,22 +319,24 @@ class SitewideReadouts:
                 if cluster is not None
                 else SitewideRatioContrast.from_iid(control_arms[0], target, others)
             )
-            return sitewide_impact_ratio(
+            result = sitewide_impact_ratio(
                 ratio_contrast,
                 site_total_numerator=evidence.site_total,
                 site_total_denominator=evidence.site_total_denominator,
                 alpha=req.alpha,
             )
+            return self._with_provenance(result, evidence, req.population)
         sum_contrast = (
             SitewideContrast.from_clusters(control_arms[0], target, others, cluster=cluster)
             if cluster is not None
             else SitewideContrast.from_iid(control_arms[0], target, others)
         )
-        return sitewide_impact(
+        result = sitewide_impact(
             sum_contrast,
             site_total_volume=evidence.site_total,
             alpha=req.alpha,
         )
+        return self._with_provenance(result, evidence, req.population)
 
 
 __all__ = ["SitewideReadouts", "SitewideRequest"]
