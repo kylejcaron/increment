@@ -12,115 +12,178 @@ The examples use Polars. Any eager dataframe supported by
 [Narwhals](https://narwhals-dev.github.io/narwhals/) works, including
 pandas and PyArrow.
 
-## One row per analysis unit
+## One row per randomization unit
 
-Your dataframe needs:
+Your dataframe needs one row per unit, a group column, and one column per
+metric. If multiple units share a randomization cluster, pass `cluster=`.
+For unit-by-day data, use [`Analysis.from_unit_panel`](#one-row-per-unit-per-day).
 
-- One row per analysis unit.
-- A column identifying the control or treatment group.
-- One column per metric.
-
-If several units share a randomization cluster, pass its column as
-`cluster=`. For daily observations, use
-[`Analysis.from_unit_panel`](#one-row-per-unit-per-day) instead.
-
-This example creates synthetic data for 500 users per group:
+The example below samples each unit's assignment independently with
+probability 0.5, then declares that same assignment law. Revenue is the
+primary metric; complaints are a guardrail. The first dataframe deliberately
+has no usable treatment-arm complaint observations, simulating a source-data
+gap rather than treating missing outcomes as zero.
 
 ```python
-import random
+from random import Random
 
 import polars as pl
 
-random.seed(7)
+from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
+
+rng = Random(7)
 n = 500
+arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(2 * n)]
+revenue = [max(0.0, rng.gauss(10 + (arm == "treatment"), 4)) for arm in arms]
+complaints = [int(rng.random() < 0.04) for _ in arms]
 df = pl.DataFrame(
     {
         "user_id": [f"u{i:04d}" for i in range(2 * n)],
-        "variant": ["control"] * n + ["treatment"] * n,
-        "revenue": [max(0.0, random.gauss(10, 4)) for _ in range(n)]
-        + [max(0.0, random.gauss(11, 4)) for _ in range(n)],
-        "converted": [int(random.random() < 0.30) for _ in range(n)]
-        + [int(random.random() < 0.34) for _ in range(n)],
+        "variant": arms,
+        "revenue": revenue,
+        "complaints": [
+            None if arm == "treatment" else value
+            for arm, value in zip(arms, complaints, strict=True)
+        ],
     }
 )
 ```
 
-## Run the analysis
+## Declare the design and metrics
 
-Pass the dataframe and column names to `Analysis.from_unit_summary`.
-The `{"column": "type"}` shorthand handles common metrics. For ratios
-or CUPED covariates, use `MetricSpec` objects; see
-[Metric types](metric-types.md).
-
-Always set `control=`. Increment does not infer the control group from
-the order of its labels.
+Always declare the control explicitly. `allocation` names the actual
+assignment probabilities; `allocation_scheme="independent"` is correct here
+because the generator used independent Bernoulli assignments. Do not declare
+this law for blocked or otherwise constrained assignment.
 
 ```python
-from increment import Analysis
+from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
 
+design = Randomized(
+    control_group="control",
+    allocation={"control": 0.5, "treatment": 0.5},
+    allocation_scheme="independent",
+)
+plan = AnalysisPlan(primary="revenue", guardrails=["complaints"])
+metrics = [
+    MetricSpec(name="revenue", type="mean"),
+    MetricSpec(
+        name="complaints",
+        type="conversion",
+        missing="drop",
+        preferred_direction="decrease",
+    ),
+]
 analysis = Analysis.from_unit_summary(
     df,
     unit="user_id",
     group="variant",
-    control="control",
-    metrics={"revenue": "mean", "converted": "conversion"},
+    design=design,
+    metrics=metrics,
+    plan=plan,
 )
 results = analysis.run()
-
-for r in results:
-    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
-        # Missing numeric bounds: print a summary without formatting them.
-        print(repr(r))
-        continue
-    print(
-        f"{r.metric} / {r.group_id}: "
-        f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
-        f"significant={r.lift.excludes(0.0)}"
-    )
+print(results)
 ```
 
 ```text
-revenue / treatment: lift=+11.33% [+6.27%, +16.64%] significant=True
-converted / treatment: lift=+12.90% [-5.44%, +34.80%] significant=False
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: incomplete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 2; available: 1.
+Unavailable complaints: Metric complaints has no usable observations for arm treatment (arms with observations: control); check the metric's missing-value policy and the values available in that arm, then correct the data or policy and rerun
+Multiplicity (primary): declared_plan; family primary.
+Multiplicity (guardrail): declared_plan; family guardrail.
+revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
+Interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+revenue additive effect: 1.15169, set [0.638286, 1.6651].
+revenue test alternative: two-sided; null (relative lift): 0.
+revenue result identity: method unadjusted; method role decision; estimand itt.
+complaints test alternative: less; null (relative lift): 0.
+complaints result identity: method unadjusted; method role decision; estimand itt.
 ```
 
-## Reading a `LiftEstimate`
+The relative lift is about 11.6%; the additive effect is about 1.15 revenue
+units. The interval describes uncertainty about the effect, not the range
+containing 95% of users. `not_rejected` means this check found no mismatch;
+it does not prove valid randomization. The guardrail has no usable treatment
+observations, so the required decision scope is incomplete; absence is not
+evidence of no increase. Both declared metrics retain their roles: revenue is
+primary, and complaints is a guardrail. Only a metric outside the declared
+plan is labelled `exploratory_unadjusted`.
 
-`run()` returns a list of `LiftEstimate` objects, one per metric and
-treatment group in this example:
+## Recover the unavailable guardrail
 
-| Field | Meaning |
-|---|---|
-| `r.metric` | Metric name. |
-| `r.group_id` | Treatment group compared with control. |
-| `r.lift.value` | Relative lift: `0.05` means 5% above control. |
-| `r.lift.lb`, `r.lift.ub` | Confidence interval bounds; 95% by default. |
-
-For the default two-sided test, `r.lift.excludes(0.0)` checks whether the
-interval excludes zero. A row can have no `r.lift`, as the guard in the loop
-above handles; see [Reading results](reading-results.md) for missing points,
-open and sequential intervals, switchback contrasts, and flat readout rows.
-A row summary does not enumerate a retained sequential set. For a sequential
-row, inspect `r.sequential_result.bounds`: exact bounds expose `status`, `lower`,
-and `upper` in ratio coordinates; asymptotic bounds also expose `components`
-for disconnected sets.
-
-The readout's `stat_sig` column also handles one-sided tests and nonzero
-null values. For other decision statistics, see `r.chance_to_beat()`,
-`r.prob_beyond(...)`, `r.risk_if_shipped()`, and `r.p_value()` in the
-[API reference](../api.md).
-
-## Results as a dataframe
-
-Convert the results to a dataframe in your preferred library:
+Repair the source so the treatment-arm observations are present, then rerun.
+Here the full generated values stand in for the corrected source; in practice,
+resolve why observations were missing and choose a missing-value policy that
+matches the metric's meaning.
 
 ```python
-table = results.to_frame(backend="polars")
-print(table.select("metric", "group_id", "lift", "lb", "ub"))
+recovered_df = df.with_columns(pl.Series("complaints", complaints))
+recovered = Analysis.from_unit_summary(
+    recovered_df,
+    unit="user_id",
+    group="variant",
+    design=design,
+    metrics=metrics,
+    plan=plan,
+).run()
+print(recovered)
+print(recovered.to_frame(backend="polars"))
 ```
 
-For a plain list assembled separately, such as by a list comprehension,
-use `to_frame(estimates, model=LiftEstimate, backend=...)`.
+```text
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: complete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 2; available: 2.
+Multiplicity (primary): declared_plan; family primary.
+Multiplicity (guardrail): declared_plan; family guardrail.
+revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
+revenue test alternative: two-sided; null (relative lift): 0.
+revenue result identity: method unadjusted; method role decision; estimand itt.
+complaints (guardrail, relative lift): -0.137803, set [-1, 0.666805] at 0.9 confidence.
+Interpretation: does not reject; inconclusive, not evidence of no effect.
+complaints additive effect: -0.00535734, set [-0.0249109, 0.0141962].
+complaints binomial set upper_bound: [-1, 0.666805] at 0.9 confidence.
+complaints test alternative: less; null (relative lift): 0.
+complaints result identity: method unadjusted; method role decision; estimand itt.
+```
+
+The repaired collection is complete. The guardrail point estimate is a 13.8%
+decrease, but its 90% interval includes zero, so it does not reject the
+one-sided null; that is inconclusive, not proof of safety or no effect.
+
+`repr(results)` and `print(results)` are the ordinary collection summary.
+`results.to_frame()` keeps numeric result columns and qualification columns;
+selecting only effect columns is a deliberate loss of evidence. For an
+optional rendered table install `increment[tables]`, then keep the consumer
+import distinct from authoring imports:
+
+```python
+from increment.tables import readout_table
+
+readout_table(recovered)
+```
+
+If you only receive serialized result rows, the result/table import does not
+configure an analysis:
+
+```python
+from increment.results import LiftEstimate
+from increment.tables import estimates_to_readout, readout_table
+
+
+def display_received_result(result: LiftEstimate) -> None:
+    rows = estimates_to_readout([result])
+    readout_table(rows)
+```
+
+See [Reading results](reading-results.md) for scale, uncertainty, availability,
+integrity, completeness, population and multiplicity qualifications.
 
 ## Group identities
 

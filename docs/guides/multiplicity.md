@@ -72,7 +72,7 @@ family or remove its partial-view indication.
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
 
 rng = np.random.default_rng(9)
 n = 3000
@@ -88,23 +88,42 @@ df = pl.DataFrame(
         "signups": signups,
     }
 )
-
+design = Randomized(
+    control_group="control",
+    allocation={"control": 0.5, "treatment": 0.5},
+    allocation_scheme="independent",
+)
 plan = AnalysisPlan(primary="sessions", secondaries=["signups"], q=0.10)
 results = Analysis.from_unit_summary(
     df,
     unit="user_id",
     group="variant",
-    control="control",
+    design=design,
     metrics=[MetricSpec(name="sessions", type="mean"), MetricSpec(name="signups", type="mean")],
     plan=plan,
 ).run()
-for r in results:
-    print(f"{r.metric:>10} role={r.role:<10} discovery={r.discovery} lift={r.lift.value:+.2%}")
+print(results)
 ```
 
 ```text
-  sessions role=primary    discovery=None lift=+12.94%
-   signups role=secondary  discovery=False lift=-0.85%
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: complete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 2; available: 2.
+Multiplicity (primary): declared_plan; family primary.
+Multiplicity (secondary): declared_plan; family secondary.
+sessions (primary, relative lift): 0.129354, set [0.0912107, 0.16883] at 0.95 confidence.
+Interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+sessions additive effect: 0.519393, set [0.373532, 0.665254].
+sessions test alternative: two-sided; null (relative lift): 0.
+sessions result identity: method unadjusted; method role decision; estimand itt.
+signups (secondary, relative lift): -0.0085373, set [-0.0224037, 0.00552583] at 0.95 confidence.
+Interpretation: does not reject; inconclusive, not evidence of no effect.
+signups additive effect: -0.000861552, set [-0.00227681, 0.000553707].
+signups test alternative: two-sided; null (relative lift): 0.
+signups result identity: method unadjusted; method role decision; estimand itt; not selected.
+signups selection: not selected; separate from interval evidence.
 ```
 
 `q=0.10` is a false-discovery level, not a second `alpha` or a
@@ -158,7 +177,11 @@ is the finite-sample alternative.
 ```python
 from increment import AnalysisPlan, InferenceSpec, Randomized
 
-design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+design = Randomized(
+    control_group="control",
+    allocation={"control": 0.5, "treatment": 0.5},
+    allocation_scheme="independent",
+)
 av_plan = AnalysisPlan(
     primary="sessions",
     secondaries=["signups"],
@@ -174,13 +197,28 @@ av_results = Analysis.from_unit_summary(
     plan=av_plan,
     exposure_date="enrolled_on",
 ).run()
-for r in av_results:
-    print(f"{r.metric:>10} inference={r.inference:<13} discovery={r.discovery}")
+print(av_results)
 ```
 
 ```text
-  sessions inference=asymptotic_mean discovery=None
-   signups inference=asymptotic_mean discovery=False
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: complete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 2; available: 2.
+Multiplicity (primary): declared_plan; family primary.
+Multiplicity (secondary): declared_plan; family secondary.
+sessions (primary, relative lift): 0.129354, set [0.0706467, 0.191773] at 0.95 confidence.
+Interpretation: excludes zero; effect direction supported (increase).
+sessions sequential ratio confidence set bounded: [1.07065, 1.19177].
+sessions test alternative: two-sided; null (relative lift): 0.
+sessions result identity: method unadjusted; method role decision; estimand itt.
+signups (secondary, relative lift): -0.0085373, set [-0.0300719, 0.0134716] at 0.95 confidence.
+Interpretation: does not reject; inconclusive, not evidence of no effect.
+signups sequential ratio confidence set bounded: [0.969928, 1.01347].
+signups test alternative: two-sided; null (relative lift): 0.
+signups result identity: method unadjusted; method role decision; estimand itt; not selected.
+signups selection: not selected; separate from interval evidence.
 ```
 
 A sequential `AnalysisPlan` needs a `design=` with an explicit
