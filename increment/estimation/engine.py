@@ -16,7 +16,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -967,6 +967,11 @@ def _reject_cuped_linear_aggregate(
             _refuse("estimation.engine.cuped_linear_unit_evidence", metric=metric.name)
 
 
+def refuse_cuped_linear_sequential() -> NoReturn:
+    """Use the engine-owned CUPED-linear refusal from sequential preflight."""
+    _refuse("estimation.engine.cuped_linear_sequential")
+
+
 def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
     metrics = tuple(request.metrics)
     methods = request.estimation_methods
@@ -978,7 +983,7 @@ def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
     if request.cluster is not None and any(linear_by_metric.values()):
         _refuse("estimation.engine.cuped_linear_cluster", cluster=request.cluster)
     if isinstance(request.plan.inference, SEQUENTIAL_POLICIES) and any(linear_by_metric.values()):
-        _refuse("estimation.engine.cuped_linear_sequential")
+        refuse_cuped_linear_sequential()
     for metric in metrics:
         if not linear_by_metric[metric.name]:
             continue

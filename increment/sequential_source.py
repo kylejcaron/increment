@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, runtime_checkable
 
 from increment._analysis_config import effective_methods
 from increment._window import resolve_window_days
@@ -1041,7 +1041,19 @@ def _validate_request_breakout(request, registration):
     )
 
 
-def validate_sequential_request(request):
+def _has_cuped_linear_method(request) -> bool:
+    return any(
+        method.variance_reduction == "cuped_linear"
+        for methods in request.estimation_methods
+        for method in methods
+    )
+
+
+def validate_sequential_request(
+    request,
+    *,
+    refuse_cuped_linear: Callable[[], NoReturn] | None = None,
+) -> None:
     from fractions import Fraction
 
     from increment.estimation.sequential import ASYMPTOTIC_PROCEDURE_POLICIES, SEQUENTIAL_POLICIES
@@ -1049,6 +1061,8 @@ def validate_sequential_request(request):
     inference = request.plan.inference
     if not isinstance(inference, SEQUENTIAL_POLICIES) or request.view == "daily":
         return
+    if _has_cuped_linear_method(request) and refuse_cuped_linear is not None:
+        refuse_cuped_linear()
     registration = inference.registration
     validate_scalar_mean_design(registration, request.design)
     validate_compliance_policy(

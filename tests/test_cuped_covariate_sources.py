@@ -650,6 +650,7 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
     from increment.frame import CupedCovariate, MetricSpec
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, tenure, groups, revenue = covariate_defs_and_con(tmp_path)
@@ -669,7 +670,8 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     reference = native.publish_unit_day_artifact(store)
     restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    assert native._src.context.configs[0].covariates[0].name == "pre_tenure"
+    covariates = cast(Any, _native_source(native).context.configs[0].covariates)
+    assert covariates[0].name == "pre_tenure"
     table = pa.Table.from_pylist(
         [
             {
@@ -781,6 +783,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
     import pytest
 
     from increment import Method
+    from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
     defs_path, con, *_ = covariate_defs_and_con(tmp_path)
@@ -805,7 +808,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
             )
             if row.group_id == "treatment" and row.method == "linear"
         )
-        source = analysis._src
+        source = _native_source(analysis)
         original = type(source).unit_frame
         mutated = False
 

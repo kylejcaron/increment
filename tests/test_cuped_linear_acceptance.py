@@ -155,7 +155,9 @@ def _summary_source(
         uptake=uptake,
         exposure_date="exposure_date" if plan is not None and plan.inference is not None else None,
     )
-    return _UnreadSource(analysis._src)
+    from tests.analysis_factory import _moment_source
+
+    return _UnreadSource(_moment_source(analysis))
 
 
 @pytest.mark.parametrize(

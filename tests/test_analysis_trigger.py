@@ -3720,9 +3720,11 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
             estimates["triggered"].require_lift().value
         )
 
-        source = analysis._src
+        from tests.analysis_factory import _native_source
+
+        source = _native_source(analysis)
         metric = source.context.metrics[0]
-        covariates = source.context.configs[0].covariates
+        covariates = cast(Any, source.context.configs[0].covariates)
         triggered_frame = source.moments_source(
             metrics=[metric], population="triggered"
         ).unit_frame(metric, covariates=tuple(item.name for item in covariates))
