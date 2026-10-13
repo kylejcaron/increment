@@ -835,8 +835,9 @@ def _attribution_suffix(values) -> str:
 
 def _integrity_notes(frame, populations, sources) -> list[str]:
     statuses = _column_values(frame, "integrity_status")
-    if statuses is None:
-        return []
+    if statuses is None or all(_is_missing(status) for status in statuses):
+        # Rows without retained collection evidence cannot vouch for scope or integrity.
+        return ["Scope and integrity unknown."]
     contexts = _column_values(frame, "integrity_code")
     required = _column_values(frame, "required_cell_count")
     available = _column_values(frame, "available_cell_count")
