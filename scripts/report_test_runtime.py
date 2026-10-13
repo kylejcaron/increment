@@ -519,6 +519,10 @@ def _duration_guard(
     }
 
 
+def _markdown_cell(identity: str) -> str:
+    return identity.replace("|", r"\|")
+
+
 def _duration_guard_markdown(guard: Mapping[str, Any]) -> list[str]:
     thresholds = guard["thresholds"]
     lines = [
@@ -543,12 +547,12 @@ def _duration_guard_markdown(guard: Mapping[str, Any]) -> list[str]:
     ]
     for item in guard["files"][:10]:
         top = "; ".join(
-            f"`{test['nodeid']}` ({test['baseline_seconds']:.3f} → "
+            f"`{_markdown_cell(test['nodeid'])}` ({test['baseline_seconds']:.3f} → "
             f"{test['current_seconds']:.3f}, {test['delta_seconds']:+.3f})"
             for test in item["top_tests"]
         )
         lines.append(
-            f"| `{item['file']}` | {item['baseline_seconds']:.3f} | "
+            f"| `{_markdown_cell(item['file'])}` | {item['baseline_seconds']:.3f} | "
             f"{item['current_seconds']:.3f} | {str(item['regressed']).lower()} | {top} |"
         )
     lines.extend(
@@ -605,7 +609,7 @@ def _markdown(report: Mapping[str, Any], json_path: str | None) -> str:
     for case in rows:
         phase_values = [case["phases"].get(name, "—") for name in _PHASES]
         lines.append(
-            f"| `{case['canonical_nodeid']}` | {phase_values[0]} | {phase_values[1]} | {phase_values[2]} | "
+            f"| `{_markdown_cell(case['canonical_nodeid'])}` | {phase_values[0]} | {phase_values[1]} | {phase_values[2]} | "
             f"{case['total_seconds'] if case['total_seconds'] is not None else 'unknown'} | "
             f"{', '.join(case['markers']) or '—'} | {case['suggestion'] or '—'} | "
             f"{case['new'] if case['new'] is not None else 'unknown'} | "
