@@ -23,8 +23,8 @@ When an experiment declares `trigger:`, the default `population="assigned"`
 still reports the assignment-based intent-to-treat whole-site impact. You
 can also request `population="triggered"`: this scales the lift among units
 in finalized trigger membership by the number of triggered enrolled units.
-Both readings use the experiment's calendar window (`start .. end`) for
-outcomes. In particular, triggered sitewide does **not** use `run()`'s
+The triggered reading uses the experiment's calendar window (`start .. end`)
+for outcomes. In particular, triggered sitewide does **not** use `run()`'s
 trigger-anchored observation windows; late triggers can belong to the
 membership while their outcome contribution still comes from the fixed
 experiment window. Site volume remains the full-site total, not a

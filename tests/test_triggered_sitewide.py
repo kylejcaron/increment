@@ -12,7 +12,7 @@ import pytest
 from scipy.stats import norm
 
 from increment import Analysis, SourceSnapshotEvidence
-from increment.errors import CapabilityError, DefinitionError
+from increment.errors import CapabilityError, CodedError, DefinitionError
 from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
 from increment.query.artifact_contract import ArtifactContractError
 from tests.analysis_factory import _moment_source as _arm_moment_source
@@ -511,6 +511,28 @@ def test_triggered_sitewide_non_utc_boundary_matches_artifact(tmp_path):
         assert isinstance(artifact, SitewideImpact)
         assert isinstance(native, SitewideImpact)
         assert artifact.baseline_volume == pytest.approx(native.baseline_volume)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_without_members_refuses_alike_on_both_ingresses(tmp_path):
+    analysis = _analysis(tmp_path, events=_events(n_per_arm=50, trigger_rate=0.0, effect=0.5))
+    adopted = None
+    try:
+        with pytest.raises(CodedError) as native:
+            analysis.sitewide("revenue", population="triggered")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        with pytest.raises(CodedError) as artifact:
+            adopted.sitewide("revenue", population="triggered")
+        assert artifact.value.code == native.value.code
     finally:
         if adopted is None:
             analysis.close()

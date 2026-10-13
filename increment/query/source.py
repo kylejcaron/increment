@@ -1883,8 +1883,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         include_ratio: bool = False,
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> Any:
-        import pyarrow as pa
-
         from increment.estimation.engine import _df_to_arms
 
         metric = self.validated_metric(metric)
@@ -1994,7 +1992,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             metric=metric,
             site_total=site_total,
             site_total_denominator=site_den,
-            arm_stats=tuple(_df_to_arms(pa.Table.from_pylist(moment_rows))),
+            arm_stats=tuple(_df_to_arms(moment_rows)),
             analysis_population=population,
             control_group=self._artifact_experiment.control_group,
             cluster=self.context.cluster,
