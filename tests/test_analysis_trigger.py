@@ -605,7 +605,7 @@ def _analysis(
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
         ),
     )
 
@@ -1902,13 +1902,13 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
     analysis = _analysis(
-        tmp_path, _events(n_per_arm=100, trigger_rate=0.2, effect=0.5), end="2024-01-16"
+        tmp_path, _events(n_per_arm=100, trigger_rate=0.2, effect=0.5), end="2024-01-15"
     )
     untriggered = _analysis(
         tmp_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         trigger=None,
-        end="2024-01-16",
+        end="2024-01-15",
     )
     adopted = None
     try:
@@ -1964,8 +1964,8 @@ def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path
         },
         schema=base.schema,
     )
-    with_late = _analysis(tmp_path, pa.concat_tables([base, late]), end="2024-01-16")
-    without_late = _analysis(tmp_path, base, end="2024-01-16")
+    with_late = _analysis(tmp_path, pa.concat_tables([base, late]), end="2024-01-15")
+    without_late = _analysis(tmp_path, base, end="2024-01-15")
     adopted = None
     try:
         native = with_late.sitewide("revenue")

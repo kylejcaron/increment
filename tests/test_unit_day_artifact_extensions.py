@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from increment import SourceSnapshotEvidence
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import (
     ArtifactContractError,
@@ -1494,7 +1495,12 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
     definitions = _definitions(tmp_path, site_volume_only=True)
-    con, native, context, store = _native(definitions=definitions)
+    con, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
     requests = _extensions(context, "site_volume")
     ref = native.publish_unit_day_artifact(store, extensions=requests)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
@@ -1578,7 +1584,12 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     }
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    connection, native, context, store = _native(definitions=definitions)
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
     adopted = None
     try:
         expected = {

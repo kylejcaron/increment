@@ -2222,7 +2222,10 @@ def test_site_volume_zero_relation_and_incomplete_coverage_are_distinct(
     from increment.query.artifact_extensions import read_site_volume_extension
 
     connection, native, context, store = _native(
-        definitions=_definitions(tmp_path, site_volume_only=True)
+        definitions=_definitions(tmp_path, site_volume_only=True),
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
     )
     connection.raw_sql("DELETE FROM analytics.event_log WHERE event = 'purchase'")
     request = _extensions(context, "site_volume")[0]

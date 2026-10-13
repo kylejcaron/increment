@@ -34,7 +34,7 @@ def _analysis(
     day_boundary=None,
     trigger=True,
     third_arm=False,
-    watermark=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+    watermark=dt.datetime(2024, 1, 17, tzinfo=dt.UTC),
     observation_end=None,
     source_snapshot_evidence=True,
     on_mixed_assignment="error",
@@ -121,7 +121,7 @@ def _conversion_analysis(tmp_path, events):
         con,
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
         ),
     )
 
