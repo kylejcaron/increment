@@ -68,6 +68,14 @@ def _source(reference=None):
     )
 
 
+def _assert_switchback_table_interpretation(results, readout):
+    from increment.tables import readout_table
+
+    table_html = readout_table(results).gt().as_raw_html()
+    assert "Interval interpretation" in table_html
+    assert readout["effect_interpretation"] is not None
+
+
 def test_contrast_request_defensively_freezes_procedures():
     procedure = _procedure()
     procedures = {"value": procedure}
@@ -219,6 +227,27 @@ def test_contrast_results_convert_to_readout_rows():
     assert row["reference"] == "unit_t_approximation"
     assert row["n_blocks"] is None
     assert (row["ct_cycles"], row["tc_cycles"]) == (2, 2)
+
+
+def test_scoped_contrast_collection_default_output_keeps_qualifications():
+    import narwhals as nw
+
+    results = _switchback_analysis().run()
+    assert "Integrity:" in repr(results)
+    for backend in ("pandas", "polars", "pyarrow"):
+        frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
+        assert {
+            "analysis_population",
+            "source_snapshot_id",
+            "integrity_status",
+            "required_cell_count",
+            "unavailable_cells",
+        } <= set(frame.columns)
+
+    empty = results.filter(lambda row: False)
+    assert "Required cells:" in repr(empty)
+    empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
+    assert not len(empty_frame) and "integrity_status" in empty_frame.columns
 
 
 def test_shared_schedule_contrast_results_convert_to_readout_rows_with_block_counts():
@@ -832,6 +861,9 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     source = _source(reference)
     results = analysis.run()
     result = results[0]
+    rendered = repr(results)
+    assert "Interpretation:" in rendered
+    assert "Interpretation: unavailable" not in rendered
     context = source.context
     restored_context = type(context).model_validate_json(context.model_dump_json())
     assert restored_context == context
@@ -897,8 +929,8 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
         assert row[name] == readout[name] == getattr(result, name)
     assert row["source_snapshot_id"] == result.source_snapshot_id
     assert row["analysis_population"] == "assigned"
-    assert row["decision_scope_complete"] is True
-    assert row["view_partial"] is False
+    assert bool(row["decision_scope_complete"]) is True
+    assert bool(row["view_partial"]) is False
     assert readout["source_snapshot_id"] == result.source_snapshot_id
     assert readout["analysis_population"] == "assigned"
     assert readout["decision_scope_complete"] is True
@@ -918,3 +950,4 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     assert frame["dof"].is_null().to_list() == [True]
     assert readout["dof"] is None and row["mean_slope"] > 0
     assert readout["stat_sig"] == (result.residual_p_value < result.alpha)
+    _assert_switchback_table_interpretation(results, readout)

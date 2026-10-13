@@ -250,6 +250,9 @@ def test_small_cluster_advisory_survives_suppressed_warning_and_json_restore():
     assert "estimation.engine.small_total_clusters" in {
         advisory.code for group in interpretation.groups for advisory in group.advisories
     }
+    from increment.tables import readout_table
+
+    assert "estimation.engine.small_total_clusters" in readout_table(restored).gt().as_raw_html()
 
 
 def test_ratio_denominator_precision_note_is_an_interpreted_advisory():
@@ -277,6 +280,11 @@ def test_ratio_denominator_precision_note_is_an_interpreted_advisory():
     assert results.metadata is not None
     codes = {advisory.code for record in results.metadata.cells for advisory in record.advisories}
     assert "estimation.engine.ratio_denominator_precision" in codes
+    from increment.tables import readout_table
+
+    assert (
+        "estimation.engine.ratio_denominator_precision" in readout_table(results).gt().as_raw_html()
+    )
 
 
 def test_ratio_denominator_skew_advisory_survives_saving_with_warnings_suppressed():
@@ -311,6 +319,9 @@ def test_ratio_denominator_skew_advisory_survives_saving_with_warnings_suppresse
     assert "estimation.engine.ratio_denominator_skew" in codes
     column_codes = readout_evidence_columns(_interpret(restored), restored[0])
     assert "estimation.engine.ratio_denominator_skew" in json.dumps(column_codes, default=str)
+    from increment.tables import readout_table
+
+    assert "estimation.engine.ratio_denominator_skew" in readout_table(restored).gt().as_raw_html()
 
 
 def test_evidence_columns_use_the_row_source_when_cell_keys_repeat():
@@ -468,6 +479,11 @@ def test_nonpositive_mean_keeps_sampling_available_additive_interval():
     interpreted = _interpret(results)
     assert interpreted.groups[0].source_cells[0].sampling_available
     assert f"{row.abs_diff:.6g}" in render_readout_text(interpreted)
+    from increment.tables import readout_table
+
+    table_html = readout_table(results).gt().as_raw_html()
+    assert "Additive effect" in table_html
+    assert f"{row.abs_diff:.6g}" in table_html
 
 
 def test_absolute_margin_renders_tested_additive_null():
@@ -601,6 +617,12 @@ def test_posterior_unavailability_reason_is_separate_from_sampling_availability(
         metrics=[MetricSpec(name="converted", type="conversion")],
         plan=AnalysisPlan(primary="converted"),
     ).run(prior=Normal(mu=0, sigma=1))
+    from increment.tables import readout_table
+
+    table_html = readout_table(results).gt().as_raw_html()
+    assert "Posterior unavailable" in table_html
+    reason_code = getattr(results[0], "posterior_reason_code", None)
+    assert reason_code is not None and reason_code in table_html
     interpretation = _interpret(results)
     cell = interpretation.groups[0].source_cells[0]
     assert cell.sampling_available is True
@@ -652,10 +674,16 @@ def test_sequential_text_labels_ratio_geometry_for_finite_unbounded_and_disconne
     assert finite_bounds.lower is not None and finite_bounds.upper is not None
     assert unbounded_bounds.upper is None
     assert disconnected_bounds.status == "disconnected"
+    decreasing = _evaluate([8, 10, 12] * 40, [1, 2, 3] * 40)[0]
+    decreasing_bounds = decreasing.require_asymptotic_sequential_result().bounds
+    assert decreasing_bounds.upper is not None and decreasing_bounds.upper < 1.0
     text = render_readout_text(interpret_readout([finite, unbounded, disconnected], None))
     assert text.count("sequential ratio confidence set") == 3
     assert "disconnected" in text
     assert "+∞" in text
+    assert "effect direction supported (decrease)" in render_readout_text(
+        interpret_readout([decreasing], None)
+    )
 
 
 def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
@@ -709,6 +737,12 @@ def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
     text = render_readout_text(interpret_readout([result], None))
     assert "additive confidence interval: [−∞, +∞]" in text
     assert "additive interval unavailable" not in text
+    from increment.breakout.estimates import LiftEstimates
+    from increment.tables import readout_table
+
+    html = readout_table(LiftEstimates([result])).gt().as_raw_html()
+    assert "[−∞, +∞]" in html
+    assert "interval unavailable" not in html
 
 
 def test_absolute_scale_null_is_not_labeled_as_relative_lift():

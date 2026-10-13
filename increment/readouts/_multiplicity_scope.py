@@ -472,6 +472,7 @@ def scoped_collection(
             arms=tuple(sorted(groups)),
             source="observed_union",
             complete=False,
+            control_group=control,
         )
         for population in populations
     )
