@@ -47,6 +47,7 @@ from increment.query.artifact_extensions import read_extension, read_unit_covari
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
+    _outcome_edge,
     _TriggeredReductionInputs,
     restrict_to_units,
 )
@@ -1934,11 +1935,25 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             # one generation; a pinned publish writes that generation at one cutoff,
             # so membership, calendar measures, and site volume share that cutoff.
             # Adoption trusts the caller-pinned generation.
+            measure_keys = (
+                frozenset({binding.numerator_measure_key, binding.denominator_measure_key})
+                if isinstance(binding, RatioMetricMeasure)
+                else frozenset({binding.measure_key})
+            )
             moment_rows = super()._reduce(
                 metric,
                 "total",
                 population_units=member_ids,
-                calendar_end=self._artifact_experiment.end_day,
+                calendar_end=min(
+                    cast(dt.date, self._artifact_experiment.end_day),
+                    _outcome_edge(
+                        self._manifest.measures,
+                        self._ensure("measure_stats"),
+                        measure_keys,
+                        self._snapshot.execute,
+                    )
+                    or cast(dt.date, self._artifact_experiment.end_day),
+                ),
             )
         else:
             population_counts = assigned_counts.copy()

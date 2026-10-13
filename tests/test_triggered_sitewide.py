@@ -86,22 +86,6 @@ def _analysis(
         ),
         on_mixed_assignment=on_mixed_assignment,
     )
-    definitions_path.write_text(definitions)
-    con = ibis.duckdb.connect()
-    con.create_table(
-        "events",
-        obj=_events(n_per_arm=100, trigger_rate=0.2, effect=0.5) if events is None else events,
-    )
-    return Analysis.from_definitions(
-        "exp",
-        definitions_path,
-        con,
-        store=store,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
-        ),
-    )
 
 
 def _add_late_trigger_and_outcome(events, *, include_outcome):
@@ -333,6 +317,40 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_artifact_respects_certified_outcome_edge(tmp_path):
+    analysis = _analysis(tmp_path, watermark=dt.datetime(2024, 1, 8, tzinfo=dt.UTC))
+    adopted = None
+    try:
+        native_result = analysis.sitewide("revenue", population="triggered")
+        native = _moment_source(analysis).sitewide_evidence(
+            analysis.metrics[0], include_ratio=False, population="triggered"
+        )
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact_result = adopted.sitewide("revenue", population="triggered")
+        artifact = _moment_source(adopted).sitewide_evidence(
+            adopted.metrics[0], include_ratio=False, population="triggered"
+        )
+        assert {arm.group_id: arm.n for arm in native.arm_stats} == {
+            arm.group_id: arm.n for arm in artifact.arm_stats
+        }
+        assert {arm.group_id: arm.mean_y() for arm in native.arm_stats} == pytest.approx(
+            {arm.group_id: arm.mean_y() for arm in artifact.arm_stats}, rel=1e-12
+        )
+        assert artifact_result.absolute_impact == pytest.approx(
+            native_result.absolute_impact, rel=1e-12
+        )
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_censoring_reports_observed_scaled_members(tmp_path):
     events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
     late_member_rows = pa.Table.from_pylist(
@@ -383,6 +401,69 @@ def test_triggered_sitewide_censoring_reports_observed_scaled_members(tmp_path):
             arm.n for arm in native_evidence.arm_stats if arm.group_id in {"C", "T"}
         )
         assert native_result.unobserved_members == artifact_result.unobserved_members == 1
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_counts_censored_members_in_every_scaled_arm(tmp_path):
+    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    third_arm_rows = []
+    for index in range(20):
+        unit, triggered = f"U{index}", index < 5
+        third_arm_rows += [
+            ("enrolled", 0.0, dt.datetime(2024, 1, 2), unit),
+            *([("saw_surface", 0.0, dt.datetime(2024, 1, 2), unit)] if triggered else []),
+            ("revenue", 1.0 + index / 10, dt.datetime(2024, 1, 8), unit),
+        ]
+    # Enrolled after the outcome feed's watermark: a member whose outcomes are censored.
+    third_arm_rows += [
+        ("enrolled", 0.0, dt.datetime(2024, 1, 9), "U-late"),
+        ("saw_surface", 0.0, dt.datetime(2024, 1, 9), "U-late"),
+    ]
+    extra = pa.Table.from_pylist(
+        [
+            {
+                "user_id": unit,
+                "group_id": "U",
+                "ts": ts,
+                "event": event,
+                "value": value,
+                "experiment_id": "exp",
+            }
+            for event, value, ts, unit in third_arm_rows
+        ],
+        schema=events.schema,
+    )
+    analysis = _analysis(
+        tmp_path,
+        events=pa.concat_tables([events, extra]),
+        watermark=dt.datetime(2024, 1, 8, 12, tzinfo=dt.UTC),
+    )
+    adopted = None
+    try:
+        native = analysis.sitewide("revenue", arm="T", population="triggered")
+        evidence = _moment_source(analysis).sitewide_evidence(
+            analysis.metrics[0], include_ratio=False, population="triggered"
+        )
+        observed = {arm.group_id: arm.n for arm in evidence.arm_stats}
+        assert evidence.population_counts["U"] == 6
+        assert observed["U"] == 5
+        assert native.other_arm_ids == ("U",)
+        assert native.scaled_units == sum(observed.values()) == round(native.n_enrolled)
+        assert native.unobserved_members == 1
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact = adopted.sitewide("revenue", arm="T", population="triggered")
+        assert artifact.scaled_units == native.scaled_units
+        assert artifact.unobserved_members == native.unobserved_members == 1
+        assert artifact.absolute_impact == pytest.approx(native.absolute_impact, rel=1e-12)
     finally:
         if adopted is None:
             analysis.close()
