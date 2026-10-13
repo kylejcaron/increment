@@ -228,3 +228,8 @@ _SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
     CapabilityError,
     template="sitewide() requires every outcome feed to be certified complete through the experiment calendar end; {route}",
 )
+_SITEWIDE_CONVERSION_TOTAL_MISSING = RefusalSpec(
+    "facade.analysis.sitewide_conversion_total_missing",
+    CapabilityError,
+    template="conversion sitewide requires whole-window distinct-converter evidence; {route}",
+)

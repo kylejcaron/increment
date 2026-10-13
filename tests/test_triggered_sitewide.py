@@ -33,7 +33,6 @@ def _analysis(
     store="auto",
     day_boundary=None,
     trigger=True,
-    conversion=False,
     third_arm=False,
     watermark=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
     observation_end=None,
@@ -47,12 +46,6 @@ def _analysis(
         end="2024-01-10",
         observation_end=observation_end,
     ).replace("    window_days: 7\n", "")
-    if conversion:
-        definitions = (
-            definitions.replace("    type: mean\n", "    type: conversion\n")
-            .replace("    fact: revenue\n", "    fact: saw_surface\n")
-            .replace("    aggregation: sum\n", "")
-        )
     if observational:
         definitions = definitions.replace(
             "    facts:\n",
@@ -102,6 +95,34 @@ def _analysis(
             else None
         ),
         on_mixed_assignment=on_mixed_assignment,
+    )
+
+
+def _conversion_analysis(tmp_path, events):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    definitions = _defs_yaml(end="2024-01-10").replace("    window_days: 7\n", "")
+    definitions = (
+        definitions.replace("    type: mean\n", "    type: conversion\n")
+        .replace("    fact: revenue\n", "    fact: converted\n")
+        .replace("    aggregation: sum\n", "")
+        .replace(
+            "      - name: saw_surface\n        column: null\n",
+            "      - name: saw_surface\n        column: null\n"
+            "      - name: converted\n        column: null\n",
+        )
+    )
+    definitions_path = tmp_path / "conversion-sitewide.yml"
+    definitions_path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=events)
+    return Analysis.from_definitions(
+        "exp",
+        definitions_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
     )
 
 
@@ -533,22 +554,104 @@ def test_sitewide_artifact_snapshot_identity_changes_between_publications(tmp_pa
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_repeated_conversion_refuses_incompatible_site_total(tmp_path):
+def test_repeated_conversions_use_distinct_site_totals_for_assigned_and_triggered(
+    tmp_path, monkeypatch
+):
     events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    converted = {*[f"C{i}" for i in range(20)], *[f"T{i}" for i in range(60)]}
     repeated = [
-        {**row, "ts": dt.datetime(2024, 1, day)}
+        {
+            **row,
+            "event": "converted",
+            "ts": dt.datetime(2024, 1, day),
+            "value": 1.0,
+        }
+        for user_id in sorted(converted)
+        for day in (4, 6)
         for row in events.to_pylist()
-        if row["event"] == "saw_surface"
-        for day in (2, 3)
+        if row["user_id"] == user_id and row["event"] == "enrolled"
     ]
     events = pa.concat_tables([events, pa.Table.from_pylist(repeated, schema=events.schema)])
-    analysis = _analysis(tmp_path / "native", events, conversion=True)
+    analysis = _conversion_analysis(tmp_path / "native", events)
+    adopted = None
     try:
-        with pytest.raises(CapabilityError) as refused:
-            analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
+        assigned = analysis.sitewide("revenue")
+        assert isinstance(assigned, SitewideImpact)
+        assert assigned.site_total_volume == pytest.approx(len(converted))
+        assert assigned.delta == pytest.approx(0.6 - 0.2)
+        assert assigned.absolute_impact == pytest.approx((0.6 - 0.2) * 200)
+
+        triggered = analysis.sitewide("revenue", population="triggered")
+        assert isinstance(triggered, SitewideImpact)
+        trigger_members = {
+            row["user_id"] for row in events.to_pylist() if row["event"] == "saw_surface"
+        }
+        triggered_counts = {
+            arm: sum(unit[0] == arm for unit in trigger_members) for arm in ("C", "T")
+        }
+        triggered_converters = {
+            arm: len({unit for unit in converted & trigger_members if unit[0] == arm})
+            for arm in ("C", "T")
+        }
+        expected_trigger_delta = (
+            triggered_converters["T"] / triggered_counts["T"]
+            - triggered_converters["C"] / triggered_counts["C"]
+        )
+        assert triggered.site_total_volume == pytest.approx(len(converted))
+        assert triggered.delta == pytest.approx(expected_trigger_delta)
+        assert triggered.absolute_impact == pytest.approx(
+            expected_trigger_delta * len(trigger_members)
+        )
+
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact_assigned = adopted.sitewide("revenue")
+        artifact_triggered = adopted.sitewide("revenue", population="triggered")
+        source = _moment_source(adopted)
+        site_volume = next(
+            extension
+            for extension in source._manifest.extensions
+            if extension.kind == "site_volume"
+        )
+        assert site_volume.extension_version == 4
+        assert dict(site_volume.distinct_unit_counts or ()) == {
+            source._manifest.metric_measures[0].measure_key: len(converted)
+        }
+        legacy_extensions = tuple(
+            extension.model_copy(update={"extension_version": 1, "distinct_unit_counts": None})
+            if extension.kind == "site_volume"
+            else extension
+            for extension in source._manifest.extensions
+        )
+        monkeypatch.setattr(
+            source,
+            "_manifest",
+            source._manifest.model_copy(update={"extensions": legacy_extensions}),
+        )
+        with pytest.raises(CapabilityError) as missing_distinct_total:
+            adopted.sitewide("revenue")
+        assert (
+            missing_distinct_total.value.code == "facade.analysis.sitewide_conversion_total_missing"
+        )
+        assert "republish" in str(missing_distinct_total.value.context["route"])
+        assert artifact_triggered.n_control == triggered.n_control
+        assert artifact_triggered.n_treatment == triggered.n_treatment
+        for native, artifact in (
+            (assigned, artifact_assigned),
+            (triggered, artifact_triggered),
+        ):
+            assert isinstance(artifact, SitewideImpact)
+            assert artifact.site_total_volume == pytest.approx(len(converted))
+            assert artifact.delta == pytest.approx(native.delta)
+            assert artifact.absolute_impact == pytest.approx(native.absolute_impact)
     finally:
-        analysis.close()
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")

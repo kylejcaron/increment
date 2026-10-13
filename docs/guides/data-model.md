@@ -698,6 +698,13 @@ definition and source-provenance hashes. Supported requests are
 `breakout_dimension`, `factor_dimension`, `cluster_identity`,
 `cuped_preperiod`, `assignment_counts`, `trigger_population`,
 `trigger_measure_stats`, `encouragement_uptake`, and `site_volume`.
+The version-4 `site_volume` extension additionally carries a whole-window
+distinct-unit count for each conversion measure. Daily rows remain event
+aggregates and cannot be summed to recover distinct converters across days.
+Older version-1 site-volume publications remain readable for other metric
+types, but conversion `sitewide()` refuses them with
+`facade.analysis.sitewide_conversion_total_missing`; republish to write the
+version-4 count.
 
 Triggered outcome summaries are raw-event-filtered from the unit's first
 eligible trigger, then aggregated by that trigger-relative local day. The

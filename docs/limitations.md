@@ -302,6 +302,9 @@ certified through the experiment end; artifacts must publish outcome edges
 through that day. An incomplete certified window refuses with
 `facade.analysis.sitewide_outcomes_incomplete`. A native analysis without
 snapshot evidence retains its existing behavior.
+Conversion site totals count distinct converted units over that same window.
+Artifacts published before site-volume extension version 4 lack this
+whole-window count and refuse conversion sitewide until republished.
 
 Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. The estimator scales all triggered members

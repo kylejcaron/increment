@@ -50,7 +50,7 @@ from increment.semantics.artifact import (
     TriggerPopulationExtension,
     UnitDayArtifactManifest,
 )
-from increment.semantics.models import Definitions, RatioMetric
+from increment.semantics.models import ConversionMetric, Definitions, RatioMetric
 from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 
 if TYPE_CHECKING:
@@ -1105,6 +1105,7 @@ class ArtifactPublisher:
 
     def _site_volume_extension_spec(self, entry: Any, request: Any) -> _PublicationExtensionSpec:
         rows: list[dict[str, object]] = []
+        distinct_unit_counts: dict[str, int] = {}
         emitted_recipe_keys: set[str] = set()
         for metric_name in request.metric_names:
             metric = next(metric for metric in self._metrics if metric.name == metric_name)
@@ -1122,6 +1123,11 @@ class ArtifactPublisher:
                 value_col = _resolve_value_column(fs, fact_def)
                 pinned = self._event_cache[resolved_measure_key(measure, value_column=value_col)]
                 events = pinned.filter(~pinned._metadata).select("unit_id", "ts", "metric", "value")
+                if isinstance(metric, ConversionMetric):
+                    distinct_row = self._con.to_pyarrow(
+                        events.aggregate(n_units=events.unit_id.nunique())
+                    ).to_pylist()[0]
+                    distinct_unit_counts[measure_key] = int(distinct_row["n_units"])
                 local_day = _local_date(events.ts, self._experiment)
                 events = events.filter(local_day >= ibis.literal(self._experiment.start_day))
                 if self._experiment.end is not None:
@@ -1156,7 +1162,12 @@ class ArtifactPublisher:
                     }
                     for day, item in grouped.items()
                 )
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+        return _PublicationExtensionSpec(
+            entry,
+            request.kind,
+            rows,
+            {"distinct_unit_counts": distinct_unit_counts} if distinct_unit_counts else {},
+        )
 
     def _encode_publication_extensions(
         self,
@@ -1272,6 +1283,7 @@ class ArtifactPublisher:
                     definition=json.loads(spec.entry.canonical_definition_json),
                     source_recipe=json.loads(spec.entry.canonical_source_recipe_json),
                     experiment_id=self._experiment.name,
+                    extension_fields=spec.fields if spec.kind == "site_volume" else None,
                 )
             )
         extension_refs.sort(

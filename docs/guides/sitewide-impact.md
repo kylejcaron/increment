@@ -8,9 +8,9 @@ can compute site volume from the raw event stream. An adopted
 published with a `site_volume` extension for the requested metric; see the
 [artifact operation and extension matrix](data-model.md#operation-and-extension-matrix).
 Pre-melted summaries and moments do not retain the required whole-site evidence.
-The [worked example](#worked-example) shows mean and ratio metrics. Read the
-output as window-specific absolute and relative impact, not as a new per-unit
-estimate; see [Reading results](reading-results.md) and
+The [worked example](#worked-example) shows mean, conversion, and ratio metrics.
+Read the output as window-specific absolute and relative impact, not as a new
+per-unit estimate; see [Reading results](reading-results.md) and
 [Multiplicity](multiplicity.md) for row context.
 
 The calculation assumes the observed per-unit effect applies to all enrolled
@@ -510,6 +510,11 @@ precision; adding units inside each cluster adds little.
   requested metric; see the [artifact operation and extension
   matrix](data-model.md#operation-and-extension-matrix). An artifact without
   this extension cannot supply site-volume evidence.
+- **Older conversion artifacts.** A conversion `site_volume` extension
+  published before version 4 contains per-day event totals, which cannot
+  recover whole-window distinct converters. It refuses with
+  `facade.analysis.sitewide_conversion_total_missing`; republish with the
+  current `site_volume` extension.
 - **Observational and encouragement designs.** Both assigned and triggered
   sitewide require randomized identification; the unadjusted sitewide contrast
   does not implement their estimands. The refusal occurs before evidence is

@@ -87,7 +87,7 @@ _SITEWIDE_ARM_NOT_ENROLLED = RefusalSpec(
 _TRIGGERED_SITEWIDE_METRIC_UNALIGNED = RefusalSpec(
     "facade.analysis.sitewide_triggered_metric_unaligned",
     CapabilityError,
-    template="triggered sitewide requires an unwindowed mean or ratio metric with sum-aggregated components and a declared experiment end; {metric!r} has {metric_type!r}, window_days={window_days!r}, aggregation={aggregation!r}. A conversion counts converted units, which the event-count site total cannot match. Use an unwindowed sum metric over the experiment window.",
+    template="triggered sitewide requires an unwindowed mean, conversion, or ratio metric with sum-aggregated components and a declared experiment end; {metric!r} has {metric_type!r}, window_days={window_days!r}, aggregation={aggregation!r}. Use an unwindowed metric aligned to the experiment window.",
 )
 
 _TRIGGERED_SITEWIDE_CLUSTER = RefusalSpec(
@@ -199,10 +199,12 @@ class SitewideReadouts:
         window_days = getattr(metric, "window_days", None)
         if (
             experiment.end is None
-            or metric.type not in ("mean", "ratio")
+            or metric.type not in ("mean", "conversion", "ratio")
             or any(
                 getattr(component, "window_days", None) is not None
-                or getattr(component, "aggregation", None) != "sum"
+                or (
+                    metric.type != "conversion" and getattr(component, "aggregation", None) != "sum"
+                )
                 for component in components
             )
         ):

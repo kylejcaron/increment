@@ -1061,7 +1061,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         if self._experiment.end is None or any(
             getattr(component, "window_days", None) is not None
-            or getattr(component, "aggregation", None) != "sum"
+            or (metric.type != "conversion" and getattr(component, "aggregation", None) != "sum")
             for component in components
         ):
             _refuse_operation(
@@ -1071,8 +1071,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     "window_days": getattr(metric, "window_days", None),
                     "aggregation": getattr(metric, "aggregation", None),
                 },
-                offered={"calendar_window": "unwindowed sum"},
-                route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
+                offered={"calendar_window": "unwindowed sum or conversion"},
+                route="declare an unwindowed sum or conversion metric and experiment end aligned to the calendar window",
             )
         self._require_sitewide_outcome_completeness(metric)
 

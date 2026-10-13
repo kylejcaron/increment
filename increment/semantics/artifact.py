@@ -508,7 +508,7 @@ class ArtifactContext(_ArtifactBase):
 
 
 class ExtensionRefBase(_ArtifactBase):
-    extension_version: Literal[1, 2, 3] = 1
+    extension_version: Literal[1, 2, 3, 4] = 1
     relation: ArtifactRelationRef
     definition_sha256: str
     source_provenance_sha256: str
@@ -525,6 +525,11 @@ class ExtensionRefBase(_ArtifactBase):
             _definition_refusal(
                 "definition.artifact_extension.unsupported_version",
                 "extension version 3 is reserved for trigger population anchors",
+            )
+        if self.extension_version == 4 and kind != "site_volume":
+            _definition_refusal(
+                "definition.artifact_extension.unsupported_version",
+                "extension version 4 is reserved for distinct-converter site volume",
             )
         return self
 
@@ -740,11 +745,13 @@ class EncouragementUptakeExtension(_ExplicitOnlyFields, ExtensionRefBase):
 
 
 class SiteVolumeExtension(ExtensionRefBase):
+    extension_version: Literal[1, 4] = 1
     kind: Literal["site_volume"] = "site_volume"
     measure_keys: tuple[str, ...]
     first_ds: date
     last_ds: date
     freshness: Freshness
+    distinct_unit_counts: tuple[tuple[str, int], ...] | None = None
 
     @field_validator("measure_keys")
     @classmethod
@@ -768,6 +775,33 @@ class SiteVolumeExtension(ExtensionRefBase):
             _definition_refusal(
                 "definition.site_volume.first_ds_last",
                 "site volume first_ds must be <= last_ds",
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _valid_distinct_unit_counts(self) -> SiteVolumeExtension:
+        counts = self.distinct_unit_counts
+        if self.extension_version == 4:
+            if not counts:
+                _definition_refusal(
+                    "definition.artifact_extension.site_volume_distinct_counts",
+                    "version-4 site volume must include distinct converter totals",
+                )
+            keys = [key for key, _ in counts]
+            if len(keys) != len(set(keys)) or not set(keys) <= set(self.measure_keys):
+                _definition_refusal(
+                    "definition.artifact_extension.site_volume_distinct_counts",
+                    "distinct converter totals must use unique measure keys from the extension",
+                )
+            if any(isinstance(count, bool) or count < 0 for _, count in counts):
+                _definition_refusal(
+                    "definition.artifact_extension.site_volume_distinct_counts",
+                    "distinct converter totals must be non-negative integers",
+                )
+        elif counts is not None:
+            _definition_refusal(
+                "definition.artifact_extension.site_volume_distinct_counts",
+                "distinct converter totals require site-volume extension version 4",
             )
         return self
 
