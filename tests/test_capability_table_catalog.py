@@ -96,7 +96,7 @@ def test_linear_cuped_interactions_are_explicitly_classified():
         interaction.name: (interaction.status, interaction.code)
         for interaction in CUPED_LINEAR_INTERACTIONS
     } == {
-        "scalar_cuped": ("supported", "frame.metric.scalar_and_set_covariates"),
+        "scalar_cuped": ("supported", None),
         "ratio": ("supported", None),
         "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
         "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
@@ -167,6 +167,18 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
         "source_limited",
         ("source.frame_panel.cluster_grain",),
     )
+
+
+def test_scalar_cuped_nonmember_declaration_has_a_separate_refusal_row():
+    from tests.capability_entry_point_catalog import ENTRY_ROWS, resolve_cell
+
+    row = next(
+        entry for entry in ENTRY_ROWS if entry.id == "cuped-linear-scalar-nonmember-conflict"
+    )
+    for ingress in ("from_unit_summary", "from_unit_panel"):
+        display = resolve_cell(row.bindings[ingress])[0][1]
+        assert display.status == "refused"
+        assert display.codes == ("frame.metric.scalar_and_set_covariates",)
 
 
 def test_linear_cuped_matrix_dispositions_cover_six_ingresses():

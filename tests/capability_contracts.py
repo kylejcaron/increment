@@ -142,15 +142,15 @@ CUPED_LINEAR_INTERACTIONS = (
     MethodInteraction(
         "scalar_cuped",
         "supported",
-        "frame.metric.scalar_and_set_covariates",
-        "tests/test_cuped_covariates.py::test_scalar_and_linear_cuped_declarations_are_mutually_exclusive",
-        "Declare the scalar covariate as a member of covariates; do not set both covariate and covariates.",
+        None,
+        "tests/test_cuped_covariates.py::test_scalar_cuped_can_share_a_declared_covariate_with_cuped_linear",
+        "Declare the same covariate by scalar name and as a member of the mixed covariate set.",
     ),
     MethodInteraction(
         "ratio",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
     ),
     MethodInteraction(
         "clustering",
@@ -221,7 +221,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "multiplicity_roles",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
     ),
     MethodInteraction(
         "triggered_population",

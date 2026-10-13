@@ -593,11 +593,12 @@ not assume every adjustment will improve precision.
 ## Mixed numeric and categorical covariates
 
 `Method(name="linear", variance_reduction="cuped_linear")` uses the metric's
-declared `covariates` set, rather than the scalar `covariate=` slot. Mean,
-conversion and ratio metrics use a shared fitted linear adjustment, HC2
-uncertainty including the fitted slope and pooled covariate anchor, and a
-Bell–McCaffrey Student-t reference. This is a fixed-horizon approximation,
-not a finite-sample or sequential guarantee. Scalar `cuped` is unchanged.
+declared `covariates` set. Mean, conversion and ratio metrics use a shared
+fitted linear adjustment, HC2 uncertainty including the fitted slope and pooled
+covariate anchor, and a Bell–McCaffrey Student-t reference. This is a
+fixed-horizon approximation, not a finite-sample or sequential guarantee.
+Scalar `cuped` remains unchanged and may be used alongside `cuped_linear` when
+its scalar `covariate` name is also a member of the mixed `covariates` set.
 
 ### A mixed-covariate dataframe recipe
 

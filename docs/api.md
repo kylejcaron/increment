@@ -286,7 +286,9 @@ declaration has a `name`, `kind="continuous"` or `"categorical"`, and a
 `missing` policy (`"refuse"` or `"impute-indicator"`). Categorical values
 must be strings. `cuped_linear` supports mean, conversion, and ratio metrics;
 ratio metrics use the same declared covariates for numerator and denominator.
-See the runnable [mixed-covariate CUPED recipe](guides/cuped.md#a-mixed-covariate-dataframe-recipe).
+Scalar `cuped` remains available alongside `cuped_linear` when its scalar
+`covariate` name is also a member of `MetricSpec.covariates`. See the runnable
+[mixed-covariate CUPED recipe](guides/cuped.md#a-mixed-covariate-dataframe-recipe).
 
 This estimator uses HC2 uncertainty and a Bell–McCaffrey Student-t
 approximation, unlike scalar `cuped`, which retains its separate

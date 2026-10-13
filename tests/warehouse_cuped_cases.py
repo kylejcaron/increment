@@ -366,6 +366,7 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
                 "group_id": arm,
                 "value": None,
                 "pre_revenue": None,
+                "region": None,
                 "country": None,
                 "device": None,
                 "new_user": None,
@@ -380,6 +381,7 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
                 "group_id": None,
                 "value": row["pre_revenue"],
                 "pre_revenue": row["pre_revenue"],
+                "region": row["region"],
                 "country": row["country"],
                 "device": row["device"],
                 "new_user": row["new_user"],
@@ -394,6 +396,7 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
                 "group_id": None,
                 "value": row["revenue"],
                 "pre_revenue": None,
+                "region": None,
                 "country": None,
                 "device": None,
                 "new_user": None,
@@ -409,6 +412,7 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
                     "group_id": None,
                     "value": None,
                     "pre_revenue": None,
+                    "region": None,
                     "country": None,
                     "device": None,
                     "new_user": None,
@@ -424,6 +428,7 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
                     "group_id": None,
                     "value": None,
                     "pre_revenue": None,
+                    "region": None,
                     "country": None,
                     "device": None,
                     "new_user": None,
@@ -432,7 +437,7 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
     return events
 
 
-def mixed_cuped_definitions_yaml(source: str) -> str:
+def mixed_cuped_definitions_yaml(source: str, *, breakout: bool = False) -> str:
     entries = (
         "{name: pre_revenue, kind: continuous, property: pre_revenue, source: events, missing: impute-indicator}",
         "{name: country, kind: categorical, property: country, source: events}",
@@ -444,6 +449,9 @@ def mixed_cuped_definitions_yaml(source: str) -> str:
         "\n          covariates:\n            - " + "\n            - ".join(entries) + "\n"
     )
     method = "decision_method: {name: linear, variance_reduction: cuped_linear}"
+    breakout_section = (
+        "    breakouts:\n      - property: region\n        source: events\n" if breakout else ""
+    )
     return f"""
 dialect: duckdb
 fact_sources:
@@ -458,6 +466,7 @@ fact_sources:
       - {{name: signup, column: null}}
     properties:
       - {{name: pre_revenue, column: pre_revenue, dtype: float, as_of: pre_exposure}}
+      - {{name: region, column: region, dtype: string, as_of: pre_exposure}}
       - {{name: country, column: country, dtype: string, as_of: pre_exposure}}
       - {{name: device, column: device, dtype: string, as_of: pre_exposure}}
       - {{name: new_user, column: new_user, dtype: string, as_of: pre_exposure}}
@@ -477,10 +486,9 @@ metrics:
     preferred_direction: increase
     denominator: {{fact: order, aggregation: count, window_days: 2}}
   - name: signups
-    type: mean
+    type: conversion
     entity: user_id
     fact: signup
-    aggregation: count
     window_days: 2
 experiments:
   - name: mixed_cuped
@@ -490,7 +498,7 @@ experiments:
     end: "2025-01-12"
     control_group: control
     allocation: {{control: 0.5, treatment: 0.5}}
-    plan:
+{breakout_section}    plan:
       primary:
         metric: revenue
         {method}

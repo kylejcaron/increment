@@ -103,7 +103,7 @@ LINEAR_CUPED_DISPOSITIONS = {
     **dict.fromkeys(LINEAR_CUPED_SOURCE_REFUSALS, "source_limited"),
 }
 LINEAR_CUPED_INTERACTIONS = {
-    "scalar_cuped": ("supported", "frame.metric.scalar_and_set_covariates"),
+    "scalar_cuped": ("supported", None),
     "ratio": ("supported", None),
     "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
     "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),

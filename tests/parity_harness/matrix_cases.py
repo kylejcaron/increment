@@ -661,7 +661,9 @@ def build_switchback_case(cell: Cell, method: str, outcomes: Mapping[str, Outcom
     )
 
 
-def linear_cuped_frame_case(rows: list[dict[str, Any]], *, panel: bool, corrupt: bool = False):
+def linear_cuped_frame_case(
+    rows: list[dict[str, Any]], *, panel: bool, corrupt: bool = False, breakout: bool = False
+):
     """Build one declared mixed-CUPED mean/ratio role family on a dataframe ingress."""
     from increment.frame import CupedCovariate
 
@@ -686,7 +688,13 @@ def linear_cuped_frame_case(rows: list[dict[str, Any]], *, panel: bool, corrupt:
             covariates=covariates,
             decision_method=method,
         ),
-        MetricSpec(name="signups", covariates=covariates, decision_method=method),
+        MetricSpec(
+            name="signups",
+            type="conversion",
+            value_column="signup_conversion",
+            covariates=covariates,
+            decision_method=method,
+        ),
     )
     plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
     if panel:
@@ -697,7 +705,8 @@ def linear_cuped_frame_case(rows: list[dict[str, Any]], *, panel: bool, corrupt:
             date="date",
             metrics=metrics,
             plan=plan,
-            control="control",
+            design=Randomized(control_group="control", allocation=_ALLOCATION),
+            breakouts=("region",) if breakout else (),
         )
     return Analysis.from_unit_summary(
         md.frame(rows),
@@ -705,5 +714,5 @@ def linear_cuped_frame_case(rows: list[dict[str, Any]], *, panel: bool, corrupt:
         group="variant",
         metrics=metrics,
         plan=plan,
-        control="control",
+        design=Randomized(control_group="control", allocation=_ALLOCATION),
     )

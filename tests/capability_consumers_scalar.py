@@ -569,42 +569,42 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
     (
         _e(
             "from_unit_summary_supported",
-            "Analysis.run() mixed-covariate mean/ratio",
+            "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_unit_summary",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
             "from_unit_panel_supported",
-            "Analysis.run() mixed-covariate mean/ratio",
+            "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_unit_panel",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
             "from_definitions_supported",
-            "Analysis.run() mixed-covariate mean/ratio",
+            "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_definitions",
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
             "from_unit_day_artifact_supported",
-            "Analysis.run() mixed-covariate mean/ratio",
+            "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_unit_day_artifact",
             "published mixed-covariate extensions are adopted with the same per-unit outcomes",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
@@ -634,6 +634,38 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
     ),
 )
 
+SCALAR_CUPED_NONMEMBER_CONFLICT = ConsumerContract(
+    "scalar-cuped-nonmember-conflict",
+    (
+        _e(
+            "summary_refused",
+            "MetricSpec construction for scalar and mixed CUPED",
+            "from_unit_summary",
+            "the scalar covariate is not declared as a member of covariates",
+            "refused",
+            codes=("frame.metric.scalar_and_set_covariates",),
+            reason="declare the scalar covariate as a member of covariates",
+            stage="construction",
+            evidence=(
+                "tests/test_cuped_covariates.py::test_scalar_and_set_cuped_reject_a_nonmember_scalar_covariate",
+            ),
+        ),
+        _e(
+            "panel_refused",
+            "MetricSpec construction for scalar and mixed CUPED",
+            "from_unit_panel",
+            "the scalar covariate is not declared as a member of covariates",
+            "refused",
+            codes=("frame.metric.scalar_and_set_covariates",),
+            reason="declare the scalar covariate as a member of covariates",
+            stage="construction",
+            evidence=(
+                "tests/test_cuped_covariates.py::test_scalar_and_set_cuped_reject_a_nonmember_scalar_covariate",
+            ),
+        ),
+    ),
+)
+
 
 CONSUMER_CONTRACTS = (
     RATIO_DENOMINATOR_ADVISORY,
@@ -644,6 +676,7 @@ CONSUMER_CONTRACTS = (
     PLANNING_BASELINE,
     UNBOUNDED_RETENTION_SEQUENTIAL,
     MIXED_CUPED_FIXED_HORIZON,
+    SCALAR_CUPED_NONMEMBER_CONFLICT,
 )
 _SWITCHBACK_NO_SCHEDULE = (
     "SOURCE: a switchback contrast has no sequential construction, and from_switchback_panel "

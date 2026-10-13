@@ -348,8 +348,10 @@ def linear_cuped_rows(*, n_per_arm: int = 60, level_support_failure: bool = Fals
                     "revenue": float(5 + i % 5 + 0.04 * i + 1.5 * arm_index),
                     "orders": float(1 + i % 4),
                     "signups": float((i * 7 + arm_index) % 9),
+                    "signup_conversion": float((i * 7 + arm_index) % 9 > 0),
                     "pre_revenue": None if i % 7 == 0 else float(10 + i % 11),
                     "country": country,
+                    "region": ("east", "west")[i % 2],
                     "device": ("mobile", "desktop")[i % 2],
                     "new_user": "new" if i % 4 == 0 else "existing",
                 }

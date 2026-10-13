@@ -1767,8 +1767,30 @@ def _cuped_interaction_rows() -> tuple[EntryRow, ...]:
     )
 
 
+def _cuped_scalar_conflict_row() -> EntryRow:
+    not_measured = _unmeasured(
+        "The nonmember-declaration conflict is measured only on frame constructors."
+    )
+    return _row(
+        "cuped-linear-scalar-nonmember-conflict",
+        "Mixed-covariate CUPED + scalar CUPED with a nonmember covariate declaration",
+        {
+            S: (_consumer("scalar-cuped-nonmember-conflict", "summary_refused"),),
+            P: (_consumer("scalar-cuped-nonmember-conflict", "panel_refused"),),
+            D: (not_measured,),
+            A: (not_measured,),
+            M: (not_measured,),
+            SB: (not_measured,),
+        },
+    )
+
+
 ENTRY_ROWS: tuple[EntryRow, ...] = (
-    _INGRESS_ROWS + _AUXILIARY_ROWS + _STORED_STATE_ROWS + _cuped_interaction_rows()
+    _INGRESS_ROWS
+    + _AUXILIARY_ROWS
+    + _STORED_STATE_ROWS
+    + _cuped_interaction_rows()
+    + (_cuped_scalar_conflict_row(),)
 )
 
 
