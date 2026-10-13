@@ -89,6 +89,7 @@ class DrawJournal:
         self._exceptional = 0
         self._dropped = 0
         self._retained = 0
+        self._sequence = 0
         self._counters: dict[str, int] = {}
         # These are the totals represented by the durable chain.  Live totals
         # may include a partial block until it is sealed.
@@ -213,11 +214,19 @@ class DrawJournal:
         block["pending"].remove(index)
         block["completed"] += 1
         self._completed += 1
-        draw = {"tally": tuple(tally), "exceptional": exceptional, "retained": False}
+        self._sequence += 1
+        draw: dict[str, Any] = {
+            "tally": tuple(tally),
+            "exceptional": exceptional,
+            "sequence": self._sequence,
+        }
         for name in tally:
             block["counters"][name] = block["counters"].get(name, 0) + 1
             self._counters[name] = self._counters.get(name, 0) + 1
         if exceptional:
+            # The record stays with the draw while its block is unsealed: a
+            # rollback at close can free a retention slot for it.
+            draw["record"] = record
             block["exceptional"] += 1
             self._exceptional += 1
             if self._retained >= self._exception_limit:
@@ -225,7 +234,6 @@ class DrawJournal:
                 self._dropped += 1
             else:
                 self._retained += 1
-                draw["retained"] = True
                 block["records"].append({"case_id": self._case_id, "draw": index, "record": record})
         block["draws"][index] = draw
         while (
@@ -307,7 +315,12 @@ class DrawJournal:
         )
 
     def _roll_back(self, block: dict[str, Any], indices: list[int]) -> None:
-        """Forget *indices* of an unsealed block as if they had never started."""
+        """Forget *indices* of an unsealed block as if they had never started.
+
+        Retention is not settled here: ``_reassign_retention`` re-decides it
+        for every surviving draw of the unsealed blocks once all rollbacks
+        are applied.
+        """
         for index in indices:
             block["started"] -= 1
             self._started -= 1
@@ -325,12 +338,40 @@ class DrawJournal:
             if draw["exceptional"]:
                 block["exceptional"] -= 1
                 self._exceptional -= 1
-                if draw["retained"]:
-                    self._retained -= 1
-                else:
-                    block["dropped"] -= 1
-                    self._dropped -= 1
-        block["records"] = [row for row in block["records"] if row["draw"] not in indices]
+
+    def _reassign_retention(self, blocks: list[dict[str, Any]]) -> None:
+        """Re-decide retention for the exceptional draws of *blocks* in completion order.
+
+        Slots held by rolled-back draws return to the pool; a surviving draw
+        that was dropped only because a later-started draw completed first
+        is retained once capacity allows. Decisions sealed earlier stand:
+        the chain has already published them.
+        """
+        retained = self._retained - sum(len(block["records"]) for block in blocks)
+        self._dropped -= sum(block["dropped"] for block in blocks)
+        for block in blocks:
+            block["records"] = []
+            block["dropped"] = 0
+        exceptional = sorted(
+            (draw["sequence"], index, block)
+            for block in blocks
+            for index, draw in block["draws"].items()
+            if draw["exceptional"]
+        )
+        for _, index, block in exceptional:
+            if retained < self._exception_limit:
+                retained += 1
+                block["records"].append(
+                    {
+                        "case_id": self._case_id,
+                        "draw": index,
+                        "record": block["draws"][index]["record"],
+                    }
+                )
+            else:
+                block["dropped"] += 1
+                self._dropped += 1
+        self._retained = retained
 
     def close(self) -> JournalTotals:
         """Seal the contiguous completed prefix and finalize both logs.
@@ -340,27 +381,36 @@ class DrawJournal:
         in start order; later completions are rolled back with their tallies
         and records, so a resume inferred from the completed count re-runs
         exactly the draws the chain does not vouch for and never overlaps a
-        sealed range.
+        sealed range. Retention slots those draws held pass to the surviving
+        exceptional draws of the unsealed blocks.
         """
         if not self._closed:
-            truncated = False
-            while self._active:
-                finished = self._active.pop(0)
+            truncated = rolled_back = False
+            surviving = []
+            for block in self._active:
                 kept = 0
                 if not truncated:
-                    for index in finished["order"]:
-                        if index in finished["pending"]:
+                    for index in block["order"]:
+                        if index in block["pending"]:
                             truncated = True
                             break
                         kept += 1
-                if kept < len(finished["order"]):
-                    self._roll_back(finished, finished["order"][kept:])
+                if kept < len(block["order"]):
+                    rolled_back = True
+                    self._roll_back(block, block["order"][kept:])
                     if not kept:
                         continue
-                    finished["first"] = min(finished["order"][:kept])
-                    finished["last"] = max(finished["order"][:kept])
-                self._first, self._last = finished["first"], finished["last"]
-                self._seal(finished)
+                    block["first"] = min(block["order"][:kept])
+                    block["last"] = max(block["order"][:kept])
+                surviving.append(block)
+            unsealed, self._active = self._active, []
+            if rolled_back:
+                # Every unsealed block, so slots and drop counts held by the
+                # rolled-back draws of fully discarded blocks are released too.
+                self._reassign_retention(unsealed)
+            for block in surviving:
+                self._first, self._last = block["first"], block["last"]
+                self._seal(block)
             self._exceptions.flush()
             os.fsync(self._exceptions.fileno())
             self._exceptions.close()
