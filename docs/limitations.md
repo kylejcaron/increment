@@ -327,8 +327,8 @@ the assigned and triggered readings each covered 95.12%–95.66% for absolute
 and relative impact at nominal 95%; every Clopper–Pearson lower bound, at a
 family-allocated error of 7.5e-5, cleared 94.5%. The campaign checks the
 Normal-reference intervals the sitewide functions report; it does not cover
-multi-arm netting, clustered designs, or uncertainty about future traffic or
-trigger reach.
+conversion metrics, multi-arm netting, clustered designs, or uncertainty about
+future traffic or trigger reach.
 
 Calibration does not establish the real-world assumptions needed to interpret
 the triggered result as whole-site impact. The explicit assumption-failure
@@ -1732,9 +1732,10 @@ are warehouse-native operations: the former preserves pre-assignment property
 values, while the latter dates triggered cohorts at their first eligible
 trigger. Artifacts do not retain the raw enrollment timeline or provide the
 dashboard aggregation operation, so those reads refuse with source-specific
-capability reasons. Triggered sitewide is available only for aligned sum
-metrics with explicit trigger and site-volume evidence; it uses calendar-
-window outcomes restricted to finalized membership and remains conditional on
+capability reasons. Triggered sitewide is available only for mean, ratio and
+unwindowed conversion metrics with sum-aggregated components and explicit
+trigger and site-volume evidence; it uses calendar-window outcomes restricted
+to finalized membership and remains conditional on
 the assumptions above. CATE, CATE
 validation, and targeting use the triggered unit population when the source
 provides triggered outcomes and pre-assignment covariates; artifacts require

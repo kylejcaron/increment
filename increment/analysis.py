@@ -1938,7 +1938,8 @@ class Analysis:
         assignment-window lift to all enrolled units. For a triggered
         experiment, ``population="triggered"`` scales the trigger-stratum lift
         to units in finalized trigger membership, while outcomes remain aligned
-        to the experiment's calendar window; it requires a sum metric and
+        to the experiment's calendar window; it requires a mean, ratio, or
+        unwindowed conversion metric with sum-aggregated components and
         discloses the conditional membership assumptions on the result.
 
         One result per call, for one treatment arm - required when

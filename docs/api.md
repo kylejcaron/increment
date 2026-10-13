@@ -980,10 +980,11 @@ intent-to-treat whole-site impact, including when the experiment declares a
 trigger. For triggered experiments, `population="triggered"` reports a
 conditional impact scaled to enrolled units in finalized trigger membership.
 It uses calendar-window outcomes (not `run()`'s trigger-anchored windows),
-requires an aligned sum metric, and discloses membership assumptions,
-allocation-balance evidence, provenance, and its exploratory unadjusted
-`multiplicity status on the result. `SitewideImpact` and `SitewideRatioImpact`
-include `analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
+requires a mean, ratio, or unwindowed conversion metric with sum-aggregated
+components, and discloses membership assumptions, allocation-balance
+evidence, provenance, and its exploratory unadjusted multiplicity status on
+the result. `SitewideImpact` and `SitewideRatioImpact` include
+`analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
 `scaled_units`, `unobserved_members`, `assumptions`, and `allocation_balance`.
 The paired-provenance check is content-bound only for artifacts; native
 `snapshot_id` reflects declared `SourceSnapshotEvidence`, not table contents.
