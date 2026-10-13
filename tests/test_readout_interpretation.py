@@ -737,6 +737,12 @@ def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
     text = render_readout_text(interpret_readout([result], None))
     assert "additive confidence interval: [−∞, +∞]" in text
     assert "additive interval unavailable" not in text
+    from increment.breakout.estimates import LiftEstimates
+    from increment.tables import readout_table
+
+    html = readout_table(LiftEstimates([result])).gt().as_raw_html()
+    assert "[−∞, +∞]" in html
+    assert "interval unavailable" not in html
 
 
 def test_absolute_scale_null_is_not_labeled_as_relative_lift():

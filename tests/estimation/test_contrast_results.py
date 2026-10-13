@@ -160,6 +160,7 @@ def test_to_frame_supports_declared_backends(backend):
         "decision_scope_complete",
         "decision_scope_reason_code",
         "decision_scope_reason_context",
+        "comparison",
         "integrity_status",
         "integrity_code",
         "integrity_context",

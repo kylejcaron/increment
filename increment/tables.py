@@ -157,6 +157,21 @@ def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool 
     return lift.excludes(null_lift)
 
 
+def _has_additive_interval(estimate: Any) -> bool:
+    if (
+        getattr(estimate, "abs_lb", None) is not None
+        or getattr(estimate, "abs_ub", None) is not None
+    ):
+        return True
+    additive = getattr(getattr(estimate, "confidence_set", None), "additive", None)
+    if additive is None:
+        return False
+    return all(
+        getattr(endpoint, "status", None) in {"finite", "unbounded"}
+        for endpoint in (additive.lower, additive.upper)
+    )
+
+
 def _base_liftestimate_to_row(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, Any]:
@@ -189,6 +204,7 @@ def _base_liftestimate_to_row(
         "abs_diff": getattr(est, "abs_diff", None),
         "abs_lb": getattr(est, "abs_lb", None),
         "abs_ub": getattr(est, "abs_ub", None),
+        "abs_interval_available": _has_additive_interval(est),
         "relative_confidence_set": relative,
         "relative_unavailable_reason": getattr(est, "relative_unavailable_reason", None),
         "confidence_set": region,
@@ -1023,6 +1039,7 @@ def _row_qualification_columns(frame: Any, n: int) -> dict[str, list[str]]:
     if additive is not None and any(not _is_missing(value) for value in additive):
         lower = _column_values(frame, "abs_lb") or [None] * n
         upper = _column_values(frame, "abs_ub") or [None] * n
+        interval_available = _column_values(frame, "abs_interval_available") or [False] * n
         columns["Additive effect"] = [
             ""
             if _is_missing(point)
@@ -1030,10 +1047,14 @@ def _row_qualification_columns(frame: Any, n: int) -> dict[str, list[str]]:
             + (
                 f"; interval [{'−∞' if _is_missing(low) else f'{low:.6g}'}, "
                 f"{'+∞' if _is_missing(high) else f'{high:.6g}'}]"
-                if not _is_missing(low) or not _is_missing(high)
+                if not _is_missing(low)
+                or not _is_missing(high)
+                or (not _is_missing(available) and bool(available))
                 else "; interval unavailable"
             )
-            for point, low, high in zip(additive, lower, upper, strict=True)
+            for point, low, high, available in zip(
+                additive, lower, upper, interval_available, strict=True
+            )
         ]
     return columns
 
@@ -1583,8 +1604,10 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
     """Convert row, frame, or scoped collection input to the render frame."""
     metadata = getattr(data, "metadata", None)
     scope_notes = ()
-    if metadata is not None:
-        scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
+    is_result_collection = hasattr(data, "metadata") and callable(getattr(data, "to_frame", None))
+    if is_result_collection:
+        if metadata is not None:
+            scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
         data = estimates_to_readout(data)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)

@@ -11,6 +11,7 @@ from increment.estimation.readout_types import (
     ReadoutMetadata,
     render_readout_failure,
 )
+from increment.estimation.results import _selection_qualification
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +186,7 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                 row = row_by_key.get((source_id, cell))
                 control = (
                     None
-                    if _is_daily_value(row)
+                    if _is_daily_mean_cell(cell) or _is_daily_value(row)
                     else (
                         cell.control_group
                         or getattr(row, "control_group", None)
@@ -475,12 +476,22 @@ def _is_daily_value(row) -> bool:
     return hasattr(row, "value") and hasattr(row, "ds") and not hasattr(row, "lift")
 
 
+def _is_daily_mean_cell(cell: CellKey) -> bool:
+    return (
+        cell.kind in {"arm", "segment"}
+        and cell.ds is not None
+        and cell.method is None
+        and cell.estimand is None
+    )
+
+
 def _row_identity(row) -> tuple[str, ...]:
     details = []
     for attribute, label in (
         ("dimension_value", getattr(row, "dimension", None) or "segment"),
         ("ds", "date"),
         ("method", "method"),
+        ("method_role", "method role"),
         ("estimand", "estimand"),
     ):
         value = getattr(row, attribute, None)
@@ -492,7 +503,10 @@ def _row_identity(row) -> tuple[str, ...]:
 
 
 def _group_comparison(group, *, metadata_known: bool, include_dates: bool = False) -> str:
-    daily = bool(group.visible_rows) and all(_is_daily_value(row) for row in group.visible_rows)
+    daily = (
+        bool(group.source_cells)
+        and all(_is_daily_mean_cell(cell.key) for cell in group.source_cells)
+    ) or (bool(group.visible_rows) and all(_is_daily_value(row) for row in group.visible_rows))
     if daily:
         comparison = f"arm {group.treatment_group or 'unknown'}"
         dates = sorted({str(row.ds) for row in group.visible_rows})
@@ -621,6 +635,9 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
         if getattr(row, "note", None) and not any(code in row.note for code in advisory_codes):
             lines.append(f"Qualification: {row.note}")
+        selection_qualification = _selection_qualification(row)
+        if selection_qualification is not None:
+            lines.append(f"Selection qualification: {selection_qualification}.")
         lines.extend(_render_effect(row))
         identity = _row_identity(row)
         if identity:
@@ -801,8 +818,8 @@ def _retained_intervals(row, estimate, scale: str):
         )
         return tuple(
             (
-                None if lower is None else lower - 1.0,
-                None if upper is None else upper - 1.0,
+                None if lower is None else lower - 1,
+                None if upper is None else upper - 1,
             )
             for lower, upper in ratio_intervals
         ), getattr(bounds, "level", None)
@@ -857,7 +874,7 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
     null_abs = getattr(row, "null_abs", None)
     null_lift = getattr(row, "null_lift", None)
     absolute_native = scale == "absolute" and null_abs is None
-    null = null_abs if null_abs is not None else 0.0 if absolute_native or contrast else null_lift
+    null = null_abs if null_abs is not None else 0 if absolute_native or contrast else null_lift
     alternative = getattr(row, "alternative", None)
     if null is None or alternative is None:
         return None
@@ -880,17 +897,25 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
 
     alternative_direction = {"greater": "increase", "less": "decrease"}.get(alternative)
     if alternative_direction is not None:
-        compatible = all(
-            (lower is not None and lower > null)
-            if alternative_direction == "increase"
-            else (upper is not None and upper < null)
-            for lower, upper in intervals
-        )
-        if not compatible:
-            side = "below" if alternative_direction == "increase" else "above"
+        sides = []
+        for lower, upper in intervals:
+            if lower is not None and lower > null:
+                sides.append("above")
+            elif upper is not None and upper < null:
+                sides.append("below")
+            else:
+                sides.append("contains")
+        supported_side = "above" if alternative_direction == "increase" else "below"
+        if not all(side == supported_side for side in sides):
+            if set(sides) == {"above", "below"}:
+                return (
+                    "Interpretation: confidence set spans both sides of the tested null; "
+                    "effect direction not established."
+                )
+            opposite_side = "below" if supported_side == "above" else "above"
             return (
                 f"Interpretation: does not support the declared alternative; "
-                f"interval lies entirely {side} the tested null."
+                f"interval lies entirely {opposite_side} the tested null."
             )
 
     zero_directions = set()

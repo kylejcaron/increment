@@ -346,6 +346,75 @@ def test_daily_unavailable_reason_is_preserved_in_readout():
     assert "few_units" in repr(values)
 
 
+def test_filtering_all_daily_means_keeps_arm_mean_identity():
+    from increment.estimation.readout_types import (
+        CellKey,
+        CellRecord,
+        PopulationRoster,
+        ReadoutMetadata,
+        ReadoutScope,
+        SourceReadoutScope,
+    )
+
+    source_id = f"sha256:{'a' * 64}"
+    cell = CellKey(
+        kind="arm",
+        metric="rev",
+        method=None,
+        method_role=None,
+        estimand=None,
+        analysis_population="assigned",
+        group_id="treatment",
+        ds=date(2024, 1, 1),
+        ds_basis="calendar",
+    )
+    source = SourceReadoutScope(
+        source_snapshot_id=source_id,
+        cells=(cell,),
+        decision_cells=(cell,),
+        rosters=(
+            PopulationRoster(
+                analysis_population="assigned",
+                arms=("control", "treatment"),
+                source="experiment_counts",
+                complete=True,
+                control_group="control",
+            ),
+        ),
+        decision_complete_by_population={"assigned": True},
+    )
+    metadata = ReadoutMetadata(
+        scope=ReadoutScope(
+            snapshot_id=source_id,
+            cells=(cell,),
+            decision_cells=(cell,),
+            populations=("assigned",),
+            families=(),
+            by_source={source_id: source},
+        ),
+        cells=(CellRecord(cell=cell, source_snapshot_id=source_id),),
+    )
+    values = DailyMetricValues(
+        [
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="rev",
+                group_id="treatment",
+                source_snapshot_id=source_id,
+                decision_scope_complete=True,
+                value=Estimate(value=2.0, lb=1.5, ub=2.5, level=0.95),
+                n=10,
+            )
+        ],
+        metadata=metadata,
+    )
+
+    rendered = repr(values.filter(lambda _: False))
+
+    assert "arm treatment" in rendered
+    assert "treatment vs control" not in rendered
+
+
 def test_row_only_readout_table_retains_roster_and_family_qualifications():
     from increment.tables import estimates_to_readout
 
@@ -1313,6 +1382,16 @@ def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail
     assert all(row.decision_scope_complete is False for row in results)
 
 
+def _assert_selection_repr_disclosures(results, selected_row, sensitivity_row):
+    from increment.estimation.results import _selection_qualification
+
+    selection = _selection_qualification(selected_row)
+    assert selection is not None
+    rendered = repr(results)
+    assert selection in rendered
+    assert f"method role {sensitivity_row.method_role}" in rendered
+
+
 def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance():
     from increment import Method
     from increment.tables import estimates_to_readout
@@ -1366,7 +1445,8 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
     assert failed.role == successful.role == "secondary"
     assert failed.multiplicity_status == successful.multiplicity_status == "declared_plan"
     assert failed.family_id == successful.family_id
-    assert successful.discovery is not None
+    assert successful.discovery is True
+    _assert_selection_repr_disclosures(results, successful, sensitivity_rows[0])
     assert failed.discovery is None
     (family,) = [
         family for family in results.metadata.scope.families if family.family_id == failed.family_id
