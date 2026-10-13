@@ -892,3 +892,86 @@ def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
         }
     assert linear_cells == unadjusted_cells
     assert set(linear_cells.values()) == {"nonpositive_mean"}
+
+
+def _dead_arm_rows_with_unsupported_sibling() -> list[dict[str, Any]]:
+    rows = _ratio_rows_with_dead_arm()
+    for row in rows:
+        if row["group"] == "treatment" and row["unit"].endswith("-0"):
+            row["pre"] = "rare"
+    return rows
+
+
+def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
+    from increment.errors import CodedError
+
+    denominator_code = "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+    expected = {
+        "dead": (denominator_code, {"metric": "rpo", "group_id": "dead", "d_bar": 0.0}),
+        "treatment": ("estimation.cuped_linear.level_support", None),
+    }
+    linear = Method(name="linear", variance_reduction="cuped_linear")
+
+    # Every decision cell refused: the readout refuses as a whole, carrying each arm's own reason.
+    decision = _ratio_analysis(_dead_arm_rows_with_unsupported_sibling(), linear)
+    with pytest.raises(CodedError) as raised, pytest.warns():
+        decision.run()
+    assert raised.value.code == "readout.estimate_lift_every"
+    failures = {
+        failure["group_id"]: failure
+        for failure in cast(list[dict[str, Any]], raised.value.context["failures"])
+    }
+    assert set(failures) == set(expected)
+    for arm, (code, context) in expected.items():
+        assert failures[arm]["code"] == code
+        if context is not None:
+            assert dict(failures[arm]["context"]) == context
+    assert failures["treatment"]["context"]["level"] == "rare"
+
+    # A valid decision alongside: the linear sensitivity rows each keep their own refusal.
+    sensitivity = _ratio_analysis(
+        _dead_arm_rows_with_unsupported_sibling(), Method(name="unadjusted")
+    )
+    with pytest.warns():
+        results = sensitivity.run(sensitivity_methods=[linear])
+    by_cell = {(row.group_id, row.method): row for row in results if isinstance(row, LiftEstimate)}
+    assert by_cell[("treatment", "unadjusted")].lift is not None
+    for arm, (code, context) in expected.items():
+        row = by_cell[(arm, "linear")]
+        assert row.lift is None and row.failure_code == code
+        if context is not None:
+            assert row.failure_context == context
+    unsupported = by_cell[("treatment", "linear")].failure_context
+    assert unsupported is not None and unsupported["level"] == "rare"
+
+
+def test_withheld_arm_reports_requested_posterior_unavailable() -> None:
+    from increment.estimation.inference import Normal
+
+    analysis = _ratio_analysis(
+        _ratio_rows_with_dead_arm(), Method(name="linear", variance_reduction="cuped_linear")
+    )
+
+    with pytest.warns():
+        results = analysis.run(prior=Normal(mu=0.0, sigma=0.1))
+
+    by_arm = {row.group_id: row for row in results if isinstance(row, LiftEstimate)}
+    for arm in ("dead", "treatment"):
+        row = by_arm[arm]
+        assert row.posterior_available is False
+        assert row.posterior_reason_code == (
+            "estimation.results.lift.t_posterior_sufficient_statistics"
+        )
+        assert row.posterior_reason_context is not None
+        assert row.posterior_reason_context["group_id"] == arm
+    assert by_arm["treatment"].lift is not None
+    assert by_arm["dead"].lift is None
+    assert results.metadata is not None
+    posterior_by_arm = {
+        record.cell.group_id: record.posterior
+        for record in results.metadata.cells
+        if record.posterior is not None
+    }
+    assert posterior_by_arm["dead"].available is False
+    assert posterior_by_arm["dead"].reason_code == by_arm["dead"].posterior_reason_code
+    assert posterior_by_arm["dead"].reason_context == by_arm["dead"].posterior_reason_context

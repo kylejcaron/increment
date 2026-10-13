@@ -3180,62 +3180,123 @@ def _ratio_denominator_refusals(frame: Any, metric_name: str) -> dict[str, Coded
     return refused
 
 
+def _cuped_linear_unavailable_row(
+    metric: Metric,
+    arm: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    *,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    prior: Prior | None,
+    code: str,
+    context: Mapping[str, object],
+) -> LiftEstimate:
+    """One unavailable linear row carrying its exact refusal.
+
+    A declared prior is explicitly unavailable on such a row: there are no
+    HC2/BM statistics to compose it from, which is the same reason every
+    other unavailable linear row reports.
+    """
+    return LiftEstimate(
+        metric=metric.name,
+        group_id=arm,
+        method=method.name,
+        method_role=method_role,
+        estimand="itt",
+        alternative=alternative,
+        preferred_direction=metric.declared_preferred_direction,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        failure_code=code,
+        failure_context=context,
+        posterior_available=False if prior is not None else None,
+        posterior_reason_code=(
+            "estimation.results.lift.t_posterior_sufficient_statistics"
+            if prior is not None
+            else None
+        ),
+        posterior_reason_context=(
+            {
+                "metric": metric.name,
+                "group_id": arm,
+                "reference_df": None,
+                "missing": "HC2/BM score statistics needed to compose the declared prior",
+            }
+            if prior is not None
+            else None
+        ),
+    )
+
+
 def _withhold_ratio_arms(
     frame: Any,
     arm_order: tuple[str, ...],
     *,
     metric: Metric,
     control_group: str,
-    method: Method,
-    method_role: Literal["decision", "sensitivity"],
-    alternative: str,
-    null_lift: float,
-    null_abs: float | None,
-) -> tuple[Any, tuple[str, ...], list[LiftEstimate], list[tuple[Any, ...]]]:
+    refuse_arm: Callable[[str, str, Mapping[str, object]], None],
+) -> tuple[Any, tuple[str, ...]]:
     """Withhold ratio arms that cannot form the estimand, as their own cell failures.
 
-    Returns the per-unit evidence and arm order left to fit plus the failure
-    rows and decision failures of the withheld arms. When nothing is left to
-    contrast -- the control arm is withheld, or every non-control arm is --
-    the evidence comes back as ``None`` and every contrast carries its refusal.
+    Returns the per-unit evidence and arm order left to fit. When nothing is
+    left to contrast -- the control arm is withheld, or every non-control arm
+    is -- the evidence comes back as ``None`` and every contrast carries its
+    refusal.
     """
     refused = _ratio_denominator_refusals(frame, metric.name)
-    results: list[LiftEstimate] = []
-    cuped_failures: list[tuple[Any, ...]] = []
-
-    def refuse_arm(arm: str, refusal: CodedError) -> None:
-        results.append(
-            LiftEstimate(
-                metric=metric.name,
-                group_id=arm,
-                method=method.name,
-                method_role=method_role,
-                estimand="itt",
-                alternative=alternative,
-                preferred_direction=metric.declared_preferred_direction,
-                null_lift=null_lift,
-                null_abs=null_abs,
-                failure_code=refusal.code,
-                failure_context=refusal.context,
-            )
-        )
-        if method_role == "decision":
-            cuped_failures.append((metric.name, arm, "itt", refusal.code, refusal.context))
-
     if control_group in refused:
+        refusal = refused[control_group]
         for arm in arm_order:
             if arm != control_group:
-                refuse_arm(arm, refused[control_group])
-        return None, (), results, cuped_failures
+                refuse_arm(arm, refusal.code, refusal.context)
+        return None, ()
     for arm in arm_order:
         if arm in refused:
-            refuse_arm(arm, refused[arm])
+            refuse_arm(arm, refused[arm].code, refused[arm].context)
     if refused:
         frame = frame.filter(~nw.col("group_id").is_in(list(refused)))
         arm_order = tuple(arm for arm in arm_order if arm not in refused)
     if arm_order == (control_group,):
-        return None, (), results, cuped_failures
-    return frame, arm_order, results, cuped_failures
+        return None, ()
+    return frame, arm_order
+
+
+def _fit_cuped_linear_frame(
+    frame: Any,
+    covariates: Sequence[Any],
+    *,
+    control_group: str,
+    arm_order: tuple[str, ...],
+    ratio: bool,
+) -> Any:
+    """Fit the per-unit evidence frame once, returning the fit or its coded refusal."""
+    import numpy as np
+
+    from increment.estimation.cuped_linear import fit_cuped_linear
+
+    declarations = tuple(covariates)
+    y = np.asarray(frame.get_column("y").to_list(), dtype=float)
+    try:
+        return fit_cuped_linear(
+            None if ratio else y,
+            frame.get_column("group_id").to_list(),
+            control=control_group,
+            arm_order=arm_order,
+            covariates={
+                item.name: np.asarray(frame.get_column(item.name).to_list(), dtype=object)
+                for item in declarations
+            },
+            kinds={item.name: item.kind for item in declarations},
+            missing={item.name: item.missing for item in declarations},
+            numerator=y if ratio else None,
+            denominator=(
+                np.asarray(frame.get_column("y_den").to_list(), dtype=float) if ratio else None
+            ),
+        )
+    except CodedError as exc:
+        return exc
 
 
 def estimate_cuped_linear(
@@ -3257,50 +3318,56 @@ def estimate_cuped_linear(
     A ratio arm whose raw denominator mean is not positive cannot form the
     estimand: it is withheld from the fit and reported as its own cell
     failure, so its siblings keep their adjusted evidence. A control arm in
-    that state fails every contrast the same way.
+    that state fails every contrast the same way. A fit that then fails on
+    the remaining arms is reported on those arms only; each withheld arm
+    keeps its own refusal.
     """
-    import numpy as np
-
-    from increment.estimation.cuped_linear import fit_cuped_linear
-
     frame = nw.from_native(unit_frame, eager_only=True)
     ratio = getattr(metric, "type", None) == "ratio"
     arm_order = tuple(dict.fromkeys((control_group, *map(str, frame.get_column("group_id")))))
     results: list[LiftEstimate] = []
     cuped_failures: list[tuple[Any, ...]] = []
+
+    def refuse_arm(arm: str, code: str, context: Mapping[str, object]) -> None:
+        results.append(
+            _cuped_linear_unavailable_row(
+                metric,
+                arm,
+                method,
+                method_role,
+                alternative=alternative,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                prior=prior,
+                code=code,
+                context=context,
+            )
+        )
+        if method_role == "decision":
+            cuped_failures.append((metric.name, arm, "itt", code, context))
+
     if ratio:
-        frame, arm_order, results, cuped_failures = _withhold_ratio_arms(
+        frame, arm_order = _withhold_ratio_arms(
             frame,
             arm_order,
             metric=metric,
             control_group=control_group,
-            method=method,
-            method_role=method_role,
-            alternative=alternative,
-            null_lift=null_lift,
-            null_abs=null_abs,
+            refuse_arm=refuse_arm,
         )
         if frame is None:
             return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
-    arms = frame.get_column("group_id").to_list()
-    declarations = tuple(covariates)
-    covariate_arrays = {
-        item.name: np.asarray(frame.get_column(item.name).to_list(), dtype=object)
-        for item in declarations
-    }
-    kinds = {item.name: item.kind for item in declarations}
-    missing = {item.name: item.missing for item in declarations}
-    fit = fit_cuped_linear(
-        None if ratio else np.asarray(frame.get_column("y").to_list(), dtype=float),
-        arms,
-        control=control_group,
-        arm_order=arm_order,
-        covariates=covariate_arrays,
-        kinds=kinds,
-        missing=missing,
-        numerator=np.asarray(frame.get_column("y").to_list(), dtype=float) if ratio else None,
-        denominator=np.asarray(frame.get_column("y_den").to_list(), dtype=float) if ratio else None,
+    fit = _fit_cuped_linear_frame(
+        frame, covariates, control_group=control_group, arm_order=arm_order, ratio=ratio
     )
+    if isinstance(fit, CodedError):
+        if not results or not fit.code.startswith("estimation.cuped_linear."):
+            raise fit
+        # The fit-wide refusal belongs to the arms that were fitted; the withheld
+        # arms already carry their own.
+        for arm in arm_order:
+            if arm != control_group:
+                refuse_arm(arm, fit.code, fit.context)
+        return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
     alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
     context = {
         "metric": metric.name,
