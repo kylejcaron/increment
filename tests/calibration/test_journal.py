@@ -295,21 +295,43 @@ def test_rollback_frees_retention_slots_for_the_committed_prefix(tmp_path):
     assert retained == [0]
 
 
-def test_rollback_reassigns_retention_in_completion_order_across_active_blocks(tmp_path):
-    journal = DrawJournal(tmp_path, case_id="c1", block_size=2, exception_limit=2)
+def test_rollback_releases_slots_held_by_a_fully_discarded_later_block(tmp_path):
+    journal = DrawJournal(tmp_path, case_id="c1", block_size=3, exception_limit=2)
     for index in range(6):
         journal.started(index)
-    # Completion order 5, 4, 1, 0, 2: draws 5 and 4 take both slots, so 1, 0
-    # and 2 are dropped; draw 3 never finishes. Only block [0, 1] and draw 2
-    # survive, and the freed slots go to the earliest completed survivors.
-    for index in (5, 4, 1, 0, 2):
-        journal.completed(index, {"draw": index}, exceptional=True)
+    # Completion order 5, 4, 0, 1, 3: draws 5 and 4 take both slots, so 0, 1
+    # and 3 are dropped; draw 2 never finishes. Only draws 0 and 1 survive,
+    # and the released slots go to them in completion order.
+    for index in (5, 4, 0, 1, 3):
+        journal.completed(index, {"draw": index}, tally=("ok",), exceptional=True)
     totals = journal.close()
-    assert (totals.blocks, totals.started, totals.completed) == (2, 3, 3)
-    assert (totals.exceptional, totals.exceptional_dropped) == (3, 1)
+    assert (totals.blocks, totals.started, totals.completed) == (1, 2, 2)
+    assert (totals.exceptional, totals.exceptional_dropped) == (2, 0)
+    assert dict(totals.counters) == {"ok": 2}
     assert verify(tmp_path, case_id="c1") == totals
     retained = [
         json.loads(line)["draw"]
         for line in (tmp_path / "exceptions.jsonl").read_text().splitlines()
     ]
-    assert retained == [1, 0]
+    assert retained == [0, 1]
+
+
+def test_rollback_leaves_a_block_sealed_during_the_run_as_published(tmp_path):
+    journal = DrawJournal(tmp_path, case_id="c1", block_size=2, exception_limit=2)
+    for index in range(6):
+        journal.started(index)
+    # Draws 5 and 4 take both slots; block [0, 1] then completes, is sealed
+    # at once with both draws dropped, and the chain has published that.
+    # Rolling back 4 and 5 at close frees the slots for draw 2 only.
+    for index in (5, 4, 1, 0, 2):
+        journal.completed(index, {"draw": index}, exceptional=True)
+    assert journal.totals().blocks == 1
+    totals = journal.close()
+    assert (totals.blocks, totals.started, totals.completed) == (2, 3, 3)
+    assert (totals.exceptional, totals.exceptional_dropped) == (3, 2)
+    assert verify(tmp_path, case_id="c1") == totals
+    retained = [
+        json.loads(line)["draw"]
+        for line in (tmp_path / "exceptions.jsonl").read_text().splitlines()
+    ]
+    assert retained == [2]
