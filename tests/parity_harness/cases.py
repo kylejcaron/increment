@@ -8932,9 +8932,10 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
     untriggered_payload = copy.deepcopy(payload)
     untriggered_payload["experiments"][0].pop("trigger")
     untriggered = Definitions.model_validate(untriggered_payload)
+    # Certified through the whole experiment end day, as triggered sitewide requires.
     snapshot = SourceSnapshotEvidence(
-        observation_cutoff_ts=dt.datetime(2025, 1, 20, tzinfo=dt.UTC),
-        complete_through_by_feed={"events": dt.datetime(2025, 1, 19, tzinfo=dt.UTC)},
+        observation_cutoff_ts=dt.datetime(2025, 1, 21, tzinfo=dt.UTC),
+        complete_through_by_feed={"events": dt.datetime(2025, 1, 21, tzinfo=dt.UTC)},
     )
 
     def build_definitions() -> Analysis:
