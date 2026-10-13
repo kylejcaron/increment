@@ -216,7 +216,7 @@ def test_registered_cell_failure_renders_its_spec_explanation():
     assert expected in render_readout_text(interpretation)
     # The unavailable guardrail's row lines must name it, not read as the primary's.
     for line in str(results).splitlines():
-        if "test alternative" in line or "result identity" in line:
+        if any(part in line for part in ("test alternative", "result identity", "interpretation:")):
             assert line.split(" ", 1)[0] in {"value", "guard"}, line
     assert any(
         line.startswith("guard test alternative: less") for line in str(results).splitlines()
