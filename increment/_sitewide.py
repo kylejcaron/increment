@@ -100,15 +100,10 @@ _TRIGGERED_SITEWIDE_SEQUENTIAL = RefusalSpec(
     CapabilityError,
     template="triggered sitewide is fixed-horizon and cannot use a registered sequential plan; use a fixed-horizon plan.",
 )
-_TRIGGERED_SITEWIDE_OBSERVATIONAL = RefusalSpec(
-    "facade.analysis.sitewide_triggered_observational",
+_SITEWIDE_REQUIRES_RANDOMIZED = RefusalSpec(
+    "facade.analysis.sitewide_requires_randomized",
     CapabilityError,
-    template="triggered sitewide requires a randomized identification design; observational and encouragement designs are unsupported. Use assigned sitewide reading or run().",
-)
-_TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
-    "facade.analysis.sitewide_triggered_outcomes_incomplete",
-    CapabilityError,
-    template="triggered sitewide requires every outcome feed to be certified complete through the experiment calendar end; {route}",
+    template="sitewide() requires a randomized identification design; observational and encouragement designs are unsupported. Use run() for their estimands.",
 )
 # Retention and quantile are refused by validate_site_volume_metric.
 _CLUSTER_COMPATIBLE_METRIC_TYPES = ("mean", "conversion", "ratio")
@@ -189,7 +184,7 @@ class SitewideReadouts:
         experiment = self._experiment
         assert experiment is not None
         if experiment.resolved_design().mechanism != "randomized":
-            _refuse(_TRIGGERED_SITEWIDE_OBSERVATIONAL)
+            _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         if experiment.cluster is not None:
             _refuse(
                 _TRIGGERED_SITEWIDE_CLUSTER,

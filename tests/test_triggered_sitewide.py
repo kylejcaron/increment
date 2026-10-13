@@ -340,9 +340,7 @@ def test_triggered_sitewide_refuses_incomplete_calendar_outcomes(tmp_path):
     try:
         with pytest.raises(CapabilityError) as native_refused:
             analysis.sitewide("revenue", population="triggered")
-        assert native_refused.value.code == (
-            "facade.analysis.sitewide_triggered_outcomes_incomplete"
-        )
+        assert native_refused.value.code == ("facade.analysis.sitewide_outcomes_incomplete")
         adopted = _publish_and_adopt(
             native_connection(_native_source(analysis)),
             analysis,
@@ -751,7 +749,7 @@ def test_triggered_sitewide_observational_design_refuses_before_evidence(tmp_pat
         )
         with pytest.raises(CapabilityError) as refused:
             analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "facade.analysis.sitewide_triggered_observational"
+        assert refused.value.code == "facade.analysis.sitewide_requires_randomized"
     finally:
         analysis.close()
 

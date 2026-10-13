@@ -221,3 +221,10 @@ _NATIVE_COVARIATE_RESERVED = RefusalSpec(
         + " -- rename the property to request it as a covariate."
     ),
 )
+
+# Shared by every source so an incomplete outcome window refuses with one code.
+_SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
+    "facade.analysis.sitewide_outcomes_incomplete",
+    CapabilityError,
+    template="sitewide() requires every outcome feed to be certified complete through the experiment calendar end; {route}",
+)

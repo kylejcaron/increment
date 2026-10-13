@@ -247,7 +247,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "sitewide requested with population='triggered' on an observational trigger experiment",
                     "refused",
                     "tests.test_triggered_sitewide::test_triggered_sitewide_observational_design_refuses_before_evidence",
-                    codes=("facade.analysis.sitewide_triggered_observational",),
+                    codes=("facade.analysis.sitewide_requires_randomized",),
                     reason="Triggered sitewide has no adjusted observational construction.",
                 ),
                 _expectation(
@@ -257,7 +257,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "sitewide requested with population='triggered' before outcome feeds cover experiment end",
                     "refused",
                     "tests.test_triggered_sitewide::test_triggered_sitewide_refuses_incomplete_calendar_outcomes",
-                    codes=("facade.analysis.sitewide_triggered_outcomes_incomplete",),
+                    codes=("facade.analysis.sitewide_outcomes_incomplete",),
                     reason="Sitewide outcomes and site volume must use the same complete calendar interval.",
                 ),
                 *(

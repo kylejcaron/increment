@@ -66,6 +66,7 @@ from increment.query.builders import (
 )
 from increment.query.native_contract import (
     _NATIVE_COVARIATE_RESERVED,
+    _SITEWIDE_OUTCOMES_INCOMPLETE,
     DimensionedDayEvidence,
     SitewideEvidence,
 )
@@ -131,12 +132,6 @@ _SQL_CLUSTER = RefusalSpec(
     "source.sql.cluster_grain",
     CapabilityError,
     template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
-)
-
-_TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
-    "facade.analysis.sitewide_triggered_outcomes_incomplete",
-    CapabilityError,
-    template="triggered sitewide requires every outcome feed to be certified complete through the experiment calendar end; {route}",
 )
 
 if TYPE_CHECKING:
@@ -1874,7 +1869,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         end_day = self._artifact_experiment.end_day
         if end_day is None or outcome_edge is None or outcome_edge < end_day:
             refuse(
-                _TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE,
+                _SITEWIDE_OUTCOMES_INCOMPLETE,
                 route="re-run after the outcome feeds are complete through the experiment end.",
             )
         return trigger_extension, count_extension, binding, measure_keys
