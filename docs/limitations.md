@@ -272,7 +272,7 @@ uptake evidence without reducing outcomes. Clustered outcome histories still
 refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
 histories use the declared cluster uptake sufficient state.
 
-### Triggered-population sitewide impact depends on an untestable assumption
+### Triggered-population sitewide impact needs an external assumption
 
 `Analysis.sitewide(population="triggered")` reports a conditional, fixed-
 membership estimate: the triggered-stratum lift is scaled by the number of
