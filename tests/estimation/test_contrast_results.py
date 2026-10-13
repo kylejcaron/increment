@@ -111,6 +111,7 @@ def test_to_frame_supports_declared_backends(backend):
         "estimand",
         "aggregation",
         "probability_ct",
+        "sequence_probabilities",
         "randomization_law",
         "independence_grain",
         "carryover_order",

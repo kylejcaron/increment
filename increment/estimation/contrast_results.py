@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from operator import index
-from typing import TYPE_CHECKING, Literal, SupportsIndex, overload
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal, SupportsIndex, overload
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from increment._literals import Alternative, PreferredDirection, Role
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
@@ -27,8 +36,71 @@ if TYPE_CHECKING:
 Backend = Literal["pandas", "polars", "pyarrow"]
 
 # Independent units and shared blocks have different replication grains.
-RandomizationLaw = Literal["independent_bernoulli_order", "shared_schedule"]
+RandomizationLaw = Literal[
+    "independent_bernoulli_order",
+    "shared_schedule",
+    "independent_declared_sequence",
+    "shared_declared_sequence",
+]
 IndependenceGrain = Literal["unit_cycle", "shared_block"]
+
+# Paired CT/TC laws carry ``probability_ct``; declared multi-period laws carry
+# ``sequence_probabilities`` instead. The grain, not the law, picks inference.
+UNIT_CYCLE_LAWS = frozenset({"independent_bernoulli_order", "independent_declared_sequence"})
+DECLARED_SEQUENCE_LAWS = frozenset({"independent_declared_sequence", "shared_declared_sequence"})
+
+
+def law_grain(law: str) -> IndependenceGrain:
+    """The independent replicate grain implied by a randomization law."""
+    return "unit_cycle" if law in UNIT_CYCLE_LAWS else "shared_block"
+
+
+def is_declared_sequence_law(law: str) -> bool:
+    return law in DECLARED_SEQUENCE_LAWS
+
+
+def declared_sequence_law(independence_unit: str) -> RandomizationLaw:
+    """Result-level law name for a declared sequence draw at ``independence_unit``."""
+    return (
+        "independent_declared_sequence"
+        if independence_unit == "unit_cycle"
+        else "shared_declared_sequence"
+    )
+
+
+def canonical_sequence_probabilities(value: object) -> Mapping[str, float] | None:
+    """Freeze a declared sequence mapping in key order, or pass through ``None``."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or not value:
+        refuse(
+            _REFUSALS["estimation.contrast.sequence_identity"],
+            randomization_law="declared sequence",
+        )
+    copied: dict[str, float] = {}
+    for key, probability in value.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or isinstance(probability, bool)
+            or not isinstance(probability, (int, float))
+            or not math.isfinite(probability)
+            or not 0.0 < probability <= 1.0
+        ):
+            refuse(
+                _REFUSALS["estimation.contrast.sequence_identity"],
+                randomization_law="declared sequence",
+            )
+        copied[key] = float(probability)
+    return MappingProxyType(dict(sorted(copied.items())))
+
+
+def drop_absent_sequence_law(data: dict[str, Any]) -> dict[str, Any]:
+    """Omit ``sequence_probabilities`` when null so paired-law payloads are unchanged."""
+    if data.get("sequence_probabilities", ...) is None:
+        del data["sequence_probabilities"]
+    return data
+
 
 _REFUSALS = {
     "estimation.contrast.assignment_metadata": RefusalSpec(
@@ -51,6 +123,14 @@ _REFUSALS = {
         InvalidRequestError,
         template="contrast method, reference and degrees of freedom must match its replicates",
     ),
+    "estimation.contrast.sequence_identity": RefusalSpec(
+        "estimation.contrast.sequence_identity",
+        InvalidRequestError,
+        template=(
+            "{randomization_law} requires probability_ct for paired CT/TC laws or "
+            "sequence_probabilities for declared sequence laws, never both"
+        ),
+    ),
     "estimation.contrast.retained_window": RefusalSpec(
         "estimation.contrast.retained_window",
         InvalidRequestError,
@@ -72,7 +152,7 @@ def _validate_retained_window(
 
 
 def _validate_assignment_metadata(law: RandomizationLaw, grain: IndependenceGrain) -> None:
-    expected = "unit_cycle" if law == "independent_bernoulli_order" else "shared_block"
+    expected = law_grain(law)
     if grain != expected:
         refuse(
             _REFUSALS["estimation.contrast.assignment_metadata"],
@@ -85,7 +165,7 @@ def _validate_assignment_metadata(law: RandomizationLaw, grain: IndependenceGrai
 def _validate_replication_counts(
     law: RandomizationLaw, n_units: int, n_cycles: int, n_blocks: int | None
 ) -> int:
-    if law == "independent_bernoulli_order":
+    if law in UNIT_CYCLE_LAWS:
         if n_blocks is None and n_cycles >= n_units:
             return n_units
     elif n_blocks is not None and n_cycles == n_units * n_blocks:
@@ -106,10 +186,17 @@ def _validate_order_counts(
     ct_cycles: int | None,
     tc_cycles: int | None,
 ) -> None:
-    if law == "independent_bernoulli_order" and ct_cycles is None and tc_cycles is None:
+    if (law == "independent_bernoulli_order" or law in DECLARED_SEQUENCE_LAWS) and (
+        ct_cycles is None and tc_cycles is None
+    ):
         return
     draws = n_cycles if law == "independent_bernoulli_order" else n_blocks
-    if ct_cycles is None or tc_cycles is None or ct_cycles + tc_cycles != draws:
+    if (
+        law in DECLARED_SEQUENCE_LAWS
+        or ct_cycles is None
+        or tc_cycles is None
+        or ct_cycles + tc_cycles != draws
+    ):
         refuse(
             _REFUSALS["estimation.contrast.order_counts"],
             randomization_law=law,
@@ -117,6 +204,55 @@ def _validate_order_counts(
             n_blocks=n_blocks,
             ct_cycles=ct_cycles,
             tc_cycles=tc_cycles,
+        )
+
+
+def _validate_sequence_identity(
+    law: RandomizationLaw,
+    probability_ct: float | None,
+    sequence_probabilities: Mapping[str, float] | None,
+) -> None:
+    declared = law in DECLARED_SEQUENCE_LAWS
+    if (probability_ct is None) != declared or (sequence_probabilities is None) == declared:
+        refuse(_REFUSALS["estimation.contrast.sequence_identity"], randomization_law=law)
+
+
+def _validate_sequence_counts(
+    law: RandomizationLaw,
+    n_cycles: int,
+    n_blocks: int | None,
+    sequence_probabilities: Mapping[str, float] | None,
+    sequence_counts: Mapping[str, int] | None,
+    treatment_probabilities: tuple[float, ...] | None,
+    realized_treated_share: float | None,
+) -> None:
+    """Realized sequence evidence is present exactly for declared laws and is coherent."""
+    realized = (sequence_counts, treatment_probabilities, realized_treated_share)
+    if sequence_probabilities is None:
+        if any(value is not None for value in realized):
+            refuse(_REFUSALS["estimation.contrast.sequence_identity"], randomization_law=law)
+        return
+    draws = n_cycles if law in UNIT_CYCLE_LAWS else n_blocks
+    periods = len(next(iter(sequence_probabilities)))
+    if (
+        sequence_counts is None
+        or treatment_probabilities is None
+        or realized_treated_share is None
+        or len(treatment_probabilities) != periods
+        or not set(sequence_counts) <= set(sequence_probabilities)
+        or any(
+            isinstance(count, bool) or not isinstance(count, int) or count < 0
+            for count in sequence_counts.values()
+        )
+        or sum(sequence_counts.values()) != draws
+    ):
+        refuse(
+            _REFUSALS["estimation.contrast.order_counts"],
+            randomization_law=law,
+            n_cycles=n_cycles,
+            n_blocks=n_blocks,
+            ct_cycles=None,
+            tc_cycles=None,
         )
 
 
@@ -141,7 +277,9 @@ class ContrastResult(CodedModel, BaseModel):
         "retained_window_conversion_difference",
     ]
     aggregation: Literal["sum", "any"]
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    # Paired CT/TC laws only; declared multi-period laws report ``sequence_probabilities``.
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
+    sequence_probabilities: Mapping[str, float] | None = None
     # Positive carryover orders discard additional post-washout steps.
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
@@ -215,10 +353,24 @@ class ContrastResult(CodedModel, BaseModel):
             )
         return self
 
+    _sequence_probabilities = field_validator("sequence_probabilities", mode="before")(
+        canonical_sequence_probabilities
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_sequence_law(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if self.sequence_probabilities is not None:
+            data["sequence_probabilities"] = dict(self.sequence_probabilities)
+        return drop_absent_sequence_law(data)
+
     @model_validator(mode="after")
     def _consistent_design(self) -> ContrastResult:
         _validate_retained_window(self.observation_steps, self.retained_steps, self.carryover_order)
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        _validate_sequence_identity(
+            self.randomization_law, self.probability_ct, self.sequence_probabilities
+        )
         replicates = _validate_replication_counts(
             self.randomization_law, self.n_units, self.n_cycles, self.n_blocks
         )
@@ -306,7 +458,7 @@ class ContrastResult(CodedModel, BaseModel):
             return self
         expected = (
             ("switchback_unit_t_approximation", "unit_t_approximation")
-            if self.randomization_law == "independent_bernoulli_order"
+            if self.randomization_law in UNIT_CYCLE_LAWS
             else ("switchback_block_t", "block_t")
         )
         if (
@@ -328,10 +480,10 @@ class ContrastResult(CodedModel, BaseModel):
                 )
             )
             or (
-                self.randomization_law == "independent_bernoulli_order"
+                self.randomization_law in UNIT_CYCLE_LAWS
                 and not isinstance(self.reference_spec, UnitCycleTApproximation)
             )
-            or (self.randomization_law == "shared_schedule" and self.reference_spec is not None)
+            or (self.randomization_law not in UNIT_CYCLE_LAWS and self.reference_spec is not None)
         ):
             refuse(
                 _REFUSALS["estimation.contrast.reference_metadata"],
@@ -527,6 +679,7 @@ class ContrastResults(list[ContrastResult]):
             "estimand",
             "aggregation",
             "probability_ct",
+            "sequence_probabilities",
             "randomization_law",
             "independence_grain",
             "carryover_order",
@@ -587,6 +740,13 @@ class ContrastResults(list[ContrastResult]):
                         else json.dumps(
                             value.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
                         )
+                    )
+                elif name == "sequence_probabilities":
+                    value = result.sequence_probabilities
+                    data[name].append(
+                        None
+                        if value is None
+                        else json.dumps(dict(value), sort_keys=True, separators=(",", ":"))
                     )
                 elif name == "decision_scope_reason_context":
                     from increment.estimation.readout_types import thaw

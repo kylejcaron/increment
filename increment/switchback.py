@@ -16,12 +16,20 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import narwhals as nw
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from increment._study import (
     SWITCHBACK_IDENTIFICATION,
     SwitchbackStudyEnvelope,
     allocation_defect,
+    declared_treated_share,
     refuse_allocation_defect,
 )
 from increment._unit_cycle import (
@@ -52,8 +60,17 @@ from increment.estimation.contrast_results import (
     _validate_order_counts,
     _validate_replication_counts,
     _validate_retained_window,
+    _validate_sequence_counts,
+    _validate_sequence_identity,
+    canonical_sequence_probabilities,
+    declared_sequence_law,
+    drop_absent_sequence_law,
 )
-from increment.semantics.assignment import SwitchbackAssignment
+from increment.semantics.assignment import (
+    DeclaredSequenceOrder,
+    SwitchbackAssignment,
+    SwitchbackWindow,
+)
 from increment.semantics.design import Randomized
 from increment.semantics.unit_cycle import (
     UnitCycleReference,
@@ -172,18 +189,24 @@ class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
     the declared block count for a shared schedule. ``n_units`` is always
     the fixed roster size, never the inferential replicate count for a
     shared law.
+
+    Declared multi-period laws report ``sequence_probabilities`` (the declared
+    assignment law), ``sequence_counts`` (realized independent draws per
+    sequence), the declared per-period ``treatment_probabilities``, and the
+    ``realized_treated_share`` of drawn periods. Probabilities describe the law;
+    counts describe one realization. CT/TC counts are then ``None``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
     schedule_complete: bool
     n_units: int = Field(ge=1)
     n_cycles: int = Field(ge=1)
-    ct_cycles: int = Field(ge=0, strict=True)
-    tc_cycles: int = Field(ge=0, strict=True)
+    ct_cycles: int | None = Field(ge=0, strict=True)
+    tc_cycles: int | None = Field(ge=0, strict=True)
     n_blocks: int | None = Field(default=None, ge=1, strict=True)
     washout_steps: int = Field(ge=0)
     observation_steps: int = Field(ge=1)
@@ -196,10 +219,42 @@ class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
         "no_residual_carryover_after_discarded_steps"
     )
     integrity_failures: tuple[str, ...] = ()
+    sequence_probabilities: Mapping[str, float] | None = None
+    sequence_counts: Mapping[str, int] | None = None
+    treatment_probabilities: tuple[float, ...] | None = None
+    realized_treated_share: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    _sequence_probabilities = field_validator("sequence_probabilities", mode="before")(
+        canonical_sequence_probabilities
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_sequence_law(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        for name in ("sequence_counts", "treatment_probabilities", "realized_treated_share"):
+            if data.get(name, ...) is None:
+                del data[name]
+        if self.sequence_probabilities is not None:
+            data["sequence_probabilities"] = dict(self.sequence_probabilities)
+        if self.sequence_counts is not None:
+            data["sequence_counts"] = dict(sorted(self.sequence_counts.items()))
+        return drop_absent_sequence_law(data)
 
     @model_validator(mode="after")
     def _consistent_design(self) -> SwitchbackAssignmentDiagnostic:
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        _validate_sequence_identity(
+            self.randomization_law, self.probability_ct, self.sequence_probabilities
+        )
+        _validate_sequence_counts(
+            self.randomization_law,
+            self.n_cycles,
+            self.n_blocks,
+            self.sequence_probabilities,
+            self.sequence_counts,
+            self.treatment_probabilities,
+            self.realized_treated_share,
+        )
         _validate_replication_counts(
             self.randomization_law, self.n_units, self.n_cycles, self.n_blocks
         )
@@ -217,11 +272,11 @@ class SwitchbackAssignmentDiagnostic(CodedModel, BaseModel):
         return self.model_dump()
 
     @property
-    def ct_count(self) -> int:
+    def ct_count(self) -> int | None:
         return self.ct_cycles
 
     @property
-    def tc_count(self) -> int:
+    def tc_count(self) -> int | None:
         return self.tc_cycles
 
 
@@ -326,8 +381,23 @@ class FrameSwitchbackSource:
         from increment.power.switchback import SwitchbackBaseline
 
         stats = self.contrast_stats(metric)
+        if stats.sequence_probabilities is not None:
+            _reject_assignment(
+                message=(
+                    "pilot planning for declared multi-period switchback sequence laws is "
+                    "not implemented yet; the switchback power solvers assume paired CT/TC "
+                    "cycles and would not match this design's estimator"
+                ),
+                metric=metric.name,
+                randomization_law=stats.randomization_law,
+                route=(
+                    "plan with a paired CT/TC pilot, or analyze this design without "
+                    "switchback power solvers until declared-sequence planning lands"
+                ),
+                reason="declared_sequence_planning_unfinished",
+            )
         moments = self._planning[metric.name]
-        shared = stats.randomization_law == "shared_schedule"
+        shared = stats.independence_grain == "shared_block"
         if moments is None:
             _reject_units(
                 message="switchback pilot planning requires at least two independent replicates",
@@ -514,11 +584,12 @@ class _RetainedBlocks:
     rows: int
     values: dict[str, np.ndarray | list[Any]]
     numeric: frozenset[str]
+    periods: int = 2
 
     def key(self, block: int) -> tuple[object, int, int]:
         """The unit, cycle and period of one block, for refusal context."""
-        index, rest = divmod(block, len(self.cycles) * 2)
-        offset, period = divmod(rest, 2)
+        index, rest = divmod(block, len(self.cycles) * self.periods)
+        offset, period = divmod(rest, self.periods)
         return self.units[index], int(self.cycles[offset]), period
 
 
@@ -534,6 +605,7 @@ def _retained_blocks(
     observation_steps: int,
     carryover_order: int,
     cycles: Sequence[int],
+    periods: int = 2,
 ) -> _RetainedBlocks:
     """Group retained observation steps by unit-cycle-period.
 
@@ -558,7 +630,7 @@ def _retained_blocks(
         selected = selected.filter(nw.col(step) >= retain_from_step)
     ordered = selected.with_row_index("__row_order__").sort(*keys, "__row_order__")
     rows = observation_steps - carryover_order
-    per_unit = len(cycles) * 2 * rows
+    per_unit = len(cycles) * periods * rows
     # Blocks are uniform: _validate_switchback_domains fixed the step domain and
     # _validate_switchback_schedule required every unit-cycle-period cell once.
     units = tuple(ordered[unit].gather_every(per_unit).to_list())
@@ -579,6 +651,7 @@ def _retained_blocks(
         rows=rows,
         values=values,
         numeric=frozenset(spec.name for spec in specs if schema[spec.y_column].is_numeric()),
+        periods=periods,
     )
 
 
@@ -712,7 +785,9 @@ def _unit_order(units: Sequence[object], reject_units: Callable[..., NoReturn]) 
     return order
 
 
-def _switchback_groups(identification: Randomized) -> tuple[str, str]:
+def _switchback_groups(
+    identification: Randomized, expected_treated_share: float | None = None
+) -> tuple[str, str]:
     allocation = identification.allocation
     control = str(identification.control_group)
     treatment_arms = [arm for arm in allocation if arm != control] if allocation is not None else []
@@ -727,7 +802,11 @@ def _switchback_groups(identification: Randomized) -> tuple[str, str]:
             reason="invalid_allocation",
         )
     treatment = str(treatment_arms[0])
-    defect = allocation_defect(allocation[control], allocation[treatment])
+    defect = allocation_defect(
+        allocation[control],
+        allocation[treatment],
+        expected_treated_share=expected_treated_share,
+    )
     if defect is not None:
         refuse_allocation_defect(
             defect, allocation=allocation, control_group=control, treatment_group=treatment
@@ -743,7 +822,8 @@ def _validated_unit_cycle_references(
     treatment: str,
 ) -> Mapping[str, UnitCycleReference]:
     copied = _copy_references(references)
-    if not copied and assignment.sequence.scheme == "independent_bernoulli_order":
+    unit_grain = assignment.sequence.independence_unit == "unit_cycle"
+    if not copied and unit_grain:
         # Ordinary callers receive a qualified unit-t approximation from the
         # declared design; complete envelopes remain research inputs.
         copied = {spec.name: UnitCycleTApproximation() for spec in specs}
@@ -751,7 +831,7 @@ def _validated_unit_cycle_references(
     for name, reference in copied.items():
         if name not in declared_metrics:
             _unit_refuse("unit_cycle.reference_mismatch", reason="undeclared_metric", metric=name)
-        if assignment.sequence.scheme != "independent_bernoulli_order":
+        if not unit_grain:
             _unit_refuse(
                 "unit_cycle.reference_mismatch", reason="unit_reference_on_shared_schedule"
             )
@@ -1088,6 +1168,395 @@ def _build_shared_stats(  # noqa: PLR0913
     return stats, planning
 
 
+# Integrity threshold for declared sequence laws, matching the shared-schedule
+# binomial admission: only overwhelming evidence against the declared law refuses.
+_DECLARED_LAW_REJECTION_P = 1e-6
+
+
+def _declared_law_p_value(counts: Mapping[str, int], law: DeclaredSequenceOrder) -> float:
+    """Bonferroni bound over exact two-sided binomial tests of each declared sequence.
+
+    Each sequence count is marginally Binomial(draws, q_s) under the declared
+    law, so the minimum per-sequence p-value times the number of sequences is
+    a valid (conservative) p-value for the joint law without a large-sample
+    chi-square approximation.
+    """
+    from scipy.stats import binomtest
+
+    draws = sum(counts.values())
+    exact = law.exact_sequence_probabilities
+    p_values = [
+        float(binomtest(counts.get(key, 0), draws, float(probability)).pvalue)
+        for key, probability in exact.items()
+    ]
+    return min(1.0, len(p_values) * min(p_values))
+
+
+def _declared_block_totals(
+    blocks: _RetainedBlocks, spec: MetricSpec, reduced: Sequence[float | bool]
+) -> list[Fraction]:
+    """Exact retained total per unit-cycle-period block, in block order."""
+    n_blocks = len(reduced)
+    if spec.type == "conversion":
+        return [Fraction(int(bool(value))) for value in reduced]
+    values = blocks.values[spec.name]
+    rows = blocks.rows
+    if isinstance(values, np.ndarray) and values.dtype.kind in "fiu":
+        groups = np.repeat(np.arange(n_blocks, dtype=np.int64), rows)
+        signs = np.ones(values.size, dtype=np.int64)
+        return _exact_group_sums(values, signs, groups, n_blocks)
+    return [
+        _exact_signed_total(((1, values[block * rows : (block + 1) * rows]),))
+        for block in range(n_blocks)
+    ]
+
+
+def _declared_period_weights(
+    law: DeclaredSequenceOrder,
+) -> tuple[tuple[Fraction, Fraction], ...]:
+    """Per-period (control, treatment) HT weights, already divided by ``K``.
+
+    A cycle contributes ``(1/K) * sum_k [Z_k Y_k / pi_k - (1-Z_k) Y_k / (1-pi_k)]``,
+    which is unbiased for the mean over the cycle's periods of the retained
+    window difference ``Y_k(T) - Y_k(C)`` whenever ``0 < pi_k < 1``.
+    """
+    periods = law.periods
+    return tuple(
+        (-1 / (periods * (1 - probability)), 1 / (periods * probability))
+        for probability in law.exact_treatment_probabilities
+    )
+
+
+def _declared_cycle_weights(
+    sequences: np.ndarray, weights: tuple[tuple[Fraction, Fraction], ...]
+) -> list[list[Fraction]]:
+    """HT weight of every period block for each realized sequence string."""
+    cache: dict[str, list[Fraction]] = {}
+    for sequence in set(sequences.ravel().tolist()):
+        cache[sequence] = [
+            weights[period][1 if arm == "T" else 0] for period, arm in enumerate(sequence)
+        ]
+    return [cache[sequence] for sequence in sequences.ravel().tolist()]
+
+
+def _build_declared_stats(  # noqa: PLR0913
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    cycle: str,
+    period: str,
+    step: str,
+    specs: Sequence[MetricSpec],
+    control: str,
+    treatment: str,
+    law: DeclaredSequenceOrder,
+    carryover_order: int,
+    observation_steps: int,
+    washout_steps: int,
+    cycles: Sequence[int],
+    sequences: np.ndarray,
+    schedule_units: Sequence[object],
+    reject_numeric: Callable[..., NoReturn],
+    reject_units: Callable[..., NoReturn],
+) -> dict[str, ContrastStats]:
+    """HT contrasts for a declared K-period sequence law at its replicate grain.
+
+    Under ``unit_cycle`` draws each unit averages its cycle contributions, and
+    units are the independent replicates. Under ``shared_block`` draws each
+    period's retained totals are first averaged over the fixed roster, and each
+    block (cycle) contributes one replicate. Accumulation is exact; each
+    replicate contribution is rounded to float once.
+    """
+    periods = law.periods
+    blocks = _retained_blocks(
+        frame,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        specs=specs,
+        washout_steps=washout_steps,
+        observation_steps=observation_steps,
+        carryover_order=carryover_order,
+        cycles=cycles,
+        periods=periods,
+    )
+    reduced = _reduce_blocks(blocks, specs, reject_numeric)
+    n_units, n_cycles = len(blocks.units), len(cycles)
+    position = {value: index for index, value in enumerate(schedule_units)}
+    aligned = sequences[[position[value] for value in blocks.units]]
+    shared = law.independence_unit == "shared_block"
+    if shared:
+        block_sequences = aligned[0]
+        cycle_weights = _declared_cycle_weights(block_sequences, _declared_period_weights(law))
+    else:
+        cycle_weights = _declared_cycle_weights(aligned, _declared_period_weights(law))
+    order = (
+        sorted(range(n_units), key=lambda index: str(blocks.units[index]))
+        if shared
+        else _unit_order(blocks.units, reject_units)
+    )
+    randomization_law = declared_sequence_law(law.independence_unit)
+    stats: dict[str, ContrastStats] = {}
+    for spec in specs:
+        totals = _declared_block_totals(blocks, spec, reduced[spec.name])
+        deltas: dict[str, float] = {}
+        sizes: dict[str, int] = {}
+        if shared:
+            for offset, current_cycle in enumerate(cycles):
+                weights = cycle_weights[offset]
+                try:
+                    exact = Fraction(0)
+                    for index in order:
+                        base = (index * n_cycles + offset) * periods
+                        for current_period in range(periods):
+                            exact += weights[current_period] * totals[base + current_period]
+                    value = float(exact / n_units)
+                except OverflowError:
+                    value = math.inf
+                if not math.isfinite(value):
+                    reject_numeric(
+                        message=(
+                            f"metric {spec.name!r}: shared-block inverse-probability "
+                            "contribution is not finite"
+                        ),
+                        metric=spec.name,
+                        cycle=current_cycle,
+                        reason="inverse_probability_nonfinite",
+                    )
+                deltas[str(current_cycle)] = value
+                sizes[str(current_cycle)] = n_units
+        else:
+            for index in order:
+                try:
+                    exact = Fraction(0)
+                    for offset in range(n_cycles):
+                        weights = cycle_weights[index * n_cycles + offset]
+                        base = (index * n_cycles + offset) * periods
+                        for current_period in range(periods):
+                            exact += weights[current_period] * totals[base + current_period]
+                    value = float(exact / n_cycles)
+                except OverflowError:
+                    value = math.inf
+                if not math.isfinite(value):
+                    reject_numeric(
+                        message=(
+                            f"metric {spec.name!r}: cycle contributions overflowed during "
+                            "aggregation"
+                        ),
+                        metric=spec.name,
+                        unit=blocks.units[index],
+                        reason="cycle_contribution_overflow",
+                    )
+                token = str(blocks.units[index])
+                deltas[token] = value
+                sizes[token] = n_cycles
+        partition = ContrastPartition(
+            metric=spec.name,
+            aggregation="any" if spec.type == "conversion" else "sum",
+            probability_ct=None,
+            sequence_probabilities=law.probabilities,
+            randomization_law=randomization_law,
+            independence_grain=law.independence_unit,
+            carryover_order=carryover_order,
+            observation_steps=observation_steps,
+            retained_steps=observation_steps - carryover_order,
+            control_group=control,
+            treatment_group=treatment,
+            washout_steps=washout_steps,
+            unit_deltas=deltas,
+            cycles_by_unit=sizes,
+        )
+        try:
+            stats[spec.name] = reduce_contrast_partitions([partition])
+        except (OverflowError, ValueError):
+            reject_numeric(
+                message=(
+                    f"metric {spec.name!r}: centered contrast reduction overflowed "
+                    "or produced non-finite moments"
+                ),
+                metric=spec.name,
+                reason="centered_contrast_reduction_overflow",
+            )
+    return stats
+
+
+def _declared_sequence_source(  # noqa: PLR0913
+    frame: nw.DataFrame[Any],
+    *,
+    unit: str,
+    cycle: str,
+    period: str,
+    step: str,
+    group: str,
+    specs: Sequence[MetricSpec],
+    control: str,
+    treatment: str,
+    law: DeclaredSequenceOrder,
+    window: SwitchbackWindow,
+    cycles: Sequence[int],
+    units: set[object],
+    context: ContrastContext,
+) -> FrameSwitchbackSource:
+    """Validate a declared-sequence schedule against its law and reduce it."""
+    from increment._frame_validation import (
+        DeclaredSwitchbackSchedule,
+        _validate_switchback_schedule,
+    )
+
+    total_steps = window.washout_steps + window.observation_steps
+    schedule = _validate_switchback_schedule(
+        frame,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        group=group,
+        control=control,
+        treatment=treatment,
+        cycles=cycles,
+        total_steps=total_steps,
+        reject_missingness=_reject_missingness,
+        reject_schedule=_reject_schedule,
+        periods=law.periods,
+        declared_sequences=True,
+    )
+    assert isinstance(schedule, DeclaredSwitchbackSchedule)
+    support = law.probabilities
+    flat = schedule.sequences.ravel().tolist()
+    undeclared = sorted({sequence for sequence in flat if sequence not in support})
+    if undeclared:
+        index = next(i for i, sequence in enumerate(flat) if sequence not in support)
+        unit_index, offset = divmod(index, len(cycles))
+        _reject_schedule(
+            message=(
+                f"realized sequence {flat[index]!r} in unit {schedule.units[unit_index]!r}, "
+                f"cycle {cycles[offset]} has no positive probability under the declared "
+                f"sequence law {sorted(support)!r}"
+            ),
+            unit=schedule.units[unit_index],
+            cycle=cycles[offset],
+            observed_sequences=undeclared,
+            declared_sequences=sorted(support),
+            route="declare every sequence the scheduler could produce, with its probability",
+            reason="undeclared_sequence",
+        )
+    shared = law.independence_unit == "shared_block"
+    n_blocks: int | None = None
+    if shared:
+        agreed = (schedule.sequences == schedule.sequences[0]).all(axis=0)
+        if not agreed.all():
+            offset = int(np.argmin(agreed))
+            observed = sorted(set(schedule.sequences[:, offset].tolist()))
+            _reject_schedule(
+                message=(
+                    "shared switchback schedule requires the identical realized sequence "
+                    f"for every unit in block (cycle) {cycles[offset]}; observed {observed!r}"
+                ),
+                cycle=cycles[offset],
+                observed_sequences=observed,
+                reason="shared_block_sequence_mismatch",
+            )
+        draws = schedule.sequences[0].tolist()
+        n_blocks = len(cycles)
+    else:
+        draws = flat
+    counts: dict[str, int] = {}
+    for sequence in draws:
+        counts[sequence] = counts.get(sequence, 0) + 1
+
+    for current_period in range(law.periods):
+        arms = {sequence[current_period] for sequence in draws}
+        if arms != {"C", "T"}:
+            missing = "control" if "C" not in arms else "treatment"
+            _reject_schedule(
+                message=(
+                    f"period {current_period} never received {missing} across the "
+                    f"{len(draws)} realized independent draw(s); its inverse-probability "
+                    "contrast would rest on one arm alone"
+                ),
+                period=current_period,
+                missing_arm=missing,
+                sequence_counts=dict(sorted(counts.items())),
+                route=(
+                    "declare more independent draws (units or blocks), or a law with "
+                    "period probabilities further from 0 and 1; the realized schedule is "
+                    "known before launch, so this can be checked before collecting outcomes"
+                ),
+                reason="insufficient_exposure_support",
+            )
+    law_p_value = _declared_law_p_value(counts, law)
+    if not math.isfinite(law_p_value):
+        _unit_refuse("unit_cycle.numerical", reason="binomial_admission_nonfinite")
+    if law_p_value < _DECLARED_LAW_REJECTION_P:
+        _reject_schedule(
+            message=(
+                "realized sequence counts are incompatible with the declared sequence law "
+                f"(Bonferroni exact-binomial p={law_p_value:.3g})"
+            ),
+            sequence_counts=dict(sorted(counts.items())),
+            sequence_probabilities=dict(support),
+            route=(
+                "confirm the declared sequence probabilities match how the panel was "
+                "actually assigned"
+            ),
+            reason="implausible_realized_sequences",
+        )
+
+    stats = _build_declared_stats(
+        frame,
+        unit=unit,
+        cycle=cycle,
+        period=period,
+        step=step,
+        specs=specs,
+        control=control,
+        treatment=treatment,
+        law=law,
+        carryover_order=window.carryover_order,
+        observation_steps=window.observation_steps,
+        washout_steps=window.washout_steps,
+        cycles=cycles,
+        sequences=schedule.sequences,
+        schedule_units=schedule.units,
+        reject_numeric=_reject_numeric,
+        reject_units=_reject_units,
+    )
+    treated = sum(sequence.count("T") for sequence in draws)
+    diagnostics = SwitchbackAssignmentDiagnostic(
+        probability_ct=None,
+        sequence_probabilities=support,
+        sequence_counts=counts,
+        treatment_probabilities=law.treatment_probabilities,
+        realized_treated_share=treated / (len(draws) * law.periods),
+        randomization_law=declared_sequence_law(law.independence_unit),
+        independence_grain=law.independence_unit,
+        schedule_complete=True,
+        n_units=len(units),
+        n_cycles=len(units) * len(cycles),
+        ct_cycles=None,
+        tc_cycles=None,
+        n_blocks=n_blocks,
+        washout_steps=window.washout_steps,
+        observation_steps=window.observation_steps,
+        retained_steps=window.observation_steps - window.carryover_order,
+        washout_rows=int(frame.filter(nw.col(step) < window.washout_steps).shape[0]),
+        observation_rows=int(frame.filter(nw.col(step) >= window.washout_steps).shape[0]),
+        retained_rows=int(
+            frame.filter(nw.col(step) >= window.washout_steps + window.carryover_order).shape[0]
+        ),
+        carryover_order=window.carryover_order,
+        integrity_failures=(),
+    )
+    return FrameSwitchbackSource(
+        context=context,
+        diagnostics=diagnostics,
+        stats=stats,
+        planning={spec.name: None for spec in specs},
+        roster=sorted(str(value) for value in units),
+    )
+
+
 def from_switchback_panel(  # noqa: PLR0915
     frame: IntoDataFrame,
     *,
@@ -1124,6 +1593,7 @@ def from_switchback_panel(  # noqa: PLR0915
     steps is an assumption. Declared and retained lengths survive into result JSON.
     """
     from increment._frame_validation import (
+        SwitchbackSchedule,
         _validate_columns,
         _validate_switchback_domains,
         _validate_switchback_labels,
@@ -1152,17 +1622,21 @@ def from_switchback_panel(  # noqa: PLR0915
             expected="SwitchbackAssignment",
             reason="unsupported_assignment",
         )
-    if assignment.periods_per_cycle != 2:
-        # The discriminated ``AssignmentSequence`` union already guarantees
-        # ``scheme`` is one of the two known mechanisms; this guards only
-        # the (schema-fixed) period count for defense in depth.
+    declared = isinstance(assignment.sequence, DeclaredSequenceOrder)
+    expected_periods = assignment.sequence.periods if declared else 2
+    if assignment.periods_per_cycle != expected_periods:
+        # The model validator already ties ``periods_per_cycle`` to the
+        # declared law; this guards forged instances for defense in depth.
         _reject_assignment(
-            message="switchback assignment must declare exactly two periods per cycle",
+            message=(
+                f"switchback assignment must declare exactly {expected_periods} periods "
+                "per cycle for its sequence law"
+            ),
             assignment_type=type(assignment).__name__,
             periods_per_cycle=assignment.periods_per_cycle,
             reason="unsupported_assignment_mechanism",
         )
-    control, treatment = _switchback_groups(identification)
+    control, treatment = _switchback_groups(identification, declared_treated_share(assignment))
 
     specs = coerce_metrics(metrics)
     unsupported = [spec.name for spec in specs if spec.type not in ("mean", "conversion")]
@@ -1277,6 +1751,7 @@ def from_switchback_panel(  # noqa: PLR0915
         total_steps=total_steps,
         reject_missingness=_reject_missingness,
         reject_domain=_reject_domain,
+        periods=assignment.periods_per_cycle,
     )
     for reference in references.values():
         if isinstance(reference, UnitCycleVarianceEnvelope) and reference.cycles_per_unit != len(
@@ -1291,7 +1766,7 @@ def from_switchback_panel(  # noqa: PLR0915
         reject_numeric=_reject_numeric,
     )
     units = set(nwf[unit].unique().to_list())
-    is_shared = assignment.sequence.scheme == "shared_schedule"
+    is_shared = assignment.sequence.independence_unit == "shared_block"
     has_envelopes = all(
         isinstance(references.get(spec.name), UnitCycleVarianceEnvelope) for spec in specs
     )
@@ -1303,6 +1778,24 @@ def from_switchback_panel(  # noqa: PLR0915
             column=unit,
             unit_count=len(units),
             reason="insufficient_independent_units",
+        )
+    if declared:
+        assert isinstance(assignment.sequence, DeclaredSequenceOrder)
+        return _declared_sequence_source(
+            nwf,
+            unit=unit,
+            cycle=cycle,
+            period=period,
+            step=step,
+            group=group,
+            specs=specs,
+            control=control,
+            treatment=treatment,
+            law=assignment.sequence,
+            window=assignment.window,
+            cycles=cycles,
+            units=units,
+            context=context,
         )
     schedule = _validate_switchback_schedule(
         nwf,
@@ -1318,6 +1811,7 @@ def from_switchback_panel(  # noqa: PLR0915
         reject_missingness=_reject_missingness,
         reject_schedule=_reject_schedule,
     )
+    assert isinstance(schedule, SwitchbackSchedule)
     ct_cycles, tc_cycles = schedule.ct_cycles, schedule.tc_cycles
 
     n_blocks: int | None = None

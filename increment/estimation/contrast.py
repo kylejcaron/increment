@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from scipy.stats import t as _t
@@ -41,6 +42,7 @@ from increment.estimation.arm_contract import (
     ContrastCompatibilityRequest,
 )
 from increment.estimation.contrast_results import (
+    UNIT_CYCLE_LAWS,
     ContrastResult,
     IndependenceGrain,
     RandomizationLaw,
@@ -48,6 +50,9 @@ from increment.estimation.contrast_results import (
     _validate_order_counts,
     _validate_replication_counts,
     _validate_retained_window,
+    _validate_sequence_identity,
+    canonical_sequence_probabilities,
+    drop_absent_sequence_law,
 )
 from increment.estimation.decision_types import ContrastDecisionProcedure, FixedInference, NoFamily
 from increment.estimation.results import Estimate
@@ -146,7 +151,9 @@ class ContrastPartition(CodedModel, BaseModel):
 
     metric: str = Field(min_length=1)
     aggregation: Literal["sum", "any"]
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    # Exactly one of these identifies the law: paired CT/TC or declared sequences.
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
+    sequence_probabilities: Mapping[str, float] | None = None
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
     washout_steps: int = Field(default=0, ge=0, strict=True)
@@ -161,6 +168,17 @@ class ContrastPartition(CodedModel, BaseModel):
     cycles_by_unit: Mapping[str, int]
     unit_slopes: Mapping[str, float] = Field(default_factory=dict)
     ct_counts_by_unit: Mapping[str, int] = Field(default_factory=dict)
+
+    _sequence_probabilities = field_validator("sequence_probabilities", mode="before")(
+        canonical_sequence_probabilities
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_sequence_law(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if self.sequence_probabilities is not None:
+            data["sequence_probabilities"] = dict(self.sequence_probabilities)
+        return drop_absent_sequence_law(data)
 
     @field_validator("unit_slopes")
     @classmethod
@@ -241,10 +259,16 @@ class ContrastPartition(CodedModel, BaseModel):
     def _matching_units(self) -> ContrastPartition:
         _validate_retained_window(self.observation_steps, self.retained_steps, self.carryover_order)
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        _validate_sequence_identity(
+            self.randomization_law, self.probability_ct, self.sequence_probabilities
+        )
         if self.unit_deltas.keys() != self.cycles_by_unit.keys():
             _raise("estimation.contrast.contrast_partition.unit_deltas_cycles")
-        shared = self.randomization_law == "shared_schedule"
-        if (shared or self.ct_counts_by_unit) and (
+        if self.sequence_probabilities is not None and self.ct_counts_by_unit:
+            # CT/TC order counts describe paired laws only.
+            _raise("estimation.contrast.contrast_partition.ct_counts")
+        shared = self.independence_grain == "shared_block"
+        if (self.randomization_law == "shared_schedule" or self.ct_counts_by_unit) and (
             self.unit_deltas.keys() != self.ct_counts_by_unit.keys()
         ):
             _raise("estimation.contrast.contrast_partition.unit_deltas_cycles")
@@ -279,7 +303,8 @@ class ContrastStats(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
     metric: str = Field(min_length=1)
     aggregation: Literal["sum", "any"]
-    probability_ct: float = Field(gt=0.0, lt=1.0)
+    probability_ct: float | None = Field(gt=0.0, lt=1.0)
+    sequence_probabilities: Mapping[str, float] | None = None
     randomization_law: RandomizationLaw
     independence_grain: IndependenceGrain
     washout_steps: int = Field(default=0, ge=0, strict=True)
@@ -310,10 +335,24 @@ class ContrastStats(CodedModel, BaseModel):
     def _exact_total(cls, value: object) -> tuple[int, int] | None:
         return None if value is None else _canonical_exact_ratio(value)
 
+    _sequence_probabilities = field_validator("sequence_probabilities", mode="before")(
+        canonical_sequence_probabilities
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_sequence_law(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if self.sequence_probabilities is not None:
+            data["sequence_probabilities"] = dict(self.sequence_probabilities)
+        return drop_absent_sequence_law(data)
+
     @model_validator(mode="after")
     def _distinct_groups(self) -> ContrastStats:
         _validate_retained_window(self.observation_steps, self.retained_steps, self.carryover_order)
         _validate_assignment_metadata(self.randomization_law, self.independence_grain)
+        _validate_sequence_identity(
+            self.randomization_law, self.probability_ct, self.sequence_probabilities
+        )
         _validate_replication_counts(
             self.randomization_law, self.n_units, self.n_cycles, self.n_blocks
         )
@@ -373,7 +412,7 @@ def _partition_moments(part: ContrastPartition) -> tuple[int, int, float, float,
     units = sorted(part.unit_deltas)
     n_units = len(units)
     try:
-        if part.randomization_law == "independent_bernoulli_order":
+        if part.randomization_law in UNIT_CYCLE_LAWS:
             reference, mean_residual, m2_delta = _unit_centered_moments(
                 [part.unit_deltas[unit] for unit in units]
             )
@@ -389,6 +428,11 @@ def _partition_moments(part: ContrastPartition) -> tuple[int, int, float, float,
     if not all(math.isfinite(value) for value in values):
         _raise("estimation.contrast.contrast_partition_centered")
     return n_units, n_cycles, reference, mean_residual, m2_delta
+
+
+def _sequence_identity(part: ContrastPartition) -> tuple[tuple[str, float], ...] | None:
+    law = part.sequence_probabilities
+    return None if law is None else tuple(sorted(law.items()))
 
 
 def reduce_contrast_partitions(parts: Sequence[ContrastPartition]) -> ContrastStats:
@@ -410,8 +454,9 @@ def reduce_contrast_partitions(parts: Sequence[ContrastPartition]) -> ContrastSt
         first.observation_steps,
         first.retained_steps,
         first.washout_steps,
+        _sequence_identity(first),
     )
-    shared = identity[3] == "shared_schedule"
+    shared = identity[4] == "shared_block"
     seen_units: set[str] = set()
     roster_sizes: set[int] = set()
     normalized: list[tuple[ContrastPartition, tuple[int, int, float, float, float]]] = []
@@ -428,6 +473,7 @@ def reduce_contrast_partitions(parts: Sequence[ContrastPartition]) -> ContrastSt
             part.observation_steps,
             part.retained_steps,
             part.washout_steps,
+            _sequence_identity(part),
         )
         if current != identity:
             labels = (
@@ -442,6 +488,7 @@ def reduce_contrast_partitions(parts: Sequence[ContrastPartition]) -> ContrastSt
                 "observation_steps",
                 "retained_steps",
                 "washout_steps",
+                "sequence_probabilities",
             )
             mismatch = next(
                 label
@@ -506,6 +553,7 @@ def reduce_contrast_partitions(parts: Sequence[ContrastPartition]) -> ContrastSt
         metric=identity[0],
         aggregation=identity[1],
         probability_ct=identity[2],
+        sequence_probabilities=first.sequence_probabilities,
         randomization_law=identity[3],
         independence_grain=identity[4],
         carryover_order=identity[5],
@@ -743,7 +791,7 @@ def _estimate_contrast_result(
     # not redundant with the constructor.
     stats = ContrastStats.model_validate(stats)
     procedure = ContrastDecisionProcedure.model_validate(procedure)
-    shared = stats.randomization_law == "shared_schedule"
+    shared = stats.independence_grain == "shared_block"
     if not shared and procedure.reference is None:
         _unit_refuse(
             "unit_cycle.envelope_required",
@@ -861,6 +909,7 @@ def _t_reference_result(
         estimand=estimand,
         aggregation=stats.aggregation,
         probability_ct=stats.probability_ct,
+        sequence_probabilities=stats.sequence_probabilities,
         randomization_law=stats.randomization_law,
         independence_grain=stats.independence_grain,
         carryover_order=stats.carryover_order,
@@ -928,7 +977,7 @@ def estimate_contrast(
         return DecisionComputation(results=(result,), evidence={hypothesis: evidence}, failures={})
     assert result.standard_error is not None and result.dof is not None
     statistic = (result.estimate.value - result.null_abs) / result.standard_error
-    if result.randomization_law == "independent_bernoulli_order":
+    if result.randomization_law in UNIT_CYCLE_LAWS:
         _, p_value = _unit_t_reference(
             result.estimate.value,
             result.standard_error,

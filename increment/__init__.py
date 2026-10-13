@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     )
     from increment.semantics.assignment import (
         Assignment,
+        DeclaredSequenceOrder,
         IndependentBernoulliOrder,
         ParallelAssignment,
         SharedScheduleOrder,
@@ -337,6 +338,7 @@ __all__ = [
     "ParallelAssignment",
     "IndependentBernoulliOrder",
     "SharedScheduleOrder",
+    "DeclaredSequenceOrder",
     "SwitchbackWindow",
     "SwitchbackAssignment",
     "ParallelStudyEnvelope",
@@ -467,6 +469,7 @@ _LAZY_IMPORTS = {
         "IndependentBernoulliOrder",
     ),
     "SharedScheduleOrder": ("increment.semantics.assignment", "SharedScheduleOrder"),
+    "DeclaredSequenceOrder": ("increment.semantics.assignment", "DeclaredSequenceOrder"),
     "SwitchbackWindow": ("increment.semantics.assignment", "SwitchbackWindow"),
     "SwitchbackAssignment": ("increment.semantics.assignment", "SwitchbackAssignment"),
     "ParallelStudyEnvelope": ("increment._study", "ParallelStudyEnvelope"),

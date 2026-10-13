@@ -45,12 +45,22 @@ SWITCHBACK_IDENTIFICATION = RefusalSpec(
     _render_message,
 )
 
-AllocationDefect = Literal["not_finite_nonnegative", "not_normalized", "unequal_allocation"]
+AllocationDefect = Literal[
+    "not_finite_nonnegative", "not_normalized", "unequal_allocation", "exposure_mismatch"
+]
 
 
-def allocation_defect(control_weight: object, treatment_weight: object) -> AllocationDefect | None:
+def allocation_defect(
+    control_weight: object,
+    treatment_weight: object,
+    *,
+    expected_treated_share: float | None = None,
+) -> AllocationDefect | None:
     """The one switchback allocation contract: finite nonnegative weights that sum
-    to one (within ``1e-12``) and are exactly 0.5/0.5. ``None`` when satisfied."""
+    to one (within ``1e-12``). Paired CT/TC laws require exactly 0.5/0.5. A
+    declared sequence law passes its ``expected_treated_share`` (the expected
+    fraction of periods treated), and the weights must match that exposure
+    within ``1e-12``. ``None`` when satisfied."""
     if (
         not isinstance(control_weight, Real)
         or not isinstance(treatment_weight, Real)
@@ -64,6 +74,10 @@ def allocation_defect(control_weight: object, treatment_weight: object) -> Alloc
     treatment = float(treatment_weight)
     if not math.isclose(control + treatment, 1.0, rel_tol=0.0, abs_tol=1e-12):
         return "not_normalized"
+    if expected_treated_share is not None:
+        if not math.isclose(treatment, expected_treated_share, rel_tol=0.0, abs_tol=1e-12):
+            return "exposure_mismatch"
+        return None
     if control != 0.5 or treatment != 0.5:
         return "unequal_allocation"
     return None
@@ -91,6 +105,18 @@ def refuse_allocation_defect(
             allocation=allocation,
             reason="invalid_allocation",
         )
+    if defect == "exposure_mismatch":
+        refuse(
+            SWITCHBACK_IDENTIFICATION,
+            message=(
+                "switchback allocation weights must equal the declared sequence law's "
+                "expected control/treatment period exposure"
+            ),
+            allocation=allocation,
+            control_group=control_group,
+            treatment_group=treatment_group,
+            reason="allocation_exposure_mismatch",
+        )
     refuse(
         SWITCHBACK_IDENTIFICATION,
         message="switchback allocation requires exact 0.5/0.5 control/treatment weights",
@@ -107,6 +133,12 @@ class ParallelStudyEnvelope(BaseModel):
     kind: Literal["parallel"] = "parallel"
     identification: Design
     assignment: ParallelAssignment = ParallelAssignment()
+
+
+def declared_treated_share(assignment: SwitchbackAssignment) -> float | None:
+    """Expected treated-period share of a declared sequence law; ``None`` for paired laws."""
+    sequence = assignment.sequence
+    return sequence.expected_treated_share if sequence.scheme == "declared_sequences" else None
 
 
 class SwitchbackStudyEnvelope(CodedModel, BaseModel):
@@ -129,7 +161,11 @@ class SwitchbackStudyEnvelope(CodedModel, BaseModel):
         if len(treatment_arms) != 1:
             _raise("facade.study.switchback_study.identification_exactly_one")
         treatment = treatment_arms[0]
-        defect = allocation_defect(allocation[control], allocation[treatment])
+        defect = allocation_defect(
+            allocation[control],
+            allocation[treatment],
+            expected_treated_share=declared_treated_share(self.assignment),
+        )
         if defect is not None:
             refuse_allocation_defect(
                 defect,
@@ -151,5 +187,6 @@ __all__ = [
     "StudyEnvelope",
     "SwitchbackStudyEnvelope",
     "allocation_defect",
+    "declared_treated_share",
     "refuse_allocation_defect",
 ]

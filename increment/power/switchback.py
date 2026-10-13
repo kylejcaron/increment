@@ -197,6 +197,18 @@ class SwitchbackBaseline(CodedModel, BaseModel):
                 value=(self.sd_a, self.sd_g, self.rho),
                 constraint="rho=0 whenever either standard deviation is zero",
             )
+        if self.assignment.sequence.scheme == "declared_sequences":
+            _invalid(
+                "baseline",
+                "switchback planning for declared multi-period sequence laws is not implemented",
+                field="assignment.sequence",
+                value=self.assignment.sequence.scheme,
+                constraint="paired CT/TC sequence law (independent or shared)",
+                route=(
+                    "Plan with a paired CT/TC baseline; declared-sequence planning is a tracked "
+                    "follow-up and must match its runtime estimator before it is offered."
+                ),
+            )
         if self.randomization_law == "independent_bernoulli_order":
             if self.cycles_per_unit is None or self.shared_roster is not None:
                 _invalid(

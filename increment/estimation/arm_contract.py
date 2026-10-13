@@ -778,15 +778,15 @@ class ContrastEvidenceContract:
     def runtime_support(self, request: ContrastCompatibilityRequest) -> Support:
         if request.decision.family.kind != "none":
             return Unsupported("contrast.decision")
-        # ``SwitchbackAssignment.sequence`` is a validated two-member
-        # discriminated union; every accepted request has a supported scheme.
-        scheme = request.assignment.sequence.scheme
+        # ``SwitchbackAssignment.sequence`` is a validated discriminated union;
+        # every accepted request has a supported scheme. The independence unit,
+        # not the scheme, selects the replicate grain and reference.
         # ContrastCompatibilityRequest fixes inference to FixedInference.
         if request.metric.metric_type not in ("mean", "conversion"):
             return Unsupported("contrast.metric")
         if request.metric.value_scale != "absolute":
             return Unsupported("contrast.decision")
-        if scheme == "shared_schedule":
+        if request.assignment.sequence.independence_unit == "shared_block":
             # The independent replicate is the block, not the roster unit:
             # a shared schedule needs at least two blocks, never two units.
             return Supported(
