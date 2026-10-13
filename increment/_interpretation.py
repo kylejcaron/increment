@@ -642,18 +642,18 @@ def _render_group_rows(group, visible_rows) -> list[str]:
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
-                f"Posterior unavailable {cell.posterior_reason_code}: "
+                f"{row.metric} posterior unavailable {cell.posterior_reason_code}: "
                 f"{_reason(cell.posterior_reason_context)}"
             )
         if getattr(row, "note", None) and not any(code in row.note for code in advisory_codes):
-            lines.append(f"Qualification: {row.note}")
+            lines.append(f"{row.metric} qualification: {row.note}")
         selection_qualification = _selection_qualification(row)
         if selection_qualification is not None:
-            lines.append(f"Selection qualification: {selection_qualification}.")
+            lines.append(f"{row.metric} selection qualification: {selection_qualification}.")
         lines.extend(_render_effect(row))
         identity = _row_identity(row)
         if identity:
-            lines.append(f"Result identity: {'; '.join(identity)}.")
+            lines.append(f"{row.metric} result identity: {'; '.join(identity)}.")
         if getattr(row, "role", None) == "secondary":
             discovery = getattr(row, "discovery", None)
             selection = (
@@ -663,7 +663,7 @@ def _render_group_rows(group, visible_rows) -> list[str]:
                 if discovery is False
                 else "not recorded"
             )
-            lines.append(f"Selection: {selection}; separate from interval evidence.")
+            lines.append(f"{row.metric} selection: {selection}; separate from interval evidence.")
     return lines
 
 
@@ -1164,4 +1164,4 @@ def _render_test_null(row, *, contrast: bool, scale: str) -> list[str]:
         if null_abs is not None or contrast or scale == "absolute"
         else "relative lift"
     )
-    return [f"Test alternative: {row.alternative}; null ({unit}): {null:.6g}."]
+    return [f"{row.metric} test alternative: {row.alternative}; null ({unit}): {null:.6g}."]

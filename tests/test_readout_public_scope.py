@@ -109,7 +109,7 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
     assert "does not reject; inconclusive" in rendered
     assert "direction supported" in rendered
     assert "not evidence of no effect" in rendered
-    assert "Selection:" in rendered
+    assert any(line.startswith("secondary selection:") for line in rendered.splitlines())
 
 
 def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_row():

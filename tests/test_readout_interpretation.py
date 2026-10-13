@@ -214,6 +214,13 @@ def test_registered_cell_failure_renders_its_spec_explanation():
     assert failure_context["observed_arms"] == ["control"]
     assert columns["failure_message"] == expected
     assert expected in render_readout_text(interpretation)
+    # The unavailable guardrail's row lines must name it, not read as the primary's.
+    for line in str(results).splitlines():
+        if "test alternative" in line or "result identity" in line:
+            assert line.split(" ", 1)[0] in {"value", "guard"}, line
+    assert any(
+        line.startswith("guard test alternative: less") for line in str(results).splitlines()
+    )
 
 
 def test_failure_rendering_fills_metric_and_falls_back_without_naming_an_unknown_arm():
