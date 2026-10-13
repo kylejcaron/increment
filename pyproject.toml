@@ -1,7 +1,7 @@
 [project]
 name = "increment"
 dynamic = ["version"]
-description = "Python library for warehouse-native A/B testing, causal inference, and experiment analysis"
+description = "Open-source Python library for A/B test analysis, from dataframes or SQL warehouses."
 keywords = [
     "python",
     "a-b-testing",
@@ -52,7 +52,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kylejcaron/increment"
+Homepage = "https://getincrement.io/"
+Documentation = "https://getincrement.io/docs/"
 Repository = "https://github.com/kylejcaron/increment"
 
 [project.optional-dependencies]
