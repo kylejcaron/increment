@@ -110,38 +110,43 @@ class MethodInteraction:
     status: InteractionStatus
     code: str | None
     evidence: str
+    route_forward: str = ""
 
 
 CUPED_LINEAR_INTERACTIONS = (
     MethodInteraction(
         "scalar_cuped",
-        "mathematically_unsound",
+        "supported",
         "frame.metric.scalar_and_set_covariates",
         "tests/test_cuped_covariates.py::test_scalar_and_linear_cuped_declarations_are_mutually_exclusive",
+        "Declare the scalar covariate as a member of covariates; do not set both covariate and covariates.",
     ),
     MethodInteraction(
         "ratio",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
     ),
     MethodInteraction(
         "clustering",
-        "mathematically_unsound",
+        "unfinished",
         "estimation.engine.cuped_linear_cluster",
         "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+        "Implement cluster-robust HC2/Bell-McCaffrey inference for the WLS fit.",
     ),
     MethodInteraction(
         "sequential",
         "unfinished",
         "estimation.engine.cuped_linear_sequential",
         "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+        "Implement predictable multivariate sequential construction; tracked by kata 6rhs.",
     ),
     MethodInteraction(
         "winsorization",
         "unfinished",
         "estimation.engine.cuped_linear_winsorization",
         "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+        "Implement winsorized CUPED fitting and interval construction.",
     ),
     MethodInteraction(
         "breakouts",
@@ -153,7 +158,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "multiplicity_roles",
         "supported",
         None,
-        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
     ),
     MethodInteraction(
         "triggered_population",

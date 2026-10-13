@@ -96,18 +96,59 @@ def test_linear_cuped_interactions_are_explicitly_classified():
         interaction.name: (interaction.status, interaction.code)
         for interaction in CUPED_LINEAR_INTERACTIONS
     } == {
-        "scalar_cuped": (
-            "mathematically_unsound",
-            "frame.metric.scalar_and_set_covariates",
-        ),
+        "scalar_cuped": ("supported", "frame.metric.scalar_and_set_covariates"),
         "ratio": ("supported", None),
-        "clustering": (
-            "mathematically_unsound",
-            "estimation.engine.cuped_linear_cluster",
-        ),
+        "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
         "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
         "winsorization": ("unfinished", "estimation.engine.cuped_linear_winsorization"),
         "breakouts": ("supported", None),
         "multiplicity_roles": ("supported", None),
         "triggered_population": ("supported", None),
     }
+    routes = {
+        interaction.name: interaction.route_forward for interaction in CUPED_LINEAR_INTERACTIONS
+    }
+    assert routes["scalar_cuped"]
+    assert routes["clustering"]
+    assert "6rhs" in routes["sequential"]
+    assert routes["winsorization"]
+
+
+def test_cuped_interaction_catalog_rows_cover_all_ingresses():
+    from tests.capability_contracts import CUPED_LINEAR_INTERACTIONS
+    from tests.capability_entry_point_catalog import ENTRY_ROWS, resolve_cell
+
+    rows = {row.id: row for row in ENTRY_ROWS}
+    for interaction in CUPED_LINEAR_INTERACTIONS:
+        row = rows[f"cuped-linear-interaction-{interaction.name}"]
+        assert set(row.bindings) == set(INGRESSES)
+        for ingress in (
+            "from_unit_summary",
+            "from_unit_panel",
+            "from_definitions",
+            "from_unit_day_artifact",
+        ):
+            display = resolve_cell(row.bindings[ingress])[0][1]
+            assert display.status == interaction.status.replace("mathematically_unsound", "unsound")
+        for ingress, code in (
+            ("from_moments", "facade.analysis_config.cuped_linear_moments"),
+            ("from_switchback_panel", "source.frame.switchback.metric"),
+        ):
+            display = resolve_cell(row.bindings[ingress])[0][1]
+            assert display.status == "source_limited"
+            assert display.codes == (code,)
+
+
+def test_linear_cuped_matrix_dispositions_cover_six_ingresses():
+    from tests.parity_harness.matrix import (
+        LINEAR_CUPED_DISPOSITIONS,
+        LINEAR_CUPED_SOURCE_REFUSALS,
+    )
+
+    assert set(LINEAR_CUPED_DISPOSITIONS) == set(INGRESSES)
+    assert {
+        ingress for ingress, status in LINEAR_CUPED_DISPOSITIONS.items() if status == "supported"
+    } == {"from_unit_summary", "from_unit_panel", "from_definitions", "from_unit_day_artifact"}
+    assert {
+        ingress: LINEAR_CUPED_DISPOSITIONS[ingress] for ingress in LINEAR_CUPED_SOURCE_REFUSALS
+    } == {"from_moments": "source_limited", "from_switchback_panel": "source_limited"}

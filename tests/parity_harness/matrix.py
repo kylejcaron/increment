@@ -98,10 +98,14 @@ LINEAR_CUPED_SOURCE_REFUSALS = {
     "from_switchback_panel": "source.frame.switchback.metric",
     "from_moments": "facade.analysis_config.cuped_linear_moments",
 }
+LINEAR_CUPED_DISPOSITIONS = {
+    **dict.fromkeys(LINEAR_CUPED_INGRESSES, "supported"),
+    **dict.fromkeys(LINEAR_CUPED_SOURCE_REFUSALS, "source_limited"),
+}
 LINEAR_CUPED_INTERACTIONS = {
-    "scalar_cuped": ("mathematically_unsound", "frame.metric.scalar_and_set_covariates"),
+    "scalar_cuped": ("supported", "frame.metric.scalar_and_set_covariates"),
     "ratio": ("supported", None),
-    "clustering": ("mathematically_unsound", "estimation.engine.cuped_linear_cluster"),
+    "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
     "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
     "winsorization": ("unfinished", "estimation.engine.cuped_linear_winsorization"),
     "breakouts": ("supported", None),

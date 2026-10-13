@@ -28,6 +28,7 @@ from typing import Any, Literal, NamedTuple, cast
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
+from ibis.backends.sql import SQLBackend
 
 from increment import SequentialCell, SourceSnapshotEvidence
 from increment._analysis_config import UNSET, _Unset
@@ -8987,6 +8988,93 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
     )
 
 
+def _mixed_cuped_linear_case() -> ParityCase:
+    """Mixed-covariate CUPED parity on four unit ingresses and two source refusals."""
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.warehouse_cuped_cases import (
+        mixed_cuped_definitions_yaml,
+        mixed_cuped_event_rows,
+    )
+
+    units = matrix_data.linear_cuped_rows()
+    events = mixed_cuped_event_rows(units)
+
+    def definition_analysis(*, artifact: bool) -> Analysis:
+        con = ds.duckdb_connection(events)
+        try:
+            with tempfile.TemporaryDirectory(prefix="increment-linear-cuped-") as directory:
+                path = Path(directory) / "mixed_cuped.yaml"
+                path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
+                con.create_table("mixed_events", obj=events)
+                native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
+            return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
+        except BaseException:
+            con.disconnect()
+            raise
+
+    def source_limited_moments() -> Analysis:
+        spec = MetricSpec(
+            name="revenue",
+            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+            covariates=(CupedCovariate(name="prior", kind="continuous"),),
+        )
+        return Analysis.from_moments([], metrics=[spec], control="control")
+
+    def different_design_switchback() -> Analysis:
+        spec = MetricSpec(
+            name="revenue",
+            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+            covariates=(CupedCovariate(name="prior", kind="continuous"),),
+        )
+        from increment.semantics.design import Randomized
+
+        return Analysis.from_switchback_panel(
+            pd.DataFrame(),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics=[spec],
+            identification=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+
+    return ParityCase(
+        id="mixed-cuped-linear-fixed-horizon",
+        build={
+            "from_definitions": lambda: definition_analysis(artifact=False),
+            "from_unit_day_artifact": lambda: definition_analysis(artifact=True),
+            "from_unit_summary": lambda: matrix_cases.linear_cuped_frame_case(units, panel=False),
+            "from_unit_panel": lambda: matrix_cases.linear_cuped_frame_case(units, panel=True),
+            "from_switchback_panel": different_design_switchback,
+            "from_moments": source_limited_moments,
+        },
+        metrics=("revenue", "rpo", "signups"),
+        waive={
+            "from_switchback_panel": "SOURCE: switchback is a different design.",
+            "from_moments": "SOURCE: moments cannot supply per-unit covariates.",
+        },
+        waived_refusal_codes={
+            "from_switchback_panel": "source.frame.switchback.metric",
+            "from_moments": "facade.analysis_config.cuped_linear_moments",
+        },
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     _triggered_sitewide_assigned_case(),
     *_triggered_day_axis_cases(),
@@ -9103,4 +9191,5 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _winsor_three_arm_case(),
     _winsor_zero_inclusive_case(1),
     _winsor_size_routed_case(),
+    _mixed_cuped_linear_case(),
 ) + capability_cases()

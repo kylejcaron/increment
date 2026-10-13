@@ -126,20 +126,50 @@ def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
         ),
     ],
 )
-def test_mixed_cuped_support_refusals_are_exact(rows, code):
+def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
+    from increment import Analysis
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
     from tests.parity_harness import matrix_cases, matrix_data
+    from tests.warehouse_cuped_cases import (
+        mixed_cuped_definitions_yaml,
+        mixed_cuped_event_rows,
+    )
 
     units = matrix_data.linear_cuped_rows(**rows)
-    for panel in (False, True):
-        analysis = matrix_cases.linear_cuped_frame_case(units, panel=panel)
-        try:
+    analyses = [
+        matrix_cases.linear_cuped_frame_case(units, panel=False),
+        matrix_cases.linear_cuped_frame_case(units, panel=True),
+    ]
+    con = ibis.duckdb.connect()
+    con.create_table("mixed_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "mixed_cuped_refusal.yaml"
+    definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, con)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    store = WarehouseArtifactStore(con, schema_name="mixed_cuped_refusal_artifacts")
+    context = artifact_context(definitions, experiment, "error")
+    ref = native.publish_unit_day_artifact(store)
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    analyses.extend((native, adopted))
+    try:
+        for analysis in analyses:
             results = analysis.run()
-            assert any(row.sampling_reason_code == code for row in results), [
-                (row.metric, row.sampling_reason_code, row.sampling_reason_context)
+            assert any(getattr(row, "sampling_reason_code", None) == code for row in results), [
+                (
+                    row.metric,
+                    getattr(row, "sampling_reason_code", None),
+                    getattr(row, "sampling_reason_context", None),
+                )
                 for row in results
             ]
-        finally:
+    finally:
+        for analysis in analyses:
             analysis.close()
+        con.disconnect()
 
 
 def test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses(tmp_path):
@@ -197,7 +227,7 @@ def test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses(tmp_path):
             metadata = result.metadata
             assert metadata is not None
             scope = metadata.scope
-            signature = set()
+            signature = {}
             for row in result:
                 cell = next(
                     cell
@@ -224,22 +254,53 @@ def test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses(tmp_path):
                 )
                 assert record.sampling is not None
                 assert record.sampling.available == row.sampling_available
-                signature.add(
-                    (
-                        cell.kind,
-                        cell.metric,
-                        cell.group_id,
-                        cell.method,
-                        cell.method_role,
-                        cell.analysis_population,
-                        record.sampling.available,
-                        record.sampling.evidence is not None,
-                    )
+                assert (
+                    record.posterior.available if record.posterior is not None else None
+                ) == row.posterior_available
+                identity = (
+                    cell.kind,
+                    cell.metric,
+                    cell.group_id,
+                    cell.method,
+                    cell.method_role,
+                    cell.analysis_population,
                 )
-            return frozenset(signature), tuple(scope.populations)
+                signature[identity] = {
+                    "failure": record.failure.model_dump(mode="json")
+                    if record.failure is not None
+                    else None,
+                    "sampling": record.sampling.model_dump(mode="json"),
+                    "posterior": record.posterior.model_dump(mode="json")
+                    if record.posterior is not None
+                    else None,
+                    "advisories": [
+                        advisory.model_dump(mode="json") for advisory in record.advisories
+                    ],
+                }
+            cells = tuple(
+                sorted(
+                    (
+                        tuple(cell.model_dump(mode="json", exclude={"source"}).items())
+                        for cell in scope.cells
+                    ),
+                    key=repr,
+                )
+            )
+            decisions = tuple(
+                sorted(
+                    (
+                        tuple(cell.model_dump(mode="json", exclude={"source"}).items())
+                        for cell in scope.decision_cells
+                    ),
+                    key=repr,
+                )
+            )
+            return signature, cells, decisions, tuple(scope.populations)
 
         expected_state = retained_signature(results[0])
-        assert all(retained_signature(result) == expected_state for result in results[1:])
+        for name, result in zip(names[1:], results[1:], strict=True):
+            assert nested_close(expected_state, retained_signature(result)), name
+
     finally:
         summary.close()
         panel.close()

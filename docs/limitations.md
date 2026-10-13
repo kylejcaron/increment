@@ -340,10 +340,9 @@ variance of the estimate. Unequal allocation and arm-specific slopes are outside
 `cuped_linear` adjusts mean, conversion, and ratio metrics using a shared
 linear covariate fit, with HC2 uncertainty and a Bell–McCaffrey Student-t
 reference. Both the fitted slopes and pooled covariate anchor contribute to
-the uncertainty calculation. This is a fixed-horizon approximation: it does
-not provide finite-sample coverage, and it does not support sequential
-stopping. A covariate can improve or worsen precision; fit support is not a
-promise of a narrower interval.
+the uncertainty calculation. This fixed-horizon approximation does not
+provide finite-sample coverage. A covariate can improve or worsen precision;
+fit support is not a promise of a narrower interval.
 
 The estimator is intentionally distinct from scalar CUPED, whose adjustment
 and Welch–Satterthwaite reference are unchanged. Do not transfer evidence

@@ -574,7 +574,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
@@ -584,27 +584,27 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
             evidence=(
-                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
             "from_definitions_supported",
-            "Analysis.run() mixed-covariate mean",
+            "Analysis.run() mixed-covariate mean/ratio",
             "from_definitions",
-            "per-unit pre-period covariate and categorical property",
+            "same per-unit mean, ratio, categorical and missing-history data",
             "supported",
             evidence=(
-                "tests/test_cuped_covariate_sources.py::test_cuped_linear_definition_and_restored_artifact_match_frame_journey",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
             ),
         ),
         _e(
             "from_unit_day_artifact_supported",
-            "Analysis.run() mixed-covariate mean",
+            "Analysis.run() mixed-covariate mean/ratio",
             "from_unit_day_artifact",
-            "published covariate extensions are adopted with the unit-day artifact",
+            "published mixed-covariate extensions are adopted with the same per-unit outcomes",
             "supported",
             evidence=(
-                "tests/test_cuped_covariate_sources.py::test_cuped_linear_definition_and_restored_artifact_match_frame_journey",
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses",
             ),
         ),
         _e(

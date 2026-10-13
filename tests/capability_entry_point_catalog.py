@@ -21,7 +21,12 @@ from tests.capability_consumers_auxiliary import (
     CONSUMER_CONTRACTS as AUXILIARY_CONSUMER_CONTRACTS,
 )
 from tests.capability_consumers_scalar import CONSUMER_CONTRACTS as SCALAR_CONSUMER_CONTRACTS
-from tests.capability_contracts import CONSTRUCTORS, ConsumerContract, ParityDeclaration
+from tests.capability_contracts import (
+    CONSTRUCTORS,
+    CUPED_LINEAR_INTERACTIONS,
+    ConsumerContract,
+    ParityDeclaration,
+)
 from tests.doc_evidence import resolve_evidence_function
 from tests.parity_harness.declarations import PARITY_DECLARATIONS
 
@@ -52,13 +57,21 @@ class ConsumerBinding:
 
 
 @dataclass(frozen=True)
+class InteractionBinding:
+    """One tested CUPED method-composition outcome on a specific ingress."""
+
+    name: str
+    ingress: str
+
+
+@dataclass(frozen=True)
 class UnmeasuredBinding:
     """A cell no contract measures; the reason is displayed, never an outcome."""
 
     reason: str
 
 
-Binding = MatrixBinding | CaseBinding | ConsumerBinding | UnmeasuredBinding
+Binding = MatrixBinding | CaseBinding | ConsumerBinding | InteractionBinding | UnmeasuredBinding
 
 Table = Literal["ingresses", "triggered-auxiliary", "stored-state"]
 
@@ -163,6 +176,8 @@ def resolve_binding(binding: Binding) -> CellDisplay:
         if reason.casefold() == _NO_DISPOSITION:
             return CellDisplay("no_disposition")
         return CellDisplay("not_measured", reason=reason)
+    if isinstance(binding, InteractionBinding):
+        return _display_interaction(binding)
     if isinstance(binding, ConsumerBinding):
         expectation = _consumer_expectation(binding)
         outcome = expectation.expected
@@ -182,6 +197,41 @@ def resolve_binding(binding: Binding) -> CellDisplay:
     except KeyError as exc:
         raise KeyError(f"unknown parity case {binding.case_id!r}") from exc
     return _display_parity_declaration(declaration, binding.ingress)
+
+
+def _display_interaction(binding: InteractionBinding) -> CellDisplay:
+    try:
+        interaction = next(item for item in CUPED_LINEAR_INTERACTIONS if item.name == binding.name)
+    except StopIteration as exc:
+        raise KeyError(f"unknown CUPED interaction {binding.name!r}") from exc
+    if binding.ingress == M:
+        return CellDisplay(
+            "source_limited",
+            ("facade.analysis_config.cuped_linear_moments",),
+            "Portable moments cannot supply per-unit covariates.",
+            stage="construction",
+            classification="SOURCE",
+        )
+    if binding.ingress == SB:
+        return CellDisplay(
+            "source_limited",
+            ("source.frame.switchback.metric",),
+            "Switchback is a different design from independent-unit CUPED.",
+            stage="construction",
+            classification="SOURCE",
+        )
+    classification = {
+        "unfinished": "UNFINISHED",
+        "mathematically_unsound": "UNSOUND",
+    }.get(interaction.status, "")
+    status = "unsound" if interaction.status == "mathematically_unsound" else interaction.status
+    return CellDisplay(
+        status,
+        (interaction.code,) if interaction.code else (),
+        interaction.route_forward,
+        stage="construction" if status != "supported" else "read",
+        classification=classification,
+    )
 
 
 @cache
@@ -313,6 +363,10 @@ def _matrix(cell_id: str, ingress: str, leg: str = "rows", condition: str = "") 
 
 def _consumer(contract_id: str, outcome_id: str, condition: str = "") -> CellClause:
     return CellClause(condition, ConsumerBinding(contract_id, outcome_id))
+
+
+def _interaction(name: str, ingress: str) -> CellClause:
+    return CellClause("", InteractionBinding(name, ingress))
 
 
 def _unmeasured(reason: str = _NO_DISPOSITION) -> CellClause:
@@ -520,7 +574,7 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
     ),
     _row(
         "mixed-covariate-cuped-fixed-horizon",
-        "Mixed-covariate CUPED, fixed-horizon mean",
+        "Mixed-covariate CUPED, fixed-horizon mean/ratio",
         {
             S: (_consumer("mixed-cuped-fixed-horizon", "from_unit_summary_supported"),),
             P: (_consumer("mixed-cuped-fixed-horizon", "from_unit_panel_supported"),),
@@ -1699,7 +1753,21 @@ _STORED_STATE_ROWS: tuple[EntryRow, ...] = (
     ),
 )
 
-ENTRY_ROWS: tuple[EntryRow, ...] = _INGRESS_ROWS + _AUXILIARY_ROWS + _STORED_STATE_ROWS
+
+def _cuped_interaction_rows() -> tuple[EntryRow, ...]:
+    return tuple(
+        _row(
+            f"cuped-linear-interaction-{interaction.name}",
+            f"Mixed-covariate CUPED × {interaction.name.replace('_', ' ')}",
+            {ingress: (_interaction(interaction.name, ingress),) for ingress in INGRESSES},
+        )
+        for interaction in CUPED_LINEAR_INTERACTIONS
+    )
+
+
+ENTRY_ROWS: tuple[EntryRow, ...] = (
+    _INGRESS_ROWS + _AUXILIARY_ROWS + _STORED_STATE_ROWS + _cuped_interaction_rows()
+)
 
 
 # --- validation -----------------------------------------------------------------
@@ -1756,6 +1824,16 @@ def _validate_binding_column(where: str, column: str, binding: Binding) -> None:
         if expectation.ingress not in allowed:
             raise ValueError(f"{where}: consumer evidence is for {expectation.ingress!r}")
         _validate_evidence(where, expectation.evidence)
+    elif isinstance(binding, InteractionBinding):
+        if binding.ingress != column:
+            raise ValueError(f"{where}: interaction is for {binding.ingress!r}")
+        interaction = next(
+            (item for item in CUPED_LINEAR_INTERACTIONS if item.name == binding.name),
+            None,
+        )
+        if interaction is None:
+            raise ValueError(f"{where}: unknown CUPED interaction {binding.name!r}")
+        _validate_evidence(where, (interaction.evidence,))
     elif isinstance(binding, (MatrixBinding, CaseBinding)) and binding.ingress != column:
         raise ValueError(f"{where}: binding is for {binding.ingress!r}")
 
