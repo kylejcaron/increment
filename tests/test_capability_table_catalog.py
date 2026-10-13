@@ -87,3 +87,27 @@ def test_unknown_consumer_metadata_reference_fails_validation() -> None:
     )
     with pytest.raises((KeyError, ValueError)):
         validate_catalog((row,))
+
+
+def test_linear_cuped_interactions_are_explicitly_classified():
+    from tests.capability_contracts import CUPED_LINEAR_INTERACTIONS
+
+    assert {
+        interaction.name: (interaction.status, interaction.code)
+        for interaction in CUPED_LINEAR_INTERACTIONS
+    } == {
+        "scalar_cuped": (
+            "mathematically_unsound",
+            "frame.metric.scalar_and_set_covariates",
+        ),
+        "ratio": ("supported", None),
+        "clustering": (
+            "mathematically_unsound",
+            "estimation.engine.cuped_linear_cluster",
+        ),
+        "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
+        "winsorization": ("unfinished", "estimation.engine.cuped_linear_winsorization"),
+        "breakouts": ("supported", None),
+        "multiplicity_roles": ("supported", None),
+        "triggered_population": ("supported", None),
+    }

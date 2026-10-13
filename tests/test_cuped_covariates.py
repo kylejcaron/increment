@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from increment.analysis import Analysis
-from increment.errors import DefinitionError
+from increment.errors import DefinitionError, InvalidRequestError
 from increment.estimation.cuped_linear import fit_cuped_linear
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
@@ -284,3 +284,13 @@ def test_definition_covariate_refusal_roundtrips_through_copy_and_pickle():
 def test_unsupported_kind_is_rejected_by_the_declaration_schema():
     with pytest.raises(ValidationError):
         CupedCovariate.model_validate({"name": "x", "kind": "ordinal"})
+
+
+def test_scalar_and_linear_cuped_declarations_are_mutually_exclusive():
+    with pytest.raises(InvalidRequestError) as raised:
+        MetricSpec(
+            name="revenue",
+            covariate="prior",
+            covariates=(CupedCovariate(name="country", kind="categorical"),),
+        )
+    assert raised.value.code == "frame.metric.scalar_and_set_covariates"

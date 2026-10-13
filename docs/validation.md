@@ -230,6 +230,7 @@ third-party comparison), `campaign_pending` (a registered campaign exists and ha
 | Method | Guarantee | Status | Basis and where the guarantee is stated | Entry points and parity |
 |---|---|---|---|---|
 | CUPED point estimate and standard error | `asymptotic`: the standard error conditions on a coefficient estimated from the same data it adjusts; that uncertainty is not propagated, so the interval is slightly narrower than one holding the coefficient fixed ([limitations](limitations.md#cuped-treats-its-adjustment-coefficient-as-known)) | `calibration_only` | The ANCOVA `lm` comparison was examined and does not match: increment reports a per-arm Welch delta-method standard error on the log scale with Welch degrees of freedom, whereas ANCOVA uses a pooled residual variance with `N - 3` degrees of freedom. On a heteroskedastic scratch dataset (not frozen) the adjusted difference agreed with the ANCOVA treatment coefficient to about `1e-14` relative at equal allocation and differed by about 0.8% at 25 vs 40 units, and the standard errors differed (0.533 vs 0.553 at equal allocation, 0.533 vs 0.611 at 25 vs 40). No comparison was frozen. [Limitations](limitations.md#cuped-treats-its-adjustment-coefficient-as-known) Calibration: `EV-CUPED-THETA` (16 cells, 3000 replications each, equal allocation, one homogeneous slope). | [matrix](reference/capabilities-by-entry-point.md#what-runs-where): `mean-run-cuped-utc-error`, `ratio-run-cuped-utc-error`, `conversion-run-cuped-utc-error`, `retention-run-cuped-utc-error`: `supported`; `quantile-run-cuped-utc-error`: `unfinished` (`66mg`: a quantile has no mean to adjust) |
+| Mixed-covariate linear CUPED (`cuped_linear`) | `asymptotic`: fixed-horizon HC2 uncertainty with a Bell–McCaffrey Student-t approximation; this does not establish finite-sample coverage ([limitations](limitations.md#mixed-covariate-linear-cuped-is-fixed-horizon-approximate)) | `campaign_pending` | Preregistered full and reduced coverage profiles exist in `calibration/cuped_linear.py` and neither has been run. Coverage is not established; runtime support is not certification. | Per-unit `from_unit_summary` recipe is documented in [CUPED](guides/cuped.md#a-mixed-covariate-dataframe-recipe); this campaign does not establish cross-entry-point parity. |
 | Cluster-robust contrasts (disjoint-arm Fieller set, additive Welch, cluster IPTW/AIPW/DML) | `asymptotic`: qualified working approximations; neither a Bessel multiplier nor a generic t choice establishes finite-sample validity for arbitrary small, unbalanced, or skewed clusters ([limitations](limitations.md#cluster-references-are-qualified-working-approximations)) | `calibration_only` | Hand-derived witnesses plus bounded Monte Carlo cells: `tests/estimation/test_cluster_coverage.py` and `tests/estimation/test_cluster_ratio_coverage.py` use 400 replications, 40 clusters per arm and 20 units per cluster; the ratio file also checks a negative control mean. `tests/estimation/test_adjust_cluster_coverage.py` covers IPTW, AIPW and DML with 400 replications, 80 clusters total and 20 units per cluster; stochastic assignment can give unequal arm counts. These cells do not cover arbitrary small or unbalanced clusters. `sandwich::vcovCL` was unavailable, so no external comparison was attempted. [Limitations](limitations.md#cluster-references-are-qualified-working-approximations) The complete existing cluster calibration matrices are open (internal trackers `q468`, `h80b`). | [matrix](reference/capabilities-by-entry-point.md#what-runs-where): `mean-run-cluster-utc-error`, `conversion-run-cluster-utc-error`, `ratio-run-cluster-utc-error`: `supported`; `quantile-run-cluster-utc-error`: `unfinished` (`66mg`: a quantile has no mean to adjust); `total-run-cluster-utc-error`: `source_limited` |
 | Ratio metrics (delta method) | `asymptotic`: unit-grain ratio lift uses a delta-method log-scale uncertainty against a Welch-Satterthwaite t reference; a first-order approximation is furthest from the truth at small n, for heavy-tailed outcomes and for ratio metrics, and the `ratio_denominator_precision` note is an advisory, not a corrected interval ([limitations](limitations.md#uncertainty-is-estimated-on-every-path)) | `calibration_only` | `tests/estimation/test_ratio.py::TestRatioStatisticalValidation::test_se_within_5pc_of_bootstrap` compares the delta SE with 2000 bootstrap replications on 2000 units, within 5%; `tests/estimation/test_ratio.py::test_unclustered_ratio_interval_coverage_is_nominal` measures coverage at a 20% lift over 1500 draws with 500 units per arm, within three Monte Carlo standard errors of 95%. These bounded simulations do not cover arbitrary rates or denominator distributions. No third-party comparison was attempted because `mratios` was unavailable. [Limitations](limitations.md#signed-effects-require-a-suitable-scale-and-reference) | [matrix](reference/capabilities-by-entry-point.md#what-runs-where): `ratio-run-none-utc-error`: `supported` (`from_switchback_panel` refuses it as `source_limited`, `source.frame.switchback.metric`) |
 | Joint relative inversion | `asymptotic`: relative Fieller set on a fixed t reference for clustered unadjusted arms; preserves bounded, disconnected, one-sided, full-real, empty or unavailable geometry ([limitations](limitations.md#cluster-references-are-qualified-working-approximations)) | `derivation_only` | `EV-JOINT-RELATIVE`; no third-party comparison. [Limitations](limitations.md#signed-effects-require-a-suitable-scale-and-reference) | See `EV-JOINT-RELATIVE` above. |
@@ -254,6 +255,56 @@ third-party comparison), `campaign_pending` (a registered campaign exists and ha
 | Total, active and retention metric types | retention: no type-wide guarantee class; each route states its own. Standalone exact-binomial inference (`EV-CP-BINOM-TEST`) and eligible unadjusted, unit-grain, fixed-horizon, prior-free relative-risk inference are `exact` (exact-binomial row); sequential routes are `exact` or `asymptotic` by family (Bernoulli e-process and e-BH rows); the adjusted intervals of fixed-horizon FCR families state no guarantee (FCR row); other routes keep their own qualifications. Total and active: none stated (no limitations entry states a class) | `none_found` | No frozen third-party comparison exists for these metric types. [Compatibility](guides/compatibility.md) | [matrix](reference/capabilities-by-entry-point.md#what-runs-where): `retention-run-none-utc-error`: `supported`; `total-run-none-utc-error`, `active-run-none-utc-error`: `not_expressible` (report-layer metric types: a frame names no such type) |
 | CATE estimation and targeting (`estimate_cate`, `validate_cate`, `targeting_rule`, `select_targeting_rule`) | none stated: no finite-sample guarantee; identification requires conditional ignorability and overlap for `Observational` scores, group-effect and characteristic tests are Bonferroni-corrected inside their own families, and no guarantee spans the whole workflow ([limitations](limitations.md#targeting-validation-depends-on-identification-and-overlap), [no joint error control](limitations.md#the-targeting-workflow-carries-no-joint-error-control)); clustered `estimate_cate` is cluster-asymptotic ([limitations](limitations.md#clustered-cate-uncertainty-is-cluster-asymptotic)) | `calibration_only` | `EV-CATE-UNCLUSTERED-CAL` and `EV-CATE-CLUSTER-SCREEN` are bounded Monte Carlo cells; no third-party comparison is recorded. | [matrix](reference/capabilities-by-entry-point.md#what-runs-where): no matrix row (the matrix has no CATE axis) |
 
+## Mixed-covariate linear CUPED
+
+`cuped_linear` uses fixed-horizon HC2 uncertainty and a Bell–McCaffrey
+Student-t approximation. It is intentionally different from scalar `cuped`;
+neither method inherits the other's evidence. The preregistered campaign in
+`calibration/cuped_linear.py` is coded, but **neither the full nor the reduced
+profile has been run**. Coverage is not established. Runtime support, the
+example's observed interval, and passing the M1 support checks are not
+calibration evidence.
+
+The registered profiles are prospective gates, not results:
+
+| Profile | Draws per statistic | Gate | Detectable undercoverage alternative |
+|---|---:|---|---|
+| `reduced` | 28,000 | coverage lower bound at least 0.94 | 0.92 coverage |
+| `full` (Revision 7) | 107,100 | coverage lower bound at least 0.945 | 0.935 coverage |
+
+These are the campaign's predeclared thresholds and detection targets only.
+The profiles share a 67-statistic allocation; the campaign documentation
+describes its accounting and the eight descriptive edge cells. Neither a
+gate nor an alternative is an observed coverage value.
+
+The campaign checks that production refuses fits outside the frozen M1
+support region with the registered code and observables, then exercises the
+public estimator on its preregistered grid. Probe prerequisites and project
+cost before deciding whether to run it:
+
+```bash
+uv run python -m calibration.cuped_linear --campaign reduced --prerequisites
+uv run python -m calibration.cuped_linear --campaign reduced --project
+uv run python -m calibration.cuped_linear --campaign full --project
+```
+
+The actual certifying commands, from the checkout, are:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  uv run --extra tables python -m calibration.cuped_linear \
+  --campaign reduced --output .test-evidence/intro-usability/cuped-linear-reduced --workers 8
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  uv run --extra tables python -m calibration.cuped_linear \
+  --campaign full --output .test-evidence/intro-usability/cuped-linear-full --workers 8
+```
+
+Each output directory must be new. These commands are supplied for later
+execution; this documentation change did not run them. External-prediction
+training (tracker #72) and longitudinal dependence (tracker #80) are not
+implemented. They are implementation gaps, not claims about the statistical
+limit of the existing same-experiment fixed-horizon estimator.
+
 ## Unvalidated regimes
 
 These restate published gaps; this page adds no new number. Each links to the section that states
@@ -263,6 +314,7 @@ the guarantee.
   has not been executed, and clustered and unit-cycle research matrices remain uncertified
   ([limitations](limitations.md#the-sequential-certification-campaign-has-not-been-executed)).
   Bounded release evidence cannot establish universal calibration.
+- Mixed-covariate linear CUPED: neither preregistered profile has been run, so coverage is not established ([campaign details and commands](#mixed-covariate-linear-cuped)).
 - Winsorization inference is experimental, and 12 alternative rows of its preserved stress grid
   remain unresolved ([metric types](guides/metric-types.md#winsorization)).
 - Meta-analysis at small K: the plug-in random-effects interval is anticonservative, and HKSJ is

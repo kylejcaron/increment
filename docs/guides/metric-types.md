@@ -497,6 +497,15 @@ passing silently. See [limitations](../limitations.md#uncertainty-is-estimated-o
 for the measured table and the cases (clustered, sequential) the check does
 not claim.
 
+When a ratio metric uses mixed-covariate `cuped_linear`, it has the
+additional fixed-horizon M1 support check described in the
+[CUPED guide](cuped.md#mixed-numeric-and-categorical-covariates): each raw
+arm denominator must have relative standard error at most 0.15. This
+rejects some heavy-denominator designs around 100 units per arm; it is a
+support restriction, not a coverage certificate. Scalar ratio CUPED remains
+a separate method and does not use this M1 check.
+
+
 ### Conditional effects (CATE)
 
 Conditional effects currently support mean and conversion metrics only.

@@ -564,6 +564,77 @@ UNBOUNDED_RETENTION_SEQUENTIAL = ConsumerContract(
     ),
 )
 
+MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
+    "mixed-cuped-fixed-horizon",
+    (
+        _e(
+            "from_unit_summary_supported",
+            "Analysis.run() mixed-covariate mean/ratio",
+            "from_unit_summary",
+            "same per-unit mean, ratio, categorical and missing-history data",
+            "supported",
+            evidence=(
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+            ),
+        ),
+        _e(
+            "from_unit_panel_supported",
+            "Analysis.run() mixed-covariate mean/ratio",
+            "from_unit_panel",
+            "same per-unit mean, ratio, categorical and missing-history data",
+            "supported",
+            evidence=(
+                "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+            ),
+        ),
+        _e(
+            "from_definitions_supported",
+            "Analysis.run() mixed-covariate mean",
+            "from_definitions",
+            "per-unit pre-period covariate and categorical property",
+            "supported",
+            evidence=(
+                "tests/test_cuped_covariate_sources.py::test_cuped_linear_definition_and_restored_artifact_match_frame_journey",
+            ),
+        ),
+        _e(
+            "from_unit_day_artifact_supported",
+            "Analysis.run() mixed-covariate mean",
+            "from_unit_day_artifact",
+            "published covariate extensions are adopted with the unit-day artifact",
+            "supported",
+            evidence=(
+                "tests/test_cuped_covariate_sources.py::test_cuped_linear_definition_and_restored_artifact_match_frame_journey",
+            ),
+        ),
+        _e(
+            "from_moments_source_limited",
+            "Analysis.run() mixed-covariate mean",
+            "from_moments",
+            "aggregate moments contain no per-unit covariates",
+            "source_limited",
+            reason="the portable cube cannot supply per-unit covariates; use a unit source",
+            stage="construction",
+            evidence=(
+                "tests/test_cuped_covariate_sources.py::test_from_moments_refuses_cuped_linear_with_unit_source_route",
+            ),
+        ),
+        _e(
+            "switchback_source_limited",
+            "Analysis.run() mixed-covariate mean",
+            "from_switchback_panel",
+            "switchback contrasts use a different design and construction",
+            "source_limited",
+            reason="use an independent-unit randomized ingress",
+            stage="construction",
+            evidence=(
+                "tests/test_cuped_covariate_sources.py::test_switchback_refuses_cuped_linear_with_independent_unit_route",
+            ),
+        ),
+    ),
+)
+
+
 CONSUMER_CONTRACTS = (
     RATIO_DENOMINATOR_ADVISORY,
     FIXED_WINSOR_SEQUENTIAL,
@@ -572,6 +643,7 @@ CONSUMER_CONTRACTS = (
     IMPUTE_POOLED_MEAN,
     PLANNING_BASELINE,
     UNBOUNDED_RETENTION_SEQUENTIAL,
+    MIXED_CUPED_FIXED_HORIZON,
 )
 _SWITCHBACK_NO_SCHEDULE = (
     "SOURCE: a switchback contrast has no sequential construction, and from_switchback_panel "

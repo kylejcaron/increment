@@ -659,3 +659,51 @@ def build_switchback_case(cell: Cell, method: str, outcomes: Mapping[str, Outcom
         **_expectations(outcomes, ("from_switchback_panel",)),
         **_case_fields(cell, method),
     )
+
+
+def linear_cuped_frame_case(rows: list[dict[str, Any]], *, panel: bool, corrupt: bool = False):
+    """Build one declared mixed-CUPED mean/ratio role family on a dataframe ingress."""
+    from increment.frame import CupedCovariate
+
+    if corrupt:
+        rows = copy.deepcopy(rows)
+        rows[0]["pre_revenue"] = 999_999.0
+    covariates = (
+        CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+        CupedCovariate(name="country", kind="categorical"),
+        CupedCovariate(name="device", kind="categorical"),
+        CupedCovariate(name="new_user", kind="categorical"),
+    )
+    method = Method(name="linear", variance_reduction="cuped_linear")
+    metrics = (
+        MetricSpec(name="revenue", covariates=covariates, decision_method=method),
+        MetricSpec(
+            name="rpo",
+            type="ratio",
+            numerator="revenue",
+            denominator="orders",
+            preferred_direction="increase",
+            covariates=covariates,
+            decision_method=method,
+        ),
+        MetricSpec(name="signups", covariates=covariates, decision_method=method),
+    )
+    plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
+    if panel:
+        return Analysis.from_unit_panel(
+            md.frame(rows),
+            unit="user_id",
+            group="variant",
+            date="date",
+            metrics=metrics,
+            plan=plan,
+            control="control",
+        )
+    return Analysis.from_unit_summary(
+        md.frame(rows),
+        unit="user_id",
+        group="variant",
+        metrics=metrics,
+        plan=plan,
+        control="control",
+    )

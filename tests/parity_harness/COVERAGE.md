@@ -135,3 +135,9 @@ The mixed-catalog checkpoint scenario compares the modeled conversion's rows and
 - AIPW/DML adjustment, absolute margins and one-sided alternatives other than the margin are not enumerated.
 - Float tolerance is 1e-9 relative with a 1e-9 absolute floor; the matrix runs on DuckDB in memory. A divergence found only on PostgreSQL, Snowflake or BigQuery is outside this ticket (CONTRIBUTING, Backend verification).
 - Refusal before data load is not asserted per cell; the gate order is pinned by `tests/test_refusal_uniqueness.py` and `tests/test_source_capabilities.py`.
+
+## Mixed-covariate CUPED slice
+
+The separate `cuped_linear` slice currently enumerates mixed categorical and numeric covariates (including a numeric missing-history impute-indicator) for a mean, ratio and secondary mean, with primary/guardrail/secondary plan roles, through `from_unit_summary` and `from_unit_panel`. The paired dataframe test compares public emitted rows, estimate and interval fields, metadata scope and snapshots; a mutation check confirms that changing one panel covariate breaks parity. Exact fixed-horizon support refusals are checked for the M1 `support_region` and categorical `level_support` cases.
+
+The existing warehouse journey tests only a scalar-CUPED mean through `from_definitions` and `from_unit_day_artifact`; it does not yet establish mixed-covariate or ratio parity for those routes. Source-limited `from_moments` and different-design `from_switchback_panel` refusals are pinned before acquisition in `tests/test_cuped_covariate_sources.py`, not as runs in this slice. The separate interaction catalog records observed method composition status; it is not an exhaustive six-ingress parity proof.

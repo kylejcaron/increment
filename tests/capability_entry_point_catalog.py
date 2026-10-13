@@ -519,6 +519,18 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         from_switchback_panel=(_matrix("ratio-run-cuped-utc-error", SB),),
     ),
     _row(
+        "mixed-covariate-cuped-fixed-horizon",
+        "Mixed-covariate CUPED, fixed-horizon mean",
+        {
+            S: (_consumer("mixed-cuped-fixed-horizon", "from_unit_summary_supported"),),
+            P: (_consumer("mixed-cuped-fixed-horizon", "from_unit_panel_supported"),),
+            D: (_consumer("mixed-cuped-fixed-horizon", "from_definitions_supported"),),
+            A: (_consumer("mixed-cuped-fixed-horizon", "from_unit_day_artifact_supported"),),
+            M: (_consumer("mixed-cuped-fixed-horizon", "from_moments_source_limited"),),
+            SB: (_consumer("mixed-cuped-fixed-horizon", "switchback_source_limited"),),
+        },
+    ),
+    _row(
         "ratio-denominator-advisory-fixed-horizon",
         "Ratio denominator-precision advisory, fixed horizon",
         {

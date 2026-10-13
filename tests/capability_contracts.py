@@ -98,3 +98,67 @@ CONSTRUCTORS = (
     "from_switchback_panel",
     "from_moments",
 )
+
+InteractionStatus = Literal["supported", "source_limited", "unfinished", "mathematically_unsound"]
+
+
+@dataclass(frozen=True)
+class MethodInteraction:
+    """Measured compatibility of mixed-covariate CUPED with another method axis."""
+
+    name: str
+    status: InteractionStatus
+    code: str | None
+    evidence: str
+
+
+CUPED_LINEAR_INTERACTIONS = (
+    MethodInteraction(
+        "scalar_cuped",
+        "mathematically_unsound",
+        "frame.metric.scalar_and_set_covariates",
+        "tests/test_cuped_covariates.py::test_scalar_and_linear_cuped_declarations_are_mutually_exclusive",
+    ),
+    MethodInteraction(
+        "ratio",
+        "supported",
+        None,
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+    ),
+    MethodInteraction(
+        "clustering",
+        "mathematically_unsound",
+        "estimation.engine.cuped_linear_cluster",
+        "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+    ),
+    MethodInteraction(
+        "sequential",
+        "unfinished",
+        "estimation.engine.cuped_linear_sequential",
+        "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+    ),
+    MethodInteraction(
+        "winsorization",
+        "unfinished",
+        "estimation.engine.cuped_linear_winsorization",
+        "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+    ),
+    MethodInteraction(
+        "breakouts",
+        "supported",
+        None,
+        "tests/test_cuped_linear_acceptance.py::test_cuped_linear_breakout_emits_complete_per_cell_family_evidence",
+    ),
+    MethodInteraction(
+        "multiplicity_roles",
+        "supported",
+        None,
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles",
+    ),
+    MethodInteraction(
+        "triggered_population",
+        "supported",
+        None,
+        "tests/test_cuped_covariate_sources.py::test_triggered_covariates_remain_anchored_to_assignment",
+    ),
+)

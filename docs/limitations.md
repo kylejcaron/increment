@@ -54,6 +54,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [The switchback t reference is itself an approximation](#the-switchback-t-reference-is-itself-an-approximation) | approximation | Few switchback units, skewed outcomes, or assignment far from even. |
 | [Cluster references are qualified working approximations](#cluster-references-are-qualified-working-approximations) | approximation | Clusters are few, unbalanced, or skewed. |
 | [CUPED treats its adjustment coefficient as known](#cuped-treats-its-adjustment-coefficient-as-known) | approximation | Coefficient treated as known: interval narrower than a known-coefficient comparator in the tested design (equal allocation, one homogeneous slope); unequal allocation and arm-specific slopes untested. |
+| [Mixed-covariate linear CUPED is fixed-horizon approximate](#mixed-covariate-linear-cuped-is-fixed-horizon-approximate) | approximation | HC2 uncertainty and a Bell–McCaffrey Student-t reference are working approximations, not finite-sample coverage. |
 | [Conversion and retention follow count-based inference routes](#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused) | scope of guarantee | Reading a conversion or retention interval's route, size limits, or extreme alpha. |
 | [Signed effects require a suitable scale and reference](#signed-effects-require-a-suitable-scale-and-reference) | assumption | A control mean can be zero or negative. |
 | [A quantile's reported interval depends on the alpha you asked for](#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for) | scope of guarantee | Comparing quantile intervals across analyses that allocated different alpha. |
@@ -333,6 +334,24 @@ the reported standard error runs 0.94–1.01 times the empirical spread of the l
 coefficient substituted, not exact finite-sample inference, so the width ratio measures the
 residual-variance shrinkage from fitting theta and does not isolate the added sampling
 variance of the estimate. Unequal allocation and arm-specific slopes are outside that design.
+
+### Mixed-covariate linear CUPED is fixed-horizon approximate
+
+`cuped_linear` adjusts mean, conversion, and ratio metrics using a shared
+linear covariate fit, with HC2 uncertainty and a Bell–McCaffrey Student-t
+reference. Both the fitted slopes and pooled covariate anchor contribute to
+the uncertainty calculation. This is a fixed-horizon approximation: it does
+not provide finite-sample coverage, and it does not support sequential
+stopping. A covariate can improve or worsen precision; fit support is not a
+promise of a narrower interval.
+
+The estimator is intentionally distinct from scalar CUPED, whose adjustment
+and Welch–Satterthwaite reference are unchanged. Do not transfer evidence
+between the two methods. The finite-sample behavior of mixed-covariate CUPED
+is not established by the derivation or the runtime's M1 support region;
+campaign status is tracked separately in
+[External validation coverage](validation.md#mixed-covariate-linear-cuped).
+
 
 ### Percentile winsorization needs the cutoff above the zero atom, and its size route is provisional
 

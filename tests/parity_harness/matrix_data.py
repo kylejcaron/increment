@@ -330,3 +330,28 @@ def panel_rows(
 
 def frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
+
+
+def linear_cuped_rows(*, n_per_arm: int = 60, level_support_failure: bool = False):
+    """Matched per-unit mean/ratio fixture with mixed covariates and missing history."""
+    rows = []
+    for arm_index, arm in enumerate(("control", "treatment")):
+        for i in range(n_per_arm):
+            country = ("north", "south", "west")[i % 3]
+            if level_support_failure and arm == "treatment" and i == n_per_arm - 1:
+                country = "singleton"
+            rows.append(
+                {
+                    "user_id": f"{arm[0]}{i}",
+                    "variant": arm,
+                    "date": dt.date(2025, 1, 10),
+                    "revenue": float(5 + i % 5 + 0.04 * i + 1.5 * arm_index),
+                    "orders": float(1 + i % 4),
+                    "signups": float((i * 7 + arm_index) % 9),
+                    "pre_revenue": None if i % 7 == 0 else float(10 + i % 11),
+                    "country": country,
+                    "device": ("mobile", "desktop")[i % 2],
+                    "new_user": "new" if i % 4 == 0 else "existing",
+                }
+            )
+    return rows

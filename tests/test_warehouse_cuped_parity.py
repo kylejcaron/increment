@@ -62,3 +62,81 @@ def test_ratio_cuped_binding_without_a_pre_period_refuses_by_name():
 
 def test_day_axis_ratio_cuped_matches_total_and_both_readers_agree(duck):
     check_day_axis_parity(duck, "duckdb", "events")
+
+
+def test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles():
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.parity_harness.comparison import nested_close
+
+    rows = matrix_data.linear_cuped_rows()
+    summary = matrix_cases.linear_cuped_frame_case(rows, panel=False)
+    panel = matrix_cases.linear_cuped_frame_case(rows, panel=True)
+    try:
+        left, right = summary.run(), panel.run()
+        assert {(r.metric, r.group_id, r.method, r.method_role) for r in left} == {
+            (r.metric, r.group_id, r.method, r.method_role) for r in right
+        }
+        assert {r.method_role for r in left} == {"decision"}
+        assert {r.metric for r in left} == {"revenue", "rpo", "signups"}
+
+        def public_rows(result):
+            fields = []
+            for row in result:
+                dumped = row.model_dump(mode="json")
+                dumped.pop("source_snapshot_id", None)
+                dumped.pop("source_id", None)
+                fields.append(dumped)
+            return sorted(fields, key=lambda row: (row["metric"], row["group_id"], row["method"]))
+
+        assert nested_close(public_rows(left), public_rows(right))
+        assert left.metadata.scope.cells and right.metadata.scope.cells
+        assert left.metadata.scope.snapshot_id and right.metadata.scope.snapshot_id
+    finally:
+        summary.close()
+        panel.close()
+
+
+def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.parity_harness.comparison import nested_close
+
+    rows = matrix_data.linear_cuped_rows()
+    summary = matrix_cases.linear_cuped_frame_case(rows, panel=False)
+    panel = matrix_cases.linear_cuped_frame_case(rows, panel=True, corrupt=True)
+    try:
+        left = next(
+            row for row in summary.run() if row.metric == "revenue" and row.group_id == "treatment"
+        )
+        right = next(
+            row for row in panel.run() if row.metric == "revenue" and row.group_id == "treatment"
+        )
+        assert not nested_close(left.model_dump(mode="json"), right.model_dump(mode="json"))
+    finally:
+        summary.close()
+        panel.close()
+
+
+@pytest.mark.parametrize(
+    ("rows", "code"),
+    [
+        ({"n_per_arm": 20}, "estimation.cuped_linear.support_region"),
+        (
+            {"n_per_arm": 60, "level_support_failure": True},
+            "estimation.cuped_linear.level_support",
+        ),
+    ],
+)
+def test_mixed_cuped_support_refusals_are_exact(rows, code):
+    from tests.parity_harness import matrix_cases, matrix_data
+
+    units = matrix_data.linear_cuped_rows(**rows)
+    for panel in (False, True):
+        analysis = matrix_cases.linear_cuped_frame_case(units, panel=panel)
+        try:
+            results = analysis.run()
+            assert any(row.sampling_reason_code == code for row in results), [
+                (row.metric, row.sampling_reason_code, row.sampling_reason_context)
+                for row in results
+            ]
+        finally:
+            analysis.close()
