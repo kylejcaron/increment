@@ -196,6 +196,7 @@ def test_declared_law_round_trips_and_reports_marginal_exposure():
     assert restored == assignment
     assert hash(restored) == hash(assignment)
     assert assignment.periods_per_cycle == 3
+    assert isinstance(assignment.sequence, DeclaredSequenceOrder)
     assert assignment.sequence.treatment_probabilities == pytest.approx((0.6, 0.6, 0.4))
     assert assignment.sequence.expected_treated_share == pytest.approx(1.6 / 3)
     # Paired declarations keep their existing serialized shape.

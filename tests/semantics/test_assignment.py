@@ -59,7 +59,7 @@ def test_switchback_assignment_rejects_sequence_and_window_violations():
         SwitchbackWindow(washout_steps=0, observation_steps=0)
     with pytest.raises(ValidationError):
         SwitchbackAssignment(
-            periods_per_cycle=3,  # ty: ignore[invalid-argument-type]
+            periods_per_cycle=3,
             sequence=IndependentBernoulliOrder(),
             window=SwitchbackWindow(washout_steps=0, observation_steps=1),
         )

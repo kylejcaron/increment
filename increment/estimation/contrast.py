@@ -56,6 +56,7 @@ from increment.estimation.contrast_results import (
 )
 from increment.estimation.decision_types import ContrastDecisionProcedure, FixedInference, NoFamily
 from increment.estimation.results import Estimate
+from increment.semantics.assignment import paired_sequence
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
 
 if TYPE_CHECKING:
@@ -630,7 +631,7 @@ def _envelope_result(
         or stats.metric != envelope.metric
         or stats.control_group != envelope.control_group
         or stats.treatment_group != envelope.treatment_group
-        or stats.probability_ct != envelope.assignment.sequence.probability_ct
+        or stats.probability_ct != paired_sequence(envelope.assignment).probability_ct
         or stats.washout_steps != window.washout_steps
         or stats.observation_steps != window.observation_steps
         or stats.carryover_order != window.carryover_order
@@ -662,6 +663,8 @@ def _envelope_result(
         envelope, n=stats.n_units, alpha=procedure.alpha, alternative=procedure.alternative
     )
     x = Fraction(*stats.exact_delta_total) / stats.n_units
+    # The envelope identity check above fixed a paired law, so probability_ct is set.
+    assert stats.probability_ct is not None
     p = Fraction(stats.probability_ct)
     w_ct, w_tc = 1 / (2 * p), 1 / (2 * (1 - p))
     slope = (stats.ct_cycles * w_ct + stats.tc_cycles * w_tc) / stats.n_cycles

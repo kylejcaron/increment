@@ -23,6 +23,7 @@ from pydantic import (
 from increment._literals import Alternative, PreferredDirection, Role
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.results import Estimate
+from increment.semantics.assignment import paired_sequence
 from increment.semantics.unit_cycle import (
     ProspectiveAssumptionProvenance,
     UnitCycleReference,
@@ -404,7 +405,7 @@ class ContrastResult(CodedModel, BaseModel):
                 and self.aggregation == envelope.aggregation
                 and self.estimand == envelope.estimand
                 and self.n_cycles == self.n_units * envelope.cycles_per_unit
-                and self.probability_ct == envelope.assignment.sequence.probability_ct
+                and self.probability_ct == paired_sequence(envelope.assignment).probability_ct
                 and self.washout_steps == envelope.assignment.window.washout_steps
                 and self.observation_steps == envelope.assignment.window.observation_steps
                 and self.carryover_order == envelope.assignment.window.carryover_order

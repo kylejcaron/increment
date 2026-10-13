@@ -111,7 +111,7 @@ data. What differs is the approximation each family layers on to get there:
 | Clustered unadjusted arm lift | Joint additive/control covariance, Fieller relative set; separate additive uncertainty |
 | Sequential | Separate registered observation-model contract; fixed-horizon approximations do not establish anytime validity |
 | Quantiles | Inversion of an order-statistic bracket (Woodruff), not a delta method |
-| Switchback | Independent unit-cycle orders: default `UnitCycleTApproximation` (sample variance, at least two units, `dof = n_units - 1`); a valid prospective `UnitCycleVarianceEnvelope` is a separate stronger route supporting one unit. Shared schedules: block-t on at least two blocks |
+| Switchback | Independent unit-cycle orders: default `UnitCycleTApproximation` (sample variance, at least two units, `dof = n_units - 1`); a valid prospective `UnitCycleVarianceEnvelope` is a separate stronger route supporting one unit. Shared schedules: block-t on at least two blocks. Declared sequence laws use the same unit-t or block-t reference for their grain and support no envelope |
 | Observational adjusted methods | Influence-function sandwich |
 
 Estimating the variance does not by itself forfeit finite-sample validity — under
@@ -1306,6 +1306,12 @@ Encoding and per-level balance diagnostics do not establish overlap.
 Definitions and artifact ingress preserve their default missing-value refusal
 for numeric and categorical nulls alike. YAML rejects `missing`/`gate` tuning;
 other policies use a full `Observational` design on the two dataframe routes.
+
+Pilot planning is not implemented for declared multi-period sequence laws
+(`DeclaredSequenceOrder`): `planning_baseline` refuses with
+`source.frame.switchback.assignment` (reason `declared_sequence_planning_unfinished`) and
+`SwitchbackBaseline` refuses such an assignment, because the paired-cycle planning
+model would not match the declared-law estimator.
 
 ### DML reports a partially-linear slope, not an average treatment effect
 

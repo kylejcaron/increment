@@ -70,6 +70,7 @@ from increment.semantics.assignment import (
     DeclaredSequenceOrder,
     SwitchbackAssignment,
     SwitchbackWindow,
+    paired_sequence,
 )
 from increment.semantics.design import Randomized
 from increment.semantics.unit_cycle import (
@@ -1832,7 +1833,7 @@ def from_switchback_panel(  # noqa: PLR0915
         tc_cycles = len(cycles) - ct_cycles
         n_blocks = len(cycles)
 
-    p_ct = assignment.sequence.probability_ct
+    p_ct = paired_sequence(assignment).probability_ct
     drawn = ct_cycles + tc_cycles
     if is_shared:
         from scipy.stats import binomtest
@@ -1904,8 +1905,8 @@ def from_switchback_panel(  # noqa: PLR0915
             specs=specs,
             control=control,
             treatment=treatment,
-            probability_ct=assignment.sequence.probability_ct,
-            randomization_law=assignment.sequence.scheme,
+            probability_ct=paired_sequence(assignment).probability_ct,
+            randomization_law=paired_sequence(assignment).scheme,
             independence_grain=assignment.sequence.independence_unit,
             carryover_order=window.carryover_order,
             observation_steps=window.observation_steps,
@@ -1924,8 +1925,8 @@ def from_switchback_panel(  # noqa: PLR0915
             specs=specs,
             control=control,
             treatment=treatment,
-            probability_ct=assignment.sequence.probability_ct,
-            randomization_law=assignment.sequence.scheme,
+            probability_ct=paired_sequence(assignment).probability_ct,
+            randomization_law=paired_sequence(assignment).scheme,
             independence_grain=assignment.sequence.independence_unit,
             carryover_order=window.carryover_order,
             observation_steps=window.observation_steps,

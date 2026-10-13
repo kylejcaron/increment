@@ -338,6 +338,8 @@ added metrics when they are passed in `metrics=`.
 
 ::: increment.SwitchbackAssignment
 
+::: increment.DeclaredSequenceOrder
+
 ::: increment.ParallelStudyEnvelope
 
 ::: increment.SwitchbackStudyEnvelope

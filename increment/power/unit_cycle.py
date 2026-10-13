@@ -52,6 +52,7 @@ from increment.power._search import (
     float_ordinal,
     require_reason_when_null,
 )
+from increment.semantics.assignment import paired_sequence
 from increment.semantics.unit_cycle import (
     UnitCycleCycleLaw,
     UnitCycleInnovation,
@@ -1297,7 +1298,7 @@ def _law(law: UnitCycleJointLaw) -> UnitCycleJointLaw:
 
 
 def _moments(law: UnitCycleJointLaw) -> _Moments:
-    p = Fraction(law.assignment.sequence.probability_ct)
+    p = Fraction(paired_sequence(law.assignment).probability_ct)
     q, cycles = 1 - p, len(law.types[0].cycles)
     wc, wt = 1 / (2 * p), 1 / (2 * q)
     total = sum((Fraction(t.weight) for t in law.types), Fraction())
@@ -1587,7 +1588,7 @@ def unit_cycle_power_lower_bound(
         alpha=procedure.alpha,
         alternative=procedure.alternative,
     )
-    p = Fraction(envelope.assignment.sequence.probability_ct)
+    p = Fraction(paired_sequence(envelope.assignment).probability_ct)
     distance = _sign(procedure) * (Fraction(effect_delta) - Fraction(procedure.null_abs))
     rejection = _RejectionRule.from_design(
         envelope, procedure, n=n, refusal=cutoff.refusal_probability_upper
@@ -1823,7 +1824,7 @@ def _sampler(law: UnitCycleJointLaw) -> _Sampler:
     denominator = math.lcm(*(x.denominator for x in weights))
     integers = tuple(x.numerator * (denominator // x.denominator) for x in weights)
     mean = _moments(law).mean
-    p = Fraction(law.assignment.sequence.probability_ct)
+    p = Fraction(paired_sequence(law.assignment).probability_ct)
     order_weights = (Fraction(1, 2) / (1 - p), Fraction(1, 2) / p)
 
     def choice(cycle: UnitCycleCycleLaw, *, order: bool) -> _Choice:
@@ -2103,7 +2104,7 @@ def unit_cycle_model_power(
     else:
         _fixed_band(repetitions, mc_error)
     rule = unit_cycle_admission_rule(
-        n * envelope.cycles_per_unit, law.assignment.sequence.probability_ct
+        n * envelope.cycles_per_unit, paired_sequence(law.assignment).probability_ct
     )
     rejection = _RejectionRule.from_design(
         envelope, procedure, n=n, refusal=cutoff.refusal_probability_upper
@@ -2223,7 +2224,7 @@ def _availability_loss(
     cutoff: float,
 ) -> Fraction:
     """Envelope-only upper bound on sufficient-state reporting/summary failure."""
-    p = Fraction(envelope.assignment.sequence.probability_ct)
+    p = Fraction(paired_sequence(envelope.assignment).probability_ct)
     slopes = (1 / (2 * max(p, 1 - p)), 1 / (2 * min(p, 1 - p)))
     variance = Fraction(envelope.residual_variance_upper)
     delta = Fraction(effect)
@@ -2422,7 +2423,7 @@ class _Draw:
         try:
             unit_cycle_admission_outcome(
                 self.state.n * len(self.law.types[0].cycles),
-                self.law.assignment.sequence.probability_ct,
+                paired_sequence(self.law.assignment).probability_ct,
                 self.state.ct,
             )
         except InvalidRequestError as exc:
@@ -2571,7 +2572,7 @@ def unit_cycle_model_mde(
         envelope, procedure, n=n, refusal=cutoff.refusal_probability_upper
     )
     rule = unit_cycle_admission_rule(
-        n * envelope.cycles_per_unit, law.assignment.sequence.probability_ct
+        n * envelope.cycles_per_unit, paired_sequence(law.assignment).probability_ct
     )
     candidate_counts = [_Counts(0, 0, Counter()) for _ in grid]
     null_counts = _Counts(0, 0, Counter())
@@ -2693,7 +2694,7 @@ def _prepare_sizes(
                 alternative=procedure.alternative,
             )
             rule = unit_cycle_admission_rule(
-                n * envelope.cycles_per_unit, envelope.assignment.sequence.probability_ct
+                n * envelope.cycles_per_unit, paired_sequence(envelope.assignment).probability_ct
             )
         except InvalidRequestError as exc:
             connection.execute("INSERT INTO sizes (n, reason) VALUES (?, ?)", (n, exc.code))

@@ -18,6 +18,7 @@ from scipy.stats import binomtest
 
 from increment._literals import ALTERNATIVE_VALUES
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
+from increment.semantics.assignment import paired_sequence
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
 
 _REFUSALS = {
@@ -250,7 +251,7 @@ def unit_cycle_envelope_cutoff(
     if alternative not in ALTERNATIVE_VALUES:
         _refuse("unit_cycle.invalid_design", reason="unsupported alternative")
     rule = unit_cycle_admission_rule(
-        n * envelope.cycles_per_unit, envelope.assignment.sequence.probability_ct
+        n * envelope.cycles_per_unit, paired_sequence(envelope.assignment).probability_ct
     )
     remaining = Fraction(alpha) - Fraction(rule.refusal_probability_upper)
     if remaining <= 0:

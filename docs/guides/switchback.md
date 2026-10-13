@@ -2,7 +2,9 @@
 
 A switchback is a fixed-horizon randomized design for outcomes with time-varying
 assignment: each two-period cycle has a CT or TC order, drawn independently
-per unit-cycle or once per shared block for a fixed roster. Successive cycles
+per unit-cycle or once per shared block for a fixed roster. Cycles of more
+than two periods, or with unequal treatment exposure, declare their sequence
+law instead ([declared multi-period sequence laws](#declared-multi-period-sequence-laws)). Successive cycles
 may draw the same order. Use
 `Analysis.from_switchback_panel` with one row per unit × cycle × period × step
 and a declared `SwitchbackAssignment`, randomized identification, washout and
@@ -147,6 +149,100 @@ Two-sided MDE planning retains the signed additive effect:
 `preferred_direction="decrease"` searches below the null within any declared
 `effect_bounds`; `"increase"`, `"neutral"`, or an unspecified direction searches
 above it. See [switchback power planning](power-analysis.md#switchback-contrasts).
+
+## Declared multi-period sequence laws
+
+Schedules that are not paired CT/TC cycles declare their actual law with
+`SwitchbackAssignment.declared`. Each key is one cycle's treatment sequence,
+one `"C"` or `"T"` per period, and each value is its draw probability.
+`independence_unit="unit_cycle"` draws one sequence per unit-cycle, so units
+are the replicates; `"shared_block"` draws one sequence per cycle for a fixed,
+complete roster, so blocks are the replicates. Unequal treatment exposure is
+part of the law: `{"CCT": 0.4, "TTC": 0.6}` treats periods 0, 1 and 2 with
+probability 0.6, 0.6 and 0.4.
+
+Each period `k` is weighted by its declared marginal treatment probability
+`pi_k`, never by realized counts. A cycle contributes
+`(1/K) * sum_k [Z_k Y_k / pi_k - (1 - Z_k) Y_k / (1 - pi_k)]`, which is unbiased
+under the declared law for the cycle's period-averaged retained-window
+difference, the same estimand as the paired laws. A two-period declaration
+`{"CT": p, "TC": 1 - p}` reproduces the paired `IndependentBernoulliOrder` or
+`SharedScheduleOrder` result. Replicate contributions then use the unit-t or
+block-t reference exactly as the paired laws do. The `Randomized` allocation
+must equal the law's expected control/treatment period exposure
+(`assignment.sequence.expected_treated_share`).
+
+A law is refused when it is not randomized: a single sequence (including fixed
+alternation), or any period that every declared sequence assigns to the same
+arm. At construction, a realized sequence outside the declared support, a
+period that never received one arm across the realized draws, or realized
+counts that a Bonferroni-combined exact binomial test rejects at `1e-6` are
+schedule refusals. Planning, variance envelopes, ratio metrics and CUPED are
+refused for declared laws; see [deliberate refusals](#deliberate-refusals).
+
+In this hand-computed example every period is treated with probability 2/3, so
+treated periods carry weight `1/(3 * 2/3) = 1/2` and the control period carries
+`-1/(3 * 1/3) = -1`. Calendar shifts of 0, 2 and 4 by period and a true effect of 3
+give unit contributions 6, 3 and 0: the trend biases each unit, not their
+expectation. The estimate is 3 with `SE=sqrt(3)` on two degrees of freedom.
+
+```python
+import math
+
+import pandas as pd
+
+from increment import Analysis, Randomized, SwitchbackAssignment, SwitchbackWindow
+
+law = {"CTT": 1 / 3, "TCT": 1 / 3, "TTC": 1 / 3}
+assignment = SwitchbackAssignment.declared(
+    law,
+    independence_unit="unit_cycle",
+    window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+)
+shift = [0, 2, 4]
+rows = []
+for unit, sequence in [("a", "CTT"), ("b", "TCT"), ("c", "TTC")]:
+    for period, letter in enumerate(sequence):
+        for step in range(2):
+            rows.append(
+                {
+                    "store_id": unit,
+                    "cycle": 0,
+                    "period": period,
+                    "step": step,
+                    "arm": "treatment" if letter == "T" else "control",
+                    "orders": 10 + shift[period] + (3 if letter == "T" else 0),
+                }
+            )
+share = assignment.sequence.expected_treated_share
+analysis = Analysis.from_switchback_panel(
+    pd.DataFrame(rows),
+    unit="store_id",
+    cycle="cycle",
+    period="period",
+    step="step",
+    group="arm",
+    metrics={"orders": "mean"},
+    identification=Randomized(
+        control_group="control",
+        allocation={"control": 1 - share, "treatment": share},
+    ),
+    assignment=assignment,
+)
+result = analysis.run()[0]
+assert math.isclose(result.estimate.value, 3.0)
+assert math.isclose(result.standard_error, math.sqrt(3))
+assert result.dof == 2
+assert result.randomization_law == "independent_declared_sequence"
+diagnostic = analysis.assignment_diagnostic()
+assert dict(diagnostic.sequence_counts) == {"CTT": 1, "TCT": 1, "TTC": 1}
+assert math.isclose(diagnostic.realized_treated_share, 2 / 3)
+```
+
+Results report the law in `sequence_probabilities` with `probability_ct=None`
+and null CT/TC counts. The diagnostic separates the declared law
+(`sequence_probabilities`, `treatment_probabilities`) from one realization of
+it (`sequence_counts`, `realized_treated_share`).
 
 ## Randomizing at a market or geo grain
 
@@ -326,12 +422,12 @@ Switchback construction failures expose these stable codes:
 
 | Code | Refused condition |
 |---|---|
-| `source.frame.switchback.assignment` | The assignment is not a two-period `SwitchbackAssignment` with a declared `IndependentBernoulliOrder` or `SharedScheduleOrder` sequence. |
-| `source.frame.switchback.identification` | Identification is not `Randomized`, does not contain exactly one control and one treatment, or has invalid allocation weights. A non-50/50 allocation raises this same code when a `SwitchbackStudyEnvelope` is constructed. |
+| `source.frame.switchback.assignment` | The assignment is not a `SwitchbackAssignment` whose period count matches its `IndependentBernoulliOrder`, `SharedScheduleOrder` (two periods) or `DeclaredSequenceOrder` (its sequence length) law, or pilot planning (`planning_baseline`) was requested for a declared sequence law (reason `declared_sequence_planning_unfinished`). |
+| `source.frame.switchback.identification` | Identification is not `Randomized`, does not contain exactly one control and one treatment, or has invalid allocation weights. Paired laws require 50/50; a declared sequence law requires the weights to equal its expected period exposure (reason `allocation_exposure_mismatch`). Either violation raises this same code when a `SwitchbackStudyEnvelope` is constructed. |
 | `source.frame.switchback.metric` | A metric type or option is outside mean/conversion switchback support (ratio, quantile, retention, winsorization, non-default missingness, CUPED, method/prior declarations, or a window option). |
 | `source.frame.switchback.columns` | A required column is missing, or the group labels are empty/non-string. |
-| `source.frame.switchback.domain` | Unit labels or cycle/period/step domains are invalid, including non-contiguous cycles or periods outside `{0, 1}`. |
-| `source.frame.switchback.schedule` | Schedule cells are missing/duplicated, steps are incomplete, a unit-cycle does not contain one control and one treatment period, a shared schedule's realized order disagrees across the roster within a block, the realized CT/TC split is implausible under the declared `probability_ct`, or a shared schedule realizes only one cycle order across all declared blocks (a positivity failure, even when the split is plausible). |
+| `source.frame.switchback.domain` | Unit labels or cycle/period/step domains are invalid, including non-contiguous cycles or periods outside `0..K-1` for the declared period count `K` (two for paired laws). |
+| `source.frame.switchback.schedule` | Schedule cells are missing/duplicated, steps are incomplete, a unit-cycle does not contain one control and one treatment period, a shared schedule's realized order disagrees across the roster within a block, the realized CT/TC split is implausible under the declared `probability_ct`, or a shared schedule realizes only one cycle order across all declared blocks (a positivity failure, even when the split is plausible). Declared sequence laws refuse a realized sequence outside the declared support (`undeclared_sequence`), a shared block whose roster disagrees (`shared_block_sequence_mismatch`), a period that never received one arm across the realized draws (`insufficient_exposure_support`), and realized counts incompatible with the declared probabilities (`implausible_realized_sequences`). |
 | `source.frame.switchback.missingness` | A required schedule or metric value is null. |
 | `source.frame.switchback.numeric` | A metric, aggregate, inverse-probability contribution, or reduction is non-finite or overflows. |
 | `source.frame.switchback.units` | Fewer than two units are present for the default unit-cycle t approximation or pilot variance. A declared variance envelope and a shared schedule permit a one-unit roster. |

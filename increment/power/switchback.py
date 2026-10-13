@@ -41,7 +41,7 @@ from increment.power._search import (
     float_ordinal,
     require_reason_when_null,
 )
-from increment.semantics.assignment import SwitchbackAssignment
+from increment.semantics.assignment import SwitchbackAssignment, paired_sequence
 
 UnavailableReason = Literal[
     "not_requested",
@@ -260,7 +260,8 @@ class SwitchbackBaseline(CodedModel, BaseModel):
 
     @property
     def randomization_law(self) -> RandomizationLaw:
-        return self.assignment.sequence.scheme
+        # Declared sequence laws are refused at construction; this is paired-only.
+        return paired_sequence(self.assignment).scheme
 
     @property
     def independence_grain(self) -> IndependenceGrain:
@@ -480,7 +481,7 @@ def _admission_probability(n: int, baseline: SwitchbackBaseline) -> float:
     """
     if baseline.planning_grain != "shared_block":
         return 1.0
-    p = baseline.assignment.sequence.probability_ct
+    p = paired_sequence(baseline.assignment).probability_ct
     return 1.0 - p**n - (1.0 - p) ** n
 
 

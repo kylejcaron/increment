@@ -115,12 +115,13 @@ class DeclaredSequenceOrder(_AssignmentModel):
     @field_validator("sequences", mode="before")
     @classmethod
     def _canonical_sequences(cls, value: object) -> tuple[tuple[str, float], ...]:
+        items: list[tuple[object, object]]
         if isinstance(value, Mapping):
             items = list(value.items())
         elif isinstance(value, (tuple, list)) and all(
             isinstance(item, (tuple, list)) and len(item) == 2 for item in value
         ):
-            items = [tuple(item) for item in value]
+            items = [(item[0], item[1]) for item in value if isinstance(item, (tuple, list))]
         else:
             _sequence_law_error(
                 "sequences must map each 'C'/'T' sequence string to its probability",
@@ -144,11 +145,14 @@ class DeclaredSequenceOrder(_AssignmentModel):
                 _sequence_law_error(
                     f"sequence {key!r} is declared twice", reason="duplicate_sequence"
                 )
+            if not isinstance(key, str):
+                raise AssertionError  # pragma: no cover - refused above
             if isinstance(probability, bool) or not isinstance(probability, (int, float)):
                 _sequence_law_error(
                     f"probability for sequence {key!r} must be a number",
                     reason="probability_type",
                 )
+                raise AssertionError  # pragma: no cover - refused above
             probability = float(probability)
             if not math.isfinite(probability) or not 0.0 < probability <= 1.0:
                 _sequence_law_error(
@@ -336,9 +340,29 @@ class SwitchbackAssignment(_AssignmentModel):
 Assignment = Annotated[ParallelAssignment | SwitchbackAssignment, Field(discriminator="kind")]
 
 
+def paired_sequence(
+    assignment: SwitchbackAssignment,
+) -> IndependentBernoulliOrder | SharedScheduleOrder:
+    """The paired CT/TC law of ``assignment``, refusing a declared sequence law.
+
+    Paired-only consumers (unit-cycle envelopes and power, paired planning)
+    are guarded before they run; this narrows their type and keeps a coded
+    refusal if a declared law ever reaches them.
+    """
+    sequence = assignment.sequence
+    if isinstance(sequence, DeclaredSequenceOrder):
+        _sequence_law_error(
+            "this operation supports paired CT/TC switchback laws only",
+            reason="paired_law_required",
+        )
+        raise AssertionError  # pragma: no cover - _sequence_law_error never returns
+    return sequence
+
+
 __all__ = [
     "Assignment",
     "DeclaredSequenceOrder",
+    "paired_sequence",
     "IndependentBernoulliOrder",
     "ParallelAssignment",
     "SharedScheduleOrder",
