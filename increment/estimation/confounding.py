@@ -10,7 +10,8 @@ Proposition A.8 and §5.2; VanderWeele & Ding (2017), Ann Intern Med
 Assumptions: consistency, positivity and correct nuisance models in the
 reported population, exchangeability given (C, U), and strength maxima
 over strata and every cohort arm pair, in both directions. This addresses
-confounding, not selection or measurement bias; binary outcome is attested.
+confounding, not selection or measurement bias. The binary outcome is
+read from the row's declared metric type, never asserted by the caller.
 """
 
 from __future__ import annotations
@@ -29,10 +30,14 @@ from increment.errors import (
 )
 from increment.estimation.results import LiftEstimate
 
+#: Declared metric types whose per-unit outcome is 0/1, so a relative lift is a risk ratio.
+BinaryMetricType = Literal["conversion", "retention"]
+
 _REFUSALS = refusals(
     UnsupportedRequestError,
     {
-        "sensitivity.confounding.outcome_unsupported": "Confounding sensitivity requires a binary outcome, attested by the caller; outcome={outcome!r} is not supported.",
+        "sensitivity.confounding.metric_type_unavailable": "Confounding sensitivity requires the row's declared metric type, and metric={metric!r} carries none. Re-run the analysis with a version that records metric type.",
+        "sensitivity.confounding.outcome_unsupported": "Confounding sensitivity requires a binary outcome (a conversion or retention metric); metric_type={metric_type!r} is not supported.",
         "sensitivity.confounding.estimand_unsupported": "Confounding sensitivity does not cover estimand={estimand!r} from method={method!r}. Use observational IPTW or AIPW for a marginal risk ratio; randomized contrasts do not require an omitted-confounder bound.",
         "sensitivity.confounding.scale_unsupported": "Confounding sensitivity requires value_scale='relative'; value_scale={value_scale!r} is not supported. Recompute the estimate on the relative scale.",
         "sensitivity.confounding.sequential_unsupported": "Confounding sensitivity requires fixed-horizon inference; inference={inference!r} is not supported. Use a fixed-horizon observational estimate.",
@@ -60,7 +65,8 @@ _ASSUMPTIONS = (
     "The marginal squared bounding factor is conservative: a factor at or above the "
     "tipping point means confounding could explain the effect, not that it does.",
     "Only confounding is addressed, not selection or measurement bias.",
-    "The binary outcome is a caller attestation, not a verified property of the estimate.",
+    "The binary outcome is the row's declared metric type (conversion or retention), "
+    "not a property verified from the data.",
 )
 
 
@@ -81,7 +87,7 @@ class ConfoundingSensitivity(CodedModel, BaseModel):
     population: str | None
     analysis_population: Literal["assigned", "triggered"]
     source_snapshot_id: str | None
-    outcome_attested: Literal["binary"]
+    metric_type: BinaryMetricType
     bound: Literal["marginal_squared_bounding_factor"]
     observed_risk_ratio: float = Field(gt=0.0, allow_inf_nan=False)
     interval_lower_risk_ratio: float | None = Field(allow_inf_nan=False)
@@ -173,22 +179,19 @@ def _interval_bias_factor(
             if limit >= threshold_risk_ratio
             else tipping_bias_factor(limit, threshold_risk_ratio)
         )
-    return 1.0 if (lift.lb is not None and lift.ub is not None) or all_real else None
+    return 1.0 if lift.lb is not None or lift.ub is not None or all_real else None
 
 
 def confounding_sensitivity(
     estimate: LiftEstimate,
     *,
-    outcome: Literal["binary"],
     threshold_risk_ratio: float = 1.0,
 ) -> ConfoundingSensitivity:
     """Transform an observational relative row without altering it.
 
-    ``outcome='binary'`` attests to an outcome type the row cannot verify.
-    Method names are user labels; eligibility follows the persisted estimand.
+    Method names are user labels; eligibility follows the persisted estimand
+    and the row's declared metric type.
     """
-    if outcome != "binary":
-        _raise("sensitivity.confounding.outcome_unsupported", outcome=outcome)
     if not isinstance(estimate, LiftEstimate):
         _raise(
             "sensitivity.confounding.risk_ratio_unavailable",
@@ -200,6 +203,11 @@ def confounding_sensitivity(
             estimand=estimate.estimand,
             method=estimate.method,
         )
+    metric_type = estimate.metric_type
+    if metric_type is None:
+        _raise("sensitivity.confounding.metric_type_unavailable", metric=estimate.metric)
+    if metric_type != "conversion" and metric_type != "retention":
+        _raise("sensitivity.confounding.outcome_unsupported", metric_type=metric_type)
     if estimate.value_scale != "relative":
         _raise("sensitivity.confounding.scale_unsupported", value_scale=estimate.value_scale)
     if estimate.inference != "fixed":
@@ -239,7 +247,7 @@ def confounding_sensitivity(
         population=estimate.population,
         analysis_population=estimate.analysis_population,
         source_snapshot_id=estimate.source_snapshot_id,
-        outcome_attested="binary",
+        metric_type=metric_type,
         bound="marginal_squared_bounding_factor",
         observed_risk_ratio=observed_risk_ratio,
         interval_lower_risk_ratio=None if lift.lb is None else 1.0 + lift.lb,

@@ -903,8 +903,9 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
 
 ## How strong would an omitted confounder need to be?
 
-For a fixed-horizon IPTW/AIPW conversion RR, apply `confounding_sensitivity`.
-`outcome="binary"` is your attestation, not a property verified from the row.
+For a fixed-horizon IPTW/AIPW conversion RR, apply `confounding_sensitivity`. Eligibility
+comes from the row's declared `metric_type`: `conversion` or `retention` rows are accepted,
+other types are refused, and a row carrying no metric type gives `metric_type_unavailable`.
 
 ```python
 import numpy as np
@@ -938,9 +939,7 @@ try:
         decision_method=inc.Method(name="iptw"), sensitivity_methods=[inc.Method(name="aipw")]
     )
     for conversion_row in conversion_rows:
-        sensitivity = inc.confounding_sensitivity(
-            conversion_row, outcome="binary", threshold_risk_ratio=1.05
-        )
+        sensitivity = inc.confounding_sensitivity(conversion_row, threshold_risk_ratio=1.05)
         print(sensitivity.model_dump())
 finally:
     conversion_analysis.close()
@@ -950,8 +949,9 @@ The threshold above is a 5% increase, not the no-effect RR of one.
 `bias_factor_point` is the smallest B that could move the causal RR to that threshold;
 `e_value_point` is the equal strength m with B(m, m) = m²/(2m − 1).
 Interval fields use the displayed threshold-side limit at `interval_level`, even if the directional
-test set is `all_real`; one means a crossing or `all_real` without that limit.
-Unavailable/empty sets or other missing limits give null and `interval_limit_unavailable`.
+test set is `all_real`; one means a crossing, a point at the threshold with any displayed limit,
+or `all_real` without that limit. Unavailable/empty sets or other missing limits give null and
+`interval_limit_unavailable`.
 
 This is a **conservative marginal** bound: RR_true is between RR_obs/B² and
 RR_obs·B², not the usual conditional E-value applied directly to RR_obs.
@@ -981,10 +981,10 @@ The accepted estimands are `ate` and `overlap_subpopulation_ate`, on relative sc
 | Interaction | Disposition |
 |---|---|
 | CUPED | Not applicable: observational adjustment refuses CUPED. |
-| Ratio metrics | Unsound for this binary-risk bound; attestation cannot detect a mislabelled ratio row. |
+| Ratio metrics | Refused from the row's metric type (`outcome_unsupported`); observational adjustment also refuses ratio metrics upstream. |
 | Clustering | Inherits the row's reported interval; public unit-summary IPTW/AIPW conversion rows with declared dependence clusters are exercised. |
 | Sequential inference | Refused; only `inference="fixed"` is accepted. |
-| Winsorization | Not applicable to the attested binary outcome. |
+| Winsorization | Not applicable to the binary metric types. |
 | Breakouts | `LiftEstimate` only; `BreakoutEstimate` is not its subclass and is refused. |
 | Multiplicity roles | Uses the reported, possibly family-adjusted, interval, without recomputing it. |
 

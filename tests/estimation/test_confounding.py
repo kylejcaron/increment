@@ -41,6 +41,7 @@ def _row(r, lo=None, hi=None, *, alternative="two-sided", **overrides) -> LiftEs
         "method": "observational-label",
         "method_role": "decision",
         "estimand": "ate",
+        "metric_type": "conversion",
         "value_scale": "relative",
         "inference": "fixed",
         "alternative": alternative,
@@ -121,7 +122,7 @@ def _random_population(rng, *, independent=False):
 
 def test_no_confounding_limit():
     assert e_value(1.0) == 1.0
-    result = confounding_sensitivity(_row(1.3), outcome="binary", threshold_risk_ratio=1.3)
+    result = confounding_sensitivity(_row(1.3), threshold_risk_ratio=1.3)
     assert result.bias_factor_point == result.e_value_point == 1.0
     assert result.direction == "at"
     assert tipping_bias_factor(1.3, 1.3) == 1.0
@@ -156,7 +157,7 @@ def test_counterexample_is_bounded():
     assert population["rr_eu"] == pytest.approx(3.0, abs=1e-12)
     assert population["rr_ud"] == pytest.approx(3.0, abs=1e-12)
     assert e_value(2.4463848225) > 3.0
-    assert confounding_sensitivity(_row(2.4463848225), outcome="binary").e_value_point <= 3.0
+    assert confounding_sensitivity(_row(2.4463848225)).e_value_point <= 3.0
 
 
 def test_bound_holds_on_random_populations():
@@ -179,7 +180,7 @@ def test_bound_holds_on_random_populations():
         protective += identified_rr < 1
         if (true_rr - 1) * (identified_rr - 1) < 0:
             crossings += 1
-            result = confounding_sensitivity(_row(identified_rr), outcome="binary")
+            result = confounding_sensitivity(_row(identified_rr))
             assert result.e_value_point <= max(rr_eu, rr_ud) + 1e-9, strata
     assert arm_counts == {2, 3}
     assert protective > 0
@@ -201,7 +202,7 @@ def test_no_confounding_population_recovers_identified_rr():
 
 
 def test_protective_estimate_uses_upper_limit():
-    result = confounding_sensitivity(_row(0.80, 0.71, 0.91), outcome="binary")
+    result = confounding_sensitivity(_row(0.80, 0.71, 0.91))
     assert result.bias_factor_point == pytest.approx(math.sqrt(1 / 0.8))
     assert result.bias_factor_interval == pytest.approx(math.sqrt(1 / 0.91))
     assert result.e_value_point == pytest.approx(e_value(math.sqrt(1 / 0.8)))
@@ -211,19 +212,16 @@ def test_protective_estimate_uses_upper_limit():
 
 @pytest.mark.parametrize("lo", [0.95, -0.2])
 def test_crossing_interval_gives_one(lo):
-    result = confounding_sensitivity(_row(1.4, lo, 1.8), outcome="binary")
+    result = confounding_sensitivity(_row(1.4, lo, 1.8))
     assert result.e_value_interval == result.bias_factor_interval == 1.0
 
 
 def test_threshold_shifts_reference():
     row = _row(1.26, 1.10, 1.5)
-    result = confounding_sensitivity(row, outcome="binary", threshold_risk_ratio=1.05)
+    result = confounding_sensitivity(row, threshold_risk_ratio=1.05)
     assert result.bias_factor_point == pytest.approx(math.sqrt(1.2))
     assert result.bias_factor_interval == pytest.approx(math.sqrt(1.10 / 1.05))
-    assert (
-        confounding_sensitivity(row, outcome="binary", threshold_risk_ratio=1.26).e_value_point
-        == 1.0
-    )
+    assert confounding_sensitivity(row, threshold_risk_ratio=1.26).e_value_point == 1.0
 
 
 @pytest.mark.parametrize(
@@ -242,7 +240,7 @@ def test_threshold_shifts_reference():
     ids=["open-lower", "open-upper", "relative-unavailable", "at-without-interval"],
 )
 def test_missing_threshold_side_limit_is_null_with_reason(row):
-    result = confounding_sensitivity(row, outcome="binary")
+    result = confounding_sensitivity(row)
     assert result.e_value_interval is None
     assert result.bias_factor_interval is None
     assert result.interval_unavailable_reason == "interval_limit_unavailable"
@@ -250,17 +248,17 @@ def test_missing_threshold_side_limit_is_null_with_reason(row):
 
 
 def test_extreme_ratios():
-    result = confounding_sensitivity(_row(1e160), outcome="binary")
+    result = confounding_sensitivity(_row(1e160))
     assert math.isfinite(result.e_value_point)
     assert result.e_value_point == pytest.approx(2e80, rel=1e-6)
     assert e_value(1e160) == pytest.approx(2e160, rel=1e-12)
     for r, t in ((2.0, 5e-324), (1e308, 1e-10)):
         with pytest.raises(InvalidRequestError) as excinfo:
-            confounding_sensitivity(_row(r), outcome="binary", threshold_risk_ratio=t)
+            confounding_sensitivity(_row(r), threshold_risk_ratio=t)
         assert excinfo.value.code == "sensitivity.confounding.ratio_not_representable"
         assert dict(excinfo.value.context) == {"observed_risk_ratio": r, "threshold_risk_ratio": t}
     with pytest.raises(UnsupportedRequestError) as excinfo:
-        confounding_sensitivity(_row(5e-324), outcome="binary")
+        confounding_sensitivity(_row(5e-324))
     assert excinfo.value.code == "sensitivity.confounding.risk_ratio_unavailable"
 
     relative = RelativeConfidenceSet(
@@ -276,7 +274,7 @@ def test_extreme_ratios():
         relative_confidence_set=relative,
         abs_diff=0.0,
     )
-    result = confounding_sensitivity(row, outcome="binary")
+    result = confounding_sensitivity(row)
     assert result.e_value_interval == result.bias_factor_interval == 1.0
     assert result.interval_unavailable_reason is None
     assert result.interval_level == pytest.approx(0.95)
@@ -289,8 +287,60 @@ def test_nonrepresentable_e_value_refuses(b):
     assert excinfo.value.code == "sensitivity.confounding.ratio_not_representable"
 
 
+def test_metric_type_unavailable_is_refused():
+    with pytest.raises(UnsupportedRequestError) as excinfo:
+        confounding_sensitivity(_row(1.4, metric_type=None))
+    assert excinfo.value.code == "sensitivity.confounding.metric_type_unavailable"
+    assert dict(excinfo.value.context) == {"metric": "conversion"}
+
+
+@pytest.mark.parametrize("metric_type", ["mean", "ratio", "total", "active", "quantile"])
+def test_non_binary_metric_type_is_refused(metric_type):
+    with pytest.raises(UnsupportedRequestError) as excinfo:
+        confounding_sensitivity(_row(1.4, metric_type=metric_type))
+    assert excinfo.value.code == "sensitivity.confounding.outcome_unsupported"
+    assert excinfo.value.context["metric_type"] == metric_type
+
+
+@pytest.mark.parametrize("metric_type", ["conversion", "retention"])
+def test_binary_metric_types_are_accepted(metric_type):
+    row = _row(1.4, 1.2, 1.8, metric_type=metric_type)
+    result = confounding_sensitivity(row)
+    assert result.metric_type == row.metric_type == metric_type
+
+
+def test_compliance_row_without_metric_type_refuses_estimand_first():
+    with pytest.raises(UnsupportedRequestError) as excinfo:
+        confounding_sensitivity(_row(1.4, estimand="compliance", metric_type=None))
+    assert excinfo.value.code == "sensitivity.confounding.estimand_unsupported"
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "alternative"),
+    [(1.2, None, "greater"), (None, 1.6, "less")],
+    ids=["greater", "less"],
+)
+def test_one_sided_interval_at_threshold_gives_one(lo, hi, alternative):
+    row = _row(1.4, lo, hi, alternative=alternative)
+    result = confounding_sensitivity(row, threshold_risk_ratio=1.4)
+    assert result.direction == "at"
+    assert result.bias_factor_interval == result.e_value_interval == 1.0
+    assert result.interval_unavailable_reason is None
+
+
+def test_at_threshold_without_displayed_limit_is_null_with_reason():
+    result = confounding_sensitivity(_row(1.4), threshold_risk_ratio=1.4)
+    assert result.direction == "at"
+    assert result.bias_factor_interval is None
+    assert result.e_value_interval is None
+    assert result.interval_unavailable_reason == "interval_limit_unavailable"
+
+
 _UNSUPPORTED = [
-    pytest.param({}, {"outcome": "continuous"}, "outcome_unsupported", id="outcome-continuous"),
+    pytest.param(
+        {"metric_type": None}, {}, "metric_type_unavailable", id="metric-type-unavailable"
+    ),
+    pytest.param({"metric_type": "mean"}, {}, "outcome_unsupported", id="metric-type-mean"),
     *[
         pytest.param({"estimand": estimand}, {}, "estimand_unsupported", id=f"estimand-{estimand}")
         for estimand in ("itt", "plr_slope", "late", "compliance")
@@ -333,9 +383,8 @@ def test_refuses_unsupported_rows(overrides, kwargs, code):
         if code in ("threshold_invalid", "ratio_not_representable")
         else UnsupportedRequestError
     )
-    request: dict[str, Any] = {"outcome": "binary", **kwargs}
     with pytest.raises(error_type) as excinfo:
-        confounding_sensitivity(_row(1.4, **overrides), **request)
+        confounding_sensitivity(_row(1.4, **overrides), **kwargs)
     assert excinfo.value.code == f"sensitivity.confounding.{code}"
     if overrides.get("relative_unavailable_reason") is not None:
         assert (
@@ -346,9 +395,8 @@ def test_refuses_unsupported_rows(overrides, kwargs, code):
 
 @pytest.mark.parametrize(("overrides", "kwargs", "code"), _UNSUPPORTED)
 def test_refusals_round_trip(overrides, kwargs, code):
-    request: dict[str, Any] = {"outcome": "binary", **kwargs}
     with pytest.raises(CodedError) as excinfo:
-        confounding_sensitivity(_row(1.4, **overrides), **request)
+        confounding_sensitivity(_row(1.4, **overrides), **kwargs)
     refusal = excinfo.value
     assert refusal.code == f"sensitivity.confounding.{code}"
     for clone in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
@@ -379,7 +427,7 @@ def test_all_real_without_displayed_limits_gives_one(risk_ratio):
         relative_confidence_set=relative,
         abs_diff=reference.a,
     )
-    result = confounding_sensitivity(row, outcome="binary")
+    result = confounding_sensitivity(row)
     assert result.bias_factor_interval == result.e_value_interval == 1.0
     assert result.interval_unavailable_reason is None
 
@@ -408,7 +456,7 @@ def test_directional_all_real_uses_displayed_threshold_side_limit(
         relative_confidence_set=relative,
         abs_diff=reference.a,
     )
-    result = confounding_sensitivity(row, outcome="binary")
+    result = confounding_sensitivity(row)
     assert result.observed_risk_ratio == pytest.approx(risk_ratio, rel=1e-12)
     displayed_limit = (
         result.interval_upper_risk_ratio if risk_ratio < 1 else result.interval_lower_risk_ratio
@@ -433,13 +481,14 @@ def test_result_preserves_input_and_identity(estimand, analysis_population):
         source_snapshot_id=f"snapshot-{analysis_population}",
     )
     before = row.model_dump()
-    result = confounding_sensitivity(row, outcome="binary")
+    result = confounding_sensitivity(row)
     assert row.model_dump() == before
     for field in (
         "metric",
         "group_id",
         "method",
         "estimand",
+        "metric_type",
         "population",
         "analysis_population",
         "source_snapshot_id",
@@ -448,7 +497,7 @@ def test_result_preserves_input_and_identity(estimand, analysis_population):
     assert isinstance(result.assumptions, tuple)
     assert result.assumptions and all(isinstance(item, str) for item in result.assumptions)
     assert result.robustness_not_identification is True
-    assert result.outcome_attested == "binary"
+    assert result.metric_type == "conversion"
     assert result.bound == "marginal_squared_bounding_factor"
     assert result.observed_risk_ratio == pytest.approx(1.4)
     assert result.interval_lower_risk_ratio == pytest.approx(1.2)
@@ -466,7 +515,7 @@ def test_result_round_trips(analysis_population):
         analysis_population=analysis_population,
         source_snapshot_id=f"snapshot-{analysis_population}",
     )
-    result = confounding_sensitivity(row, outcome="binary")
+    result = confounding_sensitivity(row)
     assert result.analysis_population == analysis_population
     assert result.source_snapshot_id == row.source_snapshot_id
     assert ConfoundingSensitivity.model_validate(result.model_dump()) == result
@@ -481,7 +530,7 @@ def test_result_round_trips(analysis_population):
     [(1.4, 1.2, None, "greater"), (0.8, None, 0.91, "less"), (1.0, 0.8, 1.2, "two-sided")],
 )
 def test_available_threshold_side_limit_is_used(r, lo, hi, alternative):
-    result = confounding_sensitivity(_row(r, lo, hi, alternative=alternative), outcome="binary")
+    result = confounding_sensitivity(_row(r, lo, hi, alternative=alternative))
     assert result.e_value_interval is not None
     assert result.interval_unavailable_reason is None
     if r == 1.0:
@@ -489,14 +538,21 @@ def test_available_threshold_side_limit_is_used(r, lo, hi, alternative):
 
 
 def test_refusal_check_order():
-    row = _row(1.4, estimand="itt", value_scale="absolute", inference="always_valid")
-    for kwargs, code in (
-        ({"outcome": "continuous", "threshold_risk_ratio": 0}, "outcome_unsupported"),
-        ({"outcome": "binary", "threshold_risk_ratio": 0}, "estimand_unsupported"),
-    ):
-        request: dict[str, Any] = kwargs
+    chain = (
+        (
+            {"estimand": "itt", "metric_type": None, "value_scale": "absolute"},
+            "estimand_unsupported",
+        ),
+        ({"metric_type": None, "value_scale": "absolute"}, "metric_type_unavailable"),
+        ({"metric_type": "mean", "value_scale": "absolute"}, "outcome_unsupported"),
+        ({"value_scale": "absolute"}, "scale_unsupported"),
+        ({}, "sequential_unsupported"),
+    )
+    for overrides, code in chain:
         with pytest.raises(CodedError) as excinfo:
-            confounding_sensitivity(row, **request)
+            confounding_sensitivity(
+                _row(1.4, inference="always_valid", **overrides), threshold_risk_ratio=0
+            )
         assert excinfo.value.code == f"sensitivity.confounding.{code}"
     with pytest.raises(InvalidRequestError) as excinfo:
         confounding_sensitivity(
@@ -507,7 +563,9 @@ def test_refusal_check_order():
                 scale="linear",
                 abs_diff=0.4,
             ),
-            outcome="binary",
             threshold_risk_ratio=0,
         )
     assert excinfo.value.code == "sensitivity.confounding.threshold_invalid"
+    with pytest.raises(UnsupportedRequestError) as excinfo:
+        confounding_sensitivity(_row(1.4, lift=Estimate(value=-1.0)), threshold_risk_ratio=5e-324)
+    assert excinfo.value.code == "sensitivity.confounding.risk_ratio_unavailable"

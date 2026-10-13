@@ -63,20 +63,22 @@ def _design(*, trimmed=False):
     )
 
 
-def _analysis(df, *, trimmed=False, clustered=False):
+def _analysis(df, *, trimmed=False, clustered=False, metric_type="conversion"):
     return Analysis.from_unit_summary(
         df,
         unit="unit",
         group="arm",
-        metrics=[MetricSpec(name="converted", type="conversion")],
+        metrics=[MetricSpec(name="converted", type=metric_type)],
         design=_design(trimmed=trimmed),
         cluster="cluster" if clustered else None,
     )
 
 
 def _assert_rr_scale(row: LiftEstimate, expected_rr):
-    result = confounding_sensitivity(row, outcome="binary", threshold_risk_ratio=1.05)
+    assert row.metric_type == "conversion"
+    result = confounding_sensitivity(row, threshold_risk_ratio=1.05)
     assert isinstance(result, ConfoundingSensitivity)
+    assert result.metric_type == "conversion"
     lift = row.require_lift()
     assert lift.lb is not None and lift.ub is not None
     se_rr = (lift.ub - lift.lb) / (2 * 1.96)
@@ -192,7 +194,7 @@ def test_cross_ingress_sensitivity_parity(method):
                 result = completed(
                     CONFOUNDING_SENSITIVITY,
                     ingress,
-                    lambda row=row: confounding_sensitivity(row, outcome="binary"),
+                    lambda row=row: confounding_sensitivity(row),
                 )
                 assert result.analysis_population == row.analysis_population
                 assert result.source_snapshot_id == row.source_snapshot_id
@@ -246,7 +248,7 @@ def test_randomized_row_is_refused():
         (row,) = analysis.run()
         assert isinstance(row, LiftEstimate)
         with pytest.raises(UnsupportedRequestError) as excinfo:
-            confounding_sensitivity(row, outcome="binary")
+            confounding_sensitivity(row)
         assert excinfo.value.code == "sensitivity.confounding.estimand_unsupported"
     finally:
         analysis.close()
@@ -259,7 +261,22 @@ def test_dml_row_is_refused():
         assert isinstance(row, LiftEstimate)
         assert row.estimand == "plr_slope"
         with pytest.raises(UnsupportedRequestError) as excinfo:
-            confounding_sensitivity(row, outcome="binary")
+            confounding_sensitivity(row)
         assert excinfo.value.code == "sensitivity.confounding.estimand_unsupported"
+    finally:
+        analysis.close()
+
+
+def test_mean_metric_row_is_refused_from_its_metric_type():
+    analysis = _analysis(_frame(), metric_type="mean")
+    try:
+        (row,) = analysis.run(decision_method=Method(name="iptw"))
+        assert isinstance(row, LiftEstimate)
+        assert row.estimand == "ate"
+        assert row.metric_type == "mean"
+        with pytest.raises(UnsupportedRequestError) as excinfo:
+            confounding_sensitivity(row)
+        assert excinfo.value.code == "sensitivity.confounding.outcome_unsupported"
+        assert excinfo.value.context["metric_type"] == "mean"
     finally:
         analysis.close()

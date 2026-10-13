@@ -575,7 +575,7 @@ CONFOUNDING_SENSITIVITY = ConsumerContract(
                 ingress,
                 "confounding_sensitivity",
                 ingress,
-                "IPTW/AIPW fixed-horizon conversion RR, caller-attested binary outcome",
+                "IPTW/AIPW fixed-horizon conversion RR, binary outcome from the row's declared metric type",
                 "supported",
                 evidence=(_CONFOUNDING_PUBLIC,),
             )
