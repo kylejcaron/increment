@@ -744,7 +744,8 @@ class EncouragementUptakeExtension(_ExplicitOnlyFields, ExtensionRefBase):
         return value
 
 
-class SiteVolumeExtension(ExtensionRefBase):
+class SiteVolumeExtension(_ExplicitOnlyFields, ExtensionRefBase):
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"distinct_unit_counts"})
     extension_version: Literal[1, 4] = 1
     kind: Literal["site_volume"] = "site_volume"
     measure_keys: tuple[str, ...]

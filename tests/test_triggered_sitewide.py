@@ -38,6 +38,7 @@ def _analysis(
     observation_end=None,
     source_snapshot_evidence=True,
     on_mixed_assignment="error",
+    windowed=False,
     observational=False,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -45,7 +46,9 @@ def _analysis(
         trigger="saw_surface" if trigger else None,
         end="2024-01-10",
         observation_end=observation_end,
-    ).replace("    window_days: 7\n", "")
+    )
+    if not windowed:
+        definitions = definitions.replace("    window_days: 7\n", "")
     if observational:
         definitions = definitions.replace(
             "    facts:\n",
@@ -98,7 +101,9 @@ def _analysis(
     )
 
 
-def _conversion_analysis(tmp_path, events):
+def _conversion_analysis(tmp_path, events, *, count_metric=False):
+    import yaml
+
     tmp_path.mkdir(parents=True, exist_ok=True)
     definitions = _defs_yaml(end="2024-01-10").replace("    window_days: 7\n", "")
     definitions = (
@@ -111,6 +116,19 @@ def _conversion_analysis(tmp_path, events):
             "      - name: converted\n        column: null\n",
         )
     )
+    if count_metric:
+        payload = yaml.safe_load(definitions)
+        payload["metrics"].insert(
+            0,
+            {
+                "name": "aaa_count",
+                "type": "mean",
+                "entity": "user_id",
+                "fact": "converted",
+                "aggregation": "count",
+            },
+        )
+        definitions = yaml.safe_dump(payload, sort_keys=False)
     definitions_path = tmp_path / "conversion-sitewide.yml"
     definitions_path.write_text(definitions)
     con = ibis.duckdb.connect()
@@ -572,6 +590,18 @@ def test_repeated_conversions_use_distinct_site_totals_for_assigned_and_triggere
         if row["user_id"] == user_id and row["event"] == "enrolled"
     ]
     events = pa.concat_tables([events, pa.Table.from_pylist(repeated, schema=events.schema)])
+    late_converter = next(
+        row for row in events.to_pylist() if row["event"] == "enrolled" and row["user_id"] == "C99"
+    )
+    late_converter = {
+        **late_converter,
+        "event": "converted",
+        "ts": dt.datetime(2024, 1, 12),
+        "value": 1.0,
+    }
+    events = pa.concat_tables(
+        [events, pa.Table.from_pylist([late_converter], schema=events.schema)]
+    )
     analysis = _conversion_analysis(tmp_path / "native", events)
     adopted = None
     try:
@@ -1214,3 +1244,131 @@ def test_triggered_sitewide_failed_balance_is_qualified_not_refused(tmp_path):
         assert result.allocation_balance.status == "failed"
     finally:
         analysis.close()
+
+
+def _clustered_analysis(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    definitions = _defs_yaml(end="2024-01-10").replace("    window_days: 7\n", "")
+    definitions = definitions.replace(
+        "    control_group: C\n",
+        "    control_group: C\n    cluster: store_id\n",
+    )
+    definitions_path = tmp_path / "clustered-sitewide.yml"
+    definitions_path.write_text(definitions)
+    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    events = events.append_column(
+        "store_id",
+        pa.array(
+            [
+                f"{str(user_id)[0]}store{int(str(user_id)[1:]) // 10}"
+                for user_id in events["user_id"]
+            ]
+        ),
+    )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=events)
+    return Analysis.from_definitions(
+        "exp",
+        definitions_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
+        ),
+    )
+
+
+@pytest.mark.filterwarnings("ignore:metric 'revenue':increment.errors.IncrementRuntimeWarning")
+@pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_clustered_assigned_sitewide_artifact_matches_native(tmp_path):
+    analysis = _clustered_analysis(tmp_path)
+    adopted = None
+    try:
+        native = analysis.sitewide("revenue")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts", "cluster_identity"),
+        )
+        artifact = adopted.sitewide("revenue")
+        assert artifact.n_clusters == native.n_clusters
+        assert artifact.absolute_impact == pytest.approx(native.absolute_impact, rel=1e-12)
+        assert artifact.relative_impact == pytest.approx(native.relative_impact, rel=1e-12)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_windowed_sitewide_artifact_clamps_maturity_to_calendar_end(tmp_path):
+    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
+    for row in events:
+        if row["user_id"] == "C99":
+            if row["event"] == "enrolled":
+                row["ts"] = dt.datetime(2024, 1, 8)
+            elif row["event"] == "revenue":
+                row["ts"] = (
+                    dt.datetime(2024, 1, 9) if row["ts"].day == 8 else dt.datetime(2024, 1, 10)
+                )
+    analysis = _analysis(
+        tmp_path,
+        pa.Table.from_pylist(events),
+        windowed=True,
+        observation_end="2024-01-16T00:00:00",
+    )
+    adopted = None
+    try:
+        native = analysis.sitewide("revenue")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact = adopted.sitewide("revenue")
+        assert native.n_control == 99
+        assert artifact.n_control == pytest.approx(native.n_control)
+        assert artifact.n_treatment == pytest.approx(native.n_treatment)
+        assert artifact.absolute_impact == pytest.approx(native.absolute_impact, rel=1e-12)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_count_mean_sharing_conversion_recipe_keeps_converter_total(tmp_path):
+    rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
+    converted = {*(f"C{i}" for i in range(20)), *(f"T{i}" for i in range(60))}
+    conversions = [
+        {
+            **row,
+            "event": "converted",
+            "ts": dt.datetime(2024, 1, 4),
+            "value": 1.0,
+        }
+        for row in rows
+        if row["event"] == "enrolled" and row["user_id"] in converted
+    ]
+    events = pa.concat_tables([pa.Table.from_pylist(rows), pa.Table.from_pylist(conversions)])
+    analysis = _conversion_analysis(tmp_path, events, count_metric=True)
+    adopted = None
+    try:
+        native = analysis.sitewide("revenue")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact = adopted.sitewide("revenue")
+        assert isinstance(native, SitewideImpact)
+        assert isinstance(artifact, SitewideImpact)
+        assert artifact.site_total_volume == pytest.approx(native.site_total_volume)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)

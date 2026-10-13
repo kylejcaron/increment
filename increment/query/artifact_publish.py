@@ -1116,22 +1116,22 @@ class ArtifactPublisher:
             )
             for measure, _part in parts:
                 measure_key = _measure_recipe_key(measure)
-                if measure_key in emitted_recipe_keys:
-                    continue
-                emitted_recipe_keys.add(measure_key)
                 fs, fact_def = _find_fact_source(self._defs, measure.fact)
                 value_col = _resolve_value_column(fs, fact_def)
                 pinned = self._event_cache[resolved_measure_key(measure, value_column=value_col)]
                 events = pinned.filter(~pinned._metadata).select("unit_id", "ts", "metric", "value")
+                local_day = _local_date(events.ts, self._experiment)
+                events = events.filter(local_day >= ibis.literal(self._experiment.start_day))
+                if self._experiment.end is not None:
+                    events = events.filter(local_day <= ibis.literal(self._experiment.end_day))
                 if isinstance(metric, ConversionMetric):
                     distinct_row = self._con.to_pyarrow(
                         events.aggregate(n_units=events.unit_id.nunique())
                     ).to_pylist()[0]
                     distinct_unit_counts[measure_key] = int(distinct_row["n_units"])
-                local_day = _local_date(events.ts, self._experiment)
-                events = events.filter(local_day >= ibis.literal(self._experiment.start_day))
-                if self._experiment.end is not None:
-                    events = events.filter(local_day <= ibis.literal(self._experiment.end_day))
+                if measure_key in emitted_recipe_keys:
+                    continue
+                emitted_recipe_keys.add(measure_key)
                 stats = unit_day_stats(
                     events,
                     source_key=measure_key,

@@ -1986,6 +1986,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             if row.get("group_id") is not None
         }
         assigned_counts = dict(Counter(group_by_unit.values()))
+        population_counts = assigned_counts.copy()
         membership_cutoff = None
         if population == "triggered":
             count_rows = self._read_extension(
@@ -2004,19 +2005,16 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             # one generation; a pinned publish writes that generation at one cutoff,
             # so membership, calendar measures, and site volume share that cutoff.
             # Adoption trusts the caller-pinned generation.
-            moment_rows = self._reduce(
-                metric,
-                "total",
-                population_units=member_ids,
-                calendar_end=self._artifact_experiment.end_day,
-            )
-        else:
-            population_counts = assigned_counts.copy()
-            moment_rows = self._reduce(
-                metric,
-                "total",
-                calendar_end=self._artifact_experiment.end_day,
-            )
+        cluster = self.context.cluster
+        cluster_table = self._cluster_table()
+        moment_rows = self._reduce(
+            metric,
+            "total",
+            cluster=cluster,
+            cluster_table=cluster_table,
+            population_units=member_ids if population == "triggered" else None,
+            calendar_end=self._artifact_experiment.end_day,
+        )
         cluster_counts = None
         unit_counts = None
         if self.context.cluster is not None:

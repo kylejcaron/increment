@@ -1516,6 +1516,13 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
         native.close()
 
 
+def test_legacy_site_volume_extension_serialization_omits_new_counts_field() -> None:
+    extension = _empty_site_volume_extension()
+
+    assert "distinct_unit_counts" not in extension.model_dump(mode="python")
+    assert "distinct_unit_counts" not in extension.model_dump(mode="json")
+
+
 def test_extension_relation_publishes_and_reopens_under_digest_format_one() -> None:
     """Only the base relations move to digest_format 2. An extension relation
     keeps format 1, which validate_extension recomputes on read, so a

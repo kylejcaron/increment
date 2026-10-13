@@ -8,7 +8,7 @@ can compute site volume from the raw event stream. An adopted
 published with a `site_volume` extension for the requested metric; see the
 [artifact operation and extension matrix](data-model.md#operation-and-extension-matrix).
 Pre-melted summaries and moments do not retain the required whole-site evidence.
-The [worked example](#worked-example) shows mean, conversion, and ratio metrics.
+The [worked example](#worked-example) shows mean and ratio metrics.
 Read the output as window-specific absolute and relative impact, not as a new
 per-unit estimate; see [Reading results](reading-results.md) and
 [Multiplicity](multiplicity.md) for row context.
@@ -808,8 +808,7 @@ for arm_name in ("control", "treatment"):
                 )
         store_i += 1
 
-# Background purchases past every store's 14-day window close, so the
-# fact table's data_as_of does not censor the whole experiment.
+# Background purchases occur after enrolled users' one-day observation windows close.
 for d in range(30):
     cluster_rows.append(
         {
