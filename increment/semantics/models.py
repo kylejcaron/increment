@@ -1885,7 +1885,7 @@ class NormalPriorSpec(_Base):
     sigma: float = Field(gt=0, allow_inf_nan=False)
 
 
-class ExperimentMetric(_Base):
+class ExperimentMetric(_ExplicitOnlyFields, _Base):
     """One metric's method-role and prior declaration within an experiment.
 
     A bare metric NAME in a plan role (``primary``/``secondaries``/
@@ -1894,6 +1894,10 @@ class ExperimentMetric(_Base):
     unadjusted estimator; sensitivity methods are additional estimates
     reported after that decision estimate.
     """
+
+    # Undeclared covariates stay out of dumps so existing definitions keep their
+    # canonical context and artifact identity.
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"covariates"})
 
     metric: str
     decision_method: MethodSpec | None = None
