@@ -414,12 +414,12 @@ baseline.
 `Experiment.cluster` (see [The data model](data-model.md#randomization-grain-vs-analysis-grain))
 is recognized here as elsewhere in the library: it identifies the stores,
 markets, or other units whose assignment actually changed, not the
-individually measured units. `Analysis.sitewide()` allows `mean`,
-`conversion`, `retention`, and `ratio` metrics; any other declared type
-raises `CapabilityError` naming the metric type and cluster. In practice,
-`mean`, `conversion`, and `ratio` produce clustered readings.
-`RetentionMetric` still refuses for the site-volume reason in
-["What refuses"](#what-refuses), whether or not the experiment is clustered.
+individually measured units. Clustered readings come from unwindowed `mean`
+and `ratio` metrics with sum- or count-aggregated components; any other
+declared type raises `CapabilityError`. Conversion, retention and quantile
+metrics refuse for the site-volume reasons in ["What refuses"](#what-refuses),
+whether or not the experiment is clustered; read conversion events with a
+`count` metric on the conversion fact.
 
 The per-unit lift $\delta$ and its variance are no longer a plain arm mean
 and Welch SE. Each arm becomes a ratio of cluster totals: outcome summed per
