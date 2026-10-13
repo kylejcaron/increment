@@ -284,20 +284,16 @@ detect some treatment-dependent trigger rates, but its non-rejection does not
 prove either assumption; equal marginal trigger rates do not rule out
 treatment-dependent membership or timing.
 
-It supports unwindowed mean and ratio metrics with sum-aggregated components
-and randomized, unit-randomized, fixed-horizon experiments with a declared
-end. Every numerator and denominator outcome feed must be certified complete
-through that experiment calendar end; otherwise the triggered request refuses
-before reduction and can be retried after those feeds are complete. A
-conversion counts converted units while the site total counts events, so
-conversions refuse; clustered experiments, observational and encouragement
-designs, registered sequential plans and winsorized metrics also refuse.
+Both assigned and triggered `Analysis.sitewide()` require randomized
+identification. Observational and encouragement designs refuse before
+sitewide evidence is loaded; use `Analysis.run()` for their estimands.
 
-The estimate omits any reach effect among never-triggered units and does not
-adjust for multiplicity or provide anytime-valid inference. It uses
-assignment-anchored experiment-calendar outcomes rather than `run()`'s
-trigger-anchored windows. Use the assigned-population sitewide result when
-these conditional assumptions are not defensible.
+For the triggered population, the estimate omits any reach effect among
+never-triggered units and does not adjust for multiplicity or provide
+anytime-valid inference. It uses assignment-anchored experiment-calendar
+outcomes rather than `run()`'s trigger-anchored windows. Use the
+assigned-population sitewide result when these conditional assumptions are
+not defensible.
 
 Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. The estimator scales all triggered members

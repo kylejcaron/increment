@@ -30,12 +30,14 @@ membership while their outcome contribution still comes from the fixed
 experiment window. Site volume remains the full-site total, not a
 trigger-filtered total.
 
-Triggered sitewide is supported only for randomized designs. Native sources
-must provide certified completeness watermarks for every outcome feed (both
-ratio components, when applicable) through the experiment end; artifact
-outcome edges must cover the same calendar end. An incomplete feed refuses
-before reduction. Re-run after all outcome feeds are certified through the
-experiment end.
+Both assigned and triggered sitewide require a randomized identification
+design. Observational and encouragement designs refuse before loading
+sitewide evidence; use `Analysis.run()` for their estimands.
+Native sources must provide certified completeness watermarks for every
+outcome feed (both ratio components, when applicable) through the experiment
+end; artifact outcome edges must cover the same calendar end. An incomplete
+feed refuses before reduction. Re-run after all outcome feeds are certified
+through the experiment end.
 The assigned/triggered `snapshot_id` equality is content-bound only for
 artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
 table contents.
@@ -508,6 +510,10 @@ precision; adding units inside each cluster adds little.
   requested metric; see the [artifact operation and extension
   matrix](data-model.md#operation-and-extension-matrix). An artifact without
   this extension cannot supply site-volume evidence.
+- **Observational and encouragement designs.** Both assigned and triggered
+  sitewide require randomized identification; the unadjusted sitewide contrast
+  does not implement their estimands. The refusal occurs before evidence is
+  loaded. Use `Analysis.run()` for the observational or encouragement estimand.
 - **An ambiguous arm.** With several non-control arms enrolled and no
   `arm=` given, `sitewide()` raises `ValueError` naming the candidates
   rather than silently picking one for you.

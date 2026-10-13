@@ -1493,7 +1493,10 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
     _triggered_auxiliary_row(
         "triggered-read-sitewide-assigned",
         "`sitewide(population='assigned')` with a declared trigger",
-        ("sitewide_definitions_assigned_supported",),
+        (
+            "sitewide_definitions_assigned_supported",
+            "sitewide_assigned_observational_refused",
+        ),
         ("sitewide_artifact_assigned_supported",),
         _other_auxiliary_bindings("sitewide"),
     ),

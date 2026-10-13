@@ -332,16 +332,15 @@ MATRIX: dict[str, dict[str, Cell]] = {
     },
     "sitewide": {
         "mean": S(
-            note="assigned impact supports triggers; triggered impact requires a randomized design, an unwindowed calendar-aligned sum metric, and complete outcome feeds through experiment end"
+            note="assigned and triggered impact require randomized identification; observational and encouragement designs refuse"
         ),
         "conversion": S(
-            note="assigned impact supports triggers; triggered impact requires a randomized design, an unwindowed calendar-aligned sum metric, and complete outcome feeds through experiment end"
+            note="assigned and triggered impact require randomized identification; observational and encouragement designs refuse"
         ),
         "ratio": S(
             note=(
-                "numerator and denominator get independent site sums; triggered impact "
-                "requires randomized design and complete outcome feeds through experiment "
-                "end, with unwindowed sum components"
+                "assigned and triggered impact require randomized identification; "
+                "observational and encouragement designs refuse"
             )
         ),
         "retention": R(

@@ -185,8 +185,6 @@ class SitewideReadouts:
     def _validate_triggered_metric(self, metric_name: str, metric: Metric) -> None:
         experiment = self._experiment
         assert experiment is not None
-        if experiment.resolved_design().mechanism != "randomized":
-            _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         if experiment.cluster is not None:
             _refuse(
                 _TRIGGERED_SITEWIDE_CLUSTER,
@@ -218,6 +216,10 @@ class SitewideReadouts:
 
     def run(self, req: SitewideRequest) -> SitewideImpact | SitewideRatioImpact:
         _validate_alpha(req.alpha)
+        if self._experiment is not None and (
+            self._experiment.resolved_design().mechanism != "randomized"
+        ):
+            _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         source = self._src
         if classify_source(source) == "artifact":
             if "sitewide_evidence" not in source.operations:

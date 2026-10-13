@@ -251,6 +251,16 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     reason="Triggered sitewide has no adjusted observational construction.",
                 ),
                 _expectation(
+                    "sitewide_assigned_observational_refused",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with the default assigned population on an observational design",
+                    "refused",
+                    "tests.test_triggered_sitewide::test_assigned_sitewide_observational_design_refuses_before_evidence",
+                    codes=("facade.analysis.sitewide_requires_randomized",),
+                    reason="Sitewide impact requires randomized identification.",
+                ),
+                _expectation(
                     "sitewide_triggered_incomplete_outcomes_refused",
                     _operation,
                     "from_definitions",
