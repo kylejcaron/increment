@@ -140,3 +140,108 @@ def test_mixed_cuped_support_refusals_are_exact(rows, code):
             ]
         finally:
             analysis.close()
+
+
+def test_mixed_cuped_mean_ratio_rows_match_all_supported_ingresses(tmp_path):
+    from increment import Analysis
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.parity_harness.comparison import nested_close
+    from tests.warehouse_cuped_cases import (
+        mixed_cuped_definitions_yaml,
+        mixed_cuped_event_rows,
+    )
+
+    units = matrix_data.linear_cuped_rows()
+    connection = ibis.duckdb.connect()
+    connection.create_table("mixed_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "mixed_cuped.yaml"
+    definitions_path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    store = WarehouseArtifactStore(connection, schema_name="mixed_cuped_artifacts")
+    expected_context = artifact_context(definitions, experiment, "error")
+    artifact_ref = native.publish_unit_day_artifact(store)
+    adopted = Analysis.from_unit_day_artifact(
+        store, artifact_ref, expected_context=expected_context
+    )
+    summary = matrix_cases.linear_cuped_frame_case(units, panel=False)
+    panel = matrix_cases.linear_cuped_frame_case(units, panel=True)
+    try:
+        results = [summary.run(), panel.run(), native.run(), adopted.run()]
+
+        from tests.parity_harness.runner import (
+            _normalize,
+            _row_identity,
+            _validate_source_snapshot_ids,
+        )
+
+        names = ("summary", "panel", "definitions", "artifact")
+        normalized = []
+        for name, result in zip(names, results, strict=True):
+            family_for_row = _validate_source_snapshot_ids("mixed-cuped", name, result)
+            normalized.append(_normalize(result, family_for_row=family_for_row))
+        for name, payload in zip(names[1:], normalized[1:], strict=True):
+            assert nested_close(normalized[0], payload), name
+
+        expected_keys = {_row_identity(row) for row in results[0]}
+        assert {row.metric for row in results[0]} == {"revenue", "rpo", "signups"}
+        for result in results[1:]:
+            assert {_row_identity(row) for row in result} == expected_keys
+
+        def retained_signature(result):
+            metadata = result.metadata
+            assert metadata is not None
+            scope = metadata.scope
+            signature = set()
+            for row in result:
+                cell = next(
+                    cell
+                    for cell in scope.cells
+                    if (
+                        cell.metric,
+                        cell.group_id,
+                        cell.method,
+                        cell.method_role,
+                        cell.analysis_population,
+                    )
+                    == (
+                        row.metric,
+                        row.group_id,
+                        row.method,
+                        row.method_role,
+                        row.analysis_population,
+                    )
+                )
+                record = next(
+                    record
+                    for record in metadata.cells
+                    if record.cell == cell and record.source_snapshot_id == row.source_snapshot_id
+                )
+                assert record.sampling is not None
+                assert record.sampling.available == row.sampling_available
+                signature.add(
+                    (
+                        cell.kind,
+                        cell.metric,
+                        cell.group_id,
+                        cell.method,
+                        cell.method_role,
+                        cell.analysis_population,
+                        record.sampling.available,
+                        record.sampling.evidence is not None,
+                    )
+                )
+            return frozenset(signature), tuple(scope.populations)
+
+        expected_state = retained_signature(results[0])
+        assert all(retained_signature(result) == expected_state for result in results[1:])
+    finally:
+        summary.close()
+        panel.close()
+        adopted.close()
+        native.close()
