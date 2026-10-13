@@ -119,6 +119,7 @@ def test_total_and_active_keep_declared_type():
         source.context.plan,
         source.context.configs,
         {"kind": "declared_metric_type", "metrics": [metric.name for metric in metrics]},
+        metrics=metrics,
         route="moments",
         view="run",
         design=design,
@@ -128,6 +129,26 @@ def test_total_and_active_keep_declared_type():
         "gmv": "total",
         "wau": "active",
     }
+
+
+def test_row_outside_the_declared_metrics_is_refused_not_left_unknown():
+    from increment.errors import InvalidRequestError
+    from increment.readouts._metric_type import declared_metric_type, declared_metric_types
+
+    types = declared_metric_types([MeanMetric(name="revenue", entity="user_id", fact="purchase")])
+    stray = LiftEstimate(
+        metric="orders",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.1, lb=0.0, ub=0.2, level=0.95, alpha=0.05),
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        declared_metric_type(stray, types)
+    assert raised.value.code == "readout.scope.metric_undeclared"
+    assert raised.value.context["metric"] == "orders"
+    compliance = stray.model_copy(update={"metric": "uptake", "estimand": "compliance"})
+    assert declared_metric_type(compliance, types) is None
 
 
 def _confounded_conversion_table(n: int = 400, seed: int = 11) -> pa.Table:
@@ -346,6 +367,32 @@ def test_daily_lift_rows_carry_metric_type():
     finally:
         analysis.close()
     _assert_stamped(rows, DECLARED)
+
+
+def test_daily_and_asof_value_rows_carry_metric_type():
+    from increment.breakout.estimates import DailyMetricValue
+
+    analysis = Analysis.from_unit_panel(
+        ds.unit_panel_frame(_summary_frame()),
+        unit="user_id",
+        group="variant",
+        date="date",
+        control="control",
+        metrics=FRAME_METRICS,
+    )
+    try:
+        daily = analysis.run_daily()
+        asof = analysis.run_asof()
+    finally:
+        analysis.close()
+    for values in (daily, asof):
+        assert values and all(isinstance(row, DailyMetricValue) for row in values)
+        assert all(row.source_snapshot_id is not None for row in values)
+        _assert_stamped(values, DECLARED)
+    restored = ReadoutResults.model_validate_json(daily.model_dump_json())
+    assert [row.metric_type for row in restored] == [row.metric_type for row in daily]
+    frame = nw.from_native(asof.to_frame(backend="polars"), eager_only=True)
+    assert set(frame["metric_type"].to_list()) == set(DECLARED.values())
 
 
 def test_switchback_contrast_rows_carry_metric_type():

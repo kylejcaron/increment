@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from increment.readouts._common import _raise
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
@@ -22,15 +24,24 @@ def declared_metric_types(metrics: Iterable[Metric]) -> dict[str, MetricType]:
 
 
 def declared_metric_type(row: Any, metric_types: Mapping[str, MetricType]) -> MetricType | None:
-    """The declared type behind ``row.metric``, or None when the row has none.
+    """The declared type behind ``row.metric``; ``row`` may be a result row or a ``CellKey``.
 
     The design-level compliance row estimates uptake rather than a declared
     metric, so it stays unknown even when a declared metric shares its
-    ``"uptake"`` name. ``row`` may be a result row or a ``CellKey``.
+    ``"uptake"`` name. Any other row names a metric the scope must declare;
+    a row outside the declared metrics is a projection defect, not an
+    unknown type.
     """
     if getattr(row, "estimand", None) == "compliance":
         return None
-    return metric_types.get(row.metric)
+    try:
+        return metric_types[row.metric]
+    except KeyError:
+        _raise(
+            "readout.scope.metric_undeclared",
+            metric=row.metric,
+            declared=tuple(sorted(metric_types)),
+        )
 
 
 __all__ = ["declared_metric_type", "declared_metric_types"]
