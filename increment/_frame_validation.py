@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 import narwhals as nw
 import numpy as np
 
+from increment._labels import canonical_group_label
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics
 from increment.errors import (
     CapabilityError,
@@ -320,6 +321,33 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+_CONTROL_INVALID = RefusalSpec(
+    "source.frame.control_invalid",
+    InvalidRequestError,
+    template="control must be a scalar group label; received {value!r}.",
+)
+_raise_control = raiser(
+    refusals(InvalidRequestError, {"source.frame.control_invalid": _CONTROL_INVALID})
+)
+
+
+def canonical_control_for_frame(frame: Any, group: str, control: object) -> str:
+    """Canonicalize a control using the declared group column's dtype."""
+    if not np.isscalar(control):
+        _raise_control("source.frame.control_invalid", value=_safe_error_value(control))
+    try:
+        source = nw.from_native(frame, eager_only=True)
+        boolean = source.schema[group] == nw.Boolean
+    except Exception:
+        boolean = False
+    if boolean and isinstance(control, str):
+        if control in ("True", "true"):
+            return "true"
+        if control in ("False", "false"):
+            return "false"
+    return str(canonical_group_label(control, boolean=boolean))
+
+
 COVARIATE_IMPUTE_ALL_NULL = _REFUSALS["frame.validation.metric_covariate_impute_all_null"]
 
 
@@ -490,6 +518,7 @@ def _reject_reserved_labels(labels: Sequence[str], *, group: str) -> None:
 
 def _canonicalize_group_identity(frame: nw.DataFrame[Any], group: str) -> nw.DataFrame[Any]:
     """Validate wire identities and preserve missing groups before reduction."""
+    boolean = frame.schema[group] == nw.Boolean
     if frame.schema[group] == nw.String and not frame.implementation.is_pandas_like():
         # A typed string column is already its canonical form, so distinct values
         # cannot collide. pandas reports a sniffed object column as String too,
@@ -498,7 +527,10 @@ def _canonicalize_group_identity(frame: nw.DataFrame[Any], group: str) -> nw.Dat
         return frame
     # No ``otherwise``: a when-without-else yields a true null on every backend,
     # whereas pandas 2.x casts a ``lit(None)`` branch to the string "None".
-    canonical = nw.when(~_is_missing(frame, group)).then(nw.col(group).cast(nw.String)).alias(group)
+    rendered = nw.col(group).cast(nw.String)
+    if boolean:
+        rendered = rendered.str.to_lowercase()
+    canonical = nw.when(~_is_missing(frame, group)).then(rendered).alias(group)
     # Pair before deduplication: raw equality can hide differently cast labels.
     identities = (
         frame.select(

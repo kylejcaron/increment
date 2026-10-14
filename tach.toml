@@ -271,7 +271,7 @@ depends_on = ["increment._day_axis_labels", "increment._frame_validation", "incr
 
 [[modules]]
 path = "increment._frame_validation"
-depends_on = ["increment._metric_specs", "increment.errors", "increment.estimation", "increment.plan", "increment.semantics", "increment.sources"]
+depends_on = ["increment._labels", "increment._metric_specs", "increment.errors", "increment.estimation", "increment.plan", "increment.semantics", "increment.sources"]
 
 [[modules]]
 path = "increment._frame_sequential"

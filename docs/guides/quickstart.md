@@ -124,9 +124,14 @@ use `to_frame(estimates, model=LiftEstimate, backend=...)`.
 
 ## Group identities
 
-Both dataframe constructors convert nonmissing group labels to strings
-using the dataframe library's representation. An integer group column
-containing `0` and `1`, for example, accepts `control="0"`.
+Nonmissing group values are rendered as strings consistently across
+dataframe libraries. Boolean columns use the canonical labels `"true"` and
+`"false"`; on a Boolean column, `control` accepts `True`, `"True"`, or
+`"true"` for the true arm (and the corresponding false spellings). Other
+column types keep their string labels, so a string column containing
+`"True"` and `"False"` retains those exact identities. For example, an
+integer group column containing `0` and `1` accepts `control=0` or
+`control="0"`.
 
 Labels must remain distinct after conversion. Values such as `1` and
 `"1"` in a pandas object column raise `frame.validation.group_label_collision`
@@ -135,6 +140,10 @@ rather than merge groups. Rename them to distinct strings before analysis.
 `"(unassigned)"` and `"(mixed assignment)"` are reserved for accounting.
 Using either as a group raises `frame.validation.group_label_reserved`.
 Missing labels stay missing; the literal string `"nan"` is a valid group.
+Saved sequential state keyed by pandas Boolean labels (`"True"`/`"False"`)
+cannot be continued under the canonical labels: retain it as a replay-only
+record, or register a new monitoring protocol rather than relabelling the
+checkpoint.
 
 ## Missing data
 

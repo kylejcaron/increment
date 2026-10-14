@@ -888,7 +888,7 @@ class Analysis:
         *,
         unit: str,
         group: str,
-        control: str | None = None,
+        control: object | None = None,
         metrics: MetricsArg,
         experiment_id: str = "frame",
         design: Randomized | Encouragement | Observational | None = None,
@@ -938,10 +938,13 @@ class Analysis:
         null exposure drops the unit, as on :meth:`from_unit_panel`.
         """
         _require_design(control, design, constructor="Analysis.from_unit_summary")
+        from increment._frame_validation import canonical_control_for_frame
+
+        control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_summary as _make_source
         from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
@@ -968,7 +971,7 @@ class Analysis:
         unit: str,
         group: str,
         date: str,
-        control: str | None = None,
+        control: object | None = None,
         metrics: MetricsArg,
         experiment_id: str = "frame",
         design: Randomized | Encouragement | Observational | None = None,
@@ -1022,10 +1025,13 @@ class Analysis:
         surfaced in ``unit_counts()`` and :meth:`srm`.
         """
         _require_design(control, design, constructor="Analysis.from_unit_panel")
+        from increment._frame_validation import canonical_control_for_frame
+
+        control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_panel as _make_source
         from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
@@ -1051,7 +1057,7 @@ class Analysis:
         rows: Sequence[Mapping[str, object]],
         *,
         metrics: MetricsArg,
-        control: str | None = None,
+        control: object | None = None,
         experiment_id: str | None = None,
         design: Randomized | Encouragement | Observational | None = None,
         plan: AnalysisPlan | None = None,
@@ -1100,7 +1106,8 @@ class Analysis:
         from increment.semantics.design import Encouragement, Randomized
         from increment.sources import MomentsSource
 
-        design = design or Randomized(control_group=cast("str", control))
+        control = str(control)
+        design = design or Randomized(control_group=control)
         specs = _coerce_source_metrics(metrics, design=design)
         metric_catalog = [synthesise_metric(spec) for spec in specs]
         from increment._analysis_config import resolve_configs

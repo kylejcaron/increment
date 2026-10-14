@@ -62,6 +62,11 @@ RETENTION_UNDER_ENCOURAGEMENT = RefusalSpec(
     template="retention metric(s) {names!r} are not supported under an encouragement design; its maturity gate changes the first-stage population by outcome metric",
 )
 
+_EXCLUSION_JUSTIFICATION = RefusalSpec(
+    "design.exclusion_restriction.justification",
+    InvalidRequestError,
+    template="exclusion restriction justification must be at least 10 characters; describe the mechanism that supports it.",
+)
 _REFUSALS = refusals(
     InvalidRequestError,
     {
@@ -74,6 +79,7 @@ _REFUSALS = refusals(
             ),
         ),
         "design.allocation_scheme.incompatible": ALLOCATION_SCHEME_INCOMPATIBLE,
+        "design.exclusion_restriction.justification": _EXCLUSION_JUSTIFICATION,
     },
 )
 _raise = raiser(_REFUSALS)
@@ -175,7 +181,7 @@ class UptakeSpec(BaseModel):
         return None if v is None else _reject_bool(v)
 
 
-class ExclusionRestriction(BaseModel):
+class ExclusionRestriction(CodedValidationMixin, BaseModel):
     """Explicit acknowledgment that assignment moves the outcome only
     through uptake. Untestable from data, so it must be declared, like
     ``Observational.adjustment``: assumptions stay visible, never implicit.
@@ -184,7 +190,14 @@ class ExclusionRestriction(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     acknowledged: Literal[True]
-    justification: str = Field(min_length=10)
+    justification: str
+
+    @field_validator("justification")
+    @classmethod
+    def _validate_justification(cls, value: str) -> str:
+        if len(value) < 10:
+            _raise("design.exclusion_restriction.justification")
+        return value
 
 
 class Encouragement(BaseModel):
