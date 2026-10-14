@@ -75,6 +75,7 @@ from increment.dashboard._html import (
 )
 from increment.dashboard._theme import theme_css, theme_from_payload
 from increment.errors import CodedError
+from increment.tables import _binomial_qualification_disclosure
 
 if TYPE_CHECKING:
     from increment.analysis import Analysis
@@ -571,8 +572,15 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
         )
     if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
         notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
+    reported_qualifications: set[tuple[str, str]] = set()
     for row in rows:
         notes.append(f"{name(row)}: {outcome_label(row)}")
+        qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
+        if qualification and qualification != "No numerical qualification claim":
+            identity = (name(row), qualification)
+            if identity not in reported_qualifications:
+                notes.append(f"Numerical qualification for {identity[0]}: {qualification}.")
+                reported_qualifications.add(identity)
         confidence_set = complete_confidence_set_text(row)
         retained = _plain(confidence_set) if confidence_set else ""
         if retained:

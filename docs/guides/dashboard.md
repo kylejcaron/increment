@@ -125,6 +125,10 @@ The complete dashboard places the selected qualifications in the hero before
 the primary effect and at the start of Report before its effect and results
 table. An added metric's inspector uses that metric's captured collection
 evidence and retained qualifications, not the confirmatory Readout's rows.
+The Health tab keeps the allocation summary and available, warning, and
+unavailable checks visible. Checks that do not apply because no trigger is
+declared collapse into one summary line; diagnostic codes and context are in
+the **Technical details** disclosure.
 
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
@@ -155,6 +159,11 @@ The standalone `render_header` and `render_metric_details` sections use the same
 selected-population default and accept `population="assigned"` or
 `population="triggered"` for an explicit view. Metric group evidence is scoped to
 that population; assignment counts remain separately labeled.
+
+Readout tables keep the core metric and arm identity, lift, and lift plot, with
+failure, family-discovery, or prior-advisory columns when those values exist.
+Numerical qualification appears in the metric inspector's interval-reading
+disclosure rather than the headline interval.
 
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only
