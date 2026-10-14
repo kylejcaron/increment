@@ -1090,7 +1090,10 @@ lower end does, so a wide enclosure sizes conservatively: the standard 10% basel
 relative lift conversion plan is sized with an enclosure about `3e-4` wide, a few units per
 arm above where its point crosses. Only the explicit point request of a diagnostic
 enclosure refuses with `power.binomial_probability_unresolved`. The Normal-tail replay only
-proposes sizes.
+proposes sizes; it pays the same replay budget over the same cells as the runtime's replay,
+so its proposal tracks the lower end the search decides from, and the final search steps
+from the proposal by the slope that replay measured (the standard 10% baseline, 10% lift
+plan is then decided by two runtime replays, the proposal and its predecessor).
 
 On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
 the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect

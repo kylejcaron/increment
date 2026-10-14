@@ -3141,7 +3141,7 @@ def _refuse_undecided(
 
 
 # Proposal, verification and bracketing share one search state.
-def _binomial_size(  # noqa: PLR0915
+def _binomial_size(
     procedure: ArmPlanningProcedure,
     baseline: Baseline,
     design: PowerDesign,
@@ -3197,103 +3197,150 @@ def _binomial_size(  # noqa: PLR0915
             powers[n] = plan_at(n).supplied(theta, distance, undecided=True)
         return powers[n]
 
-    def crossing(evaluate: Callable[[int], BinomialPower], n: int, *, final: bool) -> int:
-        """Smallest passing size of the bracket closed from ``n``. Only the final search
-        admits point probabilities; the heuristic proposes a size without publishing power."""
-        values: dict[int, BinomialPower] = {}
+    def unreachable(lo: int, reached: BinomialPower) -> NoReturn:
+        """Refuse a final search whose largest failing size is the ceiling: a decision the
+        runtime refuses there, the replay bound when it stopped the search short of the arm
+        ceiling, or the arm ceiling itself; the power named is the enclosure's published end."""
+        n_T, n_C = _analyzed_counts(*_compute_arms(lo, design, minimum_per_arm=floor), baseline)
+        if reached is _UNDECIDED:
+            _refuse_undecided(
+                procedure, _binomial_key(procedure, n_T, n_C), p_c=baseline.mean, scope="requested"
+            )
+        if ceiling < arm_ceiling:
+            cells, p_t = _sizing_cells(_binomial_key(procedure, n_T, n_C), baseline.mean, rate)
+            _refuse_replay_bound(
+                baseline.mean,
+                n_T,
+                n_C,
+                cells,
+                p_t=p_t,
+                power=target,
+                power_reached=reached.published,
+                **plan_at(lo).routing_context(),
+            )
+        refuse(
+            _BINOMIAL_SIZE_LIMIT,
+            power=target,
+            max_arm_size=max(
+                _analyzed_counts(
+                    *_compute_arms(arm_ceiling, design, minimum_per_arm=floor), baseline
+                )
+            ),
+            maximum_power=reached.published,
+            n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
+            conversion_inference=_conversion_mode(procedure),
+        )
 
-        def value(m: int) -> BinomialPower:
-            if m not in values:
-                values[m] = evaluate(m)
-            return values[m]
+    search = _SizeBracket(target, floor, ceiling, z_target, z_alpha)
+    start = min(max(proposal, floor), ceiling)
+    slope: float | None = None
+    if plan_at(start).replays(theta):
+        # The heuristic replay costs a fraction of the runtime's own and agrees with it closely;
+        # its crossing proposes the size the runtime's decision then verifies (the proposal and
+        # its predecessor) and corrects, stepping first by the slope the heuristic measured. It
+        # is never a certificate.
+        start, slope = search.crossing(
+            lambda m: plan_at(m, "approximate").supplied(theta, distance, undecided=True),
+            start,
+            unreachable=None,
+        )
+    hi, _ = search.crossing(power_at, start, slope=slope, unreachable=unreachable)
+    n_T, n_C = _compute_arms(hi, design, minimum_per_arm=floor)
+    return n_T, n_C, plan_at(hi), powers[hi]
+
+
+@dataclass(frozen=True, slots=True)
+class _SizeBracket:
+    """The stepping of a binomial size search between ``floor`` and ``ceiling``: a candidate
+    reaches the target when its enclosure's lower end does (a heuristic candidate, which
+    certifies nothing, when its computed mass does), and the search brackets the crossing by
+    a probit-secant in ``sqrt(n)`` (power ``~ Phi(b sqrt(n) - z_alpha)``), narrowing to adjacent
+    sizes and halving whenever the secant stalls."""
+
+    target: float
+    floor: int
+    ceiling: int
+    z_target: float
+    z_alpha: float
+
+    def crossing(
+        self,
+        evaluate: Callable[[int], BinomialPower],
+        n: int,
+        *,
+        slope: float | None = None,
+        unreachable: Callable[[int, BinomialPower], NoReturn] | None,
+    ) -> tuple[int, float | None]:
+        """Smallest passing size of the bracket closed from ``n``, with the probit slope per
+        ``sqrt(n)`` its closing bracket measures (``None`` when the bracket has one end). The
+        final search, which admits enclosures, refuses through ``unreachable`` when every size
+        up to the ceiling falls short; the heuristic proposal (``None``) returns the ceiling
+        instead, and its ``slope`` carries over so the final search's first step from a proposal
+        that falls short is the secant's, not a fixed fraction of the size."""
+        values: dict[int, BinomialPower] = {}
 
         def probit(m: int) -> float:
             return float(_ndtri(min(max(values[m].power, 1e-15), 1.0 - 1e-15)))
 
+        def gradient(a: int, b: int) -> float:
+            return (probit(b) - probit(a)) / (math.sqrt(b) - math.sqrt(a))
+
         def secant(a: int, b: int | None) -> float:
-            """Size where the probit line through the evaluated sizes reaches
-            the target; one size uses the line through ``(0, -z_alpha)``."""
-            if b is None or a == b:
-                slope = (probit(a) + z_alpha) / math.sqrt(a)
-                root_n = (z_target + z_alpha) / slope if slope > 0.0 else math.inf
+            """Size where the probit line through the evaluated sizes reaches the target; one
+            size uses the carried slope, or the line through ``(0, -z_alpha)`` without one."""
+            z_target, z_alpha = self.z_target, self.z_alpha
+            if b is not None and a != b:
+                rise = gradient(a, b)
+                root_n = math.sqrt(a) + (z_target - probit(a)) / rise if rise > 0.0 else math.inf
+            elif slope is not None and slope > 0.0 and math.isfinite(slope):
+                root_n = math.sqrt(a) + (z_target - probit(a)) / slope
             else:
-                slope = (probit(b) - probit(a)) / (math.sqrt(b) - math.sqrt(a))
-                root_n = math.sqrt(a) + (z_target - probit(a)) / slope if slope > 0.0 else math.inf
+                rise = (probit(a) + z_alpha) / math.sqrt(a)
+                root_n = (z_target + z_alpha) / rise if rise > 0.0 else math.inf
             return root_n * root_n if math.isfinite(root_n) and root_n > 0.0 else math.inf
 
+        floor, ceiling = self.floor, self.ceiling
         lo: int | None = None  # largest failing size of the bracket
         hi: int | None = None  # smallest passing size of the bracket
-        evaluated: list[int] = []
+        previous: int | None = None
         stalls = 0
+        strides = 0  # consecutive steps past the bracket's one end without closing it
+        adjacent = False  # the last probe was next to an end of the bracket
         while True:
             width = None if lo is None or hi is None else hi - lo
-            candidate = value(n)
-            reaches = candidate.lower >= target if final else candidate.power >= target
-            if reaches:
+            candidate = values[n] = evaluate(n)
+            reached = candidate.power if unreachable is None else candidate.lower
+            if reached >= self.target:
                 hi = n if hi is None else min(hi, n)
             else:
                 lo = n if lo is None else max(lo, n)
-            evaluated.append(n)
             if hi is not None and (hi <= floor or (lo is not None and hi - lo <= 1)):
-                return hi
-            previous = evaluated[-2] if len(evaluated) > 1 else None
+                return hi, None if lo is None else gradient(lo, hi)
             if hi is None:
                 assert lo is not None
                 if lo >= ceiling:
-                    if not final:
-                        return ceiling
-                    if values[lo] is _UNDECIDED:
-                        n_T, n_C = _analyzed_counts(
-                            *_compute_arms(lo, design, minimum_per_arm=floor), baseline
-                        )
-                        _refuse_undecided(
-                            procedure,
-                            _binomial_key(procedure, n_T, n_C),
-                            p_c=baseline.mean,
-                            scope="requested",
-                        )
-                    if ceiling < arm_ceiling:
-                        n_T, n_C = _analyzed_counts(
-                            *_compute_arms(lo, design, minimum_per_arm=floor), baseline
-                        )
-                        cells, p_t = _sizing_cells(
-                            _binomial_key(procedure, n_T, n_C), baseline.mean, rate
-                        )
-                        _refuse_replay_bound(
-                            baseline.mean,
-                            n_T,
-                            n_C,
-                            cells,
-                            p_t=p_t,
-                            power=target,
-                            power_reached=values[lo].published,
-                            **plan_at(lo).routing_context(),
-                        )
-                    refuse(
-                        _BINOMIAL_SIZE_LIMIT,
-                        power=target,
-                        max_arm_size=max(
-                            _analyzed_counts(
-                                *_compute_arms(arm_ceiling, design, minimum_per_arm=floor), baseline
-                            )
-                        ),
-                        maximum_power=values[lo].published,
-                        n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
-                        conversion_inference=_conversion_mode(procedure),
-                    )
+                    if unreachable is None:
+                        return ceiling, None
+                    unreachable(lo, candidate)
+                # Climb by the secant, at least a stride that doubles from the third step on,
+                # so a secant that undershoots cannot walk one size at a time; a step landing a
+                # size short costs one more evaluation where an overshoot costs two.
+                strides += 1
                 guess = min(secant(lo, previous), 4.0 * lo + 4.0)
-                n = min(ceiling, max(lo + 1, math.ceil(1.05 * lo), math.ceil(guess)))
+                n, previous = min(ceiling, max(lo + self._stride(strides), math.floor(guess))), n
             elif lo is None:
                 if previous is None:
                     # A proposal that passes is checked against its predecessor first.
-                    n = hi - 1
+                    n, previous = hi - 1, n
                     continue
+                strides += 1
                 guess = secant(hi, previous)
                 guess = guess if math.isfinite(guess) else 0.0
-                n = max(floor, min(hi - 1, math.floor(0.95 * hi), max(math.floor(guess), hi // 4)))
+                below = max(math.floor(guess), hi // 4)
+                n, previous = max(floor, min(hi - self._stride(strides), below)), n
             else:
                 if width is not None and 2 * (hi - lo) > width:
-                    stalls += 1
+                    stalls += 0 if adjacent else 1
                 else:
                     stalls = 0
                 guess = secant(lo, hi)
@@ -3301,20 +3348,13 @@ def _binomial_size(  # noqa: PLR0915
                     n = lo + (hi - lo) // 2
                 else:
                     n = min(hi - 1, max(lo + 1, round(guess)))
+                # A probe next to an end is the bracket's closing move when the secant is
+                # right, so one at a time is not a stall when it shrinks the bracket by one.
+                adjacent = n in (lo + 1, hi - 1) and not adjacent
 
-    start = min(max(proposal, floor), ceiling)
-    if plan_at(start).replays(theta):
-        # The heuristic replay costs a fraction of the runtime's own and agrees with it closely;
-        # its crossing proposes the size the runtime's decision then verifies (the proposal and
-        # its predecessor) and corrects. It is never a certificate.
-        start = crossing(
-            lambda m: plan_at(m, "approximate").supplied(theta, distance, undecided=True),
-            start,
-            final=False,
-        )
-    hi = crossing(power_at, start, final=True)
-    n_T, n_C = _compute_arms(hi, design, minimum_per_arm=floor)
-    return n_T, n_C, plan_at(hi), powers[hi]
+    @staticmethod
+    def _stride(strides: int) -> int:
+        return 2 ** max(0, strides - 2)
 
 
 # Largest assigned treatment size a planning search considers, far past any real arm.

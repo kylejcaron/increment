@@ -110,6 +110,25 @@ def _known(geometry: RejectionGeometry) -> int:
     return sum(int(segment.known.sum()) for segment in geometry.segments)
 
 
+def test_the_heuristic_replay_decides_the_cells_the_runtime_replay_does(small_budgets):
+    """The sizing proposal's Normal-tail replay pays the same replay budget as the runtime's
+    own and chooses the same heaviest cells, so its computed mass over them tracks the lower end
+    the final search decides from, and its cost is bounded alike."""
+    exact = _geometry()
+    heuristic = RejectionGeometry(
+        _decision(N), "approximate", PLANNING_CELL_CEILING, Routing(FLOOR, 0.0)
+    )
+    wc, wt = _binomial._window(N, P_C), _binomial._window(N, 0.4)
+    chosen = heuristic._selected(wc, wt)
+    assert np.array_equal(chosen, exact._selected(wc, wt))
+    row_in, col_in = exact._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+    replayed = chosen & ~(row_in[:, None] & col_in[None, :])
+    assert 0 < int(replayed.sum()) * len(_decision(N).kinds) <= REPLAY_BUDGET
+    assert int(replayed.sum()) < int((~(row_in[:, None] & col_in[None, :])).sum())
+    proposal = heuristic.evaluate(P_C, 0.4)
+    assert not proposal.certified and proposal.ambiguous > RESOLUTION
+
+
 def _count_calls(monkeypatch: pytest.MonkeyPatch) -> tuple[list[int], list[int]]:
     """Wrap the runtime calculation and the replay with counters, each still the real one:
     ``(rows, pairs)`` collects one entry per runtime row and the length of every replayed run."""

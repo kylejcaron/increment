@@ -184,10 +184,10 @@ _SURROGATE_SLACK = 1e-12
 #: Maximum absolute numerical error of an enumerated public point probability.
 RESOLUTION = 1e-6
 
-#: Directional replays (a count pair is replayed once per direction its alternative reads) of the
-#: runtime's own finite-sample search one evaluation's request pays for, at about 100 to 400
-#: CPU-microseconds each at the arm sizes where counts reach the routing floor. The lightest pairs
-#: past it are undecided in that evaluation and add their mass to the upper end of the enclosure.
+#: Directional replays (a count pair is replayed once per direction its alternative reads) one
+#: evaluation's request pays for, at about 100 to 400 CPU-microseconds each on the runtime's own
+#: finite-sample search and on a sizing proposal's Normal-tail replay, over the same cells. The
+#: lightest pairs past it are undecided and add their mass to the upper end of the enclosure.
 EVALUATION_REPLAY_BUDGET = 150_000
 
 #: Runtime calculations (`conversion_delta.production_decision`, about 0.2 CPU-milliseconds each:
@@ -2059,7 +2059,10 @@ class RejectionGeometry:
         (`_finite_rows`: none when the runtime refuses that decision in full), unless
         `_off_route_bound` of those pairs is at most half of `RESOLUTION`, while
         `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside
-        the choice is undecided in this evaluation, even if an earlier one decided it."""
+        the choice is undecided in this evaluation, even if an earlier one decided it. The
+        ``approximate`` route chooses the same cells: its replay is cheaper, and a proposal
+        summed over the cells the runtime's own replay will decide tracks the lower end of
+        that replay's enclosure, which the size search decides from."""
         row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
         routed = row_in[:, None] & col_in[None, :]
         weights = (wc.weights, wt.weights)
@@ -2068,10 +2071,8 @@ class RejectionGeometry:
         if self._off_route_bound(wc, wt, finite) <= RESOLUTION / 2.0:
             return selected
         pending = ~routed & finite[:, None]
-        if self.route == "exact":
-            kinds = len(self.decision.kinds)
-            pending = self._heaviest(pending, weights, EVALUATION_REPLAY_BUDGET, kinds)
-        return selected | pending
+        kinds = len(self.decision.kinds)
+        return selected | self._heaviest(pending, weights, EVALUATION_REPLAY_BUDGET, kinds)
 
     @staticmethod
     def _heaviest(
