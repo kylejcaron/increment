@@ -493,6 +493,105 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
         con.disconnect()
 
 
+def _triggered_linear_artifact(tmp_path):
+    import datetime as dt
+
+    import ibis
+
+    from increment import SourceSnapshotEvidence
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+    from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
+
+    path = tmp_path / "triggered-cuped-artifact.yaml"
+    text = (
+        _defs_yaml()
+        .replace(
+            "      - name: saw_surface\n        column: null",
+            "      - name: saw_surface\n        column: null\n    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}",
+        )
+        .replace(
+            "    plan:\n      secondaries: [revenue]",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_linear}, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}\n"
+            "    breakouts: [{property: region, source: events}]",
+        )
+    )
+    path.write_text(text)
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "events", obj=_with_preassignment_region(_events(n_per_arm=100, trigger_rate=0.5))
+    )
+    source_evidence = SourceSnapshotEvidence(
+        dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+        {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+    )
+    native = Analysis.from_definitions(
+        "exp", path, connection, source_snapshot_evidence=source_evidence
+    )
+    definitions = load(path)
+    experiment = definitions.experiment("exp")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    store = WarehouseArtifactStore(connection, schema_name="triggered_cuped")
+    required_kinds = {
+        "trigger_population",
+        "trigger_measure_stats",
+        "assignment_counts",
+        "unit_covariate_level",
+        "breakout_dimension",
+    }
+    extensions = [
+        entry.request
+        for entry in unit_day_artifact_extension_catalog(context)
+        if entry.request.kind in required_kinds
+    ]
+    reference = native.publish_unit_day_artifact(store, extensions=extensions)
+    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    return native, adopted, connection
+
+
+def test_triggered_cuped_definition_and_artifact_runs_match(tmp_path):
+    from tests.parity_harness.comparison import nested_close
+
+    native, artifact, connection = _triggered_linear_artifact(tmp_path)
+
+    def stats(rows):
+        return {
+            (
+                row.metric,
+                row.group_id,
+                row.method,
+                row.method_role,
+                getattr(row, "dimension_value", None),
+            ): (
+                row.lift.value if row.lift is not None else None,
+                row.lift.log_se if row.lift is not None else None,
+                row.dof,
+                (row.lift.lb, row.lift.ub) if row.lift is not None else None,
+            )
+            for row in rows
+        }
+
+    try:
+        assert nested_close(
+            stats(native.run(metrics=["revenue"], population="triggered")),
+            stats(artifact.run(metrics=["revenue"], population="triggered")),
+        )
+        assert nested_close(
+            stats(native.run_breakout(metrics=["revenue"], population="triggered")),
+            stats(artifact.run_breakout(metrics=["revenue"], population="triggered")),
+        )
+    finally:
+        artifact.close()
+        native.close()
+        connection.disconnect()
+
+
 def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
     import increment.estimation.cuped_linear as cuped_linear
 
