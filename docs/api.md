@@ -1006,10 +1006,23 @@ available from the receive-only results namespace.
 
 `Analysis.sitewide(metric, population="assigned")` reports an assigned
 intent-to-treat whole-site impact, including when the experiment declares a
-trigger. `population="triggered"` raises
-`analysis.sitewide.triggered_population_unsupported` before data loading; use
-`run()` for the triggered cohort effect. Both `SitewideImpact` and
-`SitewideRatioImpact` serialize `analysis_population="assigned"`.
+trigger. For triggered experiments, `population="triggered"` reports a
+conditional impact scaled to enrolled units in finalized trigger membership.
+Both populations require an unwindowed metric whose components use sum or
+count aggregation. Conversion metrics refuse with
+`facade.analysis.sitewide_metric_unaligned` before evidence is loaded because
+the converter indicator is not additive across events; declare a count metric
+on the conversion fact to read conversion events site-wide. Windowed and other
+non-additive aggregations use the same refusal.
+Triggered sitewide additionally requires a declared experiment end. It uses
+calendar-window outcomes (not `run()`'s trigger-anchored windows) and
+discloses membership assumptions, allocation-balance evidence, provenance,
+and its exploratory unadjusted multiplicity status on the result.
+`SitewideImpact` and `SitewideRatioImpact`
+include `analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
+`scaled_units`, `unobserved_members`, `assumptions`, and `allocation_balance`.
+The paired-provenance check is content-bound only for artifacts; native
+`snapshot_id` reflects declared `SourceSnapshotEvidence`, not table contents.
 
 `increment.results.LiftEstimate.family_procedure` identifies the canonical correction
 procedure retained with the result's family (`e_bh`, `bonferroni`, or `bh`), when

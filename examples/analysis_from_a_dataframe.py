@@ -79,11 +79,25 @@ def simulate(np, pd):
     _variant = np.where(_rng.random(_n_users) < 0.5, "treatment", "control")
     _lift = np.where(_variant == "treatment", 0.15, 0.0)
 
+    # Each order's value is an independent Gamma draw with CV 1/sqrt(shape):
+    # real basket sizes are right-skewed and vary order to order. The sum of
+    # k iid Gamma(shape, scale) draws is Gamma(k * shape, scale), so a user's
+    # daily revenue is one draw per user.
+    _order_value_shape = 1.0
+    _mean_order_value = np.clip(_order_value, 1, None)
+
     def _simulate_day(rng, lift):
         active = rng.uniform(0, 1, _n_users) < _active_probability
         orders = np.where(active, 1 + rng.poisson(_order_rate), 0)
-        value = np.clip((_order_value + rng.normal(0, 2, _n_users)) * (1 + lift), 0, None)
-        return orders, orders * value
+        revenue = np.where(
+            orders > 0,
+            rng.gamma(
+                np.maximum(orders, 1) * _order_value_shape,
+                _mean_order_value / _order_value_shape,
+            ),
+            0.0,
+        )
+        return orders, revenue * (1 + lift)
 
     # Pre-period: same users, same process, before anyone was treated.
     _pre_revenue = np.zeros(_n_users)

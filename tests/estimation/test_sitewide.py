@@ -254,6 +254,8 @@ class TestSitewideImpact:
         site_total_volume = 50_000.0
 
         result = sitewide_impact(contrast, site_total_volume=site_total_volume)
+        assert result.scaled_units == round(result.n_enrolled)
+        assert type(result).model_validate_json(result.model_dump_json()) == result
 
         delta = 2.0
         delta_se = math.sqrt(9.0 / 120 + 4.0 / 100)
@@ -370,6 +372,8 @@ class TestSitewideImpactRatio:
             site_total_numerator=site_total_numerator,
             site_total_denominator=site_total_denominator,
         )
+        assert result.scaled_units == round(result.n_enrolled)
+        assert type(result).model_validate_json(result.model_dump_json()) == result
 
         delta_num = 2.0
         delta_den = 1.0

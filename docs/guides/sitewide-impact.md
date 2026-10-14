@@ -8,9 +8,9 @@ can compute site volume from the raw event stream. An adopted
 published with a `site_volume` extension for the requested metric; see the
 [artifact operation and extension matrix](data-model.md#operation-and-extension-matrix).
 Pre-melted summaries and moments do not retain the required whole-site evidence.
-The [worked example](#worked-example) shows mean and ratio metrics. Read the
-output as window-specific absolute and relative impact, not as a new per-unit
-estimate; see [Reading results](reading-results.md) and
+The [worked example](#worked-example) shows mean and ratio metrics.
+Read the output as window-specific absolute and relative impact, not as a new
+per-unit estimate; see [Reading results](reading-results.md) and
 [Multiplicity](multiplicity.md) for row context.
 
 The calculation assumes the observed per-unit effect applies to all enrolled
@@ -19,19 +19,236 @@ horizon projection. Check [what refuses](#what-refuses) before selecting a
 metric or source.
 
 
-## Whole-site impact under a trigger
+When an experiment declares `trigger:`, the default `population="assigned"`
+still reports the assignment-based intent-to-treat whole-site impact. You
+can also request `population="triggered"`: this scales the lift among units
+in finalized trigger membership by the number of triggered enrolled units.
+Both readings use the experiment's calendar window (`start .. end`) for
+outcomes. In particular, sitewide does **not** use `run()`'s trigger-anchored
+observation windows or include outcomes after the experiment end, even when
+`observation_end` is later. Late triggers can belong to triggered membership
+while their outcome contribution still comes from the fixed experiment
+window. Site volume remains the full-site total, not a trigger-filtered total.
 
-When an experiment declares `trigger:`, `sitewide()` still reports the
-`assigned` intent-to-treat whole-site impact. It uses assignment-anchored
-windows and includes every enrolled unit, whether or not that unit triggered;
-declaring a trigger therefore does not change this estimand. Requesting
-`population="triggered"` is refused: the triggered-population sitewide
-estimand would scale triggered lift by triggered units and is interpretable as
-whole-site impact only if units that never trigger are unaffected. That
-assumption is not made here. Scaling triggered lift by all enrolled units is
-also incorrect: for example, if 20 of 100 units trigger, lift is 10, and the
-other 80 have no effect, the whole-site impact is 200, not 1,000. Use
-`run()` for the triggered cohort effect.
+Both assigned and triggered sitewide require a randomized identification
+design. Observational and encouragement designs refuse before loading
+sitewide evidence; use `Analysis.run()` for their estimands.
+Outcomes must reach the experiment end. The triggered reading needs every
+outcome feed certified complete through the end day by a watermark in
+`SourceSnapshotEvidence` (or published with the artifact). The assigned
+reading refuses when the snapshot cutoff or a declared watermark stops before
+the end day, and otherwise proceeds as before; a native analysis without
+snapshot evidence has no edge to check. Either refusal names
+`facade.analysis.sitewide_outcomes_incomplete`; re-run once the outcome feeds
+reach the experiment end.
+The assigned/triggered `snapshot_id` equality is content-bound only for
+artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
+table contents.
+
+The two readings can be computed from one immutable artifact that includes
+the required trigger and site-volume evidence:
+
+```python
+from pathlib import Path
+import datetime as dt
+
+import ibis
+import polars as pl
+import warnings
+
+from increment import (
+    Analysis,
+    SourceSnapshotEvidence,
+    unit_day_artifact_extension_catalog,
+)
+from increment.query.session import WarehouseArtifactStore
+from increment import IncrementWarning
+
+Path("triggered-definitions").mkdir(exist_ok=True)
+Path("triggered-definitions/fact_sources.yaml").write_text("""\
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: enrolled
+        column: null
+      - name: saw_surface
+        column: null
+      - name: revenue
+        column: value
+      - name: sessions
+        column: value
+""")
+Path("triggered-definitions/exposures.yaml").write_text("""\
+exposures:
+  - name: assignment
+    fact: enrolled
+  - name: saw_surface
+    fact: saw_surface
+""")
+Path("triggered-definitions/metrics.yaml").write_text("""\
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: revenue
+    aggregation: sum
+  - name: revenue_per_session
+    type: ratio
+    entity: user_id
+    numerator: {fact: revenue, aggregation: sum}
+    denominator: {fact: sessions, aggregation: sum}
+""")
+Path("triggered-definitions/experiments.yaml").write_text("""\
+experiments:
+  - name: triggered_launch
+    exposure: assignment
+    trigger: saw_surface
+    unit: user_id
+    start: 2025-03-01
+    end: 2025-03-10
+    control_group: control
+    plan:
+      secondaries: [revenue, revenue_per_session]
+""")
+
+triggered_rows = []
+trigger_start = dt.datetime(2025, 3, 1, 9)
+for i in range(40):
+    user = f"u{i:03d}"
+    arm = "treatment" if i % 2 else "control"
+    event_base = {
+        "user_id": user,
+        "group_id": arm,
+        "experiment_id": "triggered_launch",
+    }
+    triggered_rows.append({**event_base, "ts": trigger_start, "event": "enrolled", "value": None})
+    if i % 3 != 0:
+        triggered_rows.append(
+            {**event_base, "ts": trigger_start, "event": "saw_surface", "value": None}
+        )
+    triggered_rows.extend(
+        [
+            {
+                **event_base,
+                "ts": trigger_start + dt.timedelta(days=1),
+                "event": "revenue",
+                "value": 12.0 + (4.0 if arm == "treatment" and i % 3 != 0 else 0.0),
+            },
+            {
+                **event_base,
+                "ts": trigger_start + dt.timedelta(days=1),
+                "event": "sessions",
+                "value": 1.0,
+            },
+        ]
+    )
+# Unexposed site activity contributes to site volume but not enrolled outcomes.
+triggered_rows.append(
+    {
+        "user_id": "background",
+        "group_id": None,
+        "experiment_id": None,
+        "ts": trigger_start + dt.timedelta(days=2),
+        "event": "revenue",
+        "value": 80.0,
+    }
+)
+triggered_events = pl.DataFrame(triggered_rows)
+triggered_con = ibis.duckdb.connect()
+triggered_con.create_table("events", triggered_events.to_arrow())
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", IncrementWarning)
+    triggered_analysis = Analysis.from_definitions(
+        "triggered_launch",
+        "triggered-definitions/",
+        triggered_con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2025, 3, 12, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2025, 3, 12, tzinfo=dt.UTC)},
+        ),
+    )
+triggered_store = WarehouseArtifactStore(triggered_con, schema_name="sitewide_artifacts")
+triggered_context = triggered_analysis.artifact_context
+triggered_catalog = unit_day_artifact_extension_catalog(triggered_context)
+triggered_requests = [
+    entry.request
+    for entry in triggered_catalog
+    if entry.request.kind in {"site_volume", "trigger_population", "assignment_counts"}
+]
+triggered_reference = triggered_analysis.publish_unit_day_artifact(
+    triggered_store, extensions=triggered_requests
+)
+incomplete_reference = triggered_analysis.publish_unit_day_artifact(
+    triggered_store,
+    extensions=[
+        entry.request for entry in triggered_catalog if entry.request.kind == "site_volume"
+    ],
+)
+incomplete_artifact = Analysis.from_unit_day_artifact(
+    triggered_store, incomplete_reference, expected_context=triggered_context
+)
+analysis = Analysis.from_unit_day_artifact(
+    triggered_store, triggered_reference, expected_context=triggered_context
+)
+```
+
+```python
+for m in ("revenue", "revenue_per_session"):
+    assigned = analysis.sitewide(m)
+    triggered = analysis.sitewide(m, population="triggered")
+    print(f"{m}: assigned={assigned}; triggered={triggered}")
+    assert assigned.snapshot_id == triggered.snapshot_id
+    assert assigned.window == triggered.window
+    assert triggered.membership_cutoff is not None
+```
+
+The result is `exploratory_unadjusted`: no family adjustment is applied, and
+these fixed-horizon intervals are not anytime-valid.
+
+The unit-day artifact above contains both trigger membership and site-volume
+evidence. If trigger membership was omitted, triggered sitewide refuses with
+`artifact.extension.missing`; republish the source with the required evidence:
+
+
+```python
+from increment.errors import InvalidRequestError
+
+try:
+    incomplete_artifact.sitewide("revenue", population="triggered")
+except InvalidRequestError as err:
+    print(err.code)
+
+recovered_reference = triggered_analysis.publish_unit_day_artifact(
+    triggered_store, extensions=triggered_requests
+)
+recovered_artifact = Analysis.from_unit_day_artifact(
+    triggered_store, recovered_reference, expected_context=triggered_context
+)
+recovered = recovered_artifact.sitewide("revenue", population="triggered")
+print(recovered.analysis_population, recovered.membership_cutoff)
+incomplete_artifact.close()
+recovered_artifact.close()
+analysis.close()
+triggered_analysis.close()
+```
+
+The triggered result is a conditional fixed-membership estimate. It assumes
+membership is independent of treatment assignment, units that never trigger
+are unaffected, and enrolled units exhaust exposure; the result includes an
+allocation-balance diagnostic, but a passed diagnostic cannot establish those
+assumptions. The result is explicitly exploratory and unadjusted for
+multiplicity.
+
+**Calibration:** in two-arm simulations whose assumptions held, both readings
+covered the realized site impact at 95.1%–95.7% for nominal 95% intervals. When
+units that never trigger were affected, the triggered reading missed by the
+omitted effect while the assigned reading stayed calibrated. See
+[limitations](../limitations.md) for the designs, the precision comparison and
+what the campaign does not cover.
 
 ## The ship-to-all counterfactual
 
@@ -197,12 +414,12 @@ baseline.
 `Experiment.cluster` (see [The data model](data-model.md#randomization-grain-vs-analysis-grain))
 is recognized here as elsewhere in the library: it identifies the stores,
 markets, or other units whose assignment actually changed, not the
-individually measured units. `Analysis.sitewide()` allows `mean`,
-`conversion`, `retention`, and `ratio` metrics; any other declared type
-raises `CapabilityError` naming the metric type and cluster. In practice,
-`mean`, `conversion`, and `ratio` produce clustered readings.
-`RetentionMetric` still refuses for the site-volume reason in
-["What refuses"](#what-refuses), whether or not the experiment is clustered.
+individually measured units. Clustered readings come from unwindowed `mean`
+and `ratio` metrics with sum- or count-aggregated components; any other
+declared type raises `CapabilityError`. Conversion, retention and quantile
+metrics refuse for the site-volume reasons in ["What refuses"](#what-refuses),
+whether or not the experiment is clustered; read conversion events with a
+`count` metric on the conversion fact.
 
 The per-unit lift $\delta$ and its variance are no longer a plain arm mean
 and Welch SE. Each arm becomes a ratio of cluster totals: outcome summed per
@@ -275,19 +492,21 @@ precision; adding units inside each cluster adds little.
   independently of exposure, and a quantile is a distributional
   statistic that is not additive across events. Both raise
   `CapabilityError` before any moments are even built.
-- **A clustered experiment's metric type.** `Analysis.sitewide()`
-  recognizes a declared cluster for `mean`, `conversion`, `retention`,
-  and `ratio` metrics; any other type raises `CapabilityError` naming
-  the metric's type and the cluster. In practice that gate never turns
-  away anything reachable today: `TotalMetric` and `ActiveMetric` cannot
-  be declared on any native experiment's `metrics`/`guardrails` at all,
-  clustered or not -- a load-time restriction that predates this feature
-  (they have no per-unit variance the estimation engine can serve;
-  `increment.Report` is the intended path for them instead).
-  `RetentionMetric` still refuses for the site-volume reason above
-  regardless of `cluster`. `mean`, `conversion`, and `ratio` are
-  therefore the metric types that actually produce a clustered sitewide
-  reading.
+- **Windowed or non-additive metrics (both populations).** Site totals cover
+  the experiment calendar window `[start, end]`; a per-unit window or
+  aggregation such as `avg_event`, `min`, or `count_distinct` cannot align.
+  Ratio components follow the same rule. Both paths refuse before evidence is
+  loaded; use an unwindowed sum or count aggregation.
+- **Conversion metrics (both populations).** A converter indicator is a maximum
+  over a unit's events, not an additive event total; it cannot be decomposed
+  into per-unit contributions. Both native and artifact calls refuse before
+  loading evidence with `facade.analysis.sitewide_metric_unaligned`. Declare a
+  `count` metric (mean metric, `aggregation: count`) on the conversion fact to
+  read conversion events site-wide.
+- **A clustered experiment's metric type.** Clustered sitewide readings
+  require additive mean or ratio components that decompose over cluster-grain
+  moments. Conversion metrics refuse as non-additive, and retention/quantile
+  metrics refuse because site volume is undefined for them.
 - **Summary and moments sources.** `from_unit_summary`,
   `from_unit_panel`, and `from_moments` start from pre-melted outcomes or
   moments and cannot provide the whole-site raw-event total required by
@@ -296,6 +515,10 @@ precision; adding units inside each cluster adds little.
   requested metric; see the [artifact operation and extension
   matrix](data-model.md#operation-and-extension-matrix). An artifact without
   this extension cannot supply site-volume evidence.
+- **Observational and encouragement designs.** Both assigned and triggered
+  sitewide require randomized identification; the unadjusted sitewide contrast
+  does not implement their estimands. The refusal occurs before evidence is
+  loaded. Use `Analysis.run()` for the observational or encouragement estimand.
 - **An ambiguous arm.** With several non-control arms enrolled and no
   `arm=` given, `sitewide()` raises `ValueError` naming the candidates
   rather than silently picking one for you.
@@ -321,8 +544,7 @@ dialect: duckdb
 
 fact_sources:
   - name: event_log
-    sql: |
-      SELECT * FROM analytics.event_log
+    sql: SELECT * FROM analytics.event_log
     timestamp_column: event_at
     entities:
       - user_id
@@ -334,8 +556,8 @@ fact_sources:
         column: revenue
         description: A purchase event with its revenue amount
       - name: session_end
-        column: null
-        description: A session ended (occurrence-only event)
+        column: session_count
+        description: One per session end event, for additive session totals
 """)
 Path("definitions/exposures.yaml").write_text("""\
 exposures:
@@ -349,26 +571,22 @@ Path("definitions/metrics.yaml").write_text("""\
 metrics:
   - type: mean
     name: revenue_per_user
-    description: "Total purchase revenue per user over 14 days"
+    description: "Total purchase revenue per user over the full calendar window"
     entity: user_id
     preferred_direction: increase
     fact: purchase
     aggregation: sum
-    window_days: 14
-
   - type: ratio
     name: revenue_per_session
-    description: "Revenue per session (ratio of sums)"
+    description: "Revenue per session (ratio of additive sums)"
     entity: user_id
     preferred_direction: increase
     numerator:
       fact: purchase
       aggregation: sum
-      window_days: 14
     denominator:
       fact: session_end
-      aggregation: count
-      window_days: 14
+      aggregation: sum
 """)
 Path("definitions/experiments.yaml").write_text("""\
 experiments:
@@ -409,7 +627,7 @@ import warnings
 import ibis
 import polars as pl
 
-from increment import Analysis
+from increment import Analysis, IncrementWarning
 
 random.seed(4)
 start = dt.datetime(2025, 3, 1, 9, 0)
@@ -424,6 +642,7 @@ for i in range(200):
             "user_id": user,
             "event": "page_view",
             "revenue": None,
+            "session_count": None,
             "experiment_id": "site_launch",
             "group_id": group,
             "store_id": None,
@@ -479,13 +698,22 @@ for d in range(30):
             "store_id": None,
         }
     )
-events = pl.DataFrame(rows).with_columns(pl.col("store_id").cast(pl.Utf8))
+events = pl.DataFrame(rows).with_columns(
+    pl.when(pl.col("event") == "session_end")
+    .then(1)
+    .otherwise(None)
+    .cast(pl.Int64)
+    .alias("session_count"),
+    pl.col("store_id").cast(pl.Utf8),
+)
 
 con = ibis.duckdb.connect()  # in-memory; swap for Snowflake/BigQuery/Postgres
 con.create_database("analytics")
 con.create_table("event_log", events.to_arrow(), database="analytics")
 
-analysis = Analysis.from_definitions("site_launch", "definitions/", con)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", IncrementWarning)
+    analysis = Analysis.from_definitions("site_launch", "definitions/", con)
 
 sum_result = analysis.sitewide("revenue_per_user")
 print(f"observed site volume:   {sum_result.site_total_volume:,.2f}")
@@ -532,8 +760,7 @@ detectable amount.
 The second experiment, `store_rollout`, declares `cluster: store_id`.
 The store ID comes from exposure (`page_view`) rows, as described in
 [The data model](data-model.md#randomization-grain-vs-analysis-grain).
-Background purchases keep `data_as_of` past every enrolled store's
-14-day window close.
+Background purchases keep `data_as_of` through the experiment calendar window.
 
 ```python
 random.seed(7)
@@ -587,8 +814,7 @@ for arm_name in ("control", "treatment"):
                 )
         store_i += 1
 
-# Background purchases past every store's 14-day window close, so the
-# fact table's data_as_of does not censor the whole experiment.
+# Background purchases cover the experiment's full calendar window.
 for d in range(30):
     cluster_rows.append(
         {
@@ -613,10 +839,20 @@ for d in range(30):
         }
     )
 
-all_events = pl.concat([events, pl.DataFrame(cluster_rows)])
+cluster_events = pl.DataFrame(cluster_rows).with_columns(
+    pl.when(pl.col("event") == "session_end")
+    .then(1)
+    .otherwise(None)
+    .cast(pl.Int64)
+    .alias("session_count"),
+    pl.col("store_id").cast(pl.Utf8),
+)
+all_events = pl.concat([events, cluster_events.select(events.columns)])
 con.create_table("event_log", all_events.to_arrow(), database="analytics", overwrite=True)
 
-cluster_analysis = Analysis.from_definitions("store_rollout", "definitions/", con)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", IncrementWarning)
+    cluster_analysis = Analysis.from_definitions("store_rollout", "definitions/", con)
 
 with warnings.catch_warnings(record=True) as cluster_warnings:
     # This is the documented cluster-population advisory, not an error in
