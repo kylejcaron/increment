@@ -238,22 +238,35 @@ results = Analysis.from_unit_summary(
 ).run()
 print(results)
 
-# The full frame retains qualifications; this selection is only a compact view.
-decision_table = results.to_frame(backend="polars")[
-    [
-        "metric",
-        "group_id",
-        "method",
-        "lift",
-        "lb",
-        "ub",
-        "sampling_available",
-        "decision_scope_complete",
-        "multiplicity_status",
-    ]
-]
+for r in results:
+    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
+        # no point, or a withheld or open bound; str shows the row's set or reason
+        print(str(r))
+        continue
+    print(
+        f"{r.metric} / {r.group_id}: "
+        f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
+        f"significant={r.stat_sig()}"
+    )
+
+# The default frame retains qualified evidence; selected views retain requested
+# projection columns and view_partial.
+decision_table = results.to_frame(backend="polars", columns="summary")
+custom_table = results.to_frame(
+    backend="polars",
+    columns=["metric", "group_id", "method", "lift", "lb", "ub"],
+)
 ```
 
+`columns=None` remains the full projection. Each `"summary"` preset contains
+existing projection fields only, including row identity (`estimand` and
+`value_scale`), `decision_scope_complete`, and `multiplicity_status`; breakout
+and daily summaries also retain segment identity, and daily summaries retain
+unavailability reasons. Models without a summary preset refuse. Every view
+appends `view_partial`, including custom column sequences, so a sliced
+collection remains visibly partial. A custom sequence is checked against the
+projection's column names and returned in canonical projection order before
+`view_partial`; unknown names raise `results.frame.unknown_columns`.
 ```text
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
