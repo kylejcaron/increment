@@ -345,6 +345,54 @@ def test_unit_summary_breakout_preserves_all_missing_segment_as_unavailable():
     assert segment_b.lift is not None
 
 
+def test_encouragement_breakout_preserves_all_missing_segment():
+    import pandas as pd
+
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{segment}-{group}-{index}",
+                "arm": group,
+                "segment": segment,
+                "y": None if segment == "A" else 10.0 + (group == "treatment") + index,
+                "clicked": float(group == "treatment" and index < 2),
+            }
+            for segment in ("A", "B")
+            for group in ("control", "treatment")
+            for index in range(4)
+        ]
+    )
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            metrics=[MetricSpec(name="y", type="mean", missing="drop")],
+            design=Encouragement(
+                control_group="control",
+                uptake=UptakeSpec(fact="clicked"),
+                exclusion_restriction=ExclusionRestriction(
+                    acknowledged=True, justification="assignment affects y through uptake"
+                ),
+                min_first_stage_z=0.001,
+            ),
+            breakouts=("segment",),
+        )
+
+    rows = analysis.run_breakout()
+    segment_a_rows = [row for row in rows if row.dimension_value == "A"]
+    segment_b_rows = [row for row in rows if row.dimension_value == "B"]
+    assert segment_a_rows
+    assert all(row.excluded == "missing_metric_observations" for row in segment_a_rows)
+    assert all(
+        row.failure_code == "readout.cell.missing_metric_observations" for row in segment_a_rows
+    )
+    assert {row.estimand for row in segment_a_rows} == {"itt", "compliance", "late"}
+    assert segment_b_rows and all(row.excluded is None for row in segment_b_rows)
+
+
 def test_unit_summary_breakout_remaps_resolved_default_uptake():
     import pandas as pd
 
