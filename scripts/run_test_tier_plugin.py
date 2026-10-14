@@ -94,11 +94,11 @@ def pytest_xdist_setupnodes(config: pytest.Config, specs: list[Any]) -> None:
         return
     expected = os.environ.get("INCREMENT_AFFECTED_WORKER_ALLOWANCE", "serial")
     count = len(specs)
-    if expected == "serial" or not 1 <= count <= 8 or any(not spec.popen for spec in specs):
+    if expected == "serial" or count < 1 or any(not spec.popen for spec in specs):
         raise pytest.UsageError(
-            "effective affected xdist worker list must contain 1-8 local popen workers"
+            "effective affected xdist worker list must contain local popen workers"
         )
-    if count != int(expected):
+    if expected != "auto" and count != int(expected):
         raise pytest.UsageError(
             f"effective affected xdist worker list has {count} workers; expected {expected}"
         )

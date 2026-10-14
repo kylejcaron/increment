@@ -46,6 +46,18 @@ def _clean_pytest_environment(environment: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def _parse_affected_workers(value: str) -> int | str:
+    if value == "auto":
+        return value
+    try:
+        workers = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("-n must be a positive worker count or auto") from error
+    if workers < 1:
+        raise argparse.ArgumentTypeError("-n must be a positive worker count or auto")
+    return workers
+
+
 _TIMEOUT_STATUS = 124
 
 
@@ -1037,15 +1049,13 @@ def _affected_main(argv: Sequence[str]) -> int:
     parser.add_argument("-q", dest="quiet", action="count", default=0)
     parser.add_argument("-v", dest="verbose", action="count", default=0)
     parser.add_argument("--durations", type=int)
-    parser.add_argument("-n", dest="workers", type=int)
+    parser.add_argument("-n", dest="workers", type=_parse_affected_workers)
     parser.add_argument("--dist", choices=("loadgroup",))
     parser.add_argument("--evidence-root", default=".test-evidence/affected")
     parser.add_argument("--runtime-diagnostics", action="store_true")
     args = parser.parse_args(argv)
     if args.maxfail_one and args.maxfail is not None:
         parser.error("-x and --maxfail cannot be combined")
-    if args.workers is not None and not 1 <= args.workers <= 8:
-        parser.error("-n must be a numeric worker count from 1 through 8")
     if args.dist is not None and args.workers is None:
         parser.error("--dist requires -n")
     if args.runtime_diagnostics and not args.evidence_root:
