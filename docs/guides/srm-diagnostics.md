@@ -92,6 +92,13 @@ proportions alone are not enough. Without that declaration, the analysis reports
 the check as not applicable. Fixed-look inference remains an explicit one-look
 option.
 
+Each `Analysis.run()` also emits `integrity.srm_not_checked` when randomized
+arm results are available but the design omits `allocation_scheme`. Declare
+`allocation_scheme="independent"` only for independent, constant-probability
+assignment; otherwise use `srm(inference="fixed")` for a single predeclared
+look when that diagnostic is appropriate. `health_check()` continues to report
+the allocation check as unavailable until the assignment law is declared.
+
 ## Assignment-protocol requirements
 
 `inference="always_valid"` REQUIRES a predeclared `expected` allocation

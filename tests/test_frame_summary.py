@@ -507,6 +507,79 @@ def _cuped_pair(frame: pa.Table, covariate: str):
     return plain, adjusted
 
 
+def test_run_warns_when_available_covariate_is_not_requested(arrow_frame: pa.Table) -> None:
+    import warnings
+
+    from increment import Analysis
+
+    analysis = Analysis.from_unit_summary(
+        arrow_frame,
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        design=_DESIGN,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+
+    from tests.warning_codes import warning_codes, warning_context
+
+    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
+    context = warning_context(caught, "analysis.cuped.covariate_unused")
+    assert context["metric_name"] == "revenue"
+    assert "decision_method" in str(context["route"])
+
+
+@pytest.mark.parametrize(
+    "decision_method",
+    [
+        Method(name="cuped", variance_reduction="cuped"),
+        Method(name="unadjusted"),
+    ],
+)
+def test_run_does_not_warn_when_decision_method_is_explicit(
+    arrow_frame: pa.Table, decision_method: Method
+) -> None:
+    import warnings
+
+    from increment import Analysis
+    from tests.warning_codes import warning_codes
+
+    analysis = Analysis.from_unit_summary(
+        arrow_frame,
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        design=_DESIGN,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run(decision_method=decision_method)
+
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+
+
+def test_run_does_not_warn_when_cuped_is_a_sensitivity_method(arrow_frame: pa.Table) -> None:
+    import warnings
+
+    from increment import Analysis
+    from tests.warning_codes import warning_codes
+
+    analysis = Analysis.from_unit_summary(
+        arrow_frame,
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        design=_DESIGN,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run(sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")])
+
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+
+
 def test_cuped_narrows_interval_without_moving_the_point(arrow_frame: pa.Table) -> None:
     """With arms balanced on the covariate, CUPED buys precision and nothing else.
 

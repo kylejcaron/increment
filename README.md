@@ -26,7 +26,8 @@ maintain a separate event store.
 ## What you can do
 
 - **Analyze experiments** — estimate effects, reduce variance with CUPED, apply
-  multiple-comparison corrections, and check sample-ratio mismatch.
+  multiple-comparison corrections, and check sample-ratio mismatch when the
+  assignment law is declared (`allocation_scheme="independent"`).
 - **Bayesian inference** — combine prior beliefs with experiment data to estimate effects and
   probabilities of benefit.
 - **Plan and monitor** — solve for sample size, power, and minimum detectable

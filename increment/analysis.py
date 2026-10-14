@@ -30,6 +30,7 @@ from increment._analysis_config import (
     _Unset,
     effective_methods,
     normalize_display_correction,
+    overlay_configs,
     select_exploratory_metrics,
     select_metrics,
 )
@@ -2570,7 +2571,72 @@ class Analysis:
             )
             extra = _stamp_exploratory_rows(extra)
             rows = extra if rows.metadata is None else rows.concat(extra)
+        self._warn_run_advisories(
+            selected,
+            rows,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+        )
         return rows
+
+    def _warn_run_advisories(
+        self,
+        selected: Sequence[Metric],
+        rows: LiftEstimates,
+        *,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+    ) -> None:
+        from increment._frame_validation import _warn
+        from increment.semantics.design import Randomized
+
+        state = self._state
+        assert not isinstance(state, ContrastAnalysisState)
+        design = self._design
+        if rows and isinstance(design, Randomized) and design.allocation_scheme is None:
+            _warn(
+                "integrity.srm_not_checked",
+                experiment_name=state.experiment_name,
+                route=(
+                    "Declare allocation_scheme='independent' only for independent, "
+                    "constant-probability assignment, or call srm(inference='fixed') "
+                    "for one predeclared look."
+                ),
+            )
+
+        if not selected:
+            return
+        configs = overlay_configs(
+            selected,
+            state.source.context.configs,
+            methods=None,
+            prior=None,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+        )
+        warehouse_covariate = (
+            isinstance(state, DefinitionsArmAnalysisState) and state.experiment.n_pre_periods > 0
+        )
+        for config in configs:
+            covariate_available = config.covariate_available or (
+                warehouse_covariate and config.metric.type in ("mean", "conversion", "ratio")
+            )
+            if (
+                covariate_available
+                and config.decision_defaulted
+                and not config.methods_explicitly_empty
+                and not any(
+                    method.variance_reduction == "cuped" for method in config.sensitivity_methods
+                )
+            ):
+                _warn(
+                    "analysis.cuped.covariate_unused",
+                    metric_name=config.metric.name,
+                    route=(
+                        "Request Method(name='cuped', variance_reduction='cuped') "
+                        "as decision_method or a sensitivity method in run()."
+                    ),
+                )
 
     def _run_contrast(
         self,

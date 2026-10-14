@@ -26,7 +26,11 @@ and [CUPED under sequential inference](#cuped-under-sequential-inference).
 ## On the dataframe path
 
 With `Analysis.from_unit_summary`, set each metric's pre-period column
-in `MetricSpec(covariate=...)`. Then request CUPED in `run()`:
+in `MetricSpec(covariate=...)`. This makes CUPED available, but does not
+request the adjustment: `run()` keeps its declared/default decision method.
+When a covariate is available but an omitted decision method defaults to
+unadjusted (and no CUPED sensitivity method is selected), `run()` emits
+`analysis.cuped.covariate_unused`. Request CUPED explicitly:
 
 ```python
 import numpy as np
@@ -194,10 +198,12 @@ A unit with no pre-period activity gets zero. The same rule applies to
 both groups, preserving independence from assignment. Units without
 history may contribute less precision.
 
-`n_pre_periods` makes pre-period data available; requesting CUPED makes
-Increment query it. A positive lookback alone does not add a covariate query.
-For each metric, call-wide method overrides take precedence over the
-experiment's per-metric bindings.
+`n_pre_periods` makes pre-period data available for eligible metrics;
+requesting CUPED makes Increment query it. A positive lookback alone does not
+add a covariate query or adjust the decision method. If the decision method
+defaults to unadjusted and no CUPED sensitivity method is selected, `run()`
+emits `analysis.cuped.covariate_unused`. For each metric, call-wide method
+overrides take precedence over the experiment's per-metric bindings.
 
 Requesting `variance_reduction="cuped"` with `n_pre_periods == 0`
 raises a `ValueError`. Set a positive lookback to supply the covariate.

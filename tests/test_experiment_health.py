@@ -752,6 +752,66 @@ def test_health_unit_panel_reports_only_supported_population() -> None:
     assert report.checks[0].code == "integrity.allocation_scheme_missing"
 
 
+def test_run_warns_each_time_when_randomized_srm_is_not_checked() -> None:
+    import warnings
+
+    from tests.warning_codes import warning_codes, warning_context
+
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="C",
+        metrics={"value": "mean"},
+    )
+    for _ in range(2):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            analysis.run()
+        assert warning_codes(caught) == ["integrity.srm_not_checked"]
+        assert "independent" in str(warning_context(caught, "integrity.srm_not_checked")["route"])
+    assigned = next(
+        check for check in analysis.health_check().checks if check.check == "assigned_allocation"
+    )
+    assert assigned.availability == "unavailable"
+    assert assigned.code == "integrity.allocation_scheme_missing"
+
+
+def test_run_does_not_warn_when_randomized_scheme_is_declared() -> None:
+    import warnings
+
+    from tests.warning_codes import warning_codes
+
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Randomized(
+            control_group="C",
+            allocation={"C": 0.5, "T": 0.5},
+            allocation_scheme="independent",
+        ),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+
+    assert "integrity.srm_not_checked" not in warning_codes(caught)
+
+
 def test_health_switchback_does_not_substitute_unit_arm_srm() -> None:
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
