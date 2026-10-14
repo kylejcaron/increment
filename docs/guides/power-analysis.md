@@ -263,14 +263,13 @@ Likewise, power need not be monotone in sample size or effect:
   planning calculation, not a proof that no smaller size can reach it.
 - `minimum_detectable_effect` searches for the earliest detectable region to
   an effect tolerance of `1e-8` absolute plus `1e-8` relative, measured on the
-  relative-effect scale, not the first IEEE-representable effect. It
-  cannot silently skip a materially earlier unresolved band. The result's
-  `power` is evaluated at the reported effect, not copied from the target.
-  Where the evaluation budgets leave an enclosure straddling the target at
-  both evaluated ends of an interval, the interval is left unsearched and the
-  search continues: the returned effect is the earliest whose lower end
-  certifies the target along the search, which may lie above an effect a
-  fuller evaluation would certify.
+  relative-effect scale, not the first IEEE-representable effect. The result's
+  `power` is evaluated at the reported effect, not copied from the target. A
+  band whose evaluated ends fall short with resolved enclosures refuses with
+  `numerical_resolution`. A band the evaluation budgets leave straddling the
+  target (both evaluated ends at any width, or either end once the band is at
+  tolerance width) is passed over, so `mde_relative` certifies its target but
+  may lie above an effect a fuller evaluation would certify.
 - A target excluded over every admissible effect is `unattainable`. If the
   search cannot distinguish detectability or exclude an earlier region at its
   numerical resolution, or the far end's enclosure straddles the target, a

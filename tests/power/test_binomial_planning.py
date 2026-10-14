@@ -237,13 +237,15 @@ def _standard_plan_reference(
     arm, from ``binomial_rr.p_plus``/``p_minus`` (the runtime's p-values, about 30 ms each at
     these counts) and SciPy's binomial tails; it shares no code with the planner.
 
-    At a fixed control count the p-value for ``R > r0`` is nonincreasing in the treatment
-    count and the one for ``R < r0`` nondecreasing, so each retained control row rejects on a
-    plus tail ``[t, n]`` and a minus head ``[0, s]`` of treatment counts, each located from the
-    previous row's. The plus tails and the minus heads of the rows that carry material minus
-    mass are summed exactly; the other rows' minus heads lie below a count near a Normal guess
-    whose minus p-value reaches the tail level, and that count's head mass, with the control
-    mass outside the retained rows, is the bracket's width."""
+    Premise: at a fixed control count the runtime's p-value for ``R > r0`` is nonincreasing in
+    the treatment count and the one for ``R < r0`` nondecreasing, so each retained control row
+    rejects on a plus tail ``[t, n]`` and a minus head ``[0, s]`` of treatment counts, each
+    located from the previous row's by `_first_rejecting`. The premise is spot-checked on a
+    sample of rows: no decision reverses within 16 counts on either side of a located
+    threshold (`_monotone_about`). The plus tails and the minus heads of the rows that carry
+    material minus mass are summed exactly; the other rows' minus heads lie below a count near
+    a Normal guess whose minus p-value reaches the tail level, and that count's head mass,
+    with the control mass outside the retained rows, is the bracket's width."""
     decision = procedure.decision
     assert isinstance(decision, RelativeDecisionPolicy)
     r0 = 1.0 + decision.null_lift
@@ -255,6 +257,7 @@ def _standard_plan_reference(
     mass, slack = 0.0, float(control.cdf(lo - 1) + control.sf(hi))
     plus_from = round(n * p_c * (1.0 + 2.0 * math.sqrt(2.0 * (1.0 - p_c) / (n * p_c))))
     minus_to: int | None = None
+    sampled = max(1, (hi - lo) // 4)
     for x_c in range(lo, hi + 1):
         weight = float(control.pmf(x_c))
 
@@ -266,6 +269,8 @@ def _standard_plan_reference(
 
         plus_from = _first_rejecting(rejects_plus, min(plus_from + 1, n), 0, n)
         mass += weight * float(treatment.sf(plus_from - 1))
+        if (x_c - lo) % sampled == 0:
+            _monotone_about(rejects_plus, plus_from, n)
         near = max(0, x_c - round(1.5 * math.sqrt(2.0 * x_c * (1.0 - x_c / n))))
         if minus_to is None and weight * float(treatment.cdf(near - 1)) < 1e-9:
             while not keeps_minus(near):
@@ -274,7 +279,17 @@ def _standard_plan_reference(
             continue
         minus_to = _first_rejecting(keeps_minus, near if minus_to is None else minus_to + 1, 0, n)
         mass += weight * float(treatment.cdf(minus_to - 1))
+        if (x_c - lo) % sampled == 0:
+            _monotone_about(keeps_minus, minus_to, n)
     return mass, mass + slack
+
+
+def _monotone_about(holds, threshold: int, n: int, reach: int = 16) -> None:
+    """Assert ``holds`` is false at every count within ``reach`` below ``threshold`` and true
+    at every count within ``reach`` from it on, within ``[0, n]``: the step the reference
+    assumes has no reversal near where it was located."""
+    assert not any(holds(x) for x in range(max(0, threshold - reach), min(threshold, n + 1)))
+    assert all(holds(x) for x in range(threshold, min(n, threshold + reach) + 1))
 
 
 @pytest.mark.slow

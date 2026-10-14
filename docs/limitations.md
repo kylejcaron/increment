@@ -750,7 +750,9 @@ MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
 The reported power is evaluated at the returned effect. Internal accuracy
 bounds address numerical evaluation, not model misspecification; calibration
 remains a separate, deferred diagnostic. The planning model is
-`hybrid_finite_plus_delta_v3`, and persisted v1/v2 plans require recomputation.
+`hybrid_finite_plus_delta_v3`, and persisted v1/v2 plans require recomputation. A v3 result
+saved before `power_lower`/`power_upper` existed was sized by its computed point and carries
+no enclosure; recompute it for the lower-bound certificate.
 See [power planning](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
 for replay limits and comparisons with other tests.
 
@@ -1241,11 +1243,15 @@ times, and peak resident growth stays within 1.4 times:
 
 A supplied effect's own evaluation and a sizing's heuristic probes replay as before; the
 companion search after them now costs a fraction of the evaluation it follows rather than a
-multiple. An explicit `finite_sample` plan at the ticket's dense shapes (10,000 per arm and
-above at a 10% rate, 20,000 at 50%) has windows of 190,000 to 2.3 million cells, more than
-the per-evaluation budgets decide, so the enclosure stays wider than `1e-6` (the rows above
-record the refusal that stood then; the call now states the enclosure's lower end with
-`power_basis="lower_bound"` after the same one evaluation, 10 to 50 s here). Under the
+multiple. The outcome column is historical: its refusals of
+`power.binomial_probability_unresolved` are what stood when the table was measured. A rerun
+today states the enclosure's lower end as `power` (`power_basis="lower_bound"`) at the same
+sizes and times, and a sizing whose lower end never reaches the target climbs to its ceiling
+and refuses there with `power.binomial_replay_bound_exceeded` or
+`power.binomial_size_search_unreachable`. An explicit `finite_sample` plan at the ticket's
+dense shapes (10,000 per arm and above at a 10% rate, 20,000 at 50%) has windows of 190,000
+to 2.3 million cells, more than the per-evaluation budgets decide, so the enclosure stays
+wider than `1e-6` and the lower end is stated after one evaluation (10 to 50 s). Under the
 default `auto` the same budgets reach the designs the count rule does not route to the delta
 method with near certainty: at a 10% rate 10,000 per arm is `sparse` and 20,000 to 23,000
 `borderline` (the routing floor is 2,140 successes and failures per arm at the default

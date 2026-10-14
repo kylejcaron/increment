@@ -1144,9 +1144,11 @@ class TestPowerResultInvariants:
             self._result(**overrides)
         assert exc_info.value.code == code
 
-    def test_repr_names_the_bounds_when_present(self):
+    def test_repr_names_the_bounds_only_when_power_is_their_lower_end(self):
         bounded = self._result(power_basis="lower_bound", power_lower=0.8, power_upper=0.8004)
         assert "power_lower=0.8" in repr(bounded) and "power_upper=0.8004" in repr(bounded)
+        resolved = self._result(power_lower=0.8 - 1e-7, power_upper=0.8 + 1e-7)
+        assert "power_lower" not in repr(resolved)
         assert "power_lower" not in repr(self._result())
 
     @pytest.mark.parametrize("reason", ["unattainable", "unrepresentable", "numerical_resolution"])

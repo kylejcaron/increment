@@ -889,7 +889,7 @@ class PowerResult(CodedModel, BaseModel):
         planned = "" if self.planned_for is None else f", {self.planned_for}"
         bounds = (
             ""
-            if self.power_lower is None
+            if self.power_basis != "lower_bound"
             else f"power_lower={self.power_lower:.4g}, power_upper={self.power_upper:.4g}, "
         )
         return (
@@ -925,7 +925,7 @@ class PowerResult(CodedModel, BaseModel):
             ("power", self.power),
             ("power_basis", self.power_basis),
         ]
-        if self.power_lower is not None:
+        if self.power_basis == "lower_bound":
             args.append(("power_lower", self.power_lower))
             args.append(("power_upper", self.power_upper))
         args += [
@@ -2570,12 +2570,13 @@ class _BinomialMdeSearch(_MdeSearch):
     Discard an interval only if an upper bound excludes every computed point.
     Otherwise subdivide left first. A returned evaluated point certifies the target: the lower
     end of its enclosure reaches it. Every unexcluded earlier effect is within
-    ``atol + rtol * abs(effect)`` of it, or lies in an interval both of whose evaluated
-    endpoints the evaluation budgets leave straddling the target (an unresolved enclosure
-    holding it): such an interval is not searched further, since no bound excludes
-    certification inside it and none establishes it. An interval the bound cannot exclude whose
-    resolved endpoints both fall short at tolerance width is unresolved, and refuses instead
-    of being skipped for a later band.
+    ``atol + rtol * abs(effect)`` of it or lies in a band the evaluation budgets leave
+    straddling the target (an unresolved enclosure holding it) at both evaluated ends, at any
+    width, or at either end once the band is at tolerance width: such a band is passed over,
+    since no bound excludes certification inside it and none establishes it, so the answer
+    may lie above an effect a fuller evaluation would certify. A band the bound cannot
+    exclude whose evaluated ends both fall short with resolved enclosures at tolerance width
+    is unresolved and refuses.
 
     An interval's far endpoint is reserved when the interval is formed and decided only once
     its power is read (a narrow interval, the curvature term of an interval narrow enough for
@@ -4018,10 +4019,11 @@ def minimum_detectable_effect(
     enumerated point when that enclosure resolves to ``1e-6`` and the lower end otherwise
     (``power_basis="lower_bound"``, both ends in ``power_lower``/``power_upper``),
     conditional on the deployed SciPy/Boost special-function error model, not a cross-build
-    floating-point proof. A materially unresolved earlier interval refuses with
-    ``numerical_resolution`` rather than being skipped for a later band; an interval both of
-    whose evaluated ends the evaluation budgets leave straddling the target is left
-    unsearched and the search continues. Closed-form power is the delta-method
+    floating-point proof. A band whose evaluated ends fall short with resolved enclosures
+    refuses with ``numerical_resolution``. A band the evaluation budgets leave straddling the
+    target (both evaluated ends at any width, or either end once the band is at tolerance
+    width) is passed over and the search continues, so the returned effect certifies its
+    target but may lie above an effect a fuller evaluation would certify. Closed-form power is the delta-method
     model's own value. A target excluded throughout the admissible domain is ``unattainable``;
     one with no representable answer is ``unrepresentable``. Refusals carry a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves as in
