@@ -32,22 +32,6 @@ def _():
     )
 
 
-@app.cell(hide_code=True)
-def _():
-    import marimo as mo
-
-    mo.md(
-        """
-        This reproducible fixture separates assignment from trigger eligibility. The dashboard
-        defaults to the triggered cohort and switches the headline, Readout, inspector, Health,
-        allocation history, group evidence, and daily/as-of Explore series together. Triggered-only
-        inference is appropriate only when triggering is unaffected by treatment; a refusal keeps
-        the triggered series unavailable and offers the assignment-level view as a separate route.
-        """
-    )
-    return
-
-
 @app.cell
 def _(Path, tempfile):
     directory = Path(tempfile.mkdtemp(prefix="increment-triggered-dashboard-"))

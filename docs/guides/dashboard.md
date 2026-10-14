@@ -95,6 +95,12 @@ dashboard remains assigned-only.
 Switching populations retains the selected Readout metric and Explore scope,
 metric, and series controls when those selections exist in both views.
 
+The Health tab keeps the allocation summary and available, warning, and
+unavailable checks visible. Checks that do not apply because no trigger is
+declared collapse into one summary line; diagnostic codes and context are in
+the **Technical details** disclosure.
+
+
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
 checks. Triggered-cohort inference is appropriate only if triggering is
@@ -124,6 +130,11 @@ The standalone `render_header` and `render_metric_details` sections use the same
 selected-population default and accept `population="assigned"` or
 `population="triggered"` for an explicit view. Metric group evidence is scoped to
 that population; assignment counts remain separately labeled.
+
+Readout tables keep the core metric and arm identity, lift, and lift plot, with
+failure, family-discovery, or prior-advisory columns when those values exist.
+Numerical qualification appears in the metric inspector's interval-reading
+disclosure rather than the headline interval.
 
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only

@@ -15,7 +15,9 @@ headers rather than shrinking their textual evidence below the configured
 font floor. Presets expose independently adjustable palettes, typography,
 layout, native-chart dimensions, and print readability in `DashboardConfig.theme`.
 
-This particular example has no trigger, so its readouts are assigned-only.
+The Health tab keeps the allocation summary and applicable checks in view;
+not-applicable trigger checks are summarized, with codes and context in a
+collapsed technical-details section.
 For a reproducible triggered experiment with an assigned/triggered population
 selector, see the [triggered dashboard notebook](triggered_population_dashboard.md).
 

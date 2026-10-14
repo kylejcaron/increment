@@ -14,11 +14,7 @@ from html import escape
 from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment.tables import (
-    _binomial_qualification_disclosure,
-    _decision_available,
-    _format_confidence_set,
-)
+from increment.tables import _decision_available, _format_confidence_set
 
 if TYPE_CHECKING:
     from increment.dashboard._data import DashboardSnapshot
@@ -192,9 +188,6 @@ def complete_confidence_set_text(row: Mapping[str, Any]) -> str | None:
         scale=str(row.get("value_scale", "relative")),
         lift=row.get("lift"),
     )
-    qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
-    if text and qualification:
-        text = f"{text}; {qualification}"
     return esc(text) if text else None
 
 
@@ -222,10 +215,7 @@ def headline_interval(row: Mapping[str, Any]) -> str:
     lower, higher = endpoints
     opening = "(" if lower == -inf else "["
     closing = ")" if higher == inf else "]"
-    return (
-        f"{opening}{headline_endpoint(lower, row)}, "
-        f"{headline_endpoint(higher, row)}{closing}{_interval_qualification(row)}"
-    )
+    return f"{opening}{headline_endpoint(lower, row)}, {headline_endpoint(higher, row)}{closing}"
 
 
 def primary_tone(row: Mapping[str, Any]) -> str:
@@ -287,16 +277,7 @@ def interval_html(row: Mapping[str, Any]) -> str:
     if endpoints is None:
         return missing_html("no interval available")
     lower, higher = endpoints
-    return (
-        f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
-        f"{_interval_qualification(row)}"
-    )
-
-
-def _interval_qualification(row: Mapping[str, Any]) -> str:
-    """Keep numerical qualifications beside endpoints shown from the ordinary interval."""
-    qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
-    return f"; {esc(qualification)}" if qualification else ""
+    return f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
 
 
 def null_text(row: Mapping[str, Any]) -> str:
