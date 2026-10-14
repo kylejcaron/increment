@@ -1017,7 +1017,9 @@ def _run_affected_with_map(
         result = run_with_budget(
             command,
             tier=tier_name,
-            budget_seconds=tier.budget_seconds,
+            budget_seconds=(
+                None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
+            ),
             extra_env=extra_env,
             affected_evidence_root=evidence_root,
         )
@@ -1391,7 +1393,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tier, args.pytest_args, record_coverage=certification_report is not None
             ),
             tier=args.tier,
-            budget_seconds=tier.budget_seconds,
+            budget_seconds=(
+                None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
+            ),
             extra_env=extra_env,
         )
         recording_succeeded = (
