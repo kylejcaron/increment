@@ -542,9 +542,8 @@ Covariates must be available from the source's `unit_frame`. The definitions
 source serves any numeric `pre_exposure` or `static` property by name, resolved
 like a breakout. Unit-day artifacts automatically publish observational
 adjustment properties and per-metric CUPED property and measure bindings, so
-those covariates are also available on replay. This publication does not make
-the `cuped_linear` estimator available: estimation with that method remains
-unfinished.
+those covariates are also available on replay, including for `cuped_linear`
+estimation (see [CUPED](cuped.md)).
 Intercept-only calls (`interact=[]`) can use native and adopted artifact sources.
 They have constant rankings, so clustered AUTOC/Qini uncertainty is unavailable
 with `estimation.targeting.degenerate_rank_distribution`, and the targeting gate

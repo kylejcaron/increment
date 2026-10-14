@@ -327,9 +327,10 @@ apply this rule independently to each procedure.
 
 Power planning does not construct the mixed `cuped_linear` estimator and
 refuses procedures that request it with `power.cuped_linear_unavailable`.
-Use scalar CUPED as a conservative planning proxy, or plan without variance
-reduction; do not interpret scalar planning credit as a `cuped_linear` power
-claim.
+Plan without variance reduction, or use scalar CUPED on one covariate from the
+set as an approximation. The scalar plan is not a `cuped_linear` power claim:
+with many covariates or small arms, the extra fitted columns cost degrees of
+freedom, so it is not guaranteed to be conservative.
 `compliance` rescales a diluted encouragement effect, and `trigger_rate`
 accounts for the fraction of assigned units entering a triggered analysis. For clustered
 randomization, `avg_cluster_size` is the assigned mean size; `cluster_icc`

@@ -208,7 +208,7 @@ _REFUSALS = refusals(
         "power.cuped_linear_unavailable": RefusalSpec(
             "power.cuped_linear_unavailable",
             InvalidRequestError,
-            template="power planning does not construct the requested CUPED-linear estimator; use scalar CUPED as a conservative proxy or plan without variance reduction",
+            template="power planning does not construct the requested CUPED-linear estimator; plan without variance reduction, or use scalar CUPED on one covariate as an approximation that is not a CUPED-linear power claim",
         ),
         "power.minimum_detectable_effect.design_search_minimum": "fixed-horizon design cannot search for a minimum detectable effect when target_power={target} is at or below the null's own crossing probability ({estimate:.6g}) -- zero distance already qualifies, so no strictly nonzero minimum detectable effect exists",
         "power.baseline.mean": "mean must be > 0",
