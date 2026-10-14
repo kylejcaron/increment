@@ -15,12 +15,18 @@ import json
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from pydantic import BaseModel
 
 from increment._canonical import canonical_json_bytes
+from increment._interpretation import (
+    interpret_readout,
+    readout_evidence_columns,
+    render_readout_text,
+)
 from increment._source_operations import (
     BreakoutChoice,
     DashboardBreakoutReads,
@@ -36,6 +42,7 @@ from increment.breakout.estimates import (
     DailyMetricValues,
     LiftEstimates,
 )
+from increment.dashboard._format import allocation_evidence, allocation_verdict
 from increment.dashboard._theme import MIDNIGHT, DashboardTheme, require_theme
 from increment.errors import (
     CapabilityError,
@@ -288,6 +295,10 @@ class DashboardSnapshot:
     triggered_allocation_history: tuple[Mapping[str, Any], ...] = ()
     triggered_allocation_history_refusal: tuple[str, str] | None = None
     health: ExperimentHealth | None = None
+    readout_collection: LiftEstimates | None = None
+    population_collections: Mapping[Literal["assigned", "triggered"], LiftEstimates] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", tuple(self.metrics))
@@ -309,6 +320,9 @@ class DashboardSnapshot:
             MappingProxyType(
                 {key: tuple(value) for key, value in self.population_estimates.items()}
             ),
+        )
+        object.__setattr__(
+            self, "population_collections", MappingProxyType(dict(self.population_collections))
         )
         object.__setattr__(
             self,
@@ -452,11 +466,14 @@ class DashboardSnapshot:
 
 
 def _csv_human_value(value: Any, *, name: str) -> Any:
-    """Retain unrounded set metadata and neutralize spreadsheet formulas."""
-    if name in ("confidence_set", "relative_confidence_set", "binomial_set") and isinstance(
-        value, BaseModel
-    ):
-        value = value.model_dump_json(exclude={"raw", "reference"})
+    """Encode nested result evidence as portable JSON and neutralize spreadsheet formulas."""
+    if isinstance(value, BaseModel):
+        if name in ("confidence_set", "relative_confidence_set", "binomial_set"):
+            value = value.model_dump(exclude={"raw", "reference"})
+        else:
+            value = value.model_dump(mode="json")
+    if isinstance(value, Mapping | list | tuple):
+        value = canonical_json_bytes(value).decode("utf-8")
     if isinstance(value, str):
         for char in value:
             if not char.isprintable() or char in "=+-@":
@@ -472,13 +489,23 @@ def readout_csv(snapshot: DashboardSnapshot) -> bytes:
     Formula markers after leading whitespace and control-prefixed strings
     receive an apostrophe for safe human-facing downloads.
     """
-    fields = dict.fromkeys(key for row in snapshot.readout_rows for key in row)
+    rows = snapshot.readout_rows
+    collection = snapshot.readout_collection
+    if collection is not None and len(collection) == len(rows) == len(snapshot.estimates):
+        interpretation = interpret_readout(collection, collection.metadata)
+        rows = tuple(
+            {
+                **row,
+                **readout_evidence_columns(interpretation, estimate),
+            }
+            for row, estimate in zip(rows, snapshot.estimates, strict=True)
+        )
+    fields = dict.fromkeys(key for row in rows for key in row)
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=list(fields))
     writer.writeheader()
     writer.writerows(
-        {key: _csv_human_value(value, name=key) for key, value in row.items()}
-        for row in snapshot.readout_rows
+        {key: _csv_human_value(value, name=key) for key, value in row.items()} for row in rows
     )
     return output.getvalue().encode("utf-8")
 
@@ -581,9 +608,10 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         )
 
     health_report: ExperimentHealth | None = None
+    population_collections: dict[Literal["assigned", "triggered"], LiftEstimates] = {}
 
     def _read(pinned: Analysis) -> DashboardSnapshotPayload:
-        nonlocal health_report
+        nonlocal health_report, population_collections
         allocation, allocation_refusal = _allocation_check(pinned, config)
         allocation_history, allocation_history_refusal = _allocation_history(
             pinned, allocation_refusal
@@ -619,6 +647,14 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         population_estimates = {
             population: tuple(row for row in rows if row.analysis_population == population)
             for population, rows in population_results.items()
+        }
+        population_collections = {
+            population: LiftEstimates(
+                population_estimates[population],
+                metadata=population_results[population].metadata,
+                sequential_snapshot=population_results[population].sequential_snapshot,
+            )
+            for population in populations
         }
         estimates = population_estimates["assigned"]
         _require_treatment_arm(estimates, treatment=treatment_group)
@@ -682,6 +718,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
     default_population = "triggered" if experiment.trigger is not None else "assigned"
     population_estimates = dict(payload.population_estimates) or {"assigned": payload.estimates}
     estimates = population_estimates[default_population]
+    readout_collection = population_collections[default_population]
     captures = {capture.key: capture for capture in payload.explore}
     overviews: dict[Literal["assigned", "triggered"], DashboardOverview] = {}
     for population in populations:
@@ -725,8 +762,10 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         metrics=metrics,
         breakouts=tuple((b.source, b.property) for b in experiment.breakouts),
         estimates=estimates,
+        readout_collection=readout_collection,
+        population_collections=population_collections,
         population_estimates=population_estimates,
-        readout_rows=enriched_rows(estimates),
+        readout_rows=enriched_rows(readout_collection),
         allocation=allocation,
         allocation_refusal=allocation_refusal,
         allocation_history=allocation_history,
@@ -866,12 +905,8 @@ def _require_treatment_arm(estimates: Sequence[LiftEstimate], *, treatment: str)
 def enriched_rows(
     estimates: Sequence[LiftEstimate | BreakoutEstimate],
 ) -> tuple[Mapping[str, Any], ...]:
-    """Readout rows carrying each estimate's tested ``alternative``.
-
-    The readout adapter drops the tested tail, so a one-sided guardrail would
-    otherwise be indistinguishable from a two-sided test downstream.
-    """
-    rows = estimates_to_readout(list(estimates))
+    """Convert estimates while carrying their retained collection qualifications."""
+    rows = estimates_to_readout(estimates)
     if len(rows) != len(estimates):
         refuse(
             _INVALID_SNAPSHOT,
@@ -879,10 +914,136 @@ def enriched_rows(
             rows=len(rows),
             estimates=len(estimates),
         )
+    metadata = getattr(estimates, "metadata", None)
+    interpretation = interpret_readout(estimates, metadata)
     return tuple(
-        MappingProxyType({**row, "alternative": estimate.alternative})
+        MappingProxyType(
+            {
+                **row,
+                "alternative": estimate.alternative,
+                **readout_evidence_columns(interpretation, estimate),
+            }
+        )
         for row, estimate in zip(rows, estimates, strict=True)
     )
+
+
+def _analysis_integrity_qualification(group) -> str:
+    status = group.integrity_status
+    population = group.population or "unknown"
+    label = (
+        "Analysis assignment check (assigned population)"
+        if population == "assigned"
+        else f"Analysis integrity check ({population} population)"
+    )
+    if status == "not_checked_missing_declaration":
+        if group.integrity_code == "integrity.allocation_scheme_missing":
+            detail = "the allocation scheme is not declared on the analysis design"
+        elif group.integrity_code == "integrity.allocation_missing_or_nonconstant":
+            detail = "the declared target allocation weights are missing or nonconstant"
+        else:
+            detail = "the required assignment declaration is incomplete"
+        text = f"{label}: not checked — {detail}"
+    elif status == "unknown":
+        text = f"{label}: unknown; missing integrity metadata is not a pass"
+    else:
+        text = f"{label}: {status}"
+    if group.integrity_code:
+        text += f" (code {group.integrity_code})"
+    return text + "."
+
+
+def _dashboard_allocation_qualification(
+    snapshot: DashboardSnapshot, population: str | None
+) -> tuple[str, bool]:
+    selected = population or _default_population(snapshot)
+    if selected == "triggered":
+        allocation = snapshot.triggered_allocation
+        refusal = snapshot.triggered_allocation_refusal
+        name = "Dashboard triggered-population balance check"
+    else:
+        allocation = snapshot.allocation
+        refusal = snapshot.allocation_refusal
+        name = "Dashboard allocation check"
+    expected_weights = snapshot.config.expected_allocation
+    total_weight = sum(expected_weights.values())
+    expected = " / ".join(
+        f"{arm} {100 * weight / total_weight:g}%" for arm, weight in expected_weights.items()
+    )
+    prefix = f"{name} ({selected}, configured expected {expected})"
+    if allocation is None:
+        code, reason = refusal or ("", "")
+        state = "not run" if code == _ALLOCATION_NOT_APPLICABLE else "unavailable"
+        detail = f": {reason} (code {code})" if code else f": {reason}" if reason else ""
+        return f"{prefix}: {state}{detail}.", False
+    state = "mismatch detected" if allocation.is_srm else "no mismatch detected"
+    detail = allocation_verdict(
+        allocation, population=cast(Literal["assigned", "triggered"], selected)
+    )
+    evidence = allocation_evidence(allocation)
+    return f"{prefix}: {state}. {detail}. {evidence}", allocation.is_srm
+
+
+def readout_interpretation_text(
+    snapshot: DashboardSnapshot,
+    *,
+    rows: Sequence[Any] | None = None,
+    collection: LiftEstimates | None = None,
+) -> str:
+    """Render source, analysis-integrity, and dashboard allocation qualifications."""
+    collection = snapshot.readout_collection if collection is None else collection
+    rows = (snapshot.estimates if collection is None else collection) if rows is None else rows
+    metadata = None if collection is None else collection.metadata
+    interpretation = interpret_readout(rows, metadata)
+    selected_population = (
+        next(iter(snapshot.population_estimates))
+        if len(snapshot.population_estimates) == 1
+        else _default_population(snapshot)
+    )
+    groups = [
+        group for group in interpretation.groups if group.population in (None, selected_population)
+    ]
+    rendered = []
+    if selected_population == "triggered":
+        assigned_collection = snapshot.population_collections.get("assigned")
+        assigned_metadata = None if assigned_collection is None else assigned_collection.metadata
+        assigned_rows = (
+            snapshot.population_estimates.get("assigned", ())
+            if assigned_collection is None
+            else assigned_collection
+        )
+        assigned = interpret_readout(assigned_rows, assigned_metadata)
+        assignment_groups = {
+            group.source_snapshot_id: group
+            for group in assigned.groups
+            if group.population == "assigned"
+        }
+        if assignment_groups:
+            for source_id, group in assignment_groups.items():
+                rendered.append(
+                    f"Source snapshot: {source_id or 'unknown'}\n"
+                    + _analysis_integrity_qualification(group)
+                )
+        else:
+            rendered.append(
+                "Source snapshot: unknown\n"
+                "Analysis assignment check (assigned population): unknown; "
+                "missing integrity metadata is not a pass."
+            )
+    for group in groups:
+        population = group.population or selected_population
+        allocation_text, mismatch = _dashboard_allocation_qualification(snapshot, population)
+        analysis_text = _analysis_integrity_qualification(group)
+        qualifications = (
+            (allocation_text, analysis_text) if mismatch else (analysis_text, allocation_text)
+        )
+        rendered.append(
+            f"Source snapshot: {group.source_snapshot_id or 'unknown'}\n"
+            + "\n".join(qualifications)
+            + "\n"
+            + render_readout_text(replace(interpretation, groups=(group,)))
+        )
+    return "\n\n".join(rendered)
 
 
 # Shared read-only accessors for the rendering layer.
@@ -895,7 +1056,11 @@ def decision_rows(
     selected = population or _default_population(snapshot)
     rows = snapshot.readout_rows
     if selected != _default_population(snapshot):
-        rows = enriched_rows(snapshot.population_estimates.get(selected, ()))
+        rows = enriched_rows(
+            snapshot.population_collections.get(
+                selected, snapshot.population_estimates.get(selected, ())
+            )
+        )
     return tuple(
         row
         for row in rows
@@ -916,8 +1081,11 @@ def _population_snapshot(
         population == "assigned" and not snapshot.population_estimates
     ):
         refuse(_UNAVAILABLE_POPULATION, population=population)
-    estimates = snapshot.population_estimates.get(population, snapshot.estimates)
     is_default = population == _default_population(snapshot)
+    estimates = snapshot.population_estimates.get(population, snapshot.estimates)
+    collection = snapshot.population_collections.get(population, snapshot.readout_collection)
+    if collection is None:
+        collection = LiftEstimates(estimates)
     allocation = snapshot.triggered_allocation if population == "triggered" else snapshot.allocation
     allocation_refusal = (
         snapshot.triggered_allocation_refusal
@@ -938,8 +1106,10 @@ def _population_snapshot(
     return replace(
         snapshot,
         estimates=tuple(estimates),
+        readout_collection=collection,
+        population_collections=snapshot.population_collections or {population: collection},
         population_estimates={population: tuple(estimates)},
-        readout_rows=snapshot.readout_rows if is_default else enriched_rows(estimates),
+        readout_rows=snapshot.readout_rows if is_default else enriched_rows(collection),
         allocation=allocation,
         allocation_refusal=allocation_refusal,
         allocation_history=history,
@@ -1162,6 +1332,10 @@ def _cell_place(cell: Any) -> str:
     return f"{dimension} = {cell.dimension_value}"
 
 
+def _collection_with_metadata(collection, metadata, rows):
+    return cast(Any, collection)(rows, metadata=metadata)
+
+
 def _capture_explore(
     pinned: Analysis,
     *,
@@ -1181,6 +1355,60 @@ def _capture_explore(
             scopes=scopes,
         )
     )
+
+
+def _capture_overview(
+    captures: dict[ExploreKey, DashboardExploreCapture],
+    *,
+    population: Literal["assigned", "triggered"],
+    view: str,
+    breakout: BreakoutChoice | None,
+    declared: tuple[str, ...],
+    added: tuple[str, ...],
+    read: Callable[[list[str], list[str]], Sequence[Any]],
+    collection: Callable[[Iterable[Any]], Sequence[Any]],
+) -> None:
+    """Capture overview rows and preserve their own readout metadata."""
+    key = (population, view, None, False, breakout)
+    try:
+        answered = read(list(declared), list(added))
+    except CodedError:
+        parts: list[LiftEstimates | BreakoutEstimates] = []
+        for name in (*declared, *added):
+            one = (population, view, name, False, breakout)
+            try:
+                part = cast(
+                    LiftEstimates | BreakoutEstimates,
+                    read([name] if name in declared else [], [name] if name in added else []),
+                )
+            except CodedError as exc:
+                captures[one] = DashboardExploreCapture.refused(one, exc)
+            else:
+                part = part.filter(
+                    lambda row: getattr(row, "analysis_population", population) == population
+                )
+                captures[one] = DashboardExploreCapture.answered(
+                    one,
+                    part,
+                    collection=partial(_collection_with_metadata, type(part), part.metadata),
+                )
+                parts.append(part)
+        if parts:
+            merged = parts[0]
+            for part in parts[1:]:
+                merged = merged.concat(part)
+            rows = list(merged)
+            metadata = copy.copy(merged.metadata)
+        else:
+            rows = []
+            metadata = None
+    else:
+        rows = [
+            row for row in answered if getattr(row, "analysis_population", population) == population
+        ]
+        metadata = copy.copy(getattr(answered, "metadata", None))
+    collection_factory = partial(_collection_with_metadata, collection, metadata)
+    captures[key] = DashboardExploreCapture.answered(key, rows, collection=collection_factory)
 
 
 def _capture_explore_population(
@@ -1273,70 +1501,35 @@ def _capture_explore_population(
                         key, rows, collection=type(batch)
                     )
 
-    def overview_read(
-        view: str,
-        breakout: BreakoutChoice | None,
-        declared: tuple[str, ...],
-        read: Callable[[list[str], list[str]], Sequence[Any]],
-        collection: Callable[[Iterable[Any]], Sequence[Any]],
-        *,
-        population: Literal["assigned", "triggered"],
-    ) -> None:
-        """One read of every metric; on a refusal, each metric alone, keeping its own refusal."""
-        key = (population, view, None, False, breakout)
-        try:
-            answered = read(list(declared), list(added))
-            captures[key] = DashboardExploreCapture.answered(
-                key,
-                [
-                    row
-                    for row in answered
-                    if getattr(row, "analysis_population", population) == population
-                ],
-                collection=collection,
-            )
-            return
-        except CodedError:
-            pass
-        rows: list[Any] = []
-        for name in (*declared, *added):
-            one = (population, view, name, False, breakout)
-            try:
-                part = read([name] if name in declared else [], [name] if name in added else [])
-            except CodedError as exc:
-                captures[one] = DashboardExploreCapture.refused(one, exc)
-            else:
-                rows.extend(
-                    row
-                    for row in part
-                    if getattr(row, "analysis_population", population) == population
-                )
-        captures[key] = DashboardExploreCapture.answered(key, rows, collection=collection)
-
-    def extra(added_names: list[str]) -> dict[str, Any]:
-        return {"exploratory_metrics": added_names} if added_names else {}
-
     if added:
-        overview_read(
-            _OVERVIEW_WHOLE,
-            None,
-            (),
-            lambda _, added_names: pinned.run(
-                metrics=[], population=population, **extra(added_names)
-            ),
-            LiftEstimates,
+        _capture_overview(
+            captures,
             population=population,
+            view=_OVERVIEW_WHOLE,
+            breakout=None,
+            declared=(),
+            added=added,
+            read=lambda _, added_names: pinned.run(
+                metrics=[],
+                population=population,
+                **({"exploratory_metrics": added_names} if added_names else {}),
+            ),
+            collection=LiftEstimates,
         )
     for breakout, reader in scopes:
-        overview_read(
-            _OVERVIEW_SEGMENTS,
-            breakout,
-            names,
-            lambda declared, added_names, reader=reader: reader.uncorrected_segments(
-                metrics=declared, population=population, **extra(added_names)
-            ),
-            BreakoutEstimates,
+        _capture_overview(
+            captures,
             population=population,
+            view=_OVERVIEW_SEGMENTS,
+            breakout=breakout,
+            declared=names,
+            added=added,
+            read=lambda declared, added_names, reader=reader: reader.uncorrected_segments(
+                metrics=declared,
+                population=population,
+                **({"exploratory_metrics": added_names} if added_names else {}),
+            ),
+            collection=BreakoutEstimates,
         )
     return tuple(captures.values())
 

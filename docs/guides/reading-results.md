@@ -26,10 +26,48 @@ with an additive value numerically.
 the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
 The `readout_table` coeftable keeps per-row estimate evidence compact:
-decision-scope completeness, partial-view state, and multiplicity provenance
-appear once as header notes only when informative. They remain on result
-objects and in `to_frame()`; failure rows keep a concise `Failure` column
-with their full structured context on the result object.
+decision-scope completeness, partial-view state, integrity, availability,
+multiplicity, and advisories appear as source-attributed qualification bullets
+in the header. Source identifiers are abbreviated there; the full identifiers
+remain in result objects and evidence columns. Each effect row includes a
+compact interval-interpretation label; the full restrained explanation remains
+in the collection `repr`. Failure rows keep the registered failure explanation
+in a `Failure` column and their full structured context on the result object.
+
+Scoped result collections also carry qualifications in their default
+`repr`: integrity and scope completeness precede availability, multiplicity,
+advisories, row qualifications, and effects. A failed integrity check is not
+hidden by an otherwise favorable estimate, and `not_rejected` means no
+detected mismatch, not proof of valid randomization. The collection display
+includes retained scope even when filtering leaves no visible rows.
+
+Interpretation separates the tested-null outcome from effect direction.
+An interval containing the tested null is inconclusive, not evidence of no
+effect. Excluding a nonzero margin can meet that test without establishing an
+increase or decrease: direction is stated only when the interval also excludes
+zero on the result's own axis. Absolute-native estimates and contrasts use
+additive intervals; relative rows with an absolute margin use their retained
+additive interval; sequential ratio bounds are interpreted after conversion to
+lift coordinates. Daily arm means are values, not treatment/control contrasts.
+Secondary selection status is shown separately from interval evidence; neither
+is a ship/no-ship verdict.
+
+`to_frame()` on scoped collections and `estimates_to_readout()` retain portable
+scalar and canonical-JSON evidence columns, including comparison identity,
+`analysis_population`, `source_snapshot_id`, integrity status/code/context,
+required/available/hidden counts, unavailable identities and reasons,
+advisory codes/messages/context, posterior-unavailability reasons, and
+multiplicity family status. Nested disclosures are canonical JSON strings;
+numeric nulls remain numeric nulls. These fields retain source and population
+attribution across flattened and concatenated results.
+
+`readout_table(collection)` retains collection qualifications in its header.
+The zero-visible-row view is a deliberate exception to tables' usual reliance
+on displayed row qualifications: it still renders retained scope and integrity
+for a scoped collection, while row-only empty input reports that scope and
+integrity are unknown. Export the collection's JSON (`model_dump_json()`) when
+you need to preserve the empty view's complete scope evidence; a zero-row
+frame/table has no row on which to store attribution.
 
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. The ordinary

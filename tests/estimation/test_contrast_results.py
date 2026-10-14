@@ -66,6 +66,13 @@ def test_result_models_are_typed_and_immutable():
         result.metric = "other"  # type: ignore[misc]
 
 
+def test_frame_keeps_unknown_evidence_nullable_in_pandas():
+    frame = cast(Any, ContrastResults([_result()]).to_frame(backend="pandas"))
+
+    assert str(frame["posterior_available"].dtype) == "boolean"
+    assert frame["posterior_available"].isna().all()
+
+
 def test_slice_preserves_contrast_results():
     result = _result()
 
@@ -153,7 +160,31 @@ def test_to_frame_supports_declared_backends(backend):
         "decision_scope_complete",
         "decision_scope_reason_code",
         "decision_scope_reason_context",
+        "comparison",
+        "integrity_status",
+        "integrity_code",
+        "integrity_context",
+        "required_cell_count",
+        "available_cell_count",
+        "source_cell_count",
+        "unavailable_cell_count",
+        "hidden_cell_count",
+        "roster_complete",
+        "roster_source",
+        "sampling_available",
+        "point_available",
+        "posterior_available",
+        "posterior_reason_code",
+        "posterior_reason_context",
+        "failure_code",
+        "failure_context",
+        "failure_message",
+        "unavailable_cells",
+        "hidden_cells",
+        "advisories",
         "view_partial",
+        "multiplicity_status",
+        "retained_family",
     ]
     if backend == "pyarrow":
         row = frame.to_pylist()[0]

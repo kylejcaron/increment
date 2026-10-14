@@ -428,6 +428,7 @@ def _scoped_randomized_results(
                 arms=roster_arms,
                 source=roster_source,
                 complete=roster.complete,
+                control_group=getattr(design, "control_group", None),
             ),
         ),
         decision_complete_by_population={population: complete},

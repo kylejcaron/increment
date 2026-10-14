@@ -108,6 +108,11 @@ def test_one_sided_set_unions_the_never_rejected_half_line():
     greater_bounds = greater.require_asymptotic_sequential_result().bounds
     assert greater_bounds.components == reference.components
     assert greater_bounds.status == "disconnected"
+    from increment._interpretation import render_effect_interpretation
+
+    interpretation = render_effect_interpretation(greater)
+    assert interpretation is not None
+    assert "direction not established" in interpretation
 
 
 @pytest.mark.parametrize(
@@ -308,6 +313,18 @@ def test_point_overflow_is_distinct_from_confidence_set_availability():
     assert result.point_reason == "relative point exceeds binary64 range"
     assert result.bounds.available
     assert result.bounds.components
+
+
+def test_readout_interpretation_preserves_extreme_rational_ratio_geometry():
+    from increment._interpretation import render_effect_interpretation
+
+    row, _ = _evaluate(
+        [F(3, 10**200), F(5, 10**200)] * 40,
+        [F(10**200), F(101 * 10**198)] * 40,
+        alternative="greater",
+    )
+
+    assert render_effect_interpretation(row) is not None
 
 
 @pytest.mark.parametrize("field", ["k", "alpha", "available", "components"])

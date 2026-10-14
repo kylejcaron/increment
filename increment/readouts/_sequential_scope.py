@@ -243,6 +243,7 @@ def _population_accounting(
     roster_source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"],
     assigned_complete: bool,
     triggered_complete: bool,
+    control_group: str | None,
 ) -> tuple[dict[Population, bool], list[PopulationRoster], tuple[Population, ...]]:
     """Per-population decision completeness and rosters for the scoped collection."""
     complete: dict[Population, bool] = {"assigned": assigned_complete}
@@ -252,6 +253,7 @@ def _population_accounting(
             arms=arms,
             source=roster_source,
             complete=assigned_complete,
+            control_group=control_group,
         )
     ]
     if trigger_name is None:
@@ -265,6 +267,7 @@ def _population_accounting(
             arms=arms,
             source="experiment_counts" if counted else "unknown",
             complete=counted,
+            control_group=control_group,
         )
     )
     return complete, rosters, ("assigned", "triggered")
@@ -385,6 +388,7 @@ def scope_sequential_results(
         assigned_complete=bool(decision_assigned),
         triggered_complete=not triggered_cells
         and any(cell.analysis_population == "triggered" for cell in assigned_rows),
+        control_group=getattr(design, "control_group", None),
     )
     integrity = (
         existing_integrity
