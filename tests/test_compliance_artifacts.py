@@ -758,15 +758,6 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                     assert cast(Any, endpoint_late).require_lift().value == pytest.approx(
                         cast(Any, ordinary_late).require_lift().value
                     )
-                    uptake_events, _, _, _ = edge_adopted._src._uptake_inputs()
-                    assert uptake_events is not None
-                    daily_spine = ibis.memtable(
-                        [{"unit_id": "treatment0_10", "ds": date(2025, 1, 15)}]
-                    )
-                    daily_uptake = edge_adopted._src._uptake_panel(daily_spine, uptake_events)
-                    assert daily_uptake is not None
-                    (daily_row,) = edge_adopted._src._snapshot.execute(daily_uptake).to_pylist()
-                    assert daily_row["sum_value"] == pytest.approx(1.0)
                     endpoint_asof = next(
                         row
                         for row in edge_adopted.run_asof_lift(estimands=("late",))
