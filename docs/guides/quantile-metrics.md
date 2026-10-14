@@ -41,10 +41,11 @@ the YAML equivalent is `QuantileMetric` with the same `quantile` field.
 
 ## The Woodruff order-statistic bracket, and tied values
 
-The interval uses a distribution-free order-statistic bracket
-`[Y_(a), Y_(b)]` at the requested `alpha`, not a plug-in delta-method
-standard error (Woodruff 1952). The bracket covers the population quantile
-at the nominal rate for continuous and discrete distributions.
+The reported standard error comes from a distribution-free bracket
+`[Y_(a), Y_(b)]` around the sample quantile, evaluated at the request's own
+`alpha`, not from a plug-in delta-method SE (Woodruff 1952). The reported
+two-arm relative-lift interval combines the two bracket-derived standard
+errors; it is asymptotic, not distribution-free exact.
 
 ??? info "Statistical details"
     The classical Woodruff standard error (a symmetric width around the sample
@@ -67,8 +68,10 @@ brackets keep the classical Woodruff half-width bit-identically.
 !!! warning "Ties can widen uncertainty"
     Coincidental ties widen the standard error by at most about 1.00–1.05x.
     Coarse rounding or count data can produce 1.1–3x widths for brackets
-    spanning two or three recorded values; there is no upper bound. If the
-    widened bracket cannot establish positive spread, Increment raises
+    spanning two or three recorded values; there is no upper bound. A bracket
+    collapsed onto one recorded value has zero classical width, but the
+    reported width remains positive. If the widened bracket cannot establish
+    positive spread, Increment raises
     `estimation.quantile.degenerate_spread_order`. That is a numerical
     backstop, not an ordinary response to ties.
 

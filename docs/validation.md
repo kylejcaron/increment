@@ -65,6 +65,19 @@ assumptions, not evidence; route labels are mechanisms, not guarantee classes.
 Finite evidence grids are not universal, and completing a campaign changes
 evidence, not the guarantee.
 
+??? info "Evidence and declaration details"
+    A guarantee cell is copied from the cited limitations entry. An evidence
+    cell names its cells, seeds and tolerance, or the inventory id that does.
+    A row publishes when each cell cites an existing source or says `unknown`;
+    a campaign finishing changes only the evidence cell.
+
+    Route labels (`block_t`, `bh`, `e-bh`, `reference_kind`, `binomial`) name a
+    mechanism; they are not guarantee classes.
+
+    A `not_expressible` request fails during declaration, either with a coded
+    refusal or through signature/schema validation (`TypeError` or Pydantic
+    `ValidationError` without a refusal code).
+
 ## Ordinary-user journey contracts and current evidence
 
 These journeys describe user-facing contracts. A named assertion supports only the behavior it
@@ -243,9 +256,25 @@ The detailed entries describe guarantees, evidence status, and supported entry p
 
 ## Unvalidated regimes
 
-Current validation gaps and their published limitations are summarized below.
+!!! warning "Decision-relevant evidence gaps"
+    - Sequential certification has not covered the full registered runtime
+      manifest; clustered and unit-cycle research matrices remain uncertified
+      ([limitations](limitations.md#the-sequential-certification-campaign-has-not-been-executed)).
+    - Winsorization inference is experimental, and 12 alternative rows of its
+      preserved stress grid remain unresolved ([metric types](guides/metric-types.md#winsorization)).
+    - Meta-analysis at small K remains a decision risk: the plug-in
+      random-effects interval is anticonservative; HKSJ is bounded by one
+      calibration design ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)).
+    - Switchback carryover is assumed away, not tested, and the unit-cycle t
+      reference is an approximation ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
+      [t reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
+    - Adaptive logged-policy evaluation is refused; the historical coverage
+      figures predate that gate ([limitations](limitations.md#off-policy-evaluation-of-logged-decisions-is-calibrated-only-under-a-fixed-logger)).
+    - The exact-binomial numerical investigation above about 2^26 trials per arm
+      is open (`1tce`); public undercoverage has not been demonstrated.
+    - Independent causal-feature calibration remains open (`ryyg`).
 
-??? info "Unvalidated regimes and provenance"
+??? info "Unvalidated-regime evidence and provenance"
 
     These restate published gaps; this page adds no new number. Each links to the section that states
     the guarantee.

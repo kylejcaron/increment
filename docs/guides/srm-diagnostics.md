@@ -74,15 +74,27 @@ comparisons have no randomized allocation. Report these as unsupported or not
 applicable, not "no SRM."
 
 `sample_ratio_mismatch` and `Analysis.srm()` support explicit fixed-look
-inference. **SRM runs automatically once the assignment law is declared with
+inference. `inference="fixed"` infers equal shares from observed counts when
+`expected` is omitted; otherwise it uses the supplied expected allocation.
+**SRM runs automatically once the assignment law is declared with
 `allocation_scheme="independent"`; alternatively call `srm(inference="fixed")`
-for a single predeclared look. `health_check()` shows when SRM was not
-checked.**
+for a single predeclared look.** Check `health_check()` for the machine-readable
+unavailable status and route when the assignment law is undeclared.
+
+??? info "How the always-valid SRM guarantee differs"
+    That e-process is a distinct construction from the `AlwaysValid` guarantee
+    a metric's own interval carries (see
+    [Sequential inference](sequential-inference.md)), but it earns the same
+    kind of time-uniform, peek-anytime validity. Its precondition is that
+    cumulative assignment prefixes carry the same known conditional arm
+    probabilities at every assignment.
 
 ## Assignment-protocol requirements
 
-Always-valid inference requires a predeclared `expected` allocation; it cannot
-infer the null shares from the counts being checked. Omitting it raises. For
+`inference="always_valid"` REQUIRES a predeclared `expected` allocation -- it
+cannot infer equal shares from the observed counts the way fixed inference
+can, since an always-valid check that adapted its own null to the data it is
+checking would not be a check at all. Omitting `expected` raises. For
 cluster-randomized designs, use `grain="cluster"` with cluster-level `counts`.
 `unit_counts` is descriptive only: cluster-size imbalance does not change
 `is_srm`.
