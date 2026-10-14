@@ -56,9 +56,10 @@ for row in summary:
     print(f"{row.metric} dim={row.dimension} Q={row.q:.2f} tau2={row.tau2} i2={row.i2}")
 ```
 
+<!-- output -->
 ```text
-revenue dim=segment Q=26.15 tau2=0.003198569489815786 i2=None
-revenue dim=segment Q=27.14 tau2=1.365291618726056 i2=None
+revenue dim=segment Q=26.15 tau2=0.0031985694898157... i2=None
+revenue dim=segment Q=27.14 tau2=1.36529161872605... i2=None
 ```
 
 The function returns two rows: one for the relative (log-RR) heterogeneity
@@ -115,6 +116,7 @@ for row in rollout_segments:
     print(f"  {row.dimension_value:<6} selected={row.selected} excluded={row.excluded}")
 ```
 
+<!-- output -->
 ```text
 revenue dim=segment
   apac   selected=False excluded=None

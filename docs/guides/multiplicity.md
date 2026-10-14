@@ -105,6 +105,7 @@ results = Analysis.from_unit_summary(
 print(results)
 ```
 
+<!-- output -->
 ```text
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
@@ -200,6 +201,7 @@ av_results = Analysis.from_unit_summary(
 print(av_results)
 ```
 
+<!-- output -->
 ```text
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
@@ -214,7 +216,7 @@ sessions sequential ratio confidence set bounded: [1.07065, 1.19177].
 sessions test alternative: two-sided; null (relative lift): 0.
 sessions result identity: method unadjusted; method role decision; estimand itt.
 signups (secondary, relative lift): -0.0085373, set [-0.0300719, 0.0134716] at 0.95 confidence.
-signups interpretation: does not reject; inconclusive, not evidence of no effect.
+signups interpretation: does not reject; the retained sequential procedure has not rejected.
 signups sequential ratio confidence set bounded: [0.969928, 1.01347].
 signups test alternative: two-sided; null (relative lift): 0.
 signups result identity: method unadjusted; method role decision; estimand itt; not selected.
