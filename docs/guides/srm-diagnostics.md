@@ -84,20 +84,14 @@ randomization law and are not parallel-arm SRM cases. Observational
 comparisons have no randomized allocation to check. These cases must be
 reported as unsupported or not applicable, rather than as “no SRM.”
 
-The standalone `sample_ratio_mismatch` function still accepts explicitly
-requested fixed-look inference; this does not make a fixed-look test safe for
-repeated cumulative reads. `Analysis.srm()` defaults to anytime-valid inference
-and requires the design to declare `allocation_scheme="independent"`; allocation
-proportions alone are not enough. Without that declaration, the analysis reports
-the check as not applicable. Fixed-look inference remains an explicit one-look
-option.
-
-Each `Analysis.run()` also emits `integrity.srm_not_checked` when randomized
-arm results are available but the design omits `allocation_scheme`. Declare
-`allocation_scheme="independent"` only for independent, constant-probability
-assignment; otherwise use `srm(inference="fixed")` for a single predeclared
-look when that diagnostic is appropriate. `health_check()` continues to report
-the allocation check as unavailable until the assignment law is declared.
+The standalone `sample_ratio_mismatch` function and `Analysis.srm()` support
+explicit fixed-look inference. The default `Analysis.srm()` route is
+anytime-valid and runs only when the design declares
+`allocation_scheme="independent"`; allocation proportions alone do not establish
+that assignment law. To make the fixed-look choice explicit for a single
+predeclared look, call `srm(inference="fixed")`. Check `health_check()` to see
+the machine-readable unavailable status and route when the assignment law is
+undeclared.
 
 ## Assignment-protocol requirements
 

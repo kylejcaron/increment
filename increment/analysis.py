@@ -2573,7 +2573,6 @@ class Analysis:
             rows = extra if rows.metadata is None else rows.concat(extra)
         self._warn_run_advisories(
             selected,
-            rows,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
         )
@@ -2582,28 +2581,14 @@ class Analysis:
     def _warn_run_advisories(
         self,
         selected: Sequence[Metric],
-        rows: LiftEstimates,
         *,
         decision_method: Method | _Unset,
         sensitivity_methods: Sequence[Method] | _Unset,
     ) -> None:
         from increment._frame_validation import _warn
-        from increment.semantics.design import Randomized
 
         state = self._state
         assert not isinstance(state, ContrastAnalysisState)
-        design = self._design
-        if rows and isinstance(design, Randomized) and design.allocation_scheme is None:
-            _warn(
-                "integrity.srm_not_checked",
-                experiment_name=state.experiment_name,
-                route=(
-                    "Declare allocation_scheme='independent' only for independent, "
-                    "constant-probability assignment, or call srm(inference='fixed') "
-                    "for one predeclared look."
-                ),
-            )
-
         if not selected:
             return
         configs = overlay_configs(
