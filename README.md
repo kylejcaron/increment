@@ -86,6 +86,7 @@ for result in results:
     print(f"{result.metric}: lift={result.lift.value:+.1%}")
 ```
 
+<!-- output -->
 ```text
 revenue: lift=+7.5%
 ```

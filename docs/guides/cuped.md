@@ -73,15 +73,16 @@ for r in results:
     print(f"{r.method:>10}: lift={r.lift.value:+.2%}  CI width={width:.2%}")
 ```
 
+<!-- output -->
 ```text
-unadjusted: lift=+2.01%  CI width=3.78%
+unadjusted: lift=+2.01%  CI width=3.79%
      cuped: lift=+2.15%  CI width=1.77%
 ```
 
 The adjusted estimate is similar, with an interval less than half as wide.
 Here $\rho \approx 0.89$, so the predicted width ratio,
 $\sqrt{1 - 0.89^2} \approx 0.47$, matches the observed ratio,
-$1.77\% / 3.78\% \approx 0.47$.
+$1.77\% / 3.79\% \approx 0.47$.
 
 `variance_reduction="cuped"` enables the adjustment; `name` only labels
 the result. This example keeps the unadjusted method as the decision
@@ -525,9 +526,10 @@ print(f"LATE={late.lift.value:+.2f}  CI=({late.lift.lb:+.2f}, {late.lift.ub:+.2f
 print(f"K={late.n_clusters}, dof={late.dof:g}")
 ```
 
+<!-- output -->
 ```text
 LATE=+5.63  CI=(+3.90, +7.36)
-K=60, dof=58
+K=60, dof=56.6809
 ```
 
 ITT and additive LATE use a cluster-robust ratio delta method.

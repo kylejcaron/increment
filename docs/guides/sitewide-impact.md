@@ -737,6 +737,7 @@ print(
 )
 ```
 
+<!-- output -->
 ```text
 observed site volume:   2,095.10
 counterfactual (V0):    1,502.88
@@ -895,14 +896,15 @@ print(
 )
 ```
 
+<!-- output -->
 ```text
 n_clusters:              50
-absolute_dof:            48
+absolute_dof:            42.0245
 relative_dof:            42.0245
 observed site volume:    4,125.25
 counterfactual (V0):     2,912.12
 per-unit lift (delta):   +6.07
-ship-to-all impact:      +2,426.26 [+1,132.68, +3,719.84]
+ship-to-all impact:      +2,426.26 [+1,127.91, +3,724.61]
 relative to baseline:    +83.32% [+20.16%, +146.47%]
 ratio n_clusters:        50
 ratio absolute_dof:      42.0245
