@@ -5,14 +5,91 @@ directory. Sybil items are grouped by markdown file so xdist executes their
 blocks in order on one worker.
 """
 
+import contextlib
+import difflib
+import doctest
+import io
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
 import pytest
-from sybil import Sybil
+from sybil import Document, Example, Region, Sybil
+from sybil.evaluators.python import PythonEvaluator
 from sybil.parsers.markdown import PythonCodeBlockParser, SkipParser
+from sybil.parsers.markdown.lexers import FencedCodeBlockLexer
+
+
+class _CapturingPythonEvaluator:
+    def __init__(self) -> None:
+        self.evaluator = PythonEvaluator()
+
+    def __call__(self, example: Example) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.evaluator(example)
+        example.namespace["__last_output"] = output.getvalue()
+        example.namespace["__last_executed_python_region"] = example.region.start
+
+
+class PythonOutputBlockParser(PythonCodeBlockParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.codeblock_parser._evaluator = _CapturingPythonEvaluator()
+
+
+class OutputBlockParser:
+    """Compare explicitly marked text fences with the preceding Python output."""
+
+    _text_fences = FencedCodeBlockLexer(
+        language=r"text", mapping={"language": "arguments", "source": "source"}
+    )
+    _python_fences = FencedCodeBlockLexer(language=r"python")
+    _output_marker = re.compile(r"<!--\s*output\s*-->[ \t\r\n]*$")
+    _checker = doctest.OutputChecker()
+    _flags = doctest.ELLIPSIS | doctest.NORMALIZE_WHITESPACE
+
+    def __call__(self, document: Document):
+        text = document.text
+        python_blocks = list(self._python_fences(document))
+        for block in self._text_fences(document):
+            prefix = text[: block.start]
+            marker = self._output_marker.search(prefix)
+            if marker is None:
+                continue
+            python = next(
+                (code for code in reversed(python_blocks) if code.end <= marker.start()), None
+            )
+            if python is None:
+                continue
+            yield Region(
+                block.start,
+                block.end,
+                parsed=(block.lexemes["source"], python.start),
+                evaluator=self._evaluate_output,
+            )
+
+    @classmethod
+    def _evaluate_output(cls, example: Example) -> None:
+        expected_source, python_start = example.parsed
+        if example.namespace.get("__last_executed_python_region") != python_start:
+            return
+        actual = example.namespace.get("__last_output", "")
+        expected = str(expected_source)
+        if cls._checker.check_output(expected, actual, cls._flags):
+            return
+        diff = "".join(
+            difflib.unified_diff(
+                expected.splitlines(keepends=True),
+                actual.splitlines(keepends=True),
+                fromfile="documented output",
+                tofile="captured output",
+            )
+        )
+        raise AssertionError(f"documented output does not match captured output:\n{diff}")
+
 
 _FAST_TIMEOUT_SECONDS = 30
 _SLOW_TIMEOUT_SECONDS = 180
@@ -107,7 +184,7 @@ def _teardown(namespace: dict) -> None:
 # Every markdown file, so a new snippet-bearing page runs without anyone
 # remembering to list it. Files with no python block collect nothing.
 pytest_collect_file = Sybil(
-    parsers=[PythonCodeBlockParser(), SkipParser()],
+    parsers=[PythonOutputBlockParser(), OutputBlockParser(), SkipParser()],
     patterns=["*.md"],
     setup=_setup,
     teardown=_teardown,
