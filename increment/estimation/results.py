@@ -2313,36 +2313,35 @@ def row_decision_alpha(row: DecisionRow) -> float | None:
 
 
 def _null_abs_p_value(row: DecisionRow) -> float:
-    """The additive-margin tail from ``Normal(abs_diff, abs_se)`` against
-    ``null_abs``; a t or cluster-robust reference is refused here (the
-    decision bundle computes that margin test with its own degrees of
-    freedom)."""
-    if (
-        row.reference_kind == "t"
-        or row.abs_reference_kind == "t"
-        or getattr(row, "n_clusters", None) is not None
-    ):
-        _raise(
-            "estimation.results.lift.p_value_cluster_robust_null_abs",
-            reference_df=row.abs_reference_df
-            if row.abs_reference_kind == "t"
-            else row.reference_df,
-            group_id=row.group_id,
-            metric=row.metric,
-        )
-    if row.abs_se is None or row.abs_diff is None:
+    """Tail against ``null_abs`` under the additive interval's reference."""
+    if row.abs_se is None or row.abs_diff is None or not row.abs_se > 0.0:
         _raise(
             "estimation.results.lift.p_value_null_abs_missing_abs_se",
             group_id=row.group_id,
             metric=row.metric,
         )
+    abs_kind = row.abs_reference_kind or row.reference_kind
+    reference_df = row.abs_reference_df
+    if abs_kind == "t" and reference_df is None:
+        reference_df = row.reference_df
+    if getattr(row, "n_clusters", None) is not None and abs_kind != "t":
+        _raise(
+            "estimation.results.lift.p_value_cluster_robust_null_abs",
+            reference_df=reference_df if abs_kind == "t" else row.reference_df,
+            group_id=row.group_id,
+            metric=row.metric,
+        )
+    if abs_kind == "t" and reference_df is None:
+        _raise(
+            "estimation.results.lift.p_value_cluster_robust_null_abs",
+            reference_df=row.reference_df,
+            group_id=row.group_id,
+            metric=row.metric,
+        )
     assert row.null_abs is not None
-    z_abs = (row.null_abs - row.abs_diff) / row.abs_se
-    if row.alternative == "greater":
-        return float(_norm.cdf(z_abs))
-    if row.alternative == "less":
-        return float(_norm.sf(z_abs))
-    return float(2.0 * min(_norm.cdf(z_abs), _norm.sf(z_abs)))
+    return _additive_tail_p_value(
+        row.abs_diff, row.abs_se, row.null_abs, row.alternative, reference_df
+    )
 
 
 def _relative_unavailable_p_value(row: DecisionRow) -> float:
