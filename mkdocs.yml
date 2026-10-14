@@ -80,6 +80,7 @@ nav:
       - CUPED: guides/cuped.md
       - Switchback Contrasts: guides/switchback.md
       - Observational Comparisons: guides/observational.md
+      - Confounding Sensitivity: guides/confounding-sensitivity.md
       - Encouragement Designs: guides/encouragement.md
       - Power Analysis: guides/power-analysis.md
       - Sitewide Impact: guides/sitewide-impact.md

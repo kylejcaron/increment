@@ -1003,3 +1003,13 @@ Compare method choices in [Which experiment analysis method should I use?](choos
 ## References and assumptions
 
 The DML discussion follows Chernozhukov et al., [“Double/Debiased Machine Learning for Treatment and Causal Parameters”](https://doi.org/10.1111/ectj.12097). Conditional ignorability, consistency, and positivity identify the causal estimand; overlap and post-adjustment balance are diagnostics for support and model behavior, not validation of conditional ignorability.
+
+
+## Sensitivity to omitted confounding
+
+Measured overlap and balance cannot show that omitted confounding is absent.
+For a separately supplied unadjusted binary cohort risk ratio, the
+[confounding sensitivity workflow](confounding-sensitivity.md) reports E-value
+tipping points and assumed-strength bounds for a declared decision threshold.
+The current IPTW, AIPW and DML effect-difference rows cannot be passed to that
+risk-ratio construction; estimator and scale compatibility are checked.

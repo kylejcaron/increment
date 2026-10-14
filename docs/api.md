@@ -1167,3 +1167,18 @@ accepted by `load_explore` and `render_explore`.
 ::: increment.dashboard.readout_csv
 
 ::: increment.dashboard.group_data_csv
+
+
+## Standalone confounding sensitivity (`increment.sensitivity`)
+
+Author a supplied cohort summary and run the diagnostic through this canonical
+module. Receive-only sensitivity results are documented here alongside their
+standalone ingress; no root-package or `Analysis` adapter is claimed. See the
+[confounding sensitivity guide](guides/confounding-sensitivity.md) for scope,
+threshold semantics, assumed strengths and uncertainty interpretation.
+
+::: increment.sensitivity.CohortRiskRatio
+
+::: increment.sensitivity.risk_ratio_sensitivity
+
+::: increment.sensitivity.RiskRatioSensitivity

@@ -4,6 +4,11 @@ This page records, for each of the six `Analysis` entry points, which capabiliti
 The [Method compatibility reference](../guides/compatibility.md) is organised by metric type and method; neither page restates the other's cells.
 Where they disagree, the probe and harness results govern: `scripts/probe_capability_table.py`, `tests/test_composition_matrix.py` and `tests/parity_harness/matrix.py`.
 
+Standalone [cohort confounding sensitivity](../guides/confounding-sensitivity.md)
+uses a supplied `CohortRiskRatio`, not an `Analysis` ingress. Its numerical and
+consumer evidence covers that summary-input path only; no capability is
+claimed on the six paths below.
+
 ## What runs where
 
 A capability is a claim only when its path is named. `Analysis` has six entry

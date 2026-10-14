@@ -647,3 +647,7 @@ expose = ["_FrozenMapping"]
 from = ["increment._multiplicity"]
 expose = ["MultiplicityFamily", "guarantee_for_correction"]
 
+
+[[modules]]
+path = "increment.sensitivity"
+depends_on = ["increment.errors"]
