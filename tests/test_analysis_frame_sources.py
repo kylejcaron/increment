@@ -194,16 +194,7 @@ def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_p
         breakouts=("segment",),
     )
 
-    assert analysis._src.shape == "unit_summary"
-    assert analysis._src.capabilities == frozenset({"total"})
-    assert (
-        analysis.unit_counts()
-        == baseline.unit_counts()
-        == {
-            "control": 4,
-            "treatment": 4,
-        }
-    )
+    assert analysis.unit_counts() == baseline.unit_counts() == {"control": 4, "treatment": 4}
     assert analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == (
         baseline.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
     )
@@ -213,11 +204,9 @@ def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_p
             method()
         assert raised.value.code == "facade.analysis.no_definitions"
 
-    original_identity = (
-        analysis._src.shape,
-        analysis._src.capabilities,
-        analysis._src.context.study_id,
-    )
+    original_counts = analysis.unit_counts()
+    original_srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    original_breakout = analysis.run_breakout()
     export_path = tmp_path / "summary-moments.parquet"
     analysis.export(export_path)
     import pyarrow.parquet as pq
@@ -229,13 +218,12 @@ def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_p
         control="control",
         metrics=[MetricSpec(name="value", type="mean")],
     )
+    assert reopened.unit_counts() == original_counts
+    assert analysis.unit_counts() == original_counts
     assert (
-        analysis._src.shape,
-        analysis._src.capabilities,
-        analysis._src.context.study_id,
-    ) == original_identity
-    assert reopened._src.shape is None
-    assert reopened._src.context.study_id == "moments"
+        analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == original_srm
+    )
+    assert analysis.run_breakout() == original_breakout
 
 
 def test_unit_summary_breakout_uses_exposure_excluded_population():
@@ -316,10 +304,12 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
     assert codes.count("frame.validation.metric_missing_drop") == 1
     assert codes.count("frame.validation.metric_covariate_missing_imputed") == 1
     assert results
-    metric = next(metric for metric in analysis._src.context.metrics if metric.name == "value")
-    rows = analysis._src._summary_breakout_source.moments(metric, by=["segment"])
-    control_a = next(row for row in rows if row["segment"] == "A" and row["group_id"] == "control")
-    assert (control_a["n"], control_a["ref_y"]) == (2, 2.5)
+    treatment_a = next(
+        row
+        for row in results
+        if row.metric == "value" and row.dimension_value == "A" and row.group_id == "treatment"
+    )
+    assert treatment_a.require_lift().value == pytest.approx(0.2)
 
 
 def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable():
@@ -490,6 +480,17 @@ def test_unit_summary_breakout_preserves_unit_column_used_as_covariate():
 
 def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
     frame = _summary_breakout_frame()
+    for index in range(8):
+        for group, value in (
+            ("control", 1.0 if index % 2 == 0 else 2.0),
+            ("treatment", 2.0 if index % 2 == 0 else 4.0),
+        ):
+            frame.loc[len(frame)] = {
+                "user_id": f"A-{group}-extra-{index}",
+                "variant": group,
+                "segment": "A",
+                "value": value,
+            }
     frame.loc[0, "value"] = None
     with pytest.warns(IncrementWarning):
         analysis = Analysis.from_unit_summary(
@@ -504,16 +505,19 @@ def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
             breakouts=("segment",),
         )
 
-    for metric_name, expected_n, expected_mean in (
-        ("drop", 1, 2.0),
-        ("zero", 2, 1.0),
-    ):
-        metric = next(m for m in analysis._src.context.metrics if m.name == metric_name)
-        rows = analysis._src.moments(metric, by=["segment"])
-        control_a = next(
-            row for row in rows if row["segment"] == "A" and row["group_id"] == "control"
+    results = analysis.run_breakout()
+    treatment_by_metric = {
+        metric_name: next(
+            row
+            for row in results
+            if row.metric == metric_name
+            and row.dimension_value == "A"
+            and row.group_id == "treatment"
         )
-        assert (control_a["n"], control_a["ref_y"]) == (expected_n, expected_mean)
+        for metric_name in ("drop", "zero")
+    }
+    assert treatment_by_metric["drop"].require_lift().value == pytest.approx(13 / 14)
+    assert treatment_by_metric["zero"].require_lift().value == pytest.approx(8 / 7)
 
 
 def test_unit_summary_breakout_is_available_through_readout_api():
@@ -526,7 +530,7 @@ def test_unit_summary_breakout_is_available_through_readout_api():
         breakouts=("segment",),
     )
 
-    direct = readout_functions.breakout(analysis._src, "segment")
+    direct = analysis.run_breakout()
 
     assert {(row.metric, row.dimension_value) for row in direct} == {
         ("value", "A"),

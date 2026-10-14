@@ -149,6 +149,7 @@ class ParityCase:
     # A family case whose paths could all select nothing and still agree must
     # show at least one selected and one unselected row.
     require_selection: bool = False
+    decision_method: Any | None = None
     readout_probe: Callable[[Any], None] | None = None
     source_probe: Callable[[str, Analysis], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -1674,6 +1675,20 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
     )
 
 
+def _assert_horizon_export_warns_censoring(analysis: Analysis, path: Path) -> None:
+    from tests.warning_codes import warning_codes
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"fetch_arrow_table\(\) is deprecated, use to_arrow_table\(\) instead\.",
+            category=DeprecationWarning,
+        )
+        with pytest.warns(IncrementWarning) as captured:
+            analysis.export(path)
+    assert warning_codes(captured) == ["frame.censoring.dropped_units"]
+
+
 def _ratio_component_horizon_case(
     *,
     complete: bool = False,
@@ -1814,7 +1829,10 @@ def _ratio_component_horizon_case(
         else:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                analysis.export(path)
+                if constructor == "from_definitions" and not complete:
+                    _assert_horizon_export_warns_censoring(analysis, path)
+                else:
+                    analysis.export(path)
                 assert_moments(pq.read_table(path).to_pylist())
         if constructor in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
             rows = source.moments(

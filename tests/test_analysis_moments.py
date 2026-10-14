@@ -386,12 +386,17 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
 
     Scoped to purchase_rate (conversion) and avg_session_duration (mean).
     """
+    from increment.estimation.engine import Method
+
     definitions = load(seeded_defs)
     experiment = definitions.experiment("new_onboarding_v2")
     assert experiment is not None
     design = experiment.resolved_design().model_copy(update={"allocation_scheme": "independent"})
     a = make_analysis(seeded_con, definitions, experiment=experiment, _design=design, store="auto")
-    baseline = {(e.metric, e.group_id): e.require_lift().value for e in _lift_rows(a.run())}
+    baseline = {
+        (e.metric, e.group_id): e.require_lift().value
+        for e in _lift_rows(a.run(decision_method=Method(name="unadjusted")))
+    }
     assert {"purchase_rate", "avg_session_duration"} <= {m for m, _ in baseline}
 
     p = tmp_path / "moments.parquet"
@@ -418,7 +423,10 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     assert isinstance(restored_srm, SRMResult)
     assert isinstance(native_srm, SRMResult)
     assert restored_srm.observed == native_srm.observed
-    got = {(e.metric, e.group_id): e.require_lift().value for e in _lift_rows(b.run())}
+    got = {
+        (e.metric, e.group_id): e.require_lift().value
+        for e in _lift_rows(b.run(decision_method=Method(name="unadjusted")))
+    }
 
     for key in (("purchase_rate", "treatment"), ("avg_session_duration", "treatment")):
         assert got[key] == pytest.approx(baseline[key], rel=1e-12), key
