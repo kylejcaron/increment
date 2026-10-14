@@ -2861,3 +2861,33 @@ def test_a_naive_utc_minus_five_experiment_publishes_and_adopts_like_from_defini
     finally:
         adopted.close()
         native.close()
+
+
+@pytest.mark.integration
+def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
+    connection, native, context, store = _native()
+    connection.raw_sql(
+        """
+        CREATE OR REPLACE TABLE analytics.event_log AS
+        SELECT make_timestamp_ns(epoch_us(event_at) * 1000 + 999) AS event_at,
+               * EXCLUDE (event_at)
+        FROM analytics.event_log
+        """
+    )
+    reference = native.publish_unit_day_artifact(store)
+    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    try:
+        expected = native.run(metrics=["purchase_rate"])
+        actual = adopted.run(metrics=["purchase_rate"])
+        assert len(actual) == len(expected)
+        with store.open_snapshot(reference) as snapshot:
+            manifest = snapshot.read_manifest(
+                reference.manifest, expected_sha256=reference.manifest_sha256
+            )
+            exposures = snapshot.verify_relation(manifest.base.exposures, expected_role="exposures")
+            stored = connection.to_pyarrow(exposures).to_pylist()
+        assert stored
+        assert all(isinstance(row["first_exposure_ts"], datetime) for row in stored)
+    finally:
+        adopted.close()
+        native.close()
