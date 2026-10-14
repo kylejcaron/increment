@@ -156,6 +156,104 @@ def test_analysis_from_unit_panel_forwards_breakouts():
     assert {row.dimension for row in results} == {"country"}
 
 
+def _summary_breakout_frame():
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "user_id": f"{segment}-{group}-{index}",
+                "variant": group,
+                "segment": segment,
+                "value": value,
+            }
+            for segment, values in (
+                ("A", {"control": (1.0, 2.0), "treatment": (2.0, 4.0)}),
+                ("B", {"control": (4.0, 5.0), "treatment": (5.0, 7.0)}),
+            )
+            for group, observations in values.items()
+            for index, value in enumerate(observations)
+        ]
+    )
+
+
+def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_path):
+    baseline = Analysis.from_unit_summary(
+        _summary_breakout_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    analysis = Analysis.from_unit_summary(
+        _summary_breakout_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+    )
+
+    assert analysis._src.shape == "unit_summary"
+    assert analysis._src.capabilities == frozenset({"total"})
+    assert (
+        analysis.unit_counts()
+        == baseline.unit_counts()
+        == {
+            "control": 4,
+            "treatment": 4,
+        }
+    )
+    assert analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == (
+        baseline.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    )
+    assert {row.dimension_value for row in analysis.run_breakout()} == {"A", "B"}
+    for method in (analysis.run_daily, analysis.run_asof):
+        with pytest.raises(CapabilityError) as raised:
+            method()
+        assert raised.value.code == "facade.analysis.no_definitions"
+
+    original_identity = (
+        analysis._src.shape,
+        analysis._src.capabilities,
+        analysis._src.context.study_id,
+    )
+    export_path = tmp_path / "summary-moments.parquet"
+    analysis.export(export_path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(export_path).to_pylist()
+    assert {row["experiment_id"] for row in rows} == {"frame"}
+    reopened = Analysis.from_moments(
+        rows,
+        control="control",
+        metrics=[MetricSpec(name="value", type="mean")],
+    )
+    assert (
+        analysis._src.shape,
+        analysis._src.capabilities,
+        analysis._src.context.study_id,
+    ) == original_identity
+    assert reopened._src.shape is None
+    assert reopened._src.context.study_id == "moments"
+
+
+def test_unit_summary_breakouts_refuse_cluster_at_panel_code():
+    frame = _summary_breakout_frame()
+    frame["cluster"] = [f"cluster-{i // 2}" for i in range(len(frame))]
+    with pytest.raises(CapabilityError) as raised:
+        Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"value": "mean"},
+            cluster="cluster",
+            breakouts=("segment",),
+        )
+    assert raised.value.code == "source.frame.cluster_capability"
+
+
 def test_from_unit_panel_run_daily_returns_daily_metric_values():
     import pandas as pd
 

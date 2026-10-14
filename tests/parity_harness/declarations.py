@@ -552,22 +552,15 @@ PARITY_DECLARATIONS = MappingProxyType(
             ),
             waive=(
                 (
-                    "from_unit_summary",
-                    "SOURCE: Analysis.from_unit_summary has no breakouts= constructor parameter, so it carries no declared Breakout catalog for run_breakout to read; run_breakout raises facade.analysis.operation.",
-                ),
-                (
                     "from_moments",
-                    "SOURCE: Analysis.from_moments's own docstring names run_breakout among the methods it refuses -- a moments cube enters at moment grain and carries no per-unit breakout dimension.",
+                    "SOURCE: a moments cube contains aggregate rows, not unit-level breakout dimensions.",
                 ),
                 (
                     "from_switchback_panel",
                     "SOURCE: from_switchback_panel needs a switchback-shaped frame (unit/cycle/period/step columns) and only accepts a Randomized identification -- no case in this module builds that shape.",
                 ),
             ),
-            refusals=(
-                ("from_unit_summary", "facade.analysis.operation"),
-                ("from_moments", "facade.analysis.operation"),
-            ),
+            refusals=(("from_moments", "facade.analysis.operation"),),
         ),
         "breakout_store_dimension": ParityDeclaration(
             attempted=(
@@ -579,22 +572,15 @@ PARITY_DECLARATIONS = MappingProxyType(
             ),
             waive=(
                 (
-                    "from_unit_summary",
-                    "SOURCE: Analysis.from_unit_summary has no breakouts= constructor parameter, so it carries no declared Breakout catalog for run_breakout to read; run_breakout raises facade.analysis.operation.",
-                ),
-                (
                     "from_moments",
-                    "SOURCE: Analysis.from_moments's own docstring names run_breakout among the methods it refuses -- a moments cube enters at moment grain and carries no per-unit breakout dimension.",
+                    "SOURCE: a moments cube contains aggregate rows, not unit-level breakout dimensions.",
                 ),
                 (
                     "from_switchback_panel",
                     "SOURCE: from_switchback_panel needs a switchback-shaped frame (unit/cycle/period/step columns) and only accepts a Randomized identification -- no case in this module builds that shape.",
                 ),
             ),
-            refusals=(
-                ("from_unit_summary", "facade.analysis.operation"),
-                ("from_moments", "facade.analysis.operation"),
-            ),
+            refusals=(("from_moments", "facade.analysis.operation"),),
         ),
         "clustered_assignment_integrity_scope": ParityDeclaration(
             attempted=("from_definitions", "from_unit_day_artifact", "from_unit_summary"),

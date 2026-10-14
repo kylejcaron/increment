@@ -923,6 +923,7 @@ class Analysis:
         cluster: str | None = None,
         intervention_grain: Literal["unit", "cluster"] = "unit",
         exposure_date: str | None = None,
+        breakouts: Sequence[str] = (),
     ) -> Analysis:
         """Build an :class:`Analysis` from a one-row-per-unit dataframe.
 
@@ -961,6 +962,10 @@ class Analysis:
         Sequential inference requires it and reveals units in that order,
         never in row order. With an ``on_unassigned="exclude"`` policy a
         null exposure drops the unit, as on :meth:`from_unit_panel`.
+
+        *breakouts* names unit-stable columns used only for whole-window
+        ``run_breakout`` reads. This source remains total-only: it does not
+        expose daily or as-of methods, or a synthetic day axis.
         """
         _refuse_legacy_boolean_registration(frame, group, control, design, plan)
         from increment._frame_validation import (
@@ -993,6 +998,7 @@ class Analysis:
             cluster=cluster,
             intervention_grain=intervention_grain,
             exposure_date=exposure_date,
+            breakouts=breakouts,
         )
         return cls._from_source(src, design)
 
@@ -3223,9 +3229,11 @@ class Analysis:
             q=policy.q if policy.q is not None else self._plan.q,
             population=population,
         )
-        return BreakoutReadouts(src=self._src, experiment=getattr(self, "_experiment", None)).run(
-            request
-        )
+        source = getattr(self._src, "summary_breakout_source", None)
+        return BreakoutReadouts(
+            src=source if source is not None else self._src,
+            experiment=getattr(self, "_experiment", None),
+        ).run(request)
 
     def _refuse_clustered_day_axis(self, method: str) -> None:
         """A declared cluster is total-grain only; see `_CLUSTERED_DAY_AXIS`."""

@@ -49,6 +49,7 @@ from increment._frame_panel import (
     _validate_panel_declarations,
 )
 from increment._frame_validation import (  # noqa: F401
+    _CLUSTER_CAPABILITY,
     FRAME_UNIT_FRAME_PANEL,
     _canonicalize_group_identity,
     _coerce_metric_columns,
@@ -334,6 +335,7 @@ class FrameTotalsSource(SequentialSourceMixin):
                 )
                 segment_columns[dimension] = scratch
         self._frame = frame
+        self._summary_breakout_source = None
         self._segment_columns: Mapping[str, str] = MappingProxyType(dict(segment_columns))
         self._unit = unit
         self._unit_dtype = frame[unit].dtype
@@ -413,6 +415,11 @@ class FrameTotalsSource(SequentialSourceMixin):
     def plan(self) -> CompiledDecisionPlan:
         """The compiled decision plan captured at construction."""
         return self._context.plan
+
+    @property
+    def summary_breakout_source(self) -> Any | None:
+        """Restricted panel reducer used only for whole-window breakouts."""
+        return self._summary_breakout_source
 
     def __repr__(self) -> str:
         names = ", ".join(repr(s.name) for s in self._specs)
@@ -887,6 +894,7 @@ def from_unit_summary(  # noqa: PLR0913
     cluster: str | None = None,
     intervention_grain: Literal["unit", "cluster"] = "unit",
     exposure_date: str | None = None,
+    breakouts: Sequence[str] = (),
 ) -> FrameTotalsSource:
     """Analyse an experiment from a one-row-per-unit dataframe.
 
@@ -935,6 +943,8 @@ def from_unit_summary(  # noqa: PLR0913
         requires it and reveals units in ascending exposure order, ties
         broken by unit id, never in row order. A null exposure follows
         *on_unassigned*.
+    breakouts : Sequence[str]
+        Unit-stable columns to expose for whole-window breakout readouts.
 
     Returns
     -------
@@ -949,7 +959,17 @@ def from_unit_summary(  # noqa: PLR0913
         or an explicit *design* whose ``control_group`` disagrees with
         *control*.
     """
-    return FrameTotalsSource.from_frame(
+    if breakouts and cluster is not None:
+        refuse(
+            _CLUSTER_CAPABILITY,
+            cluster=cluster,
+            feature="breakout",
+            metrics=(),
+            uptake=uptake,
+            mechanism=getattr(design, "mechanism", "randomized"),
+            route="drop cluster= or use a nonclustered source for breakouts",
+        )
+    source = FrameTotalsSource.from_frame(
         frame,
         unit=unit,
         group=group,
@@ -964,6 +984,50 @@ def from_unit_summary(  # noqa: PLR0913
         intervention_grain=intervention_grain,
         exposure_date=exposure_date,
     )
+    if breakouts:
+        registration = getattr(source.plan.inference, "registration", None)
+        if registration is not None:
+            from increment.sequential_state import sequential_refuse
+
+            sequential_refuse(
+                "route.unsupported",
+                "unit-summary breakouts do not expose registered sequential segment paths",
+            )
+        panel_frame = nw.from_native(frame, eager_only=True)
+        synthetic_date = _scratch_name(panel_frame, "__summary_day__")
+        panel_frame = panel_frame.with_columns(nw.lit(dt.date(2000, 1, 1)).alias(synthetic_date))
+        panel = FramePanelSource.from_frame(
+            panel_frame.to_native(),
+            unit=unit,
+            group=group,
+            date=synthetic_date,
+            control=control,
+            metrics=metrics,
+            experiment_id=experiment_id,
+            uptake=uptake,
+            design=source.design,
+            plan=plan,
+            breakouts=breakouts,
+            on_unassigned=on_unassigned,
+        )
+        source.breakouts = panel.breakouts
+        source._summary_breakout_source = _RestrictedSummaryBreakoutSource(panel)
+    return source
+
+
+class _RestrictedSummaryBreakoutSource:
+    """A total-grain-only view over a summary's private panel reducer."""
+
+    shape: Literal["unit_panel"] = "unit_panel"
+    capabilities: frozenset[Grain] = frozenset({"total"})
+
+    def __init__(self, source: FramePanelSource) -> None:
+        self._source = source
+        self.operations = source.operations
+        self.breakouts = source.breakouts
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._source, name)
 
 
 # from_unit_panel: one row per unit per day.
