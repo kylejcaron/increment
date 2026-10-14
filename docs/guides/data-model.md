@@ -1059,6 +1059,7 @@ for r in results:
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:+.2%}")
 ```
 
+<!-- output -->
 ```text
 purchase_rate / T: lift=+12.37%
 revenue_per_user / T: lift=+10.64%
@@ -1663,6 +1664,7 @@ print(f"warehouse rows scanned: {scanned:,}")
 print(f"moment rows returned:   {pq.read_metadata('moments.parquet').num_rows}")
 -->
 
+<!-- output -->
 ```text
 conversion_rate / treatment: lift=+53.33%
 plan segments:    ['free']

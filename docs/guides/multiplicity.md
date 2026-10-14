@@ -105,6 +105,7 @@ results = Analysis.from_unit_summary(
 print(results)
 ```
 
+<!-- output -->
 ```text
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
@@ -200,6 +201,7 @@ av_results = Analysis.from_unit_summary(
 print(av_results)
 ```
 
+<!-- output -->
 ```text
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
