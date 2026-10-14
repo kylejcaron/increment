@@ -284,6 +284,14 @@ def test_winsorization_is_exported_from_public_layers():
     assert "Winsorization" in increment.__all__
 
 
+def test_moments_from_summaries_is_a_root_export():
+    import increment
+    import increment.summaries as summaries
+
+    assert "moments_from_summaries" in increment.__all__
+    assert increment.moments_from_summaries is summaries.moments_from_summaries
+
+
 def test_estimation_import_leaves_decision_core_unloaded():
     """increment.estimation must not eagerly pull decision/sources/_readout_request."""
     code = (

@@ -752,6 +752,38 @@ def test_health_unit_panel_reports_only_supported_population() -> None:
     assert report.checks[0].code == "integrity.allocation_scheme_missing"
 
 
+def test_run_leaves_undeclared_srm_visible_in_health_check() -> None:
+    import warnings
+
+    from tests.warning_codes import warning_codes
+
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="C",
+        metrics={"value": "mean"},
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+    assert "integrity.srm_not_checked" not in warning_codes(caught)
+
+    assigned = next(
+        check for check in analysis.health_check().checks if check.check == "assigned_allocation"
+    )
+    assert assigned.availability == "unavailable"
+    assert assigned.code == "integrity.allocation_scheme_missing"
+    assert "allocation_scheme='independent'" in str(assigned.context["route"])
+    assert "Analysis.srm(inference='fixed')" in str(assigned.context["route"])
+
+
 def test_health_switchback_does_not_substitute_unit_arm_srm() -> None:
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,

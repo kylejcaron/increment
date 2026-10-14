@@ -578,8 +578,10 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     assert isinstance(imputation_warning, IncrementWarning)
     assert imputation_warning.code == "frame.validation.metric_covariate_missing_imputed"
     assert imputation_warning.context["n_missing"] == 73
+    from increment.estimation.engine import Method
+
     with pytest.warns(IncrementWarning) as censoring_warnings:
-        source_result = source.run()
+        source_result = source.run(decision_method=Method(name="unadjusted"))
     assert censoring_warnings
     for warning in censoring_warnings:
         assert isinstance(warning.message, IncrementWarning)

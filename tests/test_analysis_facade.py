@@ -88,7 +88,9 @@ class TestAnalysisReturnsCollectionTypes:
         # The seeded warehouse, not the 4-unit micro fixture: at n=2/arm the micro warehouse's purchase_rate is refused by infer_lift's precision guards (saturated control arm); this test is about the return type.
         import pandas as pd
 
-        results = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run()
+        results = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
+            decision_method=Method(name="unadjusted")
+        )
         assert isinstance(results, LiftEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
@@ -306,10 +308,19 @@ def test_analysis_run_native_randomized_forwards_prior(seeded_con, seeded_defs):
     from increment.estimation import Normal
 
     with Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con) as analysis:
-        flat = next(r for r in _lift_rows(analysis.run()) if r.metric == "purchase_rate")
+        flat = next(
+            r
+            for r in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+            if r.metric == "purchase_rate"
+        )
         shrunk = next(
             r
-            for r in _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))
+            for r in _lift_rows(
+                analysis.run(
+                    prior=Normal(mu=0.0, sigma=0.01),
+                    decision_method=Method(name="unadjusted"),
+                )
+            )
             if r.metric == "purchase_rate"
         )
 
@@ -771,11 +782,11 @@ def test_analysis_native_null_assignment_is_accounted_separately(seeded_defs, po
         if policy == "warn":
             with pytest.warns(IncrementWarning) as rec:
                 with _ignore_ibis_deprecation():
-                    analysis.run()
+                    analysis.run(decision_method=Method(name="unadjusted"))
             assert "query.integrity.mixed_assignments_excluded" in warning_codes(rec)
         else:
             with _ignore_ibis_deprecation():
-                analysis.run()
+                analysis.run(decision_method=Method(name="unadjusted"))
         result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
 
     assert isinstance(result, SRMResult)
@@ -833,17 +844,17 @@ def test_analysis_rebuilds_materialized_exposures_when_assignments_change(seeded
         on_mixed_assignment=policy,
     ) as analysis:
         with _ignore_ibis_deprecation():
-            analysis.run()
+            analysis.run(decision_method=Method(name="unadjusted"))
 
         _insert_mixed_assignment(con)
 
         if policy == "warn":
             with pytest.warns(UserWarning):
                 with _ignore_ibis_deprecation():
-                    rows = analysis.run()
+                    rows = analysis.run(decision_method=Method(name="unadjusted"))
         else:
             with _ignore_ibis_deprecation():
-                rows = analysis.run()
+                rows = analysis.run(decision_method=Method(name="unadjusted"))
         counts = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(counts, SRMResult)
         assert counts.mixed_assignment_units == 1
@@ -857,7 +868,7 @@ def test_analysis_rebuilds_materialized_exposures_when_assignments_change(seeded
         ) as fresh:
             expected = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(fresh.run())
+                for row in _lift_rows(fresh.run(decision_method=Method(name="unadjusted")))
             }
         assert current == pytest.approx(expected)
 
@@ -884,14 +895,14 @@ def test_analysis_rebuilds_materialized_exposures_without_fetching_mixed_identit
         with _ignore_ibis_deprecation():
             before = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(analysis.run())
+                for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
             }
 
         _replace_mixed_assignment(con)
         with _ignore_ibis_deprecation():
             current = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(analysis.run())
+                for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
             }
         repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(repaired, SRMResult)
@@ -902,7 +913,7 @@ def test_analysis_rebuilds_materialized_exposures_without_fetching_mixed_identit
         ) as fresh:
             expected = {
                 (row.metric, row.group_id, row.method): row.require_lift().value
-                for row in _lift_rows(fresh.run())
+                for row in _lift_rows(fresh.run(decision_method=Method(name="unadjusted")))
             }
         assert current == pytest.approx(expected)
         assert any(current[key] != before[key] for key in current)
@@ -922,20 +933,21 @@ def test_analysis_rebuilds_materialized_exposures_when_contamination_is_repaired
         on_mixed_assignment="exclude",
     ) as analysis:
         with _ignore_ibis_deprecation():
-            analysis.run()
+            analysis.run(decision_method=Method(name="unadjusted"))
         contaminated = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(contaminated, SRMResult)
         assert sum(contaminated.observed.values()) == 199
 
         _remove_second_assignment(con)
         with _ignore_ibis_deprecation():
-            analysis.run()
+            analysis.run(decision_method=Method(name="unadjusted"))
         repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(repaired, SRMResult)
         assert repaired.mixed_assignment_units == 0
         assert sum(repaired.observed.values()) == 200
         current = {
-            (row.metric, row.group_id, row.method): row for row in _lift_rows(analysis.run())
+            (row.metric, row.group_id, row.method): row
+            for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
         }
         with Analysis.from_definitions(
             "new_onboarding_v2",
@@ -945,7 +957,8 @@ def test_analysis_rebuilds_materialized_exposures_when_contamination_is_repaired
             on_mixed_assignment="exclude",
         ) as fresh:
             expected = {
-                (row.metric, row.group_id, row.method): row for row in _lift_rows(fresh.run())
+                (row.metric, row.group_id, row.method): row
+                for row in _lift_rows(fresh.run(decision_method=Method(name="unadjusted")))
             }
         assert set(current) == set(expected)
         for key, row in expected.items():
@@ -1286,11 +1299,16 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
     )
     cuped_method = [Method(name="cuped", variance_reduction="cuped")]
 
-    unadjusted = _lift_rows(analysis.run())[0]
-    cuped = _lift_rows(analysis.run(decision_method=cuped_method[0]))[0]
-    shrunk = _lift_rows(
-        analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
-    )[0]
+    with pytest.warns(IncrementWarning) as caught:
+        unadjusted = _lift_rows(analysis.run())[0]
+    assert warning_codes(caught) == ["analysis.cuped.covariate_unused"]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cuped = _lift_rows(analysis.run(decision_method=cuped_method[0]))[0]
+        shrunk = _lift_rows(
+            analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
+        )[0]
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
     assert cuped.require_lift().value < unadjusted.require_lift().value
     assert shrunk.require_lift() == cuped.require_lift()
@@ -1517,7 +1535,7 @@ def test_analysis_run_native_declared_margin_abs_reaches_the_estimate(seeded_con
             for m in a.metrics
         ],
     )
-    results = _lift_rows(a.run())
+    results = _lift_rows(a.run(decision_method=Method(name="unadjusted")))
     rows = [r for r in results if r.metric == "avg_session_duration"]
     assert rows
     est = rows[0]
@@ -1570,7 +1588,7 @@ def test_analysis_run_native_exercises_primary_secondary_guardrail_roles(seeded_
             }
         ),
     )
-    results = _lift_rows(a.run())
+    results = _lift_rows(a.run(decision_method=Method(name="unadjusted")))
     by_metric = {r.metric: r for r in results}
     assert set(by_metric) == {"purchase_rate", "avg_session_duration", "d7_retention"}
 
@@ -1717,7 +1735,7 @@ def test_analysis_run_native_routed_refuses_call_time_epistemic_policy_kwargs(
     from increment import AlwaysValid
 
     a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    baseline = _lift_rows(a.run())
+    baseline = _lift_rows(a.run(decision_method=Method(name="unadjusted")))
     # The declared plan selects purchase_rate as a lone in-family secondary: BH's
     # cutoff is q=0.10 and the cap holds the level at 0.95. This stable baseline
     # shows the raises below refuse alpha=0.30 rather than silently ignore it.
@@ -1764,7 +1782,7 @@ def test_analysis_run_native_filters_by_name(seeded_con, seeded_defs):
     """run(metrics=["purchase_rate"]) returns only that metric's rows on
     the definitions-backed (native) path - sm8m completion."""
     a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    results = a.run(metrics=["purchase_rate"])
+    results = a.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
     assert results
     assert {r.metric for r in results} == {"purchase_rate"}
 
@@ -1799,7 +1817,7 @@ def test_analysis_run_native_binding_drives_cuped_dispatch(seeded_pre_period_con
             }
         ),
     )
-    results = a.run()
+    results = a.run(decision_method=Method(name="unadjusted"))
     by_metric_method = {(r.metric, r.method) for r in results}
     assert ("avg_session_duration", "cuped") in by_metric_method
     assert ("avg_session_duration", "unadjusted") in by_metric_method
@@ -1822,7 +1840,7 @@ def test_analysis_run_native_skips_pre_events_without_a_cuped_request(
         return to_pyarrow(expr, *args, **kwargs)
 
     monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
-    results = a.run()
+    results = a.run(decision_method=Method(name="unadjusted"))
     assert results
     # 9 queries at 192c91c (was 6): a duplicate-group-membership
     # fingerprint/dedup pass now runs an extra 3 times across exposure
@@ -2275,8 +2293,12 @@ def test_public_artifact_adoption_matches_native_results(published_artifact):
 
     _con, native, context, store, ref = published_artifact
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    native_rows = _lift_rows(native.run(metrics=["purchase_rate"]))
-    adopted_rows = _lift_rows(adopted.run(metrics=["purchase_rate"]))
+    native_rows = _lift_rows(
+        native.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+    )
+    adopted_rows = _lift_rows(
+        adopted.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+    )
     assert_support(
         "artifact_publication_abort_recovery", "publication_from_definitions_supported", ref
     )

@@ -149,6 +149,7 @@ class ParityCase:
     # A family case whose paths could all select nothing and still agree must
     # show at least one selected and one unselected row.
     require_selection: bool = False
+    decision_method: Any | None = None
     readout_probe: Callable[[Any], None] | None = None
     source_probe: Callable[[str, Analysis], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -847,14 +848,11 @@ def _fixed_horizon_case(
 ) -> ParityCase:
     """Mean/ratio/conversion(/CUPED-mean, when *include_cuped*), fixed
     horizon, under a real two-secondary(-plus-CUPED-sensitivity) plan
-    (q=0.10): supported on from_definitions, from_unit_day_artifact,
-    from_unit_summary, from_unit_panel and from_moments today -- the
-    CUPED covariate is a genuine pre-period value replicated across a
-    unit's panel rows, so from_unit_panel resolves it the same way
-    from_unit_summary's frame already carries it. `_breakout_case` passes
-    `include_cuped=False`: the breakout capability itself has nothing to
-    do with CUPED, and dropping the covariate metric keeps that case's
-    row set focused on breakouts alone.
+    (q=0.10). Breakout cases exercise the declared dimension on definitions,
+    artifacts, unit summaries and unit panels; portable moments deliberately
+    retain their refusal because they contain no per-unit segment labels.
+    CUPED uses a genuine pre-period value replicated across panel rows; the
+    summary and panel reductions resolve the same per-unit covariate.
     """
     rows = (
         _neighboring_ratio_event_rows()
@@ -939,6 +937,7 @@ def _fixed_horizon_case(
             control="control",
             metrics=summary_metrics,
             plan=frame_plan,
+            breakouts=("store",) if breakout else (),
         )
 
     panel_metrics = _fixed_horizon_frame_metrics(
@@ -1190,52 +1189,13 @@ def _lift_prior_case(
 
 
 def _breakout_case(*, boolean: bool = False) -> ParityCase:
-    """Same three metrics and plan (no CUPED -- see `include_cuped=False`
-    below), plus a declared `store` breakout (3 segments, both arms
-    present in every segment). Supported on from_definitions,
-    from_unit_day_artifact and from_unit_panel today. from_unit_summary
-    has no `breakouts=` construction parameter at all (SOURCE cannot
-    supply a declared breakout catalog on a one-row-per-unit frame) and
-    from_moments explicitly refuses run_breakout by its own docstring;
-    both raise `facade.analysis.operation`.
-
-    from_unit_panel used to be waived here too, blamed on the shared
-    metric set's `revenue_cuped` covariate (from_unit_panel does not yet
-    support CUPED at all -- `_mean_ratio_conversion_cuped_case` waives the
-    identical construction gap) -- an unrelated fixture choice, not a
-    breakout limitation: `run_breakout` names `from_unit_panel` as one of
-    only two constructors it supports at all
-    (`_breakout_readouts.py`), and `test_analysis_breakout.py`'s own
-    `test_run_breakout_bh_family_survives_*` tests already run BH-corrected
-    breakouts through it. `include_cuped=False` drops the covariate metric
-    from every constructor's plan/metric set (not just from_unit_panel's),
-    so all five attempted paths emit the identical (metric, arm, segment)
-    row set and from_unit_panel's own breakout row is genuinely compared,
-    not waived.
-
-    An earlier draft of this case mis-attributed the refusal to breakout
-    sample size and waived it as "deferred" without ever building
-    `build_unit_panel` to check; that draft also carried a real bug in
-    `event_rows`' original store formula (`f"s{i % n_stores}"` with
-    `n_stores=3` exactly aliased the exact-binomial skip condition `i % 3
-    != 0`, so segment `s0`'s `revenue`/`rps` mean was identically zero in
-    every arm -- confirmed live, and confirmed still failing at 4x this
-    seed's `n_per_arm`, so no fixture size fixes it) -- corrected now:
-    `event_rows` decorrelates store from the skip condition.
-
-    ``boolean=True`` makes ``store`` a genuine BOOLEAN warehouse column (declared
-    ``dtype: bool``) feeding the native path and the published artifact, and a
-    nullable Boolean column on the panel frame: native DuckDB is the oracle, every
-    path reads out as ``true``/``false``/``__null__``, and the same source
-    refusals apply.
-    """
-    case = _fixed_horizon_case(
+    """Breakout parity for mean, ratio, conversion and CUPED metrics."""
+    return _fixed_horizon_case(
         id="breakout_boolean_store_dimension" if boolean else "breakout_store_dimension",
         breakout=True,
-        include_cuped=False,
+        include_cuped=True,
         fixture=_Fixture(boolean_store=boolean),
     )
-    return case
 
 
 def _dashboard_breakout_reads_case() -> ParityCase:
@@ -1249,6 +1209,7 @@ def _dashboard_breakout_reads_case() -> ParityCase:
         return sorted(row.model_dump_json() for row in rows)
 
     def probe(path: str, analysis: Analysis) -> None:
+        # Summary breakouts work; the dashboard-scoped facade remains definitions-only.
         if path != "from_definitions":
             with pytest.raises(CodedError) as caught:
                 analysis.dashboard_breakout_reads(Breakout(property="store"))
@@ -1714,6 +1675,20 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
     )
 
 
+def _assert_horizon_export_warns_censoring(analysis: Analysis, path: Path) -> None:
+    from tests.warning_codes import warning_codes
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"fetch_arrow_table\(\) is deprecated, use to_arrow_table\(\) instead\.",
+            category=DeprecationWarning,
+        )
+        with pytest.warns(IncrementWarning) as captured:
+            analysis.export(path)
+    assert warning_codes(captured) == ["frame.censoring.dropped_units"]
+
+
 def _ratio_component_horizon_case(
     *,
     complete: bool = False,
@@ -1854,7 +1829,10 @@ def _ratio_component_horizon_case(
         else:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                analysis.export(path)
+                if constructor == "from_definitions" and not complete:
+                    _assert_horizon_export_warns_censoring(analysis, path)
+                else:
+                    analysis.export(path)
                 assert_moments(pq.read_table(path).to_pylist())
         if constructor in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
             rows = source.moments(
@@ -6543,6 +6521,7 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
             design=_ENCOURAGEMENT_ITT_DESIGN,
             uptake="uptake",
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7392,6 +7371,7 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
             design=design,
             uptake="clicked",
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7930,6 +7910,7 @@ def _conversion_route_breakout_case() -> ParityCase:
             control="control",
             metrics=specs,
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
