@@ -1,11 +1,74 @@
 # Warehouse-native experimentation data model
 
 Declare experiments and metrics once, in version-controlled YAML, and run them
-against warehouse data. Increment builds a unit-by-day panel from your event
-tables and exposes every query it runs. If your data is already one row per
-unit or per unit-day, use the dataframe path instead
-(`Analysis.from_unit_summary` / `from_unit_panel` in the
-[Quickstart](quickstart.md)).
+against warehouse data. Use this path when your events, enrollment records,
+and metric definitions need to stay in the warehouse.
+
+```python
+import datetime as dt
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import ibis
+import polars as pl
+
+from increment import Analysis
+
+demo_rows = []
+for i, revenue in enumerate([1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0]):
+    for event in ["page_view", "purchase"]:
+        demo_rows.append({
+            "user_id": f"u{i}",
+            "group_id": "control" if i < 4 else "treatment",
+            "experiment_id": "demo",
+            "ts": dt.datetime(2025, 1, 1, 12),
+            "event": event,
+            "revenue": revenue if event == "purchase" else None,
+        })
+demo_rows.append({
+    "user_id": "background", "group_id": None, "experiment_id": None,
+    "ts": dt.datetime(2025, 1, 3, 12), "event": "purchase", "revenue": 1.0,
+})
+demo_con = ibis.duckdb.connect()
+demo_con.create_table("demo_events", pl.DataFrame(demo_rows).to_arrow())
+
+with TemporaryDirectory() as definitions_directory:
+    Path(definitions_directory, "demo.yaml").write_text("""\
+dialect: duckdb
+fact_sources:
+  - name: demo_events
+    sql: SELECT * FROM demo_events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {name: page_view, column: null}
+      - {name: purchase, column: revenue}
+exposures:
+  - {name: enrolled, fact: page_view}
+metrics:
+  - {name: revenue, type: mean, entity: user_id, fact: purchase, aggregation: sum, window_days: 1}
+experiments:
+  - name: demo
+    exposure: enrolled
+    unit: user_id
+    start: 2025-01-01
+    end: 2025-01-01
+    observation_end: 2025-01-02
+    control_group: control
+    plan: {primary: revenue}
+""")
+    demo_results = Analysis.from_definitions(
+        "demo", definitions_directory, demo_con
+    ).run()
+for row in demo_results:
+    print(row.metric, row.group_id, row.lift)
+```
+
+This self-contained example uses `ibis-framework[duckdb]` and `polars` to
+create a small event table. Increment builds the unit-by-day panel and exposes
+every query it runs. If your data is already one row per unit or per unit-day,
+use `Analysis.from_unit_summary` / `from_unit_panel` instead
+([Quickstart](quickstart.md)).
 
 The [warehouse example](../examples/analysis_from_a_warehouse.md) walks through
 the full flow; [Binding a normalized warehouse](#binding-a-normalized-warehouse)
@@ -33,7 +96,7 @@ same-length window. Dates follow the experiment's `day_boundary` (default
 | `group_id` | Assigned arm |
 | `first_exposure_ts` / `first_exposure_date` | Start of the unit's clock |
 | `day_offset` | Days since exposure, starting at 0 |
-| `ds` | Local calendar date for that offset |
+| `ds` | Local calendar date, `first_exposure_date + day_offset` |
 
 Two rules hold on every path: an eligible unit with no events on a day
 contributes zero, not a missing value, and a unit whose window has not finished
@@ -54,15 +117,31 @@ is censored, not scored from partial data.
     use a sparse day-at-a-time reduction. `densified_cells` counts cells that
     needed zero fill, not physical rows.
 
+??? info "Dataframe zero-fill route and memory limits"
+    For small inputs, zero filling may use a temporary date spine when a scratch
+    estimate based on the number of cells, value columns and identity-buffer size
+    falls below the 64 MiB selection threshold. This is a route-selection
+    heuristic, not a guarantee on peak memory: dataframe backend overhead and
+    temporary operations are not fully captured. Larger estimates select a sparse
+    day-at-a-time reduction that avoids retaining the full unit-by-date product.
+    `densified_cells` counts observed or implicit cells that require zero filling,
+    not physical rows written or retained.
+
+    Metric windows (`window_days`, `threshold_days`) count in
+    these offsets, so every unit gets the same-length observation window
+    regardless of when it enrolled.
+
 Units with conflicting or missing assignments are reported separately and never
 analyzed as arms; the default refuses them.
 
 ??? info "Assignment diagnostics"
-    A unit assigned to more than one real arm is `(mixed assignment)`; a unit
-    with a NULL assignment, alone or alongside a real arm, is `(unassigned)`.
-    Neither receives estimates or SRM degrees of freedom. The default
-    `on_mixed_assignment="error"` refuses; `"warn"` and `"exclude"` remove the
-    affected units and report their counts separately.
+    Assignment integrity is checked before each warehouse readout. A unit seen in
+    more than one real arm is counted as `(mixed assignment)`; a unit seen only
+    with NULL, or with both a real arm and NULL, is counted as `(unassigned)`.
+    These are accounting entries, not arms: NULL never receives an estimate or an
+    SRM degree of freedom. The `on_mixed_assignment` policy governs both
+    conditions: the default `"error"` refuses, while `"warn"` and `"exclude"`
+    remove them and report each count separately in diagnostics.
 
 ## The definitions directory
 
@@ -83,6 +162,18 @@ definitions/
 Loading validates syntax, known fields, duplicate names, SQL, and the references
 between experiments, exposures, metrics, and units. Errors name the offending
 file.
+
+??? info "Definition validation and errors"
+    Loading validates everything up front: YAML syntax, model fields (unknown
+    fields are rejected at every level), fact-source SQL syntax, duplicate names
+    across files, and every cross-reference. An experiment's exposure must be a
+    defined exposure, every metric it lists must be a defined metric, and every
+    metric's entity must match the experiment's unit. Failures raise a
+    `DefinitionError` naming the offending file.
+
+    Fact-source and dim-source SQL must not be blank: an empty or whitespace-only
+    `sql` refuses at load with `definition.source.sql_empty` (context
+    `source_kind`, `source_name`), before any warehouse access.
 
 !!! warning "Definitions are trusted code"
     Source SQL must be one non-empty, read-only `SELECT` (read-only CTEs and
@@ -132,6 +223,25 @@ fact_sources:
     Segmenting outcomes by a value observed after exposure can bias results,
     so only `pre_exposure` and `static` properties are eligible.
 
+??? info "Source SQL translation and fact values"
+    `dialect` identifies the dialect in which the source SQL is written. If the
+    connection uses another dialect, Ibis transpiles the SQL as a best-effort
+    syntax translation, not a semantic guarantee. Some constructs can silently
+    change meaning rather than fail loudly: an epoch-milliseconds function can
+    map to a target function with the inverse meaning, integer floor division
+    can become a differently rounded cast, and a file-reading table function can
+    pass through unchanged to the connected backend. Match `dialect:` to the
+    connection you actually use, and prefer SQL written natively for that
+    backend except for ordinary arithmetic and standard SQL. Leaving `dialect`
+    undeclared is safe for admission because source SQL is validated against the
+    connection's dialect. The same guidance applies when you declare a dialect
+    different from the backend you run against.
+
+    A fact's `column` is its value column (`revenue` for a purchase); `column: null`
+    declares an occurrence-only event: counting, conversion, and retention
+    work on it, but value aggregations (`sum`, `avg_event`,
+    `avg_calendar_day`, ...) do not.
+
 ## `exposures.yaml`: what enrolls a unit
 
 An exposure marks enrollment. Define exactly one of `fact` (the first matching
@@ -159,6 +269,13 @@ qualifying row decides both its enrollment time and its arm.
     a selection effect rather than a randomizer failure: run the allocation
     check on all targeted units and treat the subset ratio as a separate
     selection/telemetry diagnostic.
+
+!!! warning "Allocation shares alone do not justify anytime-valid SRM"
+    Anytime-valid SRM requires cumulative prefixes with the same known
+    conditional arm probabilities at every assignment; independent categorical
+    randomization qualifies. Blocked, adaptive, dependent, quota, exact-balance,
+    and without-replacement protocols need fixed or protocol-specific inference.
+    Use `inference="fixed"` for one predeclared look.
 
 ??? info "SRM result fields and inference"
     `SRMResult.p_value` has been removed. Pearson fixed-look evidence is
@@ -211,6 +328,39 @@ the metric through results and artifacts
     Its current intervals are experimental and withhold decision evidence:
     `stat_sig` is unavailable, not "not significant."
 
+!!! warning "Prespecify the winsorization method"
+    Method choice and seed/stream must be set before examining inferential results.
+
+??? info "Winsorization inference contract"
+    For heavy-tailed mean outcomes, add `winsorization` to the mean metric. Its
+    typed `inference` specification persists through frame construction, native
+    definitions, artifact context, and result JSON. Percentile inference defaults
+    to `pooled-size-route-v1`, which runs `influence-normal-v1` on pools of at
+    least 20,000 units with an expected `N (1 - q)` of at least 100 above the cutoff
+    and `positive-log-kernel-bootstrap-t-v1` otherwise; the executed method is
+    recorded on the confidence set and its reference. Explicit
+    `joint-rank-projection-v1` retains the uniform rank method. Method choice and
+    seed/stream must be set before examining inferential results. Every method's
+    typed public status is `experimental`. The bootstrap's persisted qualification
+    is `pointwise_asymptotic_model_conditioned_v1`, the influence interval's is
+    `pointwise_asymptotic_influence_v1`, and a routed request carries
+    `pointwise_asymptotic_size_routed_v1`: pointwise asymptotic candidates under an
+    iid nonnegative smooth-positive-density model, not universal finite-sample or
+    heterogeneous-effect claims.
+    The full historical calibration manifest remains unresolved. It records 12
+    known alternative variance failures plus contamination width-failure evidence;
+    bounded normal/binomial diagnostics do not turn these into passes. An experimental
+    inference specification reports its descriptive confidence set and withholds decision
+    evidence (`evidence.experimental_reference`). The rank
+    method's qualification is `uniform_support_conditioned_v1` and it requires
+    externally justified support. Zero outcomes are accepted by every method; the
+    bootstrap and influence constructions require the percentile to sit above the
+    pooled zero share and refuse otherwise (`estimation.winsor.cutoff_in_zero_atom`).
+    Percentile cutoffs are pooled across all eligible arms before the
+    transformed per-unit values are aggregated. Fixed values use the declared cap
+    directly. The same cutoff is applied to every arm, and the estimate concerns the
+    capped outcome.
+
 ## `experiments.yaml`: tying it together
 
 An experiment connects an exposure, an analysis unit, metrics, a schedule, and
@@ -241,6 +391,28 @@ experiments:
 | `n_pre_periods` | CUPED lookback. The window ends at first exposure and includes earlier events on the exposure date. |
 | `breakouts` | Lift by declared property. |
 | `cluster` | Randomization grain when it is coarser than `unit`; see [below](#randomization-grain-vs-analysis-grain). |
+
+??? info "Decision roles and the CUPED window"
+    The `plan` block declares the decision rule: `primary` (the
+    pre-registered outcome), `secondaries` (reported alongside, sharing one
+    multiplicity family), and `guardrails` (tracked separately, tested
+    one-sided on their adverse side). It also carries `alpha`, `q`, and
+    `inference`.
+
+    An experiment can also declare `n_pre_periods` (a CUPED lookback in
+    days, see [CUPED](cuped.md)) and `breakouts` (per-segment lift
+    breakdowns on a declared property).
+    The CUPED window is `[first exposure date − n_pre_periods days, first exposure timestamp)`, including exposure-day events before exposure.
+
+    `observation_end` optionally extends data collection past `end`. Set it
+    to `end + <longest metric window>` when the intervention is delivered
+    once at enrollment (a new onboarding flow, a welcome email), so units
+    enrolled near the end still get a complete window instead of being
+    censored. Leave it unset for a continuous intervention that reverts
+    when the experiment stops.
+
+    `control_group` is required: the engine never guesses which arm is
+    control.
 
 ### Window edges and the day boundary
 
@@ -314,6 +486,18 @@ methods and priors across metrics. [CUPED](cuped.md#per-metric-method-bindings)
 covers precedence and the dataframe equivalent,
 `MetricSpec(decision_method=..., sensitivity_methods=..., prior=...)`.
 
+??? info "Metric binding defaults and override scope"
+    Every entry in a `plan` role (`primary`/`secondaries`/`guardrails`) is either a bare metric NAME
+    (shorthand -- reports under the call's own defaults) or a BINDING that
+    overrides `decision_method`/`sensitivity_methods`/`prior` for that one metric
+    only:
+
+    A call-wide role-aware `run(decision_method=..., sensitivity_methods=...)`/`run(prior=...)` still wins over a
+    declared binding for every metric it names -- the binding only fills in
+    when the call leaves that field unset. This precedence is per-metric,
+    independently: one `run()` call may dispatch several metrics under
+    different adjustment sets and different priors at once.
+
 ## Randomization grain vs analysis grain
 
 `unit` is the analysis grain: one row per unit feeds the estimate. Many
@@ -376,7 +560,17 @@ What a clustered experiment supports:
     approximation even when the count clears the threshold. Cluster count sets
     the working reference; it does not establish calibration.
 
+!!! warning "Clustered SRM also depends on the assignment protocol"
+    Independently assigned clusters with known, constant conditional arm
+    probabilities qualify for anytime-valid SRM; blocked or exact-balance
+    cluster protocols do not. Fixed-look Pearson inference remains available
+    as an explicit option.
+
 ??? info "Statistical details"
+    With `cluster` declared (or `from_unit_summary(..., cluster="store_id")` on
+    the dataframe path), uncertainty is computed from independent clusters.
+    The dataframe path (`from_unit_summary(..., cluster=...)`) reports the same two grains.
+
     - Randomized moments and observational `Method(name="unadjusted")` with
       disjoint arms use a joint relative confidence set with a working t
       reference at `min(K_T - 1, K_C - 1)` degrees of freedom; the additive

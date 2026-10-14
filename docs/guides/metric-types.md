@@ -1,10 +1,34 @@
 # Metric types
 
 Choose the metric type that matches what one unit contributes: a numeric
-outcome (`mean`), an event indicator (`conversion`), a return window
-(`retention`), or a ratio of totals (`ratio`). Define metrics in warehouse YAML
-or with dataframe `MetricSpec` objects; see [Reading results](reading-results.md)
-and the [population/status table](multiplicity.md) when interpreting them.
+outcome, an event indicator, a return window, or a ratio of totals. Declare it
+in warehouse YAML or in a dataframe `MetricSpec`.
+
+```python
+import polars as pl
+
+from increment import Analysis
+
+metric_demo = pl.DataFrame({
+    "user_id": [f"u{i}" for i in range(8)],
+    "variant": ["control"] * 4 + ["treatment"] * 4,
+    "revenue": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
+    "converted": [0, 1, 0, 1, 1, 0, 1, 1],
+})
+metric_results = Analysis.from_unit_summary(
+    metric_demo,
+    unit="user_id",
+    group="variant",
+    control="control",
+    metrics={"revenue": "mean", "converted": "conversion"},
+).run()
+for row in metric_results:
+    print(row.metric, row.group_id, row.lift)
+```
+
+The example uses Polars; any eager dataframe supported by Narwhals works.
+See [Reading results](reading-results.md) and the
+[population/status table](multiplicity.md) when interpreting results.
 
 Warehouse definitions reduce events to unit outcomes; dataframe inputs already
 hold per-unit values. Support differs by metric and source; see
@@ -40,11 +64,13 @@ declares which direction is favorable (a latency metric prefers `decrease`)
 and drives favorability readouts.
 
 ??? info "Inference reference for ordinary means"
-    For ordinary independent iid means,
-    `increment.estimation.infer_independent_mean` accepts centered `ArmStats`,
-    uses within-arm `ddof=1` and a Welch-Satterthwaite reference, and stores
-    its degrees of freedom and components. It does not apply to adjusted
-    scores, clusters, or estimated-cutoff moments.
+    For an absolute contrast of ordinary independent iid means,
+    `increment.estimation.infer_independent_mean(control_arm, treatment_arm)`
+    accepts centered `ArmStats` from the existing moments producers. It retains
+    the component counts and centered sums, uses ddof=1 within each arm and a
+    Welch-Satterthwaite reference, and persists its df and components on the result.
+    This operation does not apply to adjusted scores, clusters, or estimated-cutoff
+    moments; those require their own declared inference contracts.
 
 ### Winsorization
 
@@ -78,120 +104,160 @@ the values you declare. Zero is a regular observation. Results expose each
 arm's resolved cap and capped count. A difference in cap rates may signal a
 treatment-driven change in the tail; it is diagnostic, not an adjustment.
 
+??? info "Percentile bound resolution"
+    Percentile bounds are resolved once from the pooled eligible unit population
+    across all arms, with exact linear interpolation; fixed bounds use the supplied
+    values.
+
 !!! warning "Percentile winsorization has no decision evidence"
     Percentile cutoffs are estimated from the data, so their uncertainty must
     be included in inference. Current percentile-winsorized intervals are
     experimental: `stat_sig` is unavailable, not "not significant." Do not use
     these results to make a significance or family-selection decision.
 
+!!! warning "Prespecify the winsorization method"
+    Method choice and seed/stream must be set before examining inferential results.
+
 ??? info "Statistical details and limits"
     Winsorization is not supported for conversion, retention, ratio, quantile,
     active, or sitewide metrics. Daily, as-of, and cohort readouts are refused.
-    For one upper percentile, randomized fixed-horizon two-sided unit inference
-    defaults to `pooled-size-route-v1`. Pools of at least 20,000 units with an
-    expected `N (1 - q)` of at least 100 above the cutoff use
-    `influence-normal-v1`; smaller pools use
-    `positive-log-kernel-bootstrap-t-v1`. The executed method is recorded as
-    `confidence_set.method` and `confidence_set.reference.method`; the requested
-    route remains in `confidence_set.raw.inference.method`. Thresholds are
-    provisional pending the zero-inflated calibration campaign (`1e0h`).
-    Either method can be requested through `inference: {method: ...}`.
+    For a single upper percentile, randomized fixed-horizon two-sided unit
+    inference defaults to `pooled-size-route-v1`, a provisional size route between
+    two constructions of the same estimand. Pools of at least 20,000 units whose
+    expected count above the cutoff, `N (1 - q)`, is at least 100 run
+    `influence-normal-v1`; every smaller request runs
+    `positive-log-kernel-bootstrap-t-v1`. The method that ran is recorded as
+    `confidence_set.method` (and on `confidence_set.reference.method`); the request
+    keeps the route literal in `confidence_set.raw.inference.method`. The thresholds
+    are provisional pending the zero-inflated calibration campaign across the route
+    boundary (tracked as `1e0h`); either construction can also be requested
+    explicitly through `inference: {method: ...}`.
 
-    Outcomes may be zero. The bootstrap resamples zero outcomes alongside
-    positive outcomes, including uncertainty in zero share and cutoff. Its
-    pooled cutoff must be above the zero share `pi`: `upper_percentile` must
-    exceed `pi`, and the positive-outcome quantile is `(q - pi) / (1 - pi)`.
-    If the type-7 cutoff's lower neighbour is zero, the request refuses with
-    `estimation.winsor.cutoff_in_zero_atom`; raise `upper_percentile` or use
+    Outcomes may be zero. The log-kernel pilot acts on each arm's positive
+    outcomes and resamples the arm's zeros with the same probability as any
+    positive value, so the estimated zero share, the estimated cutoff and their
+    cross term are part of every interval. On strictly positive outcomes the
+    construction is identical to the earlier positive-only method, root for root.
+    The pooled cutoff must sit above the zero atom: with pooled zero share `pi`,
+    `upper_percentile` must exceed `pi`, and the p`q` of all units is then the
+    `(q - pi) / (1 - pi)` quantile of the positive outcomes (p99 at 90 % zeros is p90
+    of purchasers). A request whose type-7 cutoff has a zero as its lower neighbour
+    (the pooled quantile sits in the atom, or interpolates between zero and the
+    smallest positive outcome) refuses with
+    `estimation.winsor.cutoff_in_zero_atom`; raise `upper_percentile` or use a fixed
     `upper_value`. Negative outcomes refuse with
-    `estimation.winsor.pilot_negative_outcome`; an arm with fewer than two
-    positive outcomes refuses with `estimation.winsor.pilot_degenerate`.
-    Near the zero atom, failed bootstrap cutoff roots make the interval
-    unavailable with reason `bootstrap_replicate_failure`.
+    `estimation.winsor.pilot_negative_outcome`; an arm with fewer than two positive
+    outcomes (including an all-zero arm) refuses with
+    `estimation.winsor.pilot_degenerate`. Close to the atom (zero share just below
+    `upper_percentile`) bootstrap replicates whose resampled cutoff lands on a zero
+    are failed roots, and the interval is reported unavailable with reason
+    `bootstrap_replicate_failure` rather than approximated.
 
-    `positive-log-kernel-bootstrap-t-v1` uses 1,999 fixed-count bootstrap-t
-    resamples, recomputing the pooled cutoff, means, density, and studentization.
-    It requires nondegenerate positive log variances, independent iid arms, and
-    a smooth positive population cutoff. Its qualification is
-    `pointwise_asymptotic_model_conditioned_v1`; it is an experimental candidate
+    `positive-log-kernel-bootstrap-t-v1` is a full-procedure bootstrap-t: 1,999
+    fixed-count resamples from the arm-specific pilot, recomputing the pooled
+    cutoff, means, density and full influence studentization in every replicate.
+    It requires nondegenerate positive log variances, independent iid arms, and a
+    smooth positive population cutoff. Its public qualification is
+    `pointwise_asymptotic_model_conditioned_v1`: it is an experimental candidate
     for specified populations, not a universal finite-sample or heterogeneous-
-    effects guarantee. The unresolved stress calibration includes 12 known
-    alternative-variance failures and contamination width-failure evidence.
+    effects guarantee. Calibration remains unresolved for the preserved stress
+    grid, including 12 alternative rows with known clipped-variance failures and
+    the contamination width failure evidence; these rows remain unavailable
+    evidence, not passes. No external upper-tail bound is required.
 
-    `influence-normal-v1` uses a pooled cutoff, clipped means, the positive-part
-    log-kernel density, and centered empirical influence variance, including
-    estimated cutoff and zero-share uncertainty. It uses normal quantiles on
-    the log-ratio and difference scales. Its qualification is
-    `pointwise_asymptotic_influence_v1`; it is a first-order approximation
-    reserved by the router for large pools with a populated upper tail.
-    A routed request carries `pointwise_asymptotic_size_routed_v1`.
+    `influence-normal-v1` is the analytic influence-function interval: one pooled
+    cutoff, clipped means, the same positive-part log-kernel density at the cutoff
+    scaled by each arm's positive share, and the centred empirical influence
+    variance over every pool arm (estimated cutoff, estimated zero shares and the
+    cross term included), closed with normal quantiles on the log-ratio and
+    difference scales. It costs one partition and one density pass: the estimate
+    takes 0.002 s for two arms of 10,000 and 0.2 s for two arms of 1,000,000 with
+    90 % zeros (0.5 s with 50 % zeros), against 1.1 s and minutes for the bootstrap;
+    a public readout at that size spends a further few seconds on raw-outcome
+    capture and the per-unit evidence digest. Its qualification is
+    `pointwise_asymptotic_influence_v1`: a first-order normal approximation that
+    drops the bootstrap-t refinement, which is why the route reserves it for large
+    pools with a populated upper tail. A size-routed request carries
+    `pointwise_asymptotic_size_routed_v1` until the pool resolves it.
 
-    Every method's public status is `experimental`; its descriptive confidence
-    set may be reported, but decision and family-selection evidence is withheld
-    as `evidence.experimental_reference`.
-    `joint-rank-projection-v1` is an optional uniform rank confidence set and
-    requires an independently justified finite lower support. Decimal rank
-    calibration supports at most 64 units per pool arm; larger arms refuse with
-    `estimation.winsor.rank_size_unsupported`. This is a computation limit,
-    not a statistical sample-size requirement.
+    The typed public status of every method is `experimental`: the descriptive
+    confidence set is reported and decision evidence is withheld
+    (`evidence.experimental_reference`), as described below.
+    Select `inference: {method: joint-rank-projection-v1}` for the optional
+    uniform rank confidence set. That method requires an explicit finite lower
+    support declaration justified independently of the sample. Certified Decimal
+    rank calibration supports at most 64 units in each pool arm; larger arms refuse
+    before calibration with `estimation.winsor.rank_size_unsupported`. This limit
+    binds computation and is not a statistical sample-size requirement. It does not
+    apply to the bootstrap or influence methods.
+    All arms contribute to the allocation-weighted cutoff, including arms outside
+    the reported contrast. Clustered, CUPED-adjusted, prior-weighted, sequential,
+    observational, breakout, factor, one-sided and lower-percentile inference refuse
+    before estimation with `readout.metric.percentile_winsorization` (sequential
+    requests with `sequential.transform.unpredictable` at source construction),
+    whichever winsor method the request names; ratio metrics cannot declare
+    winsorization. Multiplicity roles are unaffected: experimental rows carry no
+    decision evidence into a family. `run()` supports the fixed-horizon, two-sided
+    independent-unit path when the source preserves raw outcomes; transformed
+    moments alone cannot reconstruct cutoff uncertainty.
+    Every persisted inference method carries `status="experimental"`. Their
+    descriptive confidence sets remain available, but none supplies decision or
+    family-selection evidence.
 
-    All arms contribute to the allocation-weighted cutoff, including arms
-    outside a reported contrast. Clustered, CUPED-adjusted, prior-weighted,
-    sequential, observational, breakout, factor, one-sided, and lower-percentile
-    inference refuse with `readout.metric.percentile_winsorization` (sequential
-    source construction can instead refuse with
-    `sequential.transform.unpredictable`). Multiplicity roles are unchanged;
-    experimental rows carry no decision evidence into a family. `run()` needs
-    raw outcomes for the fixed-horizon two-sided independent-unit path;
-    transformed moments cannot reconstruct cutoff uncertainty.
+    `source.unit_frame(metric, outcome_stage="raw")` returns the exact outcomes
+    after missingness handling and before winsorization. The default remains
+    `"transformed"`. Dataframe percentile snapshots preserve both views after
+    caller mutation. A native mixed readout captures every selected metric in one
+    warehouse-side snapshot before data validation and reduction, including ordinary
+    metrics alongside percentile metrics. Assigned and triggered populations retain
+    their own scope; unused metric sources are not loaded. Adopted unit-day artifacts recover
+    raw totals from verified pre-transform measure statistics on their pinned
+    snapshot; moments-only artifacts cannot supply this state. The direct
+    estimator accepts a typed `WinsorRawState` through
+    `raw_outcomes={metric.name: state}`; `raw_state_from_source` constructs it using
+    the same source protocol as the public readout.
 
-    `source.unit_frame(metric, outcome_stage="raw")` returns values after
-    missingness handling and before winsorization; `"transformed"` is the
-    default. Dataframe percentile snapshots preserve both views after caller
-    mutation. Native mixed readouts capture selected metrics in one warehouse
-    snapshot before validation and reduction. Assigned and triggered
-    populations keep their own scope, and unused metric sources are not loaded.
-    Adopted unit-day artifacts recover raw totals only from verified
-    pre-transform measure statistics; moments-only artifacts cannot provide
-    them. Direct `estimate_lift` accepts `WinsorRawState` via `raw_outcomes`;
-    `raw_state_from_source` uses the public source protocol.
+    When a direct `estimate_lift` call mixes percentile metrics (via
+    `raw_outcomes`) with ordinary summary metrics, pass
+    `summary_population="assigned"` or `"triggered"` explicitly. Summary rows carry
+    `experiment_id` but do not carry trustworthy population metadata, so the
+    engine never infers it; the supplied population must match every raw state's
+    population, and all rows/states must share one study. This requirement applies
+    only to mixed calls; raw-only and ordinary-only calls retain their existing
+    contracts. A one-use iterable of summary rows is retained for the ordinary
+    portion after this identity check.
 
-    A direct `estimate_lift` call mixing percentile metrics (`raw_outcomes`)
-    with ordinary summaries must set `summary_population="assigned"` or
-    `"triggered"`. Summary rows do not carry trustworthy population metadata;
-    the supplied population must match each raw state's population, and all
-    rows/states must belong to one study. Raw-only and ordinary-only calls keep
-    their existing contracts. A one-use summary iterable is retained after
-    this identity check.
+    `LiftEstimate.reference_kind == "confidence_set"` identifies the new reference.
+    `confidence_set.relative` and `.additive` carry endpoints with
+    `status` equal to `finite`, `unbounded`, or `undefined`. Nonfinite endpoints
+    have numeric `value=None` and an explicit reason. Use these endpoints even
+    when the empirical point is undefined. The discriminated `.reference` stores
+    rank error allocations, the bootstrap pilot (positive log centres and the
+    arm's zero count), explicit RNG seed/stream, centering targets, SEs and all
+    roots (including failed roots), or the influence reference's cutoff,
+    cutoff-scaled pooled density and both standard errors. `.cutoff` is a confidence region only for
+    rank inference; bootstrap cutoff diagnostics live in the bootstrap reference.
+    `reintervalize(alpha)` uses the stored roots or standard errors without
+    reading or rerandomizing. Bootstrap tails finer than `2/2000` are unresolved,
+    and any failed root makes the interval unavailable. `p_value()` inverts the
+    stored bootstrap effect test or the normal pivot of the influence reference;
+    rank inference retains its coarse single-level test.
 
-    `LiftEstimate.reference_kind == "confidence_set"` identifies this
-    reference. `confidence_set.relative` and `.additive` endpoints have status
-    `finite`, `unbounded`, or `undefined`; nonfinite endpoints have
-    `value=None` and a reason. The discriminated `.reference` stores rank error
-    allocations, bootstrap pilot, RNG seed/stream, centering targets, standard
-    errors, roots (including failures), or influence cutoff, density, and
-    standard errors. `.cutoff` is a confidence region only for rank inference.
-    `reintervalize(alpha)` reuses stored roots or standard errors without
-    rerandomizing. Bootstrap tails finer than `2/2000` are unresolved, and any
-    failed root makes its interval unavailable. `p_value()` inverts the stored
-    bootstrap effect test or influence normal pivot; rank inference retains a
-    coarse single-level test.
+    `WinsorInferenceSpec(seed=1729, stream=0)` records the default PCG64DXSM stream.
+    Prespecify distinct stream ordinals for repeated datasets, independently of
+    the outcome-sampling generator. Changing the pilot or budget requires a new
+    method version. `conditional_permutation_test` in
+    `increment.estimation.winsor` separately tests
+    `raw_distribution_exchangeability`; its p-value is never an effect interval.
 
-    `WinsorInferenceSpec(seed=1729, stream=0)` records the default PCG64DXSM
-    stream. Prespecify distinct stream ordinals for repeated datasets,
-    separately from outcome sampling. Changing the pilot or budget requires a
-    new method version. `conditional_permutation_test` in
-    `increment.estimation.winsor` tests `raw_distribution_exchangeability`;
-    its p-value is not an effect interval.
-
-    `support.upper` is a hard outcome bound and observed violations refuse.
-    `support.quantile_upper` bounds the population cutoff but permits observed
-    values above it. `support.control_mean_lower` declares a positive lower
-    bound for the control winsorized mean. Do not choose these from the current
-    sample. Without enough tail information, small p99 designs can have
-    unbounded rank intervals. Neither method guarantees finite width or useful
-    power; that uniform-coverage limit does not imply bootstrap calibration on
-    specified distributions is impossible.
+    Optional `support.upper` is a hard outcome bound and observed violations
+    refuse. `support.quantile_upper` is an externally justified population cutoff
+    bound; observations above it are allowed. `support.control_mean_lower` declares
+    a positive lower bound for the control winsorized mean. These declarations
+    cannot be chosen from the current sample. Without sufficient tail information,
+    small p99 designs can require unbounded rank intervals. This uniform-coverage
+    limit does not imply that bootstrap calibration on specified distributions is
+    impossible. Finite width or useful power is not guaranteed by either method.
 
 ## Conversion
 
@@ -302,6 +368,15 @@ a DST-aware zone does not.
     fixed offset drifts ±1 hour against the wall clock across DST transitions,
     but deterministically; the buckets themselves stay stable.
 
+!!! warning "Short retention windows and timezone comparisons need care"
+    A unit's calendar-day window can differ by up to a day; for d1 retention,
+    that is as large as the window itself. Changing `day_boundary` cannot fix
+    this: an elapsed-24h window would be needed and is not supported here.
+    A boundary that does not match a segment's local day also slices traffic
+    differently across timezone-correlated segments, so comparing their effect
+    sizes can change meaning. Each segment's own lift remains internally
+    valid under an arm-symmetric convention.
+
 ??? info "Short day 0, short thresholds, and cross-segment reads"
     Under any boundary, a unit exposed ten minutes before it (23:50 UTC under
     the default) gets a ten-minute "day 0"; its first full day of observation
@@ -351,6 +426,14 @@ Looking at the series repeatedly and acting on it requires a registered
 sequential process declared before any data is read; see
 [Sequential inference](sequential-inference.md) for the construction and
 replay API.
+
+!!! warning "A mature window alone does not prove sequential finalization"
+    Reveal every relevant outcome for a unit together after the longest
+    required window, in an outcome-independent order. Bounded windows and
+    `completed_windows_only=True` do not establish finalization: native and
+    panel sources require `capture_sequential(as_of=..., finalized=True)`.
+    Configure the registered process before supplying data; continuation
+    checks earlier units, assignments, values, and definitions.
 
 ??? info "What sequential retention requires"
     Declare the sampling law, proper predictive priors, the metric × arm ×
