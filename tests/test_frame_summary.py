@@ -641,6 +641,41 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
+def test_run_warns_for_defaulted_fixed_horizon_encouragement_cuped(
+    arrow_frame: pa.Table,
+) -> None:
+    import warnings
+
+    from increment import Analysis
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+    from tests.warning_codes import warning_codes, warning_context
+
+    frame = arrow_frame.append_column("took", arrow_frame["converted"])
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="took"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True,
+                justification="assignment affects revenue through uptake",
+            ),
+            allocation={"control": 0.5, "treatment": 0.5},
+        ),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+
+    assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 1
+    assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
+        "revenue",
+    )
+
+
 def test_cuped_narrows_interval_without_moving_the_point(arrow_frame: pa.Table) -> None:
     """With arms balanced on the covariate, CUPED buys precision and nothing else.
 

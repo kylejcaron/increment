@@ -2691,7 +2691,7 @@ class Analysis:
                 not covariate_available
                 or not config.decision_defaulted
                 or config.methods_explicitly_empty
-                or getattr(design, "mechanism", "randomized") != "randomized"
+                or getattr(design, "mechanism", None) == "observational"
                 or any(
                     method.variance_reduction == "cuped" for method in config.sensitivity_methods
                 )

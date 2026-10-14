@@ -620,7 +620,9 @@ def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):
         store="none",
     )
 
-    results = analysis.run()
+    from increment.estimation.engine import Method
+
+    results = analysis.run(decision_method=Method(name="unadjusted"))
     assert {e.metric for e in _lift_rows(results)} == {"revenue", "revenue_unwinsorized"}
 
     path = tmp_path / "mixed-winsorization-moments.parquet"
