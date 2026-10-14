@@ -249,8 +249,8 @@ for r in results:
         f"significant={r.stat_sig()}"
     )
 
-# The full frame retains qualifications; a column selection compacts its projection.
-# Qualified readout evidence is retained in every frame view.
+# The default frame retains qualified evidence; selected views retain requested
+# projection columns and view_partial.
 decision_table = results.to_frame(backend="polars", columns="summary")
 custom_table = results.to_frame(
     backend="polars",
