@@ -928,8 +928,11 @@ def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 # Numeric confidence-set evidence lives in interval disclosures and the per-level wording beside
 # each table, so the verdict, set and per-row level columns are not repeated in the grid. The
-# unrounded values stay in the readout frame and CSV.
-_REDUNDANT_COLUMNS = frozenset({"Significant", "Confidence set", "Interval"})
+# per-row interpretation and additive effect stay in standalone readout tables; the dashboard
+# grid keeps its compact columns. The unrounded values stay in the readout frame and CSV.
+_REDUNDANT_COLUMNS = frozenset(
+    {"Significant", "Confidence set", "Interval", "Interval interpretation", "Additive effect"}
+)
 
 
 INTERVALS_DISCLOSURE = "How to read these intervals"
