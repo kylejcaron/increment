@@ -199,30 +199,44 @@ mass. `ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")`
 replay at every size (refused for a mean, clustered or sequential plan, which the finite-sample
 route does not serve). Power depends on the baseline rate alone; `var` does not enter.
 
-Public `power` is a model-based point probability, not the lower endpoint of a
-numerical enclosure:
+Public `power` is a model-based probability of the runtime's decision. An enumerated result
+also carries the computed enclosure of that probability, `power_lower` and `power_upper`
+(both `None` for a closed-form or sequential plan):
 
 - `power_basis="exact"`: the computed rejection mass from the count-law
   enumeration. Internal bounds account for summation error, omitted support
-  and unresolved count pairs. The point is published only when the computed
+  and unresolved count pairs. The point is published when the computed
   enclosure resolves to absolute error at most `1e-6`, conditional on the
   deployed SciPy/Boost special-function error model; this is not a cross-build
   floating-point proof. `"exact"` describes the decision-law calculation, not
   error-free arithmetic or a finite-sample guarantee for the hybrid delta-method
   route.
-- `power_basis="approximate"`: an unresolved diagnostic with no claim on runtime
-  power. Materially unresolved results are refused rather than published.
+- `power_basis="lower_bound"`: the evaluation budgets below left the enclosure
+  wider than `1e-6`, and `power` is its lower end, `power_lower`. The runtime's
+  rejection probability is at least that, conditional on the same error model;
+  `power_upper` bounds it from above. Nothing inside the enclosure is claimed: no
+  midpoint, no substitute approximation.
 - `power_basis="asymptotic"`: the closed-form model above, where counts route to
   the delta method with near certainty (unrouted mass at most `1e-6`) and the
   lattice has more than 100,000 cells. This is the model's own probability,
   not an enumeration of the runtime's decision. The dense validation tolerance
   remains `0.005`; it is a comparison criterion, not a universal error bound
   for every design or data-generating process.
-- If the enumeration cannot resolve the probability to `1e-6`, the public
-  request refuses with `power.binomial_probability_unresolved` (context
-  `lower`, `upper`, `error`, `tolerance`). It does not publish a lower endpoint,
-  midpoint or substitute approximation. Internal diagnostic enclosures may remain
-  wide; they are not public `PowerResult` fields or user tuning parameters.
+- A target is reached only when the enclosure's lower end reaches it.
+  `required_sample_size` returns the smallest size of its bracket whose lower
+  end reaches the target; a size the enclosure straddles is not reached, so a
+  wide enclosure sizes conservatively, never short. `minimum_detectable_effect`
+  and a companion `mde_relative` certify the returned effect the same way. A
+  standard conversion plan (a 10% baseline, a 10% relative lift, two-sided
+  `alpha=0.05`, 80% power) is sized with `power_basis="lower_bound"` and an
+  enclosure about `3e-4` wide.
+- The explicit point request, `increment.power.core.planned_enclosure(...).reported`,
+  refuses an unresolved enclosure with `power.binomial_probability_unresolved`
+  (context `point`, `lower`, `upper`, `error`, `tolerance`). `required_sample_size`
+  refuses with the same code, adding `n_per_arm`, when its search reaches the
+  ceiling with an enclosure holding the target; a ceiling whose upper end falls
+  short refuses with the replay-bound or size-limit code naming the certified lower
+  end. No accuracy tuning parameter is exposed.
 
 Enumeration has deterministic work and memory limits, not a timing-dependent
 answer. Delta-decision enumeration is bounded at 100,000 count pairs, and
@@ -252,15 +266,19 @@ Likewise, power need not be monotone in sample size or effect:
   planning calculation, not a proof that no smaller size can reach it.
 - `minimum_detectable_effect` searches for the earliest detectable region to
   an effect tolerance of `1e-8` absolute plus `1e-8` relative, measured on the
-  relative-effect scale, not the first IEEE-representable effect. It
-  cannot silently skip a materially earlier unresolved band. The result's
-  `power` is evaluated at the reported effect, not copied from the target.
+  relative-effect scale, not the first IEEE-representable effect. The result's
+  `power` is evaluated at the reported effect, not copied from the target. A
+  band whose evaluated ends fall short with resolved enclosures refuses with
+  `numerical_resolution`. A band the evaluation budgets leave straddling the
+  target (both evaluated ends at any width, or either end once the band is at
+  tolerance width) is passed over, so `mde_relative` certifies its target but
+  may lie above an effect a fuller evaluation would certify.
 - A target excluded over every admissible effect is `unattainable`. If the
   search cannot distinguish detectability or exclude an earlier region at its
-  numerical resolution, a companion MDE is unavailable with
-  `numerical_resolution`; a standalone call refuses with
-  `power.minimum_detectable_effect.numerical_resolution`. A supplied effect
-  whose point power is resolved can still be returned without a companion MDE.
+  numerical resolution, or the far end's enclosure straddles the target, a
+  companion MDE is unavailable with `numerical_resolution`; a standalone call
+  refuses with `power.minimum_detectable_effect.numerical_resolution`. A
+  supplied effect's own answer still stands without a companion MDE.
 
 With a shifted null and partial compliance, an initial band can imply
 unrepresentable absolute lifts even though farther effects are representable.
@@ -277,8 +295,9 @@ than a prerequisite on the planning path.
 
 The official [`TTestIndPower.power`](https://www.statsmodels.org/stable/generated/statsmodels.stats.power.TTestIndPower.power.html)
 and [`NormalIndPower.power`](https://www.statsmodels.org/stable/generated/statsmodels.stats.power.NormalIndPower.power.html)
-APIs return model-based point rejection probabilities, not lower numerical
-bounds. Increment uses the same point-probability interpretation, but that does
+APIs return model-based point rejection probabilities. Increment's `power` is the same
+kind of quantity (a resolved enumerated point, or the stated lower end of an enclosure
+where the budgets leave one), but that does
 not imply numerical parity: those APIs plan independent-sample t- and z-tests,
 respectively, with standardized mean differences. Compare only after aligning
 the decision rule, effect scale, baseline/variance assumptions, alpha, sidedness
@@ -487,12 +506,13 @@ unit-randomized sequential planning.
 |---|---|
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
-| `power` | Planned power at the returned integer size under `power_basis`; an admitted finite-sample point is published only when its computed enclosure resolves to absolute error at most `1e-6`, conditional on the deployed SciPy/Boost special-function error model. An unresolved diagnostic is not runtime-power evidence; an asymptotic result is the model's own probability. |
-| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision summed over the count lattice), or `approximate` (an unresolved diagnostic, making no runtime-power claim) |
-| `numerical_qualification` | `closed_form_model_only_v1`, `scipy_special_function_error_model_conditional_v1`, or `unclaimed_approximation_diagnostic_v1`, respectively; the finite-sample label is conditional on the deployed SciPy/Boost special-function error model, not a cross-build proof |
+| `power` | Planned power at the returned integer size under `power_basis`: a finite-sample point published when its computed enclosure resolves to absolute error at most `1e-6`, the enclosure's lower end when it does not, both conditional on the deployed SciPy/Boost special-function error model; an asymptotic result is the model's own probability. |
+| `power_lower`, `power_upper` | The computed enclosure of an enumerated binomial power, holding the runtime's rejection probability and `power`; `None` for a closed-form or sequential plan |
+| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision summed over the count lattice, resolved to `1e-6`), or `lower_bound` (`power` is `power_lower`, the lower end of an enclosure wider than `1e-6`) |
+| `numerical_qualification` | `closed_form_model_only_v1` for the asymptotic model and `scipy_special_function_error_model_conditional_v1` for either enumerated basis; the finite-sample label is conditional on the deployed SciPy/Boost special-function error model, not a cross-build proof |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
-| `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Exact/approximate binomial power uses event rates and counts, not this reported variance. |
+| `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Enumerated binomial power uses event rates and counts, not this reported variance. |
 | `n_clusters_per_arm`, `n_clusters_total` | Ceiled randomization-cluster counts, or `None` for unit randomization |
 | `n_triggered_per_arm`, `n_triggered_total` | Analyzed units when `trigger_rate < 1`, otherwise `None` |
 | `expected_n_total` | Expected sequential stopping size, or `None` for fixed horizon |

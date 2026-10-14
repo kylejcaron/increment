@@ -11,6 +11,7 @@ replay); only the budgets are shrunk so that they bind at a size that runs in se
 from __future__ import annotations
 
 import copy
+import json
 import math
 import pickle
 from dataclasses import dataclass
@@ -27,7 +28,9 @@ from increment.estimation.arm_contract import ArmPlanningProcedure
 from increment.estimation.conversion_delta import production_decision
 from increment.power import (
     Baseline,
+    PowerCurvePoint,
     PowerDesign,
+    PowerResult,
     _binomial,
     achieved_power,
     minimum_detectable_effect,
@@ -105,6 +108,25 @@ def _off_route(
 
 def _known(geometry: RejectionGeometry) -> int:
     return sum(int(segment.known.sum()) for segment in geometry.segments)
+
+
+def test_the_heuristic_replay_decides_the_cells_the_runtime_replay_does(small_budgets):
+    """The sizing proposal's Normal-tail replay pays the same replay budget as the runtime's
+    own and chooses the same heaviest cells, so its computed mass over them tracks the lower end
+    the final search decides from, and its cost is bounded alike."""
+    exact = _geometry()
+    heuristic = RejectionGeometry(
+        _decision(N), "approximate", PLANNING_CELL_CEILING, Routing(FLOOR, 0.0)
+    )
+    wc, wt = _binomial._window(N, P_C), _binomial._window(N, 0.4)
+    chosen = heuristic._selected(wc, wt)
+    assert np.array_equal(chosen, exact._selected(wc, wt))
+    row_in, col_in = exact._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+    replayed = chosen & ~(row_in[:, None] & col_in[None, :])
+    assert 0 < int(replayed.sum()) * len(_decision(N).kinds) <= REPLAY_BUDGET
+    assert int(replayed.sum()) < int((~(row_in[:, None] & col_in[None, :])).sum())
+    proposal = heuristic.evaluate(P_C, 0.4)
+    assert not proposal.certified and proposal.ambiguous > RESOLUTION
 
 
 def _count_calls(monkeypatch: pytest.MonkeyPatch) -> tuple[list[int], list[int]]:
@@ -188,7 +210,8 @@ class TestAnEvaluationDecidesTheCellsOfItsRequest:
         assert limited.ambiguous > RESOLUTION
         assert limited.power <= reference.power + 1e-12
         assert limited.lower <= reference.power <= limited.upper
-        assert limited.basis == "approximate"
+        assert limited.basis == "lower_bound"
+        assert limited.published == limited.lower
 
     def test_cells_decides_every_pair_asked_whatever_the_evaluation_budgets(
         self, monkeypatch, small_budgets
@@ -224,7 +247,7 @@ class TestABudgetLeavesAmbiguousMassNotAnUnavailableRoute:
         geometry = _routed_geometry(N, 10, refused=True)
         limited = geometry.evaluate(P_C, 0.4)
         assert limited.ambiguous > RESOLUTION
-        assert limited.basis == "approximate"
+        assert limited.basis == "lower_bound"
         assert limited.lower <= reference.power <= limited.upper
         assert geometry.evaluate(P_C, 0.4) == limited
 
@@ -316,48 +339,142 @@ def _failure(call):
 
 @pytest.mark.slow
 class TestUnresolvedPublicAnswersAreDeterministic:
+    """Under a replay budget that leaves material mass undecided, every public answer states
+    the enclosure: ``power`` is its lower end, ``power_lower``/``power_upper`` its ends and
+    ``power_basis`` says so. Only an explicit point request refuses."""
+
     BASELINE = Baseline.from_proportion(0.2)
 
     @pytest.fixture(autouse=True)
     def _budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 700)
 
-    def test_wide_diagnostics_remain_available_but_scalar_and_curve_refuse(self):
+    def test_wide_diagnostics_are_published_as_bounds_by_scalar_and_curve(self):
         diagnostic = planned_enclosure(60, 0.8, self.BASELINE, _conversion())
         assert diagnostic.absolute_error > RESOLUTION
-        scalar = _failure(lambda: achieved_power(60, 0.8, self.BASELINE, _conversion()))
-        curve = _failure(
-            lambda: power_curve(
-                n_per_arm=60,
-                relative_lift=[0.8, 0.8, 0.5],
-                baseline=self.BASELINE,
-                procedure=_conversion(),
-                max_workers=1,
-            )
+        scalar = achieved_power(60, 0.8, self.BASELINE, _conversion())
+        assert scalar.power_basis == "lower_bound"
+        assert scalar.numerical_qualification == (
+            "scipy_special_function_error_model_conditional_v1"
         )
-        assert scalar.code == curve.code == "power.binomial_probability_unresolved"
-        assert scalar.context == curve.context
-        assert scalar.context["lower"] == diagnostic.lower
-        assert scalar.context["upper"] == diagnostic.upper
-        assert scalar.context["error"] == diagnostic.absolute_error
-        assert scalar.context["tolerance"] == RESOLUTION
-        for restored in (copy.deepcopy(scalar), pickle.loads(pickle.dumps(scalar))):
-            assert restored.code == scalar.code and restored.context == scalar.context
+        assert scalar.power == scalar.power_lower == diagnostic.lower
+        assert scalar.power_upper == diagnostic.upper
+        curve = power_curve(
+            n_per_arm=60,
+            relative_lift=[0.8, 0.8, 0.5],
+            baseline=self.BASELINE,
+            procedure=_conversion(),
+            max_workers=1,
+        )
+        for row in curve[:2]:
+            assert (row.power, row.power_lower, row.power_upper, row.power_basis) == (
+                scalar.power,
+                scalar.power_lower,
+                scalar.power_upper,
+                scalar.power_basis,
+            )
+        assert curve[2].power_lower is not None and curve[2].power_upper is not None
+        assert curve[2].power_lower <= curve[2].power <= curve[2].power_upper
+        assert curve[2].power_upper - curve[2].power_lower > RESOLUTION
+        # The explicit point request is the one place the unresolved integral refuses.
+        point = _failure(lambda: diagnostic.reported)
+        assert point.code == "power.binomial_probability_unresolved"
+        assert point.context["lower"] == diagnostic.lower
+        assert point.context["upper"] == diagnostic.upper
+        assert point.context["error"] == diagnostic.absolute_error
+        assert point.context["tolerance"] == RESOLUTION
+        for restored in (copy.deepcopy(point), pickle.loads(pickle.dumps(point))):
+            assert restored.code == point.code and restored.context == point.context
             with pytest.raises(TypeError):
                 restored.context["error"] = 0.0
 
-    def test_repeated_mde_requests_refuse_instead_of_skipping_unresolved_effects(self):
-        failures = [
-            _failure(lambda: minimum_detectable_effect(60, self.BASELINE, _conversion()))
-            for _ in range(2)
-        ]
-        assert failures[0].code == "power.minimum_detectable_effect.numerical_resolution"
-        assert failures[0].context == failures[1].context
+    def test_repeated_mde_requests_certify_the_same_effect_by_its_lower_bound(self):
+        answers = [minimum_detectable_effect(60, self.BASELINE, _conversion()) for _ in range(2)]
+        assert answers[0] == answers[1]
+        effect = answers[0]
+        assert effect.mde_relative is not None
+        assert effect.power_basis == "lower_bound"
+        assert effect.power_lower is not None and effect.power_lower >= PowerDesign().power
+        assert effect.power == effect.power_lower
+        at_effect = achieved_power(60, effect.mde_relative, self.BASELINE, _conversion())
+        assert (at_effect.power, at_effect.power_lower, at_effect.power_upper) == (
+            effect.power,
+            effect.power_lower,
+            effect.power_upper,
+        )
 
-    def test_size_search_does_not_count_unresolved_mass_as_power(self):
+    def test_size_search_certifies_the_target_by_the_enclosures_lower_end(self):
+        """The returned size's lower bound reaches the target; its predecessor's does not,
+        whether that predecessor fails outright or leaves the target inside its enclosure.
+        Under this budget the lower end peaks near 0.75 (the undecided mass grows with the
+        window), so the target is one it can certify."""
+        design = PowerDesign(power=0.5)
+        sized = required_sample_size(0.8, self.BASELINE, _conversion(), design)
+        assert sized.power_lower is not None and sized.power_upper is not None
+        assert sized.power_lower >= design.power
+        assert sized.power_lower <= sized.power <= sized.power_upper
+        assert sized.power_basis == "lower_bound"
+        assert sized.power == sized.power_lower
+        below = achieved_power(sized.n_per_arm - 1, 0.8, self.BASELINE, _conversion(), design)
+        assert below.power_lower is not None and below.power_lower < design.power
+
+    def test_a_target_no_budgeted_enclosure_certifies_climbs_to_the_replay_ceiling(self):
+        """No size's lower end reaches 0.8 under this budget: the search climbs to the size
+        whose windows meet the cell bound, where the budget leaves nearly every pair undecided,
+        so the enclosure there holds the target and the power is refused as unresolved, not as
+        a shortfall and not as a decision the runtime refuses."""
         failure = _failure(lambda: required_sample_size(0.8, self.BASELINE, _conversion()))
         assert failure.code == "power.binomial_probability_unresolved"
+        assert failure.context["lower"] < PowerDesign().power <= failure.context["upper"]
         assert failure.context["error"] > failure.context["tolerance"]
+
+    @pytest.mark.parametrize("straddles", [True, False])
+    def test_a_bracket_that_never_certifies_ends_at_the_size_ceiling(self, monkeypatch, straddles):
+        """With the arm ceiling at 60 units, a target the ceiling's enclosure straddles (its
+        upper end, above its lower end) is refused there as an unresolved probability with the
+        enclosure; a target the ceiling's upper end falls short of is refused with the
+        size-limit code, naming the ceiling's certified lower end."""
+        from increment.power import core
+
+        at_ceiling = planned_enclosure(60, 0.8, self.BASELINE, _conversion())
+        assert at_ceiling.lower < at_ceiling.upper
+        target = at_ceiling.upper if straddles else 0.9999
+        monkeypatch.setattr(core, "_binomial_arm_ceiling", lambda design, floor, baseline: 60)
+        failure = _failure(
+            lambda: required_sample_size(
+                0.8, self.BASELINE, _conversion(), PowerDesign(power=target)
+            )
+        )
+        if straddles:
+            assert failure.code == "power.binomial_probability_unresolved"
+            assert (failure.context["lower"], failure.context["upper"]) == (
+                at_ceiling.lower,
+                at_ceiling.upper,
+            )
+        else:
+            assert failure.code == "power.binomial_size_search_unreachable"
+            assert failure.context["n_per_arm"] == 60
+            assert failure.context["maximum_power"] == at_ceiling.lower
+            assert at_ceiling.upper < target
+
+    def test_results_with_bounds_round_trip(self):
+        result = achieved_power(60, 0.8, self.BASELINE, _conversion())
+        assert result.power_basis == "lower_bound"
+        dumped = result.model_dump(mode="json")
+        assert dumped["power_lower"] == result.power_lower
+        assert dumped["power_upper"] == result.power_upper
+        assert PowerResult.model_validate(json.loads(json.dumps(dumped))) == result
+        assert PowerResult.model_validate_json(result.model_dump_json()) == result
+        curve = power_curve(
+            n_per_arm=60,
+            relative_lift=[0.8],
+            baseline=self.BASELINE,
+            procedure=_conversion(),
+            max_workers=1,
+        )
+        row = curve.to_dicts()[0]
+        assert (row["power_lower"], row["power_upper"]) == (result.power_lower, result.power_upper)
+        assert PowerCurvePoint.model_validate_json(curve[0].model_dump_json()) == curve[0]
 
 
 @pytest.mark.slow
@@ -394,8 +511,9 @@ class TestResolvedPublicAnswers:
         )
 
 
-def test_weight_bucket_changes_cannot_publish_a_false_detectable_band(monkeypatch):
-    """Selection jumps even when the complete decision probability is increasing."""
+def test_weight_bucket_changes_publish_a_bound_not_a_point(monkeypatch):
+    """Selection jumps even when the complete decision probability is increasing: the computed
+    mass is not published as a point, and the bounds published hold the true probability."""
     monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 5)
 
     def classify(decision, route, requests):
@@ -427,15 +545,16 @@ def test_weight_bucket_changes_cannot_publish_a_false_detectable_band(monkeypatc
 
     # Public arms have a two-unit floor; use the same budget-dependent selection law
     # on its smallest admissible public lattice rather than changing that floor.
-    failure = _failure(
-        lambda: achieved_power(
-            2,
-            rates[1] / 0.01 - 1,
-            Baseline.from_proportion(0.01),
-            ArmPlanningProcedure.standard(
-                "conversion", alternative="greater", conversion_inference="finite_sample"
-            ),
-            PowerDesign(),
-        )
+    published = achieved_power(
+        2,
+        rates[1] / 0.01 - 1,
+        Baseline.from_proportion(0.01),
+        ArmPlanningProcedure.standard(
+            "conversion", alternative="greater", conversion_inference="finite_sample"
+        ),
+        PowerDesign(),
     )
-    assert failure.code == "power.binomial_probability_unresolved"
+    assert published.power_basis == "lower_bound"
+    assert published.power_lower is not None and published.power_upper is not None
+    assert published.power == published.power_lower < published.power_upper
+    assert published.power_upper - published.power_lower > RESOLUTION
