@@ -8,7 +8,7 @@ unchanged.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -32,6 +32,7 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
     Winsorization,
+    _ExplicitOnlyFields,
     _reject_bool_days,
     _validate_retention_declaration,
 )
@@ -90,7 +91,7 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
-class MetricSpec(CodedModel, BaseModel):
+class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
     """One metric to estimate from a dataframe column.
 
     Parameters
@@ -151,6 +152,9 @@ class MetricSpec(CodedModel, BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+    # Undeclared covariates stay out of dumps so existing specs keep their
+    # registration and definitions identities.
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"covariates"})
 
     name: str
     type: MetricSpecType = "mean"
