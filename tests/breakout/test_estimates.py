@@ -3309,6 +3309,11 @@ class TestRunBreakoutBinomialGateExemption:
         assert frame["set_numerical_qualification"].to_list() == [
             "scipy_special_function_error_model_conditional_v1"
         ]
+        summary = nw.from_native(result.to_frame(columns="summary"), eager_only=True)
+        assert summary["lb"].to_list() == [row.binomial_set.lower]
+        assert summary["ub"].is_null().to_list() == [True]
+        assert summary["set_upper"].is_null().to_list() == [True]
+        assert summary["set_level"].to_list() == [row.binomial_set.level]
 
     def test_ancillary_uptake_preserves_exact_binary_breakout_sets(self):
         metric = _conversion_metric()
@@ -3889,3 +3894,33 @@ class TestToFrameFreeFunction:
         LiftEstimates, DailyMetricValues, DailyLiftEstimates) are the only ones meant to be
         constructed directly."""
         assert not hasattr(EstimateList, "_model")
+
+
+@pytest.mark.parametrize("rejects", [True, False])
+def test_small_bernoulli_segment_uses_its_sequential_decision(rejects):
+    from increment import SequentialCell
+    from increment.tables import estimates_to_readout
+    from tests.sequential_cases import capture, records, registration
+
+    reg = registration(
+        cells=(
+            SequentialCell(metric="outcome", group_id="treatment", segment=(("country", "US"),)),
+        )
+    )
+    control = [0] * 20 if rejects else [0, 1] * 10
+    treatment = [1] * 20 if rejects else [0, 1] * 10
+    snapshot = capture(reg, records(control, treatment, segments={"country": "US"}))
+    result = run_breakout(
+        snapshot,
+        [ConversionMetric(name="outcome", entity="unit", fact="converted")],
+        control_group="control",
+        dimension="country",
+        inference=AlwaysValid(registration=reg),
+    )
+    (row,) = result
+    assert row.low_reliability is True
+    assert row.sequential_result is not None and row.sequential_result.rejects() is rejects
+    assert row.stat_sig() is rejects
+    (displayed,) = estimates_to_readout(result)
+    assert displayed["stat_sig"] is rejects
+    assert displayed["decision_available"] is True

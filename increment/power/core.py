@@ -772,9 +772,10 @@ class PowerResult(CodedModel, BaseModel):
         "greater"; negative for one-sided "less". ``None`` when no minimum
         detectable effect exists at the design's target power -- a valid
         supplied-effect answer can still be reported then -- with the cause
-        in ``mde_unavailable_reason``. Fixed-horizon binomial searches locate the
-        earliest detectable region to ``1e-8 + 1e-8 * abs(mde_relative)`` in relative
-        effect, rather than proving the first representable floating-point value.
+        in ``mde_unavailable_reason``. Fixed-horizon binomial searches may skip a
+        straddling band whose unprobed interior could already certify the target under the
+        same budgets. The returned effect certifies its own target; it does not certify global
+        minimality.
     mde_unavailable_reason : {"unattainable", "unrepresentable", "numerical_resolution"} | None
         Why ``mde_relative`` is ``None``: the target power exceeds every
         admissible alternative's power (``unattainable``), the admissible
@@ -2624,8 +2625,8 @@ class _BinomialMdeSearch(_MdeSearch):
     ``atol + rtol * abs(effect)`` of it or lies in a band the evaluation budgets leave
     straddling the target (an unresolved enclosure holding it) at both evaluated ends, at any
     width, or at either end once the band is at tolerance width: such a band is passed over,
-    since no bound excludes certification inside it and none establishes it, so the answer
-    may lie above an effect a fuller evaluation would certify. A band the bound cannot
+    since no bound excludes certification inside it and none establishes it. Its unprobed interior
+    may already contain an effect certified under the same evaluation budgets. A band the bound cannot
     exclude whose evaluated ends both fall short with resolved enclosures at tolerance width
     is unresolved and refuses.
 
@@ -2857,9 +2858,10 @@ def _solve_binomial_mde(
     null_lift: float,
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
-    """Earliest detectable region to numerical effect tolerance, with its admitted point power.
-    Wide unresolved earlier intervals refuse; no first-representable-float claim is made.
-    The geometry memoizes each search independently of the supplied effect it accompanies."""
+    """Conservative bounded search: a skipped straddling band may contain an unprobed interior
+    that certifies the target under the same budgets. The returned effect is certified, not a
+    global minimum. The geometry memoizes each search independently of the supplied effect it
+    accompanies."""
     memo = model.geometry.effects
     key = (model.p_c, plan.baseline.compliance, target, plan.baseline.effective_var, model.mode)
     if key not in memo:
@@ -3272,7 +3274,7 @@ def _binomial_size(
             _refuse_undecided(
                 procedure, _binomial_key(procedure, n_T, n_C), p_c=baseline.mean, scope="requested"
             )
-        if not reached.resolved and reached.upper >= target:
+        if reached.lower < target <= reached.upper:
             # The ceiling's enclosure holds the target: the point request's refusal states it,
             # with the size the search reached.
             refuse(

@@ -395,13 +395,22 @@ def _estimate_randomized_secondary_family(
     for metric, config, test, is_quantile, _metric_methods in family:
         if metric.name not in selected_names:
             continue
+        selected_groups = {key.group_id for key in selected_cells if key.metric == metric.name}
+        metric_rows = loaded[metric.name]
+        selected_evidence = evidence_by_metric[metric.name]
+        if not is_quantile and metric_rows.unit_frame is None:
+            selected_evidence = [
+                row
+                for row in selected_evidence
+                if str(row["group_id"]) == design.control_group
+                or str(row["group_id"]) in selected_groups
+            ]
         selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])
             else test.alternative
         )
         selected_alpha = _fcr_alpha_for(selected_alternative, fcr_alpha)
-        metric_rows = loaded[metric.name]
         if metric_rows.unit_frame is not None and any(
             method.variance_reduction == "cuped_linear" for method in _metric_methods
         ):
@@ -426,7 +435,7 @@ def _estimate_randomized_secondary_family(
             reestimated[metric.name], refused, computation = _estimate_pass(
                 src,
                 metric,
-                evidence_by_metric[metric.name],
+                selected_evidence,
                 test,
                 config,
                 design,

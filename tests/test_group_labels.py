@@ -11,6 +11,7 @@ from increment.analysis import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.semantics.design import Randomized
 from increment.sequential_source import validate_frame_registration
+from tests.analysis_factory import lift_rows
 from tests.sequential_cases import registration
 
 
@@ -529,3 +530,109 @@ def test_exclusion_justification_refusal_is_coded_and_roundtrips():
     assert error.code == "design.exclusion_restriction.justification"
     assert pickle.loads(pickle.dumps(error)).code == error.code
     assert copy.deepcopy(error).code == error.code
+
+
+def test_mixed_boolean_moments_keep_canonical_assignment_count_identity(tmp_path):
+    import json
+
+    import pyarrow.parquet as pq
+
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {"unit": ["a", "b", "c", "d"], "arm": [True, True, False, False], "y": [1, 2, 3, 4]}
+        ),
+        unit="unit",
+        group="arm",
+        control=True,
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "mixed-boolean-labels.parquet"
+    original.export(path)
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        row["group_id"] = "control" if row["group_id"] == "false" else True
+        row["assignment_counts"] = json.dumps({"True": 2, "control": 2})
+    analysis = Analysis.from_moments(rows, metrics={"y": "mean"}, control="control")
+    assert {getattr(row, "group_id", None) for row in analysis.run()} == {"true"}
+
+
+@pytest.mark.parametrize(
+    ("boolean_arm", "literal_arm"),
+    [(False, "True"), (True, "False"), (True, "True"), (False, "False")],
+)
+def test_mixed_moments_preserve_literal_boolean_looking_count_keys(
+    tmp_path, boolean_arm, literal_arm
+):
+    import json
+
+    import pyarrow.parquet as pq
+
+    canonical_arm = "true" if boolean_arm else "false"
+    counts = {"control": 2, canonical_arm: 2, literal_arm: 2}
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": range(6),
+                "arm": ["control"] * 2 + [canonical_arm] * 2 + [literal_arm] * 2,
+                "y": [1.0, 2.0, 2.0, 3.0, 3.0, 4.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "mixed-literal-labels.parquet"
+    original.export(path)
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        if row["group_id"] == canonical_arm:
+            row["group_id"] = boolean_arm
+        row["assignment_counts"] = json.dumps(counts)
+    reloaded = Analysis.from_moments(rows, metrics={"y": "mean"}, control="control")
+    assert reloaded.unit_counts() == counts
+    results = lift_rows(reloaded.run())
+    assert {row.group_id for row in results} == {canonical_arm, literal_arm}
+    assert all(row.lift is not None and row.failure_code is None for row in results)
+    assert reloaded.run() == original.run()
+
+
+def test_direct_frame_api_canonicalizes_boolean_explicit_design():
+    from increment.frame import from_unit_summary
+
+    frame = pd.DataFrame(
+        {"unit": ["c1", "c2", "t1", "t2"], "arm": [True, True, False, False], "y": [1, 2, 3, 4]}
+    )
+    source = from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="True",
+        design=Randomized(control_group="True"),
+        metrics={"y": "mean"},
+    )
+    assert source.design.control_group == "true"
+
+
+def test_empty_string_moments_control_survives_export_reload(tmp_path):
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["a", "b", "c", "d"],
+                "arm": ["", "", "treatment", "treatment"],
+                "y": [1, 2, 3, 4],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="",
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "empty-control.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    reloaded = Analysis.from_moments(
+        pq.read_table(path).to_pylist(), metrics={"y": "mean"}, control=""
+    )
+    assert reloaded.run() == original.run()

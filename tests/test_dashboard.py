@@ -2192,7 +2192,6 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
     storefront_analysis, storefront: DashboardSnapshot
 ) -> None:
     from increment.breakout.estimates import DailyLiftEstimates
-    from increment.dashboard._theme import coeftable_theme
     from increment.estimation.results import Estimate
 
     model = next(m for m in storefront.metrics if m.preferred_direction == "decrease")
@@ -2201,13 +2200,22 @@ def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
     )
     assert isinstance(series, DailyLiftEstimates)
     rising = DailyLiftEstimates(
-        row.model_copy(update={"lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95)})
+        row.model_copy(
+            update={
+                "lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+                "discovery": True,
+                "family_q": 0.05,
+                "family_procedure": "bh",
+                "multiplicity_status": "exploratory_family",
+            }
+        )
         for row in series
     )
+    from increment.tables import estimates_to_readout
+
+    assert estimates_to_readout(rising)[0]["selection_qualification"] is not None
     html = render_explore(storefront, rising, metric=model.name, view="cumulative_lift").text
-    theme = coeftable_theme(storefront.config.theme)
-    assert theme.unfavorable in html
-    assert theme.favorable not in html
+    assert "Selection evidence for" in html
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(

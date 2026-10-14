@@ -67,6 +67,18 @@ def _utc_now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+def _wire_uptake_timestamp(ts: ir.TimestampColumn, experiment: Experiment) -> ir.TimestampColumn:
+    """Round upward to microseconds without leaving the source's local day.
+
+    This preserves date membership and comparisons with certified local midnights;
+    flooring a fractional microsecond after midnight would certify a window early.
+    """
+    floor = ts.truncate("us")
+    ceiling = floor + ibis.interval(microseconds=1)
+    advance = (ts > floor) & (_local_date(ceiling, experiment) == _local_date(ts, experiment))
+    return advance.ifelse(ceiling, floor)
+
+
 def _relation_table(rows: list[dict[str, object]], role: str) -> ir.Table:
     type_names = {
         "STRING": "string",
@@ -611,10 +623,14 @@ class ArtifactPublisher:
                 ),
                 "first_exposure_date": row["first_exposure_date"],
             }
-            # Timestamp artifact columns have a UTC-microsecond wire scale;
-            # keep the source-precision exposure expression for SQL stats.
+            # Preserve the local date and elapsed-window certification at the
+            # artifact's UTC-microsecond wire scale; SQL stats retain source precision.
             for row in self._con.to_pyarrow(
-                exposures.mutate(first_exposure_ts=exposures.first_exposure_ts.truncate("us"))
+                exposures.mutate(
+                    first_exposure_ts=_wire_uptake_timestamp(
+                        exposures.first_exposure_ts, self._experiment
+                    )
+                )
             ).to_pylist()
         ]
         measure_specs: dict[str, tuple[Any, Metric, str | None, str, tuple[Any, ...]]] = {}
@@ -1162,7 +1178,7 @@ class ArtifactPublisher:
             )
         first = eligible.group_by(exposures.unit_id).aggregate(first_uptake_ts=events.ts.min())
         joined = exposures.left_join(first, "unit_id")
-        first_uptake_ts = first.first_uptake_ts.truncate("us")
+        first_uptake_ts = _wire_uptake_timestamp(first.first_uptake_ts, self._experiment)
         query = joined.select(
             exposures.experiment_id,
             exposures.unit_id,

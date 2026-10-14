@@ -218,7 +218,7 @@ fact_sources:
 | `dialect` | The SQL dialect. Prefer the warehouse's native dialect: Ibis translation is best-effort and can change meaning silently. If omitted, SQL is checked against the connection's dialect. |
 | `timestamp_column` | The event time used for every window. |
 | `entities` | Unit identifier columns; the experiment's `unit` must be one of them. |
-| `facts` | Event types and their values. The SQL must expose `event`, the timestamp, and every entity under the declared names. `column` holds a fact's value; `column: null` marks an occurrence-only fact, usable for counts, conversion, and retention but not value aggregations. |
+| `facts` | Event types and their values. When facts are declared, the SQL must expose `event`, the timestamp, and every entity under the declared names. Property-only sources need no `event` column. `column` holds a fact's value; `column: null` marks an occurrence-only fact, usable for counts, conversion, and retention but not value aggregations. |
 | `properties` | Columns for filters and breakouts. `as_of` states when a value applies: `event_time` (default), `pre_exposure` (latest value strictly before exposure), or `static` (asserted unchanged). |
 
 !!! warning "Event-time properties cannot be breakouts"

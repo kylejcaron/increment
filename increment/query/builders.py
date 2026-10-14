@@ -175,7 +175,12 @@ def _days_literal(n: int | ir.IntegerScalar) -> ir.IntegerScalar:
 
 
 def _utc_timestamp_literal(ts: ir.TimestampColumn, value: dt.datetime) -> ir.Scalar:
-    normalized = value.astimezone(dt.UTC)
+    """Bind an instant as UTC; naive calendar timestamps are UTC, never host-local."""
+    normalized = (
+        value.replace(tzinfo=dt.UTC)
+        if value.tzinfo is None or value.utcoffset() is None
+        else value.astimezone(dt.UTC)
+    )
     if getattr(ts.type(), "timezone", None) is None:
         normalized = normalized.replace(tzinfo=None)
     return ibis.literal(normalized, type=ts.type())
@@ -2652,9 +2657,6 @@ def _completed_asof_rows(
         uptake_completion = uptake_anchor + _days_literal(
             cast(int, uptake_window_days)
         ).as_interval("D")
-        uptake_completion_ts = uptake_anchor_ts + _days_literal(
-            cast(int, uptake_window_days)
-        ).as_interval("D")
         completion_date = ibis.greatest(outcome_completion, uptake_completion)
         if uptake_certified_edge is not None:
             # The certified local day is inclusive; its upper bound is midnight
@@ -2664,8 +2666,11 @@ def _completed_asof_rows(
                 - uptake_day_boundary_offset
             ).replace(tzinfo=dt.UTC)
             table = table.filter(
-                uptake_completion_ts
-                <= _utc_timestamp_literal(uptake_anchor_ts, certified_edge_exclusive)
+                uptake_anchor_ts
+                <= _utc_timestamp_literal(
+                    uptake_anchor_ts,
+                    certified_edge_exclusive - dt.timedelta(days=cast(int, uptake_window_days)),
+                )
             )
     else:
         completion_date = outcome_completion

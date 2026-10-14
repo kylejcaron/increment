@@ -3249,8 +3249,9 @@ def _composite_evidence(
     null_lift = row.null_lift
     p_delta = row_p_value(row)
     assert p_delta is not None, "a delta-route row carries its sampling reference"
-    x_c, n_c, x_t, n_t = evidence.counts
-    evidence = evidence.model_copy(update={"composite": True})
+    evidence = evidence.model_copy(
+        update={"composite": True, "reading_null_lift": null_lift, "reading_alpha": alpha}
+    )
     if p_delta >= level:
         return evidence, None
     below = (
@@ -3263,27 +3264,27 @@ def _composite_evidence(
             f"{CAPPED_NOTE_PREFIX}: {below}, and no exact p-value falls below the nuisance "
             f"budget {beta:.3g}, so the row reports {level:.3g}"
         )
-    if max(n_c, n_t) > binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE:
-        code = "estimation.binomial.finite_sample_arm_ceiling_exceeded"
-    else:
-        tail = alpha / 2.0 if alternative == "two-sided" else alpha
-        try:
-            exact = binomial_rr.null_p_value(
-                1.0 + null_lift, x_c, n_c, x_t, n_t, beta, alternative=alternative, tail=tail
-            )
-        except binomial_rr.BinomialDataError as exc:
-            code = exc.code
-        else:
-            evidence = evidence.model_copy(update={"escalated_p_value": exact})
-            if exact < level:
-                return evidence, (
-                    f"{ESCALATED_NOTE_PREFIX}: {below}, so the row reports the exact p-value "
-                    f"{exact:.3g} read at its nominal tail"
-                )
+    from increment.estimation.conversion_route import composite_exact_reading
+
+    exact, code = composite_exact_reading(
+        evidence.counts,
+        dense_level=level,
+        alpha=alpha,
+        null_lift=null_lift,
+        alternative=alternative,
+    )
+    if exact is not None:
+        evidence = evidence.model_copy(update={"escalated_p_value": exact})
+        if exact < level:
             return evidence, (
-                f"{CAPPED_NOTE_PREFIX}: {below}, and the exact p-value {exact:.3g} does not, "
-                f"so the row reports {level:.3g}"
+                f"{ESCALATED_NOTE_PREFIX}: {below}, so the row reports the exact p-value "
+                f"{exact:.3g} read at its nominal tail"
             )
+        return evidence, (
+            f"{CAPPED_NOTE_PREFIX}: {below}, and the exact p-value {exact:.3g} does not, "
+            f"so the row reports {level:.3g}"
+        )
+    assert code is not None, "a readable dense level either has exact evidence or a refusal"
     return evidence.model_copy(update={"exact_unavailable": code}), (
         f"{CAPPED_NOTE_PREFIX}: {below}, and the exact route is unavailable ({code}), so the "
         f"row reports {level:.3g}"

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import warnings
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,7 @@ from increment.errors import IncrementWarning, InvalidRequestError
 from increment.query.artifact_contract import ARTIFACT_DOMAIN_ROOT, ArtifactContractError
 from increment.query.artifact_digest import manifest_sha256
 from increment.query.session import (
+    SourceScope,
     SourceSnapshotEvidence,
     WarehouseArtifactStore,
     WarehouseSession,
@@ -35,6 +37,33 @@ def _session():
     # Definitions not needed for temp-table mechanics; fact_table tests
     # build real Definitions via tests.test_analysis helpers.
     return con, WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
+
+
+def test_pin_sources_interprets_naive_boundary_cutoff_without_host_timezone(monkeypatch):
+    con = ibis.duckdb.connect()
+    try:
+        sql = "select ts from events"
+        event_ts = datetime(2025, 1, 12, 11, tzinfo=UTC)
+        con.create_table("events", ibis.memtable({"ts": [event_ts]}))
+        enrolled = con.sql("select 1 as unit_id")
+        session = WarehouseSession(con, defs=SimpleNamespace(dialect="duckdb"))  # type: ignore[ty:invalid-argument-type]
+        start = datetime(2025, 1, 15)
+        n_pre_periods = 1
+        # The snapshot margin starts two days before the experiment; 2025-01-13
+        # at the UTC+14 boundary is 2025-01-12 10:00 UTC.
+        window_start = start - timedelta(days=n_pre_periods + 1) - timedelta(hours=14)
+        with monkeypatch.context() as tz:
+            tz.setenv("TZ", "Etc/GMT+12")
+            time.tzset()
+            pinned = session.pin_sources(
+                (sql,),
+                column_hints={sql: (None, "ts")},
+                scope=SourceScope(enrolled_units=enrolled, window_start=window_start),
+            )
+            assert pinned.source_sql(sql).execute()["ts"].tolist() == [event_ts]
+    finally:
+        time.tzset()
+        con.disconnect()
 
 
 def test_source_snapshot_evidence_keeps_unknown_watermarks_unknown():

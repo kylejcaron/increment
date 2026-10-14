@@ -677,10 +677,11 @@ unit-summary sources can carry covariate columns directly.
     Mixed-treatment dependence clusters keep individual actions and
     cluster-aware uncertainty under their default unit intervention
     declaration. Adopted unit-day artifacts preserve this provenance when
-    published with the `cluster_identity` extension. Native and adopted
-    warehouse unit frames contain the metric outcome and identifiers, not
-    requested model covariates; use a dataframe unit-summary source for
-    covariate-adjusted fits.
+    published with the `cluster_identity` extension. Native warehouse and
+    adopted artifact `unit_frame` implementations can attach requested covariates:
+    definitions resolve eligible properties by name, while artifacts serve
+    covariates declared under `observational.design.covariates`. See
+    [observational.md](observational.md#from-definitions-the-warehouse-path).
 
 ## Margins: non-inferiority guardrails
 

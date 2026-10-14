@@ -34,10 +34,36 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._literals import ValueScale
     from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
+
+
+def _encouragement_cell_identities(
+    estimands: Sequence[str],
+    methods: Sequence[Method],
+    compliance_scales: Sequence[ValueScale] = (),
+) -> tuple[tuple[str, ValueScale, str], ...]:
+    """Enumerate requested identities, using emitted compliance scales when known.
+
+    ITT uses each configured method on the relative scale; compliance is
+    unadjusted and absolute, plus relative where a segment emitted it;
+    additive LATE uses each configured method. Relative uptake and unadjusted
+    relative LATE require observed-data gates, so those ancillary rows do not
+    belong to the roster.
+    """
+    identities: list[tuple[str, ValueScale, str]] = []
+    if "itt" in estimands:
+        identities.extend(("itt", "relative", method.name) for method in methods)
+    if "compliance" in estimands:
+        identities.extend(
+            ("compliance", scale, "unadjusted") for scale in compliance_scales or ("absolute",)
+        )
+    if "late" in estimands:
+        identities.extend(("late", "absolute", method.name) for method in methods)
+    return tuple(identities)
 
 
 def _encouragement_family_config(

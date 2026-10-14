@@ -236,6 +236,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 specs=None,
                 methods=None,
                 prior=None,
+                covariate_available_metrics=(
+                    tuple(metric.name for metric in self._metrics)
+                    if self._experiment.n_pre_periods > 0
+                    else ()
+                ),
             ),
             cluster=self._experiment.cluster,
             intervention_grain=self._experiment.intervention_grain,
@@ -1894,9 +1899,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 exposures.select("unit_id").distinct(), "unit_id"
             )
         if completed_windows_only:
-            uptake_completion_ts = uptake_exposures.first_exposure_ts + ibis.interval(
-                days=window_days
-            )
             uptake_exposures = uptake_exposures.filter(
                 _local_date(uptake_exposures.first_exposure_ts, self._experiment)
                 + ibis.interval(days=window_days)
@@ -1909,9 +1911,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     - self._experiment.day_boundary_offset
                 ).replace(tzinfo=dt.UTC)
                 uptake_exposures = uptake_exposures.filter(
-                    uptake_completion_ts
+                    uptake_exposures.first_exposure_ts
                     <= _utc_timestamp_literal(
-                        uptake_exposures.first_exposure_ts, certified_edge_exclusive
+                        uptake_exposures.first_exposure_ts,
+                        certified_edge_exclusive - dt.timedelta(days=cast(int, window_days)),
                     )
                 )
             exposures = exposures.semi_join(

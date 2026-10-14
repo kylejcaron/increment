@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from scipy.stats import t as student_t
 
+from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, _copy_common_fields
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE, nuisance_beta, null_p_value
 from increment.estimation.conversion_route import (
     CAPPED_NOTE_PREFIX,
@@ -183,6 +184,79 @@ class TestDeltaRowsCarryTheirCounts:
 
 
 class TestTheCompositePValue:
+    @pytest.mark.parametrize("original_null,new_null", [(0.0, -0.5), (-0.5, -0.2)])
+    def test_retesting_a_composite_member_reads_evidence_against_the_new_null(
+        self, original_null, new_null
+    ):
+        counts = (2_500, 50_000, 2_500, 50_000)
+        original = member_row(counts, null_lift=original_null)
+        retested = original.model_copy(update={"null_lift": new_null})
+        fresh = member_row(counts, null_lift=new_null)
+        expected = _exact_p_value(fresh, 0.05)
+        assert fresh.delta_evidence is not None
+        assert expected < fresh.delta_evidence.dense_level
+        assert retested.p_value() == pytest.approx(expected, rel=1e-12, abs=0.0)
+        assert retested.p_value() == fresh.p_value()
+
+    def test_retesting_rebuilds_with_the_new_alternative_and_null(self):
+        counts = (2_500, 50_000, 2_500, 50_000)
+        original = member_row(counts, alternative="greater", null_lift=0.0)
+        retested = original.model_copy(update={"null_lift": 0.5, "alternative": "less"})
+        fresh = member_row(counts, alternative="less", null_lift=0.5)
+
+        assert retested.delta_evidence == fresh.delta_evidence
+        assert retested.p_value() == fresh.p_value()
+        assert retested.note == fresh.note
+
+    @pytest.mark.parametrize("row_type", [BreakoutEstimate, DailyLiftEstimate])
+    def test_retesting_a_breakout_copy_retains_exact_refusal_disclosure(self, row_type):
+        counts = (2_500, 2_000_000_000, 2_500, 2_000_000_000)
+        lift = member_row(counts)
+        if row_type is BreakoutEstimate:
+            kwargs = _copy_common_fields(lift, dimension="country", dimension_value="US")
+        else:
+            kwargs = _copy_common_fields(lift, ds="2025-01-01")
+        original = row_type(**kwargs)
+        retested = original.model_copy(update={"null_lift": -0.5})
+        fresh_lift = member_row(counts, null_lift=-0.5)
+        if row_type is BreakoutEstimate:
+            fresh = row_type(
+                **_copy_common_fields(fresh_lift, dimension="country", dimension_value="US")
+            )
+        else:
+            fresh = row_type(**_copy_common_fields(fresh_lift, ds="2025-01-01"))
+
+        assert retested.p_value() == fresh.p_value()
+        assert retested.delta_evidence == fresh.delta_evidence
+        assert retested.delta_evidence.exact_unavailable == fresh.delta_evidence.exact_unavailable
+        assert retested.note == fresh.note
+
+    def test_retesting_a_successful_exact_reading_to_refused_resets_serialized_evidence(self):
+        counts = (100_000, 1_000_000_000, 100_000, 1_000_000_000)
+        original = member_row(counts, alpha=2e-7, alternative="less", null_lift=20_000)
+        retested = original.model_copy(update={"null_lift": 0.5})
+        fresh = member_row(counts, alpha=2e-7, alternative="less", null_lift=0.5)
+
+        assert original.delta_evidence is not None
+        assert original.delta_evidence.escalated_p_value is not None
+        assert retested.delta_evidence == fresh.delta_evidence
+        assert retested.p_value() == fresh.p_value()
+        assert retested.note == fresh.note
+        assert LiftEstimate.model_validate_json(retested.model_dump_json()) == fresh
+
+    @pytest.mark.parametrize("original_null,new_null", [(0.0, -0.5), (-0.5, 0.0)])
+    def test_retested_exact_refusal_matches_fresh_row_disclosure(self, original_null, new_null):
+        counts = (2_500, 2_000_000_000, 2_500, 2_000_000_000)
+        original = member_row(counts, null_lift=original_null)
+        retested = original.model_copy(update={"null_lift": new_null})
+        fresh = member_row(counts, null_lift=new_null)
+
+        assert retested.p_value() == fresh.p_value()
+        assert retested.delta_evidence is not None and fresh.delta_evidence is not None
+        assert retested.delta_evidence.escalated_p_value == fresh.delta_evidence.escalated_p_value
+        assert retested.delta_evidence.exact_unavailable == fresh.delta_evidence.exact_unavailable
+        assert retested.note == fresh.note
+
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     def test_a_delta_p_value_at_or_above_the_dense_level_is_the_rows_p_value(self, alternative):
         row = member_row((2_500, 50_000, 2_550, 50_000), alternative=alternative)

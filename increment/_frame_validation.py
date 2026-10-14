@@ -431,16 +431,13 @@ def _moment_group_label(value: object) -> str | None:
         return "true" if value else "false"
     if value is None:
         return None
-    label = str(value)
-    return label or None
+    return str(value)
 
 
 def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
     """Read exact arm identities from ordinary rows or typed moments envelopes."""
     raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
-    boolean_group_ids = bool(raw_group_ids) and all(
-        isinstance(group_id, bool) for group_id in raw_group_ids
-    )
+    boolean_group_ids = any(isinstance(group_id, bool) for group_id in raw_group_ids)
     labels = {
         label for row in rows if (label := _moment_group_label(row.get("group_id"))) is not None
     }
@@ -453,15 +450,13 @@ def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...
                 counts = None
         if isinstance(counts, Mapping):
             labels.update(
-                (
-                    "true"
-                    if boolean_group_ids and label == "True"
-                    else "false"
-                    if boolean_group_ids and label == "False"
-                    else label
-                )
+                "true"
+                if boolean_group_ids and label == "True"
+                else "false"
+                if boolean_group_ids and label == "False"
+                else label
                 for label in counts
-                if isinstance(label, str) and label
+                if isinstance(label, str)
             )
         compliance = row.get(COMPLIANCE_SUMMARY_FIELD)
         if isinstance(compliance, str):

@@ -55,6 +55,26 @@ def test_result_deserialization_rejects_unknown_alternative():
     assert raised.value.context["alternative"] == "typo"
 
 
+def test_lift_model_copy_freezes_updated_reason_context():
+    from increment.estimation.inference import infer_lift
+
+    row = infer_lift(
+        metric="m",
+        group_id="t",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=0.1,
+        se_t=0.05,
+        se_c=0.05,
+        alpha=0.05,
+    )
+    copied = row.model_copy(update={"failure_context": {"nested": {"values": [1, 2]}}})
+    context = cast(Any, copied.failure_context)
+    assert context["nested"]["values"] == (1, 2)
+    with pytest.raises(TypeError):
+        context["nested"]["values"] = (3,)
+
+
 def test_open_bound_conversion_greater_direction_opens_the_upper_side():
     from increment.estimation.inference import infer_lift
     from increment.estimation.results import open_bound_from_two_sided_at_target

@@ -31,69 +31,64 @@ from increment.readouts._common import (
     _sequential_inference,
     _warn,
 )
+from increment.readouts._encouragement import _encouragement_cell_identities
 from increment.sources import MomentSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from increment._literals import ValueScale
     from increment.estimation.inference import Prior
     from increment.semantics.design import Encouragement
     from increment.semantics.models import Metric
 
 
 def _missing_encouragement_observation(
-    template: BreakoutEstimate,
     *,
+    metric: str,
+    group_id: str,
+    estimand: str,
+    value_scale: ValueScale,
+    method: str,
+    method_role: Literal["decision", "sensitivity"],
     dimension: str,
     value: str,
+    source: str | None,
+    n_treat: float,
+    n_control: float,
 ) -> BreakoutEstimate:
     context = {
-        "metric": template.metric,
-        "group_id": template.group_id,
+        "metric": metric,
+        "group_id": group_id,
         "dimension": dimension,
         "dimension_value": value,
         "reason": "no usable metric observations",
     }
     failure_code = "readout.cell.missing_metric_observations"
-    failure_context = context
-    data = template.model_dump()
-    data.update(
-        {
-            "dimension_value": value,
-            "lift": None,
-            "relative_confidence_set": None,
-            "relative_unavailable_reason": None,
-            "binomial_set": None,
-            "excluded": "missing_metric_observations",
-            "failure_code": failure_code,
-            "failure_context": failure_context,
-            "sampling_available": False,
-            "sampling_reason_code": failure_code,
-            "sampling_reason_context": failure_context,
-            "posterior_available": False,
-            "posterior_reason_code": "readout.cell.missing_metric_observations",
-            "posterior_reason_context": context,
-            "posterior_model": None,
-            "posterior_scale": None,
-            "posterior_estimate": None,
-            "posterior_lb": None,
-            "posterior_ub": None,
-            "posterior_level": None,
-            "posterior_alpha": None,
-            "posterior_latent_mean": None,
-            "posterior_latent_sd": None,
-            "posterior_prob_favorable": None,
-            "posterior_components": None,
-            "abs_diff": None,
-            "abs_se": None,
-            "abs_lb": None,
-            "abs_ub": None,
-            "abs_reference_kind": None,
-            "abs_reference_df": None,
-            "abs_alpha": None,
-        }
+    return BreakoutEstimate(
+        metric=metric,
+        group_id=group_id,
+        estimand=estimand,
+        value_scale=value_scale,
+        method=method,
+        method_role=method_role,
+        role="exploratory",
+        dimension=dimension,
+        dimension_value=value,
+        source=source,
+        n_treat=n_treat,
+        n_control=n_control,
+        lift=None,
+        excluded="missing_metric_observations",
+        failure_code=failure_code,
+        failure_context=context,
+        sampling_available=False,
+        sampling_reason_code=failure_code,
+        sampling_reason_context=context,
+        posterior_available=False,
+        posterior_reason_code=failure_code,
+        posterior_reason_context=context,
     )
-    return BreakoutEstimate.model_validate(data)
 
 
 def _encouragement_breakout_rows(
@@ -112,22 +107,48 @@ def _encouragement_breakout_rows(
     for metric_methods in methods_by_metric.values():
         _validate_methods(metric_methods)
     results: list[BreakoutEstimate] = []
-    empty_segments: list[tuple[str, str, frozenset[str]]] = []
+    missing_cells: list[tuple[str, str, str, float, float]] = []
+    compliance_scales_by_metric: dict[str, set[ValueScale]] = {
+        metric.name: set() for metric in selected
+    }
     for metric in selected:
         metric_methods = methods_by_metric[metric.name]
         rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=[dimension]))
         segments: dict[str, list[Mapping[str, Any]]] = {}
         for row in rows:
             segments.setdefault(str(row[dimension]), []).append(row)
-        empty_segments.extend(
-            (metric.name, value, frozenset(str(row["group_id"]) for row in segment_rows))
-            for value, segment_rows in segments.items()
-            if all(row.get("n") is not None and float(row["n"]) == 0 for row in segment_rows)
-        )
         for value in sorted(segments):
-            if all(row.get("n") is not None and float(row["n"]) == 0 for row in segments[value]):
+            segment_rows = segments[value]
+            n_by_group = {
+                str(row.get("group_id")): float(row["n"])
+                for row in segment_rows
+                if row.get("n") is not None
+            }
+            empty_groups = {
+                str(row["group_id"])
+                for row in segment_rows
+                if row.get("n") is not None and float(row["n"]) == 0
+            }
+            missing_groups = (
+                {str(row["group_id"]) for row in segment_rows}
+                if design.control_group in empty_groups
+                else empty_groups
+            )
+            missing_cells.extend(
+                (
+                    metric.name,
+                    value,
+                    group_id,
+                    n_by_group.get(group_id, 0.0),
+                    n_by_group.get(design.control_group, 0.0),
+                )
+                for group_id in sorted(missing_groups)
+                if group_id != design.control_group
+            )
+            usable_rows = [row for row in segment_rows if str(row["group_id"]) not in empty_groups]
+            if design.control_group in empty_groups or not usable_rows:
                 continue
-            if not any(row.get("group_id") == design.control_group for row in segments[value]):
+            if not any(row.get("group_id") == design.control_group for row in usable_rows):
                 _warn(
                     "readouts.breakout.segment_no_control_arm",
                     dimension=dimension,
@@ -136,15 +157,10 @@ def _encouragement_breakout_rows(
                     stacklevel=2,
                 )
                 continue
-            n_by_group = {
-                str(row.get("group_id")): float(row["n"])
-                for row in segments[value]
-                if row.get("n") is not None
-            }
             n_control_arm = n_by_group.get(design.control_group)
             for lift_estimate in estimate_encouragement(
                 [metric],
-                segments[value],
+                usable_rows,
                 design,
                 estimands=estimands,
                 methods=metric_methods,
@@ -152,6 +168,8 @@ def _encouragement_breakout_rows(
                 alpha=alpha,
                 method_roles=roles_by_metric[metric.name],
             ).results:
+                if lift_estimate.estimand == "compliance":
+                    compliance_scales_by_metric[metric.name].add(lift_estimate.value_scale)
                 if lift_estimate.metric != metric.name:
                     lift_estimate = lift_estimate.model_copy(update={"metric": metric.name})
                 n_treat = n_by_group.get(str(lift_estimate.group_id))
@@ -172,20 +190,31 @@ def _encouragement_breakout_rows(
                         ),
                     )
                 )
-    roster: dict[tuple[Any, ...], BreakoutEstimate] = {}
-    for row in results:
-        identity = (row.metric, row.group_id, row.estimand, row.value_scale, row.method)
-        roster.setdefault(identity, row)
-    for metric_name, value, groups in empty_segments:
-        templates = tuple(
-            row
-            for (metric, group_id, *_), row in roster.items()
-            if metric == metric_name and group_id in groups
-        )
-        results.extend(
-            _missing_encouragement_observation(template, dimension=dimension, value=value)
-            for template in templates
-        )
+    for metric_name, value, group_id, n_treat, n_control in missing_cells:
+        for estimand, value_scale, method in _encouragement_cell_identities(
+            estimands,
+            methods_by_metric[metric_name],
+            tuple(sorted(compliance_scales_by_metric[metric_name])),
+        ):
+            results.append(
+                _missing_encouragement_observation(
+                    metric=metric_name,
+                    group_id=group_id,
+                    estimand=estimand,
+                    value_scale=value_scale,
+                    method=method,
+                    method_role=(
+                        "decision"
+                        if estimand == "compliance"
+                        else roles_by_metric[metric_name][method]
+                    ),
+                    dimension=dimension,
+                    value=value,
+                    source=source_name,
+                    n_treat=n_treat,
+                    n_control=n_control,
+                )
+            )
     return [row.model_copy(update={"policy_name": "compiled_plan"}) for row in results]
 
 

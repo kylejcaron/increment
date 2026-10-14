@@ -1377,8 +1377,12 @@ class WarehouseSession:
             table = self.source_sql(sql)
             if scope is not None:
                 unit_col, ts_col = column_hints.get(sql, (None, None))
+                from increment.query.builders import _utc_timestamp_literal
+
                 if ts_col is not None and scope.window_start is not None:
-                    table = table.filter(table[ts_col] >= scope.window_start)
+                    table = table.filter(
+                        table[ts_col] >= _utc_timestamp_literal(table[ts_col], scope.window_start)
+                    )
                 if unit_col is not None:
                     table = table.semi_join(
                         scope.enrolled_units, table[unit_col] == scope.enrolled_units["unit_id"]

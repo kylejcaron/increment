@@ -410,7 +410,9 @@ class DeltaConversionEvidence(CodedModel, BaseModel):
     ``U``. ``exact_unavailable`` is the refusal code of the exact route where it could not (an
     arm above its ceiling, a tail its float margin dominates); the row's p-value is then ``U``
     itself, and its ``note`` says so. At most one of the two is set, and only on a composite
-    row.
+    row. ``reading_null_lift`` and ``reading_alpha`` bind that reading to its null and
+    nominal level. Retesting a copied row against a different relative null reads
+    the exact evidence from its counts at that retained nominal level.
 
     A declared family and ``select_exploratory_family`` read the same composite from the same
     persisted counts (the exploratory path reads the exact p-value on demand at selection), so
@@ -427,6 +429,12 @@ class DeltaConversionEvidence(CodedModel, BaseModel):
     composite: bool = False
     escalated_p_value: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
     exact_unavailable: str | None = None
+    reading_null_lift: float | None = Field(
+        default=None, allow_inf_nan=False, exclude_if=lambda v: v is None
+    )
+    reading_alpha: float | None = Field(
+        default=None, gt=0.0, lt=1.0, allow_inf_nan=False, exclude_if=lambda v: v is None
+    )
 
     @model_validator(mode="after")
     def _validate_counts(self):
@@ -449,6 +457,11 @@ class DeltaConversionEvidence(CodedModel, BaseModel):
             _raise(
                 "estimation.results.delta.dense_level",
                 reason="an exact reading belongs only to a row read by a family (composite)",
+            )
+        if self.composite and (self.reading_null_lift is None or self.reading_alpha is None):
+            _raise(
+                "estimation.results.delta.dense_level",
+                reason="composite evidence requires its reading null and nominal level",
             )
         return self
 
@@ -855,16 +868,6 @@ class _RowIdentity(CodedModel, BaseModel):
         _freeze_row_contexts(self)
         return self
 
-    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        """``BaseModel.model_copy`` whose reason contexts stay immutable and
-        picklable: a copy bypasses validation, so a context supplied through
-        *update* (an error's mapping proxy, a plain dict) is frozen here as
-        construction would freeze it."""
-        copied = super().model_copy(update=update, deep=deep)
-        if update and not _ROW_CONTEXT_FIELDS.isdisjoint(update):
-            _freeze_row_contexts(copied)
-        return copied
-
     @model_validator(mode="after")
     def _validate_posterior_payload(self):
         payload = (
@@ -997,6 +1000,45 @@ class _RowIdentity(CodedModel, BaseModel):
         context = self.failure_context or {}
         reason = context.get("reason")
         return reason if isinstance(reason, str) else self.failure_code
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """Copy the row, freezing updated contexts and rebuilding composite readings."""
+        copied = super().model_copy(update=update, deep=deep)
+        if update and not _ROW_CONTEXT_FIELDS.isdisjoint(update):
+            _freeze_row_contexts(copied)
+        evidence = getattr(copied, "delta_evidence", None)
+        if (
+            update is None
+            or "null_lift" not in update
+            or update["null_lift"] == getattr(self, "null_lift", None)
+            or evidence is None
+            or not evidence.composite
+        ):
+            return copied
+
+        assert evidence.reading_alpha is not None
+        evidence = evidence.model_copy(
+            update={"escalated_p_value": None, "exact_unavailable": None}
+        )
+        from increment.estimation.conversion_route import without_composite_note
+        from increment.estimation.engine import _composite_evidence
+
+        delta_row = copied.model_copy(update={"delta_evidence": None})
+        retested_evidence, composite_note = _composite_evidence(
+            cast(LiftEstimate, delta_row), evidence, evidence.reading_alpha, copied.alternative
+        )
+        note_parts = [
+            part
+            for part in (without_composite_note(getattr(copied, "note", None)), composite_note)
+            if part is not None
+        ]
+        return super(_RowIdentity, copied).model_copy(
+            update={
+                "delta_evidence": retested_evidence,
+                "note": "; ".join(note_parts) or None,
+            },
+            deep=deep,
+        )
 
 
 def _selection_qualification(row: Any) -> str | None:
@@ -2138,8 +2180,8 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
 
     ``None`` means no usable sampling verdict: an explicit producer failure,
     sampling marked unavailable, or a breakout cell excluded before estimation.
-    ``False`` is a genuine non-rejection; a ``low_reliability`` cell reports it
-    too, because its interval's nominal coverage is not trustworthy.
+    ``False`` is a genuine non-rejection; a fixed-horizon ``low_reliability``
+    cell reports it too, because its Wald interval's coverage is not trustworthy.
 
     A ``null_abs`` row decides against the additive interval
     (``abs_lb``/``abs_ub``) instead of the relative one, and that takes
@@ -2157,6 +2199,8 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
     """
     if row.failure_code is not None or _sampling_availability(row) is False:
         return None
+    if row.sequential_result is not None:
+        return row.sequential_result.rejects()
     if getattr(row, "low_reliability", False):
         return False
     confidence_set = getattr(row, "confidence_set", None)
@@ -2164,8 +2208,6 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
         if row.null_abs is not None:
             return confidence_set.additive.excludes(row.null_abs)
         return confidence_set.relative.excludes(row.null_lift)
-    if row.sequential_result is not None:
-        return row.sequential_result.rejects()
     if row.null_abs is not None:
         return _additive_excludes(row, row.null_abs)
     if row.relative_unavailable_reason is not None:
@@ -2288,9 +2330,19 @@ def row_p_value(row: DecisionRow) -> float | None:
     evidence = row.delta_evidence
     if evidence is None or not evidence.composite:
         return p_delta
-    from increment.estimation.conversion_route import composite_p_value
+    from increment.estimation.conversion_route import composite_exact_reading, composite_p_value
 
-    return composite_p_value(p_delta, evidence.dense_level, evidence.escalated_p_value)
+    exact = evidence.escalated_p_value
+    if p_delta < evidence.dense_level and row.null_lift != evidence.reading_null_lift:
+        assert evidence.reading_alpha is not None
+        exact, _reason = composite_exact_reading(
+            evidence.counts,
+            dense_level=evidence.dense_level,
+            alpha=evidence.reading_alpha,
+            null_lift=row.null_lift,
+            alternative=row.alternative,
+        )
+    return composite_p_value(p_delta, evidence.dense_level, exact)
 
 
 def _sampling_availability(row: DecisionRow) -> bool | None:
@@ -2374,13 +2426,17 @@ def row_decision_available(row: DecisionRow, *, verdict: bool | None = None) -> 
     rather than the absence of a test. Persisted by the readout adapter as
     ``decision_available``."""
     verdict = row_stat_sig(row) if verdict is None else verdict
-    if verdict is None or getattr(row, "low_reliability", False):
+    if verdict is None:
+        return False
+    sequential = row.sequential_result
+    if sequential is not None:
+        return (
+            verdict or getattr(sequential.bounds, "status", None) in DECIDABLE_SEQUENTIAL_STATUSES
+        )
+    if getattr(row, "low_reliability", False):
         return False
     if verdict:
         return True
-    sequential = row.sequential_result
-    if sequential is not None:
-        return getattr(sequential.bounds, "status", None) in DECIDABLE_SEQUENTIAL_STATUSES
     absolute = _additive_sidecar_decides(row)
     confidence_set = getattr(row, "confidence_set", None)
     if confidence_set is not None:
