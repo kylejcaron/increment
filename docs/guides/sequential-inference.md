@@ -655,7 +655,7 @@ establish that nobody examined the outcomes elsewhere beforehand.
     the arm-mean contrast and the AsympCS framework of
     [Waudby-Smith et al.](https://arxiv.org/html/2103.06476v7).
     No delayed-start coverage-limit claim or universal finite start guarantee is
-
+    made.
     For `greater`, discovery requires Dhat_r>sqrt(Vr*K_N); for `less`, it
     requires Dhat_r<-sqrt(Vr*K_N). A one-sided cell outside a family builds `K_N`
     at `2*alpha` and spends one tail of that symmetric two-sided boundary; by
@@ -736,9 +736,11 @@ arm retains with its full centered scatter:
 | `adjusted_ratio_mean` | $(N, D, X)$ | ratio of adjusted arm ratios | a ratio metric with `covariate=` and a CUPED method |
 
 !!! warning "Check source support before choosing a joint law"
-    Unit panels refuse these laws. `from_unit_day_artifact` additionally
-    requires each adjusted metric's published `cuped_preperiod` extension;
-    default publication does not include it. See [CUPED](cuped.md#the-standard-coefficient-on-the-asymptotic-route)
+    Unit panels support bounded-window, unadjusted `ratio_mean`; they refuse
+    `adjusted_mean` and `adjusted_ratio_mean` because they carry no per-unit
+    pre-period covariate. `from_unit_day_artifact` additionally requires each
+    adjusted metric's published `cuped_preperiod` extension; default publication
+    does not include it. See [CUPED](cuped.md#the-standard-coefficient-on-the-asymptotic-route)
     for extension selection.
 
 
