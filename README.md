@@ -159,6 +159,7 @@ portable unit-day artifacts, and moments exports.
 | Plan sample size or power | [Power analysis](https://getincrement.io/docs/guides/power-analysis/) |
 | Analyze non-randomized treatments | [Observational inference](https://getincrement.io/docs/guides/observational/) |
 | Analyze encouragement or switchback designs | [Encouragement](https://getincrement.io/docs/guides/encouragement/) · [Switchback](https://getincrement.io/docs/guides/switchback/#supported-contract) |
+| Analyze repeated outcomes in randomized panels | [Longitudinal experiments](docs/guides/longitudinal.md) |
 | Explore treatment-effect differences | [Heterogeneity and rollout](https://getincrement.io/docs/guides/heterogeneity-and-rollout/) |
 | Build an experiment dashboard | [Dashboard](https://getincrement.io/docs/guides/dashboard/) |
 | Look up public APIs | [API reference](https://getincrement.io/docs/api/) |

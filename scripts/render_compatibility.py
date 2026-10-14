@@ -303,6 +303,9 @@ def render_reference() -> str:
         "[Statistical limitations](../limitations.md) for open evidence and "
         "[Reading results](reading-results.md) for row interpretation and "
         "the canonical [population/status table](multiplicity.md).\n\n"
+        "The standalone [longitudinal family](longitudinal.md#compatibility-and-ingress) "
+        "documents its own ingress and interaction table; the Analysis matrix below "
+        "does not select that estimator.\n\n"
         '!!! warning "Supported does not mean calibrated"\n'
         "    SUPPORTED means the combination runs and passes the runtime checks "
         "behind this page. It does not establish statistical calibration. "

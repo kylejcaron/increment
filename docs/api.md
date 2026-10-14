@@ -1167,3 +1167,14 @@ accepted by `load_explore` and `render_explore`.
 ::: increment.dashboard.readout_csv
 
 ::: increment.dashboard.group_data_csv
+
+## Longitudinal experiments
+
+For fixed-horizon repeated additive outcomes, use the standalone
+[longitudinal workflow](guides/longitudinal.md).
+
+::: increment.longitudinal
+
+::: increment.query.longitudinal.prepare_longitudinal_query
+
+::: increment.power.longitudinal

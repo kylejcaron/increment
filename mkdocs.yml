@@ -79,6 +79,7 @@ nav:
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
       - Switchback Contrasts: guides/switchback.md
+      - Randomized Longitudinal Experiments: guides/longitudinal.md
       - Observational Comparisons: guides/observational.md
       - Encouragement Designs: guides/encouragement.md
       - Power Analysis: guides/power-analysis.md

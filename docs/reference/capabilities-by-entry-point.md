@@ -295,3 +295,15 @@ These rows describe what happens when stored state meets the current reader, or 
 - tombstone cannot be persisted: supported
 - a new process reopens the store and abandons/erases a generation left visible by the prior process: supported
 <!-- capability-table:stored-state:end -->
+
+## Standalone longitudinal family
+
+The six `Analysis` entry points do not select the longitudinal estimator.
+Its ingresses are `prepare_longitudinal_panel` over eager roster/outcome frames
+and `prepare_longitudinal_query` over Ibis snapshot relations, both producing
+`LongitudinalSummary` consumed by `fit_longitudinal`. Numerical parity covers
+estimate, covariance, interval and p-value for unit and cluster randomization,
+mixed covariates and staggered cohort schedules in
+`tests/test_longitudinal.py::test_frame_query_parity`. DuckDB is the executed
+warehouse reference; cloud execution is not certified. See the
+[workflow and interaction table](../guides/longitudinal.md).

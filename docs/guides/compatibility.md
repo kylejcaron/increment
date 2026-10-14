@@ -3,6 +3,8 @@
 
 Use the matrix to check support for a capability and metric type. Select a cell to see tested combinations with other methods. An unlisted combination is not evidence of support. Read a cell as a tested runtime capability, not as an inferential guarantee: consult [Statistical limitations](../limitations.md) for open evidence and [Reading results](reading-results.md) for row interpretation and the canonical [population/status table](multiplicity.md).
 
+The standalone [longitudinal family](longitudinal.md#compatibility-and-ingress) documents its own ingress and interaction table; the Analysis matrix below does not select that estimator.
+
 !!! warning "Supported does not mean calibrated"
     SUPPORTED means the combination runs and passes the runtime checks behind this page. It does not establish statistical calibration. Any open calibration gaps still apply; check [Statistical limitations](../limitations.md) before using a result.
 

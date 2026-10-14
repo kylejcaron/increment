@@ -39,3 +39,12 @@ estimated; it does not prevent reading arm counts or a separate allocation
 diagnostic. A triggered readout refusal does not license interpreting the
 assigned-population result as a triggered-population estimate. See
 [reading results](reading-results.md) for interpretation and next actions.
+
+### Longitudinal panels
+
+`longitudinal.*` covers invalid schedules/rosters, incomplete or duplicate
+observations, nonestimable covariates, and numerical failure. Restore the
+assigned roster's complete feed or correct the predeclared design; do not
+remove missing units to obtain a complete-case result. `power.*` also covers
+longitudinal pilot and fixed-composition planning requests. See the
+[longitudinal guide](longitudinal.md).
