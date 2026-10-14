@@ -15,8 +15,10 @@ effect still targets the same comparison.
 Declare the pre-period column with `MetricSpec(covariate=...)`, then request
 the adjustment with `variance_reduction="cuped"` on a decision or sensitivity
 `Method`. Declaring the covariate alone changes nothing: `run()` keeps its
-declared or default decision method and warns with
-`analysis.cuped.covariate_unused`.
+declared or default decision method. When the effective design, metric, and
+inference support CUPED, `run()` emits `analysis.cuped.covariate_unused` only
+if an omitted decision method defaults to unadjusted and no CUPED sensitivity
+method is selected. An explicitly chosen unadjusted decision does not warn.
 
 ```python
 import numpy as np
@@ -66,9 +68,11 @@ unadjusted: lift=+2.01%  CI width=3.79%
 ```
 
 The adjusted estimate is similar, with an interval less than half as wide.
-Here $\rho \approx 0.89$, so the predicted width ratio,
-$\sqrt{1 - 0.89^2} \approx 0.47$, matches the observed ratio,
-$1.77\% / 3.79\% \approx 0.47$.
+
+??? info "Statistical details: the example's precision gain"
+    Here $\rho \approx 0.89$, so the predicted width ratio,
+    $\sqrt{1 - 0.89^2} \approx 0.47$, matches the observed ratio,
+    $1.77\% / 3.79\% \approx 0.47$.
 
 `variance_reduction="cuped"` enables the adjustment; `name` only labels
 the result. This example keeps the unadjusted decision method and reports
@@ -82,16 +86,18 @@ CUPED alongside it as a sensitivity analysis. See
     each unit's rows; varying values raise
     `frame.frame_panel.unit_covariate_varies`. Windowed and retention metrics
     reject panel covariates (`frame.validation.from_unit_panel`): compute a
-    windowed metric per unit upstream and declare it on `from_unit_summary`;
-    drop the covariate to run retention without CUPED. For sequential CUPED,
-    use the paths [below](#cuped-under-sequential-inference).
+    non-retention windowed metric per unit upstream and declare it on
+    `from_unit_summary`. No frame source serves a per-unit retention value;
+    remove the covariate to run retention without CUPED. For sequential
+    CUPED, use the paths [below](#cuped-under-sequential-inference).
 
 ### Missing covariates
 
 By default, a missing covariate is filled with the pooled mean of the
 observed covariates, and a `UserWarning` reports how many values were filled.
-The fill uses neither group assignment nor outcomes, so it preserves the
-covariate's independence from assignment; filled values add no precision.
+The fill uses neither group assignment nor outcomes; under randomization,
+this preserves the covariate's independence from assignment. Filled values
+add no precision.
 Use `MetricSpec(covariate_missing="error")` to reject missing covariates, or
 `covariate_missing="zero"` when missing means no pre-period activity.
 
@@ -173,14 +179,16 @@ experiments:
     control_group: C
 ```
 
-A unit with no pre-period activity gets zero in both groups, which preserves
-independence from assignment; such units contribute less precision.
+A unit with no pre-period activity gets zero in both groups. Under
+randomization, this preserves independence from assignment; such units
+contribute less precision.
 
 `n_pre_periods` supplies the covariate but does not request the adjustment,
 and the covariate is not queried until a CUPED method is requested. Add CUPED
-to the decision or sensitivity method; otherwise `run()` warns with
-`analysis.cuped.covariate_unused`. A CUPED request with `n_pre_periods == 0`
-raises `ValueError`. Call-wide methods override per-metric bindings.
+to the decision or sensitivity method. The unused-covariate advisory follows
+the same eligibility and defaulted-decision conditions as on the dataframe
+path. A CUPED request with `n_pre_periods == 0` raises `ValueError`.
+Call-wide methods override per-metric bindings.
 
 ### Per-metric method bindings
 

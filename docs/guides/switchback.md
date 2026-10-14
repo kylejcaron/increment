@@ -338,7 +338,7 @@ Switchback construction failures expose these stable codes:
   The fixed `ContrastDecisionProcedure` owns the one decision method, fixed
   inference, family (`none`), alternative, null, and alpha. Passing
   `decision_method`, `sensitivity_methods`, or `prior` raises
-  `CapabilityError` with code `readout.contract.override` before source access.
+  `CapabilityError` with code `readout.contrast.override` before source access.
 
 For parallel A/B analyses, use `Analysis.from_unit_summary`,
 `Analysis.from_unit_panel`, or `Analysis.from_definitions`; their arm-moment

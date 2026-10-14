@@ -30,11 +30,11 @@ power=0.8000 in [0.8000, 0.8003]
 
 ## What `power` and `power_lower` mean
 
-For a conversion or retention plan, Increment does not approximate power with
-a formula. It replays the runtime's own accept/reject decision over every
-plausible pair of control and treatment counts and adds up the probability of
-the rejecting ones. That sum is computed as a narrow range, `power_lower` to
-`power_upper`, rather than a single number:
+An unadjusted, unclustered, fixed-horizon conversion or retention plan without
+CUPED, absorbed factors, winsorization, or priors can replay the runtime's own
+accept/reject decisions over plausible control and treatment counts. Adding
+up the rejecting counts' probabilities gives a narrow range, `power_lower`
+to `power_upper`, rather than just a single number:
 
 - When the range is narrower than one part in a million, `power` is that
   point and `power_basis="exact"`.
@@ -43,17 +43,18 @@ the rejecting ones. That sum is computed as a narrow range, `power_lower` to
   The runtime's rejection probability is at least `power`, under the planner's
   stated numerical qualification, so the plan errs on the side of a few more
   units, never fewer.
-- A target is reached only when `power_lower` reaches it. A size the range
-  straddles is not reached.
-- Mean metrics, and conversion plans too large to enumerate, use a closed-form
-  model instead: `power_basis="asymptotic"`, with `power_lower` and
-  `power_upper` set to `None`.
+- For an enumerated plan, a target is reached only when `power_lower`
+  reaches it. A size the range straddles is not reached.
+- Mean metrics and supported binary plans outside the conditions above use
+  a model-based calculation: `power_basis="asymptotic"`, with `power_lower`
+  and `power_upper` set to `None`. Dense eligible binary plans can also
+  use a closed-form model when their count lattice is too large to enumerate.
 
 !!! warning "Power is conditional on the decision rule and planning model"
-    Every result is a model-based probability of the runtime's decision. The
-    numerical range describes evaluation accuracy, not model misspecification
-    or calibration, and it is not a claim about every future data-generating
-    process.
+    Every result depends on the selected decision rule and planning
+    assumptions. A model-based result estimates power; it does not bound the
+    runtime's rejection probability. An enumerated result's numerical range
+    addresses evaluation accuracy, not model misspecification or calibration.
 
 ## Size a mean metric
 
@@ -226,13 +227,14 @@ route for quantiles.
 
 ## Conversion and retention: planning follows the runtime's route
 
-An ordinary fixed-horizon conversion or retention plan follows the runtime's
-count-based decision. With the default `conversion_inference="auto"`, the
-runtime decides each count pair with a delta-method test when all four arm
-success/failure counts are dense and with the exact Berger–Boos risk-ratio
-test otherwise; the planner sums the rejection probability of that combined
-decision over the count law. Power depends on the baseline rate, not
-`Baseline.var`.
+For the unadjusted, unclustered fixed-horizon conversion and retention plans
+above (no CUPED, absorbed factors, winsorization, or priors), planning follows
+the runtime's count-based decision. With the default
+`conversion_inference="auto"`, the runtime uses a delta-method test for dense
+arm success/failure counts and the exact Berger–Boos risk-ratio test
+otherwise. The planner sums the combined decision's rejection probability
+over the count law. This route uses the baseline rate, not `Baseline.var`;
+other supported binary plans retain the model-based calculation.
 
 | `power_basis` | `power` is | Reported range |
 |---|---|---|
@@ -240,10 +242,11 @@ decision over the count law. Power depends on the baseline rate, not
 | `lower_bound` | `power_lower`, the bottom of a range wider than `1e-6`. Nothing inside the range is claimed: no midpoint, no substitute approximation. | `power_lower`, `power_upper` |
 | `asymptotic` | The closed-form model's own probability, used where counts route to the delta method with near certainty (unrouted mass at most `1e-6`) and the lattice has more than 100,000 cells. | `None` |
 
-`required_sample_size` returns the smallest size of its bracket whose lower
-end reaches the target; `minimum_detectable_effect` and a companion
-`mde_relative` certify the returned effect the same way. Enumerating the
-count lattice is deterministic work and can take about a minute per call.
+For an enumerated plan, `required_sample_size` returns the smallest size of
+its bracket whose lower end reaches the target; `minimum_detectable_effect`
+and a companion `mde_relative` certify the returned effect the same way.
+Enumerating the count lattice is deterministic work and can take about a
+minute per call.
 
 ??? info "Statistical details: the route and its enclosure"
     This route applies to unadjusted, unclustered fixed-horizon plans without
@@ -285,10 +288,18 @@ count lattice is deterministic work and can take about a minute per call.
     timing-dependent answers. Delta-decision enumeration is bounded at
     100,000 count pairs, and finite-sample replay at 150,000 directional
     replays per evaluation. A solve stores at most 10,000,000
-    control/treatment count cells across null and alternative windows. Each
-    supplied-effect solve, MDE search, and `power_curve` row has its own cell
-    budget. Companion calculations may reuse decisions already made for the
-    same design. Exceeding the cell bound raises
+    control/treatment count cells across its null and evaluated alternative
+    windows. A supplied effect, an MDE search and each `power_curve` row are
+    separate solves: each is bounded by the cells of its own requests, and an
+    MDE search's interval bounds read only what that search decided.
+    A count pair's decision is the runtime's own, the same whichever request
+    decides it, so the solves of one design share those decisions: a companion
+    MDE search copies the cells the supplied effect or the sizing already
+    decided instead of replaying them, and replays of each interval's far
+    endpoint only the cells its bound depends on; an endpoint whose power and
+    cells no bound reads (the far end of the admissible effects, the far
+    endpoints of wide intervals above the answer) is never replayed, while one
+    a curvature term reads is. Exceeding the cell bound raises
     `power.binomial_replay_bound_exceeded`; an MDE search may return
     `mde_relative=None` with `mde_unavailable_reason="numerical_resolution"`.
     These are planner limits; the runtime's finite-sample ceiling remains
@@ -299,15 +310,22 @@ count lattice is deterministic work and can take about a minute per call.
     decisions. Planning does not infer one count pair from its neighbour, and
     power need not be monotone in sample size or effect. A required size
     meets the target under the selected calculation; it does not prove no
-    smaller size could. MDE search looks for the earliest detectable region
-    to an absolute plus relative tolerance of `1e-8`; its returned power is
-    evaluated at the reported effect, not copied from the target. A search
-    may pass over unresolved regions, returning a certified higher effect or
-    marking MDE unavailable with `numerical_resolution`; if numerical
-    resolution cannot distinguish an earlier detectable region, a companion
-    MDE is unavailable with `numerical_resolution` and a standalone call
-    refuses with `power.minimum_detectable_effect.numerical_resolution`. A
-    target excluded over all admissible effects is `unattainable`.
+    smaller size could. `minimum_detectable_effect` searches for the earliest
+    detectable region to an effect tolerance of `1e-8` absolute plus `1e-8`
+    relative, measured on the relative-effect scale, not the first
+    IEEE-representable effect. The result's `power` is evaluated at the
+    reported effect, not copied from the target. A band whose evaluated ends
+    fall short with resolved enclosures refuses with `numerical_resolution`.
+    A band the evaluation budgets leave straddling the target (both evaluated
+    ends at any width, or either end once the band is at tolerance width) is
+    passed over, so `mde_relative` certifies its target but may lie above an
+    effect a fuller evaluation would certify. A target excluded over every
+    admissible effect is `unattainable`. If the search cannot distinguish
+    detectability or exclude an earlier region at its numerical resolution,
+    or the far end's enclosure straddles the target, a companion MDE is
+    unavailable with `numerical_resolution`; a standalone call refuses with
+    `power.minimum_detectable_effect.numerical_resolution`. A supplied
+    effect's own answer still stands without a companion MDE.
 
     With a shifted null and partial compliance, early candidate effects can
     imply unrepresentable absolute lifts even when larger effects are
@@ -578,10 +596,11 @@ for interpreting the analysis the plan feeds.
 
 Switchback planning uses a `ContrastDecisionProcedure` and a frozen
 `SwitchbackBaseline`, usually `analysis.planning_baseline(metric)` on a pilot
-built by `Analysis.from_switchback_panel(...)` (or
-`source.planning_baseline(source.metrics[0])` on the source; both return the
-same baseline). These approximate functions are exported from both
-`increment` and `increment.power`:
+built by `Analysis.from_switchback_panel(...)`, or
+`source.planning_baseline(source.metrics[0])` on a source built by
+`increment.frame.from_switchback_panel(...)`; both return the same baseline.
+These approximate functions are exported from both `increment` and
+`increment.power`:
 
 ```text
 switchback_achieved_power(n, delta, baseline, procedure)
