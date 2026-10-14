@@ -20,7 +20,7 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from scipy.stats import binom
+from scipy.stats import binom, norm
 
 from calibration import conversion_route as cr
 from increment._literals import Alternative
@@ -758,6 +758,35 @@ class TestDenseLevelInvertsTheRule:
             assert tail is not None
             tails.append(tail)
         assert all(b <= a for a, b in zip(tails, tails[1:], strict=False))
+
+
+class TestReadingCellIsTheEqualArmCentralDesign:
+    """The cell ``composite_readings`` probes is built from its design -- a 0.3 rate in both
+    arms at the size whose expected success count is the nominal threshold -- so a threshold at
+    which ``cells`` files that design under another family first still yields it."""
+
+    @pytest.mark.parametrize("tail", [0.025, 0.05, 0.1])
+    def test_it_is_the_central_unit_ratio_cell_of_the_lattice_at_production_tails(self, tail):
+        cell = cr.reading_cell(tail)
+        (listed,) = [
+            c
+            for c in cr.cells(dense_min_count(tail))
+            if (c.n_c, c.n_t, c.p_c, c.p_t) == (cell.n_c, cell.n_t, cell.p_c, cell.p_t)
+        ]
+        assert listed == cell
+        assert cell.family == "central" and cell.risk_ratio == 1.0 and cell.n_c == cell.n_t
+
+    def test_a_threshold_the_lattice_files_under_the_rare_family_still_yields_it(self):
+        tail = float(norm.sf((1_500 / 145) ** 0.25))
+        while dense_min_count(tail) > 1_500:
+            tail = math.nextafter(tail, 1.0)
+        assert dense_min_count(tail) == 1_500
+        listed = [
+            c for c in cr.cells(1_500) if (c.n_c, c.n_t, c.p_c, c.p_t) == (5_000, 5_000, 0.3, 0.3)
+        ]
+        assert [c.family for c in listed] == ["rare"]
+        cell = cr.reading_cell(tail)
+        assert (cell.n_c, cell.n_t, cell.p_c, cell.p_t, cell.m) == (5_000, 5_000, 0.3, 0.3, 1_500)
 
 
 class TestCompositeNoncoverageDecidesPairsByTheRuntime:

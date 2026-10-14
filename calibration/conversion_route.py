@@ -1459,14 +1459,15 @@ def composite_readings(
 
 
 def reading_cell(nominal_tail: float) -> Cell:
-    """The equal-arm central cell at a unit risk ratio and the nominal threshold: the exact
-    p-value and the delta p-value are closest there, so ``composite_readings`` probes the
-    exact decision's edge from the delta p-value."""
-    return next(
-        cell
-        for cell in cells(dense_min_count(nominal_tail))
-        if cell.family == "central" and cell.risk_ratio == 1.0 and cell.n_c == cell.n_t
-    )
+    """The equal-arm central design at a unit risk ratio and the nominal threshold (a 0.3 rate
+    in both arms at the size whose expected success count is the threshold): the exact p-value
+    and the delta p-value are closest there, so ``composite_readings`` probes the exact
+    decision's edge from the delta p-value. Built from the design itself rather than found by
+    its family label in ``cells``, which keeps the first entry of a design two families share
+    (at a threshold of 1,500 the rare cell at a control size of 5,000 is that very design)."""
+    m = dense_min_count(nominal_tail)
+    n = math.ceil(m / 0.3)
+    return Cell("central", n, n, 0.3, 0.3, 1.0, m)
 
 
 #: Design counts of the nominal-boundary cells, in units of the nominal threshold: at it, where
