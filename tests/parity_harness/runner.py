@@ -80,7 +80,6 @@ from __future__ import annotations
 
 import inspect
 import warnings
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -366,10 +365,11 @@ class CaseResult:
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]]
     refusals: dict[str, str]
     sequential_state: dict[str, SequentialCapture] = field(default_factory=dict)
-    # Ingresses whose constructor signature or schema cannot express the request: name ->
-    # the `Absence` the attempt raised (a `TypeError` for an unsupported keyword). They
-    # have no refusal code and are never row-compared.
+    # Constructor signatures or schemas that cannot express the request: name -> structural
+    # absence. These ingress attempts have no refusal code and are not row-compared.
     absences: dict[str, Absence] = field(default_factory=dict)
+    # Advice is counted per ingress; availability may differ by constructor.
+    advisory_counts: dict[str, int] = field(default_factory=dict)
 
 
 def _read(analysis: Any, case: ParityCase) -> Any:
@@ -379,10 +379,15 @@ def _read(analysis: Any, case: ParityCase) -> Any:
     estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
     prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
     metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
+    method_kwargs = (
+        {"decision_method": case.decision_method} if case.decision_method is not None else {}
+    )
     if case.view is None:
         if case.breakout_dimension:
-            return analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
-        return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
+            return analysis.run_breakout(
+                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **method_kwargs
+            )
+        return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs, **method_kwargs)
     dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
     population = {"population": case.population}
     match case.view:
@@ -398,6 +403,35 @@ def _read(analysis: Any, case: ParityCase) -> Any:
             return analysis.run_asof_lift(
                 **estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension, **population
             )
+
+
+def _read_with_advisories(analysis: Any, name: str, case: ParityCase) -> tuple[Any, int]:
+    expected = case.expected_warning_codes.get(name, ())
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.filterwarnings(
+            "always",
+            message=r"metrics .* have available CUPED covariates",
+            category=IncrementWarning,
+        )
+        if expected:
+            warnings.simplefilter("always", IncrementWarning)
+        results = _read(analysis, case)
+    if case.readout_probe is not None or case.source_probe is not None:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"metrics .* have available CUPED covariates",
+                category=IncrementWarning,
+            )
+            if case.readout_probe is not None:
+                case.readout_probe(results)
+            if case.source_probe is not None:
+                case.source_probe(name, analysis)
+    actual = warning_codes(caught)
+    assert set(expected) <= set(actual)
+    advisory_count = actual.count("analysis.cuped.covariate_unused")
+    assert advisory_count <= 1, f"{case.id}: {name} emitted the CUPED advisory more than once"
+    return results, advisory_count
 
 
 def _assert_names_absent_field(case_id: str, name: str, exc: Exception, absent: Absence) -> None:
@@ -451,6 +485,7 @@ def run_case(case: ParityCase) -> CaseResult:
     refusals: dict[str, str] = {}
     absences: dict[str, Absence] = {}
     sequential_state: dict[str, SequentialCapture] = {}
+    advisory_counts: dict[str, int] = {}
     for name, build in case.build.items():
         analysis = None
         try:
@@ -491,21 +526,7 @@ def run_case(case: ParityCase) -> CaseResult:
                 assert sequential_fingerprint(continued) == sequential_fingerprint(snapshot), (
                     f"{case.id}: replayed empty-freeze snapshot could not continue on {name}"
                 )
-            expected_warnings = case.expected_warning_codes.get(name, ())
-            warning_context = (
-                warnings.catch_warnings(record=True) if expected_warnings else nullcontext()
-            )
-            with warning_context as caught:
-                if expected_warnings:
-                    warnings.simplefilter("always", IncrementWarning)
-                results = _read(analysis, case)
-                if case.readout_probe is not None:
-                    case.readout_probe(results)
-                if case.source_probe is not None:
-                    case.source_probe(name, analysis)
-            if expected_warnings:
-                assert caught is not None
-                assert set(warning_codes(caught)) == set(expected_warnings)
+            results, advisory_counts[name] = _read_with_advisories(analysis, name, case)
             family_for_row = _family_map_for_output(case, name, results)
             rows[name] = _normalize(results, family_for_row=family_for_row)
         except Exception as exc:
@@ -529,7 +550,11 @@ def run_case(case: ParityCase) -> CaseResult:
     if case.sequential_probe is not None:
         case.sequential_probe()
     return CaseResult(
-        rows=rows, refusals=refusals, sequential_state=sequential_state, absences=absences
+        rows=rows,
+        refusals=refusals,
+        sequential_state=sequential_state,
+        absences=absences,
+        advisory_counts=advisory_counts,
     )
 
 
@@ -623,6 +648,8 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
     if not live:
         pytest.fail(f"{case.id}: every constructor was waived -- nothing to compare")
     oracle_name, oracle_rows = next(iter(live.items()))
+    # Recorded advice is not a row-parity invariant: constructors can differ in whether they
+    # retain the covariate needed to make that advice applicable.
     if case.require_selection:
         discoveries = [
             payload.get("discovery")

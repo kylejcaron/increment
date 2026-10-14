@@ -156,6 +156,445 @@ def test_analysis_from_unit_panel_forwards_breakouts():
     assert {row.dimension for row in results} == {"country"}
 
 
+def _summary_breakout_frame():
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "user_id": f"{segment}-{group}-{index}",
+                "variant": group,
+                "segment": segment,
+                "value": value,
+            }
+            for segment, values in (
+                ("A", {"control": (1.0, 2.0), "treatment": (2.0, 4.0)}),
+                ("B", {"control": (4.0, 5.0), "treatment": (5.0, 7.0)}),
+            )
+            for group, observations in values.items()
+            for index, value in enumerate(observations)
+        ]
+    )
+
+
+def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_path):
+    baseline = Analysis.from_unit_summary(
+        _summary_breakout_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    analysis = Analysis.from_unit_summary(
+        _summary_breakout_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+    )
+
+    assert analysis.unit_counts() == baseline.unit_counts() == {"control": 4, "treatment": 4}
+    assert analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == (
+        baseline.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    )
+    assert {row.dimension_value for row in analysis.run_breakout()} == {"A", "B"}
+    for method in (analysis.run_daily, analysis.run_asof):
+        with pytest.raises(CapabilityError) as raised:
+            method()
+        assert raised.value.code == "facade.analysis.no_definitions"
+
+    original_counts = analysis.unit_counts()
+    original_srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
+    original_breakout = analysis.run_breakout()
+    export_path = tmp_path / "summary-moments.parquet"
+    analysis.export(export_path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(export_path).to_pylist()
+    assert {row["experiment_id"] for row in rows} == {"frame"}
+    reopened = Analysis.from_moments(
+        rows,
+        control="control",
+        metrics=[MetricSpec(name="value", type="mean")],
+    )
+    assert reopened.unit_counts() == original_counts
+    assert analysis.unit_counts() == original_counts
+    assert (
+        analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed") == original_srm
+    )
+    assert analysis.run_breakout() == original_breakout
+
+
+def test_unit_summary_breakout_uses_exposure_excluded_population():
+    frame = _summary_breakout_frame()
+    frame.loc[len(frame)] = {
+        "user_id": "A-control-extra",
+        "variant": "control",
+        "segment": "A",
+        "value": 3.0,
+    }
+    frame["exposure"] = [date(2026, 1, 1)] * len(frame)
+    frame.loc[0, "exposure"] = None
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        exposure_date="exposure",
+        on_unassigned="exclude",
+        breakouts=("segment",),
+    )
+    results = analysis.run_breakout()
+    expected = Analysis.from_unit_summary(
+        frame.dropna(subset=["exposure"]),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        exposure_date="exposure",
+        breakouts=("segment",),
+    ).run_breakout()
+
+    by_segment = {row.dimension_value: row for row in results}
+    expected_by_segment = {row.dimension_value: row for row in expected}
+    assert set(by_segment) == set(expected_by_segment)
+    for segment, row in by_segment.items():
+        actual_lift = row.require_lift()
+        expected_lift = expected_by_segment[segment].require_lift()
+        assert actual_lift.value == pytest.approx(expected_lift.value, abs=1e-12)
+        assert actual_lift.lb == pytest.approx(expected_lift.lb, abs=1e-12)
+        assert actual_lift.ub == pytest.approx(expected_lift.ub, abs=1e-12)
+
+
+def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
+
+    frame = _summary_breakout_frame()
+    frame.loc[len(frame)] = {
+        "user_id": "A-control-extra",
+        "variant": "control",
+        "segment": "A",
+        "value": 3.0,
+        "covariate": 1.0,
+    }
+    frame["covariate"] = [1.0] * len(frame)
+    frame.loc[0, "value"] = None
+    frame.loc[1, "covariate"] = None
+    with pytest.warns(IncrementWarning) as recorded:
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="value",
+                    type="mean",
+                    missing="drop",
+                    covariate="covariate",
+                    covariate_missing="impute",
+                )
+            ],
+            breakouts=("segment",),
+        )
+        results = analysis.run_breakout()
+
+    codes = warning_codes(recorded)
+    assert codes.count("frame.validation.metric_missing_drop") == 1
+    assert codes.count("frame.validation.metric_covariate_missing_imputed") == 1
+    assert results
+    treatment_a = next(
+        row
+        for row in results
+        if row.metric == "value" and row.dimension_value == "A" and row.group_id == "treatment"
+    )
+    assert treatment_a.require_lift().value == pytest.approx(0.2)
+
+
+def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable():
+    import pandas as pd
+
+    frame = _summary_breakout_frame()
+    empty = frame[frame["segment"] == "A"].copy()
+    empty["user_id"] = "empty-" + empty["user_id"]
+    empty["segment"] = "C"
+    valid = frame[frame["segment"] == "B"].copy()
+    valid["user_id"] = "valid-" + valid["user_id"]
+    valid["segment"] = "D"
+    frame = pd.concat([frame, empty, valid], ignore_index=True)
+    frame.loc[frame["segment"].isin(("A", "C")), "value"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="value", type="mean", missing="drop")],
+            breakouts=("segment",),
+        )
+
+    with pytest.warns(IncrementWarning):
+        rows = analysis.run_breakout()
+    identities = [
+        (row.dimension_value, row.metric, row.group_id, row.method, row.estimand, row.value_scale)
+        for row in rows
+    ]
+    assert len(identities) == len(set(identities))
+    for value in ("A", "C"):
+        (unavailable,) = [row for row in rows if row.dimension_value == value]
+        assert unavailable.excluded == "missing_metric_observations"
+        assert unavailable.failure_code == "readout.cell.missing_metric_observations"
+        assert unavailable.sampling_available is False
+        assert unavailable.sampling_reason_code == "readout.cell.missing_metric_observations"
+    assert {row.dimension_value for row in rows if row.excluded is None} == {"B", "D"}
+
+
+def test_encouragement_breakout_deduplicates_multiple_empty_segments():
+    import pandas as pd
+
+    from increment.estimation.inference import Normal
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{segment}-{group}-{index}",
+                "arm": group,
+                "segment": segment,
+                "y": None if segment in {"A", "C"} else 10.0 + (group == "treatment") + index,
+                "clicked": float(group == "treatment" and index < 2),
+            }
+            for segment in ("A", "B", "C", "D")
+            for group in ("control", "treatment")
+            for index in range(4)
+        ]
+    )
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            metrics=[MetricSpec(name="y", type="mean", missing="drop")],
+            design=Encouragement(
+                control_group="control",
+                uptake=UptakeSpec(fact="clicked"),
+                exclusion_restriction=ExclusionRestriction(
+                    acknowledged=True, justification="assignment affects y through uptake"
+                ),
+                min_first_stage_z=0.001,
+            ),
+            breakouts=("segment",),
+        )
+
+    rows = analysis.run_breakout(prior=Normal(mu=0.0, sigma=0.1))
+    for value in ("A", "C"):
+        segment_rows = [row for row in rows if row.dimension_value == value]
+        assert segment_rows
+        for unavailable in segment_rows:
+            assert unavailable.posterior_available is False
+            assert unavailable.posterior_reason_code == ("readout.cell.missing_metric_observations")
+            assert unavailable.posterior_reason_context is not None
+            assert unavailable.posterior_reason_context["reason"] == (
+                "no usable metric observations"
+            )
+            assert unavailable.posterior_model is None
+            assert unavailable.posterior_scale is None
+            assert (
+                type(unavailable).model_validate_json(unavailable.model_dump_json()) == unavailable
+            )
+    identities = [
+        (row.dimension_value, row.metric, row.group_id, row.estimand, row.value_scale, row.method)
+        for row in rows
+    ]
+    assert len(identities) == len(set(identities))
+    for value in ("A", "C"):
+        segment_rows = [row for row in rows if row.dimension_value == value]
+        assert segment_rows
+        assert all(row.excluded == "missing_metric_observations" for row in segment_rows)
+        assert all(
+            row.failure_code == "readout.cell.missing_metric_observations" for row in segment_rows
+        )
+    for value in ("B", "D"):
+        assert any(row.dimension_value == value and row.excluded is None for row in rows)
+
+
+def test_unit_summary_breakout_remaps_resolved_default_uptake():
+    import pandas as pd
+
+    from increment.frame import from_unit_summary
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(8)],
+            "arm": ["control", "control", "treatment", "treatment"] * 2,
+            "segment": ["A"] * 4 + ["B"] * 4,
+            "y": [2.0, 3.0, 4.0, 5.0, 3.0, 5.0, 6.0, 8.0],
+            "ds": [0, 0, 1, 1] * 2,
+        }
+    )
+    source = from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"y": "mean"},
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="ds"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only moves y through uptake"
+            ),
+        ),
+        breakouts=("segment",),
+    )
+
+    assert readout_functions.breakout(source, "segment")
+
+
+def test_unit_summary_breakout_preserves_unit_column_used_as_covariate():
+    import pandas as pd
+
+    from increment.frame import from_unit_summary
+
+    frame = pd.DataFrame(
+        {
+            "ds": [101, 102, 103, 104, 105, 106, 107, 108],
+            "arm": ["control", "control", "treatment", "treatment"] * 2,
+            "segment": ["A"] * 4 + ["B"] * 4,
+            "y": [2.0, 3.0, 4.0, 5.0, 3.0, 5.0, 6.0, 8.0],
+        }
+    )
+    source = from_unit_summary(
+        frame,
+        unit="ds",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="y", type="mean", covariate="ds")],
+        breakouts=("segment",),
+    )
+
+    assert readout_functions.breakout(source, "segment")
+
+
+def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
+    frame = _summary_breakout_frame()
+    for index in range(8):
+        for group, value in (
+            ("control", 1.0 if index % 2 == 0 else 2.0),
+            ("treatment", 2.0 if index % 2 == 0 else 4.0),
+        ):
+            frame.loc[len(frame)] = {
+                "user_id": f"A-{group}-extra-{index}",
+                "variant": group,
+                "segment": "A",
+                "value": value,
+            }
+    frame.loc[0, "value"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[
+                MetricSpec(name="drop", type="mean", value_column="value", missing="drop"),
+                MetricSpec(name="zero", type="mean", value_column="value", missing="zero"),
+            ],
+            breakouts=("segment",),
+        )
+
+    results = analysis.run_breakout()
+    treatment_by_metric = {
+        metric_name: next(
+            row
+            for row in results
+            if row.metric == metric_name
+            and row.dimension_value == "A"
+            and row.group_id == "treatment"
+        )
+        for metric_name in ("drop", "zero")
+    }
+    assert treatment_by_metric["drop"].require_lift().value == pytest.approx(13 / 14)
+    assert treatment_by_metric["zero"].require_lift().value == pytest.approx(8 / 7)
+
+
+def test_unit_summary_breakout_is_available_through_readout_api():
+    analysis = Analysis.from_unit_summary(
+        _summary_breakout_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+    )
+
+    direct = analysis.run_breakout()
+
+    assert {(row.metric, row.dimension_value) for row in direct} == {
+        ("value", "A"),
+        ("value", "B"),
+    }
+    assert direct == analysis.run_breakout()
+
+
+def test_unit_summary_breakouts_allow_metric_named_ds():
+    frame = _summary_breakout_frame().rename(columns={"value": "ds"})
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[MetricSpec(name="ds", type="mean")],
+        breakouts=("segment",),
+    )
+
+    assert analysis.run_breakout()
+
+
+def test_unit_summary_breakouts_refuse_cluster_with_summary_capability_code():
+    frame = _summary_breakout_frame()
+    frame["cluster"] = [f"cluster-{i // 2}" for i in range(len(frame))]
+    with pytest.raises(CapabilityError) as raised:
+        Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"value": "mean"},
+            cluster="cluster",
+            breakouts=("segment",),
+        )
+    assert raised.value.code == "source.frame.cluster_capability"
+
+
+@pytest.mark.parametrize("control", [True, "True", "true"])
+def test_unit_summary_boolean_control_breakouts_keep_canonical_arm(control):
+    import pandas as pd
+
+    from increment.frame import from_unit_summary
+
+    source = from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(8)],
+                "arm": [True, True, False, False] * 2,
+                "segment": ["A"] * 4 + ["B"] * 4,
+                "y": [10.0, 11.0, 13.0, 14.0] * 2,
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control=control,
+        metrics={"y": "mean"},
+        breakouts=["segment"],
+    )
+
+    rows = readout_functions.breakout(source, "segment")
+    assert {row.dimension_value for row in rows} == {"A", "B"}
+
+
 def test_from_unit_panel_run_daily_returns_daily_metric_values():
     import pandas as pd
 

@@ -775,6 +775,15 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
             M: (_consumer("unbounded-retention-sequential", "moments-no-checkpoint-to-replay"),),
         },
     ),
+    _case_row(
+        "unit-summary-whole-window-breakouts",
+        "Whole-window breakouts from one-row-per-unit summaries",
+        "breakout_store_dimension",
+        notes={
+            S: "breakouts do not create daily or as-of capabilities",
+            M: "portable moments contain no per-unit segment labels",
+        },
+    ),
     _conditional_case_row(
         "registered-segmented-sequential-family",
         "Randomized registered segmented sequential family (automatic predeclared levels "

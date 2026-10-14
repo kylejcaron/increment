@@ -365,6 +365,7 @@ ExclusionReason = Literal[
     "no_control_arm",
     "no_treatment_arm",
     "nonpositive_mean",
+    "missing_metric_observations",
     "zero_variance",
     "extreme_ratio",
     "estimation_failed",
@@ -2026,7 +2027,8 @@ def _partition_nonpositive_mean_rows(
 ) -> _MeanPartition:
     """Split *rows* on a per-row, family-dependent estimability gate.
 
-    Drop rows with ``n < 2`` or a nonpositive outcome/denominator mean when
+    Rows with no usable metric observations are retained as a distinct unavailable reason;
+    other rows with ``n < 2`` or a nonpositive outcome/denominator mean are dropped when
     log-scale variance models require those quantities. Exact binomial rows
     remain eligible at ``n=1`` and with zero means. Mixed adjusted/unadjusted
     requests receive a method-specific partition; this function only identifies
@@ -2040,6 +2042,9 @@ def _partition_nonpositive_mean_rows(
     dropped: list[_DroppedRow] = []
     for row in rows:
         metric_name = str(row["metric"])
+        if int(row["n"]) == 0:
+            dropped.append(_DroppedRow(row, "missing_metric_observations"))
+            continue
         if metric_name in binomial_gate_exempt_metrics and _row_has_independent_binomial_family(
             row
         ):
@@ -2081,6 +2086,8 @@ def _warn_nonpositive_mean_partition(part: _MeanPartition, *, label: str) -> Non
     """
     for dropped in part.dropped:
         row = dropped.row
+        if dropped.reason == "missing_metric_observations":
+            continue
         if dropped.reason == "few_units":
             _warn(
                 "breakout.estimates.row_few_units",
@@ -3003,9 +3010,14 @@ def _breakout_unavailable_computation(
             )
             failures[hypothesis] = DecisionFailure(hypothesis, original.code, failure_context)
         else:
+            code = (
+                "readout.cell.missing_metric_observations"
+                if reason == "missing_metric_observations"
+                else f"breakout.{reason}"
+            )
             failures[hypothesis] = DecisionFailure(
                 hypothesis,
-                f"breakout.{reason}",
+                code,
                 {
                     "metric": metric_name,
                     "group_id": group_id,
@@ -3446,6 +3458,35 @@ def _append_breakout_slice_rows(
                     (context.segment_value, estimate, result_start + len(rows) - 1)
                 )
             continue
+        failure_code = (
+            "readout.cell.missing_metric_observations"
+            if outcome.reason == "missing_metric_observations"
+            else None
+        )
+        failure_context = (
+            {
+                "metric": outcome.metric,
+                "group_id": outcome.group_id,
+                "dimension": context.dimension,
+                "dimension_value": context.segment_value,
+                "reason": outcome.reason,
+            }
+            if failure_code is not None
+            else None
+        )
+        family = (
+            {
+                "excluded": outcome.reason,
+                "role": "exploratory",
+                "failure_code": failure_code,
+                "failure_context": failure_context,
+                "sampling_available": False,
+                "sampling_reason_code": failure_code,
+                "sampling_reason_context": failure_context,
+            }
+            if outcome.reason == "missing_metric_observations"
+            else {}
+        )
         rows.append(
             _unavailable_breakout_row(
                 outcome,
@@ -3453,6 +3494,8 @@ def _append_breakout_slice_rows(
                 dimension_value=context.segment_value,
                 source=context.source,
                 alternative=context.alternative,
+                lift=None,
+                **family,
             )
         )
     return _BreakoutRowsPass(rows, family_entries)
@@ -3469,36 +3512,37 @@ def _unavailable_breakout_row(
 ) -> BreakoutEstimate:
     """One identity-preserving unavailable row with its exact reason, and the
     requested posterior's unavailability when the failed estimator row stated it."""
-    return BreakoutEstimate(
-        metric=outcome.metric,
-        group_id=outcome.group_id,
-        method=outcome.method.name,
-        method_role=outcome.method_role,
-        dimension=dimension,
-        dimension_value=dimension_value,
-        source=source,
-        alternative=alternative,
-        lift=None,
-        excluded=outcome.reason,
-        failure_code=None if outcome.failure is None else outcome.failure.code,
-        failure_context=None if outcome.failure is None else outcome.failure.context,
-        sampling_available=False,
-        sampling_reason_code=(
+    fields: dict[str, Any] = {
+        "metric": outcome.metric,
+        "group_id": outcome.group_id,
+        "method": outcome.method.name,
+        "method_role": outcome.method_role,
+        "dimension": dimension,
+        "dimension_value": dimension_value,
+        "source": source,
+        "alternative": alternative,
+        "lift": None,
+        "excluded": outcome.reason,
+        "failure_code": None if outcome.failure is None else outcome.failure.code,
+        "failure_context": None if outcome.failure is None else outcome.failure.context,
+        "sampling_available": False,
+        "sampling_reason_code": (
             f"breakout.{outcome.reason}" if outcome.failure is None else outcome.failure.code
         ),
-        sampling_reason_context=(
+        "sampling_reason_context": (
             {"reason": outcome.reason} if outcome.failure is None else outcome.failure.context
         ),
-        posterior_available=None if outcome.posterior is None else False,
-        posterior_reason_code=(
+        "posterior_available": None if outcome.posterior is None else False,
+        "posterior_reason_code": (
             None if outcome.posterior is None else outcome.posterior.reason_code
         ),
-        posterior_reason_context=(
+        "posterior_reason_context": (
             None if outcome.posterior is None else outcome.posterior.reason_context
         ),
-        role="exploratory",
-        **family,
-    )
+        "role": "exploratory",
+    }
+    fields.update(family)
+    return BreakoutEstimate(**fields)
 
 
 class _BreakoutFamilyContext(NamedTuple):
