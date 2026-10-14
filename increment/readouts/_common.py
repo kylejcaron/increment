@@ -121,6 +121,11 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="cannot project incomplete readout cell: {cell!r}",
         ),
+        "readout.scope.metric_undeclared": RefusalSpec(
+            "readout.scope.metric_undeclared",
+            InvalidRequestError,
+            template="readout row names metric {metric!r}, which the metrics in scope {declared!r} do not declare",
+        ),
     },
 )
 

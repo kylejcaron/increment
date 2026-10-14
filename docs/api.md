@@ -150,6 +150,13 @@ repeat); the `roles=` argument of `increment.impute.pooled_mean`. A
 returns the persisted context reason when present and otherwise the failure
 code; it does not combine other unavailable sampling or interval reasons.
 
+`LiftEstimate`, `BreakoutEstimate`, `DailyLiftEstimate`, `DailyMetricValue` and
+`ContrastResult` carry `metric_type`: the declared `Metric.type` of the row's metric
+(`mean`, `conversion`, `retention`, `ratio`, `total`, `active` or `quantile`), stamped
+by every `Analysis` readout and carried through saved results and frame exports. It is
+`None` when the type is unknown: rows built directly by the low-level estimators, the
+design-level compliance row, and results saved before the field existed.
+
 **Site-volume coverage ends at `end`.** An experiment that declares
 `observation_end` after `end` now publishes site-volume coverage through `end`,
 the window its rows and the estimand use, instead of through `observation_end`.

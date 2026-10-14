@@ -17,6 +17,7 @@ from increment.estimation.readout_types import (
     SourceReadoutScope,
     cell_order,
 )
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import component, composite_source, input_evidence
 
 if TYPE_CHECKING:
@@ -24,11 +25,13 @@ if TYPE_CHECKING:
 
     from increment.estimation.contrast import ContrastStats
     from increment.estimation.contrast_results import ContrastResult
+    from increment.semantics.models import Metric
 
 
 def scope_contrast_results(
     results: Sequence[ContrastResult],
     *,
+    metrics: Sequence[Metric],
     stats: Mapping[str, ContrastStats],
     procedures: Mapping[str, Any],
     component_source: str | None = None,
@@ -103,8 +106,15 @@ def scope_contrast_results(
         ).hexdigest()
     )
 
+    metric_types = declared_metric_types(metrics)
     stamped = [
-        row.model_copy(update={"source_snapshot_id": snapshot_id, "decision_scope_complete": True})
+        row.model_copy(
+            update={
+                "source_snapshot_id": snapshot_id,
+                "metric_type": declared_metric_type(row, metric_types),
+                "decision_scope_complete": True,
+            }
+        )
         for row in results
     ]
     cells = {CellKey.from_row(row): row for row in stamped}

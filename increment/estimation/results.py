@@ -35,6 +35,7 @@ from increment._display import format_interval
 from increment._literals import (
     ALTERNATIVE_VALUES,
     Alternative,
+    MetricType,
     PreferredDirection,
     RowRole,
     ValueScale,
@@ -671,6 +672,10 @@ class _RowIdentity(CodedModel, BaseModel):
     failure_code: str | None = None
     failure_context: Mapping[str, object] | None = None
     source_snapshot_id: str | None = None
+    #: The declared ``Metric.type`` behind ``metric``, stamped by every readout. None
+    #: when unknown: a row built by a low-level estimator, the design-level compliance
+    #: row, or a result saved before this field existed.
+    metric_type: MetricType | None = None
     decision_scope_complete: bool | None = None
 
     decision_scope_reason_code: str | None = None

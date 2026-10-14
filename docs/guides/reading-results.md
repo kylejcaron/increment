@@ -78,6 +78,7 @@ For a `LiftEstimate` row `r`:
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
+| What kind of metric is this? | `r.metric_type` | The declared `Metric.type` (`mean`, `conversion`, `retention`, `ratio`, `total`, `active`, `quantile`), carried by every readout row type: `LiftEstimate`, `BreakoutEstimate`, `DailyLiftEstimate`, `DailyMetricValue` and `ContrastResult`. `None` when unknown: rows from the low-level estimators, the design-level compliance row, or results saved before the field existed. |
 
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 `c.estimate.ub`, `c.null_abs`, and `c.alternative`. All are additive.

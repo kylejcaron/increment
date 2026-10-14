@@ -15,6 +15,8 @@ PreferredDirection = Literal["increase", "decrease", "neutral"]
 MultiplicityCorrection = Literal["none", "bh", "bonferroni", "e_bh"]
 Correction = Literal["none", "bh", "bonferroni"]
 ConversionInference = Literal["auto", "finite_sample"]
+# The declared ``Metric.type`` vocabulary (``increment.semantics.models.Metric``).
+MetricType = Literal["mean", "conversion", "retention", "ratio", "total", "active", "quantile"]
 
 ALTERNATIVE_VALUES = frozenset(get_args(Alternative))
 VALUE_SCALE_VALUES = frozenset(get_args(ValueScale))

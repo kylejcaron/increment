@@ -90,6 +90,7 @@
   "response_meaning": "retained_total",
   "analysis_population": "assigned",
   "source_snapshot_id": null,
+  "metric_type": null,
   "decision_scope_complete": null,
   "decision_scope_reason_code": null,
   "decision_scope_reason_context": null

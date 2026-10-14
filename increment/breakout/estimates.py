@@ -43,7 +43,7 @@ from pydantic import (
 )
 from scipy.stats import norm as _norm
 
-from increment._literals import Alternative, Correction, Role, RowRole, ValueScale
+from increment._literals import Alternative, Correction, MetricType, Role, RowRole, ValueScale
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.projection import Backend
@@ -566,6 +566,7 @@ _FAMILY_VIEW_FIELDS = (
     "failure_code",
     "failure_context",
     "source_snapshot_id",
+    "metric_type",
     "decision_scope_complete",
     "decision_scope_reason_code",
     "decision_scope_reason_context",
@@ -1166,6 +1167,8 @@ class DailyMetricValue(CodedModel, BaseModel):
 
     analysis_population: Literal["assigned", "triggered"] = "assigned"
     source_snapshot_id: str | None = None
+    #: The declared ``Metric.type`` behind ``metric``; None when unknown (see ``LiftEstimate``).
+    metric_type: MetricType | None = None
     decision_scope_complete: bool | None = None
     decision_scope_reason_code: str | None = None
     decision_scope_reason_context: Mapping[str, object] | None = None

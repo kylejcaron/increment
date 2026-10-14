@@ -34,6 +34,7 @@ from increment.estimation.readout_types import (
 from increment.estimation.results import LiftEstimate
 from increment.readouts._common import _raise, _runtime_method_roles, _runtime_methods
 from increment.readouts._metric_rows import _rows_digest
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 from increment.readouts._source_digest import component, composite_source
 
@@ -586,11 +587,13 @@ def scope_design_results(  # noqa: PLR0913
         }
     )
     configs_by_metric = {config.metric.name: config for config in configs}
+    metric_types = declared_metric_types(config.metric for config in configs)
 
     def project(row, failure):
         return row.model_copy(
             update={
                 "source_snapshot_id": snapshot_id,
+                "metric_type": declared_metric_type(row, metric_types),
                 "analysis_population": population,
                 "sampling_available": failure is None,
                 "sampling_reason_code": None if failure is None else failure.code,

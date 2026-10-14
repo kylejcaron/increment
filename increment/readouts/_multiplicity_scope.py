@@ -15,6 +15,7 @@ from increment.estimation.readout_types import (
     cell_order,
     family_identity,
 )
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import input_evidence
 
 
@@ -365,13 +366,14 @@ def _attach_family_scope(
     )
 
 
-def scoped_collection(
+def scoped_collection(  # noqa: PLR0913
     rows: Sequence[Any],
     collection_type: Any,
     plan: Any,
     configs: Sequence[Any],
     request: Any,
     *,
+    metrics: Sequence[Any],
     route: str,
     view: Literal["run", "breakout", "daily", "asof"],
     design: Any,
@@ -380,7 +382,11 @@ def scoped_collection(
     family_populations: set[str] | None = None,
     sequential_snapshot: Any = None,
 ):
-    """Return rows with a source snapshot and source-local readout metadata."""
+    """Return rows with a source snapshot and source-local readout metadata.
+
+    ``metrics`` are the declared metrics the rows were read for; every
+    non-compliance row must name one of them.
+    """
     from hashlib import sha256
 
     from increment._canonical import canonical_json_bytes
@@ -437,9 +443,13 @@ def scoped_collection(
         },
     }
     snapshot_id = "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
+    metric_types = declared_metric_types(metrics)
     stamped = []
     for row in rows:
-        update = {"source_snapshot_id": snapshot_id}
+        update = {
+            "source_snapshot_id": snapshot_id,
+            "metric_type": declared_metric_type(row, metric_types),
+        }
         if hasattr(row, "sampling_available") and row.sampling_available is None:
             update["sampling_available"] = True
         stamped.append(row.model_copy(update=update))
