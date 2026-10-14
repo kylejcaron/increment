@@ -410,8 +410,11 @@ def test_d1_scalar_point_and_anchor_equal_scalar_moments(record_property):
     scalar_width = 2 * student_t.ppf(0.975, welch_df) * math.sqrt(sum(components))
     ratio = (matrix.upper - matrix.lower) / scalar_width
     assert math.isfinite(ratio) and ratio > 0
-    record_property("d1_interval_width_ratio_matrix_over_scalar", ratio)
-    record_property("d1_reference_dof", {"matrix": matrix.dof, "scalar_welch": welch_df})
+    # Plain floats: xdist serializes recorded properties between processes.
+    record_property("d1_interval_width_ratio_matrix_over_scalar", float(ratio))
+    record_property(
+        "d1_reference_dof", {"matrix": float(matrix.dof), "scalar_welch": float(welch_df)}
+    )
 
 
 @pytest.mark.slow
