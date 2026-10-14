@@ -1731,7 +1731,10 @@ def _uptake_events_in_elapsed_window(
     joined = joined.filter(joined.ts >= joined.first_exposure_ts)
     if uptake_window_days is not None:
         end = joined.first_exposure_ts + _days_literal(uptake_window_days).as_interval("D")
-        joined = joined.filter(joined.ts < end)
+        within_window = joined.ts < end
+        if "_certified_uptake_member" in joined.columns:
+            within_window = within_window | ((joined.ts == end) & joined._certified_uptake_member)
+        joined = joined.filter(within_window)
     return joined
 
 
@@ -1875,7 +1878,12 @@ def unit_totals(  # noqa: PLR0913
 
     totals = _attach_covariate(totals, pre_stats, experiment)
     uptake_anchor = spine if uptake_exposures is None else uptake_exposures
-    totals = _attach_uptake_flag(totals, uptake_anchor, uptake_events, uptake_window_days)
+    totals = _attach_uptake_flag(
+        totals,
+        uptake_anchor,
+        uptake_events,
+        uptake_window_days,
+    )
     return _project_unit_totals(totals, spine, metric, by, properties_table, cluster)
 
 
