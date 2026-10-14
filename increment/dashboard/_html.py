@@ -904,6 +904,7 @@ def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # Keep only the dashboard's core readout and declared advisory columns.
 _CORE_COLUMNS = frozenset(
     {
+        "Lift (absolute)",
         "Lift %",
         "Lift Plot",
         "Failure",
@@ -944,7 +945,29 @@ def _geometry_disclosure(
         ],
         css_class="inc-dashboard-reasons",
     )
+
     return _disclosure(label, geometry) if geometry else ""
+
+
+def _selection_qualification_notes(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    name: Callable[[Mapping[str, Any]], str],
+) -> str:
+    """Keep selected-row qualifications beside a table without adding a per-row column."""
+    affected: dict[str, list[str]] = {}
+    for row in rows:
+        qualification = row.get("selection_qualification")
+        if is_missing(qualification):
+            continue
+        affected.setdefault(str(qualification), []).append(name(row))
+    return _list(
+        [
+            f"Selection evidence for {esc(', '.join(dict.fromkeys(names)))}: {esc(qualification)}."
+            for qualification, names in affected.items()
+        ],
+        css_class="inc-dashboard-family-qualifications",
+    )
 
 
 def results_table(snapshot: DashboardSnapshot) -> str:
@@ -961,7 +984,10 @@ def results_table(snapshot: DashboardSnapshot) -> str:
     _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
-    return _TABLE_WRAP.format(native_html(table, metrics))
+    return _TABLE_WRAP.format(native_html(table, metrics)) + _selection_qualification_notes(
+        snapshot.readout_rows,
+        name=lambda row: f"{row.get('metric')} · {row.get('group_id')}",
+    )
 
 
 _WHOLE = "Whole experiment"
@@ -1043,6 +1069,7 @@ def overview_table(snapshot: DashboardSnapshot, breakout: tuple[str | None, str]
         _TABLE_WRAP.format(native_html(table, metrics))
         + _geometry_disclosure(snapshot, explained, label=INTERVALS_DISCLOSURE, name=name)
         + _caveats_list(result_caveats([{**row, "metric": name(row)} for row in explained]))
+        + _selection_qualification_notes(rows, name=name)
     )
 
 
@@ -1972,6 +1999,9 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
         + _segments_caption(rows)
         + _caveats_list(_segment_caveats(rows))
         + _geometry_disclosure(snapshot, rows, label=INTERVALS_DISCLOSURE)
+        + _selection_qualification_notes(
+            rows, name=lambda row: f"{row.get('metric')} · {row.get('segment')}"
+        )
     )
 
 

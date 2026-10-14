@@ -1072,6 +1072,7 @@ def test_results_table_shows_only_core_readout_columns(pricing: DashboardSnapsho
         for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
     }
     allowed_columns = {
+        "Lift (absolute)",
         "Lift %",
         "Lift Plot",
         "Failure",
@@ -1087,6 +1088,48 @@ def test_results_table_shows_only_core_readout_columns(pricing: DashboardSnapsho
     }
     assert "Numerical qualification" not in html
     assert "Selection qualification" not in html
+
+
+def test_results_table_keeps_absolute_scale_values(pricing: DashboardSnapshot) -> None:
+    rows = tuple(
+        {
+            **dict(row),
+            "value_scale": "absolute",
+            "lift": 23.456,
+            "lower": 12.345,
+            "higher": 34.567,
+        }
+        if row["metric"] == pricing.primary_metric
+        else row
+        for row in pricing.readout_rows
+    )
+    html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
+    assert "Lift (absolute)" in html
+    assert "23.46" in html
+
+
+def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSnapshot) -> None:
+    qualification = (
+        "Benjamini-Hochberg family selection at q=0.05; retained family size 12; "
+        "FDR qualification requires independence or positive dependence"
+    )
+    rows = tuple(
+        {
+            **dict(row),
+            "discovery": True,
+            "selection_qualification": qualification,
+            "family_q": 0.05,
+            "family_size": 12,
+        }
+        if row["metric"] == pricing.primary_metric
+        else row
+        for row in pricing.readout_rows
+    )
+    html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
+    assert "Selection qualification" not in html
+    assert "Selection evidence for" in html
+    assert pricing.primary_metric in html
+    assert qualification in html
 
 
 def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapshot) -> None:

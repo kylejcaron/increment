@@ -7,6 +7,7 @@ captured estimates and the rendered overview rows, never their wording.
 from __future__ import annotations
 
 import dataclasses
+import re
 from typing import Any
 
 import pytest
@@ -117,6 +118,32 @@ def test_explore_tables_show_only_core_readout_columns(_selected_family_snapshot
     for html in (overview_html, segment_html):
         assert "Numerical qualification" not in html
         assert "Selection qualification" not in html
+
+
+@pytest.mark.integration
+def test_overview_qualification_footnotes_name_rows_and_family(_selected_family_snapshot):
+    from increment.dashboard._html import overview_table
+
+    snapshot = _selected_family_snapshot
+    rows = overview_rows(snapshot, COUNTRY)
+    qualified = [row for row in rows if row.get("selection_qualification")]
+    assert qualified
+
+    html = overview_table(snapshot, COUNTRY)
+    footnote = re.search(
+        r'<ul class="inc-dashboard-family-qualifications">(.*?)</ul>', html, re.DOTALL
+    )
+    assert footnote is not None
+    body = footnote.group(1)
+    qualifications = {row["selection_qualification"] for row in qualified}
+    assert body.count("<li>") == len(qualifications)
+    for qualification in qualifications:
+        assert qualification in body
+    for row in qualified:
+        assert row["metric"] in body
+        if row.get("dimension") is not None:
+            assert row["segment"] in body
+    assert "Selection qualification" not in html
 
 
 @pytest.fixture(scope="module")
