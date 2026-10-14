@@ -73,9 +73,11 @@ Pearson tests. Switchbacks have their own assignment law; observational
 comparisons have no randomized allocation. Report these as unsupported or not
 applicable, not "no SRM."
 
-`sample_ratio_mismatch` and `Analysis.srm()` support explicit fixed-look
-inference. `inference="fixed"` infers equal shares from observed counts when
-`expected` is omitted; otherwise it uses the supplied expected allocation.
+`sample_ratio_mismatch(inference="fixed")` assumes equal shares when
+`expected` is omitted. `Analysis.srm(inference="fixed")` uses the design's
+declared `allocation` when present, falling back to equal shares only when
+neither the design nor the call supplies an allocation. This example's 4:1
+allocation therefore means 80/20, not 50/50.
 **SRM runs automatically once the assignment law is declared with
 `allocation_scheme="independent"`; alternatively call `srm(inference="fixed")`
 for a single predeclared look.** Check `health_check()` for the machine-readable

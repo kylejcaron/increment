@@ -48,10 +48,12 @@ two-arm relative-lift interval combines the two bracket-derived standard
 errors; it is asymptotic, not distribution-free exact.
 
 ??? info "Statistical details"
-    The classical Woodruff standard error (a symmetric width around the sample
-    quantile) has that coverage only when the quantile lies at the bracket's
-    log midpoint. Continuous data guarantee this; ties do not. Prices, counts,
-    and rounded latencies can put the bracket on different recorded values.
+    The bracket covers the population quantile at the nominal rate for every
+    distribution, continuous or not. The classical Woodruff standard error (a
+    symmetric width around the sample quantile) has that coverage only when
+    the quantile lies at the bracket's log midpoint. Continuous data guarantee
+    this; ties do not. Prices, counts, and rounded latencies can place the
+    bracket on different recorded values.
 
     Ranks are checked against independently enclosed binomial tails, not a
     fixed SciPy CDF accuracy allowance. Certified logarithms enclose mass at a
