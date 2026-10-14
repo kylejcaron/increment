@@ -76,6 +76,7 @@ nav:
       - Refusal Navigation: guides/refusals.md
       - Data Model & YAML Definitions: guides/data-model.md
       - Extending Estimators and Evidence: development/adding-an-estimator.md
+      - Historical Effect-Prior Research: development/historical-effect-priors.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
       - Switchback Contrasts: guides/switchback.md

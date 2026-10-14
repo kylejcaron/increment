@@ -179,3 +179,9 @@ Overrides do not change the declaration: a later call that omits `prior`
 uses the declared prior again for posterior inference. This also works after
 reloading older moment exports with a declared prior. An explicit no-family
 policy remains excluded.
+
+## Historical effect-prior research
+
+For the corpus-gated offline evaluation of learned versus fixed effect priors,
+see [historical effect-prior research](../development/historical-effect-priors.md).
+The research recommendation is deferred pending suitable historical evidence.
