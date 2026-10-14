@@ -61,6 +61,7 @@ EXPECTED_RESULT_EXPORTS = [
     "AllocationBand",
     "NotApplicable",
     "AbsorptionResult",
+    "ConfoundingSensitivity",
     "CateResult",
     "CateScoreState",
     "ClusterScore",
@@ -169,13 +170,10 @@ def test_core_entry_points_avoid_the_optional_dashboard_stack():
 
 
 def test_diagnostics_exports_avoid_heavy_dependencies():
-    """Accessing diagnostics/absorption result and function exports must not pull in frame libraries.
+    """Resolving diagnostic and robustness exports avoids frame-library imports.
 
-    ``increment.results`` exposes the result types while the retained root
-    functions resolve from ``increment.estimation.diagnostics`` and
-    ``increment.absorption``. Those modules use narwhals (a hard, lightweight
-    dep), never a frame library directly, so no heavy dependency should appear
-    after resolving all six public exports.
+    Receive-only models resolve from ``increment.results`` while their
+    functions remain at the package root.
     """
     code = (
         "import increment\n"
@@ -186,6 +184,8 @@ def test_diagnostics_exports_avoid_heavy_dependencies():
         "increment.allocation_posterior_bands\n"
         "increment.absorb_factor\n"
         "increment.results.AbsorptionResult\n"
+        "increment.confounding_sensitivity\n"
+        "increment.results.ConfoundingSensitivity\n"
         "import sys\n"
         "heavy = {'ibis', 'pandas', 'pyarrow', 'duckdb'} & set(sys.modules)\n"
         "assert not heavy, sorted(heavy)\n"

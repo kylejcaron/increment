@@ -256,6 +256,11 @@ depends_on = [
   "increment._unit_cycle",
   "increment.estimation._score_design",
 ]
+
+[[modules]]
+path = "increment.estimation.confounding"
+depends_on = ["increment.errors", "increment.estimation"]
+
 [[modules]]
 path = "increment._lift_options"
 depends_on = ["increment._analysis_config", "increment.estimation"]

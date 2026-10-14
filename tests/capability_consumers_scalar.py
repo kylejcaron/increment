@@ -564,6 +564,49 @@ UNBOUNDED_RETENTION_SEQUENTIAL = ConsumerContract(
     ),
 )
 
+_CONFOUNDING_PUBLIC = (
+    "tests/test_confounding_sensitivity_public.py::test_cross_ingress_sensitivity_parity"
+)
+CONFOUNDING_SENSITIVITY = ConsumerContract(
+    "observational-confounding-sensitivity",
+    (
+        *(
+            _e(
+                ingress,
+                "confounding_sensitivity",
+                ingress,
+                "IPTW/AIPW fixed-horizon conversion RR, binary outcome from the row's declared metric type",
+                "supported",
+                evidence=(_CONFOUNDING_PUBLIC,),
+            )
+            for ingress in MATCHED_ARM_INGRESSES
+            if ingress != "from_moments"
+        ),
+        _e(
+            "from_moments",
+            "observational adjusted conversion readout",
+            "from_moments",
+            "portable moments cannot supply adjustment covariates",
+            "refused",
+            codes=("source.moments.covariate_unavailable",),
+            reason="a moments cube retains no per-unit adjustment covariates",
+            evidence=(_CONFOUNDING_PUBLIC,),
+        ),
+        _e(
+            "from_switchback_panel",
+            "observational design construction",
+            "from_switchback_panel",
+            "switchback identification accepts a randomized design only",
+            "refused",
+            codes=("source.frame.switchback.identification",),
+            reason="observational identification is not supported by switchback",
+            stage="construction",
+            evidence=(_CONFOUNDING_PUBLIC,),
+        ),
+    ),
+)
+
+
 CONSUMER_CONTRACTS = (
     RATIO_DENOMINATOR_ADVISORY,
     FIXED_WINSOR_SEQUENTIAL,
@@ -572,6 +615,7 @@ CONSUMER_CONTRACTS = (
     IMPUTE_POOLED_MEAN,
     PLANNING_BASELINE,
     UNBOUNDED_RETENTION_SEQUENTIAL,
+    CONFOUNDING_SENSITIVITY,
 )
 _SWITCHBACK_NO_SCHEDULE = (
     "SOURCE: a switchback contrast has no sequential construction, and from_switchback_panel "

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from increment.estimation.absorption import AbsorptionResult
     from increment.estimation.armstats import IndependentMeanComponent, IndependentMeanReference
     from increment.estimation.cate import CateResult, CateScoreState, ClusterScore
+    from increment.estimation.confounding import ConfoundingSensitivity
     from increment.estimation.contrast_results import ContrastResult, ContrastResults
     from increment.estimation.diagnostics import AllocationBand, NotApplicable, SRMResult
     from increment.estimation.health import ExperimentHealth, HealthCheck
@@ -117,6 +118,7 @@ __all__ = [
     "AllocationBand",
     "NotApplicable",
     "AbsorptionResult",
+    "ConfoundingSensitivity",
     "CateResult",
     "CateScoreState",
     "ClusterScore",
@@ -147,6 +149,7 @@ _LAZY_IMPORTS = {
     "SetEndpoint": ("increment.winsor", "SetEndpoint"),
     "SetInterval": ("increment.winsor", "SetInterval"),
     "LiftEstimate": ("increment.estimation.results", "LiftEstimate"),
+    "ConfoundingSensitivity": ("increment.estimation.confounding", "ConfoundingSensitivity"),
     "LiftEstimates": ("increment.breakout.estimates", "LiftEstimates"),
     "ContrastResult": ("increment.estimation.contrast_results", "ContrastResult"),
     "ContrastResults": ("increment.estimation.contrast_results", "ContrastResults"),
