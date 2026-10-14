@@ -215,8 +215,8 @@ def test_composition_gates_refuse_before_source_acquisition(case: str, expected_
     assert source.read_calls == 0
 
 
-def test_cuped_linear_fixed_upper_value_clipping_matches_preclipped_fit() -> None:
-    upper = 60.0
+def test_cuped_linear_fixed_lower_and_upper_clipping_matches_preclipped_fit() -> None:
+    lower, upper = 20.0, 60.0
     rows = [
         {
             "unit": f"{group}-{index}",
@@ -227,14 +227,14 @@ def test_cuped_linear_fixed_upper_value_clipping_matches_preclipped_fit() -> Non
         for group in ("control", "treatment")
         for index in range(30)
     ]
-    clipped_rows = [{**row, "revenue": min(row["revenue"], upper)} for row in rows]
+    clipped_rows = [{**row, "revenue": min(max(row["revenue"], lower), upper)} for row in rows]
 
     clipped = Analysis.from_unit_summary(
         pa.Table.from_pylist(rows),
         unit="unit",
         group="group",
         control="control",
-        metrics=[_linear_metric(winsorization={"upper_value": upper})],
+        metrics=[_linear_metric(winsorization={"lower_value": lower, "upper_value": upper})],
     )
     preclipped = Analysis.from_unit_summary(
         pa.Table.from_pylist(clipped_rows),

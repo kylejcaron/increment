@@ -390,6 +390,21 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
         events.append(
             {
                 "user_id": user_id,
+                "ts": history,
+                "event": "revenue",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["pre_revenue"],
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
                 "ts": outcome,
                 "event": "revenue",
                 "experiment_id": None,
@@ -437,7 +452,14 @@ def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
     return events
 
 
-def mixed_cuped_definitions_yaml(source: str, *, breakout: bool = False) -> str:
+def mixed_cuped_definitions_yaml(
+    source: str,
+    *,
+    breakout: bool = False,
+    scalar_cuped: bool = False,
+    n_pre_periods: int = 0,
+    fixed_winsorization: bool = False,
+) -> str:
     entries = (
         "{name: pre_revenue, kind: continuous, property: pre_revenue, source: events, missing: impute-indicator}",
         "{name: country, kind: categorical, property: country, source: events}",
@@ -449,6 +471,15 @@ def mixed_cuped_definitions_yaml(source: str, *, breakout: bool = False) -> str:
         "\n          covariates:\n            - " + "\n            - ".join(entries) + "\n"
     )
     method = "decision_method: {name: linear, variance_reduction: cuped_linear}"
+    scalar_sensitivity = (
+        "        sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
+        if scalar_cuped
+        else ""
+    )
+    pre_period_section = f"    n_pre_periods: {n_pre_periods}\n" if n_pre_periods else ""
+    winsorization_section = (
+        "    winsorization: {lower_value: 7.0, upper_value: 11.0}\n" if fixed_winsorization else ""
+    )
     breakout_section = (
         "    breakouts:\n      - property: region\n        source: events\n" if breakout else ""
     )
@@ -479,6 +510,7 @@ metrics:
     fact: revenue
     aggregation: sum
     window_days: 2
+{winsorization_section}
   - name: rpo
     type: ratio
     entity: user_id
@@ -498,11 +530,11 @@ experiments:
     end: "2025-01-12"
     control_group: control
     allocation: {{control: 0.5, treatment: 0.5}}
-{breakout_section}    plan:
+{pre_period_section}{breakout_section}    plan:
       primary:
         metric: revenue
         {method}
-{covariates}      guardrails:
+{scalar_sensitivity}{covariates}      guardrails:
         - metric: rpo
           {method}{nested_covariates}      secondaries:
         - metric: signups

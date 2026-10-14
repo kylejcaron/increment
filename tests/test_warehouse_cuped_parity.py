@@ -122,6 +122,89 @@ def _retained_mixed_cuped_signature(result):
     return signature, cells, decisions, tuple(scope.populations)
 
 
+def _retained_breakout_signature(result):
+    metadata = result.metadata
+    assert metadata is not None
+    scope = metadata.scope
+
+    def cell_dump(cell):
+        return cell.model_dump(mode="json", exclude={"source"})
+
+    families = tuple(
+        sorted(
+            (
+                {
+                    "analysis_population": family.analysis_population,
+                    "view": family.view,
+                    "dimension": family.dimension,
+                    "name": family.name,
+                    "family": (
+                        family.family.model_dump(mode="json") if family.family is not None else None
+                    ),
+                    "members": tuple(cell_dump(member) for member in family.members),
+                    "complete": family.complete,
+                }
+                for family in scope.families
+            ),
+            key=repr,
+        )
+    )
+    records = tuple(
+        sorted(
+            (
+                {
+                    "cell": cell_dump(record.cell),
+                    "failure": (
+                        record.failure.model_dump(mode="json")
+                        if record.failure is not None
+                        else None
+                    ),
+                    "sampling": (
+                        record.sampling.model_dump(mode="json")
+                        if record.sampling is not None
+                        else None
+                    ),
+                    "posterior": (
+                        record.posterior.model_dump(mode="json")
+                        if record.posterior is not None
+                        else None
+                    ),
+                    "advisories": [
+                        advisory.model_dump(mode="json") for advisory in record.advisories
+                    ],
+                }
+                for record in metadata.cells
+            ),
+            key=repr,
+        )
+    )
+    source_scopes = tuple(
+        sorted(
+            (
+                {
+                    "cells": tuple(cell_dump(cell) for cell in source.cells),
+                    "decision_cells": tuple(cell_dump(cell) for cell in source.decision_cells),
+                    "rosters": tuple(roster.model_dump(mode="json") for roster in source.rosters),
+                    "decision_complete_by_population": dict(source.decision_complete_by_population),
+                    "integrity": tuple(
+                        integrity.model_dump(mode="json") for integrity in source.integrity
+                    ),
+                }
+                for source in scope.by_source.values()
+            ),
+            key=repr,
+        )
+    )
+    return (
+        tuple(cell_dump(cell) for cell in scope.cells),
+        tuple(cell_dump(cell) for cell in scope.decision_cells),
+        tuple(scope.populations),
+        families,
+        records,
+        source_scopes,
+    )
+
+
 def _assert_usable_cuped_rows(results):
     for result in results:
         for row in result:
@@ -387,6 +470,122 @@ def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tm
         native.close()
 
 
+def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
+    from increment import Analysis
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    units = matrix_data.linear_cuped_rows()
+    for row in units:
+        if row["pre_revenue"] is None:
+            row["pre_revenue"] = 12.0
+    connection = ibis.duckdb.connect()
+    connection.create_table("mixed_scalar_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "mixed_cuped_scalar.yaml"
+    definitions_path.write_text(
+        mixed_cuped_definitions_yaml(
+            "mixed_scalar_events",
+            scalar_cuped=True,
+            n_pre_periods=30,
+        )
+    )
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    store = WarehouseArtifactStore(connection, schema_name="mixed_scalar_artifacts")
+    context = artifact_context(definitions, experiment, "error")
+    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+    artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
+    adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+    summary = matrix_cases.linear_cuped_frame_case(units, panel=False, scalar_cuped=True)
+    panel = matrix_cases.linear_cuped_frame_case(units, panel=True, scalar_cuped=True)
+    try:
+        results = [summary.run(), panel.run(), native.run(), adopted.run()]
+        for result in results:
+            adjusted = [
+                row
+                for row in result
+                if isinstance(row, LiftEstimate)
+                and row.metric == "revenue"
+                and row.method in {"cuped", "linear"}
+            ]
+            assert {row.method for row in adjusted} == {"cuped", "linear"}
+            for row in adjusted:
+                assert row.sampling_available is True
+                assert row.lift is not None
+                assert row.lift.value is not None and math.isfinite(row.lift.value)
+    finally:
+        summary.close()
+        panel.close()
+        adopted.close()
+        native.close()
+        connection.disconnect()
+
+
+def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses(
+    tmp_path,
+):
+    from increment import Analysis
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.parity_harness.comparison import nested_close
+    from tests.parity_harness.runner import _normalize, _validate_source_snapshot_ids
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    units = matrix_data.linear_cuped_rows()
+    assert min(row["revenue"] for row in units) < 7.0
+    assert max(row["revenue"] for row in units) > 11.0
+    connection = ibis.duckdb.connect()
+    connection.create_table("mixed_winsor_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "mixed_cuped_winsor.yaml"
+    definitions_path.write_text(
+        mixed_cuped_definitions_yaml("mixed_winsor_events", fixed_winsorization=True)
+    )
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    store = WarehouseArtifactStore(connection, schema_name="mixed_winsor_artifacts")
+    context = artifact_context(definitions, experiment, "error")
+    artifact_ref = native.publish_unit_day_artifact(store)
+    adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+    summary = matrix_cases.linear_cuped_frame_case(units, panel=False, fixed_winsorization=True)
+    panel = matrix_cases.linear_cuped_frame_case(units, panel=True, fixed_winsorization=True)
+    try:
+        results = [
+            summary.run(metrics=["revenue"]),
+            panel.run(metrics=["revenue"]),
+            native.run(metrics=["revenue"]),
+            adopted.run(metrics=["revenue"]),
+        ]
+        names = ("summary", "panel", "definitions", "artifact")
+        normalized = []
+        for name, result in zip(names, results, strict=True):
+            family_for_row = _validate_source_snapshot_ids("mixed-cuped-winsor", name, result)
+            normalized.append(_normalize(result, family_for_row=family_for_row))
+            _assert_usable_cuped_rows([result])
+        for payload in normalized[1:]:
+            assert nested_close(normalized[0], payload)
+        retained = _retained_mixed_cuped_signature(results[0])
+        source_scope = _source_scope_signature(results[0].metadata)
+        for result in results[1:]:
+            assert nested_close(retained, _retained_mixed_cuped_signature(result))
+            assert nested_close(source_scope, _source_scope_signature(result.metadata))
+    finally:
+        summary.close()
+        panel.close()
+        adopted.close()
+        native.close()
+        connection.disconnect()
+
+
 def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path):
     from increment import Analysis
     from increment.errors import CodedError
@@ -426,30 +625,50 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
         assert raised.value.code == "facade.analysis.operation"
 
         results = [panel.run_breakout(), native.run_breakout(), adopted.run_breakout()]
-
-        def outputs(rows):
-            return sorted(
+        expected_keys = {
+            (metric, region, arm, "linear", "decision")
+            for metric in ("revenue", "rpo", "signups")
+            for region in ("east", "west")
+            for arm in ("treatment",)
+        }
+        for rows in results:
+            assert {
                 (
                     row.metric,
-                    row.dimension,
                     row.dimension_value,
                     row.group_id,
                     row.method,
                     row.method_role,
-                    row.lift.value if row.lift is not None else None,
-                    row.lift.log_se if row.lift is not None else None,
-                    (row.lift.lb, row.lift.ub) if row.lift is not None else None,
-                    row.dof,
-                    row.sampling_available,
-                    row.sampling_reason_code,
-                    row.sampling_reason_context,
                 )
                 for row in rows
-            )
+            } == expected_keys
+            for row in rows:
+                assert row.dimension == "region"
+                assert row.sampling_available is True
+                assert row.lift is not None
+                assert all(
+                    value is not None and math.isfinite(value)
+                    for value in (
+                        row.lift.value,
+                        row.lift.log_se,
+                        row.lift.lb,
+                        row.lift.ub,
+                        row.dof,
+                    )
+                )
 
-        expected = outputs(results[0])
-        for result in results[1:]:
-            assert nested_close(expected, outputs(result))
+        from tests.parity_harness.runner import _normalize, _validate_source_snapshot_ids
+
+        names = ("panel", "definitions", "artifact")
+        normalized = []
+        for name, rows in zip(names, results, strict=True):
+            family_for_row = _validate_source_snapshot_ids("mixed-cuped-breakout", name, rows)
+            normalized.append(_normalize(rows, family_for_row=family_for_row))
+        expected_rows = normalized[0]
+        expected_scope = _retained_breakout_signature(results[0])
+        for payload, rows in zip(normalized[1:], results[1:], strict=True):
+            assert nested_close(expected_rows, payload)
+            assert nested_close(expected_scope, _retained_breakout_signature(rows))
     finally:
         summary.close()
         panel.close()

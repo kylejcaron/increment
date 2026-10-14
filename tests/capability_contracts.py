@@ -143,8 +143,8 @@ CUPED_LINEAR_INTERACTIONS = (
         "scalar_cuped",
         "supported",
         None,
-        "tests/test_cuped_covariates.py::test_scalar_cuped_can_share_a_declared_covariate_with_cuped_linear",
-        "Declare the same covariate by scalar name and as a member of the mixed covariate set.",
+        "tests/test_warehouse_cuped_parity.py::test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses",
+        "Frames declare the same MetricSpec.covariate and member of MetricSpec.covariates; definitions declare n_pre_periods > 0 for scalar CUPED and bind the mixed covariates separately. Publish the cuped_preperiod artifact extension.",
     ),
     MethodInteraction(
         "ratio",
@@ -182,8 +182,8 @@ CUPED_LINEAR_INTERACTIONS = (
         "winsorization_fixed_value",
         "supported",
         None,
-        "tests/test_cuped_linear_acceptance.py::test_cuped_linear_fixed_upper_value_clipping_matches_preclipped_fit",
-        "Fixed upper and lower value bounds are clipped before fitting.",
+        "tests/test_warehouse_cuped_parity.py::test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses",
+        "Fixed lower and upper value bounds are exercised on each supported unit ingress and compared with shared row and retained-scope normalization.",
     ),
     MethodInteraction(
         "winsorization_percentile",

@@ -600,6 +600,25 @@ fixed-horizon approximation, not a finite-sample or sequential guarantee.
 Scalar `cuped` remains unchanged and may be used alongside `cuped_linear` when
 its scalar `covariate` name is also a member of the mixed `covariates` set.
 
+### Combining scalar and mixed CUPED
+
+The two estimators can be emitted for the same metric. On
+`from_unit_summary` and `from_unit_panel`, set
+`MetricSpec.covariate="pre_revenue"` for scalar `cuped` and include that same
+name in `MetricSpec.covariates` for `cuped_linear`; assign one estimator as
+the decision method and the other as a sensitivity method.
+
+`from_definitions` has no scalar `covariate` field on `ExperimentMetric`.
+Instead, declare `n_pre_periods > 0` so scalar `cuped` can derive the metric's
+own pre-period outcome, while the mixed estimator uses its declared
+`covariates` bindings. To adjust the same historical signal, those pre-period
+metric values and the mixed covariate values must represent the same per-unit
+data. Publishing for `from_unit_day_artifact` must include the
+`cuped_preperiod` extension required by the scalar method. The four-ingress
+witness in `test_warehouse_cuped_parity.py` exercises both methods on the same
+per-unit historical revenue data; this is runtime compatibility, not coverage
+certification.
+
 ### A mixed-covariate dataframe recipe
 
 The following complete example uses a per-user revenue mean and a revenue/orders

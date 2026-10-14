@@ -662,9 +662,15 @@ def build_switchback_case(cell: Cell, method: str, outcomes: Mapping[str, Outcom
 
 
 def linear_cuped_frame_case(
-    rows: list[dict[str, Any]], *, panel: bool, corrupt: bool = False, breakout: bool = False
+    rows: list[dict[str, Any]],
+    *,
+    panel: bool,
+    corrupt: bool = False,
+    breakout: bool = False,
+    scalar_cuped: bool = False,
+    fixed_winsorization: bool = False,
 ):
-    """Build one declared mixed-CUPED mean/ratio role family on a dataframe ingress."""
+    """Build mixed-CUPED dataframe roles with optional scalar, clipping, breakout, or mutation axes."""
     from increment.frame import CupedCovariate
 
     if corrupt:
@@ -677,8 +683,18 @@ def linear_cuped_frame_case(
         CupedCovariate(name="new_user", kind="categorical"),
     )
     method = Method(name="linear", variance_reduction="cuped_linear")
+    scalar_method = Method(name="cuped", variance_reduction="cuped")
     metrics = (
-        MetricSpec(name="revenue", covariates=covariates, decision_method=method),
+        MetricSpec(
+            name="revenue",
+            covariate="pre_revenue" if scalar_cuped else None,
+            covariates=covariates,
+            decision_method=method,
+            sensitivity_methods=(scalar_method,) if scalar_cuped else (),
+            winsorization=(
+                {"lower_value": 7.0, "upper_value": 11.0} if fixed_winsorization else None
+            ),
+        ),
         MetricSpec(
             name="rpo",
             type="ratio",
