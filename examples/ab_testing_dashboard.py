@@ -15,21 +15,6 @@ def _():
     return (mo,)
 
 
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(
-        """
-        This bundled fixture is assigned-only. When a bound experiment declares a trigger,
-        the dashboard defaults to **Triggered** and the **Population** selector switches the
-        headline, Readout, inspector, Health, allocation history, group evidence, and Explore
-        together between assigned and triggered populations. Triggered-cohort inference is
-        appropriate only when triggering is unaffected by treatment; a triggered series that
-        the source refuses stays unavailable, with its refusal and an assigned-view route forward.
-        """
-    )
-    return
-
-
 @app.cell
 def _():
     from pathlib import Path

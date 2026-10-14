@@ -115,7 +115,10 @@ Student-t and mixtures are call-time `run(prior=...)` options.
 `stat_sig()` reads the row's own interval directly -- `lift.lb`/`lift.ub`
 against `null_lift` (or `abs_lb`/`abs_ub` against `null_abs` on an
 absolute-margin row) -- and works on every row's own decision: fixed-
-horizon or sequential, Normal-referenced or cluster-robust. An exact-binomial
+horizon or sequential, Normal-referenced or cluster-robust. It is tri-state:
+`None` when the row carries no usable sampling evidence (a failed cell, or
+`sampling_available` False), the same value the readout frame reports, so an
+unavailable verdict is never mistaken for a non-rejection. An exact-binomial
 row (`reference_kind="binomial"`) instead recomputes the test its interval was
 inverted from out of its persisted counts, so the two agree, and it refuses
 exactly where a fresh estimate of those counts at that null would (an extreme
@@ -123,7 +126,8 @@ alpha at arm sizes whose float margin dominates the tail level, unless the null
 is one the control arm's own bound rejects; see the limitations page); a row
 persisted under an earlier construction of that test, or without naming its
 construction, is refused when read rather than shown beside a verdict its
-endpoints can contradict.
+endpoints can contradict. `BreakoutEstimate` and `DailyLiftEstimate` carry the
+same two methods, computed by the same rule.
 
 `prob_favorable()` reads the stored posterior only when it is available.
 `p_value()` instead reads the prior-free sampling construction and remains a

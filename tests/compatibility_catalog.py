@@ -244,10 +244,14 @@ MATRIX: dict[str, dict[str, Cell]] = {
         "active": _NA_REPORT_LAYER,
     },
     "breakout": {
-        "mean": S(note="native run_breakout; frame sources refuse by substrate"),
+        "mean": S(
+            note="native/panel run_breakout; unit-summary frame refuses (facade.analysis.operation)"
+        ),
         "conversion": S(),
         "ratio": S(),
-        "retention": S(note="native path; bounded band"),
+        "retention": S(
+            note="native/panel run_breakout; unit-summary frame refuses (facade.analysis.operation); bounded band"
+        ),
         "quantile": R(
             "quantiles do not decompose over segment moments",
             CapabilityError,

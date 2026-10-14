@@ -1193,7 +1193,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
         if not isinstance(design, Encouragement):
             return None, None, False, None
         relation = self._uptake_relation(design)
-        events = relation.filter(relation.uptake).select("unit_id", ts=relation.first_uptake_ts)
+        events = relation.filter(relation.uptake).select(
+            "unit_id",
+            ts=relation.first_uptake_ts,
+            _certified_uptake_member=relation.uptake,
+        )
         extension = next(
             ext for ext in self._manifest.extensions if ext.kind == "encouragement_uptake"
         )
@@ -2137,9 +2141,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         invalid_time = joined.first_uptake_ts < joined.first_exposure_ts
         if design.uptake.window_days is not None:
-            invalid_time = invalid_time | (
-                joined.first_uptake_ts
-                >= joined.first_exposure_ts + ibis.interval(days=design.uptake.window_days)
+            window_end = joined.first_exposure_ts + ibis.interval(days=design.uptake.window_days)
+            invalid_time = (
+                invalid_time
+                | (joined.first_uptake_ts > window_end)
+                | ((joined.first_uptake_ts == window_end) & ~joined.uptake)
             )
         checks = joined.aggregate(
             n=joined.count(),
