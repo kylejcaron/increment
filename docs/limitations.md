@@ -110,9 +110,11 @@ the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
 !!! warning "A feasibility floor is not a calibration guarantee"
     The sampling floor (two units per arm for most arm inference, twenty for a quantile)
     says a method can run, not that its interval is calibrated. No result field diagnoses
-    misspecification or certifies calibration. A ratio row carrying a
-    `ratio_denominator_skew` or `ratio_denominator_precision` note is reported unchanged
-    and is still anticonservative; read its interval as optimistic.
+    misspecification or certifies calibration. For ratio metrics, a positive
+    `ratio_denominator_skew` warning marks a measured regime where undercoverage is more
+    likely; it is not a verdict for every numerator/denominator relationship. A
+    `ratio_denominator_skew: unavailable` note means the check could not be computed, not
+    that skew was found. The unchanged interval may under-cover in some measured regimes.
 
 ??? info "Statistical details: how each family estimates uncertainty"
     | Family | How uncertainty is obtained |
@@ -195,7 +197,8 @@ the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
     resolving its denominator mean to a relative standard error `sqrt(var_d / n) / d_bar`
     above 0.15 carries the older `ratio_denominator_precision` note. Both are advisory
     qualifications, not refusals or corrected intervals: the estimate and interval are
-    emitted unchanged, and a flagged row is still anticonservative.
+    emitted unchanged. The measured flagged regimes show undercoverage, but this is not
+    universal: correlated numerator and denominator can retain near-nominal coverage.
 
     The cutoff comes from `campaign-module:calibration.ratio_skew` (seed 20261010, 6,000 replications
     per cell, lognormal denominators with an independent `Normal(2, 1)` numerator, coverage
