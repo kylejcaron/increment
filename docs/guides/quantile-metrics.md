@@ -33,6 +33,7 @@ for r in results:
     print(f"p90 relative lift: {r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}]")
 ```
 
+<!-- output -->
 ```text
 p90 relative lift: -7.94% [-13.63%, -1.87%]
 ```
