@@ -177,6 +177,7 @@ _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
         "site_volume": 8,
         "unit_covariate": 9,
         "unit_covariate_level": 10,
+        "cuped_measure_covariate": 11,
     }
 )
 
@@ -850,37 +851,39 @@ def _dimension_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
 
 
 def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
-    """One entry per covariate an observational design declares; an artifact
-    can publish exactly these, never an ad hoc name. A numeric property is
-    offered as `unit_covariate`, a string property as `unit_covariate_level`:
-    the declared dtype picks the wire relation that can carry its values."""
-    entries: list[Any] = []
+    """Catalog declared observational and CUPED-linear property evidence."""
+    declarations: list[Any] = []
     design = getattr(experiment, "design", None)
-    if design is None or design.mechanism != "observational":
-        return entries
-    for covariate in design.covariates:
-        source = _source_for(
-            definitions, covariate.property, covariate.source, unit=experiment.unit
-        )
-        prop = next(p for p in definitions.properties_of(source) if p.name == covariate.property)
+    if design is not None and design.mechanism == "observational":
+        declarations.extend(design.covariates)
+    for binding in experiment.bindings.values():
+        declarations.extend(c for c in binding.covariates if c.property is not None)
+
+    entries: list[Any] = []
+    seen_sources: set[tuple[str, str]] = set()
+    for declaration in declarations:
+        property_name = declaration.property
+        source_name = declaration.source
+        source = _source_for(definitions, property_name, source_name, unit=experiment.unit)
+        source_key = (property_name, source.name)
+        if source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        prop = next(p for p in definitions.properties_of(source) if p.name == property_name)
         kind, model_name = (
             ("unit_covariate_level", "UnitCovariateLevelRequest")
             if prop.dtype == "string"
             else ("unit_covariate", "UnitCovariateRequest")
         )
         request = _model(model_name).model_validate(
-            {
-                "kind": kind,
-                "property_name": covariate.property,
-                "source_name": source.name,
-            }
+            {"kind": kind, "property_name": property_name, "source_name": source.name}
         )
         _catalog_add(
             entries,
             request,
             {
                 "kind": kind,
-                "property": _dump(covariate),
+                "property": _dump(declaration),
                 "property_definition": _dump(prop),
             },
             {
@@ -960,7 +963,40 @@ def _cuped_catalog_entries(
     entries: list[Any] = []
     for metric_name in metric_names:
         binding = experiment.bindings.get(metric_name)
-        if binding is None or not binding.wants_cuped:
+        if binding is None:
+            continue
+        for covariate in binding.covariates:
+            measure = covariate.measure
+            if measure is None:
+                continue
+            request = _model("CupedMeasureCovariateRequest").model_validate(
+                {
+                    "kind": "cuped_measure_covariate",
+                    "metric_name": metric_name,
+                    "covariate_name": covariate.name,
+                }
+            )
+            _catalog_add(
+                entries,
+                request,
+                {
+                    "kind": "cuped_measure_covariate",
+                    "metric_name": metric_name,
+                    "covariate_name": covariate.name,
+                    "measure_key": _measure_recipe_key(measure),
+                    "aggregation": measure.aggregation,
+                    "window_start_days": -experiment.n_pre_periods,
+                    "window_end_days": 0,
+                },
+                {
+                    "experiment": experiment.name,
+                    "metric_name": metric_name,
+                    "binding": _dump(covariate),
+                    "measure": _dump(measure),
+                    "fact_source": _fact_source_recipe(definitions, measure.fact, experiment.unit),
+                },
+            )
+        if not binding.wants_cuped:
             continue
         request = _model("CupedPreperiodRequest").model_validate(
             {"kind": "cuped_preperiod", "metric_name": metric_name}

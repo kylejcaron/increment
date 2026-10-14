@@ -24,6 +24,48 @@ from increment.errors import (
     refusals,
 )
 
+
+def breakout_dimension_column(covariates: Sequence[str]) -> str:
+    """Name the unit-frame segment column so it displaces no declared covariate.
+
+    Producers and consumers derive the name from the same covariate request,
+    so a covariate called ``__breakout_dimension`` keeps its own values.
+    """
+    name = "__breakout_dimension"
+    while name in covariates:
+        name += "_"
+    return name
+
+
+# Columns a unit frame serves in its own right; a covariate declared under one
+# of these names is carried under a scratch column instead (see
+# `unit_frame_covariate_columns`). The declared cluster column keeps its own
+# reservation: `cluster_id` is metadata, never a covariate.
+UNIT_FRAME_COLUMNS = frozenset({"unit_id", "group_id", "y", "y_den"})
+
+
+def unit_frame_covariate_columns(covariates: Sequence[str]) -> dict[str, str]:
+    """The unit-frame column each requested covariate is carried under.
+
+    The identity for every name that does not collide with a frame-served
+    column, so producers that emit covariates under their declared names are
+    unchanged. A colliding name (a covariate called ``y``) is carried under a
+    scratch column derived from the same request, so a producer and its
+    consumer agree on it without a side channel and the frame never holds
+    two columns of one name or silently resolves a covariate to the outcome.
+    """
+    names = tuple(covariates)
+    columns: dict[str, str] = {}
+    for name in names:
+        column = name
+        if name in UNIT_FRAME_COLUMNS:
+            column = f"__covariate_{name}"
+            while column in names or column in columns.values():
+                column += "_"
+        columns[name] = column
+    return columns
+
+
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
@@ -514,6 +556,12 @@ class MomentSource(Protocol):
         per-unit denominator) is a separate column a caller combines with `y`.
         A declared `context.cluster` adds `cluster_id` metadata automatically,
         independently of `covariates`; callers must not request its source name.
+        Each covariate is carried under `unit_frame_covariate_columns(covariates)`:
+        its own name unless that is one of the frame's own columns. Only frame
+        producers remap (their covariate names are the caller's own columns);
+        native and artifact producers emit each binding under its declared alias
+        and refuse a reserved alias before acquisition
+        (`definition.experiment.covariate_name_reserved`).
         """
         ...
 

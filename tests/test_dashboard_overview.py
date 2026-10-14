@@ -31,6 +31,7 @@ _SAVED = (
     + f"""
   - type: mean
     name: {ADDED}
+    description: Added purchase count per enrolled user.
     entity: user_id
     preferred_direction: increase
     fact: purchase
@@ -506,6 +507,7 @@ def test_an_added_metric_inspector_shows_its_overview_result(tmp_path):
         assert added["role"] == "exploratory"
         assert "no decision result" not in added["detail"]
         assert f"{row.require_lift().value:+.1%}" in added["detail"]
+        assert "Added purchase count per enrolled user." in added["detail"]
         assert added["csv"] == ""
         # A declared metric keeps its group-data download.
         assert payload["checkout_conversion"]["csv"] != ""

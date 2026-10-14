@@ -1698,3 +1698,70 @@ def test_warehouse_metrics_cannot_declare_a_missing_policy(model, payload) -> No
             )
         assert [error["loc"] for error in raised.value.errors()] == [("missing",)]
         assert {error["type"] for error in raised.value.errors()} == {"extra_forbidden"}
+
+
+def test_metric_spec_declares_mixed_covariates_with_independent_missing_policies():
+    from increment._metric_specs import CupedCovariate
+
+    spec = MetricSpec(
+        name="revenue",
+        covariates=(
+            CupedCovariate(name="pre_revenue", kind="continuous"),
+            CupedCovariate(name="country", kind="categorical", missing="impute-indicator"),
+        ),
+    )
+
+    assert [(item.name, item.kind, item.missing) for item in spec.covariates] == [
+        ("pre_revenue", "continuous", "refuse"),
+        ("country", "categorical", "impute-indicator"),
+    ]
+
+
+def test_cuped_linear_requires_a_covariate_set():
+    with pytest.raises(InvalidRequestError) as raised:
+        MetricSpec(
+            name="revenue",
+            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        )
+
+    assert raised.value.code == "frame.metric.declares_cuped_linear"
+
+
+def test_summary_unit_frame_preserves_mixed_covariate_values_and_nulls():
+    from increment._metric_specs import CupedCovariate
+
+    source = from_unit_summary(
+        pa.table(
+            {
+                "unit": ["u1", "u2", "u3", "u4"],
+                "group": ["control", "control", "treatment", "treatment"],
+                "outcome": [1.0, 2.0, 3.0, 4.0],
+                "pre": [10.0, None, 30.0, 40.0],
+                "country": ["7", None, "West", "East"],
+            }
+        ),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="outcome",
+                covariates=(
+                    CupedCovariate(name="pre", kind="continuous", missing="impute-indicator"),
+                    CupedCovariate(name="country", kind="categorical"),
+                ),
+            )
+        ],
+    )
+
+    table = nw.from_native(
+        source.unit_frame(_metric(source, "outcome"), covariates=["pre", "country"]),
+        eager_only=True,
+    ).to_arrow()
+    rows = {row["unit_id"]: row for row in table.to_pylist()}
+
+    assert rows["u2"]["pre"] is None
+    assert rows["u2"]["country"] is None
+    assert rows["u1"]["country"] == "7"
+    assert table.schema.field("country").type == pa.string()
+    assert set(rows) == {"u1", "u2", "u3", "u4"}

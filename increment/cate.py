@@ -25,6 +25,7 @@ import narwhals as nw
 import numpy as np
 
 from increment._identity import canonical_id_strings
+from increment._source_types import unit_frame_covariate_columns
 from increment.errors import (
     InvalidRequestError,
     RefusalSpec,
@@ -104,7 +105,8 @@ def _coerce(covariates: Sequence[Covariate | str]) -> tuple[Covariate, ...]:
 def _requested_columns(*groups: Sequence[Covariate]) -> list[str]:
     """Every covariate column to pull, deduplicated, first-occurrence order.
 
-    ``unit_frame`` selects the names verbatim, so a column named by both
+    ``unit_frame`` serves each requested name once (under a scratch column
+    when it collides with one of the frame's own), so a column named by both
     *interact* and *adjust* must be asked for once.
     """
     seen: dict[str, None] = {}
@@ -219,16 +221,23 @@ def _unit_design(
     if resolved.type == "quantile":
         _raise("cate.cate_supported_quantile", metric=metric)
     frame = nw.from_native(source.unit_frame(resolved, covariates=requested), eager_only=True)
+    # A covariate named like one of the frame's own columns is served under a
+    # scratch column; every read below goes through its declared name.
+    served = unit_frame_covariate_columns(requested)
 
     if design is not None and design.mechanism == "observational":
         numeric_adjustments = [
-            name for name in design.adjustment.covariates if frame.schema[name].is_numeric()
+            served[name]
+            for name in design.adjustment.covariates
+            if frame.schema[served[name]].is_numeric()
         ]
         frame = frame.with_columns(*(nw.col(name).cast(nw.Float64) for name in numeric_adjustments))
     # A dictionary-encoded column's `to_numpy()` can rewrite a null level as
     # a neighbour's; `to_list()` keeps every null null on every backend.
     textual = {
-        name for name in requested if frame.schema[name] in (nw.String, nw.Categorical, nw.Enum)
+        name
+        for name in requested
+        if frame.schema[served[name]] in (nw.String, nw.Categorical, nw.Enum)
     }
 
     group_values = frame["group_id"].to_list()
@@ -252,9 +261,9 @@ def _unit_design(
     d = np.fromiter((g != control for g in group_values), dtype=float, count=len(group_values))
     cols = {
         name: (
-            np.asarray(frame[name].to_list(), dtype=object)
+            np.asarray(frame[served[name]].to_list(), dtype=object)
             if name in textual
-            else np.asarray(frame[name].to_numpy())
+            else np.asarray(frame[served[name]].to_numpy())
         )
         for name in requested
     }

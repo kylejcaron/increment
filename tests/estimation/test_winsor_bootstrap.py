@@ -1109,6 +1109,7 @@ def test_bootstrap_observed_log_point_matches_reference_validation_when_ratio_ro
 
 @pytest.mark.slow
 def test_full_reference_stream_centering_wire_and_reinversion():
+    from increment._interpretation import interpret_readout, render_readout_text
     from increment.estimation.winsor import estimate_winsor_lift
     from increment.results import LiftEstimate
     from increment.winsor import BootstrapReference
@@ -1174,6 +1175,9 @@ def test_full_reference_stream_centering_wire_and_reinversion():
     unresolved = restored.reintervalize(1e-300)
     assert unresolved.confidence_set is not None
     assert unresolved.confidence_set.relative.upper.reason == "bootstrap_tail_unresolved"
+    text = render_readout_text(interpret_readout([unresolved], None))
+    assert "relative confidence interval: [-1, +∞]" in text
+    assert "additive confidence interval: [−∞, +∞]" in text
     assert restored.p_value() == row.p_value()
 
 
@@ -1231,6 +1235,10 @@ def test_failed_root_is_persisted_without_retry_and_invalid_wire_refuses():
     assert retained.confidence_set is not None
     assert retained.confidence_set.relative.lower.reason == "bootstrap_replicate_failure"
     assert region.relative.lower.status == "undefined"
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    text = render_readout_text(interpret_readout([retained], None))
+    assert "undefined (bootstrap_replicate_failure)" in text
     bad = base.model_dump()
     bad["relative"]["lower"]["value"] = -0.999
     with pytest.raises(CodedError) as error:

@@ -42,12 +42,20 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
+# Reasons a Fieller joint construction records when its set is unavailable;
+# every other relative refusal sits on an ordinary additive Wald row.
+_JOINT_UNAVAILABLE_REASONS = frozenset(
+    {"joint_covariance_indefinite", "joint_covariance_unrepresentable", "zero_relative_variance"}
+)
+
+
 def _joint_relative_rows(rows: Sequence[LiftEstimate], *, metric: str | None = None) -> bool:
     """Joint decision rows use actual FCR alpha, not the legacy central
-    equivalent. A nonpositive_arm_mean row is an ordinary additive Wald
-    result (never a joint/Fieller construction, which is inherently
-    two-sided), so it must not force two-sided re-estimation on its
-    metric's other, healthy, directional arms.
+    equivalent. A row whose relative projection was withheld for a
+    nonpositive arm mean or an unrepresentable relative scale is an ordinary
+    additive Wald result (never a joint/Fieller construction, which is
+    inherently two-sided), so it must not force two-sided re-estimation on
+    its metric's other, healthy, directional arms.
     """
     return any(
         row.method_role == "decision"
@@ -55,10 +63,7 @@ def _joint_relative_rows(rows: Sequence[LiftEstimate], *, metric: str | None = N
         and (metric is None or row.metric == metric)
         and (
             row.relative_confidence_set is not None
-            or (
-                row.relative_unavailable_reason is not None
-                and row.relative_unavailable_reason != "nonpositive_arm_mean"
-            )
+            or row.relative_unavailable_reason in _JOINT_UNAVAILABLE_REASONS
         )
         for row in rows
     )
@@ -200,7 +205,6 @@ def _runtime_methods(
     config: ResolvedMetricConfig,
     design: Randomized | Encouragement | Observational,
 ) -> list[Method]:
-    """Return one concrete method sequence for this metric and design."""
     return list(effective_methods(config, design=design))
 
 

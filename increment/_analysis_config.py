@@ -15,9 +15,15 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
-from increment.errors import InvalidRequestError, raiser, refusals
+from increment.errors import (
+    InvalidRequestError,
+    RefusalSpec,
+    UnsupportedRequestError,
+    raiser,
+    refusals,
+)
 from increment.estimation.engine import Method, _validate_unique_method_names, resolve_method_roles
 from increment.estimation.inference import Normal, Prior
 from increment.semantics.design import Encouragement, Observational, Randomized
@@ -25,7 +31,7 @@ from increment.semantics.models import ExperimentMetric, MethodSpec, Metric, Nor
 
 if TYPE_CHECKING:
     from increment._literals import MultiplicityCorrection
-    from increment._readout_request import Correction
+    from increment._readout_request import Correction, ReadoutRequest
     from increment.frame import MetricSpec
 
 
@@ -44,6 +50,14 @@ _REFUSALS = refusals(
         "facade.analysis_config.metric_definition_mismatch": "{caller}: metric object(s) {mismatched_names!r} differ from their declared definitions; select by name or pass a field-equal declared metric",
         "facade.analysis_config.metric_no_resolved": "metric {metric_name!r} has no resolved source configuration",
         "facade.analysis_config.exploratory_metric_unavailable": "{caller}: exploratory_metrics cannot add {names!r} -- unknown to the loaded definitions: {unknown_names!r}; already declared by the experiment (pass them in metrics= instead): {declared_names!r}. Available to add: {available_names!r}",
+        "facade.analysis_config.cuped_linear_moments": RefusalSpec(
+            "facade.analysis_config.cuped_linear_moments",
+            UnsupportedRequestError,
+            template="metric {metric!r} requests cuped_linear, but from_moments stores aggregate moments rather than per-unit covariates; use from_unit_summary, from_unit_panel, from_definitions, or an artifact published with covariate extensions.",
+            keys=frozenset({"metric"}),
+        ),
+        "facade.analysis_config.cuped_linear_covariates": "metric {metric!r} requests cuped_linear without a declared covariate set.",
+        "facade.analysis_config.cuped_linear_metric_type": "metric {metric!r} has type={metric_type!r}; cuped_linear supports mean and conversion metrics only.",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -60,6 +74,7 @@ class ResolvedMetricConfig:
     sensitivity_methods: tuple[Method, ...]
     prior: Prior | None
     prior_is_global: bool
+    covariates: tuple[object, ...] = ()
     # An explicit ``methods=[]`` declaration emits no estimator rows.
     methods_explicitly_empty: bool = False
     # Provenance flag: the winning declaration omitted its decision method.
@@ -85,6 +100,20 @@ def effective_methods(
     methods = (decision, *config.sensitivity_methods)
     _validate_unique_method_names(methods, caller=f"metric {config.metric.name!r}")
     return methods
+
+
+def validate_readout_covariates(request: ReadoutRequest) -> None:
+    """Refuse an effective cuped_linear method whose metric declares no covariates.
+
+    Runs in the shared request preflight so a call-time override is refused
+    on every ingress before any source acquisition, matching the declaration
+    rule :func:`resolve_configs` applies to configured methods.
+    """
+    for config, methods in zip(request.configs, request.estimation_methods, strict=True):
+        if not config.covariates and any(
+            method.variance_reduction == "cuped_linear" for method in methods
+        ):
+            _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
 
 
 def normalize_display_correction(correction: MultiplicityCorrection) -> Correction:
@@ -272,6 +301,11 @@ def select_exploratory_metrics(
     return [by_name[name] for name in names]
 
 
+def refuse_cuped_linear_moments(metric: str) -> NoReturn:
+    """Refuse per-unit covariates at the aggregate-moments ingress."""
+    _raise("facade.analysis_config.cuped_linear_moments", metric=metric)
+
+
 def resolve_configs(
     selected: Sequence[Metric],
     bindings: Mapping[str, ExperimentMetric] | None,
@@ -353,6 +387,25 @@ def resolve_configs(
             else (decision_method, *sensitivity_methods),
             caller=f"metric {metric.name!r}",
         )
+        covariates = (
+            binding.covariates
+            if binding is not None
+            else (spec.covariates if spec is not None else ())
+        )
+        configured_methods = (() if decision_defaulted else (decision_method,)) + tuple(
+            sensitivity_methods
+        )
+        if any(method.variance_reduction == "cuped_linear" for method in configured_methods):
+            if not covariates:
+                if bindings is None and specs is None:
+                    _raise("facade.analysis_config.cuped_linear_moments", metric=metric.name)
+                _raise("facade.analysis_config.cuped_linear_covariates", metric=metric.name)
+            if metric.type in ("quantile", "retention"):
+                _raise(
+                    "facade.analysis_config.cuped_linear_metric_type",
+                    metric=metric.name,
+                    metric_type=metric.type,
+                )
         out.append(
             ResolvedMetricConfig(
                 metric=metric,
@@ -362,6 +415,7 @@ def resolve_configs(
                 prior_is_global=prior_is_global,
                 methods_explicitly_empty=methods_explicitly_empty,
                 decision_defaulted=decision_defaulted,
+                covariates=tuple(covariates),
             )
         )
     return tuple(out)

@@ -8,9 +8,9 @@ unchanged.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import PreferredDirection
@@ -24,6 +24,7 @@ from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.semantics.models import (
     ConversionMetric,
+    CupedCovariate,
     MeanMetric,
     Measure,
     Metric,
@@ -31,11 +32,13 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
     Winsorization,
+    _ExplicitOnlyFields,
     _reject_bool_days,
     _validate_retention_declaration,
 )
 
 __all__ = [
+    "CupedCovariate",
     "MetricSpec",
     "MetricSpecType",
     "MetricsArg",
@@ -74,6 +77,10 @@ _REFUSALS = refusals(
         "frame.metric.cuped_supported_metrics": "metric {name!r}: CUPED is not supported for {type} metrics -- a quantile is not a mean of per-unit values, so there is no per-unit residual for a covariate slope to act on. CUPED is supported for mean, conversion, retention and ratio metrics; a ratio adjusts its numerator and denominator against covariate= with a slope each.",
         "frame.metric.declares_cuped_method": "metric {name!r} declares a CUPED method but no covariate= column -- CUPED needs a pre-period covariate",
         "frame.metrics_empty_supply": "metrics is empty; supply at least one metric to estimate",
+        "frame.metric.declares_cuped_linear": "metric {name!r} requests cuped_linear but declares no covariate set",
+        "frame.metric.cuped_linear_supported_metrics": "metric {name!r}: cuped_linear is supported only for mean, conversion, and ratio metrics, got {type!r}",
+        "frame.metric.covariate_names_unique": "metric {name!r} declares duplicate covariate names",
+        "frame.metric.scalar_and_set_covariates": "metric {name!r} cannot declare both covariate= and covariates=",
         "frame.metrics_entries_metricspec": "metrics entries must be MetricSpec or mapping, got {type_name}",
         "frame.duplicate_metric_name": "duplicate metric name {name!r}: moments are keyed by name, so two specs sharing one name silently interleave their rows and cross-pair arms. Give each metric a distinct name.",
         "frame.metric_type_retention": "metric {name!r}: type='retention' needs threshold_days -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='retention', threshold_days=...)",
@@ -84,7 +91,7 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
-class MetricSpec(CodedModel, BaseModel):
+class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
     """One metric to estimate from a dataframe column.
 
     Parameters
@@ -145,6 +152,9 @@ class MetricSpec(CodedModel, BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+    # Undeclared covariates stay out of dumps so existing specs keep their
+    # registration and definitions identities.
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"covariates"})
 
     name: str
     type: MetricSpecType = "mean"
@@ -160,6 +170,7 @@ class MetricSpec(CodedModel, BaseModel):
     covariate_missing: Literal["impute", "zero", "error"] = "impute"
     decision_method: Method | None = None
     sensitivity_methods: tuple[Method, ...] = ()
+    covariates: tuple[CupedCovariate, ...] = Field(default=(), exclude_if=lambda value: not value)
     prior: Normal | None = None
     preferred_direction: PreferredDirection | None = None
 
@@ -198,6 +209,21 @@ class MetricSpec(CodedModel, BaseModel):
             _raise("frame.metric.sets_threshold_days", name=self.name, type=self.type)
         if self.type == "quantile" and self.window_days is not None:
             _raise("frame.metric.window_days_supported", name=self.name)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cuped_covariates(self) -> MetricSpec:
+        if (
+            self.covariate is not None
+            and self.covariates
+            and self.covariate not in {covariate.name for covariate in self.covariates}
+        ):
+            _raise("frame.metric.scalar_and_set_covariates", name=self.name)
+        names = [covariate.name for covariate in self.covariates]
+        if len(names) != len(set(names)):
+            _raise("frame.metric.covariate_names_unique", name=self.name)
+        if self.covariates and self.type in ("quantile", "retention"):
+            _raise("frame.metric.cuped_linear_supported_metrics", name=self.name, type=self.type)
         return self
 
     @model_validator(mode="after")
@@ -259,10 +285,15 @@ class MetricSpec(CodedModel, BaseModel):
             if method.name == "cuped" and method.variance_reduction != "cuped":
                 _raise("frame.metric.method_name_cuped", name=self.name)
         wants_cuped = any(method.variance_reduction == "cuped" for method in methods)
+        wants_cuped_linear = any(method.variance_reduction == "cuped_linear" for method in methods)
         if wants_cuped and self.type == "quantile":
             _raise("frame.metric.cuped_supported_metrics", name=self.name, type=self.type)
         if wants_cuped and self.covariate is None:
             _raise("frame.metric.declares_cuped_method", name=self.name)
+        if wants_cuped_linear and self.type in ("quantile", "retention"):
+            _raise("frame.metric.cuped_linear_supported_metrics", name=self.name, type=self.type)
+        if wants_cuped_linear and not self.covariates:
+            _raise("frame.metric.declares_cuped_linear", name=self.name)
         if self.type not in ("conversion", "retention") and any(
             method.conversion_inference == "finite_sample" for method in methods
         ):
@@ -285,7 +316,8 @@ class MetricSpec(CodedModel, BaseModel):
             cols.append(self.covariate)
         if self.denominator is not None:
             cols.append(self.denominator)
-        return cols
+        cols.extend(covariate.name for covariate in self.covariates)
+        return list(dict.fromkeys(cols))
 
 
 MetricsArg = Mapping[str, str] | Sequence["MetricSpec | Mapping[str, Any]"]

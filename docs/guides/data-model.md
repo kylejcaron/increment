@@ -466,6 +466,13 @@ interval remains on the row. Zero sample variability is not a certificate of
 zero population uncertainty; other singular Fieller geometries remain supported.
 Such a secondary remains a non-rejection in its family's declared roster, so it
 does not inflate sibling discoveries or prevent usable siblings from reporting.
+A mixed-CUPED row whose relative projection is refused for a representability
+or finiteness reason carries `relative_unavailable_reason="relative_unrepresentable"`
+and the exact code in `relative_error_code`; its additive projection and `t`
+interval remain on the row, so an absolute-margin decision is unaffected. A
+relative interval alone that a level cannot represent keeps the row's point,
+`log_mean` and `log_se` and withholds only the bounds, with the refusal in
+`relative_error_code` and no `relative_unavailable_reason`.
 
 For estimators that do not refit nuisance models (including randomized
 moments and IPTW), declaring a cluster changes only the SE and reference.

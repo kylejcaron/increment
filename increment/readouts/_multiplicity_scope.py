@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
 from increment.decision import MultiplicityFamily
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.multiplicity import multiplicity_status, row_multiplicity_status
 from increment.estimation.readout_types import (
     CellFailure,
@@ -365,7 +367,7 @@ def _attach_family_scope(
     )
 
 
-def scoped_collection(
+def scoped_collection(  # noqa: PLR0913
     rows: Sequence[Any],
     collection_type: Any,
     plan: Any,
@@ -379,8 +381,15 @@ def scoped_collection(
     source: str | None = None,
     family_populations: set[str] | None = None,
     sequential_snapshot: Any = None,
+    source_components: Sequence[Mapping[str, Any]] = (),
 ):
-    """Return rows with a source snapshot and source-local readout metadata."""
+    """Return rows with a source snapshot and source-local readout metadata.
+
+    ``source_components`` are provenance components of evidence the rows were
+    computed from but do not carry themselves (per-unit evidence digests);
+    they enter the source half of the snapshot identity, as the headline
+    route's evidence components do.
+    """
     from hashlib import sha256
 
     from increment._canonical import canonical_json_bytes
@@ -398,7 +407,7 @@ def scoped_collection(
     from increment.readouts._design_scope import _request_snapshot
 
     identity_request = _identity_request(rows, request)
-    payload = {
+    payload: dict[str, Any] = {
         "kind": "increment.readout.snapshot",
         "version": 2,
         "collection": collection_type.__name__,
@@ -436,6 +445,11 @@ def scoped_collection(
             ).hexdigest(),
         },
     }
+    if source_components:
+        payload["source"] = {
+            **payload["source"],
+            "components": [dict(item) for item in source_components],
+        }
     snapshot_id = "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
     stamped = []
     for row in rows:
@@ -470,6 +484,7 @@ def scoped_collection(
             arms=tuple(sorted(groups)),
             source="observed_union",
             complete=False,
+            control_group=control,
         )
         for population in populations
     )
@@ -548,6 +563,7 @@ def scoped_collection(
                     if getattr(row, "failure_code", None) is not None and cell.method is not None
                     else None
                 ),
+                advisories=_row_advisories(row),
             )
         )
     metadata = ReadoutMetadata(
@@ -557,3 +573,26 @@ def scoped_collection(
         ),
     )
     return collection_type(stamped, metadata=metadata, sequential_snapshot=sequential_snapshot)
+
+
+_RATIO_NOTE_CODES = {
+    "ratio_denominator_precision": "estimation.engine.ratio_denominator_precision",
+    "ratio_denominator_skew": "estimation.engine.ratio_denominator_skew",
+}
+
+
+def _row_advisories(row):
+    note = getattr(row, "note", None)
+    if not isinstance(note, str):
+        return ()
+    # Ratio rows join their advisories with "; "; a skew note can itself contain "; ".
+    parts = re.split(r"; (?=ratio_denominator_(?:precision|skew):)", note)
+    return tuple(
+        ReadoutAdvisory(
+            code=_RATIO_NOTE_CODES[part.split(":", 1)[0]],
+            context={"metric_name": row.metric, "note": part},
+            message=part,
+        )
+        for part in parts
+        if part.split(":", 1)[0] in _RATIO_NOTE_CODES
+    )

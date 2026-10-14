@@ -503,6 +503,7 @@ def bind_automatic_sequential_plan(
             compliance=plan.compliance,
             segments=spec.segments,
             view_multiplicity=plan.view_multiplicity,
+            allocation_owner="experiment" if path == "warehouse" else "design",
         )
     else:
         registration = auto_register_scalar_mean(
@@ -519,6 +520,7 @@ def bind_automatic_sequential_plan(
             compliance=plan.compliance,
             segments=spec.segments,
             view_multiplicity=plan.view_multiplicity,
+            allocation_owner="experiment" if path == "warehouse" else "design",
         )
     inference = spec.model_copy(
         update={

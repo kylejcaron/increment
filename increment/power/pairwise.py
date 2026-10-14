@@ -46,7 +46,13 @@ from increment.power._shared import (
 from increment.power._shared import (
     validate_relative_lift as _validate_relative_lift,
 )
-from increment.power.core import Baseline, PowerDesign, PowerResult, QuantileBaseline
+from increment.power.core import (
+    Baseline,
+    PowerDesign,
+    PowerResult,
+    QuantileBaseline,
+    _refuse_cuped_linear_planning,
+)
 
 _PAIRWISE_N_PER_ARM_TOO_SMALL = RefusalSpec(
     "power.segment_pairwise_achieved_n_per_arm_too_small",
@@ -168,6 +174,7 @@ def _prepare_pairwise_baseline(
     procedure: ArmPlanningProcedure, baseline: Baseline
 ) -> tuple[ArmPlanningProcedure, Baseline]:
     procedure = derive_axes_from_baseline(procedure, baseline)
+    _refuse_cuped_linear_planning(procedure)
     if procedure.decision_method.variance_reduction == "none" and baseline.cuped_rho != 0.0:
         baseline = baseline.model_copy(update={"cuped_rho": 0.0})
     support = arm_planning_support(procedure, baseline=baseline)

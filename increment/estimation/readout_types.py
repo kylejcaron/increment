@@ -33,6 +33,7 @@ from increment.errors import (
     refuse,
 )
 from increment.estimation._sequential_likelihood import LikelihoodCertificate
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
     ArmHypothesisKey,
     AsymptoticSequentialEvidence,
@@ -70,15 +71,25 @@ _UNSUPPORTED_REFUSALS = refusals(
 _CELL_FAILURE_REFUSALS = refusals(
     InvalidRequestError,
     {
-        "readout.cell.missing_arm": "Metric {metric} lacks declared arm {group_id}",
-        "readout.cell.missing_metric_observations": "Metric {metric} has no usable observations for {group_id}",
+        # Templates name {observed_arms} so only producers that know the requested arm is the
+        # one lacking observations render them; other contexts fall back to code and context.
+        "readout.cell.missing_arm": (
+            "Metric {metric} has no observations for requested arm {group_id} (observed arms: "
+            "{observed_arms}); check the observed group label and control spelling, then "
+            "correct the source or requested contrast and rerun"
+        ),
+        "readout.cell.missing_metric_observations": (
+            "Metric {metric} has no usable observations for arm {group_id} (arms with "
+            "observations: {observed_arms}); check the metric's missing-value policy and the "
+            "values available in that arm, then correct the data or policy and rerun"
+        ),
         "readout.cell.unsupported_request": "Requested cell is unsupported: {reason}",
     },
 )
 _WIRE_REFUSALS = refusals(
     WireFormatError,
     {
-        "readout.serialization.unsupported_version": "Unsupported envelope {kind} version {received}; supported {supported}",
+        "readout.serialization.unsupported_version": "Unsupported envelope {kind} version {received}; supported {supported}. {remedy}",
         "readout.serialization.model_mismatch": "Collection {collection} does not contain row model {row_model}",
         "readout.serialization.duplicate_cell_key": "Duplicate serialized cell {cell_key} in {source_snapshot_id}",
         "readout.serialization.noncanonical_order": "Serialized {section} is not canonically ordered",
@@ -384,6 +395,23 @@ class CellRecord(_ReadoutModel):
     failure: CellFailure | None = None
     sampling: SamplingInference | None = None
     posterior: PosteriorInference | None = None
+    advisories: tuple[ReadoutAdvisory, ...] = ()
+
+    @model_validator(mode="after")
+    def _canonical_advisories(self):
+        ordered = tuple(
+            sorted(
+                self.advisories,
+                key=lambda item: (
+                    item.code,
+                    canonical_json_bytes(thaw(item.context)),
+                    item.severity,
+                    item.message,
+                ),
+            )
+        )
+        object.__setattr__(self, "advisories", ordered)
+        return self
 
 
 class PopulationRoster(_ReadoutModel):
@@ -391,6 +419,7 @@ class PopulationRoster(_ReadoutModel):
     arms: tuple[str, ...]
     source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
     complete: bool
+    control_group: str | None = None
 
 
 class FamilyScope(_ReadoutModel):
@@ -753,6 +782,50 @@ class StreamingDigest:
                 }
             )
         ).hexdigest()
+
+
+def render_readout_failure(
+    code: str | None,
+    context: Mapping[str, Any] | None,
+    *,
+    identity: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Render a registered readout refusal without changing its stored identity.
+
+    ``identity`` supplies the cell's own coordinates (for example ``metric``) for
+    templates whose stored context omits them; stored context wins. Sequences
+    render as comma-separated text (``none`` when empty). Returns ``None`` when
+    the code is unregistered or its template still lacks a required key, so
+    callers fall back to the code and context.
+    """
+    if code is None:
+        return None
+    spec = next(
+        (
+            registry[code]
+            for registry in (
+                _CELL_FAILURE_REFUSALS,
+                _REFUSALS,
+                _UNSUPPORTED_REFUSALS,
+                _WIRE_REFUSALS,
+            )
+            if code in registry
+        ),
+        None,
+    )
+    if spec is None:
+        return None
+    known_identity = {key: value for key, value in (identity or {}).items() if value is not None}
+    values = {
+        key: (", ".join(map(str, value)) or "none") if isinstance(value, list | tuple) else value
+        for key, value in {**known_identity, **thaw(context or {})}.items()
+    }
+    if not spec.keys <= values.keys():
+        return None
+    try:
+        return spec.render(**values)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def refuse_readout(code: str, **context: object) -> NoReturn:
@@ -1165,12 +1238,13 @@ class ReadoutResults:
         from increment.sequential_state import SequentialSnapshot
 
         payload = json.loads(text, object_pairs_hook=_unique_object)
-        if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 1:
+        if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 2:
             refuse_readout(
                 "readout.serialization.unsupported_version",
                 kind=payload.get("kind"),
                 received=payload.get("schema_version"),
-                supported=(1,),
+                supported=(2,),
+                remedy="Recompute results with the current version from the original analysis inputs.",
             )
         collection_name = payload.get("collection")
         collection_type: Any = (
@@ -1243,7 +1317,7 @@ def dump_collection(results):
     return json.dumps(
         {
             "kind": "increment.readout",
-            "schema_version": 1,
+            "schema_version": 2,
             "collection": type(results).__name__,
             "row_model": results._model.__name__,
             "snapshot_id": None if metadata is None else metadata.scope.snapshot_id,

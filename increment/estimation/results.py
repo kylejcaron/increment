@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, TypedDict, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Self, TypedDict, cast
 
 from pydantic import (
     BaseModel,
@@ -40,6 +40,7 @@ from increment._literals import (
     ValueScale,
 )
 from increment.errors import (
+    CodedError,
     CodedModel,
     InvalidRequestError,
     RefusalSpec,
@@ -90,6 +91,9 @@ RelativeUnavailableReason = Literal[
     "joint_covariance_indefinite",
     "joint_covariance_unrepresentable",
     "nonpositive_arm_mean",
+    # Relative projection refused for representability or finiteness
+    # (``relative_error_code`` names it); the additive projection stays usable.
+    "relative_unrepresentable",
     "zero_relative_variance",
 ]
 
@@ -632,6 +636,40 @@ class PosteriorComponents(CodedModel, BaseModel):
         return self
 
 
+_ROW_CONTEXT_FIELDS = frozenset(
+    {
+        "sampling_reason_context",
+        "posterior_reason_context",
+        "absolute_error_context",
+        "relative_error_context",
+        "failure_context",
+        "decision_scope_reason_context",
+        "weight_diagnostics_reason_context",
+    }
+)
+
+
+def _freeze_row_contexts(row: Any) -> None:
+    """Replace each reason context on *row* with an immutable, canonical,
+    picklable mapping, so a refusal survives pickle, deepcopy and JSON."""
+    from increment._canonical import canonical_json_bytes
+    from increment._immutable import _FrozenMapping
+
+    def freeze(value):
+        if isinstance(value, Mapping):
+            frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
+            canonical_json_bytes(dict(frozen))
+            return frozen
+        if isinstance(value, (tuple, list)):
+            return tuple(freeze(item) for item in value)
+        return value
+
+    for name in _ROW_CONTEXT_FIELDS:
+        value = getattr(row, name)
+        if value is not None:
+            object.__setattr__(row, name, freeze(value))
+
+
 class _RowIdentity(CodedModel, BaseModel):
     """Leading identity fields shared, in the same declared order, by
     LiftEstimate, BreakoutEstimate and DailyLiftEstimate. Only a field
@@ -668,6 +706,10 @@ class _RowIdentity(CodedModel, BaseModel):
     # Stored at the declared relative null on the metric's good side; None for
     # absolute-margin nulls.
     posterior_prob_favorable: float | None = None
+    absolute_error_code: str | None = None
+    absolute_error_context: Mapping[str, object] | None = None
+    relative_error_code: str | None = None
+    relative_error_context: Mapping[str, object] | None = None
     failure_code: str | None = None
     failure_context: Mapping[str, object] | None = None
     source_snapshot_id: str | None = None
@@ -700,29 +742,18 @@ class _RowIdentity(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _freeze_readout_contexts(self):
-        from increment._canonical import canonical_json_bytes
-        from increment._immutable import _FrozenMapping
-
-        def freeze(value):
-            if isinstance(value, Mapping):
-                frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
-                canonical_json_bytes(dict(frozen))
-                return frozen
-            if isinstance(value, (tuple, list)):
-                return tuple(freeze(item) for item in value)
-            return value
-
-        for name in (
-            "sampling_reason_context",
-            "posterior_reason_context",
-            "failure_context",
-            "decision_scope_reason_context",
-            "weight_diagnostics_reason_context",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, freeze(value))
+        _freeze_row_contexts(self)
         return self
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """``BaseModel.model_copy`` whose reason contexts stay immutable and
+        picklable: a copy bypasses validation, so a context supplied through
+        *update* (an error's mapping proxy, a plain dict) is frozen here as
+        construction would freeze it."""
+        copied = super().model_copy(update=update, deep=deep)
+        if update and not _ROW_CONTEXT_FIELDS.isdisjoint(update):
+            _freeze_row_contexts(copied)
+        return copied
 
     @model_validator(mode="after")
     def _validate_posterior_payload(self):
@@ -793,6 +824,8 @@ class _RowIdentity(CodedModel, BaseModel):
     @field_serializer(
         "sampling_reason_context",
         "posterior_reason_context",
+        "absolute_error_context",
+        "relative_error_context",
         "failure_context",
         "decision_scope_reason_context",
         "weight_diagnostics_reason_context",
@@ -1129,44 +1162,83 @@ class LiftEstimate(_RowIdentity):
             from increment.estimation.inference import _resolve_fixed_horizon
 
             ref = self.independent_mean_reference
-            resolved = _resolve_fixed_horizon(
-                ref.alpha,
-                ref.alternative,
-                dof=None,
-                arm_ns=None,
-                prior=None,
-                independent_means=ref,
-            )
-            assert resolved.crit is not None
-            expected_bounds: tuple[float | None, float | None] = (
-                ref.point - resolved.crit * ref.se(),
-                ref.point + resolved.crit * ref.se(),
-            )
-            expected_open = None
-            if ref.interval == "directional-fcr":
-                if ref.alternative == "two-sided":
-                    winsor_refuse("invalid_state", "Directional mean interval needs a direction.")
-                critical = tail_isf(
-                    student_t_isf, resolved.alpha_eff, ref.df, what="fixed FCR endpoint"
+            lift = self.lift
+
+            def expected_interval() -> tuple[
+                tuple[float | None, float | None], float | None, float | None, str | None
+            ]:
+                resolved = _resolve_fixed_horizon(
+                    ref.alpha,
+                    ref.alternative,
+                    dof=None,
+                    arm_ns=None,
+                    prior=None,
+                    independent_means=ref,
                 )
-                bounds = wald_bounds(ref.point, critical, ref.se(), what="fixed FCR endpoint")
-                expected_bounds = (
-                    (bounds[0], None) if ref.alternative == "greater" else (None, bounds[1])
+                assert resolved.crit is not None
+                bounds: tuple[float | None, float | None] = (
+                    ref.point - resolved.crit * ref.se(),
+                    ref.point + resolved.crit * ref.se(),
                 )
-                expected_open = "upper" if ref.alternative == "greater" else "lower"
+                open_side = None
+                if ref.interval == "directional-fcr":
+                    if ref.alternative == "two-sided":
+                        winsor_refuse(
+                            "invalid_state", "Directional mean interval needs a direction."
+                        )
+                    critical = tail_isf(
+                        student_t_isf, resolved.alpha_eff, ref.df, what="fixed FCR endpoint"
+                    )
+                    one_sided = wald_bounds(
+                        ref.point, critical, ref.se(), what="fixed FCR endpoint"
+                    )
+                    bounds = (
+                        (one_sided[0], None)
+                        if ref.alternative == "greater"
+                        else (None, one_sided[1])
+                    )
+                    open_side = "upper" if ref.alternative == "greater" else "lower"
+                return bounds, resolved.alpha_eff, math.fsum((1.0, -resolved.alpha_eff)), open_side
+
+            # A withheld interval (``relative_error_code`` names the refusal)
+            # keeps the point and statistics only; it is accepted only when the
+            # reference's level really cannot be represented.
+            withheld = (
+                lift is not None
+                and lift.lb is None
+                and lift.ub is None
+                and self.relative_error_code is not None
+            )
+            if withheld:
+                try:
+                    expected_interval()
+                except CodedError as exc:
+                    if exc.code != "estimation.tails.unresolvable":
+                        raise
+                else:
+                    winsor_refuse(
+                        "invalid_state",
+                        "Independent mean interval withheld at a representable level.",
+                    )
+                expected_bounds: tuple[float | None, float | None] = (None, None)
+                expected_alpha: float | None = None
+                expected_level: float | None = None
+                expected_open: str | None = None
+            else:
+                expected_bounds, expected_alpha, expected_level, expected_open = expected_interval()
             if (
                 self.reference_kind != "t"
                 or self.reference_df != ref.df
                 or self.value_scale != "absolute"
                 or self.scale != "linear"
-                or self.lift is None
-                or self.lift.value != ref.point
-                or self.lift.log_se != ref.se()
-                or self.lift.log_mean != ref.point
-                or (self.lift.lb, self.lift.ub) != expected_bounds
-                or self.lift.alpha != resolved.alpha_eff
-                or self.lift.level != math.fsum((1.0, -resolved.alpha_eff))
-                or self.lift.open_side != expected_open
+                or lift is None
+                or lift.value != ref.point
+                or lift.log_se != ref.se()
+                or lift.log_mean != ref.point
+                or (lift.lb, lift.ub) != expected_bounds
+                or lift.alpha != expected_alpha
+                or lift.level != expected_level
+                or lift.open_side != expected_open
                 or self.alternative != ref.alternative
                 or self.null_lift != 0
                 or self.null_abs is not None
@@ -1476,8 +1548,36 @@ class LiftEstimate(_RowIdentity):
         """The estimate exploratory-family evidence and FCR reissue read: this row itself."""
         return self
 
-    def reintervalize(self, alpha: float) -> LiftEstimate:
-        """Reinvert persisted inference; bootstrap roots are never regenerated."""
+    def reintervalize(
+        self, alpha: float, *, interval_alternative: str | None = None
+    ) -> LiftEstimate:
+        """Rebuild central persisted inference; bootstrap roots are never regenerated.
+
+        A ``t`` row rebuilds its log-scale relative interval and, when it carries
+        them, its additive statistics. A relative endpoint the new level pushes
+        outside float64 withholds only that interval: the point and the log-scale
+        statistics the row was selected on are kept, so its sampling p-value is
+        unchanged, and the refusal is recorded in ``relative_error_code``. A row
+        whose relative projection was already withheld rebuilds its additive
+        interval only.
+        """
+        if self.reference_kind == "t" and self.reference_df is not None:
+            relative = (
+                self.lift is not None
+                and self.lift.log_mean is not None
+                and self.lift.log_se is not None
+            )
+            additive = (
+                self.abs_diff is not None
+                and self.abs_se is not None
+                and self.abs_reference_df is not None
+            )
+            if relative or (
+                additive and self.lift is None and self.relative_unavailable_reason is not None
+            ):
+                return self._reintervalize_t(
+                    alpha, interval_alternative, relative=relative, additive=additive
+                )
         if self.confidence_set is None:
             winsor_refuse(
                 "reinversion_required", "This operation requires a persisted winsor confidence set."
@@ -1508,6 +1608,95 @@ class LiftEstimate(_RowIdentity):
                 "abs_alpha": result.abs_alpha,
             }
         )
+
+    def _reintervalize_t(
+        self,
+        alpha: float,
+        interval_alternative: str | None,
+        *,
+        relative: bool,
+        additive: bool,
+    ) -> LiftEstimate:
+        alternative = interval_alternative or self.alternative
+        alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+        update: dict[str, Any] = {
+            "alternative": alternative,
+            "independent_mean_reference": (
+                self.independent_mean_reference.model_copy(
+                    update={"alpha": alpha, "alternative": alternative, "interval": "central"}
+                )
+                if self.independent_mean_reference is not None
+                else None
+            ),
+        }
+        if additive:
+            assert (
+                self.abs_diff is not None
+                and self.abs_se is not None
+                and self.abs_reference_df is not None
+            )
+            abs_critical = tail_isf(
+                student_t_isf,
+                alpha_eff / 2.0,
+                self.abs_reference_df,
+                what="absolute t reintervalization",
+            )
+            abs_lb, abs_ub = wald_bounds(
+                self.abs_diff,
+                abs_critical,
+                self.abs_se,
+                what="absolute t reintervalization endpoint",
+            )
+            update.update({"abs_lb": abs_lb, "abs_ub": abs_ub, "abs_alpha": alpha_eff})
+        if not relative:
+            return self.model_copy(update=update)
+        lift = self.lift
+        assert lift is not None and lift.log_mean is not None and lift.log_se is not None
+        assert self.reference_df is not None
+        try:
+            critical = tail_isf(
+                student_t_isf, alpha_eff / 2.0, self.reference_df, what="t reintervalization"
+            )
+            lower, upper = wald_bounds(
+                lift.log_mean, critical, lift.log_se, what="t reintervalization endpoint"
+            )
+            if self.scale == "log":
+                lower = resolvable_expm1(lower, what="t reintervalization endpoint")
+                upper = resolvable_expm1(upper, what="t reintervalization endpoint")
+        except CodedError as exc:
+            # The level, not the evidence, is what cannot be represented: keep
+            # the point and the log-scale statistics the selection was decided
+            # on (p_value() still answers from them) and withhold only the
+            # interval, recording the exact refusal beside it.
+            update.update(
+                {
+                    "lift": lift.model_copy(
+                        update={
+                            "lb": None,
+                            "ub": None,
+                            "alpha": None,
+                            "level": None,
+                            "open_side": None,
+                        }
+                    ),
+                    "relative_error_code": exc.code,
+                    "relative_error_context": exc.context,
+                }
+            )
+            return self.model_copy(update=update)
+        update["lift"] = lift.model_copy(
+            update={
+                "lb": lower,
+                "ub": upper,
+                "alpha": alpha_eff,
+                "level": 1.0 - alpha_eff,
+                "open_side": None,
+            }
+        )
+        # The interval is representable at this level: an earlier level's
+        # withholding no longer describes the row.
+        update.update({"relative_error_code": None, "relative_error_context": None})
+        return self.model_copy(update=update)
 
     def __repr__(self) -> str:
         """Compact interactive representation of the published estimate."""
@@ -1848,11 +2037,7 @@ class LiftEstimate(_RowIdentity):
         against ``null_abs`` -- split out of ``p_value`` purely to keep
         that method's branch count readable; see its docstring for the
         contract."""
-        if (
-            self.reference_kind == "t"
-            or self.abs_reference_kind == "t"
-            or self.n_clusters is not None
-        ):
+        if self.n_clusters is not None:
             _raise(
                 "estimation.results.lift.p_value_cluster_robust_null_abs",
                 reference_df=self.abs_reference_df
@@ -1861,7 +2046,7 @@ class LiftEstimate(_RowIdentity):
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        if self.abs_se is None or self.abs_diff is None:
+        if self.abs_se is None or self.abs_diff is None or not self.abs_se > 0.0:
             _raise(
                 "estimation.results.lift.p_value_null_abs_missing_abs_se",
                 group_id=self.group_id,
@@ -1869,11 +2054,25 @@ class LiftEstimate(_RowIdentity):
             )
         assert self.null_abs is not None
         z_abs = (self.null_abs - self.abs_diff) / self.abs_se
+        abs_kind = self.abs_reference_kind or self.reference_kind
+        if abs_kind == "t":
+            if self.abs_reference_df is None:
+                _raise(
+                    "estimation.results.lift.p_value_cluster_robust_null_abs",
+                    reference_df=self.reference_df,
+                    group_id=self.group_id,
+                    metric=self.metric,
+                )
+            from scipy.stats import t as distribution
+
+            distribution = distribution(df=self.abs_reference_df)
+        else:
+            distribution = _norm
         if self.alternative == "greater":
-            return float(_norm.cdf(z_abs))
+            return float(distribution.cdf(z_abs))
         if self.alternative == "less":
-            return float(_norm.sf(z_abs))
-        return float(2.0 * min(_norm.cdf(z_abs), _norm.sf(z_abs)))
+            return float(distribution.sf(z_abs))
+        return float(2.0 * min(distribution.cdf(z_abs), distribution.sf(z_abs)))
 
     def p_value(self) -> float | None:
         """Return a presentation-only sampling p-value for this displayed result.

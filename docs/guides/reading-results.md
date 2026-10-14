@@ -26,10 +26,48 @@ with an additive value numerically.
 the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
 The `readout_table` coeftable keeps per-row estimate evidence compact:
-decision-scope completeness, partial-view state, and multiplicity provenance
-appear once as header notes only when informative. They remain on result
-objects and in `to_frame()`; failure rows keep a concise `Failure` column
-with their full structured context on the result object.
+decision-scope completeness, partial-view state, integrity, availability,
+multiplicity, and advisories appear as source-attributed qualification bullets
+in the header. Source identifiers are abbreviated there; the full identifiers
+remain in result objects and evidence columns. Each effect row includes a
+compact interval-interpretation label; the full restrained explanation remains
+in the collection `repr`. Failure rows keep the registered failure explanation
+in a `Failure` column and their full structured context on the result object.
+
+Scoped result collections also carry qualifications in their default
+`repr`: integrity and scope completeness precede availability, multiplicity,
+advisories, row qualifications, and effects. A failed integrity check is not
+hidden by an otherwise favorable estimate, and `not_rejected` means no
+detected mismatch, not proof of valid randomization. The collection display
+includes retained scope even when filtering leaves no visible rows.
+
+Interpretation separates the tested-null outcome from effect direction.
+An interval containing the tested null is inconclusive, not evidence of no
+effect. Excluding a nonzero margin can meet that test without establishing an
+increase or decrease: direction is stated only when the interval also excludes
+zero on the result's own axis. Absolute-native estimates and contrasts use
+additive intervals; relative rows with an absolute margin use their retained
+additive interval; sequential ratio bounds are interpreted after conversion to
+lift coordinates. Daily arm means are values, not treatment/control contrasts.
+Secondary selection status is shown separately from interval evidence; neither
+is a ship/no-ship verdict.
+
+`to_frame()` on scoped collections and `estimates_to_readout()` retain portable
+scalar and canonical-JSON evidence columns, including comparison identity,
+`analysis_population`, `source_snapshot_id`, integrity status/code/context,
+required/available/hidden counts, unavailable identities and reasons,
+advisory codes/messages/context, posterior-unavailability reasons, and
+multiplicity family status. Nested disclosures are canonical JSON strings;
+numeric nulls remain numeric nulls. These fields retain source and population
+attribution across flattened and concatenated results.
+
+`readout_table(collection)` retains collection qualifications in its header.
+The zero-visible-row view is a deliberate exception to tables' usual reliance
+on displayed row qualifications: it still renders retained scope and integrity
+for a scoped collection, while row-only empty input reports that scope and
+integrity are unknown. Export the collection's JSON (`model_dump_json()`) when
+you need to preserve the empty view's complete scope evidence; a zero-row
+frame/table has no row on which to store attribution.
 
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. The ordinary
@@ -113,11 +151,19 @@ estimated. A partial result is not a complete decision.
 
 ### Interpret status and scope
 
-- **`NotApplicable` assignment integrity is not a passing check.** It means
-  assignment integrity could not be evaluated for that source, design, or
-  population. Read the status and reason, and use the assigned population at
-  its stated assignment grain for assignment-law checks. Triggered counts
-  describe an outcome subset; they do not validate randomization.
+| Integrity status | Meaning |
+|---|---|
+| `failed` | A mismatch was detected; do not let a favorable effect hide it. |
+| `not_rejected` | No mismatch was detected; this does not prove valid randomization. |
+| `not_checked_missing_declaration` | The assignment law was not declared, so it could not be checked. |
+| `not_checked_missing_counts` | Required assignment counts were unavailable. |
+| `unsupported_assignment` | This source or design cannot evaluate the declared assignment law. |
+| `not_applicable` | The check does not apply to this source/design/population; it is not a pass. |
+
+Use assignment evidence from the assigned population at its declared
+randomization grain. Triggered counts describe an outcome subset, not
+assignment-law evidence.
+
 - **`exploratory_unadjusted` means no family adjustment.** Treat that result
   as exploratory rather than as a confirmatory discovery. If the question is
   decision-critical, define the appropriate family and role before using
@@ -146,46 +192,43 @@ population or inference method.
 
 ## Fixed horizon: guard the missing point
 
-Most rows carry `r.lift`. A few reachable rows do not. The loop below guards for
-them and runs on data where one occurs: no control user converts, so the
-relative lift has no finite point.
+The collection summary keeps required cells, integrity and retained family
+visible before effects. This example includes an exact conversion row with
+zero control conversions, so its relative point is unavailable even though
+the confidence set remains informative.
 
 ```python
+from random import Random
+
 import polars as pl
 
-from increment import Analysis
+from increment import Analysis, Randomized
 
-n = 100
+rng = Random(13)
+n = 200
+arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
 df = pl.DataFrame(
     {
-        "user_id": [f"u{i:03d}" for i in range(2 * n)],
-        "variant": ["control"] * n + ["treatment"] * n,
-        "revenue": [10.0 + (i * 7) % 11 for i in range(n)]
-        + [11.0 + (i * 7) % 11 for i in range(n)],
-        "converted": [0] * n + [1] * 40 + [0] * 60,
+        "user_id": [f"u{i:03d}" for i in range(n)],
+        "variant": arms,
+        "revenue": [10.0 + (i * 7) % 11 + (arm == "treatment") for i, arm in enumerate(arms)],
+        "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
     }
 )
 results = Analysis.from_unit_summary(
     df,
     unit="user_id",
     group="variant",
-    control="control",
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
     metrics={"revenue": "mean", "converted": "conversion"},
 ).run()
+print(results)
 
-for r in results:
-    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
-        # no point, or a withheld or open bound; str shows the row's set or reason
-        print(str(r))
-        continue
-    print(
-        f"{r.metric} / {r.group_id}: "
-        f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
-        f"significant={r.stat_sig()}"
-    )
-
-# The full frame retains evidence and decision metadata. Select a concise
-# display view without dropping those fields from the underlying readout.
+# The full frame retains qualifications; this selection is only a compact view.
 decision_table = results.to_frame(backend="polars")[
     [
         "metric",
@@ -201,10 +244,23 @@ decision_table = results.to_frame(backend="polars")[
 ]
 ```
 
-
 ```text
-revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), discovery=None)
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: complete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 2; available: 2.
+Multiplicity (outcome): undeclared_plan; family retained scope.
+converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+converted additive effect: 0.36036, set [0.270641, 0.45008].
+converted binomial set central: [1.61559, +∞] at 0.95 confidence.
+converted test alternative: two-sided; null (relative lift): 0.
+converted result identity: method unadjusted; method role decision; estimand itt.
+revenue (outcome, relative lift): 0.0946974, set [0.0327365, 0.160376] at 0.95 confidence.
+revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+revenue additive effect: 1.39812, set [0.504942, 2.29129].
+revenue test alternative: two-sided; null (relative lift): 0.
+revenue result identity: method unadjusted; method role decision; estimand itt.
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where
@@ -221,6 +277,17 @@ each row keeps its remaining evidence, are:
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
   including when both arms are constant. Check the bounds before use.
+- A mixed-CUPED (`cuped_linear`) row whose relative projection cannot be
+  represented: `r.relative_unavailable_reason == "relative_unrepresentable"`,
+  with the exact refusal in `r.relative_error_code`. The relative point lies
+  outside what a float can hold (the log-scale lift underflows to a total loss
+  or overflows) or the projection is not finite; the additive difference and its
+  `t` interval survive in `r.abs_diff`, `r.abs_lb` and `r.abs_ub`, and an
+  absolute-margin guardrail still decides from them. When only the relative
+  *interval* is unrepresentable (at the nominal level or after FCR widening),
+  the row keeps its point and sampling statistics, `r.lift.lb`/`r.lift.ub` are
+  `None`, `r.relative_unavailable_reason` stays `None` and
+  `r.relative_error_code` names the refusal; `r.p_value()` still answers.
 - A row whose joint relative covariance is unusable: it cannot be represented as
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).
@@ -372,8 +439,8 @@ assert flat.abs_diff == 1.0  # the additive difference is still reported
 Check `lb` and `ub` against `None`, or read `r.relative_unavailable_reason`
 first, before formatting them. A row with `relative_unavailable_reason` set to
 `"joint_covariance_unrepresentable"` or `"joint_covariance_indefinite"` and a
-finite point is the same case: its bounds are `None`, so the loop above prints
-its `repr`.
+finite point is the same case: its bounds are `None`. The row's `repr` retains
+the reason that its relative interval is unavailable.
 
 ## One-sided tests
 
@@ -383,6 +450,7 @@ unbounded end, and that bound is `None`:
 ```python
 from increment import AnalysisPlan, MetricSpec
 
+n = 100
 purchases = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(2 * n)],

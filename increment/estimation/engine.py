@@ -16,7 +16,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -28,6 +28,7 @@ from increment._finite_sample_refusals import (
 )
 from increment._literals import Alternative, ConversionInference, PreferredDirection
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
+from increment._source_types import unit_frame_covariate_columns
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -46,7 +47,12 @@ from increment.errors import (
 )
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
-from increment.estimation._tails import two_sided_critical_value, wald_bounds
+from increment.estimation._tails import (
+    resolvable_expm1,
+    two_sided_critical_value,
+    wald_bounds,
+)
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import (
     ArmStats,
     binary_counts,
@@ -94,6 +100,7 @@ from increment.estimation.variance import (
     ratio_denominator_precision,
     ratio_log_mean_se,
     ratio_moments,
+    require_positive_denominator_mean,
     se_log_mean,
     stable_log_ratio,
 )
@@ -105,6 +112,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment._readout_request import ReadoutRequest
     from increment.decision import DecisionComputation, DecisionFailure, PValueEvidence
+    from increment.estimation.results import RelativeUnavailableReason
     from increment.winsor import BootstrapReference, InfluenceReference, WinsorRawState
 # 40 (sandwich variance itself noisy, so borderline significance is fragile).
 _WARN_TOTAL_CLUSTERS = 40
@@ -127,7 +135,43 @@ _REFUSALS = refusals(
         "estimation.engine.arm.duplicate_rows": "group_summary carries more than one row for (metric, group_id) {keys} -- an unchecked duplicate control row silently overwrites an earlier one in the lookup dict, and an unchecked duplicate treatment row is silently iterated as if it were a second arm, either way returning an arbitrary lift instead of a refusal. Deduplicate group_summary to exactly one row per (metric, group_id) before calling estimate_lift.",
         "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
         "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
-        "estimation.engine.method.name_without_variance": "Method(name={self!r}) without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; pass Method(name='cuped', variance_reduction='cuped') or rename.",
+        "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
+        "estimation.engine.cuped_linear_unit_evidence": RefusalSpec(
+            "estimation.engine.cuped_linear_unit_evidence",
+            UnsupportedRequestError,
+            template="cuped_linear for metric {metric!r} requires per-unit outcomes and declared covariates; use a per-unit analysis entry point instead of aggregate moments.",
+            keys=frozenset({"metric"}),
+        ),
+        "estimation.engine.cuped_linear_observational": RefusalSpec(
+            "estimation.engine.cuped_linear_observational",
+            UnsupportedRequestError,
+            template="cuped_linear is a randomized mean/ratio estimator and cannot be used with observational metric {metric!r}; choose an observational estimator or a randomized design.",
+            keys=frozenset({"metric"}),
+        ),
+        "estimation.engine.cuped_linear_cluster": RefusalSpec(
+            "estimation.engine.cuped_linear_cluster",
+            UnsupportedRequestError,
+            template="cuped_linear does not support clustered assignment (cluster={cluster!r}); choose an unadjusted clustered method or scalar CUPED where supported.",
+            keys=frozenset({"cluster"}),
+        ),
+        "estimation.engine.cuped_linear_sequential": RefusalSpec(
+            "estimation.engine.cuped_linear_sequential",
+            UnsupportedRequestError,
+            template="cuped_linear is fixed-horizon only and cannot be used with sequential inference; use an unadjusted sequential method or scalar CUPED's registered sequential route.",
+            keys=frozenset(),
+        ),
+        "estimation.engine.cuped_linear_winsorization": RefusalSpec(
+            "estimation.engine.cuped_linear_winsorization",
+            UnsupportedRequestError,
+            template="cuped_linear cannot be composed with winsorization for metric {metric!r}; choose one supported construction.",
+            keys=frozenset({"metric"}),
+        ),
+        "estimation.engine.cuped_linear_encouragement": RefusalSpec(
+            "estimation.engine.cuped_linear_encouragement",
+            UnsupportedRequestError,
+            template="cuped_linear is not available for encouragement design metric {metric!r}; use an encouragement-supported method without mixed CUPED.",
+            keys=frozenset({"metric"}),
+        ),
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.engine.carries_format_moments": "{what} carries format-1 moments (raw additive sums: 'sum_y2' present, 'cy2' absent). increment consumes CENTERED moments -- ref_y/cy1/cy2 and the c-form families -- because raw second moments lose the variance signal to floating-point cancellation once the mean dwarfs the spread, so they are never reinterpreted here. Two ways in: Analysis.from_moments(...), which adapts stamped or unstamped format-1 rows automatically, or ArmStats.from_raw_sums(...) for hand-built rows.",
         "estimation.engine.carries_unsupported_weighted": "{what} carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
@@ -311,7 +355,7 @@ class Method(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str  # label carried on the LiftEstimate
-    variance_reduction: str = "none"  # "none" | "cuped" (same Registry)
+    variance_reduction: str = "none"  # "none" | "cuped" | "cuped_linear"
     conversion_inference: ConversionInference = "auto"
     propensity_learner: Callable[[], Any] | None = None
     outcome_learner: Callable[[], Any] | None = None
@@ -320,7 +364,10 @@ class Method(CodedModel, BaseModel):
     @model_validator(mode="after")
     def _check_label_matches_configuration(self) -> Method:
         VARIANCE_REDUCTION.get(self.variance_reduction)  # raises if unregistered
-        if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
+        if self.conversion_inference == "finite_sample" and self.variance_reduction in (
+            "cuped",
+            "cuped_linear",
+        ):
             refuse_finite_sample_cuped(self.name)
         if self.name == "cuped" and self.variance_reduction != "cuped":
             _refuse("estimation.engine.method.name_without_variance", self=self.name)
@@ -913,6 +960,44 @@ def reject_completed_windows_on_unbounded_retention(
         _refuse("breakout.retention.completion", fn_name=fn_name, names=open_bands)
 
 
+def _reject_cuped_linear_aggregate(
+    metrics: Sequence[Metric], methods: Sequence[Method] | None
+) -> None:
+    if methods is None:
+        return
+    for metric in metrics:
+        if any(method.variance_reduction == "cuped_linear" for method in methods):
+            _refuse("estimation.engine.cuped_linear_unit_evidence", metric=metric.name)
+
+
+def refuse_cuped_linear_sequential() -> NoReturn:
+    """Use the engine-owned CUPED-linear refusal from sequential preflight."""
+    _refuse("estimation.engine.cuped_linear_sequential")
+
+
+def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
+    metrics = tuple(request.metrics)
+    methods = request.estimation_methods
+    linear_by_metric = {
+        metric.name: any(method.variance_reduction == "cuped_linear" for method in metric_methods)
+        for metric, metric_methods in zip(metrics, methods, strict=True)
+    }
+    mechanism = getattr(request.design, "mechanism", None)
+    if request.cluster is not None and any(linear_by_metric.values()):
+        _refuse("estimation.engine.cuped_linear_cluster", cluster=request.cluster)
+    if isinstance(request.plan.inference, SEQUENTIAL_POLICIES) and any(linear_by_metric.values()):
+        refuse_cuped_linear_sequential()
+    for metric in metrics:
+        if not linear_by_metric[metric.name]:
+            continue
+        if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
+            _refuse("estimation.engine.cuped_linear_winsorization", metric=metric.name)
+        if mechanism == "encouragement":
+            _refuse("estimation.engine.cuped_linear_encouragement", metric=metric.name)
+        if mechanism == "observational":
+            _refuse("estimation.engine.cuped_linear_observational", metric=metric.name)
+
+
 def validate_readout_engine(request: ReadoutRequest) -> None:
     """Validate metric/method compatibility before source moments are read."""
     metrics = tuple(request.metrics)
@@ -924,6 +1009,7 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
     mechanism = getattr(design, "mechanism", None)
     method_catalog = request.estimation_methods
     methods = [method for metric_methods in method_catalog for method in metric_methods]
+    _validate_cuped_linear_compatibility(request)
     if mechanism != "observational":
         for metric_methods in method_catalog:
             _validate_methods(metric_methods)
@@ -1077,6 +1163,108 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
             fix=fix,
             skip_file_prefixes=PACKAGE_FRAMES,
         )
+
+
+def _open_ended_advisory(metric: Metric) -> ReadoutAdvisory | None:
+    if not _is_open_ended(metric):
+        return None
+    if metric.type == "ratio":
+        windows = "one or both windows unset"
+    elif metric.type == "retention":
+        windows = "unbounded band"
+    else:
+        windows = "window_days=None"
+    fix = (
+        "Bound the band (threshold_days: [a, b])"
+        if metric.type == "retention"
+        else "Set window_days"
+    )
+    context = {"metric_name": metric.name, "windows": windows, "fix": fix}
+    spec = _WARNINGS["estimation.engine.open_ended_sequential"]
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _small_total_clusters_advisory(
+    metric_name: str, cluster: str | None, n_clusters: int | None
+) -> ReadoutAdvisory | None:
+    if n_clusters is None or n_clusters >= _WARN_TOTAL_CLUSTERS:
+        return None
+    context = {
+        "metric_name": metric_name,
+        "n_clusters": n_clusters,
+        "cluster": cluster,
+        "floor": _WARN_TOTAL_CLUSTERS,
+    }
+    spec = _WARNINGS["estimation.engine.small_total_clusters"]
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _lift_advisories(
+    metric: Metric,
+    treatment: ArmStats,
+    control: ArmStats,
+    strategy: _LiftVarianceStrategy,
+    *,
+    cluster: str | None,
+    sequential: bool,
+) -> tuple[ReadoutAdvisory, ...]:
+    advisories: list[ReadoutAdvisory] = []
+    cluster_advisory = _small_total_clusters_advisory(metric.name, cluster, strategy.n_clusters)
+    if cluster_advisory is not None:
+        advisories.append(cluster_advisory)
+    for note in strategy.ratio_notes:
+        if note.startswith("ratio_denominator_precision:"):
+            stats = {
+                arm.group_id: ratio_denominator_precision(arm)
+                for arm in (treatment, control)
+                if ratio_denominator_precision(arm) > RATIO_DENOMINATOR_PRECISION_THRESHOLD
+            }
+            advisories.append(
+                ReadoutAdvisory(
+                    code="estimation.engine.ratio_denominator_precision",
+                    context={
+                        "metric_name": metric.name,
+                        "threshold": RATIO_DENOMINATOR_PRECISION_THRESHOLD,
+                        "relative_standard_errors": stats,
+                    },
+                    message=note,
+                )
+            )
+        elif note.startswith("ratio_denominator_skew:"):
+            advisories.append(
+                ReadoutAdvisory(
+                    code="estimation.engine.ratio_denominator_skew",
+                    context={
+                        "metric_name": metric.name,
+                        "threshold": RATIO_DENOMINATOR_SKEW_THRESHOLD,
+                    },
+                    message=note,
+                )
+            )
+    if sequential:
+        advisory = _open_ended_advisory(metric)
+        if advisory is not None:
+            advisories.append(advisory)
+    return tuple(advisories)
+
+
+def _treatment_lift_advisories(metrics, treatment, control, strategy, cluster, sequential):
+    metric = next(item for item in metrics if item.name == treatment.metric)
+    return _lift_advisories(
+        metric,
+        treatment,
+        control,
+        strategy,
+        cluster=cluster,
+        sequential=sequential,
+    )
+
+
+def _attach_lift_advisories(advisory_map, treatment, advisories, result, failure):
+    if advisories and (result is not None or failure is not None):
+        from increment.estimation.decision_types import ArmHypothesisKey
+
+        advisory_map[ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")] = advisories
 
 
 # Orchestrator
@@ -1263,11 +1451,23 @@ def merge_decision_computations(
     results: list[Any] = []
     evidence: dict[Any, Any] = {}
     failures: dict[Any, Any] = {}
+    advisories: dict[Any, list[ReadoutAdvisory]] = {}
     for computation in computations:
         results.extend(computation.results)
         evidence.update(computation.evidence)
         failures.update(computation.failures)
-    return DecisionComputation(results=tuple(results), evidence=evidence, failures=failures)
+        for hypothesis, items in computation.advisories.items():
+            advisories.setdefault(hypothesis, []).extend(items)
+    merged_advisories = {}
+    for key, items in advisories.items():
+        distinct = {item.model_dump_json(): item for item in items}
+        merged_advisories[key] = tuple(distinct[value] for value in sorted(distinct))
+    return DecisionComputation(
+        results=tuple(results),
+        evidence=evidence,
+        failures=failures,
+        advisories=merged_advisories,
+    )
 
 
 def _lift_decision_bundle(  # noqa: PLR0915
@@ -1275,6 +1475,8 @@ def _lift_decision_bundle(  # noqa: PLR0915
     *,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     sequential_snapshot=None,
+    cuped_advisory: ReadoutAdvisory | None = None,
+    cuped_failures: Sequence[tuple[str, str, str, str, Mapping[str, Any]]] = (),
 ) -> DecisionComputation[LiftEstimate]:
     """Attach one typed decision value to every decision presentation row."""
     from increment.estimation.decision_types import (
@@ -1434,11 +1636,24 @@ def _lift_decision_bundle(  # noqa: PLR0915
             failures[hypothesis] = failure_row
         else:
             evidence[hypothesis] = evidence_row
+    for metric, group_id, estimand, code, context in cuped_failures:
+        hypothesis = ArmHypothesisKey(metric, group_id, estimand)
+        evidence.pop(hypothesis, None)
+        failures[hypothesis] = DecisionFailure(hypothesis, code, dict(context))
+    advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = (
+        {
+            ArmHypothesisKey(result.metric, result.group_id, result.estimand): (cuped_advisory,)
+            for result in output_results
+        }
+        if cuped_advisory is not None
+        else {}
+    )
     return DecisionComputation(
         results=tuple(output_results),
         evidence=evidence,
         failures=failures,
         sequential_snapshot=sequential_snapshot,
+        advisories=advisories,
     )
 
 
@@ -2951,6 +3166,462 @@ def _lift_for_method(  # noqa: PLR0913
     )
 
 
+def _ratio_denominator_refusals(frame: Any, metric_name: str) -> dict[str, CodedError]:
+    """The variance owner's refusal for every arm whose raw denominator mean is not positive."""
+    means = frame.group_by("group_id").agg(nw.col("y_den").mean().alias("d_bar"))
+    refused: dict[str, CodedError] = {}
+    for group_id, d_bar in zip(
+        means.get_column("group_id").to_list(), means.get_column("d_bar").to_list(), strict=True
+    ):
+        try:
+            require_positive_denominator_mean(
+                metric=metric_name, group_id=str(group_id), d_bar=float(d_bar)
+            )
+        except CodedError as exc:
+            refused[str(group_id)] = exc
+    return refused
+
+
+# Numeric refusals proven local to one (arm, method) cell: a readout keeps the
+# cell as an unavailable row while its siblings stay usable. Capability,
+# request, source, and wire refusals abort the readout instead.
+CELL_ESTIMATION_GUARD_CODES = frozenset(
+    {
+        "estimation.cuped.covariate_zero_variance",
+        "estimation.variance.ratio_moments_nonpositive_denominator_mean",
+        "estimation.cuped_linear.arm_counts",
+        "estimation.cuped_linear.invalid_arms",
+        "estimation.cuped_linear.nonfinite",
+        "estimation.cuped_linear.missing_refused",
+        "estimation.cuped_linear.level_support",
+        "estimation.cuped_linear.rank_deficiency",
+        "estimation.cuped_linear.leverage",
+        "estimation.cuped_linear.support_region",
+        "estimation.cuped_linear.residual_df",
+        "estimation.cuped_linear.nonpositive_component",
+        "estimation.cuped_linear.nonfinite_projection",
+    }
+)
+
+
+def _cuped_linear_posterior_fields(
+    metric: Metric, arm: str, prior: Prior | None, *, reference_df: float | None
+) -> dict[str, Any]:
+    """A declared prior is unavailable on every linear row, with its exact reason:
+    there are no HC2/BM score statistics to compose it from."""
+    if prior is None:
+        return {
+            "posterior_available": None,
+            "posterior_reason_code": None,
+            "posterior_reason_context": None,
+        }
+    return {
+        "posterior_available": False,
+        "posterior_reason_code": "estimation.results.lift.t_posterior_sufficient_statistics",
+        "posterior_reason_context": {
+            "metric": metric.name,
+            "group_id": arm,
+            "reference_df": reference_df,
+            "missing": "HC2/BM score statistics needed to compose the declared prior",
+        },
+    }
+
+
+def _cuped_linear_unavailable_row(
+    metric: Metric,
+    arm: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    *,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    prior: Prior | None,
+    code: str,
+    context: Mapping[str, object],
+) -> LiftEstimate:
+    """One unavailable linear row carrying its exact refusal."""
+    return LiftEstimate(
+        metric=metric.name,
+        group_id=arm,
+        method=method.name,
+        method_role=method_role,
+        estimand="itt",
+        alternative=alternative,
+        preferred_direction=metric.declared_preferred_direction,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        failure_code=code,
+        failure_context=context,
+        **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=None),
+    )
+
+
+def _cuped_linear_withheld_relative_row(  # noqa: PLR0913
+    metric: Metric,
+    arm: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    *,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    prior: Prior | None,
+    absolute: Any,
+    alpha_eff: float,
+    reason: RelativeUnavailableReason,
+    code: str,
+    context: Mapping[str, object],
+) -> LiftEstimate:
+    """The additive projection of an arm whose relative projection is refused.
+
+    The absolute contrast, its HC2/BM ``t`` interval and any absolute-margin
+    decision stay usable; the relative refusal is recorded beside them rather
+    than failing the cell, mirroring the clustered ``lift=None`` row shape.
+    """
+    return LiftEstimate(
+        metric=metric.name,
+        group_id=arm,
+        method=method.name,
+        method_role=method_role,
+        estimand="itt",
+        alternative=alternative,
+        preferred_direction=metric.declared_preferred_direction,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        abs_diff=absolute.estimate,
+        abs_se=absolute.se if absolute.se > 0.0 else None,
+        abs_lb=absolute.lower,
+        abs_ub=absolute.upper,
+        abs_reference_kind="t",
+        abs_reference_df=absolute.dof,
+        abs_alpha=alpha_eff,
+        reference_kind="t",
+        reference_df=absolute.dof,
+        dof=absolute.dof,
+        scale="linear",
+        relative_unavailable_reason=reason,
+        relative_error_code=code,
+        relative_error_context=context,
+        **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=absolute.dof),
+    )
+
+
+def _withhold_ratio_arms(
+    frame: Any,
+    arm_order: tuple[str, ...],
+    *,
+    metric: Metric,
+    control_group: str,
+    refuse_arm: Callable[[str, str, Mapping[str, object]], None],
+) -> tuple[Any, tuple[str, ...]]:
+    """Withhold ratio arms that cannot form the estimand, as their own cell failures.
+
+    Returns the per-unit evidence and arm order left to fit. When nothing is
+    left to contrast -- the control arm is withheld, or every non-control arm
+    is -- the evidence comes back as ``None`` and every contrast carries its
+    refusal.
+    """
+    refused = _ratio_denominator_refusals(frame, metric.name)
+    if control_group in refused:
+        refusal = refused[control_group]
+        for arm in arm_order:
+            if arm != control_group:
+                refuse_arm(arm, refusal.code, refusal.context)
+        return None, ()
+    for arm in arm_order:
+        if arm in refused:
+            refuse_arm(arm, refused[arm].code, refused[arm].context)
+    if refused:
+        frame = frame.filter(~nw.col("group_id").is_in(list(refused)))
+        arm_order = tuple(arm for arm in arm_order if arm not in refused)
+    if arm_order == (control_group,):
+        return None, ()
+    return frame, arm_order
+
+
+def _fit_cuped_linear_frame(
+    frame: Any,
+    covariates: Sequence[Any],
+    *,
+    control_group: str,
+    arm_order: tuple[str, ...],
+    ratio: bool,
+) -> Any:
+    """Fit the per-unit evidence frame once, returning the fit or its coded refusal."""
+    import numpy as np
+
+    from increment.estimation.cuped_linear import fit_cuped_linear
+
+    declarations = tuple(covariates)
+    # The frame carries a covariate named like one of its own columns under
+    # a scratch column; the declared name still identifies it in the fit.
+    columns = unit_frame_covariate_columns([item.name for item in declarations])
+    y = np.asarray(frame.get_column("y").to_list(), dtype=float)
+    try:
+        return fit_cuped_linear(
+            None if ratio else y,
+            frame.get_column("group_id").to_list(),
+            control=control_group,
+            arm_order=arm_order,
+            covariates={
+                item.name: np.asarray(frame.get_column(columns[item.name]).to_list(), dtype=object)
+                for item in declarations
+            },
+            kinds={item.name: item.kind for item in declarations},
+            missing={item.name: item.missing for item in declarations},
+            numerator=y if ratio else None,
+            denominator=(
+                np.asarray(frame.get_column("y_den").to_list(), dtype=float) if ratio else None
+            ),
+        )
+    except CodedError as exc:
+        return exc
+
+
+def estimate_cuped_linear(
+    metric: Metric,
+    unit_frame: Any,
+    *,
+    control_group: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    covariates: Sequence[Any],
+    alpha: float,
+    alternative: str,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+    prior: Prior | None = None,
+) -> Any:
+    """Fit mixed-covariate CUPED once and project one randomized metric.
+
+    A ratio arm whose raw denominator mean is not positive cannot form the
+    estimand: it is withheld from the fit and reported as its own cell
+    failure, so its siblings keep their adjusted evidence. A control arm in
+    that state fails every contrast the same way. A fit that then fails on
+    the remaining arms is reported on those arms only; each withheld arm
+    keeps its own refusal. An arm whose absolute projection is usable keeps
+    it when only the relative projection is refused.
+    """
+    frame = nw.from_native(unit_frame, eager_only=True)
+    ratio = getattr(metric, "type", None) == "ratio"
+    arm_order = tuple(dict.fromkeys((control_group, *map(str, frame.get_column("group_id")))))
+    results: list[LiftEstimate] = []
+    cuped_failures: list[tuple[Any, ...]] = []
+
+    def refuse_arm(arm: str, code: str, context: Mapping[str, object]) -> None:
+        results.append(
+            _cuped_linear_unavailable_row(
+                metric,
+                arm,
+                method,
+                method_role,
+                alternative=alternative,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                prior=prior,
+                code=code,
+                context=context,
+            )
+        )
+        if method_role == "decision":
+            cuped_failures.append((metric.name, arm, "itt", code, context))
+
+    if ratio:
+        frame, arm_order = _withhold_ratio_arms(
+            frame,
+            arm_order,
+            metric=metric,
+            control_group=control_group,
+            refuse_arm=refuse_arm,
+        )
+        if frame is None:
+            return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    fit = _fit_cuped_linear_frame(
+        frame, covariates, control_group=control_group, arm_order=arm_order, ratio=ratio
+    )
+    if isinstance(fit, CodedError):
+        if not results or not fit.code.startswith("estimation.cuped_linear."):
+            raise fit
+        # The fit-wide refusal belongs to the arms that were fitted; the withheld
+        # arms already carry their own.
+        for arm in arm_order:
+            if arm != control_group:
+                refuse_arm(arm, fit.code, fit.context)
+        return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+    context = {
+        "metric": metric.name,
+        "n_min": fit.n_min,
+        "p": fit.p,
+        "max_leverage": fit.max_leverage,
+        "mean_leverage": fit.mean_leverage,
+        "reference_df": fit.dof,
+        "structural_drops": fit.layout.structural_omissions,
+        "shared_missingness_indicators": fit.layout.shared_indicators,
+    }
+    advisory = ReadoutAdvisory(
+        code="estimation.cuped_linear.fit",
+        context=context,
+        message=(
+            f"Mixed CUPED fit: minimum arm size {fit.n_min}, {fit.p} encoded covariates, "
+            f"maximum leverage {fit.max_leverage:.3g}, reference df {fit.dof:.3g}."
+        ),
+    )
+
+    def withhold_relative(arm: str, absolute: Any, exc: CodedError) -> None:
+        """Record a relative-projection refusal for one arm, keeping its
+        additive projection when there is one; otherwise the cell fails."""
+        if absolute is None:
+            failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
+            refuse_arm(arm, exc.code, failure_context)
+            return
+        results.append(
+            _cuped_linear_withheld_relative_row(
+                metric,
+                arm,
+                method,
+                method_role,
+                alternative=alternative,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                prior=prior,
+                absolute=absolute,
+                alpha_eff=alpha_eff,
+                reason=(
+                    "nonpositive_arm_mean"
+                    if exc.code == "estimation.cuped_linear.nonpositive_component"
+                    else "relative_unrepresentable"
+                ),
+                code=exc.code,
+                context=exc.context,
+            )
+        )
+
+    for arm in arm_order:
+        if arm == control_group:
+            continue
+        absolute = None
+        absolute_error = None
+        try:
+            absolute = (
+                fit.ratio(arm, scale="absolute", alpha=alpha_eff)
+                if ratio
+                else fit.absolute(arm, alpha=alpha_eff)
+            )
+        except CodedError as exc:
+            absolute_error = exc
+        try:
+            relative = (
+                fit.ratio(arm, scale="log", alpha=alpha_eff)
+                if ratio
+                else fit.relative(arm, alpha=alpha_eff)
+            )
+        except CodedError as exc:
+            withhold_relative(arm, absolute, exc)
+            continue
+        if absolute_error is not None and null_abs is not None and method_role == "decision":
+            failure_context = {
+                **absolute_error.context,
+                "metric": metric.name,
+                "group_id": arm,
+                "projection": "absolute",
+            }
+            cuped_failures.append((metric.name, arm, "itt", absolute_error.code, failure_context))
+        try:
+            point = resolvable_expm1(relative.estimate, what="CUPED relative point estimate")
+        except CodedError as exc:
+            withhold_relative(arm, absolute, exc)
+            continue
+        relative_error = None
+        try:
+            lift = Estimate(
+                value=point,
+                lb=resolvable_expm1(relative.lower, what="CUPED relative lower bound"),
+                ub=resolvable_expm1(relative.upper, what="CUPED relative upper bound"),
+                level=1.0 - alpha_eff,
+                alpha=alpha_eff,
+                log_mean=relative.estimate,
+                log_se=relative.se,
+            )
+        except CodedError as exc:
+            # Only the interval is unrepresentable at this level: keep the point
+            # and the log-scale statistics its sampling test uses, withhold the
+            # bounds, and record the refusal beside them.
+            relative_error = exc
+            lift = Estimate(value=point, log_mean=relative.estimate, log_se=relative.se)
+        results.append(
+            LiftEstimate(
+                metric=metric.name,
+                group_id=arm,
+                method=method.name,
+                method_role=method_role,
+                estimand="itt",
+                lift=lift,
+                alternative=alternative,
+                preferred_direction=metric.declared_preferred_direction,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                abs_diff=None if absolute is None else absolute.estimate,
+                abs_se=None if absolute is None or not absolute.se > 0.0 else absolute.se,
+                abs_lb=None if absolute is None else absolute.lower,
+                abs_ub=None if absolute is None else absolute.upper,
+                abs_reference_kind="t" if absolute is not None else None,
+                abs_reference_df=None if absolute is None else absolute.dof,
+                abs_alpha=alpha_eff if absolute is not None else None,
+                reference_kind="t",
+                reference_df=relative.dof,
+                dof=relative.dof,
+                scale="log",
+                absolute_error_code=None if absolute_error is None else absolute_error.code,
+                absolute_error_context=None if absolute_error is None else absolute_error.context,
+                relative_error_code=None if relative_error is None else relative_error.code,
+                relative_error_context=None if relative_error is None else relative_error.context,
+                **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=relative.dof),
+            )
+        )
+    return _lift_decision_bundle(
+        results,
+        inference=None,
+        cuped_advisory=advisory,
+        cuped_failures=cuped_failures,
+    )
+
+
+def reintervalize_cuped_decision(
+    row: LiftEstimate,
+    alpha: float,
+    *,
+    alternative: str,
+    metric: Metric,
+    method: Method,
+    prior: Prior | None,
+) -> LiftEstimate:
+    """Rebuild one selected linear decision row at its family's FCR level.
+
+    Only a selected cell is rebuilt, from its retained HC2/BM statistics
+    without refitting (``LiftEstimate.reintervalize``: a level whose relative
+    bounds are unrepresentable withholds the interval and keeps the point and
+    sampling statistics). A row the level cannot rebuild at all becomes an
+    unavailable cell carrying the refusal, so its siblings' rows survive.
+    """
+    try:
+        return row.reintervalize(alpha, interval_alternative=alternative)
+    except CodedError as exc:
+        return _cuped_linear_unavailable_row(
+            metric,
+            row.group_id,
+            method,
+            "decision",
+            alternative=alternative,
+            null_lift=row.null_lift,
+            null_abs=row.null_abs,
+            prior=prior,
+            code=exc.code,
+            context={**exc.context, "metric": metric.name, "group_id": row.group_id},
+        )
+
+
 def estimate_lift(  # noqa: PLR0913
     metrics: Sequence[Metric],
     summary: SequentialSnapshot
@@ -3038,6 +3709,8 @@ def estimate_lift(  # noqa: PLR0913
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
+    _reject_cuped_linear_aggregate(metrics, methods)
+
     return _estimate_lift(
         metrics,
         summary,
@@ -3090,6 +3763,8 @@ def _estimate_lift(  # noqa: PLR0913
     own ``alpha`` decides. Only the package's own families set it; the public function
     never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
     """
+    from increment.estimation.decision_types import DecisionComputation
+
     if route_alpha is not None and not 0.0 < route_alpha <= 1.0:
         _refuse("estimation.engine.route_alpha", route_alpha=route_alpha)
     percentile_metrics = [
@@ -3189,6 +3864,7 @@ def _estimate_lift(  # noqa: PLR0913
                 results=(*bundle.results, *remaining.results),
                 evidence={**bundle.evidence, **remaining.evidence},
                 failures={**bundle.failures, **remaining.failures},
+                advisories={**bundle.advisories, **remaining.advisories},
             )
         return bundle
 
@@ -3196,6 +3872,7 @@ def _estimate_lift(  # noqa: PLR0913
         sequential_refuse(
             "source.invalid", "an exact snapshot requires its registered runtime policy"
         )
+    _reject_cuped_linear_aggregate(metrics, methods)
     prepared = _prepare_lift_estimation(
         metrics,
         summary,
@@ -3228,6 +3905,7 @@ def _estimate_lift(  # noqa: PLR0913
     )
     results: list[LiftEstimate] = []
     guard_failures: dict[Any, Any] = {}
+    advisory_map: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
     for treatment in prepared.treatment_arms:
         control = prepared.control_by_metric.get(treatment.metric)
         if control is None:
@@ -3253,6 +3931,9 @@ def _estimate_lift(  # noqa: PLR0913
             method_strategies,
             fixed_horizon=inference is None,
         )
+        advisories = _treatment_lift_advisories(
+            metrics, treatment, control, strategy, cluster, inference is not None
+        )
         metric_type = prepared.metric_types[treatment.metric]
         for method_strategy in strategy.methods:
             method_role = prepared.resolved_method_roles.get(
@@ -3274,6 +3955,7 @@ def _estimate_lift(  # noqa: PLR0913
                 preferred_direction,
                 route_alpha,
             )
+            _attach_lift_advisories(advisory_map, treatment, advisories, result, failure)
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure
             if result is not None:
@@ -3282,12 +3964,9 @@ def _estimate_lift(  # noqa: PLR0913
         results,
         inference=inference,
     )
-    if not guard_failures:
-        return bundle
-    from increment.estimation.decision_types import DecisionComputation
-
     return DecisionComputation(
         results=bundle.results,
         evidence=dict(bundle.evidence),
         failures={**bundle.failures, **guard_failures},
+        advisories={**bundle.advisories, **advisory_map},
     )

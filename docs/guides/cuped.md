@@ -591,6 +591,228 @@ make this more likely. The LATE adjustment can also lose precision.
 Use the metric's pre-period value when most units have history, but do
 not assume every adjustment will improve precision.
 
+## Mixed numeric and categorical covariates
+
+`Method(name="linear", variance_reduction="cuped_linear")` uses the metric's
+declared `covariates` set. Mean, conversion and ratio metrics use a shared
+fitted linear adjustment, HC2 uncertainty including the fitted slope and pooled
+covariate anchor, and a Bell–McCaffrey Student-t reference. This is a
+fixed-horizon approximation, not a finite-sample or sequential guarantee.
+Scalar `cuped` remains unchanged and may be used alongside `cuped_linear` when
+its scalar `covariate` name is also a member of the mixed `covariates` set.
+
+### Combining scalar and mixed CUPED
+
+The two estimators can be emitted for the same metric. On
+`from_unit_summary` and `from_unit_panel`, set
+`MetricSpec.covariate="pre_revenue"` for scalar `cuped` and include that same
+name in `MetricSpec.covariates` for `cuped_linear`; assign one estimator as
+the decision method and the other as a sensitivity method.
+
+`from_definitions` has no scalar `covariate` field on `ExperimentMetric`.
+Instead, declare `n_pre_periods > 0` so scalar `cuped` can derive the metric's
+own pre-period outcome, while the mixed estimator uses its declared
+`covariates` bindings. To adjust the same historical signal, those pre-period
+metric values and the mixed covariate values must represent the same per-unit
+data. Publishing for `from_unit_day_artifact` must include the
+`cuped_preperiod` extension required by the scalar method. The four-ingress
+witness in `test_warehouse_cuped_parity.py` exercises both methods on the same
+per-unit historical revenue data; this is runtime compatibility, not coverage
+certification.
+
+### A mixed-covariate dataframe recipe
+
+The following complete example uses a per-user revenue mean and a revenue/orders
+ratio. It supplies country, device, and new-versus-returning-user categories plus
+numeric pre-period revenue. Twelve percent of the synthetic users have no
+pre-period revenue; `missing="impute-indicator"` fills those values with the
+pooled observed mean and adds a missingness indicator. Categorical covariates
+must be strings (encode a Boolean as labels such as `"new"` and `"returning"`).
+
+```python
+import numpy as np
+import polars as pl
+from increment import Analysis, Method, MetricSpec
+from increment.semantics.models import CupedCovariate
+
+rng = np.random.default_rng(20261013)
+n = 4_000
+country = rng.choice(["US", "CA", "GB"], n, p=[0.55, 0.25, 0.20])
+device = rng.choice(["web", "ios", "android"], n, p=[0.45, 0.35, 0.20])
+new_user = np.where(rng.random(n) < 0.30, "new", "returning")
+pre_revenue = rng.gamma(2.2, 12.0, n)
+pre_revenue[rng.random(n) < 0.12] = np.nan
+variant = np.where(rng.random(n) < 0.5, "treatment", "control")
+pre_for_outcomes = np.nan_to_num(pre_revenue, nan=np.nanmean(pre_revenue))
+
+country_effect = np.select([country == "CA", country == "GB"], [2.0, -1.0], default=0.0)
+device_effect = np.select([device == "ios", device == "android"], [1.5, -0.5], default=0.0)
+revenue = (
+    4.0
+    + 0.65 * pre_for_outcomes
+    + country_effect
+    + device_effect
+    + 3.0 * (new_user == "new")
+    + 1.8 * (variant == "treatment")
+    + rng.normal(0, 9, n)
+)
+orders = np.maximum(
+    2.0
+    + 0.015 * pre_for_outcomes
+    + 0.12 * (device == "ios")
+    + 0.08 * (variant == "treatment")
+    + rng.normal(0, 0.65, n),
+    0.1,
+)
+
+units = pl.DataFrame(
+    {
+        "user_id": [f"u{i}" for i in range(n)],
+        "variant": variant,
+        "revenue": revenue,
+        "orders": orders,
+        "country": country,
+        "device": device,
+        "new_user": new_user,
+        "pre_revenue": pre_revenue,
+    }
+)
+covariates = [
+    CupedCovariate(name="country", kind="categorical"),
+    CupedCovariate(name="device", kind="categorical"),
+    CupedCovariate(name="new_user", kind="categorical"),
+    CupedCovariate(
+        name="pre_revenue",
+        kind="continuous",
+        missing="impute-indicator",
+    ),
+]
+metrics = [
+    MetricSpec(name="revenue", type="mean", covariates=covariates),
+    MetricSpec(
+        name="revenue_per_order",
+        type="ratio",
+        numerator="revenue",
+        denominator="orders",
+        covariates=covariates,
+    ),
+]
+analysis = Analysis.from_unit_summary(
+    units,
+    unit="user_id",
+    group="variant",
+    control="control",
+    metrics=metrics,
+)
+results = analysis.run(
+    decision_method=Method(name="unadjusted"),
+    sensitivity_methods=(Method(name="linear", variance_reduction="cuped_linear"),),
+)
+
+for result in results:
+    lift = result.lift
+    print(
+        result.metric,
+        result.method,
+        "lift=",
+        None if lift is None else round(lift.value, 6),
+        "CI=",
+        None if lift is None else (round(lift.lb, 6), round(lift.ub, 6)),
+        "failure=",
+        result.failure_code,
+    )
+```
+
+Observed output from a fresh run:
+
+```text
+revenue unadjusted lift= 0.082946 CI= (0.042652, 0.124797) failure= None
+revenue linear lift= 0.068045 CI= (0.042767, 0.093936) failure= None
+revenue_per_order unadjusted lift= 0.049966 CI= (0.011863, 0.089504) failure= None
+revenue_per_order linear lift= 0.039378 CI= (0.009775, 0.069849) failure= None
+```
+
+The lift is relative: for example, `0.068045` is a 6.8045% estimated increase
+in mean revenue, and its confidence interval is a relative-lift interval.
+Here the adjusted revenue interval is narrower than the unadjusted one, but
+that is an observed property of this synthetic draw, not a guarantee. The ratio
+rows target the ratio of arm-level mean revenues to arm-level mean orders, not
+the mean of users' individual revenue-per-order values. Both metrics share the
+same covariate set; the ratio adjustment jointly accounts for its numerator and
+denominator.
+
+This is intentionally not scalar CUPED: `cuped_linear` fits one multivariable
+adjustment to the per-unit outcome vector and uses HC2 uncertainty (including
+fitted-slope and pooled-anchor uncertainty) with a Bell–McCaffrey Student-t
+approximation. Scalar `cuped` keeps its existing Welch–Satterthwaite route.
+Neither route inherits the other's statistical properties.
+
+The fixed-horizon M1 support region below is a hard boundary, not a warning or
+an automatic fallback. For a concrete small-sample failure, a balanced
+40-unit synthetic design with these four covariates returned
+`estimation.cuped_linear.support_region` with
+`violations=(('leverage_ratio', 0.25, 0.2),)`: five encoded columns divided
+by 20 units in the smaller arm exceeds the 0.20 cap. Duplicating that
+balanced design to 80 units gave `leverage_ratio=0.125` and a usable estimate
+in a fresh run (`lift=0.120882`, 95% CI `[0.100753, 0.141379]`; values are
+specific to this synthetic witness, not coverage evidence). In real
+experiments the remedy is more independent units
+with adequate category support; do not duplicate observations as if they
+were new users. A failed decision fit stays unavailable rather than silently
+switching to unadjusted inference.
+
+For ratio CUPED, M1 additionally requires each raw arm denominator's
+`sqrt(var_den / n) / mean_den` to be at most 0.15. Heavy-tailed denominators
+at about 100 units per arm are unsupported when this screen is exceeded; a
+larger sample may pass the screen, but passing it is not evidence of
+calibrated coverage.
+
+This same-experiment estimator does not train an external prediction model:
+external-prediction training (tracker #72) and longitudinal dependence
+(tracker #80) are not implemented. A preregistered coverage campaign exists
+but has not been run, so coverage is not established. Its current commands
+and status are recorded in [External validation coverage](../validation.md#mixed-covariate-linear-cuped).
+
+
+Fits must lie in support region **M1**: at most 203 encoded covariates,
+at most 200 levels in any categorical covariate, encoded width divided by
+the smallest arm size at most 0.20, and maximum unit leverage at most 0.45.
+Ratio fits additionally require each raw arm denominator's relative
+standard error, `sqrt(var_den / n) / mean_den`, at most 0.15; adjustment
+does not substitute its residual variance for this check. An arm whose raw
+denominator mean is not positive cannot form the ratio estimand at all: it
+is withheld from the fit and reported as its own refused cell under the
+same `estimation.variance.ratio_moments_nonpositive_denominator_mean`
+code an unadjusted row carries, while its siblings keep their adjusted
+evidence; a control arm in that state refuses every contrast. Full rank,
+positive residual degrees of freedom, and at least two observations per
+categorical level in every arm are also required.
+
+An out-of-region fit emits an unavailable cell with
+`estimation.cuped_linear.support_region` and its retained observable
+violations, rather than an unadjusted substitute. Each violation is
+`(observable, value, bound)`; an observable that is not finite is kept as
+its text form (`"inf"`, `"nan"`) so the refusal survives JSON replay. The
+decision cell keeps this refusal whatever sensitivity methods accompany it,
+and a call-time `cuped_linear` override on a metric without declared
+covariates is refused on every ingress before any source query. Breakout
+cells fit separately and may therefore be unavailable even when the
+whole-population fit is supported. Assigned and triggered results retain
+their own populations; aggregate and per-unit evidence share one source
+snapshot, including the resolved fact source of each breakout.
+
+Relative and absolute projections have separate availability. A usable
+relative estimate survives an absolute-projection refusal, whose exact
+code and context are retained in `absolute_error_code` and
+`absolute_error_context`. Absolute-margin guardrails may retain sampling
+inference when a nonpositive adjusted mean prevents relative lift.
+The relative projection's exact refusal is likewise retained in
+`relative_error_code` and `relative_error_context`, without labeling the
+usable absolute projection as failed. `estimates_to_readout` forwards all
+four projection fields alongside the usable estimate.
+Declared priors do not change sampling inference; a posterior unsupported
+by the retained HC2/BM statistics is explicitly unavailable.
+
 ## The math
 
 For outcome $Y$ and pre-period covariate $X$, CUPED adjusts each group's

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from increment._policy_alpha import resolve_cell_alpha
 from increment.estimation.conversion_route import family_route_alpha
-from increment.estimation.engine import Method
+from increment.estimation.engine import Method, reintervalize_cuped_decision
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.results import (
@@ -119,11 +119,16 @@ def _load_family_rows(
     decision row is routed at it, so its p-value is never read at a tail it is not dense for.
     A quantile metric is refused before any data is read."""
     loaded: dict[str, Any] = {}
-    for metric, _config, test, is_quantile, _metric_methods in secondary_entries:
+    for metric, config, test, is_quantile, metric_methods in secondary_entries:
         if is_quantile:
             _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
         loaded[metric.name] = _load_metric_rows(
-            src, metric, by=by, control_group=design.control_group
+            src,
+            metric,
+            by=by,
+            control_group=design.control_group,
+            methods=metric_methods,
+            covariates=config.covariates,
         )
     hypotheses = sum(
         loaded[metric.name].n_treatment_arms
@@ -186,10 +191,8 @@ def _secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_recor
 
 def _secondary_source_rows(metric_rows, is_quantile, control_group):
     observed_arms = set(metric_rows.observed_arms)
-    evidence_component = (
-        metric_rows.evidence_kind,
-        metric_rows.evidence_sha256,
-        metric_rows.evidence_count,
+    evidence_components = metric_rows.evidence_components or (
+        (metric_rows.evidence_kind, metric_rows.evidence_sha256, metric_rows.evidence_count),
     )
     if is_quantile:
         rows = metric_rows.unit_frame
@@ -199,7 +202,7 @@ def _secondary_source_rows(metric_rows, is_quantile, control_group):
         family_groups = {
             str(row["group_id"]) for row in rows if str(row["group_id"]) != str(control_group)
         }
-    return rows, observed_arms, evidence_component, family_groups
+    return rows, observed_arms, evidence_components, family_groups
 
 
 def _secondary_group_ids(nominal, computation, observed_groups, is_quantile):
@@ -220,6 +223,78 @@ def _secondary_group_ids(nominal, computation, observed_groups, is_quantile):
     return groups
 
 
+def _reintervalize_cuped_secondary(  # noqa: PLR0913
+    src,
+    metric,
+    test,
+    config,
+    design,
+    methods,
+    nominal_rows,
+    evidence,
+    selected_alpha,
+    selected_alternative,
+    effective_inference,
+    advisory_seen,
+    computations,
+    is_quantile,
+    selected_cells,
+):
+    """Rebuild the metric's selected cells at the family's FCR level.
+
+    Linear decision rows are reinverted from their retained statistics; only
+    a selected cell is rebuilt, so an unselected sibling's wider interval is
+    never constructed. Ordinary decision methods re-estimate as before.
+    """
+    from increment.decision import ArmHypothesisKey
+
+    cuped_by_name = {
+        method.name: method for method in methods if method.variance_reduction == "cuped_linear"
+    }
+    rows = [
+        reintervalize_cuped_decision(
+            row,
+            selected_alpha,
+            alternative=selected_alternative,
+            metric=metric,
+            method=cuped_by_name[row.method],
+            prior=config.prior,
+        )
+        if row.method in cuped_by_name
+        and row.method_role == "decision"
+        and row.failure_code is None
+        and ArmHypothesisKey(row.metric, row.group_id, "itt") in selected_cells
+        else row
+        for row in nominal_rows
+    ]
+    cuped_names = set(cuped_by_name)
+    decision_names = {row.method for row in nominal_rows if row.method_role == "decision"}
+    ordinary_decision_methods = [
+        method
+        for method in methods
+        if method.name in decision_names and method.variance_reduction != "cuped_linear"
+    ]
+    if not ordinary_decision_methods:
+        return rows, []
+    ordinary_rows, refused, computation = _estimate_pass(
+        src,
+        metric,
+        evidence.rows if hasattr(evidence, "rows") else evidence,
+        test,
+        config,
+        design,
+        alpha_for=selected_alpha,
+        role="secondary",
+        inference=None if is_quantile else effective_inference,
+        advisory_seen=advisory_seen,
+        methods=ordinary_decision_methods,
+    )
+    computations.append(computation)
+    return [
+        row for row in rows if row.method_role != "decision" or row.method in cuped_names
+    ] + ordinary_rows, refused
+
+
 def _estimate_randomized_secondary_family(
     src: MomentSource,
     secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
@@ -232,7 +307,7 @@ def _estimate_randomized_secondary_family(
     observed_arms: set[str],
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
-    evidence_components: dict[str, tuple[str, str, int]],
+    evidence_components: dict[str, tuple[tuple[str, str, int], ...]],
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]]]:
     """Run nominal, selection, and FCR passes for randomized secondaries."""
     if not secondary_entries:
@@ -253,7 +328,12 @@ def _estimate_randomized_secondary_family(
         )
         observed_by_metric[metric.name] = metric_observed
         evidence_components[metric.name] = evidence_component
-        evidence_by_metric[metric.name] = rows
+        evidence_by_metric[metric.name] = (
+            metric_rows
+            if metric_rows.unit_frame is not None
+            and any(method.variance_reduction == "cuped_linear" for method in _metric_methods)
+            else rows
+        )
         observed_arms |= metric_observed
         if is_quantile and not metric_rows.n_treatment_arms:
             # Nothing to contrast; the final arm gate decides whether the
@@ -263,7 +343,7 @@ def _estimate_randomized_secondary_family(
             nominal, refused, computation = _estimate_pass(
                 src,
                 metric,
-                rows,
+                evidence_by_metric[metric.name],
                 test,
                 config,
                 design,
@@ -324,29 +404,51 @@ def _estimate_randomized_secondary_family(
     for metric, config, test, is_quantile, _metric_methods in family:
         if metric.name not in selected_names:
             continue
-        selected_alpha = _fcr_alpha_for(
+        selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])
-            else test.alternative,
-            fcr_alpha,
+            else test.alternative
         )
-        reestimated[metric.name], refused, computation = _estimate_pass(
-            src,
-            metric,
-            evidence_by_metric[metric.name],
-            test,
-            config,
-            design,
-            alpha_for=selected_alpha,
-            role="secondary",
-            inference=None if is_quantile else effective_inference,
-            advisory_seen=advisory_seen,
-            methods=_metric_methods[:1],
-        )
+        selected_alpha = _fcr_alpha_for(selected_alternative, fcr_alpha)
+        metric_rows = loaded[metric.name]
+        if metric_rows.unit_frame is not None and any(
+            method.variance_reduction == "cuped_linear" for method in _metric_methods
+        ):
+            reestimated[metric.name], refused = _reintervalize_cuped_secondary(
+                src,
+                metric,
+                test,
+                config,
+                design,
+                _metric_methods,
+                nominal_by_metric[metric.name],
+                evidence_by_metric[metric.name],
+                selected_alpha,
+                selected_alternative,
+                effective_inference,
+                advisory_seen,
+                computations,
+                is_quantile,
+                selected_cells,
+            )
+        else:
+            reestimated[metric.name], refused, computation = _estimate_pass(
+                src,
+                metric,
+                evidence_by_metric[metric.name],
+                test,
+                config,
+                design,
+                alpha_for=selected_alpha,
+                role="secondary",
+                inference=None if is_quantile else effective_inference,
+                advisory_seen=advisory_seen,
+                methods=_metric_methods[:1],
+            )
+            computations.append(computation)
         reestimated[metric.name] = [
             open_bound_from_two_sided_at_target(r) for r in reestimated[metric.name]
         ]
-        computations.append(computation)
         refused_cells.extend(refused)
     out.extend(
         _stamp_fcr_selected_rows(
@@ -374,7 +476,7 @@ def _estimate_randomized_non_secondary(
     observed_arms: set[str],
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
-    evidence_components: dict[str, tuple[str, str, int]],
+    evidence_components: dict[str, tuple[tuple[str, str, int], ...]],
 ) -> tuple[
     list[LiftEstimate],
     list[tuple[str, str, str, str]],
@@ -397,13 +499,22 @@ def _estimate_randomized_non_secondary(
         if test.role == "secondary":
             secondary_entries.append((metric, config, test, is_quantile, metric_methods))
             continue
+        metric_rows = _load_metric_rows(
+            src,
+            metric,
+            by=by,
+            control_group=design.control_group,
+            methods=metric_methods,
+            covariates=config.covariates,
+        )
         if is_quantile:
             _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
-            metric_rows = _load_metric_rows(src, metric, by=by, control_group=design.control_group)
-            evidence_components[metric.name] = (
-                metric_rows.evidence_kind,
-                metric_rows.evidence_sha256,
-                metric_rows.evidence_count,
+            evidence_components[metric.name] = metric_rows.evidence_components or (
+                (
+                    metric_rows.evidence_kind,
+                    metric_rows.evidence_sha256,
+                    metric_rows.evidence_count,
+                ),
             )
             observed_arms |= metric_rows.observed_arms
             observed_by_metric[metric.name] = set(metric_rows.observed_arms)
@@ -431,11 +542,12 @@ def _estimate_randomized_non_secondary(
                     methods=metric_methods,
                 )
         else:
-            metric_rows = _load_metric_rows(src, metric, by=by, control_group=design.control_group)
-            evidence_components[metric.name] = (
-                metric_rows.evidence_kind,
-                metric_rows.evidence_sha256,
-                metric_rows.evidence_count,
+            evidence_components[metric.name] = metric_rows.evidence_components or (
+                (
+                    metric_rows.evidence_kind,
+                    metric_rows.evidence_sha256,
+                    metric_rows.evidence_count,
+                ),
             )
             observed_arms |= metric_rows.observed_arms
             observed_by_metric[metric.name] = set(metric_rows.observed_arms)
@@ -447,7 +559,9 @@ def _estimate_randomized_non_secondary(
             rows_est, refused, computation = _estimate_pass(
                 src,
                 metric,
-                list(metric_rows.rows),
+                metric_rows
+                if any(method.variance_reduction == "cuped_linear" for method in metric_methods)
+                else list(metric_rows.rows),
                 test,
                 config,
                 design,

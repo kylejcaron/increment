@@ -88,6 +88,31 @@ Status = Literal[
 ]
 Stage = Literal["declaration", "request"]
 
+LINEAR_CUPED_INGRESSES = (
+    "from_definitions",
+    "from_unit_day_artifact",
+    "from_unit_summary",
+    "from_unit_panel",
+)
+LINEAR_CUPED_SOURCE_REFUSALS = {
+    "from_switchback_panel": "source.frame.switchback.metric",
+    "from_moments": "facade.analysis_config.cuped_linear_moments",
+}
+LINEAR_CUPED_DISPOSITIONS = {
+    **dict.fromkeys(LINEAR_CUPED_INGRESSES, "supported"),
+    **dict.fromkeys(LINEAR_CUPED_SOURCE_REFUSALS, "source_limited"),
+}
+LINEAR_CUPED_INTERACTIONS = {
+    "scalar_cuped": ("supported", None),
+    "ratio": ("supported", None),
+    "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
+    "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
+    "winsorization": ("unfinished", "estimation.engine.cuped_linear_winsorization"),
+    "breakouts": ("supported", None),
+    "multiplicity_roles": ("supported", None),
+    "triggered_population": ("supported", None),
+}
+
 
 @dataclass(frozen=True)
 class Cell:

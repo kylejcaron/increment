@@ -9,7 +9,6 @@ from __future__ import annotations
 import datetime as dt
 import statistics
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from html import escape
 from math import inf
 from typing import TYPE_CHECKING, Any, Literal
@@ -309,91 +308,25 @@ def null_text(row: Mapping[str, Any]) -> str:
     return f"{float(null_lift):+.1%} relative"
 
 
-Verdict = Literal["reject", "not_reject", "unavailable"]
-Selection = Literal["selected", "not_selected", "not_applied"]
-
-
-@dataclass(frozen=True)
-class ResultOutcome:
-    """One row's own test verdict and, separately, its family-selection state."""
-
-    verdict: Verdict
-    selection: Selection
-    unavailable_reason: str | None
-
-
-def _unavailable_reason(row: Mapping[str, Any]) -> str | None:
-    """The engine-reported reason a row has no usable inference, if it reported one."""
-    status = row.get("sequential_status")
-    if not is_missing(status):
-        return f"sequential status {status}"
-    if row.get("low_reliability"):
-        return "flagged low reliability"
-    relative = row.get("relative_confidence_set")
-    candidates = (
-        row.get("relative_unavailable_reason"),
-        None if relative is None or is_missing(relative) else relative.reason,
-        row.get("unavailable"),
-    )
-    return next((str(value) for value in candidates if value and not is_missing(value)), None)
-
-
-def result_outcome(row: Mapping[str, Any]) -> ResultOutcome:
-    """Classify a row's hypothesis verdict and family selection from emitted metadata.
-
-    The verdict is the row's own ``stat_sig``; a non-rejecting row is "not_reject" only when
-    ``_decision_available`` says the procedure produced usable inference, so a valid set with
-    no point estimate stays distinct from a row with nothing to test. Selection reads only
-    ``discovery``: it is neither inferred from the verdict nor from any point or colour.
-    """
+def outcome_label(row: Mapping[str, Any]) -> str:
+    """Format emitted decision and family fields; do not infer either from effect geometry."""
     significant = row.get("stat_sig")
-    if not is_missing(significant) and significant:
-        verdict: Verdict = "reject"
-    elif is_missing(significant) or not _decision_available(row):
-        verdict = "unavailable"
+    availability = row.get("sampling_available")
+    if significant is True:
+        verdict = "rejects the declared null"
+    elif significant is False and availability is not False:
+        verdict = "does not reject the declared null"
     else:
-        verdict = "not_reject"
+        verdict = "inference unavailable"
     discovery = row.get("discovery")
-    selection: Selection = (
-        "not_applied" if is_missing(discovery) else "selected" if discovery else "not_selected"
+    selection = (
+        "selected by the family procedure"
+        if discovery is True
+        else "not selected by the family procedure"
+        if discovery is False
+        else "family selection not applied"
     )
-    return ResultOutcome(
-        verdict, selection, _unavailable_reason(row) if verdict == "unavailable" else None
-    )
-
-
-def result_outcome_text(row: Mapping[str, Any], *, arm: bool = False) -> str:
-    """Plain text of a row's verdict and selection, qualified by its method and role.
-
-    ``arm`` adds the treatment arm for tables that hold several. The metric name is left to
-    the caller.
-    """
-    outcome = result_outcome(row)
-    method, role, group = row.get("method"), row.get("method_role"), row.get("group_id")
-    who = " ".join(
-        part
-        for part in (
-            None if is_missing(method) else str(method),
-            None if is_missing(role) else f"({role})",
-        )
-        if part
-    )
-    qualifier = who or "unspecified method"
-    if arm and not is_missing(group):
-        qualifier += f" in {group}"
-    verdict = {
-        "reject": "rejects the declared null",
-        "not_reject": "does not reject the declared null",
-        "unavailable": "is unavailable"
-        + (f" ({outcome.unavailable_reason})" if outcome.unavailable_reason else ""),
-    }[outcome.verdict]
-    selection = {
-        "selected": "selected by the family procedure",
-        "not_selected": "not selected by the family procedure",
-        "not_applied": "family selection not applied"
-        + (" (sensitivity method, outside the family)" if role == "sensitivity" else ""),
-    }[outcome.selection]
-    return f"{qualifier}: {tail_word(row)} {verdict}; {selection}"
+    return f"{tail_word(row)} {verdict}; {selection}"
 
 
 ROLE_LABELS = {

@@ -90,10 +90,11 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   affected checks retain their trusted-map or conservative-graph routes.
 - Reuse matching source/worktree/environment-bound evidence across read-only
   reviews; changed inputs invalidate it. Required integration gates remain.
-- Run `make install` for explicit hook setup; do not bypass hooks with
-  `--no-verify`. Do not activate shared hooks while live consumers are unprepared.
-- Run `make check` before pushing. Reserve `make test-all` for final integration
-  or release candidates changing estimation or a wire format.
+- Run `make install` for explicit hook setup. Do not activate shared hooks while
+  live consumers are unprepared. Before pushing, run the fast tier plus slow tests
+  of changed test files; pushes skip local test hooks and CI runs `make check`.
+  Reserve `make test-all` for final integration or release candidates changing
+  estimation or a wire format.
 - Use `make fmt`; build docs with `nox -s docs`, not bare MkDocs.
 
 ## Coordination and review
@@ -101,7 +102,9 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 - Record the integration branch, absolute worktree, immutable base, worker
   allowance and evidence location. Assign disjoint files; shared schemas and
   serialization have one writer. Consume exercised handoffs, not design-only
-  carriers. Keep modules importable and preserve other writers' work.
+  carriers. Keep modules importable and preserve other writers' work. Delegated
+  workers use absolute paths in their assigned worktree for every read, edit and
+  command; relative tool paths resolve to the coordinator's worktree.
 - One coordinator owns broad checks; focused suites may overlap within the
   host allowance. Timing measurements require an uncontended window.
 - Integrate reviewed slices promptly. Before each integration commit, include
@@ -112,8 +115,11 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   writer and receives the brief, report and diff, not the controller conversation.
 - Every PR requires a human diff read before merging. Where configured, pin
   Roborev's repo and branch; check its backlog before issue closure and after
-  integration commits. Resolve each finding with concrete code/test evidence,
-  not a later clean review. See [review and handoffs](CONTRIBUTING.md#review-and-handoffs).
+  integration commits. Audit by job ID since the effort began (`roborev show
+  --job N`); branch-filtered lists miss side-branch jobs. Run a branch-range
+  review per task branch and for the PR range before merging. Resolve each
+  finding with concrete code/test evidence, not a later clean review. See
+  [review and handoffs](CONTRIBUTING.md#review-and-handoffs).
 - Ignored plans and temporary probes stay local; never force-add scaffolding.
   Record decisions, verification and blockers in the issue ledger as they change.
 - Handoffs identify commits, dirty/untracked work, evidence, remaining decisions
@@ -123,15 +129,14 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 
 ### Recommended local verification and review
 
-Keep Roborev per commit. This cadence does not relax the current before-push
-`make check`, required CI, or scientific acceptance; it does not authorize
-shared-hook changes.
+Keep Roborev per commit. This cadence does not relax required CI or scientific
+acceptance; it does not authorize shared-hook changes.
 
 | Boundary | Checks and tests | Review |
 | --- | --- | --- |
 | Commit | Existing format/lint/type hooks; relevant regressions while editing, not a broad suite merely because a commit is created. | Roborev per commit; resolve findings with concrete evidence. |
 | Task / AI task | Focused regressions, affected fast and relevant affected slow against the immutable task base, plus the changed public-behavior smoke. Follow broader routes when selection refuses. | One independent high-depth correctness review of the completed task; consume commit findings. |
-| PR | Current `make check` (full fast and functional slow) before pushing; required CI and applicable docs/build, parity and scientific gates. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
+| PR | Fast tier plus slow tests of changed test files before pushing; required CI (`make check`) and applicable docs/build, parity and scientific gates. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
 | Stack / final integration | Same baseline on the frozen combined source, plus cross-PR journeys and applicable scientific campaigns or `make test-all`. | High-depth integration review of interactions and unreviewed resolutions; do not re-review every constituent PR from scratch. |
 
 - A standalone PR is the final integration gate. Reuse matching evidence when
@@ -237,8 +242,10 @@ that is unfinished. Keep the path-by-capability table in
   survival or log-tail functions; do not recover a tail through
   `1 - alpha`.
 - Aggregate calculations cover large offsets, neighboring floating-point
-  values, input-order changes, merged partitions, and values near overflow.
-  Prefer centered, mergeable moments and overflow-safe cross terms.
+  values, input-order changes and merged partitions within a realistic data
+  range. Beyond it, refuse with a code rather than crash or return a wrong
+  value; do not add tests pinning exact results near float64 limits or
+  subnormals. Prefer centered, mergeable moments and overflow-safe cross terms.
 - When a result can be unavailable, preserve a numeric null and its exact
   reason through schemas, conversions, serialization, and saved fixtures.
 - Assignment counts state their grain and population. Unassigned and

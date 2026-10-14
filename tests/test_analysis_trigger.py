@@ -3282,6 +3282,27 @@ def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_
             and cell.cell.dimension_value == "CA"
         )
         assert restored_cell.failure == cell.failure
+        from increment._interpretation import interpret_readout, readout_evidence_columns
+
+        # The control arm is missing; the interpretation must not claim the treatment arm is.
+        hidden = estimates.filter(lambda row: False)
+        interpretation = interpret_readout(hidden, hidden.metadata)
+        messages = [
+            item.failure_message
+            for group in interpretation.groups
+            for item in group.source_cells
+            if item.key.group_id == "T"
+            and item.key.ds == dt.date(2024, 1, 3)
+            and item.key.dimension_value == "CA"
+        ]
+        assert messages
+        assert all("requested arm T" not in (message or "") for message in messages)
+        assert all((message or "").startswith("readout.cell.missing_arm") for message in messages)
+        visible = treatment[0]
+        columns = readout_evidence_columns(
+            interpret_readout(estimates, estimates.metadata), visible
+        )
+        assert "requested arm T" not in str(columns.get("failure_message"))
     finally:
         analysis.close()
         con.disconnect()
@@ -3669,3 +3690,89 @@ def _switchback_panel_analysis() -> Analysis:
         ),
         contrast_references={"value": UnitCycleTApproximation()},
     )
+
+
+def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
+    import narwhals as nw
+
+    from increment import Method
+    from increment.estimation.engine import estimate_cuped_linear
+
+    text = (
+        _defs_yaml()
+        .replace(
+            "      - name: saw_surface\n        column: null",
+            "      - name: saw_surface\n        column: null\n    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}",
+        )
+        .replace(
+            "    plan:\n      secondaries: [revenue]",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_linear}, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}",
+        )
+    )
+    defs_path = tmp_path / "triggered-cuped.yaml"
+    defs_path.write_text(text)
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=_with_preassignment_region(_events(n_per_arm=100, trigger_rate=0.5)),
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        defs_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    try:
+        from increment.estimation.results import LiftEstimate
+
+        rows = cast(
+            list[LiftEstimate],
+            analysis.run(
+                decision_method=Method(name="plain"),
+                sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+            ),
+        )
+        estimates = {
+            row.analysis_population: row
+            for row in rows
+            if row.method == "linear" and row.group_id == "T"
+        }
+        assert set(estimates) == {"assigned", "triggered"}
+        assert estimates["assigned"].require_lift().value != pytest.approx(
+            estimates["triggered"].require_lift().value
+        )
+
+        from tests.analysis_factory import _native_source
+
+        source = _native_source(analysis)
+        metric = source.context.metrics[0]
+        covariates = cast(Any, source.context.configs[0].covariates)
+        triggered_frame = source.moments_source(
+            metrics=[metric], population="triggered"
+        ).unit_frame(metric, covariates=tuple(item.name for item in covariates))
+        assert nw.from_native(triggered_frame, eager_only=True).shape[0] == pytest.approx(
+            100, abs=25
+        )
+        expected = estimate_cuped_linear(
+            metric,
+            triggered_frame,
+            control_group="C",
+            method=Method(name="linear", variance_reduction="cuped_linear"),
+            method_role="sensitivity",
+            covariates=covariates,
+            alpha=0.05,
+            alternative="two-sided",
+        )
+        expected_treatment = next(row for row in expected.results if row.group_id == "T")
+        assert estimates["triggered"].require_lift().value == pytest.approx(
+            expected_treatment.require_lift().value, rel=1e-10, abs=1e-10
+        )
+    finally:
+        analysis.close()
+        con.disconnect()

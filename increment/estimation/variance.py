@@ -206,13 +206,7 @@ def ratio_moments(arm: ArmStats) -> tuple[float, float, float, float, float]:
 
     n_bar = arm.mean_y()
     d_bar = arm.mean_den()
-    if d_bar <= 0.0:
-        _raise(
-            "estimation.variance.ratio_moments_nonpositive_denominator_mean",
-            group_id=arm.group_id,
-            metric=arm.metric,
-            d_bar=d_bar,
-        )
+    require_positive_denominator_mean(metric=arm.metric, group_id=arm.group_id, d_bar=d_bar)
 
     # ddof=1 moments, every one an analytic expansion in the centered fields
     var_n = arm.var_y()
@@ -220,6 +214,22 @@ def ratio_moments(arm: ArmStats) -> tuple[float, float, float, float, float]:
     cov_nd = arm.cov_yden()
 
     return n_bar, d_bar, var_n, var_d, cov_nd
+
+
+def require_positive_denominator_mean(*, metric: str, group_id: str, d_bar: float) -> None:
+    """Refuse a ratio arm whose denominator mean cannot form ``sum(num) / sum(den)``.
+
+    The one owner of this rule for aggregate moments and per-unit evidence
+    alike, so an adjusted and an unadjusted row refuse the same arm with the
+    same code and context.
+    """
+    if d_bar <= 0.0:
+        _raise(
+            "estimation.variance.ratio_moments_nonpositive_denominator_mean",
+            group_id=group_id,
+            metric=metric,
+            d_bar=d_bar,
+        )
 
 
 #: Calibrated across sample sizes 20-2000 and lognormal, exponential, and gamma
@@ -732,3 +742,4 @@ VARIANCE_MODELS.register("cluster", ClusterVarianceModel())
 VARIANCE_REDUCTION: Registry[str] = Registry("variance reduction")
 VARIANCE_REDUCTION.register("none", "none")
 VARIANCE_REDUCTION.register("cuped", "cuped")
+VARIANCE_REDUCTION.register("cuped_linear", "cuped_linear")

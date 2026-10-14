@@ -25,18 +25,28 @@ def _randomized_source(
     from increment._canonical import canonical_digest_bytes
     from increment.readouts._source_digest import component, composite_source
 
-    components = [
-        component(
-            kind=kind,
-            metric=metric.name,
-            population=population,
-            sha256=digest,
-            source=source,
-            dimension=dimension,
-        )
-        for metric in selected
-        for kind, digest, _count in (evidence_components[metric.name],)
-    ]
+    components = []
+
+    for metric in selected:
+        component_set = evidence_components[metric.name]
+        if (
+            len(component_set) == 3
+            and isinstance(component_set[0], str)
+            and isinstance(component_set[1], str)
+            and isinstance(component_set[2], int)
+        ):
+            component_set = (component_set,)
+        for kind, digest, count in component_set:
+            item = component(
+                kind=kind,
+                metric=metric.name,
+                population=population,
+                sha256=digest,
+                source=source,
+                dimension=dimension,
+            )
+            item["count"] = count
+            components.append(item)
     if assignment_counts is not None:
         components.append(
             component(
@@ -66,7 +76,7 @@ def _randomized_snapshot_id(source, request):
     return "sha256:" + sha256(canonical_json_bytes(preimage)).hexdigest()
 
 
-def _randomized_cell_record(cell, row, failure, config, snapshot_id):
+def _randomized_cell_record(cell, row, failure, config, snapshot_id, advisories=()):
     from increment.estimation.decision_types import PValueEvidence
     from increment.estimation.readout_types import (
         CellRecord,
@@ -75,7 +85,7 @@ def _randomized_cell_record(cell, row, failure, config, snapshot_id):
     )
 
     evidence = None
-    if row is not None and failure is None and row.lift is not None:
+    if row is not None and failure is None:
         try:
             evidence = PValueEvidence(
                 cell.hypothesis(), cell.method, row.p_value(), row.reference_kind
@@ -106,6 +116,7 @@ def _randomized_cell_record(cell, row, failure, config, snapshot_id):
         failure=failure,
         sampling=sampling,
         posterior=posterior,
+        advisories=tuple(advisories),
     )
 
 
@@ -163,15 +174,16 @@ def _randomized_cell_registry(
                     config,
                     test,
                 )
+    # Decision computations only register decision-role failures, so a failure
+    # without a method discriminator belongs to the metric's one decision cell.
     for hypothesis, failure in methodless_failures:
-        candidates = {
-            method_name
-            for metric_name, group_id, method_name, _role in method_info
-            if metric_name == hypothesis.metric and group_id == hypothesis.group_id
-        }
-        if len(candidates) == 1:
-            method = next(iter(candidates))
-            failure_by_cell[(hypothesis.metric, hypothesis.group_id, method)] = failure
+        for metric_name, group_id, method_name, role in method_info:
+            if (
+                role == "decision"
+                and metric_name == hypothesis.metric
+                and group_id == hypothesis.group_id
+            ):
+                failure_by_cell.setdefault((metric_name, group_id, method_name), failure)
     return failure_by_cell, method_info, cells, decision_cells
 
 
@@ -298,6 +310,19 @@ def _scoped_randomized_results(
     failure_by_cell, method_info, cells, decision_cells = _randomized_cell_registry(
         selected, configs, design, plan, computations, roster_arms, population
     )
+
+    advisories_by_identity = {}
+    for computation in computations:
+        for hypothesis, advisories in computation.advisories.items():
+            identity = (
+                hypothesis.metric,
+                getattr(hypothesis, "group_id", None),
+                getattr(hypothesis, "estimand", None),
+                getattr(hypothesis, "dimension", None),
+                getattr(hypothesis, "dimension_value", None),
+            )
+            values = advisories_by_identity.setdefault(identity, {})
+            values.update({item.model_dump_json(): item for item in advisories})
     cell_failures, complete, scope_reason_context = _randomized_cell_failures(
         method_info,
         failure_by_cell,
@@ -336,6 +361,19 @@ def _scoped_randomized_results(
             "plr_slope",
             "overlap_subpopulation_ate",
         )
+        config = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1]
+        test = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][2]
+        metric = next(item for item in selected if item.name == cell.metric)
+        prior_context = (
+            {
+                "metric": cell.metric,
+                "group_id": cell.group_id,
+                "reference_df": None,
+                "missing": "HC2/BM score statistics needed to compose the declared prior",
+            }
+            if config.prior is not None
+            else None
+        )
         failure = cell_failures.get(cell)
         row = result_by_cell.get((cell.metric, cell.group_id, cell.method, cell.method_role))
         if row is None and failure is not None:
@@ -349,17 +387,22 @@ def _scoped_randomized_results(
                 value_scale=cell.value_scale,
                 alternative=cell.alternative,
                 inference=cell.inference,
-                role=plan.procedures[cell.metric].role if plan.declared else None,
+                preferred_direction=metric.declared_preferred_direction,
+                null_lift=getattr(test, "null_lift", 0.0),
+                null_abs=getattr(test, "null_abs", None),
                 lift=None,
                 failure_code=failure.code,
                 failure_context=failure.context,
                 sampling_available=False,
                 sampling_reason_code=failure.code,
                 sampling_reason_context=failure.context,
-                posterior_available=False
-                if method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1].prior
-                is not None
-                else None,
+                posterior_available=False if config.prior is not None else None,
+                posterior_reason_code=(
+                    "estimation.results.lift.t_posterior_sufficient_statistics"
+                    if config.prior is not None
+                    else None
+                ),
+                posterior_reason_context=prior_context,
             )
         if row is not None:
             row = row.model_copy(
@@ -379,8 +422,21 @@ def _scoped_randomized_results(
                 }
             )
             output.append(row)
-        config = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1]
-        records.append(_randomized_cell_record(cell, row, failure, config, snapshot_id))
+        advisories = advisories_by_identity.get(
+            (
+                cell.metric,
+                cell.group_id,
+                cell.estimand,
+                cell.dimension,
+                cell.dimension_value,
+            ),
+            {},
+        )
+        records.append(
+            _randomized_cell_record(
+                cell, row, failure, config, snapshot_id, tuple(advisories.values())
+            )
+        )
 
     ordered_cells = tuple(sorted(set(cells), key=cell_order))
     ordered_decisions = tuple(sorted(set(decision_cells), key=cell_order))
@@ -400,6 +456,7 @@ def _scoped_randomized_results(
                 arms=roster_arms,
                 source=roster_source,
                 complete=roster.complete,
+                control_group=getattr(design, "control_group", None),
             ),
         ),
         decision_complete_by_population={population: complete},

@@ -150,6 +150,62 @@ def _conversion_arm_row(
     )
 
 
+def test_segment_rekey_accepts_sensitivity_and_decision_rows_with_advisories():
+    rows = [
+        _make_arm_row(
+            50,
+            10.0 if group == "control" else 12.0,
+            4.0,
+            country="US",
+            group_id=group,
+            metric="ratio_rev",
+            sum_den=50.0,
+        )
+        for group in ("control", "treatment")
+    ]
+    for row in rows:
+        row["cden2"] = 220.5
+    results = run_breakout(
+        rows,
+        [_ratio_metric("ratio_rev")],
+        control_group="control",
+        dimension="country",
+        methods=[Method(name="unadjusted"), Method(name="sensitivity")],
+        method_roles={"unadjusted": "decision", "sensitivity": "sensitivity"},
+    )
+    assert {row.method_role for row in results} == {"decision", "sensitivity"}
+    assert all(row.dimension == "country" and row.dimension_value == "US" for row in results)
+
+
+def test_rekeyed_advisories_match_segment_result_identity():
+    from increment.breakout.estimates import _rekey_segment_computation
+    from increment.estimation.advisory import ReadoutAdvisory
+    from increment.estimation.decision_types import (
+        ArmHypothesisKey,
+        DecisionComputation,
+        SegmentHypothesisKey,
+    )
+
+    rows = [
+        _make_arm_row(50, 10.0, 4.0, country="US", group_id="control"),
+        _make_arm_row(50, 12.0, 4.0, country="US", group_id="treatment"),
+    ]
+    (result,) = estimate_lift([_mean_metric()], rows, control_group="control").results
+    key = ArmHypothesisKey(result.metric, result.group_id, result.estimand)
+    advisory = ReadoutAdvisory(code="test.advisory", context={"reason": "retained"}, message="note")
+    bundle = DecisionComputation(
+        results=(result,), evidence={}, failures={}, advisories={key: (advisory,)}
+    )
+    rekeyed = _rekey_segment_computation(bundle, dimension="country", dimension_value="US")
+    segment_key = SegmentHypothesisKey(
+        result.metric, result.group_id, result.estimand, "country", "US"
+    )
+    assert rekeyed.advisories[segment_key] == (advisory,)
+    segment_result = cast(Any, rekeyed.results[0])
+    assert segment_result.dimension == "country"
+    assert segment_result.dimension_value == "US"
+
+
 # CRITICAL: never call estimate_lift on a multi-segment summary at once.
 
 

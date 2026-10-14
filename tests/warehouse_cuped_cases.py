@@ -346,3 +346,197 @@ def check_day_axis_parity(con, dialect: str, source: str) -> None:
     finally:
         definitions.close()
         artifact.close()
+
+
+def mixed_cuped_event_rows(rows: list[dict]) -> list[dict]:
+    """Warehouse events carrying the same per-unit outcomes and covariates as the frame fixture."""
+    events = []
+    exposure = dt.datetime(2025, 1, 10, 8)
+    history = dt.datetime(2025, 1, 7, 9)
+    outcome = dt.datetime(2025, 1, 11, 9)
+    for row in rows:
+        user_id = row["user_id"]
+        arm = row["variant"]
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": exposure,
+                "event": "enrolled",
+                "experiment_id": "mixed_cuped",
+                "group_id": arm,
+                "value": None,
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": history,
+                "event": "history",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["pre_revenue"],
+                "pre_revenue": row["pre_revenue"],
+                "region": row["region"],
+                "country": row["country"],
+                "device": row["device"],
+                "new_user": row["new_user"],
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": history,
+                "event": "revenue",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["pre_revenue"],
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        events.append(
+            {
+                "user_id": user_id,
+                "ts": outcome,
+                "event": "revenue",
+                "experiment_id": None,
+                "group_id": None,
+                "value": row["revenue"],
+                "pre_revenue": None,
+                "region": None,
+                "country": None,
+                "device": None,
+                "new_user": None,
+            }
+        )
+        for _ in range(int(row["orders"])):
+            events.append(
+                {
+                    "user_id": user_id,
+                    "ts": outcome,
+                    "event": "order",
+                    "experiment_id": None,
+                    "group_id": None,
+                    "value": None,
+                    "pre_revenue": None,
+                    "region": None,
+                    "country": None,
+                    "device": None,
+                    "new_user": None,
+                }
+            )
+        for _ in range(int(row["signups"])):
+            events.append(
+                {
+                    "user_id": user_id,
+                    "ts": outcome,
+                    "event": "signup",
+                    "experiment_id": None,
+                    "group_id": None,
+                    "value": None,
+                    "pre_revenue": None,
+                    "region": None,
+                    "country": None,
+                    "device": None,
+                    "new_user": None,
+                }
+            )
+    return events
+
+
+def mixed_cuped_definitions_yaml(
+    source: str,
+    *,
+    breakout: bool = False,
+    scalar_cuped: bool = False,
+    n_pre_periods: int = 0,
+    fixed_winsorization: bool = False,
+) -> str:
+    entries = (
+        "{name: pre_revenue, kind: continuous, property: pre_revenue, source: events, missing: impute-indicator}",
+        "{name: country, kind: categorical, property: country, source: events}",
+        "{name: device, kind: categorical, property: device, source: events}",
+        "{name: new_user, kind: categorical, property: new_user, source: events}",
+    )
+    covariates = "\n        covariates:\n          - " + "\n          - ".join(entries) + "\n"
+    nested_covariates = (
+        "\n          covariates:\n            - " + "\n            - ".join(entries) + "\n"
+    )
+    method = "decision_method: {name: linear, variance_reduction: cuped_linear}"
+    scalar_sensitivity = (
+        "        sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
+        if scalar_cuped
+        else ""
+    )
+    pre_period_section = f"    n_pre_periods: {n_pre_periods}\n" if n_pre_periods else ""
+    winsorization_section = (
+        "    winsorization: {lower_value: 7.0, upper_value: 11.0}\n" if fixed_winsorization else ""
+    )
+    breakout_section = (
+        "    breakouts:\n      - property: region\n        source: events\n" if breakout else ""
+    )
+    return f"""
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM {source}
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - {{name: enrolled, column: null}}
+      - {{name: revenue, column: value}}
+      - {{name: order, column: null}}
+      - {{name: signup, column: null}}
+    properties:
+      - {{name: pre_revenue, column: pre_revenue, dtype: float, as_of: pre_exposure}}
+      - {{name: region, column: region, dtype: string, as_of: pre_exposure}}
+      - {{name: country, column: country, dtype: string, as_of: pre_exposure}}
+      - {{name: device, column: device, dtype: string, as_of: pre_exposure}}
+      - {{name: new_user, column: new_user, dtype: string, as_of: pre_exposure}}
+exposures:
+  - {{name: enrollment, fact: enrolled}}
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: revenue
+    aggregation: sum
+    window_days: 2
+{winsorization_section}
+  - name: rpo
+    type: ratio
+    entity: user_id
+    numerator: {{fact: revenue, aggregation: sum, window_days: 2}}
+    preferred_direction: increase
+    denominator: {{fact: order, aggregation: count, window_days: 2}}
+  - name: signups
+    type: conversion
+    entity: user_id
+    fact: signup
+    window_days: 2
+experiments:
+  - name: mixed_cuped
+    exposure: enrollment
+    unit: user_id
+    start: "2025-01-10"
+    end: "2025-01-12"
+    control_group: control
+    allocation: {{control: 0.5, treatment: 0.5}}
+{pre_period_section}{breakout_section}    plan:
+      primary:
+        metric: revenue
+        {method}
+{scalar_sensitivity}{covariates}      guardrails:
+        - metric: rpo
+          {method}{nested_covariates}      secondaries:
+        - metric: signups
+          {method}{nested_covariates}
+"""

@@ -4,6 +4,8 @@ import copy
 import pickle
 import subprocess
 import sys
+from datetime import date
+from typing import Any, cast
 
 import narwhals as nw
 import numpy as np
@@ -15,12 +17,15 @@ from increment.breakout.estimates import (
     BreakoutEstimate,
     DailyLiftEstimate,
     DailyLiftEstimates,
+    DailyMetricValue,
+    DailyMetricValues,
     LiftEstimates,
 )
 from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.readout_types import CellKey, ReadoutResults
-from increment.estimation.results import LiftEstimate
+from increment.estimation.results import Estimate, LiftEstimate
 from increment.semantics.design import Randomized
+from increment.tables import readout_table
 from tests.readout_journeys import (
     assert_failed_assigned_integrity as check_failed_assigned_integrity,
 )
@@ -48,12 +53,13 @@ def _frame(*, guard_constant=True, drop_guard_treatment=False):
     return pd.DataFrame(rows)
 
 
-def _analysis(frame, *, drop_missing_guard=False):
+def _analysis(frame, *, drop_missing_guard=False, design=None):
     return Analysis.from_unit_summary(
         frame,
         unit="unit",
         group="arm",
-        control="control",
+        control=None if design is not None else "control",
+        design=design,
         metrics=[
             MetricSpec(name="rev", type="mean", preferred_direction="increase"),
             MetricSpec(
@@ -62,9 +68,430 @@ def _analysis(frame, *, drop_missing_guard=False):
                 preferred_direction="decrease",
                 missing="drop" if drop_missing_guard else "error",
             ),
+            MetricSpec(name="secondary", type="mean", preferred_direction="increase"),
+        ]
+        if "secondary" in frame
+        else [
+            MetricSpec(name="rev", type="mean", preferred_direction="increase"),
+            MetricSpec(
+                name="guard",
+                type="mean",
+                preferred_direction="decrease",
+                missing="drop" if drop_missing_guard else "error",
+            ),
         ],
-        plan=AnalysisPlan(primary="rev", guardrails=["guard"]),
+        plan=(
+            AnalysisPlan(primary="rev", guardrails=["guard"])
+            if "secondary" not in frame
+            else AnalysisPlan(primary="rev", guardrails=["guard"], secondaries=["secondary"])
+        ),
     )
+
+
+def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
+    frame = _frame(guard_constant=False)
+    frame["secondary"] = frame["rev"] * 0.8
+    results = _analysis(
+        frame,
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+        ),
+    ).run()
+    rendered = repr(results)
+    assert "treatment vs control" in rendered
+    assert "control identity not retained" not in rendered
+    assert rendered.index("rev (primary") < rendered.index("guard (guardrail")
+    assert rendered.index("guard (guardrail") < rendered.index("secondary (secondary")
+    assert rendered.count("Multiplicity (primary)") == 1
+    assert rendered.count("Multiplicity (secondary)") == 1
+    assert "family" in rendered
+    assert "does not reject; inconclusive" in rendered
+    assert "direction supported" in rendered
+    assert "not evidence of no effect" in rendered
+    assert any(line.startswith("secondary selection:") for line in rendered.splitlines())
+
+
+def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_row():
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    html = readout_table(results).gt().as_raw_html()
+    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
+    assert "<ul " in subtitle
+    assert subtitle.count("<li>") == 4
+    assert "Integrity: not_checked" in subtitle
+    assert subtitle.count("sha256:") == 1
+    assert "Interpretation:" not in subtitle and "Interpretation:" not in html
+    assert "Interval interpretation" in html
+    assert 'th[id="Interval-interpretation"]{width:18em' in html
+    assert "Excludes zero — increase established" in html
+    assert results[0].source_snapshot_id not in subtitle
+
+
+def test_row_only_table_discloses_unknown_scope_and_integrity():
+    from increment.tables import estimates_to_readout
+
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    # A received row carries no collection evidence; the table must not look vouched for.
+    html = readout_table(estimates_to_readout([results[0]])).gt().as_raw_html()
+    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
+    assert "Scope and integrity unknown." in subtitle
+    scoped = readout_table(results).gt().as_raw_html()
+    assert "Scope and integrity unknown." not in scoped
+
+
+def test_readout_table_escapes_user_text_in_qualification_list():
+    frame = _frame(guard_constant=False)
+    frame["arm"] = frame["arm"].replace("treatment", "<img src=x>")
+    results = _analysis(frame).run(metrics=["rev"])
+    html = readout_table(results).gt().as_raw_html()
+    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
+
+    assert "<img" not in subtitle
+    assert "&lt;img src=x&gt;" in subtitle
+
+
+def test_readout_table_preserves_title_and_subtitle_without_notes():
+    table = readout_table(
+        [
+            {
+                "metric": "revenue",
+                "method": "unadjusted",
+                "lift": 0.1,
+                "lower": 0.0,
+                "higher": 0.2,
+                "stat_sig": False,
+                "group_id": "treatment",
+            }
+        ],
+        title="Experiment A",
+        subtitle="Week 1",
+    )
+
+    html = table.gt().as_raw_html()
+
+    assert "Experiment A" in html
+    assert "Week 1" in html
+
+
+def test_absolute_margin_repr_matches_exported_additive_interpretation():
+    from increment.semantics.models import ExperimentMetric
+    from increment.tables import estimates_to_readout
+
+    records = []
+    for arm in ("control", "treatment"):
+        for index in range(200):
+            value = 9.0 if index % 2 == 0 else 11.0
+            records.append(
+                {
+                    "unit": f"{arm}-{index}",
+                    "arm": arm,
+                    "revenue": value,
+                    "latency": value,
+                }
+            )
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(records),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+            MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
+        ],
+        plan=AnalysisPlan(
+            primary="revenue",
+            guardrails=[ExperimentMetric(metric="latency", margin_abs=0.5)],
+        ),
+    )
+    with analysis:
+        results = analysis.run()
+
+    latency = next(row for row in estimates_to_readout(results) if row["metric"] == "latency")
+    rendered = repr(results)
+
+    assert "effect direction not established" in latency["effect_interpretation"]
+    assert "effect direction supported" not in latency["effect_interpretation"]
+    exported = latency["effect_interpretation"].removeprefix("Interpretation: ")
+    assert f"latency interpretation: {exported}" in rendered.splitlines()
+
+
+def test_absolute_margin_uses_additive_interval_not_relative_interval():
+    from increment.tables import estimates_to_readout
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        null_lift=0.0,
+        null_abs=-0.01,
+        abs_diff=-0.5,
+        abs_lb=-0.66,
+        abs_ub=-0.34,
+    )
+    (row,) = estimates_to_readout([estimate])
+
+    assert "direction supported (decrease)" in row["effect_interpretation"]
+    assert "increase supported" not in row["effect_interpretation"]
+
+
+def test_margin_success_below_zero_does_not_claim_increase():
+    from increment.tables import estimates_to_readout
+
+    estimate = LiftEstimate(
+        metric="latency",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=-0.03, lb=-0.04, ub=-0.02, level=0.95),
+        null_lift=0.0,
+        null_abs=-0.05,
+        abs_diff=-0.03,
+        abs_lb=-0.04,
+        abs_ub=-0.02,
+        alternative="greater",
+    )
+    (row,) = estimates_to_readout([estimate])
+
+    assert "rejects the null" in row["effect_interpretation"]
+    assert "margin met" in row["effect_interpretation"]
+    assert "effect direction supported (decrease)" in row["effect_interpretation"]
+    assert "increase" not in row["effect_interpretation"]
+
+
+def test_absolute_margin_without_additive_interval_does_not_fall_back_to_relative():
+    from increment.tables import estimates_to_readout
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        null_lift=0.0,
+        null_abs=-0.01,
+    )
+    (row,) = estimates_to_readout([estimate])
+
+    assert "unavailable" in row["effect_interpretation"].lower()
+    assert "increase supported" not in row["effect_interpretation"]
+
+
+def test_estimate_frames_preserve_unknown_nullable_evidence_and_daily_values():
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+    )
+    unscoped = cast(pd.DataFrame, LiftEstimates([estimate]).to_frame(backend="pandas"))
+    assert str(unscoped["decision_scope_complete"].dtype) == "boolean"
+    assert unscoped["decision_scope_complete"].isna().all()
+    assert str(unscoped["posterior_available"].dtype) == "boolean"
+    assert unscoped["posterior_available"].isna().all()
+
+    daily = cast(
+        pd.DataFrame,
+        DailyMetricValues(
+            [
+                DailyMetricValue(
+                    ds=date(2024, 1, 1),
+                    metric="revenue",
+                    group_id="treatment",
+                    value=Estimate(value=10, lb=9, ub=11, level=0.95),
+                    n=100,
+                )
+            ]
+        ).to_frame(backend="pandas"),
+    )
+    assert daily["point_available"].tolist() == [True]
+    assert daily["sampling_available"].tolist() == [True]
+    assert daily["unavailable_cell_count"].tolist() == [0]
+
+
+def test_daily_mean_repr_shows_values_without_treatment_control_contrast():
+    values = DailyMetricValues(
+        [
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="revenue",
+                group_id="control",
+                value=Estimate(value=10.0, lb=9.0, ub=11.0, level=0.95),
+                n=100,
+            ),
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="revenue",
+                group_id="treatment",
+                value=Estimate(value=12.0, lb=11.0, ub=13.0, level=0.95),
+                n=100,
+            ),
+        ]
+    )
+
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    rendered = render_readout_text(interpret_readout(values, None))
+
+    assert "absolute mean" in rendered
+    assert "10" in rendered and "12" in rendered
+    assert "arm control" in rendered and "arm treatment" in rendered
+    assert "treatment vs control" not in rendered
+    assert "Interpretation:" not in rendered
+
+
+def test_daily_unavailable_reason_is_preserved_in_readout():
+    values = DailyMetricValues(
+        [
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="revenue",
+                group_id="treatment",
+                value=None,
+                unavailable="few_units",
+                n=1,
+            )
+        ]
+    )
+
+    assert "few_units" in repr(values)
+
+
+def test_filtering_all_daily_means_keeps_arm_mean_identity():
+    from increment.estimation.readout_types import (
+        CellKey,
+        CellRecord,
+        PopulationRoster,
+        ReadoutMetadata,
+        ReadoutScope,
+        SourceReadoutScope,
+    )
+
+    source_id = f"sha256:{'a' * 64}"
+    cell = CellKey(
+        kind="arm",
+        metric="rev",
+        method=None,
+        method_role=None,
+        estimand=None,
+        analysis_population="assigned",
+        group_id="treatment",
+        ds=date(2024, 1, 1),
+        ds_basis="calendar",
+    )
+    source = SourceReadoutScope(
+        source_snapshot_id=source_id,
+        cells=(cell,),
+        decision_cells=(cell,),
+        rosters=(
+            PopulationRoster(
+                analysis_population="assigned",
+                arms=("control", "treatment"),
+                source="experiment_counts",
+                complete=True,
+                control_group="control",
+            ),
+        ),
+        decision_complete_by_population={"assigned": True},
+    )
+    metadata = ReadoutMetadata(
+        scope=ReadoutScope(
+            snapshot_id=source_id,
+            cells=(cell,),
+            decision_cells=(cell,),
+            populations=("assigned",),
+            families=(),
+            by_source={source_id: source},
+        ),
+        cells=(CellRecord(cell=cell, source_snapshot_id=source_id),),
+    )
+    values = DailyMetricValues(
+        [
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="rev",
+                group_id="treatment",
+                source_snapshot_id=source_id,
+                decision_scope_complete=True,
+                value=Estimate(value=2.0, lb=1.5, ub=2.5, level=0.95),
+                n=10,
+            )
+        ],
+        metadata=metadata,
+    )
+
+    rendered = repr(values.filter(lambda _: False))
+
+    assert "arm treatment" in rendered
+    assert "treatment vs control" not in rendered
+
+
+def test_row_only_readout_table_retains_roster_and_family_qualifications():
+    from increment.tables import estimates_to_readout
+
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    rows = estimates_to_readout(results)
+    direct_html = readout_table(results).gt().as_raw_html()
+    row_only_html = readout_table(rows).gt().as_raw_html()
+
+    assert "family" in direct_html.lower()
+    assert "roster" in direct_html.lower()
+    assert "family" in row_only_html.lower()
+    assert "roster" in row_only_html.lower()
+
+
+def test_empty_breakout_table_keeps_segment_schema():
+    pytest.importorskip("coeftable")
+    from increment.breakout.estimates import BreakoutEstimates
+
+    html = readout_table(BreakoutEstimates([]), nest_by="segment").gt().as_raw_html()
+
+    assert "Scope and integrity unknown" in html
+
+
+def test_interpretation_labels_distinct_source_snapshots():
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        source_snapshot_id=f"sha256:{'1' * 64}",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+    )
+    second = estimate.model_copy(update={"source_snapshot_id": f"sha256:{'2' * 64}"})
+    rendered = render_readout_text(interpret_readout([estimate, second], None))
+
+    assert rendered.count("sha256:") == 2
+
+
+def test_failure_passthrough_is_escaped_in_complete_html_table():
+    payload = "<img src=x onerror=alert(1)>"
+    frame = _frame(guard_constant=False).rename(columns={"guard": payload})
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="rev", type="mean"),
+            MetricSpec(
+                name=payload,
+                type="mean",
+                missing="drop",
+                preferred_direction="decrease",
+            ),
+        ],
+        plan=AnalysisPlan(primary="rev", guardrails=[payload]),
+    )
+    with analysis:
+        results = analysis.run()
+    html = readout_table(cast(Any, results)).gt().as_raw_html()
+    assert "<img" not in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
 
 
 def test_saved_results_decode_when_only_the_boundary_module_is_imported():
@@ -675,8 +1102,11 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
         "null_lift": 0.0,
         "lift": None,
         "failure_code": "readout.cell.missing_metric_observations",
-        "failure_context": {"reason": "missing_metric_observations"},
-        "decision_scope_complete": False,
+        "failure_context": {
+            "reason": "missing_metric_observations",
+            "metric": "guard",
+            "group_id": "treatment",
+        },
     }
     if estimate_type is DailyLiftEstimate:
         fields.update(
@@ -707,6 +1137,26 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
     assert "treatment" in rendered
     assert "readout.cell.missing_metric_observations" in rendered
     assert "missing_metric_observations" in rendered
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    collection_text = render_readout_text(interpret_readout([row], None))
+    if estimate_type is BreakoutEstimate:
+        assert "country US" in collection_text
+    elif estimate_type is DailyLiftEstimate:
+        assert "date 2025-01-01" in collection_text
+
+
+def test_scoped_repr_keeps_relative_unavailability_reason():
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    row = results[0].model_copy(
+        update={"lift": None, "relative_unavailable_reason": "zero_relative_variance"}
+    )
+    collection = LiftEstimates([row], metadata=results.metadata)
+
+    rendered = str(collection)
+
+    assert "relative unavailable" in rendered.lower()
+    assert "zero_relative_variance" in rendered
 
 
 def test_cell_reason_preserves_persisted_failure():
@@ -772,6 +1222,18 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert "treatment" in rendered
     assert "readout.cell.missing_metric_observations" in rendered
     assert "reason=" in rendered
+
+    from increment.tables import readout_table
+
+    failed_repr = repr(results)
+    assert "unavailable guard:" in failed_repr.lower()
+    failed_table = readout_table(results).gt().as_raw_html()
+    assert "guard" in failed_table
+    corrected = _analysis(_frame(guard_constant=False)).run()
+    assert corrected.metadata.scope.decision_complete("assigned") is True
+    assert "guard" in repr(corrected)
+    corrected_table = readout_table(corrected).gt().as_raw_html()
+    assert "guard" in corrected_table
     assert failed.lift is None
 
     path = tmp_path / "partial-required-cell.parquet"
@@ -888,6 +1350,41 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
     assert "Decision scope is incomplete" in partial_html
 
 
+def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
+    pytest.importorskip("coeftable")
+    from increment.tables import estimates_to_readout, readout_table
+
+    with pytest.warns(IncrementWarning):
+        results = _analysis(_frame()).run()
+    assert "Integrity:" in repr(results)
+    assert "not success" in repr(results)
+    for backend in ("pandas", "polars", "pyarrow"):
+        frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
+        assert {
+            "analysis_population",
+            "source_snapshot_id",
+            "integrity_status",
+            "required_cell_count",
+            "unavailable_cells",
+            "hidden_cells",
+            "advisories",
+        } <= set(frame.columns)
+    rows = estimates_to_readout(results)
+    assert all(row["integrity_status"] == "not_checked_missing_declaration" for row in rows)
+    assert all(row["analysis_population"] == "assigned" for row in rows)
+    assert "not_checked_missing_declaration" in readout_table(results).gt().as_raw_html()
+    from tests.test_tables import _as_latex, _latex_text
+
+    assert "not_checked_missing_declaration" in _latex_text(_as_latex(readout_table(results)))
+
+    empty = results.filter(lambda row: False)
+    assert "Required cells:" in repr(empty)
+    empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
+    assert len(empty_frame) == 0 and "integrity_status" in empty_frame.columns
+    assert "Required cells:" in readout_table(empty).gt().as_raw_html()
+    assert "Scope and integrity unknown" in readout_table([]).gt().as_raw_html()
+
+
 def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail():
     frame = _frame(guard_constant=False)
     frame["rev"] = 1.0
@@ -909,6 +1406,16 @@ def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail
     assert surviving.metric == "guard" and surviving.lift is not None
     assert results.metadata.scope.decision_complete("assigned") is False
     assert all(row.decision_scope_complete is False for row in results)
+
+
+def _assert_selection_repr_disclosures(results, selected_row, sensitivity_row):
+    from increment.estimation.results import _selection_qualification
+
+    selection = _selection_qualification(selected_row)
+    assert selection is not None
+    rendered = repr(results)
+    assert selection in rendered
+    assert f"method role {sensitivity_row.method_role}" in rendered
 
 
 def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance():
@@ -964,7 +1471,8 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
     assert failed.role == successful.role == "secondary"
     assert failed.multiplicity_status == successful.multiplicity_status == "declared_plan"
     assert failed.family_id == successful.family_id
-    assert successful.discovery is not None
+    assert successful.discovery is True
+    _assert_selection_repr_disclosures(results, successful, sensitivity_rows[0])
     assert failed.discovery is None
     (family,) = [
         family for family in results.metadata.scope.families if family.family_id == failed.family_id
@@ -1002,6 +1510,9 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
     from increment.tables import readout_table
 
     html = readout_table(readout).gt().as_raw_html()
+    assert "treatment_a vs control" in html
+    assert "treatment_b vs control" in html
+    assert "required cells" in html.lower()
     assert "Unadjusted for multiplicity" not in html
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata == results.metadata

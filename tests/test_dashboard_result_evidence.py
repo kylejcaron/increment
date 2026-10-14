@@ -20,8 +20,7 @@ from increment.dashboard._format import (
     complete_confidence_set_text,
     confidence_set_text,
     headline_interval,
-    result_outcome,
-    result_outcome_text,
+    outcome_label,
 )
 from increment.dashboard._html import results_notes
 from increment.estimation.inference import _joint_additive_bounds
@@ -218,71 +217,72 @@ def test_complete_set_text_keeps_every_endpoint_of_point_free_sets(
 # Per-row outcomes
 
 
-@pytest.mark.parametrize("rejects", [True, False])
+@pytest.mark.parametrize("stat_sig", [True, False, None])
 @pytest.mark.parametrize("discovery", [True, False, None])
-@pytest.mark.slow
-def test_verdict_and_selection_are_independent(
-    storefront: DashboardSnapshot, rejects: bool, discovery: bool | None
+def test_outcome_label_formats_captured_verdict_and_selection(
+    storefront: DashboardSnapshot, stat_sig: bool | None, discovery: bool | None
 ) -> None:
-    interval = (
-        Estimate(value=0.3, lb=0.1, ub=0.5, level=0.95)
-        if rejects
-        else Estimate(value=0.05, lb=-0.1, ub=0.2, level=0.95)
-    )
-    row = _row(_with(storefront, SECONDARY, lift=interval, discovery=discovery), SECONDARY)
-    outcome = result_outcome(row)
-    assert outcome.verdict == ("reject" if rejects else "not_reject")
-    assert (
-        outcome.selection
-        == {True: "selected", False: "not_selected", None: "not_applied"}[discovery]
-    )
-    assert outcome.unavailable_reason is None
+    row = {
+        **_row(storefront, SECONDARY),
+        "stat_sig": stat_sig,
+        "discovery": discovery,
+    }
+    label = outcome_label(row)
+    assert label
+    assert outcome_label({**row, "stat_sig": not stat_sig}) != label
+    assert outcome_label({**row, "discovery": not discovery}) != label
 
 
-@pytest.mark.parametrize(
-    ("a", "c", "cov", "expected"),
-    [
-        (1, 0, 0.0, "not_reject"),  # whole line: valid, nothing excluded, no point
-        (10, 0, 0.0, "reject"),  # disconnected, null in the gap
-        (1, 1, -0.9, "not_reject"),  # disconnected, null inside a component
-    ],
-)
-def test_valid_sets_without_a_bounded_interval_are_not_unavailable(
-    storefront: DashboardSnapshot, a: float, c: float, cov: float, expected: str
+def test_valid_sets_without_a_bounded_interval_keep_captured_verdict(
+    storefront: DashboardSnapshot,
 ) -> None:
-    region = _fieller(a, c, cov=cov)
+    region = _fieller(1, 0)
     snapshot = _with(storefront, PRIMARY, lift=region.estimate(), relative_confidence_set=region)
-    outcome = result_outcome(_row(snapshot, PRIMARY))
-    assert outcome.verdict == expected
-    assert outcome.unavailable_reason is None
-
-
-def test_true_unavailability_keeps_its_engine_reason_and_is_not_a_non_rejection(
-    storefront: DashboardSnapshot,
-) -> None:
-    reason = "joint_covariance_indefinite"
-    snapshot = _with(storefront, PRIMARY, **_UNAVAILABLE, relative_unavailable_reason=reason)
     row = _row(snapshot, PRIMARY)
-    assert row["stat_sig"] is False
-    outcome = result_outcome(row)
-    assert outcome.verdict == "unavailable"
-    assert outcome.unavailable_reason == reason
-    assert reason in result_outcome_text(row)
+    assert outcome_label(row) == outcome_label({**row, "relative_confidence_set": None})
 
 
-def test_missing_verdict_is_unavailable_not_a_default_non_rejection(
+def test_missing_verdict_is_not_converted_to_non_rejection(
     storefront: DashboardSnapshot,
 ) -> None:
-    row = {k: v for k, v in _row(storefront, PRIMARY).items() if k != "stat_sig"}
-    assert result_outcome(row).verdict == "unavailable"
+    row = _row(storefront, PRIMARY)
+    assert outcome_label({key: value for key, value in row.items() if key != "stat_sig"}) != (
+        outcome_label({**row, "stat_sig": False})
+    )
 
 
-def test_text_qualifies_the_method_role_and_arm(storefront: DashboardSnapshot) -> None:
+def test_readout_qualifications_distinguish_multiple_methods_for_one_metric(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import LiftEstimates
+    from increment.dashboard._data import readout_interpretation_text
+
+    decision = _decision(storefront, PRIMARY)
+    sensitivity = decision.model_copy(update={"method": "cuped", "method_role": "sensitivity"})
+    snapshot = _rebuilt(storefront, (*storefront.estimates, sensitivity))
+    collection = LiftEstimates(list(snapshot.estimates))
+
+    qualifications = readout_interpretation_text(snapshot, collection=collection)
+
+    assert "method unadjusted" in qualifications
+    assert "method role decision" in qualifications
+    assert "method cuped" in qualifications
+    assert "method role sensitivity" in qualifications
+
+
+def test_metric_details_restore_metric_descriptions(storefront: DashboardSnapshot) -> None:
+    declared = render_metric_details(storefront, metric=PRIMARY).text
+
+    assert "Did the user check out within 14 days of exposure?" in declared
+
+
+def test_outcome_label_does_not_add_row_identity_to_layout_text(
+    storefront: DashboardSnapshot,
+) -> None:
     row = {**_row(storefront, PRIMARY), "method": "cuped", "method_role": "sensitivity"}
-    text = result_outcome_text(row)
-    assert "cuped" in text and "sensitivity" in text
-    assert str(row["group_id"]) not in text
-    assert str(row["group_id"]) in result_outcome_text(row, arm=True)
+    label = outcome_label(row)
+    assert label
+    assert outcome_label({**row, "group_id": "different-arm"}) == label
 
 
 # Levels

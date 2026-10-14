@@ -39,6 +39,7 @@ from increment.dashboard import (
     render_metric_details,
     render_results,
 )
+from increment.dashboard._data import enriched_rows
 
 STOREFRONT_WINDOW = (dt.date(2025, 1, 15), dt.date(2025, 2, 14))
 PRICING_WINDOW = (dt.date(2025, 3, 1), dt.date(2025, 3, 31))
@@ -524,6 +525,103 @@ def test_allocation_check_uses_configured_shares(pricing: DashboardSnapshot) -> 
     assert allocation.expected == {"baseline": 0.7, "candidate": 0.3}
     assert allocation.observed == {"baseline": 700, "candidate": 300}
     assert allocation.is_srm is False
+
+
+def test_dashboard_readout_normalizes_relative_allocation_weights(
+    dashboard_con, dashboard_definitions
+) -> None:
+    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    try:
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1}),
+        )
+        assert snapshot.allocation is not None
+        assert snapshot.allocation.expected == {"baseline": 0.5, "candidate": 0.5}
+        text = render_header(snapshot).text
+        assert "baseline 50%" in text
+        assert "candidate 50%" in text
+        assert "baseline 100%" not in text
+        assert "candidate 100%" not in text
+    finally:
+        analysis.close()
+
+
+def test_dashboard_explains_missing_allocation_scheme_separately(
+    pricing: DashboardSnapshot,
+) -> None:
+    from increment.estimation.readout_types import IntegrityStatus
+
+    collection = pricing.readout_collection
+    assert collection is not None and collection.metadata is not None
+    metadata = collection.metadata
+    source_id, source = next(iter(metadata.scope.by_source.items()))
+    integrity = tuple(
+        item.model_copy(
+            update={
+                "status": IntegrityStatus.NOT_CHECKED_MISSING_DECLARATION,
+                "code": "integrity.allocation_scheme_missing",
+                "context": {"allocation_scheme": None},
+            }
+        )
+        if item.analysis_population == "assigned"
+        else item
+        for item in source.integrity
+    )
+    changed_source = source.model_copy(update={"integrity": integrity})
+    changed_scope = metadata.scope.model_copy(
+        update={"by_source": {**metadata.scope.by_source, source_id: changed_source}}
+    )
+    changed_collection = type(collection)(
+        collection, metadata=metadata.model_copy(update={"scope": changed_scope})
+    )
+    snapshot = dataclasses.replace(
+        pricing,
+        readout_collection=changed_collection,
+        population_collections={**pricing.population_collections, "assigned": changed_collection},
+    )
+
+    text = render_header(snapshot).text
+    assert "the allocation scheme is not declared" in text
+    assert "integrity.allocation_scheme_missing" in text
+    assert "no allocation declared" not in text
+
+
+def test_dashboard_names_declared_weights_not_observed_counts(pricing: DashboardSnapshot) -> None:
+    from increment.estimation.readout_types import IntegrityStatus
+
+    collection = pricing.readout_collection
+    assert collection is not None and collection.metadata is not None
+    metadata = collection.metadata
+    source_id, source = next(iter(metadata.scope.by_source.items()))
+    integrity = tuple(
+        item.model_copy(
+            update={
+                "status": IntegrityStatus.NOT_CHECKED_MISSING_DECLARATION,
+                "code": "integrity.allocation_missing_or_nonconstant",
+                "context": {"allocation": None},
+            }
+        )
+        if item.analysis_population == "assigned"
+        else item
+        for item in source.integrity
+    )
+    changed_source = source.model_copy(update={"integrity": integrity})
+    changed_scope = metadata.scope.model_copy(
+        update={"by_source": {**metadata.scope.by_source, source_id: changed_source}}
+    )
+    changed_collection = type(collection)(
+        collection, metadata=metadata.model_copy(update={"scope": changed_scope})
+    )
+    snapshot = dataclasses.replace(
+        pricing,
+        readout_collection=changed_collection,
+        population_collections={**pricing.population_collections, "assigned": changed_collection},
+    )
+    text = render_header(snapshot).text
+    assert "integrity.allocation_missing_or_nonconstant" in text
+    assert "declared target allocation weights" in text
+    assert "allocation counts are missing or nonconstant" not in text
 
 
 def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) -> None:
@@ -1922,6 +2020,12 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         method_at = summary.index(str(row["method"]))
         preceding = [value for start, value in levels if start < method_at]
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
+    notes = "\n".join(_app._report_notes(snapshot))
+    disclosure = render_results(snapshot).text
+    for row in (decision, sensitivity):
+        attribution = f"{row['metric']} ({row['method']}, {row['method_role']})"
+        assert attribution in notes
+        assert attribution in disclosure
 
 
 def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
@@ -2046,3 +2150,319 @@ def test_report_retains_directional_fieller_set_beside_central_interval(
             if endpoint is not None:
                 assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
     assert "∞" in notes
+
+
+@pytest.mark.slow
+def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
+    dashboard_con, dashboard_definitions
+):
+    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    try:
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"control": 0.7, "treatment": 0.3}),
+        )
+    finally:
+        analysis.close()
+    assert snapshot.allocation is not None and snapshot.allocation.is_srm
+
+    scoped = snapshot.readout_collection
+    assert scoped is not None
+    assert scoped.metadata is not None
+    assert scoped.metadata.scope.by_source
+    primary_only = scoped.filter(lambda row: row.metric == "checkout_conversion")
+    rows = enriched_rows(primary_only)
+    primary = next(row for row in rows if row["metric"] == "checkout_conversion")
+    assert primary["view_partial"] is True
+    assert primary["analysis_population"] == "assigned"
+    assert primary["integrity_status"] == "not_checked_missing_declaration"
+    hidden = json.loads(primary["hidden_cells"])
+    assert any(item["cell"]["metric"] == "session_seconds" for item in hidden)
+
+    dashboard_snapshot = dataclasses.replace(
+        snapshot,
+        estimates=tuple(primary_only),
+        readout_collection=primary_only,
+        population_collections={"assigned": primary_only},
+        population_estimates={"assigned": tuple(primary_only)},
+        readout_rows=rows,
+    )
+    exported = list(csv.DictReader(io.StringIO(readout_csv(dashboard_snapshot).decode("utf-8"))))
+    assert len(exported) == 1
+    row = exported[0]
+    assert row["view_partial"] == "True"
+    assert row["analysis_population"] == "assigned"
+    assert row["integrity_status"] == "not_checked_missing_declaration"
+    exported_hidden = json.loads(row["hidden_cells"])
+    assert any(item["cell"]["metric"] == "session_seconds" for item in exported_hidden)
+    assert row["hidden_cells"] == json.dumps(
+        exported_hidden, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert json.loads(row["retained_family"])
+    summary_html = render_header(dashboard_snapshot).text
+    assert "partial" in summary_html
+    assert "session_seconds" in summary_html
+    assert "not_checked_missing_declaration" in summary_html
+    readout_html = render_results(dashboard_snapshot).text
+    assert "partial" in readout_html
+    for surface in (summary_html, readout_html):
+        assert "Dashboard allocation check" in surface
+        assert "configured expected control 70% / treatment 30%" in surface
+        assert "mismatch detected" in surface
+        assert "integrity.allocation_missing_or_nonconstant" in surface
+        assert surface.index("mismatch detected") < surface.index("Analysis assignment check")
+
+
+def _assert_added_exploratory_readout(snapshot):
+    from html import escape
+
+    from increment.dashboard import render_metric_details
+
+    captures = [
+        capture
+        for key, capture in snapshot.explore.items()
+        if key[1] == "overview_whole" and key[2] is None and key[4] is None
+    ]
+    assert captures
+    collection = captures[0].load()
+    assert collection.metadata is not None
+    advisory = next(
+        item
+        for record in collection.metadata.cells
+        if record.cell.metric == "purchase_rate"
+        for item in record.advisories
+        if item.code == "estimation.engine.small_total_clusters"
+    )
+    details = render_metric_details(snapshot, metric="purchase_rate").text
+    assert "purchase_rate" in details
+    assert advisory.code in details
+    assert escape(advisory.message) in details
+    assert snapshot.overview is not None
+    added = next(row for row in snapshot.overview.exploratory if row.metric == "purchase_rate")
+    assert added.note is not None and added.note in details
+    assert "session_seconds" not in details
+
+
+@pytest.mark.slow
+def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Path, dashboard_con):
+    facts = (
+        FACT_SOURCES.replace(
+            "SELECT * FROM analytics.event_log",
+            "SELECT *, concat(group_id, '_', country_code) AS store_id FROM analytics.event_log",
+        )
+        .replace(
+            "    properties:\n",
+            "    properties:\n"
+            "      - name: store_id\n"
+            "        column: store_id\n"
+            "        dtype: string\n"
+            "        as_of: static\n"
+            "        description: Randomization cluster\n",
+            1,
+        )
+        .replace(
+            "    properties:\n",
+            "      - name: no_data\n"
+            "        column: revenue\n"
+            "        description: No observations\n"
+            "    properties:\n",
+            1,
+        )
+    )
+    metrics = (
+        METRICS
+        + """
+  - type: ratio
+    name: empty_guardrail
+    entity: user_id
+    preferred_direction: decrease
+    numerator: {fact: purchase, aggregation: sum, window_days: 14}
+    denominator: {fact: no_data, aggregation: count, window_days: 14}
+"""
+    )
+    experiments = (
+        EXPERIMENTS.replace(
+            "    unit: user_id\n",
+            "    unit: user_id\n    cluster: store_id\n",
+            1,
+        )
+        .replace(
+            "      guardrails:\n        - session_seconds\n",
+            "      guardrails:\n        - session_seconds\n        - empty_guardrail\n",
+            1,
+        )
+        .replace("    breakouts:\n      - property: country\n        source: event_log\n", "")
+    )
+    definitions = tmp_path / "definitions"
+    definitions.mkdir()
+    for name, content in (
+        ("fact_sources.yaml", facts),
+        ("exposures.yaml", EXPOSURES),
+        ("metrics.yaml", metrics),
+        ("experiments.yaml", experiments),
+    ):
+        (definitions / name).write_text(content)
+
+    from increment import Analysis
+    from increment.dashboard._app import build_payload, document
+
+    analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            snapshot = prepare_dashboard(
+                analysis,
+                config=DashboardConfig(
+                    expected_allocation={"control": 0.9999, "treatment": 0.0001},
+                    exploratory_metrics=("purchase_rate",),
+                ),
+            )
+        assert snapshot.allocation is not None and snapshot.allocation.is_srm
+        failed = next(row for row in snapshot.readout_rows if row["metric"] == "empty_guardrail")
+        unavailable = json.loads(failed["unavailable_cells"])
+        reason = next(item for item in unavailable if item["cell"]["metric"] == "empty_guardrail")
+        assert reason["code"] == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+        advisory = next(
+            item
+            for row in snapshot.readout_rows
+            for item in json.loads(row["advisories"])
+            if item["code"] == "estimation.engine.small_total_clusters"
+        )
+        assert "below 40" in advisory["message"]
+
+        summary_html = render_header(snapshot).text
+        readout_html = render_results(snapshot).text
+        payload = build_payload(analysis, snapshot=snapshot)
+        report_text = payload["report"]["qualifications"]
+        for surface in (summary_html, readout_html, report_text):
+            assert reason["code"] in surface
+            assert advisory["code"] in surface
+            assert "below 40" in surface
+        assert advisory["message"] in report_text
+        shell = document(payload)
+        assert payload["qualifications"] == payload["report"]["qualifications"]
+        assert "integrity.allocation_missing_or_nonconstant" in payload["qualifications"]
+        assert shell.index('id="hero-meta"') < shell.index('id="hero-qualifications"')
+        assert "hero-meta').textContent = str(data.meta)" in shell
+        assert payload["meta"]
+        assert shell.index('id="hero-qualifications"') < shell.index('id="hero-primary-effect"')
+        assert shell.index('id="report-qualifications"') < shell.index('id="report-primary-effect"')
+        _assert_added_exploratory_readout(snapshot)
+
+        exported = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
+        exported_failed = next(row for row in exported if row["metric"] == "empty_guardrail")
+        exported_reason = next(
+            item
+            for item in json.loads(exported_failed["unavailable_cells"])
+            if item["cell"]["metric"] == "empty_guardrail"
+        )
+        assert exported_reason["code"] == reason["code"]
+        exported_advisory = next(
+            item
+            for row in exported
+            for item in json.loads(row["advisories"])
+            if item["code"] == "estimation.engine.small_total_clusters"
+        )
+        assert exported_advisory["message"] == advisory["message"]
+    finally:
+        analysis.close()
+
+
+@pytest.mark.slow
+def test_clustered_overview_fallback_preserves_each_metric_collection(
+    tmp_path: Path, dashboard_con
+):
+    facts = FACT_SOURCES.replace(
+        "SELECT * FROM analytics.event_log",
+        "SELECT *, concat(group_id, '_', country_code) AS store_id FROM analytics.event_log",
+    ).replace(
+        "    properties:\n",
+        "    properties:\n"
+        "      - name: store_id\n"
+        "        column: store_id\n"
+        "        dtype: string\n"
+        "        as_of: static\n",
+        1,
+    )
+    metrics = (
+        METRICS
+        + """
+  - type: mean
+    name: added_revenue
+    entity: user_id
+    preferred_direction: increase
+    fact: purchase
+    aggregation: sum
+    window_days: 14
+  - type: mean
+    name: added_duration
+    entity: user_id
+    preferred_direction: decrease
+    fact: session_end
+    aggregation: sum
+    window_days: 14
+  - type: quantile
+    name: p90_revenue
+    quantile: 0.9
+    entity: user_id
+    fact: purchase
+    aggregation: sum
+    window_days: 14
+"""
+    )
+    experiments = EXPERIMENTS.replace(
+        "    unit: user_id\n", "    unit: user_id\n    cluster: store_id\n", 1
+    ).replace("    breakouts:\n      - property: country\n        source: event_log\n", "")
+    definitions = tmp_path / "definitions"
+    definitions.mkdir()
+    for name, content in (
+        ("fact_sources.yaml", facts),
+        ("exposures.yaml", EXPOSURES),
+        ("metrics.yaml", metrics),
+        ("experiments.yaml", experiments),
+    ):
+        (definitions / name).write_text(content)
+
+    from typing import cast
+
+    from increment import Analysis
+    from increment.breakout.estimates import LiftEstimates
+    from increment.dashboard import render_dashboard
+    from increment.dashboard._app import build_payload
+
+    added = ("added_revenue", "added_duration", "p90_revenue")
+    analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            snapshot = prepare_dashboard(
+                analysis,
+                config=DashboardConfig(
+                    expected_allocation={"control": 0.5, "treatment": 0.5},
+                    exploratory_metrics=added,
+                ),
+            )
+        capture = snapshot.explore[("assigned", "overview_whole", None, False, None)]
+        collection = cast(LiftEstimates, capture.load())
+        assert {row.metric for row in collection} >= set(added[:2])
+        assert collection.metadata is not None
+        assert {record.cell.metric for record in collection.metadata.cells} >= set(added[:2])
+
+        overview = snapshot.overview
+        assert overview is not None
+        assert {row.metric for row in overview.exploratory} >= set(added[:2])
+        refusal = next(item for item in overview.refusals if item[0] == "p90_revenue")
+        assert refusal[2].code == "arm.metric.quantile_cluster"
+
+        details = render_metric_details(snapshot, metric="added_revenue").text
+        assert "added_revenue" in details
+        assert render_dashboard(analysis, snapshot=snapshot) is not None
+        payload = build_payload(analysis, snapshot=snapshot)
+        notes = payload["overview"]["overall"]["notes"]
+        assert any("p90_revenue" in note and refusal[2].code in note for note in notes)
+    finally:
+        analysis.close()

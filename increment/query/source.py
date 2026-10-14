@@ -74,6 +74,8 @@ from increment.semantics.artifact import (
     ArtifactContext,
     RatioMetricMeasure,
     SimpleMetricMeasure,
+    UnitCovariateExtension,
+    UnitCovariateLevelExtension,
     UnitDayArtifactManifest,
     UnitDayArtifactRef,
 )
@@ -644,6 +646,12 @@ def _artifact_request(extension: Any) -> dict[str, Any]:
         return {"kind": kind, "cluster_name": extension.cluster_name}
     if kind == "cuped_preperiod":
         return {"kind": kind, "metric_name": extension.metric_name}
+    if kind == "cuped_measure_covariate":
+        return {
+            "kind": kind,
+            "metric_name": extension.metric_name,
+            "covariate_name": extension.covariate_name,
+        }
     if kind == "assignment_counts":
         return {"kind": kind, "populations": extension.populations}
     if kind == "trigger_population":
@@ -1276,8 +1284,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)
         # A requested declared cluster column reuses the attached metadata column.
         requested = [name for name in dict.fromkeys(covariates) if name != "cluster_id"]
-        extensions = {name: self._covariate_extension(name) for name in requested}
         metric = self.validated_metric(metric)
+        extensions = {name: self._covariate_extension(metric.name, name) for name in requested}
         if self._population_units is None:
             base = self._unit_frame(
                 metric,
@@ -1314,13 +1322,66 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return frame.to_native()
 
-    def _covariate_extension(self, name: str) -> Any:
-        matches = [
-            extension
-            for extension in self._manifest.extensions
-            if (extension.kind == "unit_covariate" or extension.kind == "unit_covariate_level")
-            and extension.covariate_name == name
-        ]
+    def _covariate_extension(self, metric_name: str, name: str) -> Any:
+        property_name = name
+        source_name = None
+        measure_bound = False
+        context = json.loads(self._manifest.context.canonical_json)
+        experiment_context = context.get("experiment", {})
+        design = experiment_context.get("design") or {}
+        design_covariate = next(
+            (
+                covariate
+                for covariate in design.get("covariates", ())
+                if covariate.get("property") == name
+            ),
+            None,
+        )
+        design_bound = design_covariate is not None
+        if design_covariate is not None:
+            source_name = design_covariate.get("source")
+        else:
+            plan = experiment_context.get("plan", {})
+            primary = plan.get("primary")
+            entries = list(primary) if isinstance(primary, list) else [primary]
+            entries.extend(plan.get("secondaries") or ())
+            entries.extend(plan.get("guardrails") or ())
+            for entry in entries:
+                if not isinstance(entry, dict) or entry.get("metric") != metric_name:
+                    continue
+                for covariate in cast(Sequence[Any], entry.get("covariates", ())):
+                    if covariate.get("name") != name:
+                        continue
+                    if covariate.get("property") is not None:
+                        property_name = covariate["property"]
+                        source_name = covariate.get("source")
+                    elif covariate.get("measure") is not None:
+                        measure_bound = True
+                    break
+        if not measure_bound and source_name is None:
+            design = experiment_context.get("design") or {}
+            for covariate in design.get("covariates", ()):
+                if covariate.get("property") == property_name:
+                    source_name = covariate.get("source")
+                    break
+
+        matches: list[Any] = []
+        if not measure_bound:
+            matches.extend(
+                extension
+                for extension in self._manifest.extensions
+                if isinstance(extension, (UnitCovariateExtension, UnitCovariateLevelExtension))
+                and extension.covariate_name == property_name
+                and (source_name is None or extension.source_name == source_name)
+            )
+        if not design_bound:
+            matches.extend(
+                extension
+                for extension in self._manifest.extensions
+                if extension.kind == "cuped_measure_covariate"
+                and extension.metric_name == metric_name
+                and extension.covariate_name == name
+            )
         if len(matches) == 1:
             return matches[0]
         code = "artifact.extension.missing" if not matches else "artifact.extension.invalid"
@@ -1328,16 +1389,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             _ARTIFACT_REFUSALS[code],
             message=(
                 f"artifact carries {'no' if not matches else 'more than one'} unit "
-                f"covariate {name!r}. An artifact publishes only the covariates its "
-                "experiment declares under design.covariates: declare it there and "
-                "republish (a declared covariate is published automatically), or "
-                "read Analysis.from_definitions."
+                f"covariate {name!r} for metric {metric_name!r}. Republish the artifact "
+                "from the matching definitions so it includes this declared covariate."
             ),
             covariate=name,
-            route=(
-                "declare the covariate under the experiment's observational design "
-                "and republish the artifact from those definitions"
-            ),
+            metric=metric_name,
+            route="republish the artifact from the definitions that declare this CUPED covariate",
         )
 
     def moments(
@@ -1495,6 +1552,57 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             {str(row[breakout.property]) for row in rows if row.get(breakout.property) is not None}
         )
 
+    def breakout_unit_frame(
+        self,
+        metric: Metric,
+        *,
+        breakout: Breakout,
+        covariates: Sequence[str] = (),
+        population: Literal["assigned", "triggered"] = "assigned",
+        outcome_stage: Literal["transformed", "raw"] = "transformed",
+    ) -> Any:
+        import narwhals as nw
+        import pyarrow as pa
+
+        from increment._source_types import breakout_dimension_column
+
+        if population == "triggered" and self._population_units is None:
+            return cast("_ArtifactFacadeSource", self.triggered_source()).breakout_unit_frame(
+                metric,
+                breakout=breakout,
+                covariates=covariates,
+                population=population,
+                outcome_stage=outcome_stage,
+            )
+        units = nw.from_native(
+            self.unit_frame(metric, covariates=covariates, outcome_stage=outcome_stage),
+            eager_only=True,
+        )
+        extension = self._extension(
+            {
+                "kind": "breakout_dimension",
+                "property_name": breakout.property,
+                "source_name": breakout.source,
+            }
+        )
+        rows = self._read_extension(extension, request=_artifact_request(extension))
+        values = {
+            str(row["unit_id"]): None if row.get("value_is_missing") else row["dimension_value"]
+            for row in rows
+        }
+        dimension = nw.from_native(
+            pa.table(
+                {
+                    "unit_id": [str(value) for value in units["unit_id"].to_list()],
+                    breakout_dimension_column(covariates): [
+                        values.get(str(value)) for value in units["unit_id"].to_list()
+                    ],
+                }
+            ),
+            eager_only=True,
+        )
+        return units.join(dimension, on="unit_id", how="left").to_native()
+
     def breakout_source(
         self,
         breakout: Breakout,
@@ -1544,6 +1652,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             plan=self.context.plan,
             configs=self.context.configs,
             _source=self,
+            population=population,
         )
 
     def breakout_sources(

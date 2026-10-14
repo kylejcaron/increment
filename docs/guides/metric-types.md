@@ -497,6 +497,15 @@ passing silently. See [limitations](../limitations.md#uncertainty-is-estimated-o
 for the measured table and the cases (clustered, sequential) the check does
 not claim.
 
+When a ratio metric uses mixed-covariate `cuped_linear`, it has the
+additional fixed-horizon M1 support check described in the
+[CUPED guide](cuped.md#mixed-numeric-and-categorical-covariates): each raw
+arm denominator must have relative standard error at most 0.15. This
+rejects some heavy-denominator designs around 100 units per arm; it is a
+support restriction, not a coverage certificate. Scalar ratio CUPED remains
+a separate method and does not use this M1 check.
+
+
 ### Conditional effects (CATE)
 
 Conditional effects currently support mean and conversion metrics only.
@@ -531,9 +540,10 @@ IDs adds no independent randomizations.
 
 Covariates must be available from the source's `unit_frame`. The definitions
 source serves any numeric `pre_exposure` or `static` property by name, resolved
-like a breakout; a unit-day artifact serves only the covariates its experiment
-declares under an observational `design.covariates` (see
-[observational.md](observational.md#from-definitions-the-warehouse-path)).
+like a breakout. Unit-day artifacts automatically publish observational
+adjustment properties and per-metric CUPED property and measure bindings, so
+those covariates are also available on replay, including for `cuped_linear`
+estimation (see [CUPED](cuped.md)).
 Intercept-only calls (`interact=[]`) can use native and adopted artifact sources.
 They have constant rankings, so clustered AUTOC/Qini uncertainty is unavailable
 with `estimation.targeting.degenerate_rank_distribution`, and the targeting gate
