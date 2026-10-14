@@ -723,6 +723,8 @@ _INTERVAL_FIELDS = (
     "abs_lb",
     "abs_ub",
     "abs_alpha",
+    "abs_reference_kind",
+    "abs_reference_df",
     "note",
 )
 #: Each selected row is capped at its own nominal level below, so selection runs uncapped.

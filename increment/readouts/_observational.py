@@ -10,6 +10,7 @@ from increment.estimation.adjust import (
     judge_shared_prior_scales,
     weight_diagnostics_projection,
 )
+from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.engine import Method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
@@ -300,6 +301,7 @@ def _estimate_observational_secondary_family(
             _raise_if_empty=False,
             _prior_scale_judged=True,
             evidence=evidence,
+            route_tail=fcr_route_tail(procedure.alternative, fcr_alpha),
         )
         if computations is not None:
             computations.append(computation)

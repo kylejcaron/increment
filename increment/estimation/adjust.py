@@ -847,11 +847,13 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     evidence: ObservationalEvidence | None = None,
     family_member: bool = False,
+    route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """``estimate_ate`` with the moment evidence and family membership its callers pass.
 
     ``family_member`` marks the unadjusted conversion decision rows as members of a BH family
-    (see ``_estimate_lift``); only the package's own families set it. ``evidence`` is the
+    and ``route_tail`` the tail a selected member's corrected pass routes their counts at (see
+    ``_estimate_lift``); only the package's own families set them. ``evidence`` is the
     moment rows a readout already reduced (and sized its family from): every method,
     diagnostic, failed cell and FCR re-estimate of this call reads them. Absent, the call
     reduces required metric moments once itself; clustered unadjusted inference uses unit
@@ -959,6 +961,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         cluster=cluster,
                         method_roles=method_roles,
                         family_member=family_member,
+                        route_tail=route_tail,
                     ).results
                 # The docstring promise "labelled accordingly" must be visible
                 # on the row itself, not just the method name, for a report reader.

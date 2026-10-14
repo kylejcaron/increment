@@ -475,6 +475,107 @@ class TestFcrReissueBelowTheDenseLevel:
         assert strong.stat_sig() is True
 
 
+class TestReissueRoutesAtTheReportedTail:
+    """A selected directional row reports one open bound at the corrected level's whole tail
+    (the two-sided parent is requested at half the level and opened at the full tail): the
+    reissue routes its counts at that tail, on the persisted path and the source-backed one."""
+
+    COUNTS = (2_600, 20_000, 2_900, 20_000)
+    FCR = 0.03
+
+    def _member(self):
+        row = member_row(self.COUNTS, alpha=0.05, alternative="greater")
+        evidence = row.delta_evidence
+        assert evidence is not None
+        # Dense at the reported tail, not at half of it.
+        assert self.FCR / 2.0 < evidence.dense_level <= self.FCR
+        return row
+
+    def test_the_persisted_reissue_keeps_the_delta_route_where_the_reported_tail_is_dense(self):
+        from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+
+        row = self._member()
+        construction, _ = classify(row)
+        assert construction == "conversion"
+        reissued = reinterval_at_fcr(row, construction, self.FCR)
+        assert reissued.reference_kind == "t"
+        assert reissued.require_lift().alpha == self.FCR
+        assert reissued.require_lift().open_side == "upper"
+        assert reissued.delta_evidence == row.delta_evidence
+
+    def test_the_source_backed_reissue_routes_at_the_same_tail(self):
+        """``estimate_lift`` requested at half the corrected level for a directional row routes
+        at the full tail when told it is a corrected pass, as the persisted path does."""
+        from increment.estimation.conversion_route import fcr_route_tail
+
+        computation = _estimate_lift(
+            metrics=[CONVERSION_METRIC],
+            summary=count_summary(*self.COUNTS),
+            control_group="control",
+            alpha=self.FCR / 2.0,
+            alternative="greater",
+            route_tail=fcr_route_tail("greater", self.FCR),
+        )
+        (row,) = computation.results
+        assert row.reference_kind == "t"
+        plain = lift_row(self.COUNTS, alpha=self.FCR / 2.0, alternative="greater")
+        assert plain.reference_kind == "binomial"
+
+    def test_an_arm_above_the_exact_ceiling_is_not_refused_where_the_reported_tail_is_dense(
+        self,
+    ):
+        from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+
+        n = 2 * FINITE_SAMPLE_MAX_ARM_SIZE
+        row = member_row((50_000, n, 60_000, n), alternative="greater")
+        evidence = row.delta_evidence
+        assert evidence is not None
+        fcr = 1e-5
+        assert fcr / 2.0 < evidence.dense_level <= fcr
+        construction, _ = classify(row)
+        assert construction is not None
+        reissued = reinterval_at_fcr(row, construction, fcr)
+        assert reissued.reference_kind == "t"
+        assert reissued.require_lift().alpha == fcr
+
+    def test_a_reissue_below_the_dense_level_is_cut_as_a_fresh_finite_sample_row(self):
+        """Normal additive bounds with no t reference, and the row's other disclosures kept
+        while the composite note, which no longer applies, is dropped."""
+        from increment.estimation._fcr_reinterval import classify, reinterval_at_fcr
+
+        warning = (
+            "unadjusted group-mean comparison under an Observational design -- confounded; "
+            "not a causal estimate"
+        )
+        row = escalate_family_member(
+            lift_row((2_500, 50_000, 2_800, 50_000)).model_copy(update={"note": warning})
+        )
+        assert row.note is not None and row.note.startswith(warning)
+        assert ESCALATED_NOTE_PREFIX in row.note
+        construction, _ = classify(row)
+        assert construction is not None
+        reissued = reinterval_at_fcr(row, construction, 0.002)
+        fresh = lift_row((2_500, 50_000, 2_800, 50_000), alpha=0.002, mode="finite_sample")
+        assert reissued.reference_kind == "binomial"
+        assert (reissued.abs_reference_kind, reissued.abs_reference_df) == (None, None)
+        assert (reissued.abs_lb, reissued.abs_ub) == (fresh.abs_lb, fresh.abs_ub)
+        assert reissued.note == warning
+        assert fresh.note is None
+
+    def test_an_exploratory_member_reissued_below_its_level_keeps_its_other_disclosures(self):
+        warning = "unadjusted group-mean comparison under an Observational design -- confounded"
+        cells = {
+            "strong": (2_500, 50_000, 2_800, 50_000),
+            **{f"null_{i}": (2_500, 50_000, 2_500 + i, 50_000) for i in range(9)},
+        }
+        rows = [row.model_copy(update={"note": warning}) for row in _whole_window_rows(cells)]
+        corrected = select_exploratory_family(rows, q=0.05)
+        strong = next(row for row in corrected if row.metric == "strong")
+        assert strong.discovery is True and strong.reference_kind == "binomial"
+        assert strong.note == warning
+        assert (strong.abs_reference_kind, strong.abs_reference_df) == (None, None)
+
+
 class TestPersistedRowsRoundTrip:
     @pytest.mark.parametrize("member", [True, False])
     @pytest.mark.parametrize(

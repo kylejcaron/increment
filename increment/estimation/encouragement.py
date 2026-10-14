@@ -957,6 +957,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     *,
     family_member: bool,
+    route_tail: float | None,
 ) -> _PreparedEncouragementEstimation | DecisionComputation[LiftEstimate]:
     """Resolve request policy, index arms, and delegate ITT construction."""
     if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -1016,6 +1017,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
             cluster=cluster,
             method_roles=resolved_method_roles,
             family_member=family_member,
+            route_tail=route_tail,
         )
         results = tuple(
             r.model_copy(
@@ -1685,10 +1687,12 @@ def _estimate_encouragement(  # noqa: PLR0913
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     family_member: bool = False,
+    route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_encouragement`` with the family membership its families pass: the ``itt``
-    decision rows of a conversion metric in a BH family read the composite p-value (see
-    ``_estimate_lift``). Only the package's own families set it."""
+    """``estimate_encouragement`` with the family membership and corrected-pass routing tail
+    its families pass: the ``itt`` decision rows of a conversion metric in a BH family read the
+    composite p-value, and a selected one's reissue routes at the tail it reports (see
+    ``_estimate_lift``). Only the package's own families set them."""
     _require_exclusion_for_late(design, estimands)
     if inference is not None:
         from increment.estimation.decision_types import DecisionComputation
@@ -1757,6 +1761,7 @@ def _estimate_encouragement(  # noqa: PLR0913
         cluster,
         method_roles,
         family_member=family_member,
+        route_tail=route_tail,
     )
     if not isinstance(prepared, _PreparedEncouragementEstimation):
         return prepared

@@ -182,6 +182,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     family: bool = False,
     family_member: bool = False,
+    route_tail: float | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Estimate randomized whole-window cells independently.
 
@@ -248,6 +249,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
                         method_roles=method_roles,
                         cluster=cluster,
                         family_member=family_member,
+                        route_tail=route_tail,
                     )
                     cell_results = computation.results
                     computations.append(computation)
@@ -373,11 +375,13 @@ def _estimate_pass(  # noqa: PLR0913
     retry: Literal["cells", "family", "whole", "whole_asof"] = "cells",
     methods: list[Method],
     family_member: bool = False,
+    route_tail: float | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Run one randomized estimation pass with role, alpha, and retry policy.
 
     ``family_member`` marks the metric's decision rows as members of the plan's BH family,
-    whose p-values are read below their own level.
+    whose p-values are read below their own level; ``route_tail`` is the tail a selected
+    member's corrected pass routes conversion counts at (`conversion_route.fcr_route_tail`).
 
     `evidence` is what the caller already read for this metric: total moment
     rows for a moments metric, the native unit frame for a quantile metric.
@@ -453,6 +457,7 @@ def _estimate_pass(  # noqa: PLR0913
             method_roles=method_roles,
             cluster=src.context.cluster,
             family_member=family_member,
+            route_tail=route_tail,
         )
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
@@ -477,5 +482,6 @@ def _estimate_pass(  # noqa: PLR0913
         advisory_seen=advisory_seen,
         family=retry == "family",
         family_member=family_member,
+        route_tail=route_tail,
     )
     return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation

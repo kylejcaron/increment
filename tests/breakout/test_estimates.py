@@ -1425,6 +1425,62 @@ class TestRunBreakoutBHRoutesEachCellAtItsOwnLevel:
             if row.discovery:
                 assert row.stat_sig() is twin.stat_sig()
 
+    def test_a_selected_directional_cell_is_reissued_at_the_tail_it_reports(self):
+        """A ``greater`` family at ``q = 0.06`` over two cells selects one at ``fcr = 0.03``:
+        its counts are dense at that tail but not at half of it, so the reissued cell keeps
+        the delta route with its bound opened at ``0.03`` -- on the moment path and on the
+        exploratory path alike."""
+        from increment.estimation.family import select_exploratory_family
+
+        rows = [
+            *(
+                _conversion_arm_row(20_000, successes, country="US", group_id=group)
+                for group, successes in (("control", 2_600), ("treatment", 2_900))
+            ),
+            *(
+                _conversion_arm_row(20_000, successes, country="GB", group_id=group)
+                for group, successes in (("control", 2_600), ("treatment", 2_600))
+            ),
+        ]
+        corrected = run_breakout(
+            rows,
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            alpha=0.05,
+            alternative="greater",
+            correction="bh",
+            q=0.06,
+        )
+        us = next(row for row in corrected if row.dimension_value == "US")
+        assert us.discovery is True and us.family_threshold == 0.03
+        assert us.reference_kind == "t"
+        assert us.require_lift().alpha == 0.03 and us.require_lift().open_side == "upper"
+        assert us.delta_evidence is not None
+        assert 0.015 < us.delta_evidence.dense_level <= 0.03
+        exploratory = select_exploratory_family(
+            list(
+                run_breakout(
+                    rows,
+                    [_conversion_metric()],
+                    control_group="control",
+                    dimension="country",
+                    alpha=0.05,
+                    alternative="greater",
+                )
+            ),
+            q=0.06,
+        )
+        twin = next(
+            row
+            for row in exploratory
+            if isinstance(row, BreakoutEstimate) and row.dimension_value == "US"
+        )
+        assert twin.reference_kind == "t"
+        assert twin.require_lift().lb == us.require_lift().lb
+        assert twin.p_value() == us.p_value()
+        assert twin.delta_evidence == us.delta_evidence
+
     def test_the_family_size_counts_only_the_cells_present(self):
         """``other`` is carried by one segment only: the family is three cells, and every cell
         keeps the route its own level gives it whatever the family's size."""

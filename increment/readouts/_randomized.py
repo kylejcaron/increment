@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._policy_alpha import resolve_cell_alpha
+from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.engine import Method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
@@ -332,6 +333,7 @@ def _estimate_randomized_secondary_family(
             inference=None if is_quantile else effective_inference,
             advisory_seen=advisory_seen,
             methods=_metric_methods[:1],
+            route_tail=None if is_quantile else fcr_route_tail(test.alternative, fcr_alpha),
         )
         reestimated[metric.name] = [
             open_bound_from_two_sided_at_target(r) for r in reestimated[metric.name]

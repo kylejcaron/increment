@@ -2875,15 +2875,17 @@ def _lift_for_method(  # noqa: PLR0913
     preferred_direction: PreferredDirection | None,
     *,
     family_member: bool = False,
+    route_tail: float | None = None,
 ) -> tuple[LiftEstimate | None, DecisionFailure | None]:
     """One (contrast, method) row.
 
-    Auto conversion routing is selected from the counts and the row's own tail allocation,
-    independently of the prior and of any family the row belongs to. The prior can add a
-    separately guarded posterior, but cannot replace the prior-free sampling construction.
-    A row routed to the delta method carries its four counts and dense level; a decision row
-    of a multiplicity family (``family_member``) additionally reads the composite p-value the
-    family decides on (`escalate_family_member`).
+    Auto conversion routing is selected from the counts and the row's own tail allocation
+    (``route_tail`` when a family's corrected pass opens the resulting parent at another tail:
+    `conversion_route.fcr_route_tail`), independently of the prior and of any family the row
+    belongs to. The prior can add a separately guarded posterior, but cannot replace the
+    prior-free sampling construction. A row routed to the delta method carries its four counts
+    and dense level; a decision row of a multiplicity family (``family_member``) additionally
+    reads the composite p-value the family decides on (`escalate_family_member`).
     """
     treatment, control = contrast
     method = method_strategy.method
@@ -2930,7 +2932,11 @@ def _lift_for_method(  # noqa: PLR0913
         counts = _contrast_counts(treatment, control, metric_type)
     except binomial_rr.BinomialDataError as exc:
         return _binomial_data_failure(treatment, exc, method_role)
-    route = route_for_counts(*counts, tail_alpha=alpha_eff / 2.0, mode=method.conversion_inference)
+    route = route_for_counts(
+        *counts,
+        tail_alpha=alpha_eff / 2.0 if route_tail is None else route_tail,
+        mode=method.conversion_inference,
+    )
     if route == "finite_sample":
         result, failure = _infer_binomial_lift_result(
             contrast,
@@ -3199,14 +3205,19 @@ def _estimate_lift(  # noqa: PLR0913
     *,
     summary_population: Literal["assigned", "triggered"] | None = None,
     family_member: bool = False,
+    route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_lift`` with the family membership its multiplicity families pass.
+    """``estimate_lift`` with the family membership and corrected-pass routing tail its
+    multiplicity families pass.
 
     ``family_member`` marks the decision rows as members of a multiplicity family that reads
     their p-values below their own level: a delta-route conversion decision row then reports
-    the composite p-value of its counts (`escalate_family_member`). Only the package's own
-    families set it; the public function never does, so a row's p-value outside a family is
-    its own delta p-value.
+    the composite p-value of its counts (`escalate_family_member`). ``route_tail`` is the
+    one-sided tail a selected row's corrected pass routes conversion counts at, the tail of the
+    bound it finally reports (`conversion_route.fcr_route_tail`; a directional reissue is
+    requested at half the corrected level and opened at the whole of it). Only the package's
+    own families set either; the public function never does, so a row's p-value outside a
+    family is its own delta p-value and its route its own tail's.
     """
     percentile_metrics = [
         m for m in metrics if getattr(getattr(m, "winsorization", None), "has_percentile", False)
@@ -3298,6 +3309,7 @@ def _estimate_lift(  # noqa: PLR0913
                 cluster=cluster,
                 method_roles=method_roles,
                 family_member=family_member,
+                route_tail=route_tail,
             )
             from increment.estimation.decision_types import DecisionComputation
 
@@ -3389,6 +3401,7 @@ def _estimate_lift(  # noqa: PLR0913
                 null_abs,
                 preferred_direction,
                 family_member=family_member,
+                route_tail=route_tail,
             )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure

@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
 from increment.errors import InvalidRequestError
+from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.encouragement import (
     ESTIMANDS,
     _estimate_encouragement,
     estimate_compliance,
-    estimate_encouragement,
 )
 from increment.estimation.engine import Method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
@@ -455,7 +455,7 @@ def _select_encouragement_family(
                 "two-sided" if _joint_relative_rows(rows, metric=name) else alternative,
                 outcome.fcr_alpha,
             )
-            pass_computation = estimate_encouragement(
+            pass_computation = _estimate_encouragement(
                 metrics=[metric],
                 summary=rows_by_metric[name],
                 design=design,
@@ -468,6 +468,7 @@ def _select_encouragement_family(
                 null_abs=getattr(plan.procedures[name], "null_abs", None),
                 cluster=cluster,
                 method_roles={config.decision_method.name: "decision"},
+                route_tail=fcr_route_tail(alternative, outcome.fcr_alpha),
             )
             computations.append(pass_computation)
             pass_results = pass_computation.results

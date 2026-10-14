@@ -46,8 +46,10 @@ the ``log_se >= 0.5`` nor the zero-variance guard of ``infer_lift`` can fire.
 from __future__ import annotations
 
 import math
+import re
 import struct
 from collections.abc import Callable
+from fractions import Fraction
 from typing import Literal, NoReturn
 
 import numpy as np
@@ -81,6 +83,33 @@ _DENSE_SLOPE = 145
 #: (`composite_p_value`): the exact p-value read in its place, or the dense level itself.
 ESCALATED_NOTE_PREFIX = "conversion p-value escalated to the exact p-value"
 CAPPED_NOTE_PREFIX = "conversion p-value capped at its dense level"
+_COMPOSITE_PREFIXES = (ESCALATED_NOTE_PREFIX, CAPPED_NOTE_PREFIX)
+_NOTE_SEPARATOR = re.compile(r"( \| |; )")
+
+
+def without_composite_note(note: str | None) -> str | None:
+    """*note* with any composite p-value note removed, every other disclosure and its separator
+    intact: a row reissued as an exact binomial set reports the exact p-value at that level,
+    so the note explaining its composite no longer applies while its other qualifications do."""
+    if not note:
+        return None
+    pieces = _NOTE_SEPARATOR.split(note)
+    kept: list[str] = []
+    for index in range(0, len(pieces), 2):
+        if pieces[index].startswith(_COMPOSITE_PREFIXES):
+            continue
+        if kept:
+            kept.append(pieces[index - 1])
+        kept.append(pieces[index])
+    return "".join(kept) or None
+
+
+def fcr_route_tail(alternative: str, fcr_alpha: float | Fraction) -> float:
+    """The one-sided tail the count rule routes a selected row's reissue at: the tail of the
+    interval that row finally reports at the corrected level ``fcr_alpha`` -- half of it for a
+    central two-sided interval, all of it for the single open bound a directional row reports
+    (`open_bound_from_two_sided_at_target` opens the two-sided parent at that full tail)."""
+    return float(fcr_alpha) / 2.0 if alternative == "two-sided" else float(fcr_alpha)
 
 
 _REFUSALS = refusals(

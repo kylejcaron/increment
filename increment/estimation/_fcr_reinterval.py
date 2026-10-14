@@ -207,18 +207,27 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
     return view.model_copy(update=updates)
 
 
-def _conversion_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
+def _conversion_parent(
+    view: LiftEstimate, alpha: float, fcr_alpha: float | Fraction
+) -> LiftEstimate:
     """The row ``estimate_lift`` builds at *alpha* for a conversion contrast the count rule
-    routed to the delta method: routed again by its persisted counts at *alpha*'s tail, the
-    Wald row where they are dense there and the exact binomial row from the counts where they
-    are not (the family's corrected level fell below the row's dense level)."""
+    routed to the delta method: routed again by its persisted counts at the tail of the bound
+    the row finally reports at the corrected level *fcr_alpha* (`fcr_route_tail`), the Wald
+    row where they are dense there and the exact binomial row from the counts where they are
+    not (the corrected level fell below the row's dense level), as a fresh finite-sample row
+    would be cut: Normal additive bounds with no t reference, and only the disclosures that
+    still apply."""
     from increment.estimation import binomial_rr
-    from increment.estimation.conversion_route import route_for_counts
+    from increment.estimation.conversion_route import (
+        fcr_route_tail,
+        route_for_counts,
+        without_composite_note,
+    )
     from increment.estimation.engine import _binomial_abs_bounds
 
     evidence = view.delta_evidence
     assert evidence is not None, "classified: the row carries its counts"
-    tail = alpha / 2.0 if view.alternative == "two-sided" else alpha
+    tail = fcr_route_tail(view.alternative, float(fcr_alpha))
     if route_for_counts(*evidence.counts, tail_alpha=tail, mode="auto") == "asymptotic":
         return _wald_parent(view, alpha)
     x_c, n_c, x_t, n_t = evidence.counts
@@ -260,7 +269,14 @@ def _conversion_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
         "reference_df": None,
         "dof": None,
         "scale": "linear",
-        "note": binomial_rr.precision_note(interval),
+        "abs_reference_kind": None,
+        "abs_reference_df": None,
+        "note": " | ".join(
+            part
+            for part in (without_composite_note(view.note), binomial_rr.precision_note(interval))
+            if part is not None
+        )
+        or None,
     }
     if view.abs_se is not None:
         assert view.abs_diff is not None
@@ -331,7 +347,7 @@ def reinterval_at_fcr(
         case "wald":
             parent = _wald_parent(view, alpha)
         case "conversion":
-            parent = _conversion_parent(view, alpha)
+            parent = _conversion_parent(view, alpha, fcr_alpha)
         case "binomial":
             parent = _binomial_parent(view, alpha)
         case "joint":

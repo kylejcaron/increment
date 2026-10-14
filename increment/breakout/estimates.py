@@ -62,6 +62,7 @@ from increment.errors import (
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
+from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
@@ -69,7 +70,6 @@ from increment.estimation.engine import (
     Method,
     _estimate_lift,
     _validate_methods,
-    estimate_lift,
     reject_unbounded_retention,
 )
 from increment.estimation.engine import (
@@ -2010,16 +2010,18 @@ def _estimate_lift_or_reason(
     null_abs: float | None = None,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    route_tail: float | None = None,
 ) -> tuple[list[LiftEstimate] | None, str | None, Mapping[Any, Any]]:
     """Call ``estimate_lift`` and retain keyed failures for dense callers.
 
     Catches lift guards and returns their keyed failures rather than dropping
-    otherwise estimable sibling arms.
+    otherwise estimable sibling arms. ``route_tail`` is the tail a selected cell's corrected
+    pass routes conversion counts at (`conversion_route.fcr_route_tail`).
     """
 
     try:
         metrics_by_name = {m.name: m for m in metrics}
-        computation = estimate_lift(
+        computation = _estimate_lift(
             metrics=metrics,
             summary=summary,
             control_group=control_group,
@@ -2031,6 +2033,7 @@ def _estimate_lift_or_reason(
             null_abs=null_abs,
             inference=inference,
             method_roles=method_roles,
+            route_tail=route_tail,
         )
         results = [
             r.model_copy(
@@ -3099,6 +3102,7 @@ def _apply_breakout_family_correction(
             alternative=alternative,
             inference=None,
             method_roles={decision_name: "decision"},
+            route_tail=fcr_route_tail(alternative, outcome.fcr_alpha),
         )
         if re_estimates:
             reestimated[(segment_value, metric_name)] = [
