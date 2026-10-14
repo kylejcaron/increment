@@ -1,12 +1,6 @@
 # Priors and Bayesian decisions
 
-`run(prior=...)` leaves the sampling estimate, interval, reference, p-value,
-and significance verdict equal to the same request with `prior=None`. It
-stores the posterior separately in `posterior_*` fields; use
-`posterior_estimate`, `posterior_lb`/`posterior_ub`, and the posterior
-probability accessors for Bayesian decisions. The row's ordinary `lift`
-remains the prior-free sampling construction. `stat_sig()` and `p_value()`
-are sampling decisions, not posterior summaries.
+`run(prior=...)` adds a posterior for probability-based decisions without changing the sampling estimate, interval, reference, p-value, or significance verdict. Use the posterior fields and accessors for Bayesian summaries; ordinary `lift`, `stat_sig()`, and `p_value()` remain prior-free sampling results.
 
 ## Declaring a prior: `Normal`, `StudentTPrior`, `MixturePrior`
 
@@ -36,53 +30,17 @@ for r in results:
     print(f"sampling_lift={r.lift.value:+.2%} posterior_estimate={r.posterior_estimate!r}")
 ```
 
-`prior=` belongs on `run(...)`, not on `from_unit_summary`/
-`from_definitions`/etc. The constructor assembles the source and its
-declared metrics. `run(prior=...)` overrides the epistemic policy for that
-call; `AnalysisPlan`/`ExperimentMetric` declarations provide the default
-when `prior` is `UNSET`, and `prior=None` resets it to flat.
+Pass `prior=` to `run(...)`, not to an `Analysis` constructor. A call-time prior overrides the declared prior for that call; `prior=None` resets to flat. If omitted, `AnalysisPlan` or `ExperimentMetric` declarations supply the default.
 
 `StudentTPrior(nu=4, scale=0.10)` and
 `MixturePrior(weights=(0.5, 0.5), means=(0.0, 0.0), sigmas=(0.02, 0.20))`
 declare heavier-tailed or bimodal shapes instead of a single Normal.
-`Normal` uses a closed-form Normal-Normal conjugate update (a
-precision-weighted mean, with no expansion). `StudentTPrior` and
-`MixturePrior` expand through `.components()` into a `MixturePrior` on
-`k` Gauss-Laguerre nodes (`MixturePrior.components()` returns itself) and
-use a separate K-component mixture posterior.
-The declared input remains in `prior_spec`. The separately stored mixture
-posterior uses `posterior_components`, an exact ordered carrier of equal-length
-`weights`, `means`, and `sigmas` tuples. Component positions are retained even
-when a posterior weight is zero; weights are validated to sum to one within
-`1e-9` and are never normalized. Accessors replay these updated values directly,
-not the declaration or the prior-free sampling lift.
+`Normal` has a closed-form update. `StudentTPrior` and `MixturePrior` use a finite mixture representation and a separate mixture posterior. The original declaration remains in `prior_spec`; `posterior_components` stores the updated weights, means, and scales. Components keep their order, including zero-weight components, and weights must sum to one (they are not normalized).
 
 
-`run(prior=...)` accepts all three, but `StudentTPrior` and `MixturePrior`
-support only unclustered randomized parallel-arm reads on the
-log-relative-lift scale produced by `mean`/`conversion`/`ratio`/
-`retention`/`quantile` rows (`infer_lift`/`estimate_lift`). A declared
-`cluster=` refuses every prior, including `Normal`; see
-["Mutual exclusions"](#mutual-exclusions-prior-vs-sequential-inference-prior-vs-cluster).
-Cluster-robust rows therefore never reach the Student-t/mixture checks.
+`StudentTPrior` and `MixturePrior` support only unclustered randomized parallel-arm reads on log-relative lift for mean, conversion, ratio, retention, and quantile metrics. Any declared `cluster=` refuses all priors, including `Normal`. Student-t and mixture priors also refuse observational, adjustment, and encouragement paths. Use `Normal` only where the support matrix permits it.
 
-`StudentTPrior` and `MixturePrior` also refuse observational designs with
-`readout.observational.prior`, and adjustment/encouragement paths with
-`estimation.adjust.prior.type`. Their supported posterior construction is
-the randomized log-relative working likelihood; those routes do not gain
-mixture support from separating sampling and posterior payloads. Pass a
-`Normal` prior where the support matrix allows one.
-
-Fixed-horizon encouragement compliance and LATE rows with a supported
-Normal prior likewise retain their prior-free `lift` and store the Normal
-posterior separately. Sequential and declared cluster-prior exclusions still
-apply; the posterior is available only when the row records a supported update.
-
-No prior, including `Normal`, is settable on a switchback contrast call.
-`run()` accepts only `UNSET` for `prior`/`decision_method`/
-`sensitivity_methods` on a switchback source. `StudentTPrior.nu` is capped
-at 200: larger values are numerically unstable to expand and are within
-0.6% of `Normal(mu=0, sigma=scale)`. Use `Normal` directly instead.
+Fixed-horizon encouragement compliance and LATE support a `Normal` prior while retaining prior-free `lift`. Sequential inference, clusters, and switchback contrasts do not accept priors. `StudentTPrior.nu` is capped at 200; larger values are numerically unstable and within 0.6% of a Normal with the same scale, so use `Normal` instead.
 
 ### Binary metrics and path coverage
 
@@ -110,76 +68,16 @@ parallel-arm coverage, not a switchback or sequential posterior claim.
 Per-metric/YAML prior declarations currently accept Normal priors;
 Student-t and mixtures are call-time `run(prior=...)` options.
 
-## `prob_favorable`, `p_value`, and `stat_sig`
+`stat_sig()` reads the row's sampling interval against its declared null. It returns `None` when sampling evidence is unavailable; an unavailable result is not a non-rejection. Exact-binomial rows recompute the test from persisted counts, and refuse when the interval's original construction cannot be recovered. `BreakoutEstimate` and `DailyLiftEstimate` follow the same rule.
 
-`stat_sig()` reads the row's own interval directly -- `lift.lb`/`lift.ub`
-against `null_lift` (or `abs_lb`/`abs_ub` against `null_abs` on an
-absolute-margin row) -- and works on every row's own decision: fixed-
-horizon or sequential, Normal-referenced or cluster-robust. It is tri-state:
-`None` when the row carries no usable sampling evidence (a failed cell, or
-`sampling_available` False), the same value the readout frame reports, so an
-unavailable verdict is never mistaken for a non-rejection. An exact-binomial
-row (`reference_kind="binomial"`) instead recomputes the test its interval was
-inverted from out of its persisted counts, so the two agree, and it refuses
-exactly where a fresh estimate of those counts at that null would (an extreme
-alpha at arm sizes whose float margin dominates the tail level, unless the null
-is one the control arm's own bound rejects; see the limitations page); a row
-persisted under an earlier construction of that test, or without naming its
-construction, is refused when read rather than shown beside a verdict its
-endpoints can contradict. `BreakoutEstimate` and `DailyLiftEstimate` carry the
-same two methods, computed by the same rule.
+`prob_favorable()` uses an available posterior; `p_value()` uses prior-free sampling evidence. Both require fixed-horizon inference. Sequential rows refuse with `sequential.route.unsupported`; a confidence sequence has no fixed endpoint distribution or posterior summary. `p_value()` supports cluster-robust t references, but posterior access does not reconstruct a posterior from cluster sampling fields. `prob_favorable()` also requires `preferred_direction` on the metric.
 
-`prob_favorable()` reads the stored posterior only when it is available.
-`p_value()` instead reads the prior-free sampling construction and remains a
-sampling p-value whether or not a prior was declared. Both require
-`inference == "fixed"`: a sequential row (`AlwaysValid`/
-`AsymptoticMean`) refuses with `CapabilityError` code
-`sequential.route.unsupported`, since a confidence sequence has no fixed
-endpoint distribution or posterior to summarize. `p_value()` additionally
-handles a cluster-robust (`reference_kind="t"`) row directly against its
-own t reference. Posterior access follows `posterior_available`: declared
-cluster-prior requests remain refused, and an unavailable posterior is never
-reconstructed from cluster sampling fields. `prob_favorable()` also needs
-`preferred_direction` declared on the metric (`"increase"`/`"decrease"`/`"neutral")` -- it is
-not derived from `alternative`, which can point the opposite way on a
-harm/futility test.
-
-The posterior probability accessors (`chance_to_beat`, `prob_beyond`,
-`prob_within`, and `risk_if_shipped`) never reconstruct a posterior from
-sampling interval endpoints and never infer one from a p-value. They return
-`None` when no supported posterior is stored. A selected sequential interval
-whose alpha was widened by FCR selection also refuses `prob_beyond` with
-`sequential.route.unsupported`; selection does not define a posterior
-probability.
+Posterior accessors (`chance_to_beat`, `prob_beyond`, `prob_within`, and `risk_if_shipped`) never infer a posterior from intervals or p-values. They return `None` when no supported posterior is stored. FCR-selected sequential intervals also refuse `prob_beyond`; selection does not create a posterior probability.
 
 ## Mutual exclusions: prior vs sequential inference, prior vs cluster
 
-A prior and sequential inference (`AlwaysValid`/`AsymptoticMean`) cannot
-compose: sequential coverage is a frequentist martingale guarantee. Declaring
-both -- an `AnalysisPlan(inference=...)` combined with a `run(prior=...)`
-override or a per-metric declared prior -- raises `sequential.route.unsupported`.
-A prior also cannot compose with a declared cluster: clustered rows use a
-joint reference built from cluster totals, and separating payloads does not
-authorize a cluster prior. Combining `cluster=` with a prior raises
-`arm.adjustment.cluster_prior`. In both cases the request is refused before
-estimation. See [Sequential inference](sequential-inference.md) for the
-always-valid/asymptotic-mean side of this exclusion.
+Priors do not combine with sequential inference or declared clusters. Sequential coverage is a frequentist guarantee; cluster rows use a joint reference. These requests refuse before estimation with `sequential.route.unsupported` or `arm.adjustment.cluster_prior`. See [Sequential inference](sequential-inference.md).
 
 ## Per-metric priors
 
-`MetricSpec(prior=...)` declares one metric's own prior on the dataframe
-path. It applies only when the call itself leaves `prior` at its default
-`UNSET`: an *explicit* `run(prior=...)` call -- including `run(prior=None)`
--- overrides every metric's prior for that call, including metrics that
-declared their own `MetricSpec.prior`, the same call-wide-overrides-
-per-metric-declaration precedence `decision_method`/`sensitivity_methods`
-use (see [The data model](data-model.md)).
-
-The same override applies to priors declared on YAML `ExperimentMetric`
-bindings. An informative prior changes the separately stored posterior, not
-the prior-free sampling evidence used for an otherwise eligible secondary's
-configured multiplicity family; method-compatibility checks still apply.
-Overrides do not change the declaration: a later call that omits `prior`
-uses the declared prior again for posterior inference. This also works after
-reloading older moment exports with a declared prior. An explicit no-family
-policy remains excluded.
+`MetricSpec(prior=...)` declares a dataframe metric's prior; YAML `ExperimentMetric` bindings can also declare priors. A call-time `run(prior=...)` overrides declarations for every metric, including `run(prior=None)`. Omitting `prior` on a later call uses the declared value again. Priors change the posterior, not prior-free sampling evidence or multiplicity selection. Per-metric/YAML declarations currently accept `Normal`; Student-t and mixtures are call-time options.

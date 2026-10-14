@@ -1,71 +1,27 @@
 # Multiplicity
 
-Testing several metrics at once inflates the chance that at least one
-looks significant by pure noise. Increment's `AnalysisPlan` separates
-metrics into roles with different multiplicity treatment: a `primary`
-takes a share `alpha / n_primaries` of the familywise `alpha`, split
-again across that metric's own non-control arms at estimation; a
-`guardrail` tests unsplit, at the full `alpha`, since it must not move
-adversely; a `secondaries` family is judged as a false-discovery-rate
-problem at level `q` instead of a per-metric significance test.
+When you test many metrics, chance can produce a false positive. Assign roles in `AnalysisPlan`: primaries share familywise `alpha` across metrics and then treatment arms; guardrails test adverse effects at full `alpha`; secondaries use false-discovery-rate level `q`.
 
 ## Reading multiplicity provenance
 
-Lift, breakout and daily/as-of lift rows expose `multiplicity_status`
-alongside the existing `role`, interval alpha and (where the route has a
-source-scoped family) `family_id`. The status discloses how the metric was
-declared or selected; it does not apply a new correction:
+Lift, breakout, and daily/as-of rows expose `multiplicity_status` and, where applicable, `family_id`. These fields explain how a row was declared or selected; they do not add a correction.
 
-| `role` | `multiplicity_status` | Interpretation |
-|---|---|---|
-| `None` | `undeclared_plan` | No metric role was declared; unadjusted. |
-| `unassigned` | `unassigned_in_plan` | A plan exists, but this metric has no assigned role; unadjusted. |
-| `primary`, `secondary`, `guardrail` | `declared_plan` | Retains the existing role-specific allocation and procedure. |
-| `exploratory`, outside a BH/e-BH or Bonferroni family | `exploratory_unadjusted` | Exploratory, without family adjustment. |
-| `exploratory`, inside a BH/e-BH or Bonferroni family | `exploratory_family` | Member of the named adjusted family: BH/e-BH selection or Bonferroni alpha division. |
+| Role / status | Meaning |
+|---|---|
+| `None` / `undeclared_plan` | No role declared; unadjusted. |
+| `unassigned` / `unassigned_in_plan` | Plan exists, but this metric has no role; unadjusted. |
+| `primary`, `secondary`, `guardrail` / `declared_plan` | Uses its declared role's existing procedure. |
+| `exploratory` / `exploratory_unadjusted` | Outside an adjusted family; no family adjustment. |
+| `exploratory` / `exploratory_family` | In a named BH/e-BH or Bonferroni family. |
 
-`readout_table` keeps this disclosure in the header when all rows share an
-informative status. For mixed statuses, it adds a superscript marker to
-each known unadjusted or exploratory row and explains the marker and row
-count in the header; declared-plan rows need no marker. The original
-`multiplicity_status` and family fields remain available on result objects
-and in `to_frame()`.
+`readout_table` shows a common informative status in its header. For mixed statuses, it marks each known unadjusted or exploratory row and gives the marked row count. Result objects and `to_frame()` retain the original status and family fields.
 
-For example, five metrics without a declared plan each retain alpha `0.05`
-and report `undeclared_plan`; five declared primaries share alpha `0.05`,
-so each receives `0.01` for a single treatment arm. `declared_plan` is
-not a blanket claim of joint error control: guardrails still use their
-existing unsplit alpha. No metric is silently promoted to primary.
+Five undeclared metrics each keep alpha `0.05`; five declared primaries share `0.05`, so each gets `0.01` with one treatment arm. `declared_plan` does not mean every role has joint error control: guardrails use their existing unsplit alpha. No metric is silently promoted to primary.
 
-Family membership comes from the original source-scoped readout, never
-the number of visible rows. `results.filter(...)` and slicing retain the
-full `results.metadata.scope.families` member lists; `to_frame()` carries
-the row status and `family_id`, and saved readout envelopes preserve them.
-Adding an exploratory metric does not enlarge the declared primary
-family or reallocate its alpha.
+Family membership comes from the original source-scoped readout, not from visible rows. Filtering or slicing keeps the full family; adding exploratory metrics does not enlarge the primary family. Assigned and triggered populations have separate family identities. Concatenating sources does not create an experiment-wide correction. Use `family_id` with source and population scope to identify the guarantee.
 
-Assigned and triggered populations have separate family identities.
-Switching the visible population only changes the rows shown, not either
-population's allocation or membership. Concatenating readouts preserves
-each source's families; it does not create one jointly controlled
-experiment-wide family. Use `family_id` and the source/population scope,
-not a shared family name, to identify which guarantee applies.
-Under a registered sequential plan the triggered secondary family is selected
-by e-BH on its own chain with the assigned family's guarantee and status labels,
-conditional on arm-independent triggering, no pre-trigger treatment effect,
-trigger-order stationarity, and looks/stops/freezes adapted to the joint triggered
-filtration. Do not time those decisions using any assigned result that reveals
-future triggered outcomes, including the same metric's result (see
-[Triggered populations](sequential-inference.md#triggered-populations)).
+A selected result is not automatically confirmatory. Fixed-horizon BH retains its q level and FCR-adjusted intervals, but depends on independence or positive dependence (PRDS), which is not checked. A triggered sequential family uses e-BH on its own chain and has conditional guarantees only: triggering must be arm-independent, there must be no pre-trigger treatment effect, trigger order must be stationary, and looks, stops, and freezes must follow the joint triggered filtration. Do not time these decisions using assigned results that reveal future triggered outcomes. Filtering does not shrink a family or remove a partial-view indication. See [Triggered populations](sequential-inference.md#triggered-populations).
 
-An affirmative selection is still not automatically confirmatory. A fixed
-Benjamini-Hochberg exploratory family retains its q level, whole-family size,
-FCR-adjusted selected intervals, and the independence/positive-dependence
-qualification for its FDR statement; it is shown as exploratory, not as an
-unadjusted result or a confirmatory discovery. A triggered sequential family's
-guarantee labels state conditional control, not verification of the analyst's
-look, stopping or freezing rule. Filtering a result view does not shrink either
-family or remove its partial-view indication.
 
 ## Declaring families: primary, guardrails, secondaries
 

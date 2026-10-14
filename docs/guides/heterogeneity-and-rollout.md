@@ -1,20 +1,10 @@
 # Heterogeneity and rollout
 
-After `run_breakout()` estimates a lift for each segment, answer two
-independent questions: is the between-segment spread real
-(`segment_heterogeneity`), and which segments are worth shipping
-(`segment_rollout_recommendation`)? Both functions read the same
-`run_breakout()` output, so call them on estimates from a single
-`run_breakout()` call. Combining two calls on one dimension silently merges
-their results into one heterogeneity test or selection problem.
+After `run_breakout()`, use `segment_heterogeneity` to ask whether effects differ across segments, and `segment_rollout_recommendation` to rank segments against a rollout cost. Both require estimates from the same `run_breakout()` call; combining calls silently merges the analysis.
 
-For a trigger-declared experiment, `run_breakout()` returns assigned and
-triggered rows together. Both consumers include `analysis_population` in
-their grouping keys and preserve it on summary and segment outputs, so the
-two populations are never pooled. Scope the input to one population when
-that is the intended question.
+For trigger-declared experiments, breakout output includes assigned and triggered populations. The functions keep these populations separate. Filter to one population when that is the question you intend to answer.
 
-## `segment_heterogeneity`: Q, tau², I², HKSJ, and shrinkage
+## `segment_heterogeneity`: are segment effects different?
 
 ```python
 import numpy as np
@@ -62,49 +52,17 @@ revenue dim=segment Q=26.15 tau2=0.0031985694898157... i2=None
 revenue dim=segment Q=27.14 tau2=1.36529161872605... i2=None
 ```
 
-The function returns two rows: one for the relative (log-RR) heterogeneity
-pass and one for the absolute pass. They can disagree because a between-
-segment spread that looks large on one scale can look small on the other.
-`tau2`, `i2`, `i2_lb`, and `i2_ub` all return `None` when an outcome-based
-exclusion affects that (key, scale); an outcome exclusion would bias
-`tau^2`, so none of the four is trustworthy. Independently, `i2`'s point
-estimate is also `None` below `k=5` live segments on a scale, even with zero
-exclusions (as in this example's `k=3`). Under a true null, P(I² > 25%) is
-still ~25--26% with so few segments, so the point estimate produces false
-positives too often to report. `i2_lb`/`i2_ub` remain available down to
-`k=3`; they are undefined (`None`) only at `k=2`, where the
-Higgins-Thompson interval has no closed form.
+The summary has separate relative (log-RR) and absolute-scale rows; they can disagree. Outcome-based exclusions suppress `tau2` and all `i2` fields because excluding outcomes can bias heterogeneity estimates. The `i2` point estimate is unavailable below five live segments; `i2` bounds are available from three, but not two.
 
 ## Shrinkage and numerical integration
 
-`segments` carries two rows per estimable `(segment, scale)`:
-`estimator="raw"` (the segment's own estimate) and
-`estimator="shrunken"` (a posterior estimate integrated by adaptive
-quadrature: a REML marginal likelihood for tau, times a
-`HalfNormal(tau_prior_scale)` prior, mixed against Morris's (1983)
-conditional posterior for each segment -- not the HKSJ pooled mean,
-which feeds only the *pooled* row in `HeterogeneitySummary` above).
-The reported interval is a Wald summary of the posterior moments, not
-a posterior-quantile interval.
+For each estimable segment and scale, `segments` includes a raw estimate and a shrunken estimate. Shrinkage uses a random-effects model; its reported interval summarizes posterior moments, not posterior quantiles.
 
-Integration adapts both support and resolution, with posterior-tail and
-moment convergence checks. A posterior extending beyond eight prior
-scales is no longer clipped or withheld merely for crossing that boundary.
-The same integration supplies shrinkage and rollout pricing.
+??? info "Statistical details"
+    The shrunken estimate integrates a REML marginal likelihood for `tau` times a `HalfNormal(tau_prior_scale)` prior, mixed with Morris's (1983) conditional posterior for each segment. It is not the HKSJ pooled mean, which appears only in the pooled `HeterogeneitySummary` row. Integration adapts support and resolution and checks posterior tails and moment convergence; it does not clip or withhold a posterior merely because it extends beyond eight prior scales. The same integration supports rollout pricing.
 
-`tau_prior_scale` sets the HalfNormal prior's width, not an integration
-ceiling. The default `0.30` is expressed on the log-RR scale. For absolute
-effects, choose a scale in that metric's own units (for example dollars);
-a narrow prior can strongly shrink large absolute effects even when it is
-integrated accurately. Changing this value changes the model.
 
-If the numerical budget cannot resolve a posterior, heterogeneity keeps
-the raw rows but withholds that scale's shrunken values with
-`excluded="estimation_failed"` and warning code
-`breakout.heterogeneity.posterior_integration_unresolved`. The rollout
-functions instead propagate `InvalidRequestError` with code
-`estimation.meta.posterior_integration_unresolved`; this numerical failure
-is not an ordinary noise-offset refusal or a recommendation against rollout.
+`tau_prior_scale` sets the prior width and changes the model; it is not an integration ceiling. The default `0.30` is on the log-RR scale. For absolute effects, choose a value in the metric's units. If numerical integration cannot resolve the posterior, heterogeneity retains raw rows but withholds shrunken values (`breakout.heterogeneity.posterior_integration_unresolved`). Rollout instead raises `estimation.meta.posterior_integration_unresolved`; this is a numerical failure, not a recommendation against rollout.
 
 ## `segment_rollout_recommendation`: pricing the rollout
 
@@ -124,29 +82,9 @@ revenue dim=segment
   us     selected=True excluded=None
 ```
 
-Both APIs group by `estimand` and upstream `value_scale`.
-`segment_heterogeneity` identifies its computed scale with `scale`: relative-primary
-families can produce relative and absolute results; absolute-primary families
-produce only absolute results, using their additive moments.
-`segment_rollout_recommendation` prices only relative-primary families. It skips
-every `value_scale="absolute"` family, including encouragement LATE, even when
-the shared `lift.log_mean`/`lift.log_se` fields contain additive moments.
+Both APIs group by `estimand` and `value_scale`. `segment_heterogeneity` reports relative and absolute results for relative-primary families, but only absolute results for absolute-primary families. `segment_rollout_recommendation` prices only relative-primary families and skips absolute-scale families, including encouragement LATE.
 
-Cost resolution is highest-precedence-first: an explicit `rollout_cost=`
-argument (a mapping's unknown metric name is refused), then the
-metric's own declared `rollout_cost` -- read from whichever `Metric`
-objects are passed via `metrics=`, matched to each estimate's metric
-name -- then `0.0` (ship any segment estimated favorable at all). This
-guide's own `analysis.metrics` (synthesized from the frame-path
-`MetricSpec` the example declares) can never carry a declared cost:
-`MetricSpec` has no `rollout_cost` field to set, so passing
-`metrics=analysis.metrics` here always resolves to `0.0` too. An
-arbitrary matching `Metric` object built with its own `rollout_cost`
-set is honored the same way regardless of how the estimates themselves
-were produced. Values are unweighted by exposure: a segment with few units
-and a wide interval is treated the same as a well-powered one on this pass.
-Read `RolloutRecommendation`'s field docs before quoting a rollout number in
-a launch review.
+Cost precedence is: explicit `rollout_cost=`; the matching metric's declared `rollout_cost`; then `0.0` (select any segment estimated favorable). A mapping with an unknown metric is refused. Frame-path `MetricSpec` has no `rollout_cost` field, so passing its `analysis.metrics` resolves to `0.0`. Costs are not weighted by exposure; small and large segments count equally.
 
 ## Scale dependence
 
@@ -166,11 +104,7 @@ result rows carry the same `value_scale` label as
 
 ## Caveats
 
-DerSimonian-Laird followed by an unmodified Hartung-Knapp-Sidik-Jonkman
-adjustment, with no variance floor, can be anticonservative at small K
-(few segments) -- read
-[Meta-analysis can be anticonservative at small K](../limitations.md#meta-analysis-can-be-anticonservative-at-small-k)
-before trusting a pooled interval built from three or four segments.
+DerSimonian-Laird followed by an unmodified Hartung-Knapp-Sidik-Jonkman adjustment, with no variance floor, can be anticonservative with few segments. Read [Meta-analysis can be anticonservative at small K](../limitations.md#meta-analysis-can-be-anticonservative-at-small-k) before trusting a pooled interval from three or four segments.
 
 ## Categorical adjustment in individual targeting
 

@@ -1,8 +1,6 @@
 # Encouragement Designs
 
-Use an encouragement design when randomized assignment changes the
-probability of receiving treatment but does not force treatment receipt.
-Assignment is the instrument; uptake records whether treatment was received.
+Use an encouragement design when random assignment changes the chance that people receive treatment, but does not force them to take it. Compare assignment effects directly; estimate effects among people whose uptake changed only when the causal assumptions are credible.
 
 ## Declare assignment and uptake
 
@@ -45,12 +43,9 @@ results = Analysis.from_unit_summary(
 ).run()
 ```
 
-The exclusion restriction is explicit because LATE attributes the outcome
-effect to treatment receipt, not to a second direct path from encouragement
-assignment.
+LATE needs the exclusion restriction: assignment must affect the outcome only through treatment receipt.
 
-ITT and compliance do not need that restriction. Omit it when requesting only
-those effects:
+ITT and compliance do not require exclusion. Omit it when requesting only those estimands:
 
 ```python
 assignment_and_uptake = Analysis.from_unit_summary(
@@ -65,13 +60,7 @@ assignment_and_uptake = Analysis.from_unit_summary(
 ).run(estimands=("itt", "compliance"))
 ```
 
-The default still requests all three estimands. Without the declaration, any
-request containing `late` raises `identification.encouragement.exclusion_required`
-before reading outcomes, even if the eventual outcome-cohort LATE cell records
-a weak-first-stage failure.
-The same omission is allowed in YAML and survives artifact and moments
-round trips. Supported sequential ITT/compliance monitoring also needs no
-exclusion declaration; supplying one does not make sequential LATE supported.
+The default requests all three estimands. If exclusion is not declared, any request containing `late` raises `identification.encouragement.exclusion_required` before reading outcomes, even if a weak first stage would later make LATE unavailable. The same omission works in YAML and survives artifact and moments round trips. Supported sequential ITT/compliance monitoring also needs no exclusion declaration; declaring one does not make sequential LATE supported.
 
 ## Declare on `from_definitions`
 
@@ -131,10 +120,9 @@ table for the measured row-by-row evidence.
 
 ## Read the estimands
 
-- **ITT** is the effect of assignment to encouragement.
-- **Compliance** is the difference in treatment uptake caused by assignment.
-- **LATE** is ITT divided by the compliance first stage: the effect among
-  compliers whose treatment receipt changed because of encouragement.
+- **ITT**: effect of assignment to encouragement.
+- **Compliance**: change in treatment uptake caused by assignment.
+- **LATE**: ITT divided by the compliance difference; it estimates the effect for compliers whose treatment receipt changed because of assignment.
 
 
 The notebook's registered uptake confidence sequence is shown in **ratio
@@ -148,14 +136,7 @@ as its ITT row (both test the same null), but `discovery` itself is
 reported on the ITT row only -- LATE is a derived presentation, not a
 second hypothesis test.
 
-Unadjusted, independent-unit binary ITT takes the same count-routed conversion route as
-an ordinary arm pair even when the source also carries uptake moments: dense counts
-the delta-method route (`reference_kind="t"`), sparse counts the exact binomial
-reference (`"binomial"`; `Method(name="unadjusted",
-conversion_inference="finite_sample")` selects it at every size). This includes conversion breakouts
-from `from_definitions`, `from_unit_day_artifact`, and `from_unit_panel`: zero
-control conversions can leave the point lift unavailable while retaining a
-confidence set. Summary and portable sources carry no breakout dimension.
+For unadjusted independent-unit binary ITT, conversion counts use the same route as an ordinary arm comparison: dense counts use the delta-method route (`reference_kind="t"`), while sparse counts use the exact binomial reference (`"binomial"`). `Method(name="unadjusted", conversion_inference="finite_sample")` selects the exact route at every size. Zero control conversions can leave the lift point unavailable while retaining a confidence set.
 
 Compliance rows diagnose the first stage. Fixed-horizon compliance rows have
 `discovery is None`. Registered sequential compliance also stays outside selection
@@ -401,12 +382,7 @@ results also preserve these labels through JSON serialization.
 
 ## Assumptions and refusals
 
-Interpret LATE only with randomized assignment, a relevant first stage, the
-declared exclusion restriction, and monotonicity (no defiers). Increment
-refuses a weak first stage rather than dividing by a near-zero compliance
-difference and reporting an unstable LATE. The requested LATE row remains
-visible as a typed failure with no estimate, so a weak cohort is not silently
-omitted.
+Interpret LATE only when assignment is randomized, assignment changes uptake (a relevant first stage), exclusion holds, and there are no defiers (monotonicity). Increment reports diagnostics and refuses a weak first stage rather than dividing by a near-zero difference. The requested LATE row remains visible as a typed failure, not silently omitted.
 
 ## Run the example
 
