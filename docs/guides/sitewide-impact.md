@@ -1,52 +1,30 @@
 # Sitewide impact
 
-`Analysis.sitewide()` converts a supported per-unit lift into whole-site
-impact for the experiment's actual enrollment window: the change if that lift
-had shipped to every enrolled unit. Native `Analysis.from_definitions` sources
-can compute site volume from the raw event stream. An adopted
-`Analysis.from_unit_day_artifact` can also provide it when the artifact was
-published with a `site_volume` extension for the requested metric; see the
-[artifact operation and extension matrix](data-model.md#operation-and-extension-matrix).
-Pre-melted summaries and moments do not retain the required whole-site evidence.
-The [worked example](#worked-example) shows mean and ratio metrics.
-Read the output as window-specific absolute and relative impact, not as a new
-per-unit estimate; see [Reading results](reading-results.md) and
-[Multiplicity](multiplicity.md) for row context.
+`Analysis.sitewide()` estimates the whole-site change if the per-unit effect
+had applied to every enrolled unit during the experiment window. Use it for
+a rollout estimate, not as another per-unit effect.
 
-The calculation assumes the observed per-unit effect applies to all enrolled
-units, and it reports only the window actually run—no annualized or longer
-horizon projection. Check [what refuses](#what-refuses) before selecting a
-metric or source.
+It needs the site's raw event volume, so it runs on a native
+`Analysis.from_definitions` source or on an adopted
+`Analysis.from_unit_day_artifact` published with the metric's `site_volume`
+extension. Pre-melted summaries and moments cannot supply it; see the
+[artifact extension matrix](data-model.md#operation-and-extension-matrix).
 
+!!! warning "Read only the window observed"
+    Sitewide assumes the observed per-unit effect applies to all enrolled
+    units, and it reports only the experiment's enrollment window
+    (`experiment.start .. experiment.end`), never an annualized or
+    longer-horizon projection. An effect measured in one window does not
+    establish its size or statistical signature in a later one; for
+    retention, even a constant per-unit effect can become less detectable as
+    the window grows ([why](metric-types.md#unbounded-retention-doesnt-keep-getting-more-precise)).
+    Check [when it refuses](#when-it-refuses) before choosing a source or
+    metric.
 
-When an experiment declares `trigger:`, the default `population="assigned"`
-still reports the assignment-based intent-to-treat whole-site impact. You
-can also request `population="triggered"`: this scales the lift among units
-in finalized trigger membership by the number of triggered enrolled units.
-Both readings use the experiment's calendar window (`start .. end`) for
-outcomes. In particular, sitewide does **not** use `run()`'s trigger-anchored
-observation windows or include outcomes after the experiment end, even when
-`observation_end` is later. Late triggers can belong to triggered membership
-while their outcome contribution still comes from the fixed experiment
-window. Site volume remains the full-site total, not a trigger-filtered total.
+## Run it
 
-Both assigned and triggered sitewide require a randomized identification
-design. Observational and encouragement designs refuse before loading
-sitewide evidence; use `Analysis.run()` for their estimands.
-Outcomes must reach the experiment end. The triggered reading needs every
-outcome feed certified complete through the end day by a watermark in
-`SourceSnapshotEvidence` (or published with the artifact). The assigned
-reading refuses when the snapshot cutoff or a declared watermark stops before
-the end day, and otherwise proceeds as before; a native analysis without
-snapshot evidence has no edge to check. Either refusal names
-`facade.analysis.sitewide_outcomes_incomplete`; re-run once the outcome feeds
-reach the experiment end.
-The assigned/triggered `snapshot_id` equality is content-bound only for
-artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
-table contents.
-
-The two readings can be computed from one immutable artifact that includes
-the required trigger and site-volume evidence:
+This example publishes one immutable artifact carrying trigger membership and
+site-volume evidence, then reads the assigned and triggered estimates from it:
 
 ```python
 from pathlib import Path
@@ -206,12 +184,271 @@ for m in ("revenue", "revenue_per_session"):
     assert triggered.membership_cutoff is not None
 ```
 
-The result is `exploratory_unadjusted`: no family adjustment is applied, and
-these fixed-horizon intervals are not anytime-valid.
+## Read the result
 
-The unit-day artifact above contains both trigger membership and site-volume
-evidence. If trigger membership was omitted, triggered sitewide refuses with
-`artifact.extension.missing`; republish the source with the required evidence:
+`sitewide()` returns a `SitewideImpact` for a mean metric and a
+`SitewideRatioImpact` for a ratio metric. Both are `exploratory_unadjusted`:
+no family adjustment is applied, and their fixed-horizon intervals are not
+anytime-valid. Both baselines net out every enrolled non-control arm's lift
+(`other_arm_ids`), not only the arm being scored.
+
+| Field (both models) | Meaning |
+|---|---|
+| `absolute_impact`, `absolute_impact_lb`, `absolute_impact_ub` | The ship-to-all gain with its interval. For a mean metric it is in the metric's own units; for a ratio metric it is `shipped_ratio - baseline_ratio`, a difference of site ratios. |
+| `relative_impact`, `relative_impact_lb`, `relative_impact_ub` | That gain as a fraction of the baseline (`baseline_volume` or `baseline_ratio`). |
+| `analysis_population`, `membership_cutoff`, `window`, `snapshot_id` | The population read, its trigger-membership cutoff, the experiment window, and the evidence identity. |
+| `n_clusters`, `absolute_dof`, `relative_dof` | `None` at unit grain; otherwise the cluster count and the degrees of freedom each interval was cut at. |
+
+| `SitewideImpact` (mean metric) | `SitewideRatioImpact` (ratio metric) | Meaning |
+|---|---|---|
+| `delta` | `delta_num`, `delta_den` | The per-unit absolute lift being scaled up; a ratio metric has one per component. |
+| `site_total_volume` | `site_total_numerator`, `site_total_denominator` | The observed site-window total(s). |
+| `baseline_volume` | `baseline_numerator`, `baseline_denominator`, `baseline_ratio` | The counterfactual total(s) with nobody exposed to treatment. |
+| — | `shipped_numerator`, `shipped_denominator`, `shipped_ratio` | The ship-to-all total(s) with every enrolled unit treated. |
+
+??? info "Statistical details: the ship-to-all counterfactual"
+    Given a per-unit absolute lift
+
+    $$
+    \delta = \bar y_T - \bar y_C
+    $$
+
+    and its Welch-style standard error
+
+    $$
+    \mathrm{se}(\delta) = \sqrt{\frac{\mathrm{Var}(y_T)}{n_T} + \frac{\mathrm{Var}(y_C)}{n_C}},
+    $$
+
+    start from the observed **site-window volume** $V$: everything that
+    happened on the metric's raw event stream during the experiment's
+    enrollment window, not just what the exposed population did. $V$ already
+    contains the treatment arm's lift, so subtracting its contribution
+    (its $n_T$ units, each $\delta$ above what they would have done under
+    control) recovers the **counterfactual baseline** -- what the whole site
+    would have produced with nobody exposed to treatment:
+
+    $$
+    V_0 = V - \delta\,n_T
+    $$
+
+    The **ship-to-all impact** is the absolute gain from rolling the lift out
+    to every enrolled unit, control and treatment alike
+    ($N_{\text{exp}} = n_C + n_T$):
+
+    $$
+    I = \delta\,N_{\text{exp}}
+    $$
+
+    and the **relative impact** expresses that gain as a fraction of the
+    counterfactual baseline:
+
+    $$
+    \frac{I}{V_0}
+    $$
+
+    $V$ and $N_{\text{exp}}$ are data, not estimated quantities -- fixed
+    constants for the intervals below, which propagate only $\delta$'s
+    sampling variance. Absolute impact is linear in $\delta$, so its interval
+    is just the lift's Wald interval scaled by $N_{\text{exp}}$:
+
+    $$
+    \mathrm{se}(I) = N_{\text{exp}}\,\mathrm{se}(\delta)
+    $$
+
+    Relative impact is not linear -- $V_0$ is itself a function of $\delta$ --
+    but the quotient rule's cross-terms cancel to a clean closed form:
+
+    $$
+    \mathrm{se}\!\left(\frac{I}{V_0}\right)
+    = \left|\frac{N_{\text{exp}}\,V}{V_0^2}\right|\,\mathrm{se}(\delta),
+    $$
+
+    the same first-order delta-method (Taylor) approximation this library
+    uses everywhere a ratio depends on an estimated quantity.
+
+    !!! note
+        A non-positive $V_0$ makes "relative impact" undefined -- a fraction
+        of a baseline that isn't positive has no sensible sign or magnitude.
+        `Analysis.sitewide()` raises `ValueError` rather than return one when
+        the baseline is non-positive.
+
+    **Ratio metrics.** A ratio metric (revenue per session, CTR) needs two
+    lifts instead of one: a numerator lift $\delta_{\text{num}}$ and a
+    denominator lift $\delta_{\text{den}}$, plus their covariance (they come
+    from the same per-arm sums, not independent draws). The counterfactual
+    and ship-to-all totals are built the same way as $V_0$ above, once per
+    side:
+
+    $$
+    N_0 = V_{\text{num}} - n_T\,\delta_{\text{num}}, \qquad
+    D_0 = V_{\text{den}} - n_T\,\delta_{\text{den}}
+    $$
+
+    $$
+    N_1 = N_0 + N_{\text{exp}}\,\delta_{\text{num}}, \qquad
+    D_1 = D_0 + N_{\text{exp}}\,\delta_{\text{den}}
+    $$
+
+    and the impact is the **difference of the two ratios**, not a ratio of
+    differences:
+
+    $$
+    \text{impact} = \frac{N_1}{D_1} - \frac{N_0}{D_0}
+    $$
+
+    Its delta-method standard error follows from the two partial derivatives
+    (with respect to $\delta_{\text{num}}$ and $\delta_{\text{den}}$) and
+    includes the numerator/denominator covariance term, since the two are
+    not independent:
+
+    $$
+    \mathrm{Var}(\text{impact}) = g_{\text{num}}^2\,\mathrm{Var}(\delta_{\text{num}})
+    + g_{\text{den}}^2\,\mathrm{Var}(\delta_{\text{den}})
+    + 2\,g_{\text{num}}\,g_{\text{den}}\,\mathrm{Cov}(\delta_{\text{num}}, \delta_{\text{den}})
+    $$
+
+    `Analysis.sitewide()` reports a ratio metric's `relative_impact` as
+    `absolute_impact / baseline_ratio`. Its uncertainty uses covariance-aware
+    delta-method gradients for the numerator and denominator lifts; the
+    reported intervals use the resulting relative-impact standard error.
+
+    **Multi-arm experiments.** With a second treatment arm enrolled, $V$
+    carries *both* arms' lifts: $V = V_0 + \delta_A n_A + \delta_B n_B$.
+    Netting out only the arm being scored would leave the other arm's lift
+    counted as baseline, so every enrolled non-control arm is subtracted:
+
+    $$
+    V_0 = V - \sum_i \delta_i\,n_i
+    $$
+
+    $N_{\text{exp}}$ counts all enrolled units. The arms' lifts are not
+    independent -- every $\delta_i$ subtracts the same control mean, so
+    $\mathrm{Cov}(\delta_i, \delta_j) = \mathrm{Var}(\bar y_C) = \mathrm{Var}(y_C)/n_C$,
+    which is *positive*. Absolute impact depends only on the selected arm's
+    lift; relative impact also carries the shared-baseline covariance into
+    its interval.
+
+## Assigned or triggered
+
+With a declared `trigger:`, `population="assigned"` (the default) estimates
+the intent-to-treat impact of assignment. `population="triggered"` scales
+the effect among finalized trigger members by the triggered enrolled count.
+
+| Rule | Both populations |
+|---|---|
+| Window | The experiment calendar window (`start .. end`), not `run()`'s trigger-anchored windows. Later outcomes are excluded even when `observation_end` extends past the experiment; a late trigger can still be a member, but its outcomes come from the experiment window. |
+| Site volume | Always the full site, never only triggered units. |
+| Identification | Randomized only; observational and encouragement designs refuse before evidence loads. |
+| Completeness | Outcomes must be complete through the experiment end, or the call refuses with `facade.analysis.sitewide_outcomes_incomplete`. Rerun after the feeds reach the end day. |
+
+!!! warning "The triggered estimate is conditional on its assumptions"
+    It assumes trigger membership is independent of treatment assignment,
+    units that never trigger are unaffected, and enrolled units exhaust
+    exposure. The result carries an allocation-balance diagnostic, but a
+    passed diagnostic cannot establish those assumptions.
+
+??? info "Statistical details: completeness evidence and calibration"
+    Triggered results require a feed watermark in `SourceSnapshotEvidence`
+    (or the artifact) proving completeness through the end day. Assigned
+    results refuse if a snapshot cutoff or declared watermark is earlier; a
+    native analysis without snapshot evidence has no cutoff to check.
+    `snapshot_id` equality is content-bound for artifacts only; native
+    identity reflects declared `SourceSnapshotEvidence`, not table contents.
+
+    In two-arm simulations whose assumptions held, both readings covered the
+    realized site impact at 95.1%–95.7% for nominal 95% intervals. When units
+    that never trigger were affected, the triggered reading missed by the
+    omitted effect while the assigned reading stayed calibrated. See
+    [limitations](../limitations.md) for the designs, the precision
+    comparison and what the campaign does not cover.
+
+## Multi-arm experiments
+
+`sitewide()` scores one arm at a time: pass `arm="treatment_b"` to select it
+when several treatment arms are enrolled. The question is what would happen if that arm alone
+shipped to everyone, compared with no treatment; arms are never combined into
+an unshippable scenario. Every enrolled arm's lift is removed from site volume
+to form the baseline, so co-enrolled arms add sampling variance to the
+relative impact's interval. The formula is in the fold above.
+
+## Cluster-randomized experiments
+
+`Experiment.cluster` (see [The data model](data-model.md#randomization-grain-vs-analysis-grain))
+names the stores, markets, or other units whose assignment actually changed,
+not the individually measured units. Clustered readings come from unwindowed
+`mean` and `ratio` metrics with sum- or count-aggregated components; any other
+declared type raises `CapabilityError`. Conversion, retention and quantile
+metrics refuse for the reasons in [when it refuses](#when-it-refuses) whether
+or not the experiment is clustered.
+
+Declaring a cluster never moves the point estimate. It changes the standard
+error, because units within a cluster are not independent draws, and moves
+inference from a Normal to a $t$ reference whose degrees of freedom depend on
+what is reported. `absolute_dof` and `relative_dof` echo the degrees of
+freedom each interval was cut at.
+
+**How many clusters is enough.** Below 40 total clusters, a `RuntimeWarning`
+names the over-rejection risk, and borderline significance should be treated
+as fragile. Each enrolled arm needs at least two clusters so its
+between-cluster variance is defined. More clusters buy real precision; adding
+units inside each cluster adds little.
+
+!!! warning "Enrolled units must exhaust the treated population"
+    Cluster randomization usually treats the whole cluster, every register at
+    a store or every session in a market, not just the units that logged an
+    enrollment event. A returning customer who skipped the enrolling page but
+    still bought at a treated store is real treated volume with no enrollment
+    row, so it lands in the counterfactual baseline as though untouched. The
+    bias has a fixed direction: the baseline is biased upward and the reported
+    ship-to-all impact is understated, never overstated. The library does not
+    implement a cluster-restricted site total or spillover correction.
+
+??? info "Statistical details: cluster standard errors and degrees of freedom"
+    Each arm becomes a ratio of cluster totals: outcome summed per cluster
+    divided by units summed per cluster, the same cluster-robust reduction
+    used by `run()` and other cluster-aware estimators. The point estimate
+    matches a unit-grain mean; only the standard error changes. Cluster count
+    is a qualification, not an admission floor: structurally valid contrasts
+    use a qualified Normal/$t$ reference.
+
+    - **Absolute impact for a plain (non-ratio) metric** combines the target
+      and control arm mean variances. Its $t$ reference uses a two-component
+      Welch–Satterthwaite correction, pairing each variance component with
+      its own arm's cluster degrees of freedom ($K_i - 1$). It does not
+      pool the cluster count or automatically use the pairwise sum.
+    - **Relative impact, and a ratio metric's absolute impact,** mix
+      contributions from every enrolled arm. A co-enrolled arm's lift enters
+      the shared baseline used by either quantity, so more arms add sampling
+      variance to the standard error, not necessarily a more conservative
+      reference distribution. The combined estimate uses a Welch–Satterthwaite
+      correction across every contributing arm's cluster count (each arm's own
+      $K_i - 1$, including control), weighted by that arm's variance
+      contribution. It is not a simple average of the arms' individual degrees
+      of freedom. The result falls between the smallest contributing arm's
+      $K_i - 1$ and the sum of all contributing arms' $K_i - 1$, and can fall
+      below the target-control pairwise degrees of freedom. A co-enrolled arm
+      with fewer clusters can lower an every-arm reference further.
+
+    The two kinds of reference need not move in the same direction when a
+    cluster is declared. The [cluster-randomized rollout](#a-cluster-randomized-rollout)
+    below shows both at 42.0245 with 24 cluster degrees of freedom per arm.
+
+## When it refuses
+
+| Case | What happens | Do instead |
+|---|---|---|
+| `RetentionMetric` or `QuantileMetric` | `CapabilityError` before any moments are built: site volume is undefined, because a retention outcome is anchored to each unit's own exposure time and a quantile is not additive across events. | Use an additive mean, count, or ratio metric. |
+| Windowed or non-additive metric (`avg_event`, `min`, `count_distinct`, a per-unit window), including ratio components | Refuses before evidence loads: site totals cover the calendar window `[start, end]` and cannot align. | Use an unwindowed sum or count aggregation. |
+| Conversion metric | `facade.analysis.sitewide_metric_unaligned` before evidence loads, native or artifact: a converter indicator is a maximum over a unit's events, not an additive total. | Declare a `count` metric (`type: mean`, `aggregation: count`) on the conversion fact. |
+| `from_unit_summary`, `from_unit_panel`, `from_moments` | Pre-melted outcomes or moments carry no whole-site raw-event total. | Use `from_definitions`, or adopt a unit-day artifact published with the metric's `site_volume` extension ([extension matrix](data-model.md#operation-and-extension-matrix)). |
+| Artifact without trigger membership | `artifact.extension.missing` for `population="triggered"`. | Republish with the `trigger_population` extension, as below. |
+| Outcomes incomplete through the end day | `facade.analysis.sitewide_outcomes_incomplete`, either population. | Rerun after the feeds reach the end day. |
+| Observational or encouragement design | Refuses before evidence loads: the unadjusted sitewide contrast does not implement those estimands. | Use `Analysis.run()`. |
+| Several non-control arms and no `arm=` | `ValueError` naming the candidates. | Pass `arm=`. |
+
+The artifact published in [Run it](#run-it) carries trigger membership.
+`incomplete_artifact`, published with only `site_volume`, refuses the
+triggered reading until the source is republished with the required evidence:
 
 
 ```python
@@ -236,317 +473,14 @@ analysis.close()
 triggered_analysis.close()
 ```
 
-The triggered result is a conditional fixed-membership estimate. It assumes
-membership is independent of treatment assignment, units that never trigger
-are unaffected, and enrolled units exhaust exposure; the result includes an
-allocation-balance diagnostic, but a passed diagnostic cannot establish those
-assumptions. The result is explicitly exploratory and unadjusted for
-multiplicity.
-
-**Calibration:** in two-arm simulations whose assumptions held, both readings
-covered the realized site impact at 95.1%–95.7% for nominal 95% intervals. When
-units that never trigger were affected, the triggered reading missed by the
-omitted effect while the assigned reading stayed calibrated. See
-[limitations](../limitations.md) for the designs, the precision comparison and
-what the campaign does not cover.
-
-## The ship-to-all counterfactual
-
-Given a per-unit absolute lift
-
-$$
-\delta = \bar y_T - \bar y_C
-$$
-
-and its Welch-style standard error
-
-$$
-\mathrm{se}(\delta) = \sqrt{\frac{\mathrm{Var}(y_T)}{n_T} + \frac{\mathrm{Var}(y_C)}{n_C}},
-$$
-
-start from the observed **site-window volume** $V$: everything that
-happened on the metric's raw event stream during the experiment's
-enrollment window, not just what the exposed population did. $V$ already
-contains the treatment arm's lift, so subtracting its contribution
-(its $n_T$ units, each $\delta$ above what they would have done under
-control) recovers the **counterfactual baseline** -- what the whole site
-would have produced with nobody exposed to treatment:
-
-$$
-V_0 = V - \delta\,n_T
-$$
-
-The **ship-to-all impact** is the absolute gain from rolling the lift out
-to every enrolled unit, control and treatment alike
-($N_{\text{exp}} = n_C + n_T$):
-
-$$
-I = \delta\,N_{\text{exp}}
-$$
-
-and the **relative impact** expresses that gain as a fraction of the
-counterfactual baseline:
-
-$$
-\frac{I}{V_0}
-$$
-
-$V$ and $N_{\text{exp}}$ are data, not estimated quantities -- fixed
-constants for the intervals below, which propagate only $\delta$'s
-sampling variance. Absolute impact is linear in $\delta$, so its interval
-is just the lift's Wald interval scaled by $N_{\text{exp}}$:
-
-$$
-\mathrm{se}(I) = N_{\text{exp}}\,\mathrm{se}(\delta)
-$$
-
-Relative impact is not linear -- $V_0$ is itself a function of $\delta$ --
-but the quotient rule's cross-terms cancel to a clean closed form:
-
-$$
-\mathrm{se}\!\left(\frac{I}{V_0}\right)
-= \left|\frac{N_{\text{exp}}\,V}{V_0^2}\right|\,\mathrm{se}(\delta),
-$$
-
-the same first-order delta-method (Taylor) approximation this library
-uses everywhere a ratio depends on an estimated quantity.
-
-!!! note
-    A non-positive $V_0$ makes "relative impact" undefined -- a fraction
-    of a baseline that isn't positive has no sensible sign or magnitude.
-    `Analysis.sitewide()` raises `ValueError` rather than return one when
-    the baseline is non-positive.
-
-## Ratio metrics
-
-A ratio metric (revenue per session, CTR) needs two lifts instead of
-one: a numerator lift $\delta_{\text{num}}$ and a denominator lift
-$\delta_{\text{den}}$, plus their covariance (they come from the same
-per-arm sums, not independent draws). The counterfactual and ship-to-all
-totals are built the same way as $V_0$ above, once per side:
-
-$$
-N_0 = V_{\text{num}} - n_T\,\delta_{\text{num}}, \qquad
-D_0 = V_{\text{den}} - n_T\,\delta_{\text{den}}
-$$
-
-$$
-N_1 = N_0 + N_{\text{exp}}\,\delta_{\text{num}}, \qquad
-D_1 = D_0 + N_{\text{exp}}\,\delta_{\text{den}}
-$$
-
-and the impact is the **difference of the two ratios**, not a ratio of
-differences:
-
-$$
-\text{impact} = \frac{N_1}{D_1} - \frac{N_0}{D_0}
-$$
-
-Its delta-method standard error follows from the two partial derivatives
-(with respect to $\delta_{\text{num}}$ and $\delta_{\text{den}}$) and
-includes the numerator/denominator covariance term, since the two are
-not independent:
-
-$$
-\mathrm{Var}(\text{impact}) = g_{\text{num}}^2\,\mathrm{Var}(\delta_{\text{num}})
-+ g_{\text{den}}^2\,\mathrm{Var}(\delta_{\text{den}})
-+ 2\,g_{\text{num}}\,g_{\text{den}}\,\mathrm{Cov}(\delta_{\text{num}}, \delta_{\text{den}})
-$$
-
-`Analysis.sitewide()` reports ratio metrics' `relative_impact` as absolute
-impact divided by the baseline ratio (`absolute_impact / baseline_ratio`).
-Its uncertainty uses covariance-aware delta-method gradients for the
-numerator and denominator lifts, including their covariance; the reported
-intervals use the resulting relative-impact standard error.
-
-## Window only -- no projection beyond it
-
-`sitewide()` reports the impact over exactly the experiment's declared
-enrollment window (`experiment.start .. experiment.end`) and refuses to
-extrapolate it into a longer or different horizon: no "annualized"
-number, no per-day rate multiplied out to a quarter or a year.
-
-That refusal is not conservatism for its own sake. As
-[Metric types](metric-types.md#unbounded-retention-doesnt-keep-getting-more-precise)
-shows for retention, a real, *constant* per-unit effect does not read the
-same at every observation horizon: watched longer, later and
-weakly-informative observations dilute the running estimate, to the
-point that a genuinely constant effect can look statistically
-undetectable purely from observing further out. If an effect's own
-statistical signature is not stable across horizons, assuming its
-*size* stays flat past the window you actually measured is exactly the
-same unearned assumption. `sitewide()` reports what happened in the
-window that was run, not a projection of what might happen in a window
-that wasn't.
-
-## Multi-arm experiments
-
-With a second treatment arm enrolled, $V$ carries *both* arms' lifts:
-$V = V_0 + \delta_A n_A + \delta_B n_B$. Netting out only the arm being
-scored would leave the other arm's lift counted as baseline, so every
-enrolled non-control arm is subtracted:
-
-$$
-V_0 = V - \sum_i \delta_i\,n_i
-$$
-
-and $N_{\text{exp}}$ counts every enrolled unit, not just two arms' worth.
-The reported number therefore answers: if this arm had shipped to every
-enrolled unit, and no other treatment arm had ever been exposed, how much
-higher would the site-window total be than under no treatment at all? Both
-worlds it compares are worlds a ship decision can actually choose -- a unit
-sits in exactly one arm, so "this arm ships *and* the other keeps running"
-is not a realizable alternative for one shared population.
-
-`sitewide()` scores one arm per call: pass `arm="treatment_b"` to say
-which. It is optional only when a single non-control arm is enrolled, and
-the co-enrolled arms are netted out of the baseline either way.
-
-The arms' lifts are not independent -- every $\delta_i$ subtracts the same
-control mean, so $\mathrm{Cov}(\delta_i, \delta_j) = \mathrm{Var}(\bar
-y_C) = \mathrm{Var}(y_C)/n_C$, which is *positive*. Absolute impact is
-unaffected (it stays linear in the scored arm's $\delta$ alone), but the
-relative impact's interval carries that covariance through the shared
-baseline.
-
-## Cluster-randomized experiments
-
-`Experiment.cluster` (see [The data model](data-model.md#randomization-grain-vs-analysis-grain))
-is recognized here as elsewhere in the library: it identifies the stores,
-markets, or other units whose assignment actually changed, not the
-individually measured units. Clustered readings come from unwindowed `mean`
-and `ratio` metrics with sum- or count-aggregated components; any other
-declared type raises `CapabilityError`. Conversion, retention and quantile
-metrics refuse for the site-volume reasons in ["What refuses"](#what-refuses),
-whether or not the experiment is clustered; read conversion events with a
-`count` metric on the conversion fact.
-
-The per-unit lift $\delta$ and its variance are no longer a plain arm mean
-and Welch SE. Each arm becomes a ratio of cluster totals: outcome summed per
-cluster divided by units summed per cluster. This is the same cluster-robust
-reduction used by `run()` and other cluster-aware estimators. The point
-estimate matches a unit-grain mean; only the standard error changes because
-units within a cluster are not independent draws.
-
-Inference also moves from a Normal reference to a $t$ reference. The
-applicable degrees of freedom depend on what is reported:
-
-- **Absolute impact for a plain (non-ratio) metric** combines the target
-  and control arm mean variances. Its $t$ reference uses a two-component
-  Welch–Satterthwaite correction, pairing each variance component with
-  its own arm's cluster degrees of freedom ($K_i - 1$). It does not
-  pool the cluster count or automatically use the pairwise sum.
-- **Relative impact, and a ratio metric's absolute impact,** mix
-  contributions from every enrolled arm. A co-enrolled arm's lift enters the
-  shared baseline used by either quantity, so more arms add sampling variance
-  to the standard error, not necessarily a more conservative reference
-  distribution. The combined estimate uses a Welch–Satterthwaite correction
-  across every contributing arm's cluster count (each arm's own $K_i - 1$,
-  including control), weighted by that arm's variance contribution. It is not
-  a simple average of the arms' individual degrees of freedom. The result
-  falls between the smallest contributing arm's $K_i - 1$ and the sum of all
-  contributing arms' $K_i - 1$, and can fall below the target-control
-  pairwise degrees of freedom. In the guide's balanced single-arm example,
-  each arm contributes 24 degrees of freedom. The two-component reference
-  would be 48 only with equal variance contributions; here it is about 42
-  because those contributions differ. A co-enrolled arm with fewer clusters
-  can lower an every-arm reference further.
-`revenue_per_user`'s plain-metric absolute impact uses the two-component
-Welch–Satterthwaite reference, pairing the control and target mean variances
-with their own 24 cluster degrees of freedom. Its `absolute_dof` is 42.0245
-here; 48 is the special case of equal variance contributions, not an
-automatic `target.n + control.n - 2` result. Relative impact and
-`revenue_per_session`'s absolute and relative impacts use the every-arm
-Welch–Satterthwaite reference instead (see "Degrees of freedom" in
-`increment.estimation.sitewide`'s module docstring): each variance term is
-paired with its own arm's cluster degrees of freedom. With only control and
-one target, those are 24 each, and the unequal variance weights yield
-42.0245. Co-enrolled arms add their own variance terms and cluster degrees
-of freedom to that reduction.
-
-!!! note
-    Declaring a cluster never moves the point estimate. It changes the
-    standard error and, for a multi-arm quantity, the reference distribution's
-    degrees of freedom; those changes need not move in the same direction.
-
-### How many clusters is enough
-
-Cluster count is a qualification, not an arbitrary admission floor. Structurally
-valid contrasts use a qualified Normal/$t$ reference; below 40 total clusters,
-`RuntimeWarning` names the over-rejection risk, and borderline significance
-should be treated as fragile. Each enrolled arm still needs at least two
-clusters so its between-cluster variance is defined. More clusters buy real
-precision; adding units inside each cluster adds little.
-
-!!! warning "Enrolled units must exhaust the treated population"
-    Cluster randomization usually treats the whole cluster -- every
-    register at a store, every session in a market -- not just the units
-    that happened to trigger an enrollment event. `sitewide()` assumes
-    enrolled units exhaust the treated population.
-
-    That assumption breaks concretely whenever a treated cluster has
-    real activity from someone who was never exposure-logged there: a
-    returning customer who did not view the enrolling page this window,
-    but still bought something at the treated store. That purchase is
-    real treated-population volume, but `sitewide()` has no enrollment
-    row to attribute it to, so it lands in the counterfactual baseline as
-    though it were untouched by treatment.
-
-    The bias has a fixed direction: the baseline is biased upward, and the
-    reported ship-to-all impact is understated, never overstated. The library
-    does not implement a cluster-restricted site total or spillover correction;
-    this is a known limitation, not behavior that `sitewide()` works around.
-
-## What refuses
-
-- **`RetentionMetric` and `QuantileMetric`.** Site volume is undefined
-  for both: a retention outcome is anchored to each unit's own exposure
-  time (the observation band), not a raw event stream that sums
-  independently of exposure, and a quantile is a distributional
-  statistic that is not additive across events. Both raise
-  `CapabilityError` before any moments are even built.
-- **Windowed or non-additive metrics (both populations).** Site totals cover
-  the experiment calendar window `[start, end]`; a per-unit window or
-  aggregation such as `avg_event`, `min`, or `count_distinct` cannot align.
-  Ratio components follow the same rule. Both paths refuse before evidence is
-  loaded; use an unwindowed sum or count aggregation.
-- **Conversion metrics (both populations).** A converter indicator is a maximum
-  over a unit's events, not an additive event total; it cannot be decomposed
-  into per-unit contributions. Both native and artifact calls refuse before
-  loading evidence with `facade.analysis.sitewide_metric_unaligned`. Declare a
-  `count` metric (mean metric, `aggregation: count`) on the conversion fact to
-  read conversion events site-wide.
-- **A clustered experiment's metric type.** Clustered sitewide readings
-  require additive mean or ratio components that decompose over cluster-grain
-  moments. Conversion metrics refuse as non-additive, and retention/quantile
-  metrics refuse because site volume is undefined for them.
-- **Summary and moments sources.** `from_unit_summary`,
-  `from_unit_panel`, and `from_moments` start from pre-melted outcomes or
-  moments and cannot provide the whole-site raw-event total required by
-  `sitewide()`. Use `from_definitions` for a native source, or adopt a
-  unit-day artifact published with the `site_volume` extension for the
-  requested metric; see the [artifact operation and extension
-  matrix](data-model.md#operation-and-extension-matrix). An artifact without
-  this extension cannot supply site-volume evidence.
-- **Observational and encouragement designs.** Both assigned and triggered
-  sitewide require randomized identification; the unadjusted sitewide contrast
-  does not implement their estimands. The refusal occurs before evidence is
-  loaded. Use `Analysis.run()` for the observational or encouragement estimand.
-- **An ambiguous arm.** With several non-control arms enrolled and no
-  `arm=` given, `sitewide()` raises `ValueError` naming the candidates
-  rather than silently picking one for you.
-
 ## Worked example
 
-This worked example uses the native `from_definitions` path: a definitions
-directory plus a DuckDB connection, as in
-[The data model](data-model.md#running-it). The alternative artifact path
-requires publishing the `site_volume` extension for the metric as described
-in the [operation and extension matrix](data-model.md#operation-and-extension-matrix).
-The event log below carries two kinds of "off-experiment" activity on
-purpose -- a `page_view` marks enrollment, `purchase` is the revenue metric,
-`session_end` backs a ratio metric's denominator, and background purchases
-from users who were never exposed still count toward the site total:
+This example uses the native `from_definitions` path: a definitions directory
+plus a DuckDB connection, as in [The data model](data-model.md#running-it).
+The event log carries off-experiment activity on purpose: a `page_view` marks
+enrollment, `purchase` is the revenue metric, `session_end` backs a ratio
+metric's denominator, and background purchases from users who were never
+exposed still count toward the site total.
 
 <!-- invisible-code-block: python
 from pathlib import Path
@@ -762,17 +696,15 @@ shipped ratio:          12.4992
 ship-to-all impact:     +5.5090 [+1.7949, +9.2232]
 ```
 
-`revenue_per_user` returns a `SitewideImpact`; `revenue_per_session`, a
-ratio metric, returns a `SitewideRatioImpact` with the numerator and
-denominator fields described in "Ratio metrics" above. Both intervals exclude
-zero here: the lift is large enough, relative to this toy dataset's small
-enrolled population, to move the whole-site total by a statistically
-detectable amount.
+`revenue_per_user` returns a `SitewideImpact`; `revenue_per_session` returns a
+`SitewideRatioImpact`. Both intervals exclude zero here: the lift is large
+enough, relative to this toy dataset's small enrolled population, to move the
+whole-site total by a detectable amount.
 
 ### A cluster-randomized rollout
 
-The second experiment, `store_rollout`, declares `cluster: store_id`.
-The store ID comes from exposure (`page_view`) rows, as described in
+The second experiment, `store_rollout`, declares `cluster: store_id`. The
+store ID comes from exposure (`page_view`) rows, as described in
 [The data model](data-model.md#randomization-grain-vs-analysis-grain).
 Background purchases keep `data_as_of` through the experiment calendar window.
 
@@ -927,22 +859,25 @@ shipped ratio:           12.8636
 ship-to-all impact:      +5.8464 [+2.7179, +8.9750]
 ```
 
-50 total clusters (25 stores per arm) clear the 40-cluster floor
-cleanly, so no `RuntimeWarning` fires here. `n_clusters` is echoed as
-contrast-level metadata; `absolute_dof`/`relative_dof` echo the dof
-each interval above was actually cut at, not a single pooled figure.
-`revenue_per_user`'s plain-metric absolute impact uses the two-component
-Welch–Satterthwaite reference, pairing the control and target mean variances
-with their own 24 cluster degrees of freedom. Its `absolute_dof` is 42.0245
-here; 48 is the special case of equal variance contributions, not an
-automatic `target.n + control.n - 2` result. Relative impact and
-`revenue_per_session`'s absolute and relative impacts use the every-arm
-Welch–Satterthwaite reference instead (see "Degrees of freedom" in
-`increment.estimation.sitewide`'s module docstring): each variance term is
-paired with its own arm's cluster degrees of freedom. With only control and
-one target, those are 24 each, and the unequal variance weights yield
-42.0245. Co-enrolled arms add their own variance terms and cluster degrees
-of freedom to that reduction.
+50 total clusters (25 stores per arm) clear the 40-cluster floor, so no
+`RuntimeWarning` fires. `n_clusters` is contrast-level metadata;
+`absolute_dof` and `relative_dof` echo the degrees of freedom each interval
+was actually cut at, not a single pooled figure.
+
+??? info "Statistical details: why both references are 42.0245 here"
+    `revenue_per_user`'s plain-metric absolute impact uses the two-component
+    Welch–Satterthwaite reference, pairing the control and target mean
+    variances with their own 24 cluster degrees of freedom. 48 would be the
+    special case of equal variance contributions, not an automatic
+    `target.n + control.n - 2` result; the unequal contributions here give
+    42.0245. Relative impact and `revenue_per_session`'s absolute and
+    relative impacts use the every-arm Welch–Satterthwaite reference instead
+    (see "Degrees of freedom" in `increment.estimation.sitewide`'s module
+    docstring): each variance term is paired with its own arm's cluster
+    degrees of freedom. With only control and one target, those are 24 each,
+    and the same unequal variance weights yield 42.0245. Co-enrolled arms add
+    their own variance terms and cluster degrees of freedom to that
+    reduction.
 
 See the [API reference](../api.md) for `SitewideImpact` and
 `SitewideRatioImpact`'s full field lists, and

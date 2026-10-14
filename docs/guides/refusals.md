@@ -1,15 +1,15 @@
 # When a request is refused
 
-Increment refuses requests it cannot interpret or support honestly. A refusal is
-not a result, and changing the request until the error disappears is not a
-substitute for checking the design and estimand.
+Increment refuses a request when it cannot interpret or support it honestly.
+A refusal is not a result; do not change the request just to make the error
+disappear. Check the design and estimand first.
 
 ## Start with the code and context
 
-Catch `CodedError` and use its stable `code` to choose handling; use `context`
-for the relevant field names and values. The message is for people, not a stable
-branching interface. Do not parse its wording. The [API error reference](../api.md#errors-and-refusals)
-describes typed refusals and gives examples.
+Catch `CodedError` and branch on its stable `code`; use `context` to inspect
+the relevant fields. The human-readable message can change, so do not parse
+it. See the [API error reference](../api.md#errors-and-refusals) for typed
+refusals and examples.
 
 ```python
 from increment.errors import CodedError
@@ -21,9 +21,9 @@ def refusal_record(exc: CodedError) -> tuple[str, dict[str, object]]:
 
 ## Find the next step by code family
 
-The first code segment is a navigation hint, not a new public enum. Follow the
-specific refusal's message/context and the linked contract; similar-looking
-codes can describe different limitations.
+The first code segment helps you find a family; it is not a separate public
+enum. Check the specific refusal's message, context, and linked contract:
+similar codes can mean different things.
 
 | Code family | What to check next |
 | --- | --- |

@@ -1030,7 +1030,7 @@ def test_clustered_adjusted_row_withholds_posterior_and_refuses_additive_pvalue(
     ).results
 
     # Posterior access follows posterior_available; see
-    # docs/guides/priors-and-decisions.md:142-145.
+    # docs/guides/priors-and-decisions.md:81-83.
     assert est.chance_to_beat() is None
     assert est.prob_favorable() is None
     with pytest.raises(InvalidRequestError) as exc_info:

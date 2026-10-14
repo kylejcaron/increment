@@ -2609,7 +2609,7 @@ def test_mixed_readout_emits_winsor_and_adjusted_other_metric(other_adjustment):
         baseline_rows = {row.metric: row for row in readouts.run(baseline_source)}
         baseline = baseline_rows["plain"]
         # Prior changes only stored posterior state, never sampling evidence
-        # (docs/guides/priors-and-decisions.md:7-9).
+        # (docs/guides/priors-and-decisions.md:3).
         assert plain.lift == baseline.lift
         assert baseline.posterior_available is None
         assert baseline.posterior_estimate is None
