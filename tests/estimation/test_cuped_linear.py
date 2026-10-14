@@ -1396,3 +1396,82 @@ def test_arm_mean_keeps_small_contributions_beside_cancelling_extremes(permutati
     fit = fit_cuped_linear(np.r_[np.zeros(6), treatment], arm, control="c", arm_order=("c", "t"))
     assert fit.adjusted_means[1] == pytest.approx(1e-20 / 6, rel=1e-15, abs=0)
     assert fit.absolute("t").estimate == pytest.approx(1e-20 / 6, rel=1e-15, abs=0)
+
+
+def test_unrelated_large_arm_cannot_change_a_small_contrast():
+    arm = np.repeat(["c", "t", "z"], 4)
+    y = np.r_[np.zeros(4), np.full(4, 1e-20), np.full(4, 1e308)]
+    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t", "z"))
+    two_arm = fit_cuped_linear(y[:8], arm[:8], control="c", arm_order=("c", "t"))
+    result = fit.absolute("t")
+    assert result.estimate == 1e-20
+    assert result.se == two_arm.absolute("t").se
+    assert fit.absolute("z").estimate == 1e308
+    assert fit.absolute("z", control="t").estimate == 1e308
+
+
+def test_small_fitted_adjustment_survives_a_shared_large_outcome_offset():
+    arm = np.repeat(["c", "t", "z"], 8)
+    x = np.r_[np.tile([-1.0, 1.0], 4), np.tile([0.0, 2.0], 4), np.tile([-1.0, 1.0], 4)]
+    y = np.r_[np.full(8, 1e308), np.full(8, 1e308), 1e-20 * np.tile([-1.0, 1.0], 4)]
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t", "z"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    assert fit.theta[0] == pytest.approx(1e-20 / 3, rel=1e-12)
+    result = fit.absolute("t")
+    assert result.estimate == pytest.approx(-fit.theta[0], rel=1e-12, abs=0)
+    assert result.se == pytest.approx(
+        fit_cuped_linear(
+            y * 1e-300,
+            arm,
+            control="c",
+            arm_order=("c", "t", "z"),
+            covariates={"x": x},
+            kinds={"x": "continuous"},
+        )
+        .absolute("t")
+        .se
+        * 1e300,
+        rel=1e-9,
+    )
+
+
+def test_relative_projection_survives_arms_of_different_magnitude():
+    arm = np.repeat(["c", "t"], 4)
+    base = np.array([1.0, 1.0, 3.0, 3.0])
+    fit = fit_cuped_linear(np.r_[base, base * 1e-310], arm, control="c", arm_order=("c", "t"))
+    result = fit.relative("t")
+    assert result.estimate == pytest.approx(math.log(1e-310), rel=1e-12)
+    assert result.se == pytest.approx(1 / math.sqrt(6), rel=1e-10)
+    assert math.isfinite(result.dof) and result.dof > 0
+    reverse = fit_cuped_linear(np.r_[base * 1e-310, base], arm, control="c", arm_order=("c", "t"))
+    assert reverse.relative("t").estimate == pytest.approx(-result.estimate, rel=1e-12)
+    assert reverse.relative("t").se == pytest.approx(result.se, rel=1e-10)
+    assert reverse.relative("t").dof == pytest.approx(result.dof, rel=1e-10)
+
+
+def test_absolute_ratio_stays_available_when_log_uncertainty_is_unrepresentable():
+    arm = np.repeat(["c", "t"], 6)
+    numerator = np.r_[np.ones(6), [1.0, -1.0, 0.0, 0.0, 0.0, 1e-310]]
+    fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=numerator,
+        denominator=np.ones(12),
+    )
+    mean_fit = fit_cuped_linear(numerator, arm, control="c", arm_order=("c", "t"))
+    result = fit.ratio("t", scale="absolute")
+    expected = mean_fit.absolute("t")
+    assert result.estimate == pytest.approx(expected.estimate, rel=1e-12)
+    assert result.se == pytest.approx(expected.se, rel=1e-12)
+    assert math.isfinite(result.dof) and result.dof > 0
+    with pytest.raises(InvalidRequestError) as raised:
+        fit.ratio("t", scale="log")
+    assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
