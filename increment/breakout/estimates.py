@@ -1122,6 +1122,8 @@ class EstimateList[M: BaseModel](list[M]):
             selected_columns = columns
 
         native = to_frame(self, model=self._model, backend=backend, columns=selected_columns)
+        if selected_columns is not None:
+            selected_columns = nw.from_native(native, eager_only=True).columns
         if not self._has_readout_cells():
             frame = nw.from_native(native, eager_only=True).with_columns(
                 nw.lit(None if self.metadata is None else self.metadata.partial).alias(
@@ -1227,6 +1229,11 @@ class EstimateList[M: BaseModel](list[M]):
                 [None if self.metadata is None else self.metadata.partial] * len(native),
                 dtype="boolean",
             )
+        if selected_columns is not None:
+            selected = [*selected_columns, "view_partial"]
+            if backend == "pandas":
+                return native.loc[:, selected]
+            return nw.from_native(native, eager_only=True).select(selected).to_native()
         return native
 
     @overload
