@@ -371,6 +371,82 @@ class TestRunBreakoutSegmentIsolation:
         assert daily.p_value() == whole.p_value()
         assert daily.model_copy(update={"sampling_available": False}).stat_sig() is None
 
+    def test_daily_nonpositive_cell_with_a_relative_margin_keeps_its_declared_null(self):
+        """A daily CUPED cell whose adjusted means are nonpositive, carrying a declared
+        relative margin and no absolute margin, never substitutes an additive-zero test
+        for the hypothesis it retains."""
+        from increment.estimation.results import row_decision_scale
+
+        base: dict[str, Any] = {
+            "metric": "rev",
+            "group_id": "treatment",
+            "method": "cuped",
+            "method_role": "decision",
+            "ds": date(2024, 1, 1),
+            "lift": None,
+            "relative_unavailable_reason": "nonpositive_arm_mean",
+            "abs_diff": -0.9,
+            "abs_se": 0.05,
+            "abs_lb": -1.0,
+            "abs_ub": -0.8,
+            "abs_reference_kind": "t",
+            "abs_reference_df": 1998.0,
+            "abs_alpha": 0.1,
+            "reference_kind": "normal",
+            "alternative": "less",
+            "sampling_available": True,
+        }
+        margin = DailyLiftEstimate(**base, null_lift=-0.05)
+        assert margin.p_value() == 1.0
+        assert margin.stat_sig() is False
+        assert row_decision_scale(margin) == "relative"
+        unshifted = DailyLiftEstimate(**base, null_lift=0.0)
+        assert unshifted.stat_sig() is True
+        assert row_decision_scale(unshifted) == "absolute"
+
+    def test_absolute_scale_cell_with_a_nonzero_null_matches_the_whole_window_row(self):
+        """An additive cell's Wald statistics are linear, so a shifted null is not
+        log-transformed: the cell's p-value equals the ``LiftEstimate``'s and the
+        hand Normal tail on the additive scale."""
+        from scipy.stats import norm
+
+        from increment.estimation.armstats import ScoreStats
+        from increment.estimation.inference import infer_ate
+
+        whole = infer_ate(
+            metric="m",
+            group_id="t",
+            method="unadjusted",
+            method_role="decision",
+            alpha=0.05,
+            alternative="two-sided",
+            point=2.0,
+            scores=ScoreStats(metric="m", contrast="t", n=100, sum_psi=0.0, sum_psi2=100.0),
+            value_scale="absolute",
+        ).model_copy(update={"null_lift": 1.5})
+        assert whole.scale == "linear" and whole.value_scale == "absolute"
+        cell = BreakoutEstimate(
+            metric=whole.metric,
+            group_id=whole.group_id,
+            method=whole.method,
+            method_role=whole.method_role,
+            dimension="country",
+            dimension_value="US",
+            lift=whole.lift,
+            value_scale="absolute",
+            null_lift=whole.null_lift,
+            reference_kind=cast("Any", whole.reference_kind),
+            reference_df=whole.reference_df,
+        )
+        lift = whole.require_lift()
+        assert lift.log_mean is not None and lift.log_se is not None
+        expected = 2.0 * norm.sf(abs((lift.log_mean - 1.5) / lift.log_se))
+        whole_p, cell_p = whole.p_value(), cell.p_value()
+        assert whole_p is not None and cell_p is not None
+        assert whole_p == pytest.approx(expected, rel=1e-12, abs=0.0)
+        assert cell_p == pytest.approx(expected, rel=1e-12, abs=0.0)
+        assert cell.stat_sig() is whole.stat_sig()
+
     def test_segment_row_order_does_not_change_either_answer(self):
         """Row arrival order (CA-then-US vs US-then-CA) must not change either segment's answer - a
         `{metric: control}` dict collision would make whichever segment is iterated LAST win."""

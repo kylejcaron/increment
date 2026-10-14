@@ -27,6 +27,8 @@ from increment.estimation.contrast_results import ContrastResult
 from increment.estimation.results import (
     LiftEstimate,
     _selection_qualification,
+    row_decision_available,
+    row_decision_scale,
 )
 
 if TYPE_CHECKING:
@@ -94,6 +96,8 @@ def _base_liftestimate_to_row(
         "open_side": open_side,
         "level": level,
         "stat_sig": est.stat_sig(),
+        "decision_scale": row_decision_scale(est),
+        "decision_available": row_decision_available(est),
         "null_lift": getattr(est, "null_lift", 0.0),
         "null_abs": getattr(est, "null_abs", None),
         "abs_lb": getattr(est, "abs_lb", None),
@@ -788,8 +792,10 @@ def _rendered_metadata_columns(
             for text, sig, row in zip(
                 set_text, significance, frame.iter_rows(named=True), strict=True
             ):
-                if not text or _is_missing(sig):
+                if not text:
                     verdict = ""
+                elif _is_missing(sig):
+                    verdict = "Unavailable"
                 elif sig:
                     verdict = "Yes"
                 else:
@@ -820,7 +826,15 @@ def _binomial_qualification_disclosure(value: Any) -> str:
 
 
 def _decision_available(row: Mapping[str, Any]) -> bool:
-    """Distinguish a non-rejecting confidence procedure from unavailable inference."""
+    """Distinguish a non-rejecting confidence procedure from unavailable inference.
+
+    A row the adapter built carries ``decision_available`` from
+    :func:`increment.estimation.results.row_decision_available`, the one rule
+    every row type shares; the field-by-field reading below serves only frames
+    assembled without that column."""
+    available = row.get("decision_available")
+    if not _is_missing(available):
+        return bool(available)
     status = row.get("sequential_status")
     if not _is_missing(status):
         return status in {

@@ -1594,14 +1594,15 @@ class LiftEstimate(_RowIdentity):
                 interval = "interval=None"
             else:
                 interval = f"interval=({self.lift.lb:+.4g}, {self.lift.ub:+.4g})"
-            if self.lift.alpha is not None and (
-                self.lift.lb is not None or self.lift.ub is not None
+            decision_alpha = row_decision_alpha(self)
+            # The level this construction decides at, shown where it is not simply the
+            # interval's own level complement: a plan-allocated (Bonferroni-split) or
+            # family-reissued row, or a closed directional interval spending one tail.
+            if decision_alpha is not None and (
+                self.role is not None
+                or self.family_procedure is not None
+                or not math.isclose(decision_alpha, self.lift.alpha or decision_alpha)
             ):
-                # The level this interval decides at: a Bonferroni-split primary or an FCR
-                # reissue differs from the plan's nominal alpha, which p_value() never absorbs.
-                decision_alpha = (
-                    self.lift.alpha if self.alternative == "two-sided" else self.lift.alpha / 2.0
-                )
                 interval += f", decision_alpha={decision_alpha:.4g}"
         qualification = _selection_qualification(self)
         suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
@@ -1882,9 +1883,10 @@ def row_p_value(row: DecisionRow) -> float | None:
     :func:`row_stat_sig` reports as ``None``). It is never divided by a
     multiplicity factor; the row's decision alpha is what it is compared with.
     A fixed-horizon row with an interval satisfies ``p_value() <= alpha``
-    exactly when ``stat_sig()`` (for the alpha the interval was cut at) except
-    on a ``low_reliability`` cell, whose statistic is reported while its
-    verdict is withheld.
+    (``<`` for an exact binomial row) exactly when ``stat_sig()``, for the
+    alpha its construction decides at (:func:`row_decision_alpha`), except on a
+    ``low_reliability`` cell, whose statistic is reported while its verdict is
+    withheld.
     """
     if row.inference != "fixed":
         from increment.sequential_state import sequential_refuse
@@ -1930,8 +1932,9 @@ def row_p_value(row: DecisionRow) -> float | None:
     e = row.lift
     if e is None:
         return None
-    # A breakout or daily cell carries its Wald statistics on the log scale.
-    scale = getattr(row, "scale", "log")
+    # A breakout or daily cell carries no ``scale``: its Wald statistics are on
+    # the log scale unless the row itself is additive.
+    scale = getattr(row, "scale", None) or ("linear" if row.value_scale == "absolute" else "log")
     clustered = row.reference_kind == "t" or getattr(row, "n_clusters", None) is not None
     if e.log_mean is None or e.log_se is None:
         _raise(
@@ -1992,15 +1995,18 @@ def _additive_excludes(row: DecisionRow, null: float) -> bool:
 def _additive_zero_reference(row: DecisionRow) -> tuple[float, float, float | None] | None:
     """``(abs_diff, abs_se, df)`` when the row's decision is the additive
     difference tested against zero: the relative scale is undefined because an
-    arm mean is not positive, no absolute margin is declared, and the additive
-    sidecar carries an interval with its own reference. The reference is the
-    one the interval was cut from -- Welch or cluster ``t`` at
-    ``abs_reference_df``, Normal otherwise -- so ``p_value()`` and
-    ``stat_sig()`` read the same construction. ``None`` leaves the row a
+    arm mean is not positive, the row's declared null is the unshifted zero on
+    both scales (no absolute margin, no relative margin -- a declared relative
+    margin has no additive counterpart, so such a row stays a conservative
+    non-rejection), and the additive sidecar carries an interval with its own
+    reference. The reference is the one the interval was cut from -- Welch or
+    cluster ``t`` at ``abs_reference_df``, Normal otherwise -- so ``p_value()``
+    and ``stat_sig()`` read the same construction. ``None`` leaves the row a
     conservative non-rejection."""
     if (
         row.relative_unavailable_reason != "nonpositive_arm_mean"
         or row.null_abs is not None
+        or row.null_lift != 0.0
         or row.abs_diff is None
         or row.abs_se is None
         or not row.abs_se > 0.0
@@ -2010,6 +2016,94 @@ def _additive_zero_reference(row: DecisionRow) -> tuple[float, float, float | No
     ):
         return None
     return row.abs_diff, row.abs_se, row.abs_reference_df
+
+
+def row_decision_scale(row: DecisionRow) -> Literal["relative", "absolute"]:
+    """The scale ``row``'s own decision is made on: ``"absolute"`` for a declared
+    absolute margin or an automatic additive-zero decision, ``"relative"``
+    otherwise. The readout adapter persists it as ``decision_scale`` so table
+    and dashboard consumers label the tested null without re-deriving the rule."""
+    if row.null_abs is not None or _additive_zero_reference(row) is not None:
+        return "absolute"
+    return "relative"
+
+
+def row_decision_available(row: DecisionRow) -> bool:
+    """Whether ``row`` carries a usable decision construction, so that a
+    ``False`` verdict from :func:`row_stat_sig` is a genuine non-rejection
+    rather than the absence of a test. Persisted by the readout adapter as
+    ``decision_available``."""
+    verdict = row_stat_sig(row)
+    if verdict is None or getattr(row, "low_reliability", False):
+        return False
+    if verdict:
+        return True
+    sequential = row.sequential_result
+    if sequential is not None:
+        return getattr(sequential.bounds, "status", None) != "unavailable"
+    absolute = row_decision_scale(row) == "absolute"
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        interval = (
+            confidence_set.additive
+            if absolute or row.value_scale == "absolute"
+            else confidence_set.relative
+        )
+        return all(endpoint.status != "undefined" for endpoint in (interval.lower, interval.upper))
+    if absolute:
+        lower, upper = row.abs_lb is not None, row.abs_ub is not None
+        return (
+            (lower and upper)
+            or (lower and row.alternative == "greater")
+            or (upper and row.alternative == "less")
+        )
+    if row.relative_confidence_set is not None:
+        return row.relative_confidence_set.geometry not in ("empty", "unavailable")
+    if row.binomial_set is not None:
+        return True
+    lift = row.lift
+    if lift is None:
+        return False
+    lower, upper = lift.lb is not None, lift.ub is not None
+    return (
+        (lower and upper)
+        or (lower and lift.open_side == "upper")
+        or (upper and lift.open_side == "lower")
+    )
+
+
+def row_decision_alpha(row: DecisionRow) -> float | None:
+    """The level ``row``'s own fixed-horizon construction decides at: the single
+    tail a directional test spends, so ``p_value() <= row_decision_alpha(row)``
+    (``<`` for an exact binomial row) agrees with ``stat_sig()``. An additive
+    decision reads ``abs_alpha``; an exact binomial row its set's
+    ``decision_alpha``; a joint set its inversion alpha; a scalar interval its
+    ``lift.alpha``, halved for a closed directional interval (the display alpha
+    is central-equivalent) and taken whole for an open directional bound, which
+    a family reissue already cut at the full tail. ``None`` without a fixed
+    construction."""
+    if row.inference != "fixed":
+        return None
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        return confidence_set.alpha
+    if row_decision_scale(row) == "absolute":
+        abs_alpha = row.abs_alpha
+        if abs_alpha is None:
+            return None
+        return abs_alpha if row.alternative == "two-sided" else abs_alpha / 2.0
+    if row.relative_unavailable_reason is not None:
+        return None
+    if row.relative_confidence_set is not None:
+        return row.relative_confidence_set.alpha
+    if row.binomial_set is not None:
+        return row.binomial_set.decision_alpha
+    lift = row.lift
+    if lift is None or lift.alpha is None:
+        return None
+    if row.alternative == "two-sided" or lift.open_side is not None:
+        return lift.alpha
+    return lift.alpha / 2.0
 
 
 def _null_abs_p_value(row: DecisionRow) -> float:

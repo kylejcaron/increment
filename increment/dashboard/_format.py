@@ -226,9 +226,10 @@ def primary_tone(row: Mapping[str, Any]) -> str:
     if direction not in ("increase", "decrease"):
         return "neutral"
 
-    null_abs = row.get("null_abs")
-    if not is_missing(null_abs):
-        null, lower, higher = null_abs, row.get("abs_lb"), row.get("abs_ub")
+    if decision_scale(row) == "absolute":
+        null_abs = row.get("null_abs")
+        null = 0.0 if is_missing(null_abs) else null_abs
+        lower, higher = row.get("abs_lb"), row.get("abs_ub")
     else:
         null = row.get("null_lift")
         null = 0.0 if null is None else null
@@ -280,10 +281,22 @@ def interval_html(row: Mapping[str, Any]) -> str:
     return f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
 
 
+def decision_scale(row: Mapping[str, Any]) -> str:
+    """The scale the row's own decision is made on, as the readout adapter persisted it
+    (``decision_scale`` from ``increment.estimation.results.row_decision_scale``); a row
+    without the column decides on its declared absolute margin when one is set."""
+    scale = row.get("decision_scale")
+    if not is_missing(scale):
+        return str(scale)
+    return "relative" if is_missing(row.get("null_abs")) else "absolute"
+
+
 def null_text(row: Mapping[str, Any]) -> str:
-    null_abs = row.get("null_abs")
-    if null_abs is not None:
-        return f"{null_abs:+,.4g} absolute"
+    """The tested null on the row's own decision scale."""
+    if decision_scale(row) == "absolute":
+        null_abs = row.get("null_abs")
+        null = 0.0 if is_missing(null_abs) else null_abs
+        return f"{null:+,.4g} absolute"
     null_lift = row.get("null_lift")
     if null_lift is None:
         return missing_html("no null boundary reported")

@@ -34,11 +34,15 @@ with their full structured context on the result object.
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the
 row's own unadjusted sampling p-value; it is never divided by a multiplicity
-factor. The row's decision compares it with the alpha its interval was cut at
-(`r.lift.alpha`, halved for a one-sided row, and shown as `decision_alpha` in
-the row's representation), which a Bonferroni-split primary or a family
-reissue sets below the plan's nominal alpha, so `p_value() <= decision alpha`
-exactly when `stat_sig()`. The family verdict is `r.discovery`. The ordinary
+factor. The row's decision compares it with the level its construction decides
+at, shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a
+two-sided or open-sided interval, half of it for a closed one-sided interval
+(the display alpha is central-equivalent), `r.binomial_set.decision_alpha` for an
+exact conversion row, and the single-tail `r.abs_alpha` for an additive decision.
+A Bonferroni-split primary or a family reissue sets it below the plan's nominal
+alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
+binomial row decides with a strict `<`; a `low_reliability` breakout cell reports
+its p-value but withholds the verdict). The family verdict is `r.discovery`. The ordinary
 representation and `readout_table` place a selection qualification next to
 that result, including its procedure, exploratory/confirmatory role, retained
 family, and applicable guarantee or assumption. These disclosures do not
@@ -227,14 +231,16 @@ each row keeps its remaining evidence, are:
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
   including when both arms are constant. Check the bounds before use. When the
-  additive interval is present and no absolute margin is declared, it is the
-  row's decision: `r.p_value()` is the additive test of the difference against
-  zero under the row's alternative, using the reference the interval was cut
-  from (Welch `t` or Normal, `r.abs_reference_kind`), and `r.stat_sig()` is
-  whether that interval excludes zero. Such a row takes part in its family on
-  that evidence and, when selected, has its additive interval reissued at the
-  family level. A row with no additive interval keeps `r.p_value() == 1.0` and
-  `r.stat_sig()` False: a non-rejection, never a discovery.
+  additive interval is present and the row's null is the unshifted zero (no
+  absolute or relative margin declared), it is the row's decision: `r.p_value()`
+  is the additive test of the difference against zero under the row's
+  alternative, using the reference the interval was cut from (Welch `t` or
+  Normal, `r.abs_reference_kind`), and `r.stat_sig()` is whether that interval
+  excludes zero. Such a row takes part in its family on that evidence and, when
+  selected, has its additive interval reissued at the family level. A row with
+  no additive interval, or one that declares a relative margin (which has no
+  additive counterpart), keeps `r.p_value() == 1.0` and `r.stat_sig()` False: a
+  non-rejection, never a discovery.
 - A row whose joint relative covariance is unusable: it cannot be represented as
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).

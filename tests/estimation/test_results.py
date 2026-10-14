@@ -1859,6 +1859,55 @@ class TestNonpositiveArmMeanUnavailableReason:
         assert row.p_value() != pytest.approx(_additive_tail(row, null=0.0), rel=1e-12, abs=0.0)
         assert row.stat_sig() is True
 
+    def test_a_declared_relative_margin_keeps_the_conservative_nonrejection(self):
+        """A relative margin has no additive counterpart: the row keeps its declared
+        null and never tests additive zero in its place."""
+        from increment.estimation.results import row_decision_available, row_decision_scale
+
+        row = self._row(null_lift=-0.05, alternative="greater")
+        assert row.p_value() == 1.0
+        assert row.stat_sig() is False
+        assert row_decision_scale(row) == "relative"
+        assert row_decision_available(row) is False
+
+    def test_run_with_a_plan_bound_relative_margin_keeps_the_declared_null(self):
+        from increment import Analysis
+        from increment.frame import MetricSpec
+        from increment.semantics.models import AnalysisPlan, ExperimentMetric
+        from tests.analysis_factory import lift_rows
+
+        frame = _nonpositive_mean_unit_summary()
+        (row,) = lift_rows(
+            Analysis.from_unit_summary(
+                frame,
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics=[MetricSpec(name="delta", preferred_direction="increase")],
+                plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="delta", margin=0.05)]),
+            ).run()
+        )
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert row.null_lift == pytest.approx(-0.05)
+        assert row.null_abs is None
+        assert row.p_value() == 1.0
+        assert row.stat_sig() is False
+        assert row.discovery is False
+
+    def test_decision_alpha_agrees_with_the_verdict(self):
+        from increment.estimation.results import row_decision_alpha
+
+        row = self._row()
+        assert row.abs_alpha is None
+        assert row_decision_alpha(row) is None
+        cut = self._row(abs_alpha=0.05)
+        assert row_decision_alpha(cut) == pytest.approx(0.05)
+        directional = self._row(abs_alpha=0.1, alternative="less")
+        assert row_decision_alpha(directional) == pytest.approx(0.05)
+        directional_p = directional.p_value()
+        assert directional_p is not None
+        assert (directional_p <= 0.05) is directional.stat_sig()
+
     def test_round_trips_preserve_the_decision(self):
         row = self._row()
         expected = (row.p_value(), row.stat_sig())
@@ -2028,8 +2077,15 @@ class TestStatSigIsUnavailableWithoutSamplingEvidence:
         (readout,) = estimates_to_readout(rows)
         assert readout["stat_sig"] is None
         assert readout["failure_code"] == row.failure_code
-        rendered = readout_table([readout]).data
+        table = readout_table([readout])
+        rendered = table.data
         assert rendered["stat_sig"].isna().all()
+        # The verdict column renders beside a confidence-set text; wherever it renders
+        # for this row it must read as unavailable, and the failure code is disclosed.
+        if "Significant" in rendered.columns:
+            assert rendered["Significant"].tolist() == ["Unavailable"]
+        assert row.failure_code is not None
+        assert row.failure_code in table.gt().as_raw_html()
 
     def test_failed_cell_has_no_verdict(self):
         row = LiftEstimate(
