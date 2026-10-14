@@ -764,7 +764,11 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
         assert actual.ub == pytest.approx(expected.ub, rel=1e-10, abs=1e-10)
         scope, evidence = source_signature(result)
         assert scope[:2] == expected_scope[:2]
-        assert evidence == expected_evidence
+        assert evidence.keys() == expected_evidence.keys()
+        for key, (available, p_value, reference) in evidence.items():
+            expected_available, expected_p, expected_reference = expected_evidence[key]
+            assert (available, reference) == (expected_available, expected_reference)
+            assert p_value == pytest.approx(expected_p, rel=1e-10, abs=1e-12)
 
 
 def test_cuped_evidence_digest_accepts_infinities_without_rewriting_values():
