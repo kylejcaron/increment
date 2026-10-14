@@ -494,10 +494,15 @@ A multiplicity family (a BH secondary family, `run_breakout(correction="bh")`,
 level; what changes is its p-value. Every delta-method conversion row persists its four counts
 (`delta_evidence`) with `U`, the smallest level at which those counts are dense
 (`dense_level`, the count rule inverted float by float against itself; `0.0` for counts dense
-at every representable level), and reports the composite `p* = p_delta` when
-`p_delta >= U`, otherwise `min(p_exact, U)`, where `p_exact` is the finite-sample route's
-p-value against the row's null read at the row's nominal tail with its nominal nuisance budget
-(`escalated_p_value`). Read at any level `u`, `p* <= u` only where the pipeline routed by counts
+at every representable level). A row no family reads -- a sole primary, a guardrail, a
+sensitivity method's row, a breakout cell under `correction="none"` or `"bonferroni"` --
+keeps its delta p-value. A family member's decision row (`delta_evidence.composite`) reports
+the composite `p* = p_delta` when `p_delta >= U`, otherwise `min(p_exact, U)`, where
+`p_exact` is the finite-sample route's p-value against the row's null read at the row's
+nominal tail with its nominal nuisance budget (`escalated_p_value`); `select_exploratory_family`
+reads the same composite on demand from the persisted counts of the uncorrected rows it is
+given, so it and `run_breakout(correction="bh")` select on identical evidence. Read at any
+level `u`, `p* <= u` only where the pipeline routed by counts
 at `u` rejects: by the delta row at `u` on counts dense at `u` (where `{p* <= u}` equals
 `{p_delta <= u}`), by the finite-sample test at `u` elsewhere, up to an exact float tie and the
 certification gap between the nominal reading of the exact p-value and a finer one (both
@@ -512,7 +517,12 @@ ceiling, a tail its float margin dominates; the refusal code is persisted as
 `exact_unavailable`). A capped `p*` is not a tail probability but is valid: the row rejects
 nowhere below `U`, and at `U` and above only where its delta p-value does; it can lie below the
 nuisance budget `1e-6` that bounds every exact p-value. A row persisted before the counts
-existed restores as a plain Wald row whose p-value is the delta p-value at every level.
+existed restores as a plain Wald row whose p-value is the delta p-value at every level; a
+family that corrects such a restored row below `U` reads an unvalidated delta p-value there,
+as every family did before the counts were persisted. A restored row's `U` is checked against
+the rule (dense at `U`, not one float below); a row cut under a build whose normal quantile
+differs by one float at its count is refused by code (`estimation.results.delta.dense_level`),
+and re-running the analysis is the remedy.
 
 A selected member is reissued at `min(R q / m, alpha)` by its counts at that level with no
 family floor: the delta interval where they are dense there, the exact binomial set from the

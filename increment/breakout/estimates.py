@@ -67,6 +67,7 @@ from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
     UNBOUNDED_RETENTION_DAILY_REMEDY,
     Method,
+    _estimate_lift,
     _validate_methods,
     estimate_lift,
     reject_unbounded_retention,
@@ -2111,9 +2112,10 @@ def _estimate_lift_computation_or_reason(
     alternative: str,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    family_member: bool = False,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     try:
-        computation = estimate_lift(
+        computation = _estimate_lift(
             metrics=[metric],
             summary=summary,
             control_group=control_group,
@@ -2123,6 +2125,7 @@ def _estimate_lift_computation_or_reason(
             alternative=alternative,
             inference=inference,
             method_roles=method_roles,
+            family_member=family_member,
         )
         from increment.decision import DecisionComputation
 
@@ -2475,6 +2478,9 @@ class _BreakoutContext(NamedTuple):
     all_pairs: set[tuple[str, str]]
     reliability_floor: int
     resolved_methods: list[Method]
+    # Whether the cells form a ``correction="bh"`` family, whose decision rows are read below
+    # their own level and so report the composite conversion p-value.
+    family_member: bool
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2839,6 +2845,7 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     methods=method_group,
                     inference=context.inference,
                     method_roles=resolved_roles,
+                    family_member=context.family_member,
                 )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
@@ -3395,6 +3402,7 @@ def run_breakout(  # noqa: PLR0913
             all_pairs,
             reliability_floor,
             resolved_methods,
+            correction == "bh",
         )
         prepared = _prepare_lift_slice(
             segment_rows,

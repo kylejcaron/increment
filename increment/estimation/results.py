@@ -392,21 +392,25 @@ class DeltaConversionEvidence(CodedModel, BaseModel):
     ``dense_level`` is ``U``, the smallest level at which the four counts are dense
     (`conversion_route.dense_level`, in the convention of the level the row's p-value is
     compared with: ``alpha`` two-sided, the single directional tail otherwise; ``0.0`` for
-    counts dense at every representable level). The row's ``p_value()`` is the composite
+    counts dense at every representable level). Every delta-route conversion row persists
+    its counts and ``U``; its p-value is its delta p-value.
+
+    ``composite`` marks a decision row read by a multiplicity family below its own level
+    (a declared secondary family, ``run_breakout(correction="bh")``,
+    ``select_exploratory_family``). Its ``p_value()`` is then the composite
     `conversion_route.composite_p_value`: its delta p-value when that is at least ``U``, else
-    the smaller of ``escalated_p_value`` and ``U``.
+    the smaller of ``escalated_p_value`` and ``U``. ``escalated_p_value`` is the finite-sample
+    route's exact p-value against the row's own null, read at the row's nominal tail with the
+    nuisance budget of its nominal level (never a finer reading), persisted only when the delta
+    p-value is below ``U`` and the exact route could serve it with a p-value able to fall below
+    ``U``. ``exact_unavailable`` is the refusal code of the exact route where it could not (an
+    arm above its ceiling, a tail its float margin dominates); the row's p-value is then ``U``
+    itself, and its ``note`` says so. At most one of the two is set, and only on a composite
+    row.
 
-    ``escalated_p_value`` is the finite-sample route's exact p-value against the row's own
-    null, read at the row's nominal tail with the nuisance budget of its nominal level (never
-    a finer reading), persisted only when the delta p-value is below ``U`` and the exact
-    route could serve it with a p-value able to fall below ``U``. ``exact_unavailable`` is
-    the refusal code of the exact route where it could not (an arm above its ceiling, a tail
-    its float margin dominates); the row's p-value is then ``U`` itself, and its ``note``
-    says so. At most one of the two is set.
-
-    A multiplicity family and ``select_exploratory_family`` read the same composite from the
-    same persisted state, so a row corrected after the fact carries the evidence the family
-    selected on.
+    A declared family and ``select_exploratory_family`` read the same composite from the same
+    persisted counts (the exploratory path reads the exact p-value on demand at selection), so
+    a row corrected after the fact carries the evidence the family selected on.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -416,6 +420,7 @@ class DeltaConversionEvidence(CodedModel, BaseModel):
     x_t: int = Field(ge=0)
     n_t: int = Field(ge=1)
     dense_level: float = Field(ge=0.0, lt=1.0, allow_inf_nan=False)
+    composite: bool = False
     escalated_p_value: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
     exact_unavailable: str | None = None
 
@@ -433,6 +438,13 @@ class DeltaConversionEvidence(CodedModel, BaseModel):
             _raise(
                 "estimation.results.delta.dense_level",
                 reason="an exact p-value and the exact route's refusal cannot both be recorded",
+            )
+        if not self.composite and (
+            self.escalated_p_value is not None or self.exact_unavailable is not None
+        ):
+            _raise(
+                "estimation.results.delta.dense_level",
+                reason="an exact reading belongs only to a row read by a family (composite)",
             )
         return self
 
@@ -645,7 +657,7 @@ def _validate_delta_evidence(row: Any) -> Any:
     evidence = row.delta_evidence
     if evidence is None:
         return row
-    from increment.estimation.conversion_route import dense_level
+    from increment.estimation.conversion_route import dense_level_holds
 
     if (
         row.reference_kind != "t"
@@ -658,13 +670,15 @@ def _validate_delta_evidence(row: Any) -> Any:
             group_id=row.group_id,
             reference_kind=row.reference_kind,
         )
-    expected = dense_level(*evidence.counts, alternative=row.alternative)
-    if expected != evidence.dense_level:
+    if not dense_level_holds(
+        *evidence.counts, level=evidence.dense_level, alternative=row.alternative
+    ):
         _raise(
             "estimation.results.delta.dense_level",
             reason=(
-                f"dense_level={evidence.dense_level!r} is not the rule's level "
-                f"{expected!r} for counts {evidence.counts} under {row.alternative!r}"
+                f"dense_level={evidence.dense_level!r} is not the rule's level for counts "
+                f"{evidence.counts} under {row.alternative!r} (re-run the analysis to cut "
+                "the row under this version's rule)"
             ),
         )
     return row
@@ -1993,12 +2007,13 @@ def row_p_value(row: DecisionRow) -> float | None:
     (``<`` for an exact binomial row) exactly when ``stat_sig()``, for the
     alpha its construction decides at (:func:`row_decision_alpha`), except on a
     ``low_reliability`` cell, whose statistic is reported while its verdict is
-    withheld. A conversion row the count rule routed to the delta method
-    (``delta_evidence`` persisted) reports the composite p-value of its counts
+    withheld. A delta-route conversion row read by a multiplicity family
+    (``delta_evidence.composite``) reports the composite p-value of its counts
     (`conversion_route.composite_p_value`): its delta p-value when that is at
     least the level its counts become dense at, else the smaller of its exact
     p-value and that level. The composite agrees with ``stat_sig()`` at the
-    row's own alpha and is valid at every level a family reads it at.
+    row's own alpha and is valid at every level the family reads it at; a
+    row outside a family reports its delta p-value.
     """
     if row.inference != "fixed":
         from increment.sequential_state import sequential_refuse
@@ -2082,7 +2097,7 @@ def row_p_value(row: DecisionRow) -> float | None:
     else:
         p_delta = float(2.0 * distribution.sf(abs(z), *shapes))
     evidence = row.delta_evidence
-    if evidence is None:
+    if evidence is None or not evidence.composite:
         return p_delta
     from increment.estimation.conversion_route import composite_p_value
 

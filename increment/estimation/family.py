@@ -855,8 +855,12 @@ def _scope_of(row: object) -> _Scope | None:
 
 
 def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
-    """Key every row and classify how its interval is reissued, refusing what cannot be."""
+    """Key every row and classify how its interval is reissued, refusing what cannot be. A
+    delta-route conversion row is read as a family member: its view carries the composite
+    p-value of its persisted counts (`engine.escalate_family_member`), the evidence
+    ``run_breakout(correction="bh")`` reads for the same cell."""
     from increment.estimation._fcr_reinterval import classify
+    from increment.estimation.engine import escalate_family_member
 
     members: list[_Member] = []
     obstructed: list[tuple[str, str]] = []
@@ -864,6 +868,8 @@ def _members(rows: Sequence[LiftEstimate | BreakoutEstimate]) -> list[_Member]:
         scope = _scope_of(row)
         key = _in_scope(ArmHypothesisKey(row.metric, row.group_id, row.estimand), scope)
         view = row._family_view()
+        if view is not None and row.method_role == "decision":
+            view = escalate_family_member(view)
         construction, reason = ("unavailable", "") if view is None else classify(view)
         if construction is None:
             obstructed.append((_label(index, row), reason))
@@ -954,7 +960,11 @@ def select_exploratory_family(
     row's own nominal level, from the construction the row persists: the Wald interval from its
     raw statistics and reference, the exact binomial set from its counts, or the Fieller set
     from its joint reference, each with its one-sided geometry. That equals the interval
-    ``run_breakout(correction="bh")`` returns for the same cell. A row whose relative interval is
+    ``run_breakout(correction="bh")`` returns for the same cell. A delta-route conversion row
+    is read as a family member: its persisted counts give the composite p-value the family
+    selects on (read on demand here, carried on every tested row), and a selected one is
+    reissued by those counts at the corrected level, the exact binomial set where they are not
+    dense there -- again what ``run_breakout(correction="bh")`` reports. A row whose relative interval is
     unavailable (a non-positive arm mean) reports only its additive interval; an absolute margin
     can select it, and that interval is reissued from its persisted ``abs_alpha`` at the same
     level, never narrower than the nominal one. An unselected row keeps its interval.
@@ -1005,9 +1015,9 @@ def select_exploratory_family(
             corrected.append(member.row)
             continue
         selected = family_discovery(outcome, member.key)
-        view = None
-        if selected and member.view is not None:
+        view = member.view
+        if selected and view is not None:
             assert outcome.realized_threshold is not None
-            view = reinterval_selected(member.view, member.construction, outcome.realized_threshold)
+            view = reinterval_selected(view, member.construction, outcome.realized_threshold)
         corrected.append(_stamped(member.row, view, discovery=selected, **family))
     return tuple(corrected)

@@ -7,6 +7,7 @@ from increment.breakout.estimates import reject_quantile_metrics
 from increment.errors import InvalidRequestError
 from increment.estimation.encouragement import (
     ESTIMANDS,
+    _estimate_encouragement,
     estimate_compliance,
     estimate_encouragement,
 )
@@ -68,6 +69,7 @@ class _EncouragementCellGroup(NamedTuple):
     alpha: float
     null_lift: float
     null_abs: float | None
+    family_member: bool
     metrics: list[Metric]
 
 
@@ -79,6 +81,7 @@ def _encouragement_cell_groups(
     alternative_by_metric: Mapping[str, str],
     null_lift_by_metric: Mapping[str, float],
     null_abs_by_metric: Mapping[str, float | None],
+    family_metric_names: set[str],
 ) -> list[_EncouragementCellGroup]:
     groups: list[_EncouragementCellGroup] = []
     for metric, config in zip(metrics, configs, strict=True):
@@ -86,6 +89,7 @@ def _encouragement_cell_groups(
         alpha = alpha_by_metric[metric.name]
         null_lift = null_lift_by_metric[metric.name]
         null_abs = null_abs_by_metric[metric.name]
+        family_member = metric.name in family_metric_names
         metric_methods = _runtime_methods(config, design)
         for group in groups:
             if (
@@ -95,6 +99,7 @@ def _encouragement_cell_groups(
                 and group.alpha == alpha
                 and group.null_lift == null_lift
                 and group.null_abs == null_abs
+                and group.family_member == family_member
             ):
                 group.metrics.append(metric)
                 break
@@ -107,6 +112,7 @@ def _encouragement_cell_groups(
                     alpha,
                     null_lift,
                     null_abs,
+                    family_member,
                     [metric],
                 )
             )
@@ -162,6 +168,7 @@ def _prepare_encouragement_groups(metrics, rows_by_metric, configs, design, plan
         cell_alternative_by_metric,
         cell_null_lift_by_metric,
         cell_null_abs_by_metric,
+        family_metric_names,
     )
     return role_by_metric, family_metric_names, groups
 
@@ -221,7 +228,7 @@ def encouragement_rows(
         summary = [row for m in group.metrics for row in rows_by_metric[m.name]]
         method_roles = _runtime_method_roles(group.methods)
         try:
-            computation = estimate_encouragement(
+            computation = _estimate_encouragement(
                 metrics=group.metrics,
                 summary=summary,
                 design=design,
@@ -234,6 +241,7 @@ def encouragement_rows(
                 null_abs=group.null_abs,
                 cluster=cluster,
                 method_roles=method_roles,
+                family_member=group.family_member,
             )
         except InvalidRequestError as exc:
             if exc.code != "estimation.encouragement.control.missing" or any(

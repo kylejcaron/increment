@@ -77,6 +77,7 @@ from increment.estimation.results import (
     Estimate,
     LiftEstimate,
     _alpha_eff_for,
+    row_decision_alpha,
     row_p_value,
 )
 from increment.estimation.sequential import (
@@ -1447,7 +1448,7 @@ def _lift_decision_bundle(  # noqa: PLR0915
                     hypothesis, result.method, p_value, bset.method
                 )
             continue
-        if result.delta_evidence is not None:
+        if result.delta_evidence is not None and result.delta_evidence.composite:
             # The composite p-value the row itself reports (its persisted counts, dense level
             # and exact reading), the same evidence a family assembled after the fact reads.
             p_value = result.p_value()
@@ -2872,14 +2873,17 @@ def _lift_for_method(  # noqa: PLR0913
     null_lift: float,
     null_abs: float | None,
     preferred_direction: PreferredDirection | None,
+    *,
+    family_member: bool = False,
 ) -> tuple[LiftEstimate | None, DecisionFailure | None]:
     """One (contrast, method) row.
 
     Auto conversion routing is selected from the counts and the row's own tail allocation,
     independently of the prior and of any family the row belongs to. The prior can add a
     separately guarded posterior, but cannot replace the prior-free sampling construction.
-    A row routed to the delta method carries its count evidence and composite p-value
-    (`_delta_conversion_evidence`), which a family reads at any level below the row's own.
+    A row routed to the delta method carries its four counts and dense level; a decision row
+    of a multiplicity family (``family_member``) additionally reads the composite p-value the
+    family decides on (`escalate_family_member`).
     """
     treatment, control = contrast
     method = method_strategy.method
@@ -2971,23 +2975,46 @@ def _lift_for_method(  # noqa: PLR0913
     if result is None or null_abs is not None:
         # An additive margin decides on the additive sidecar, which neither route cuts.
         return result, failure
-    evidence, note = _delta_conversion_evidence(result, counts, alpha, valid_alternative, null_lift)
-    notes = [part for part in (result.note, note) if part is not None]
-    return (
-        result.model_copy(update={"delta_evidence": evidence, "note": "; ".join(notes) or None}),
-        failure,
+    level = dense_level(*counts, alternative=valid_alternative)
+    assert level is not None, "routed asymptotic: the counts are dense at the nominal level"
+    x_c, n_c, x_t, n_t = counts
+    result = result.model_copy(
+        update={
+            "delta_evidence": DeltaConversionEvidence(
+                x_c=x_c, n_c=n_c, x_t=x_t, n_t=n_t, dense_level=level
+            )
+        }
     )
+    if family_member and method_role == "decision":
+        result = escalate_family_member(result)
+    return result, failure
 
 
-def _delta_conversion_evidence(
+def escalate_family_member(row: LiftEstimate) -> LiftEstimate:
+    """*row*, a delta-route conversion decision row with its counts, read as a member of a
+    multiplicity family: its ``delta_evidence`` becomes composite, carrying the exact p-value
+    where the composite needs it, and its note says when its p-value is not its delta p-value.
+    A row already read as a member, or one without counts, is returned unchanged."""
+    evidence = row.delta_evidence
+    if evidence is None or evidence.composite:
+        return row
+    alpha = row_decision_alpha(row)
+    assert alpha is not None, "a delta-route row carries its decision alpha"
+    composite, note = _composite_evidence(
+        row, evidence, alpha, binomial_rr.validate_alternative(row.alternative)
+    )
+    notes = [part for part in (row.note, note) if part is not None]
+    return row.model_copy(update={"delta_evidence": composite, "note": "; ".join(notes) or None})
+
+
+def _composite_evidence(
     row: LiftEstimate,
-    counts: tuple[int, int, int, int],
+    evidence: DeltaConversionEvidence,
     alpha: float,
     alternative: Alternative,
-    null_lift: float,
 ) -> tuple[DeltaConversionEvidence, str | None]:
-    """The count evidence of a conversion row the rule routed to the delta method, and the
-    note it carries when its p-value is not its delta p-value.
+    """The composite evidence of a family-member conversion row routed to the delta method, and
+    the note it carries when its p-value is not its delta p-value.
 
     ``U`` is the smallest level at which the counts are dense (`conversion_route.dense_level`).
     A delta p-value at or above ``U`` is the row's p-value. Below ``U`` the exact p-value is read
@@ -2998,12 +3025,12 @@ def _delta_conversion_evidence(
     p-value of ``U`` is valid at every level (the row rejects nowhere below ``U``, and at ``U``
     and above only where its delta p-value does), and is never a silent fallback.
     """
-    level = dense_level(*counts, alternative=alternative)
-    assert level is not None, "routed asymptotic: the counts are dense at the nominal level"
+    level = evidence.dense_level
+    null_lift = row.null_lift
     p_delta = row_p_value(row)
     assert p_delta is not None, "a delta-route row carries its sampling reference"
-    x_c, n_c, x_t, n_t = counts
-    evidence = DeltaConversionEvidence(x_c=x_c, n_c=n_c, x_t=x_t, n_t=n_t, dense_level=level)
+    x_c, n_c, x_t, n_t = evidence.counts
+    evidence = evidence.model_copy(update={"composite": True})
     if p_delta >= level:
         return evidence, None
     below = (
@@ -3130,6 +3157,57 @@ def estimate_lift(  # noqa: PLR0913
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
+    return _estimate_lift(
+        metrics,
+        summary,
+        control_group,
+        methods,
+        prior,
+        alpha,
+        alternative,
+        inference,
+        null_lift,
+        null_abs,
+        preferred_direction,
+        cluster,
+        method_roles,
+        raw_outcomes,
+        winsor_references,
+        summary_population=summary_population,
+    )
+
+
+def _estimate_lift(  # noqa: PLR0913
+    metrics: Sequence[Metric],
+    summary: SequentialSnapshot
+    | IntoDataFrame
+    | Iterable[Mapping[str, Any]],  # group_summary rows for ONE experiment
+    control_group: str,  # REQUIRED explicit control
+    methods: list[Method] | None = None,
+    prior: Prior | None = None,
+    alpha: float | None = None,
+    alternative: str | None = None,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
+    null_lift: float | None = None,
+    null_abs: float | None = None,
+    preferred_direction: PreferredDirection | None = None,
+    cluster: str | None = None,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    raw_outcomes: Mapping[str, WinsorRawState] | None = None,
+    winsor_references: Mapping[tuple[str, str], BootstrapReference | InfluenceReference]
+    | None = None,
+    *,
+    summary_population: Literal["assigned", "triggered"] | None = None,
+    family_member: bool = False,
+) -> DecisionComputation[LiftEstimate]:
+    """``estimate_lift`` with the family membership its multiplicity families pass.
+
+    ``family_member`` marks the decision rows as members of a multiplicity family that reads
+    their p-values below their own level: a delta-route conversion decision row then reports
+    the composite p-value of its counts (`escalate_family_member`). Only the package's own
+    families set it; the public function never does, so a row's p-value outside a family is
+    its own delta p-value.
+    """
     percentile_metrics = [
         m for m in metrics if getattr(getattr(m, "winsorization", None), "has_percentile", False)
     ]
@@ -3205,7 +3283,7 @@ def estimate_lift(  # noqa: PLR0913
             preferred_direction,
         )
         if ordinary:
-            remaining = estimate_lift(
+            remaining = _estimate_lift(
                 metrics=ordinary,
                 summary=summary,
                 control_group=control_group,
@@ -3219,6 +3297,7 @@ def estimate_lift(  # noqa: PLR0913
                 preferred_direction=preferred_direction,
                 cluster=cluster,
                 method_roles=method_roles,
+                family_member=family_member,
             )
             from increment.estimation.decision_types import DecisionComputation
 
@@ -3309,6 +3388,7 @@ def estimate_lift(  # noqa: PLR0913
                 null_lift,
                 null_abs,
                 preferred_direction,
+                family_member=family_member,
             )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure

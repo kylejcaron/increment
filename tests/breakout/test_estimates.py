@@ -2920,7 +2920,7 @@ def test_breakout_replays_one_open_ended_warning_per_metric_across_segments(monk
     from increment.errors import warn
     from increment.estimation.engine import _WARNINGS
 
-    original = breakout.estimate_lift
+    original = breakout._estimate_lift
     spec = _WARNINGS["estimation.engine.open_ended_sequential"]
 
     def warn_then_estimate(*args, **kwargs):
@@ -2935,7 +2935,7 @@ def test_breakout_replays_one_open_ended_warning_per_metric_across_segments(monk
         )
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(breakout, "estimate_lift", warn_then_estimate)
+    monkeypatch.setattr(breakout, "_estimate_lift", warn_then_estimate)
     metrics = [_mean_metric("rev"), _mean_metric("sessions")]
     rows = [
         _make_arm_row(

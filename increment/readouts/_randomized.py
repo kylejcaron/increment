@@ -265,6 +265,7 @@ def _estimate_randomized_secondary_family(
                     "family" if is_quantile or getattr(test.family, "member", False) else "cells"
                 ),
                 methods=_metric_methods,
+                family_member=bool(getattr(test.family, "member", False)) and not is_quantile,
             )
         nominal_by_metric[metric.name] = nominal
         nominal_computation_by_metric[metric.name] = computation

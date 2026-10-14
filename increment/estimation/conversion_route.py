@@ -224,6 +224,26 @@ def dense_level(x_c: int, n_c: int, x_t: int, n_t: int, *, alternative: str) -> 
     return 2.0 * tail if alternative == "two-sided" else tail
 
 
+def dense_level_holds(
+    x_c: int, n_c: int, x_t: int, n_t: int, *, level: float, alternative: str
+) -> bool:
+    """Whether ``level`` is the rule's own dense level for the four counts under
+    ``alternative`` (`dense_level`), read from two evaluations of the rule rather than a fresh
+    inversion: the counts are dense at the level's tail and not one float below it; a level of
+    zero holds from ``_DENSE_CEILING`` on. A row persisted under a build whose normal quantile
+    differs by one float at its count fails this check; re-running the analysis is the remedy."""
+    smallest = min(x_c, n_c - x_c, x_t, n_t - x_t)
+    if level == 0.0:
+        return smallest >= _DENSE_CEILING
+    tail = level / 2.0 if alternative == "two-sided" else level
+    if not 0.0 < tail < 0.5 or smallest >= _DENSE_CEILING:
+        return False
+    if dense_min_count(tail) > smallest:
+        return False
+    below = math.nextafter(tail, 0.0)
+    return below == 0.0 or dense_min_count(below) > smallest
+
+
 def composite_p_value(p_delta: float, dense_level: float, escalated_p_value: float | None) -> float:
     """The p-value a row the rule routed asymptotic reports: ``p_delta`` when that is at least
     ``dense_level`` (the row is dense at every level that could reject it), otherwise the

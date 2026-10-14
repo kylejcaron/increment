@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 from increment import Analysis
+from increment.estimation.engine import escalate_family_member
 from increment.frame import MetricSpec
 from increment.semantics.models import AnalysisPlan
 from tests.analysis_factory import lift_rows
@@ -82,7 +83,12 @@ class TestTheAuditScenario:
         for row in family:
             twin = plain[row.metric, row.group_id]
             assert row.reference_kind == twin.reference_kind == "t"
-            assert row.delta_evidence == twin.delta_evidence
+            assert row.delta_evidence is not None and twin.delta_evidence is not None
+            # The family reads the member's composite; the row outside the plan keeps its delta
+            # p-value. Under the null the two coincide (no member lies below its dense level).
+            assert row.delta_evidence.composite and not twin.delta_evidence.composite
+            assert row.delta_evidence.counts == twin.delta_evidence.counts
+            assert row.delta_evidence.dense_level == twin.delta_evidence.dense_level
             assert row.require_lift().lb == twin.require_lift().lb
             assert row.require_lift().ub == twin.require_lift().ub
             assert row.p_value() == twin.p_value()
@@ -147,4 +153,4 @@ class TestASelectedMemberIsReissuedByItsCounts:
             assert row.reference_kind == "t"
             assert row.require_lift().lb == nominal.require_lift().lb
             assert row.require_lift().ub == nominal.require_lift().ub
-            assert row.p_value() == nominal.p_value()
+            assert row.p_value() == escalate_family_member(nominal).p_value()

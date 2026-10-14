@@ -182,7 +182,9 @@ def _estimate_observational_secondary_family(
 
     out: list[LiftEstimate] = []
 
-    def _nominal_pass(metric: Metric, alpha: float) -> DecisionComputation[LiftEstimate]:
+    def _nominal_pass(
+        metric: Metric, alpha: float, *, family_member: bool = False
+    ) -> DecisionComputation[LiftEstimate]:
         config = config_by_name[metric.name]
         computation = _estimate_ate(
             src,
@@ -200,6 +202,7 @@ def _estimate_observational_secondary_family(
             _raise_if_empty=False,
             _prior_scale_judged=True,
             evidence=evidence,
+            family_member=family_member,
         )
         if computations is not None:
             computations.append(computation)
@@ -216,7 +219,7 @@ def _estimate_observational_secondary_family(
     nominal_by_metric: dict[str, list[LiftEstimate]] = {}
     computation_by_metric: dict[str, DecisionComputation[LiftEstimate]] = {}
     for metric in family:
-        computation = _nominal_pass(metric, plan.alpha)
+        computation = _nominal_pass(metric, plan.alpha, family_member=True)
         nominal_by_metric[metric.name] = list(computation.results)
         computation_by_metric[metric.name] = computation
 

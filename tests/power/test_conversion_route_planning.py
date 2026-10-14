@@ -276,9 +276,6 @@ def test_a_baseline_cuped_rho_does_not_discard_an_explicit_finite_sample_request
     assert achieved_power(5_000, 0.1, baseline, _plan("auto")).power_basis == "asymptotic"
 
 
-# Four hundred delta rows, most of them rejecting below their dense level, each read their
-# exact p-value once (about 0.1 s at these counts): the smoke needs more than the default budget.
-@pytest.mark.timeout(240)
 def test_the_dense_runtime_rate_smoke_agrees_with_planning():
     p = 0.3
     n = _dense_n(p)
