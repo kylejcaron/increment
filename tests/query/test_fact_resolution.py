@@ -126,6 +126,7 @@ def _table(con):
                 "user_id": ["u1"],
                 "ts": [dt.datetime(2025, 1, 1)],
                 "amount": [100.0],
+                "event": ["purchase"],
                 "country": [7],
             }
         ),
@@ -227,6 +228,7 @@ def test_property_reading_the_fallback_entity_column_is_rejected(con):
                 "session_id": ["s1"],
                 "user_id": ["u1"],
                 "ts": [dt.datetime(2025, 1, 1)],
+                "event": ["purchase"],
                 "amount": [100.0],
             }
         ),
@@ -245,3 +247,39 @@ def test_property_reading_the_fallback_entity_column_is_rejected(con):
         exc_info.value.code == "query.fact_resolution.fact_source_property_reads_canonical_column"
     )
     assert exc_info.value.context["prop_column"] == "session_id"
+
+
+def test_fact_source_missing_event_refuses_before_data_query_and_survives_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import copy
+    import pickle
+
+    from increment.query.fact_resolution import _dim_joined_fact_table
+
+    con = ibis.duckdb.connect()
+    fs = FactSource.model_validate(
+        {
+            "name": "orders",
+            "sql": "SELECT user_id, event_time AS ts FROM orders",
+            "timestamp_column": "event_time",
+            "entities": ["user_id"],
+            "facts": [{"name": "purchase", "column": "amount"}],
+        }
+    )
+    defs = Definitions.model_construct(fact_sources=(fs,), dim_sources=())
+    relation = ibis.memtable({"user_id": ["u1"], "event_time": [dt.datetime(2025, 1, 1)]})
+
+    def unexpected_query(*args: object, **kwargs: object) -> None:
+        raise AssertionError("schema refusal must precede data execution")
+
+    monkeypatch.setattr(con, "execute", unexpected_query)
+    with pytest.raises(DefinitionError) as raised:
+        _dim_joined_fact_table(con, defs, fs, "user_id", {}, resolve_sql=lambda _sql: relation)
+    error = raised.value
+    assert error.code == "definition.fact_source.missing_columns"
+    assert error.context["fact_source"] == "orders"
+    assert error.context["missing"] == ("event",)
+    for restored in (copy.deepcopy(error), pickle.loads(pickle.dumps(error))):
+        assert restored.code == error.code
+        assert dict(restored.context) == dict(error.context)
