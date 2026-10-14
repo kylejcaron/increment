@@ -102,6 +102,23 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
     assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
+@pytest.mark.integration
+def test_explore_tables_show_only_core_readout_columns(_selected_family_snapshot):
+    from increment.dashboard._html import _segments_body, overview_table
+
+    snapshot = _selected_family_snapshot
+    overview = snapshot.overview
+    assert overview is not None
+    segment_rows = overview.segments[COUNTRY]
+    overview_html = overview_table(snapshot, COUNTRY)
+    segment_html = _segments_body(snapshot, segment_rows, metric=None)
+    assert "Discovery" in overview_html
+    assert "Selection qualification" not in overview_html
+    for html in (overview_html, segment_html):
+        assert "Numerical qualification" not in html
+        assert "Selection qualification" not in html
+
+
 @pytest.fixture(scope="module")
 def _selected_family_snapshot(tmp_path_factory):
     # Enough units that the exploratory BH family selects at least one cell.
@@ -190,7 +207,6 @@ def test_only_a_discovery_is_coloured_as_a_finding(_saved_added_snapshot):
     assert shown(False).count(favorable) < shown(True).count(favorable)
     qualified = shown(True)
     for token in (
-        "Selection qualification",
         "Benjamini-Hochberg",
         "FCR-adjusted",
         "independence or positive dependence",

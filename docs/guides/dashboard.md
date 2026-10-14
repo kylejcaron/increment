@@ -125,6 +125,11 @@ selected-population default and accept `population="assigned"` or
 `population="triggered"` for an explicit view. Metric group evidence is scoped to
 that population; assignment counts remain separately labeled.
 
+Readout tables keep the core metric and arm identity, lift, and lift plot, with
+failure, family-discovery, or prior-advisory columns when those values exist.
+Numerical qualification appears in the metric inspector's interval-reading
+disclosure rather than the headline interval.
+
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only
 the name is insufficient.

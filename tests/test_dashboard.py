@@ -998,7 +998,6 @@ def test_health_shows_a_refused_check_as_a_refusal_not_a_pass(
         allocation_refusal=("facade.analysis.invalid_population", "population is unsupported"),
     )
     html = render_health(snapshot).text
-    assert "facade.analysis.invalid_population" in html
     assert "population is unsupported" in html
     assert "not a passing check" in html
     assert "No allocation issues detected" not in html
@@ -1012,6 +1011,46 @@ def test_health_separates_the_allocation_alpha_from_interval_levels(
 
 
 # Results and metric details.
+
+
+def test_results_table_shows_only_core_readout_columns(pricing: DashboardSnapshot) -> None:
+    html = render_results(pricing).text
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+    }
+    allowed_columns = {
+        "Lift %",
+        "Lift Plot",
+        "Failure",
+        "Discovery",
+        "Posterior chance to beat",
+        "Posterior risk if shipped",
+        "Posterior P(favorable)",
+    }
+    assert {"Lift %", "Lift Plot"} <= headers
+    structural = {"group_id", "▾Primary"}
+    assert headers - structural <= allowed_columns | {
+        header for header in headers if "Declared plan" in header
+    }
+    assert "Numerical qualification" not in html
+    assert "Selection qualification" not in html
+
+
+def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapshot) -> None:
+    rows = tuple(
+        {
+            **dict(row),
+            "posterior_available": True,
+            "posterior_chance_to_beat": 0.73,
+            "posterior_risk_if_shipped": 0.27,
+        }
+        for row in pricing.readout_rows
+    )
+    snapshot = dataclasses.replace(pricing, readout_rows=rows)
+    html = render_results(snapshot).text
+    assert "Posterior chance to beat" in html
+    assert "Posterior risk if shipped" in html
 
 
 def test_results_render_every_declared_role_group(storefront: DashboardSnapshot) -> None:

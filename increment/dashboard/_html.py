@@ -66,7 +66,6 @@ from increment.dashboard._format import (
     timestamp_label,
 )
 from increment.dashboard._native import (
-    drop_columns,
     native_html,
     readout_native,
     resize_forest,
@@ -77,7 +76,11 @@ from increment.dashboard._theme import (
     coeftable_theme,
     standalone_css,
 )
-from increment.tables import _format_confidence_set, estimates_to_readout
+from increment.tables import (
+    _binomial_qualification_disclosure,
+    _format_confidence_set,
+    estimates_to_readout,
+)
 
 if TYPE_CHECKING:
     from increment.breakout.estimates import (
@@ -795,6 +798,9 @@ def _geometry_explanations(snapshot: DashboardSnapshot, row: Mapping[str, Any]) 
         and relative.geometry == "one_sided"
     ):
         open_side = "lower" if relative.intervals[0][0] is None else "upper"
+    qualification = _binomial_qualification_disclosure(binomial)
+    if qualification:
+        explanations.append(qualification)
     if binomial is not None and not is_missing(binomial) and binomial.geometry == "upper_bound":
         explanations.append(
             "This is a one-sided binary test for a decrease. Its lower endpoint is the physical "
@@ -859,14 +865,32 @@ def _geometry_explanations(snapshot: DashboardSnapshot, row: Mapping[str, Any]) 
 
 
 def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Omit the family selection column only from the visual readout."""
-    return [{key: value for key, value in row.items() if key != "discovery"} for row in rows]
+    """Preserve readout metadata so the core-column filter can choose what to display."""
+    return [dict(row) for row in rows]
 
 
-# Numeric confidence-set evidence lives in interval disclosures and the per-level wording beside
-# each table, so the verdict, set and per-row level columns are not repeated in the grid. The
-# unrounded values stay in the readout frame and CSV.
-_REDUNDANT_COLUMNS = frozenset({"Significant", "Confidence set", "Interval"})
+# Keep only the dashboard's core readout and declared advisory columns.
+_CORE_COLUMNS = frozenset(
+    {
+        "Lift %",
+        "Lift Plot",
+        "Failure",
+        "Discovery",
+        "Posterior chance to beat",
+        "Posterior risk if shipped",
+        "Posterior P(favorable)",
+    }
+)
+
+
+# This column is the Explore trajectory chart, not a readout evidence column.
+_EXPLORE_SERIES_COLUMNS = _CORE_COLUMNS | {"Cumulative lift"}
+
+
+def _keep_core_columns(table: ct.CoefTable) -> None:
+    table.columns = tuple(
+        column for column in table.columns if getattr(column, "label", None) in _CORE_COLUMNS
+    )
 
 
 INTERVALS_DISCLOSURE = "How to read these intervals"
@@ -899,10 +923,10 @@ def results_table(snapshot: DashboardSnapshot) -> str:
         subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
         nest_by="arm",
-        advisory=False,
+        advisory=True,
         show_interval_level=True,
     )
-    drop_columns(table, _REDUNDANT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
     return _TABLE_WRAP.format(native_html(table, metrics))
@@ -967,10 +991,10 @@ def overview_table(snapshot: DashboardSnapshot, breakout: tuple[str | None, str]
         subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
         nest_by="arm" if breakout is None else "segment",
-        advisory=False,
+        advisory=True,
         show_interval_level=True,
     )
-    drop_columns(table, _REDUNDANT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
     _colour_discoveries_only(table)
@@ -1796,13 +1820,16 @@ def _lift_trajectory_table(
         nest_by="segment" if segmented else "arm",
         trend=list(estimates),
         trend_label="Cumulative lift",
-        advisory=False,
+        advisory=True,
         show_interval_level=True,
     )
     axis = _percent_axis(estimates)
     columns = []
     for column in table.columns:
-        if isinstance(column, ct.Forest) or getattr(column, "label", None) in _REDUNDANT_COLUMNS:
+        if (
+            isinstance(column, ct.Forest)
+            or getattr(column, "label", None) not in _EXPLORE_SERIES_COLUMNS
+        ):
             continue
         if isinstance(column, ct.Sparkline):
             column = replace(
@@ -1902,9 +1929,10 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
         subtitle=f"Relative lift of {snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
         nest_by="segment",
+        advisory=True,
         show_interval_level=True,
     )
-    drop_columns(table, _REDUNDANT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.segment_forest_width, height=charts.segment_forest_height)
     return (
