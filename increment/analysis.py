@@ -27,6 +27,7 @@ from ibis.backends.sql import SQLBackend
 from increment import readouts
 from increment._analysis_config import (
     UNSET,
+    ResolvedMetricConfig,
     _Unset,
     effective_methods,
     normalize_display_correction,
@@ -440,6 +441,44 @@ def _stamp_exploratory_rows(rows):
         source=rows.source,
         sequential_snapshot=rows.sequential_snapshot,
     )
+
+
+def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricConfig) -> bool:
+    """Check the proposed CUPED method against the shared arm-support contract."""
+    from increment.estimation.arm_contract import (
+        MetricCapabilities,
+        Supported,
+        arm_cuped_advisory_support,
+    )
+    from increment.estimation.engine import _is_open_ended
+    from increment.sequential_source import adjustment_kind
+
+    context = source.context
+    metric = config.metric
+    inference = context.plan.inference
+    registration = getattr(inference, "registration", None)
+    adjustment = adjustment_kind(registration, metric.name) if registration is not None else None
+    capabilities = MetricCapabilities(
+        metric_type=metric.type if metric.type not in ("total", "active") else "mean",
+        value_scale="relative",
+        winsorization=(
+            "percentile"
+            if getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+            else "fixed"
+            if getattr(metric, "winsorization", None) is not None
+            else "none"
+        ),
+        outcome_window="unbounded" if _is_open_ended(metric) else "bounded",
+        uptake_window="not_applicable",
+    )
+    support = arm_cuped_advisory_support(
+        dependence="cluster" if context.cluster is not None else "iid",
+        metric=capabilities,
+        inference=inference,
+        adjustment=adjustment,
+        prior_present=config.prior is not None,
+    )
+    return isinstance(support, Supported)
 
 
 class Analysis:
@@ -2582,6 +2621,7 @@ class Analysis:
             added,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
+            prior=prior,
         )
         return rows
 
@@ -2592,36 +2632,40 @@ class Analysis:
         *,
         decision_method: Method | _Unset,
         sensitivity_methods: Sequence[Method] | _Unset,
+        prior: Prior | None | _Unset,
     ) -> None:
         from increment._frame_validation import _warn
 
         state = self._state
         assert not isinstance(state, ContrastAnalysisState)
-        metrics = (*selected, *added)
-        if not metrics:
-            return
-        configs = (
-            overlay_configs(
-                selected,
-                state.source.context.configs,
-                methods=None,
-                prior=None,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
+        config_sources: list[tuple[Any, MomentSource]] = []
+        if selected:
+            config_sources.extend(
+                (config, state.source)
+                for config in overlay_configs(
+                    selected,
+                    state.source.context.configs,
+                    methods=None,
+                    prior=None,
+                    prior_override=prior,
+                    decision_method=decision_method,
+                    sensitivity_methods=sensitivity_methods,
+                )
             )
-            if selected
-            else ()
-        )
         if added:
             exploratory = self._exploratory_analysis(added, caller="run")
-            exploratory_source = exploratory._state.source
-            configs += overlay_configs(
-                added,
-                cast("SourceContext", exploratory_source.context).configs,
-                methods=None,
-                prior=None,
-                decision_method=decision_method,
-                sensitivity_methods=sensitivity_methods,
+            exploratory_source = cast("MomentSource", exploratory._state.source)
+            config_sources.extend(
+                (config, exploratory_source)
+                for config in overlay_configs(
+                    added,
+                    exploratory_source.context.configs,
+                    methods=None,
+                    prior=None,
+                    prior_override=prior,
+                    decision_method=decision_method,
+                    sensitivity_methods=sensitivity_methods,
+                )
             )
         warehouse_covariate = (
             isinstance(state, DefinitionsArmAnalysisState) and state.experiment.n_pre_periods > 0
@@ -2638,20 +2682,23 @@ class Analysis:
             else set()
         )
         unused: list[str] = []
-        for config in configs:
+        for config, source in config_sources:
             covariate_available = config.covariate_available or (
-                config.metric.type in ("mean", "conversion", "ratio")
-                and (warehouse_covariate or config.metric.name in artifact_covariates)
+                warehouse_covariate or config.metric.name in artifact_covariates
             )
+            design = source.context.design
             if (
-                covariate_available
-                and config.decision_defaulted
-                and not config.methods_explicitly_empty
-                and not any(
+                not covariate_available
+                or not config.decision_defaulted
+                or config.methods_explicitly_empty
+                or getattr(design, "mechanism", "randomized") != "randomized"
+                or any(
                     method.variance_reduction == "cuped" for method in config.sensitivity_methods
                 )
+                or not _cuped_recommendation_admitted(source, config)
             ):
-                unused.append(config.metric.name)
+                continue
+            unused.append(config.metric.name)
         if unused:
             _warn(
                 "analysis.cuped.covariate_unused",

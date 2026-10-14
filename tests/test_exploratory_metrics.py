@@ -164,7 +164,8 @@ def test_available_metrics_are_the_undeclared_definitions_in_definitions_order(w
 @pytest.mark.parametrize("alpha", PLAN_ALPHAS)
 @pytest.mark.parametrize(
     ("name", "call_wide"),
-    [(name, {}) for name in ADDED] + [("revenue_cuped", {"decision_method": CUPED})],
+    [(name, {"decision_method": Method(name="unadjusted")}) for name in ADDED]
+    + [("revenue_cuped", {"decision_method": CUPED})],
     ids=[*ADDED, "revenue_cuped-cuped"],
 )
 def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
@@ -232,8 +233,11 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     analysis = _analysis(
         warehouse, AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1)
     )
-    without = lift_rows(analysis.run())
-    combined = lift_rows(analysis.run(exploratory_metrics=["rps", "revenue_cuped"]))
+    unadjusted = Method(name="unadjusted")
+    without = lift_rows(analysis.run(decision_method=unadjusted))
+    combined = lift_rows(
+        analysis.run(exploratory_metrics=["rps", "revenue_cuped"], decision_method=unadjusted)
+    )
     assert [row.model_dump() for row in combined[: len(without)]] == [
         row.model_dump() for row in without
     ]
@@ -242,7 +246,9 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     assert {row.role for row in added} == {"exploratory"}
     assert {row.multiplicity_status for row in added} == {"exploratory_unadjusted"}
     assert all(row.discovery is None and row.family_axes is None for row in added)
-    narrowed = lift_rows(analysis.run(metrics=["revenue"], exploratory_metrics=["rps"]))
+    narrowed = lift_rows(
+        analysis.run(metrics=["revenue"], exploratory_metrics=["rps"], decision_method=unadjusted)
+    )
     assert {row.metric for row in narrowed} == {"revenue", "rps"}
     assert _rows([row for row in narrowed if row.metric == "revenue"]) == _rows(
         [row for row in without if row.metric == "revenue"]
@@ -262,9 +268,10 @@ def test_triggered_added_metric_reports_both_populations_without_changing_declar
         AnalysisPlan(primary="revenue"),
         delayed_trigger=True,
     )
-    without = lift_rows(analysis.run())
+    unadjusted = Method(name="unadjusted")
+    without = lift_rows(analysis.run(decision_method=unadjusted))
     added_names = set(ADDED)
-    combined = lift_rows(analysis.run(exploratory_metrics=list(ADDED)))
+    combined = lift_rows(analysis.run(exploratory_metrics=list(ADDED), decision_method=unadjusted))
     assert combined and {row.analysis_population for row in combined} == {
         "assigned",
         "triggered",
@@ -426,7 +433,13 @@ def test_triggered_added_bad_metric_preserves_typed_cell_identity_and_reason(
         delayed_trigger=True,
     )
     with pytest.warns(IncrementWarning) as warnings:
-        rows = lift_rows(analysis.run(metrics=[], exploratory_metrics=["rps", "constant_session"]))
+        rows = lift_rows(
+            analysis.run(
+                metrics=[],
+                exploratory_metrics=["rps", "constant_session"],
+                decision_method=Method(name="unadjusted"),
+            )
+        )
     assert {
         warning.message.code
         for warning in warnings
@@ -455,11 +468,22 @@ def test_triggered_ratio_guard_keeps_its_failed_cell_and_good_metric_siblings(
     )
     with pytest.warns(IncrementWarning) as warnings:
         rows = lift_rows(analysis.run(metrics=[], exploratory_metrics=["rps", "revenue_cuped"]))
-    assert {
+    advisory_codes = {
         warning.message.code
         for warning in warnings
         if isinstance(warning.message, IncrementWarning)
-    } == {"readouts.run.cell_refused"}
+    }
+    assert advisory_codes == {
+        "analysis.cuped.covariate_unused",
+        "readouts.run.cell_refused",
+    }
+    advisory = next(
+        warning.message
+        for warning in warnings
+        if isinstance(warning.message, IncrementWarning)
+        and warning.message.code == "analysis.cuped.covariate_unused"
+    )
+    assert advisory.context["metric_names"] == ("rps", "revenue_cuped")
     ratio_rows = [row for row in rows if row.metric == "rps"]
     assert {row.role for row in rows} == {"exploratory"}
     cuped_rows = [row for row in rows if row.metric == "revenue_cuped"]
@@ -633,8 +657,9 @@ def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(wareho
 @pytest.mark.parametrize("alpha", [0.01, 0.1])
 def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name, alpha):
     analysis = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"), breakout=True)
+    unadjusted = Method(name="unadjusted")
     reads = {
-        "run": analysis.run(metrics=[], exploratory_metrics=[name]),
+        "run": analysis.run(metrics=[], exploratory_metrics=[name], decision_method=unadjusted),
         "run_asof_lift": analysis.run_asof_lift(metrics=[], exploratory_metrics=[name]),
         "run_breakout": analysis.run_breakout(metrics=[], exploratory_metrics=[name]),
     }
@@ -793,7 +818,13 @@ def test_dashboard_snapshot_pins_and_serves_added_metrics():
         def read(source: Analysis) -> dict[str, list[dict[str, Any]]]:
             reads = source.dashboard_breakout_reads(declared)
             return {
-                "whole": _rows(source.run(metrics=[], exploratory_metrics=names)),
+                "whole": _rows(
+                    source.run(
+                        metrics=[],
+                        exploratory_metrics=names,
+                        decision_method=Method(name="unadjusted"),
+                    )
+                ),
                 "segments": _rows(reads.run_breakout(metrics=[], exploratory_metrics=names)),
                 "asof": _rows(reads.run_asof_lift(metrics=[], exploratory_metrics=names)),
             }

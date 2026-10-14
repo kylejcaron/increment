@@ -673,6 +673,21 @@ def _native_cluster_analysis(*, n_pre_periods: int = 0, ratio: bool = False, des
     return make_analysis(con, defs, experiment="native_late", _design=design)
 
 
+def test_clustered_preperiod_does_not_recommend_refused_cuped() -> None:
+    import warnings
+
+    from increment.semantics.design import Randomized
+
+    analysis = _native_cluster_analysis(
+        n_pre_periods=14,
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+
+
 def test_cluster_with_cuped_method_refuses():
     """CUPED stays refused under a declared cluster - named up front,
     never falling through to a wrong number."""

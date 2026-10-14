@@ -268,7 +268,7 @@ def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs):
     assert analysis.experiment.n_pre_periods == 14, (
         "test fixture drifted -- this test intends to materialize a covariate"
     )
-    results = analysis.run()
+    results = analysis.run(decision_method=Method(name="unadjusted"))
 
     assert isinstance(results, list)
     assert len(results) > 0, "Expected at least one LiftEstimate"
@@ -315,7 +315,7 @@ def test_ratio_metric_with_n_pre_periods_never_builds_covariate(
         return execute(expr, *args, **kwargs)
 
     monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
-    results = analysis.run()
+    results = analysis.run(decision_method=Method(name="unadjusted"))
     ratio_rows = [r for r in results if r.metric == "revenue_per_session"]
     assert ratio_rows
     assert all(r.method == "unadjusted" for r in ratio_rows)
@@ -366,7 +366,8 @@ def test_run_itt_estimand_works_on_native_randomized_path(seeded_defs, seeded_co
     purchased) and infer_lift's degenerate-arm guard refuses it, aborting
     run() before the estimands plumbing under test here is reached."""
     results = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        estimands=("itt",)
+        estimands=("itt",),
+        decision_method=Method(name="unadjusted"),
     )
     assert results
 

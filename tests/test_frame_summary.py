@@ -615,6 +615,32 @@ def test_run_does_not_warn_when_cuped_is_a_sensitivity_method(arrow_frame: pa.Ta
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
+def test_run_does_not_recommend_cuped_for_observational_default(
+    arrow_frame: pa.Table,
+) -> None:
+    import warnings
+
+    from increment import Analysis
+    from increment.semantics.design import AdjustmentSet, Observational
+    from tests.warning_codes import warning_codes
+
+    analysis = Analysis.from_unit_summary(
+        arrow_frame,
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        design=Observational(
+            control_group="control",
+            adjustment=AdjustmentSet(covariates=("pre_revenue",)),
+        ),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+
+
 def test_cuped_narrows_interval_without_moving_the_point(arrow_frame: pa.Table) -> None:
     """With arms balanced on the covariate, CUPED buys precision and nothing else.
 
