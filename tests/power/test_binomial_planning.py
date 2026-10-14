@@ -370,7 +370,8 @@ def test_a_bracket_at_a_huge_size_is_closed_from_every_side(offset):
 def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(monkeypatch):
     """Effects whose enclosures the budgets leave holding the target are passed over; when no
     later effect certifies it, the search has not established unattainability and refuses as
-    unresolved, naming the band and the enclosure it left."""
+    unresolved, naming the band and an enclosure whose upper end is the band's interval bound
+    (which covers the interior), not the larger endpoint upper end (which need not)."""
     from increment.power import core
     from increment.power._binomial import BinomialPower
 
@@ -383,9 +384,12 @@ def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(m
     def value(self, probe):
         return straddle if band[0] <= probe.distance <= band[1] else short
 
+    interior = 0.95  # the interval bound over the band, strictly above both endpoint uppers
+    assert interior > straddle.upper > target
+
     def bound(self, lo, hi, left, right):
         low, high = sorted((math.log1p(lo), math.log1p(hi)))
-        return 1.0 if low <= band[1] and high >= band[0] else 0.0
+        return interior if low <= band[1] and high >= band[0] else 0.0
 
     monkeypatch.setattr(core._BinomialMdeSearch, "value", value)
     monkeypatch.setattr(core._BinomialMdeSearch, "_bound", bound)
@@ -401,7 +405,8 @@ def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(m
     lo, hi = cast("tuple[float, float]", refusal.context["unresolved_interval"])
     assert math.expm1(band[0]) - 1e-6 <= lo <= hi <= math.expm1(band[1]) + 1e-6
     lower, upper = cast("tuple[float, float]", refusal.context["power_enclosure"])
-    assert lower < target <= upper
+    assert lower == straddle.lower < target
+    assert upper == interior
 
 
 def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
