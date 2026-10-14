@@ -143,7 +143,9 @@ not another significance verdict, and can differ from `r.stat_sig()`.
     at, shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a
     two-sided or open-sided interval, half of it for a closed one-sided interval
     (the display alpha is central-equivalent), `r.binomial_set.decision_alpha` for an
-    exact conversion row, and the single-tail `r.abs_alpha` for an additive decision.
+    exact conversion row, and the additive interval's central-equivalent `r.abs_alpha`
+    for an additive decision: use `r.abs_alpha` for a two-sided alternative and
+    `r.abs_alpha / 2` for a one-sided alternative.
     A Bonferroni-split primary or a family reissue sets it below the plan's nominal
     alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
     binomial row decides with a strict `<`; a `low_reliability` breakout cell reports
