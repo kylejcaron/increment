@@ -19,10 +19,11 @@ import pyarrow as pa
 import pytest
 
 from increment import readouts
-from increment.errors import InvalidRequestError
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
 from increment.frame import (
+    CupedCovariate,
     FramePanelSource,
     FrameTotalsSource,
     MetricSpec,
@@ -1147,6 +1148,41 @@ def test_unit_frame_includes_requested_covariates(arrow_frame: pa.Table) -> None
     units = nw.from_native(src.unit_frame(metric, covariates=["pre_revenue"]), eager_only=True)
     assert "pre_revenue" in units.columns
     assert sorted(units["pre_revenue"].to_list()) == sorted(r[4] for r in _ROWS)
+
+
+def test_summary_public_unit_frame_preserves_mixed_declared_covariates():
+    frame = pa.table(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+            "sibling": [1.0, None, 3.0, None],
+            "prior": [2.0, None, 4.0, None],
+            "region": ["north", None, "south", "east"],
+        }
+    )
+    metric = MetricSpec(
+        name="revenue",
+        covariates=(
+            CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
+            CupedCovariate(name="region", kind="categorical"),
+        ),
+    )
+    with pytest.warns(IncrementWarning):
+        source = from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[metric, MetricSpec(name="sibling", missing="drop")],
+        )
+    units = nw.from_native(
+        source.unit_frame(_metric(source, "revenue"), covariates=["prior", "region"]),
+        eager_only=True,
+    )
+    assert units["unit_id"].to_list() == ["c1", "c2", "t1", "t2"]
+    assert units["prior"].to_list() == [2.0, None, 4.0, None]
+    assert units["region"].to_list() == ["north", None, "south", "east"]
 
 
 def test_unit_frame_checks_identity_after_metric_missingness():

@@ -14,6 +14,8 @@ from increment.semantics.loader import load
 from increment.semantics.models import (
     ActiveMetric,
     ConversionMetric,
+    CupedCovariate,
+    CupedCovariateBinding,
     Definitions,
     Experiment,
     Exposure,
@@ -37,6 +39,8 @@ from increment.semantics.models import (
 __all__ = [
     "ActiveMetric",
     "ConversionMetric",
+    "CupedCovariate",
+    "CupedCovariateBinding",
     "DefinitionError",
     "Definitions",
     "Experiment",
