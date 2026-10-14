@@ -909,12 +909,17 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         (lower is None or lower <= null) and (upper is None or null <= upper)
         for lower, upper in intervals
     )
-    if bool(getattr(row, "low_reliability", False)):
+    sequential_result = getattr(row, "sequential_result", None)
+    if sequential_result is not None and not sequential_result.rejects():
+        return (
+            "Interpretation: does not reject; the retained sequential procedure has not rejected."
+        )
+    if sequential_result is None and bool(getattr(row, "low_reliability", False)):
         return (
             "Interpretation: inconclusive; the nominal interval is not trustworthy "
             "because this row is flagged low reliability."
         )
-    if getattr(row, "stat_sig", None) is False and not contains_null:
+    if sequential_result is None and getattr(row, "stat_sig", None) is False and not contains_null:
         return (
             "Interpretation: does not reject; the retained statistical verdict "
             "does not support an inferential claim."

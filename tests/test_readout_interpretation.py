@@ -19,19 +19,22 @@ from increment.semantics.design import Randomized
 
 
 def test_low_reliability_interval_is_qualified_in_shared_interpretation():
-    from types import SimpleNamespace
+    import datetime as dt
 
     from increment._interpretation import render_effect_interpretation
+    from increment.breakout.estimates import DailyLiftEstimate
     from increment.estimation.results import Estimate
 
-    row = SimpleNamespace(
-        value_scale="relative",
-        null_lift=0.0,
-        null_abs=None,
-        alternative="greater",
+    row = DailyLiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        ds=dt.date(2025, 1, 1),
         lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        alternative="greater",
+        null_lift=0.0,
         low_reliability=True,
-        stat_sig=False,
     )
 
     interpretation = render_effect_interpretation(row)
@@ -39,6 +42,42 @@ def test_low_reliability_interval_is_qualified_in_shared_interpretation():
     assert interpretation is not None
     assert "low reliability" in interpretation.lower()
     assert "increase" not in interpretation.lower()
+
+
+def test_sequential_breakout_rejection_overrides_low_reliability_suppression():
+    from increment import AsymptoticMean, SequentialCell, estimate_sequential
+    from increment._interpretation import render_effect_interpretation
+    from increment.breakout.estimates import BreakoutEstimate
+    from tests.asymptotic_cases import mean_capture, mean_records, mean_registration
+
+    registration = mean_registration(
+        cells=(
+            SequentialCell(
+                metric="outcome",
+                group_id="treatment",
+                segment=(("country", "US"),),
+                alternative="greater",
+            ),
+        )
+    )
+    snapshot = mean_capture(
+        registration,
+        mean_records([1, 2] * 20, [8, 10] * 20, segment={"country": "US"}),
+    )
+    computation = estimate_sequential(snapshot, AsymptoticMean(registration=registration))
+    sequential_row = computation.results[0]
+    assert sequential_row.sequential_result is not None
+    assert sequential_row.sequential_result.rejects()
+    assert sequential_row.stat_sig()
+
+    fields = sequential_row.model_dump()
+    fields.update(dimension="country", dimension_value="US", low_reliability=True)
+    breakout = BreakoutEstimate.model_validate(fields)
+
+    interpretation = render_effect_interpretation(breakout)
+
+    assert interpretation is not None
+    assert "effect direction supported (increase)" in interpretation
 
 
 def test_explicit_non_significance_suppresses_excluding_interval_claim():
