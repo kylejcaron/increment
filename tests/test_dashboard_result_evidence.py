@@ -251,6 +251,31 @@ def test_missing_verdict_is_not_converted_to_non_rejection(
     )
 
 
+def test_readout_qualifications_distinguish_multiple_methods_for_one_metric(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import LiftEstimates
+    from increment.dashboard._data import readout_interpretation_text
+
+    decision = _decision(storefront, PRIMARY)
+    sensitivity = decision.model_copy(update={"method": "cuped", "method_role": "sensitivity"})
+    snapshot = _rebuilt(storefront, (*storefront.estimates, sensitivity))
+    collection = LiftEstimates(list(snapshot.estimates))
+
+    qualifications = readout_interpretation_text(snapshot, collection=collection)
+
+    assert "method unadjusted" in qualifications
+    assert "method role decision" in qualifications
+    assert "method cuped" in qualifications
+    assert "method role sensitivity" in qualifications
+
+
+def test_metric_details_restore_metric_descriptions(storefront: DashboardSnapshot) -> None:
+    declared = render_metric_details(storefront, metric=PRIMARY).text
+
+    assert "Did the user check out within 14 days of exposure?" in declared
+
+
 def test_outcome_label_does_not_add_row_identity_to_layout_text(
     storefront: DashboardSnapshot,
 ) -> None:

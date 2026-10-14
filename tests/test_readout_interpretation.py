@@ -18,6 +18,51 @@ from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.semantics.design import Randomized
 
 
+def test_low_reliability_interval_is_qualified_in_shared_interpretation():
+    from types import SimpleNamespace
+
+    from increment._interpretation import render_effect_interpretation
+    from increment.estimation.results import Estimate
+
+    row = SimpleNamespace(
+        value_scale="relative",
+        null_lift=0.0,
+        null_abs=None,
+        alternative="greater",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        low_reliability=True,
+        stat_sig=False,
+    )
+
+    interpretation = render_effect_interpretation(row)
+
+    assert interpretation is not None
+    assert "low reliability" in interpretation.lower()
+    assert "increase" not in interpretation.lower()
+
+
+def test_explicit_non_significance_suppresses_excluding_interval_claim():
+    from types import SimpleNamespace
+
+    from increment._interpretation import render_effect_interpretation
+    from increment.estimation.results import Estimate
+
+    row = SimpleNamespace(
+        value_scale="relative",
+        null_lift=0.0,
+        null_abs=None,
+        alternative="greater",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        stat_sig=False,
+    )
+
+    interpretation = render_effect_interpretation(row)
+
+    assert interpretation is not None
+    assert "does not reject" in interpretation.lower()
+    assert "increase" not in interpretation.lower()
+
+
 def _mean_frame(*, n_control=100, n_treatment=100, constant_guard=False):
     rows = []
     for group, count, shift in (

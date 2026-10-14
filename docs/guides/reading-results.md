@@ -428,8 +428,8 @@ assert flat.abs_diff == 1.0  # the additive difference is still reported
 Check `lb` and `ub` against `None`, or read `r.relative_unavailable_reason`
 first, before formatting them. A row with `relative_unavailable_reason` set to
 `"joint_covariance_unrepresentable"` or `"joint_covariance_indefinite"` and a
-finite point is the same case: its bounds are `None`, so the loop above prints
-its `repr`.
+finite point is the same case: its bounds are `None`. The row's `repr` retains
+the reason that its relative interval is unavailable.
 
 ## One-sided tests
 

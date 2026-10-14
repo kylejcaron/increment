@@ -638,6 +638,11 @@ def _render_group_rows(group, visible_rows) -> list[str]:
     lines = []
     advisory_codes = {item.code for item in group.advisories}
     cells_by_key = {item.key: item for item in group.source_cells}
+    methods_by_metric: dict[str, set[tuple[str | None, str | None]]] = {}
+    for row in visible_rows:
+        methods_by_metric.setdefault(row.metric, set()).add(
+            (getattr(row, "method", None), getattr(row, "method_role", None))
+        )
     for row in visible_rows:
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
@@ -650,7 +655,12 @@ def _render_group_rows(group, visible_rows) -> list[str]:
         selection_qualification = _selection_qualification(row)
         if selection_qualification is not None:
             lines.append(f"{row.metric} selection qualification: {selection_qualification}.")
-        lines.extend(_render_effect(row))
+        lines.extend(
+            _render_effect(
+                row,
+                qualify_method=len(methods_by_metric[row.metric]) > 1,
+            )
+        )
         identity = _row_identity(row)
         if identity:
             lines.append(f"{row.metric} result identity: {'; '.join(identity)}.")
@@ -899,9 +909,19 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         (lower is None or lower <= null) and (upper is None or null <= upper)
         for lower, upper in intervals
     )
-    level_note = "" if level is None else f" at {level:.1%} confidence"
+    if bool(getattr(row, "low_reliability", False)):
+        return (
+            "Interpretation: inconclusive; the nominal interval is not trustworthy "
+            "because this row is flagged low reliability."
+        )
+    if getattr(row, "stat_sig", None) is False and not contains_null:
+        return (
+            "Interpretation: does not reject; the retained statistical verdict "
+            "does not support an inferential claim."
+        )
     if contains_null:
         return "Interpretation: does not reject; inconclusive, not evidence of no effect."
+    level_note = "" if level is None else f" at {level:.1%} confidence"
     if null == 0:
         outcome = f"excludes zero{level_note}"
     else:
@@ -1040,7 +1060,7 @@ def _endpoint_text(endpoint, *, lower: bool):
     return _format_bound(endpoint)
 
 
-def _render_effect(row):
+def _render_effect(row, *, qualify_method: bool = False):
     lines = []
     role = getattr(row, "role", None) or "outcome"
     if _is_daily_value(row):
@@ -1065,7 +1085,14 @@ def _render_effect(row):
     )
     estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
     if estimate is not None:
-        effect = f"{row.metric} ({role}, {label}): {estimate.value:.6g}"
+        method = getattr(row, "method", None)
+        method_role = getattr(row, "method_role", None)
+        method_label = (
+            f", method {method or 'unknown'}, method role {method_role or 'unknown'}"
+            if qualify_method
+            else ""
+        )
+        effect = f"{row.metric} ({role}, {label}{method_label}): {estimate.value:.6g}"
         if estimate.lb is not None or estimate.ub is not None:
             low = "−∞" if estimate.lb is None else f"{estimate.lb:.6g}"
             high = "+∞" if estimate.ub is None else f"{estimate.ub:.6g}"
@@ -1076,6 +1103,9 @@ def _render_effect(row):
     interpretation = render_effect_interpretation(row)
     if interpretation is not None:
         lines.append(f"{row.metric} {interpretation[0].lower()}{interpretation[1:]}")
+    relative_reason = getattr(row, "relative_unavailable_reason", None)
+    if relative_reason:
+        lines.append(f"{row.metric} relative unavailable: {relative_reason}.")
     if getattr(row, "abs_diff", None) is not None:
         low = getattr(row, "abs_lb", None)
         high = getattr(row, "abs_ub", None)
