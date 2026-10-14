@@ -366,6 +366,7 @@ class TestFactorSummaries:
             ]
             con.create_table("pre_exposure_factor_events", obj=exposure_rows + purchase_rows)
             con.create_table("pre_exposure_factor_props", obj=prop_rows)
+        assert "event" not in con.sql("SELECT * FROM pre_exposure_factor_props").columns
 
         defs = Definitions.model_validate(
             {

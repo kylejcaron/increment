@@ -322,6 +322,7 @@ _REFUSALS = refusals(
             ),
         ),
         "frame.validation.duplicate_breakout_column": "duplicate breakout column(s): {duplicates!r}",
+        "source.frame.control_invalid": "control must be a scalar group label; received {value!r}.",
         "frame.validation.breakout_reserved_internal": "breakout {name!r} is reserved for internal panel/moment fields",
         "frame.validation.breakout_overlaps_column": "breakout {name!r} overlaps {role} column {name!r}",
         "frame.validation.breakout_overlaps_metric": "breakout {name!r} overlaps metric input column {name!r}",
@@ -329,20 +330,12 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
-_CONTROL_INVALID = RefusalSpec(
-    "source.frame.control_invalid",
-    InvalidRequestError,
-    template="control must be a scalar group label; received {value!r}.",
-)
-_raise_control = raiser(
-    refusals(InvalidRequestError, {"source.frame.control_invalid": _CONTROL_INVALID})
-)
 
 
 def canonical_control_for_frame(frame: Any, group: str, control: object) -> str:
     """Canonicalize a control using the declared group column's dtype."""
     if not np.isscalar(control):
-        _raise_control("source.frame.control_invalid", value=_safe_error_value(control))
+        _raise("source.frame.control_invalid", value=_safe_error_value(control))
     try:
         source = nw.from_native(frame, eager_only=True)
         boolean = source.schema[group] == nw.Boolean
@@ -418,7 +411,7 @@ def canonical_design_for_moments(design: Any) -> Any:
 def canonical_control_for_moments(control: object) -> str:
     """Coerce moments controls without inferring type from exported labels."""
     if not np.isscalar(control):
-        _raise_control("source.frame.control_invalid", value=_safe_error_value(control))
+        _raise("source.frame.control_invalid", value=_safe_error_value(control))
     if isinstance(control, bool):
         return "true" if control else "false"
     return str(control)

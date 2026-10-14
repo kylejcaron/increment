@@ -171,6 +171,11 @@ _REFUSALS = refusals(
         "breakout.run_daily_lift_dimension_found": "run_daily_lift: dimension column {dimension!r} not found in summary. Available columns: {columns}",
         "breakout.run_daily_lift_metric_declared": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {declared}",
         "breakout.run_daily_lift_plan_missing_procedures": "run_daily_lift: compiled plan is missing procedure(s) for {missing_procedures!r}",
+        "results.frame.summary_unavailable": RefusalSpec(
+            "results.frame.summary_unavailable",
+            InvalidRequestError,
+            template="to_frame(columns='summary') is not available for {model}",
+        ),
     },
 )
 
@@ -1018,6 +1023,7 @@ class EstimateList[M: BaseModel](list[M]):
     """
 
     _model: ClassVar[type[BaseModel]]
+    _summary_columns: ClassVar[tuple[str, ...] | None] = None
 
     def __init__(
         self,
@@ -1079,12 +1085,26 @@ class EstimateList[M: BaseModel](list[M]):
 
         return concat_collection(self, other)
 
-    def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
-        """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
+    def to_frame(
+        self,
+        backend: Backend = "pandas",
+        columns: Sequence[str] | Literal["summary"] | None = None,
+    ) -> IntoDataFrame:
+        """Convert to a native frame, optionally selecting projection columns."""
 
         from increment.breakout.projection import to_frame
 
-        frame = nw.from_native(to_frame(self, model=self._model, backend=backend), eager_only=True)
+        selected_columns: Sequence[str] | None
+        if columns == "summary":
+            selected_columns = self._summary_columns
+            if selected_columns is None:
+                _refuse("results.frame.summary_unavailable", model=self._model.__name__)
+        else:
+            selected_columns = columns
+        frame = nw.from_native(
+            to_frame(self, model=self._model, backend=backend, columns=selected_columns),
+            eager_only=True,
+        )
         return frame.with_columns(
             nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
         ).to_native()
@@ -1571,6 +1591,23 @@ class LiftEstimates(EstimateList[LiftEstimate]):
     analysis.Analysis.run`'s return type."""
 
     _model = LiftEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "failure_code",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+    )
 
 
 class BreakoutEstimates(EstimateList[BreakoutEstimate]):
@@ -1579,6 +1616,26 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
     return type."""
 
     _model = BreakoutEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "dimension",
+        "dimension_value",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+        "excluded",
+        "failure_code",
+    )
 
 
 class DailyMetricValues(EstimateList[DailyMetricValue]):
@@ -1595,6 +1652,27 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     ``run_asof_lift``'s) return type."""
 
     _model = DailyLiftEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "ds",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "unavailable",
+        "relative_unavailable_reason",
+        "failure_code",
+    )
 
 
 def daily_sequential_projection(
