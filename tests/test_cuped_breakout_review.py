@@ -239,7 +239,7 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
                     "segment": "all",
                     "pre": ("a", "b", "c")[index % 3],
                     "revenue": 1e150 * (1.0 + index / 1000.0 + (group == "treatment") / 100.0),
-                    "orders": 1e-150,
+                    "orders": 1e-200,
                 }
             )
     metric = MetricSpec(
@@ -806,7 +806,7 @@ def test_readout_rows_forward_projection_refusal_sidecars() -> None:
                     "segment": "all",
                     "pre": ("a", "b", "c")[index % 3],
                     "revenue": 1e150 * (1.0 + index / 1000.0 + (group == "treatment") / 100.0),
-                    "orders": 1e-150,
+                    "orders": 1e-200,
                 }
             )
     metric = MetricSpec(
