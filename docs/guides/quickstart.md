@@ -92,6 +92,7 @@ for captured_warning in analysis_warnings:
 print(results)
 ```
 
+<!-- output -->
 ```text
 Warning: metric 'complaints': missing='drop' excludes rows with 537 null/NaN value(s) from this metric's moments (complete-case). This is unbiased only when missingness is unrelated to the values; if null means "no events", missing='zero' keeps every unit.
 assigned — treatment vs control

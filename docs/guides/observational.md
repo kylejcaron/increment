@@ -91,8 +91,9 @@ for r in results:
     )
 ```
 
+<!-- output -->
 ```text
-revenue / opted_in [iptw]: lift=+5.67% CI=(+3.89%, +7.45%)
+revenue / opted_in [iptw]: lift=+5.67% CI=(+4.48%, +6.87%)
 ```
 
 On this data a naive randomized-style analysis reports a lift of **+19.1%**
@@ -106,19 +107,12 @@ declared covariates, each unit is weighted by the inverse of its propensity,
 and the weighted (Hájek, self-normalized) arm means are compared. With more
 than one treatment arm, every arm mean targets the same eligible population
 (see [Multiple treatment arms](#multiple-treatment-arms)). The
-influence-function standard error is a plug-in calculation that treats the
-fitted propensity as known for generic, pattern-specific, and trimmed fits.
-The untrimmed pooled-logistic native path additionally includes the fitted
-propensity estimating equations (of every treatment-versus-control model when
-several treatments share the control) and their covariance with the arm means.
-For correctly specified, untrimmed parametric IPTW on the generic plug-in
-path, this is deliberately conservative (Lunceford & Davidian 2004) —
-when the covariates strongly drive uptake, measured intervals run ~1.5–1.8×
-wider than the true sampling spread (99.5% observed coverage at a nominal
-95%), so coverage is above nominal and power is below what a refit-aware (e.g.
-bootstrap) interval would give. This conservative-direction claim does not
-extend to the fitted pooled-logistic covariance correction, fitted overlap
-trimming, or AIPW/DML cross-fitted orthogonal-score intervals.
+influence-function standard errors differ by propensity path. Generic,
+pattern-specific, and trimmed fits use a plug-in calculation that treats the
+fitted propensity as known. The untrimmed pooled-logistic native path instead
+includes the fitted propensity estimating equations (of every
+treatment-versus-control model when several treatments share the control) and
+their covariance with the arm means.
 With `gate.overlap="trim"`, the IF interval conditions on the fitted retained
 set and omits estimated trim-boundary variability.
 
@@ -197,6 +191,7 @@ for r in results:
     print(f"{r.group_id}: lift={r.lift.value:+.2%} population={r.population}")
 ```
 
+<!-- output -->
 ```text
 opted_in: lift=+5.46% population=overlap e in [0.05, 0.95] (3968 of 4000 units)
 ```
@@ -483,12 +478,16 @@ dollars and later dates percentages under one heading.
 observational rows too, computed from the same influence functions — which
 is what makes a declared absolute margin (`Metric.margin_abs`/
 `ExperimentMetric.margin_abs`, absolute-unit non-inferiority) work on this
-path. On the generic plug-in IPTW path the additive SE ignores propensity
-estimation and is conservative (see the ~1.5–1.8× inflation measured under
-strongly prognostic covariates above), so its coverage runs at or above
-nominal; the untrimmed default logistic path includes the fitted-propensity
-estimating equations instead. `dml` and `aipw` are calibrated to within a
-few percent.
+path. For correctly specified, untrimmed parametric IPTW on this generic
+plug-in path, the SE ignores propensity estimation and is deliberately
+conservative (Lunceford & Davidian 2004): under strongly prognostic covariates,
+measured intervals run ~1.5–1.8× wider than the true sampling spread (99.5%
+observed coverage at a nominal 95%), so coverage is above nominal and power is
+below what a refit-aware (e.g. bootstrap) interval would give. This claim does
+not extend to the fitted pooled-logistic covariance correction, fitted overlap
+trimming, or AIPW/DML cross-fitted orthogonal-score intervals. The untrimmed
+default logistic path includes fitted-propensity estimating equations instead.
+`dml` and `aipw` are calibrated to within a few percent.
 
 ## Choosing `iptw` vs `dml` vs `aipw`
 
@@ -740,6 +739,7 @@ geo_df = pl.DataFrame(
 print(f"K={geo_result.n_clusters}, reference={geo_result.reference_kind}, dof={geo_result.dof}")
 ```
 
+<!-- output -->
 ```text
 K=80, reference=normal, dof=None
 ```
