@@ -649,6 +649,7 @@ Run calibration commands from the checkout with `uv run python -m`:
 | `calibration.binomial_grid` | Deterministic rare-event probability integration |
 | `calibration.bernoulli_prior` | Bernoulli prior-weight study |
 | `calibration.ratio_precision` | Ratio-denominator precision study |
+| `calibration.nonlinear_targeting` | Nonlinear R-learner targeting evaluation (research only) |
 
 Use `--help` for each command's options. Campaign output directories must be
 new; incomplete runs retain their evidence and do not certify the full design.
