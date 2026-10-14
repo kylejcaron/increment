@@ -104,7 +104,7 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
                 assert getattr(cleared.require_lift(), field) == pytest.approx(wanted)
         restored = lift_rows(analysis.run(metrics=["revenue"], decision_method=method))[0]
         # The declared prior changes the posterior, not this secondary's
-        # sampling-family membership; see docs/guides/priors-and-decisions.md:171-173.
+        # sampling-family membership; see docs/guides/priors-and-decisions.md:102.
         for row in (inherited, restored):
             assert row.discovery == expected.discovery
             assert row.family_axes == expected.family_axes

@@ -1,6 +1,7 @@
 # A/B testing from a Python dataframe
 
-Analyze a checkout experiment from unit-level dataframe data, including baseline, CUPED, ratio metrics, and panel windows.
+Analyze a checkout experiment from a dataframe, including baseline metrics,
+CUPED, ratios, and daily windows.
 
 [Open the notebook in a full browser tab](analysis_from_a_dataframe.html)
 

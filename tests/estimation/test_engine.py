@@ -2041,7 +2041,7 @@ class TestRatioNeighboringMeans:
         summary = _summary_df([control, treatment])
         # `LiftEstimate.lift` is prior-free sampling evidence; a prior cannot
         # make an unrepresentable sample point reportable
-        # (docs/guides/priors-and-decisions.md:7-9).
+        # (docs/guides/priors-and-decisions.md:3).
         for prior in (None, Normal(mu=0.0, sigma=0.005)):
             with pytest.raises(InvalidRequestError) as raised:
                 estimate_lift(

@@ -1,8 +1,8 @@
-# LATE Over Time
+# LATE over time
 
-Watch an encouragement design's LATE mature as a staggered enrollment
-cohort's outcome and uptake windows close, day by day. Increment refuses a
-per-day LATE view but supports one cumulative as-of view.
+Track a staggered encouragement cohort's LATE as outcome and uptake windows
+close. Increment does not support daily LATE results, but it can report one
+cumulative as-of estimate.
 
 [Open the notebook in a full browser tab](late_over_time.html)
 

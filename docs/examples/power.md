@@ -1,8 +1,7 @@
-# Power Analysis
+# Power analysis
 
-Design-time power analysis: given control-arm assumptions, solve for
-required sample size, achieved power at a fixed budget, and minimum
-detectable effect.
+Plan an experiment from control-arm assumptions. Solve for sample size, power
+at a fixed budget, and the minimum detectable effect.
 
 [Open the notebook in a full browser tab](power.html)
 
