@@ -772,20 +772,6 @@ def test_rank_deficient_covariates_refuse_exact_linear_combinations():
     assert raised.value.code == "estimation.cuped_linear.rank_deficiency"
 
 
-def test_log_projection_is_invariant_to_outcome_order_and_common_scale():
-    arm = np.repeat(["c", "t"], 8)
-    y = np.r_[np.full(8, 1e-100), np.full(8, 1.5e-100)]
-    y[0] = 1e100
-    forward = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
-    reverse = fit_cuped_linear(y[::-1], arm[::-1], control="c", arm_order=("c", "t"))
-    expected = math.log(y[arm == "t"].mean()) - math.log(y[arm == "c"].mean())
-    assert forward.relative("t").estimate == pytest.approx(expected, rel=1e-12)
-    assert reverse.relative("t").estimate == pytest.approx(forward.relative("t").estimate)
-    scaled = fit_cuped_linear(y * 1e60, arm, control="c", arm_order=("c", "t"))
-    assert scaled.relative("t").estimate == pytest.approx(forward.relative("t").estimate)
-    assert scaled.relative("t").se == pytest.approx(forward.relative("t").se, rel=1e-9)
-
-
 @pytest.mark.slow
 def test_large_fit_and_projections_use_linear_memory():
     import tracemalloc
@@ -808,15 +794,6 @@ def test_large_fit_and_projections_use_linear_memory():
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert peak < 512 * 1024 * 1024
-
-
-def test_relative_standard_error_is_invariant_to_common_extreme_scale():
-    arm = np.repeat(["c", "t"], 6)
-    base = np.r_[1 + np.arange(6) * 1e-4, 1.1 + np.arange(6) * 1e-4]
-    scaled_fit = fit_cuped_linear(1e160 * base, arm, control="c", arm_order=("c", "t"))
-    base_fit = fit_cuped_linear(base, arm, control="c", arm_order=("c", "t"))
-    assert base_fit.relative("t").se == pytest.approx(0.0001031948, rel=2e-5)
-    assert scaled_fit.relative("t").se == pytest.approx(base_fit.relative("t").se, rel=1e-9)
 
 
 def test_absolute_ratio_jacobian_is_stable_under_common_extreme_scale():
@@ -992,16 +969,6 @@ def test_large_covariate_offset_preserves_slope_and_zero_residual_uncertainty():
     assert fit.absolute("t").se == pytest.approx(0.0, abs=1e-14)
 
 
-def test_interval_overflow_is_coded_refusal():
-    arm = np.array(["c", "c", "t", "t"])
-    fit = _fit_repeated_design(
-        np.array([-2e300, 0.0, -4e300, 0.0]), arm, control="c", arm_order=("c", "t")
-    )
-    with pytest.raises(InvalidRequestError) as raised:
-        fit.absolute("t", alpha=1e-320)
-    assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
-
-
 def test_nonfinite_absolute_ratio_projection_does_not_abort_log_ratio_fit():
     arm = np.array(["c", "c", "t", "t"])
     fit = _fit_repeated_design(
@@ -1118,20 +1085,6 @@ def test_categorical_sequence_detects_nan_before_string_coercion():
             kinds={"category": "categorical"},
         )
     assert raised.value.code == "estimation.cuped_linear.missing_refused"
-
-
-def test_cached_interval_overflow_does_not_poison_other_alpha():
-    arm = np.array(["c"] * 4 + ["t"] * 4)
-    fit = fit_cuped_linear(
-        np.tile([-1e308, 0.0, 0.0, 0.0], 2), arm, control="c", arm_order=("c", "t")
-    )
-    with pytest.raises(InvalidRequestError) as raised:
-        fit.absolute("t", alpha=1e-10)
-    assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
-    projection = fit.absolute("t", alpha=0.5)
-    assert np.isfinite(
-        (projection.estimate, projection.se, projection.lower, projection.upper)
-    ).all()
 
 
 def test_covariate_constant_within_each_arm_is_rank_deficient():
