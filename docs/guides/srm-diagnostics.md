@@ -78,10 +78,11 @@ applicable, not "no SRM."
 declared `allocation` when present, falling back to equal shares only when
 neither the design nor the call supplies an allocation. This example's 4:1
 allocation therefore means 80/20, not 50/50.
-**SRM runs automatically once the assignment law is declared with
-`allocation_scheme="independent"`; alternatively call `srm(inference="fixed")`
-for a single predeclared look.** Check `health_check()` for the machine-readable
-unavailable status and route when the assignment law is undeclared.
+Automatic SRM checking requires `allocation_scheme="independent"`, declared
+constant `allocation` weights, and cumulative assigned counts at the
+randomization grain. Otherwise `health_check()` records an unavailable status
+(for example, missing allocation is `not_checked_missing_declaration`). You can
+also call `srm(inference="fixed")` for a single predeclared look.
 
 ??? info "How the always-valid SRM guarantee differs"
     That e-process is a distinct construction from the `AlwaysValid` guarantee
