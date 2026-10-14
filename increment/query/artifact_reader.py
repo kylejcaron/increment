@@ -1193,7 +1193,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
         if not isinstance(design, Encouragement):
             return None, None, False, None
         relation = self._uptake_relation(design)
-        events = relation.filter(relation.uptake).select("unit_id", ts=relation.first_uptake_ts)
+        events = relation.filter(relation.uptake).select(
+            "unit_id",
+            ts=relation.first_uptake_ts,
+            _certified_uptake_member=relation.uptake,
+        )
         extension = next(
             ext for ext in self._manifest.extensions if ext.kind == "encouragement_uptake"
         )
