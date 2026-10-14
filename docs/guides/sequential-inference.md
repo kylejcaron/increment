@@ -82,18 +82,15 @@ snapshot = capture_sequential_snapshot(
 )
 decision = estimate_sequential(snapshot, policy)
 ```
-<details>
-<summary>Model scope for manual registrations</summary>
+??? info "Model scope for manual registrations"
+    The exact public anytime-valid observation model is Bernoulli with a proper
+    Beta prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
+    normal–inverse-Wishart kernels remain available only through the private
+    research-diagnostic route; they do not produce certified `EValueEvidence` or
+    public sequential decisions. Gaussian arms may have different unknown
+    variances. Declare positive population control means, and positive denominator
+    means for ratios; positive observed averages do not establish these assumptions.
 
-The exact public anytime-valid observation model is Bernoulli with a proper
-Beta prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
-normal–inverse-Wishart kernels remain available only through the private
-research-diagnostic route; they do not produce certified `EValueEvidence` or
-public sequential decisions. Gaussian arms may have different unknown
-variances. Declare positive population control means, and positive denominator
-means for ratios; positive observed averages do not establish these assumptions.
-
-</details>
 
 For population and result-status interpretation, see [Reading
 results](reading-results.md) and [Multiplicity](multiplicity.md).
@@ -145,35 +142,32 @@ can replay this exact state. The preceding sequential format 9 remains
 readable; fixed-horizon format 12 carries the same source identity, while the
 preceding fixed-horizon format 11 remains readable.
 
-<details>
-<summary>Checkpoint rational encoding and limits</summary>
+??? info "Checkpoint rational encoding and limits"
+    Every rational in that envelope -- prior hyperparameters, `rho`,
+    `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment
+    coefficients and centres, and each retained arm mean and scatter entry -- is
+    spelled as `Fraction` prints it: a signed integer or an integer quotient with
+    a positive denominator (a fixed decimal string such as `"0.05"` is also read).
+    JSON carries a rational as that string or a bounded integer literal, never a
+    boolean or floating literal: `0.05` and `1e-5` have already been rounded by the
+    JSON parser, so spell them `"0.05"` and `"0.00001"` instead. Each integer
+    component may carry at most 4,096 decimal digits, and scientific notation is
+    never a portable spelling. A payload outside that grammar refuses
+    with `sequential.wire.rational_invalid` (an `InvalidRequestError` whose context
+    names the `field`, `reason`, `limit_digits` and `route_forward`) before any
+    arithmetic, so a nine-byte `"1e5000000"` cannot make the reader allocate a
+    five-million-digit integer; text that is not JSON refuses with
+    `sequential.source.invalid`. The ceiling holds every supported capture: a
+    binary64 observation is an exact dyadic rational with at most 309 numerator
+    digits and a 1,075-bit denominator, and retained means and scatters stay near
+    1,300 digits even when the largest and smallest finite values alternate.
+    In-process `Fraction` and finite `Decimal` values keep their exact meaning.
+    A finite Python float normally binds its exact binary64 value; compliance
+    `alpha`/`null_lift` and `InferenceSpec.baseline_rate` instead bind its shortest
+    decimal spelling (`0.05` is `1/20`). Non-finite inputs refuse with the same code.
+    Exporting a state outside the ceiling refuses with `field="export"` instead
+    of writing a checkpoint no reader admits.
 
-Every rational in that envelope -- prior hyperparameters, `rho`,
-`treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment
-coefficients and centres, and each retained arm mean and scatter entry -- is
-spelled as `Fraction` prints it: a signed integer or an integer quotient with
-a positive denominator (a fixed decimal string such as `"0.05"` is also read).
-JSON carries a rational as that string or a bounded integer literal, never a
-boolean or floating literal: `0.05` and `1e-5` have already been rounded by the
-JSON parser, so spell them `"0.05"` and `"0.00001"` instead. Each integer
-component may carry at most 4,096 decimal digits, and scientific notation is
-never a portable spelling. A payload outside that grammar refuses
-with `sequential.wire.rational_invalid` (an `InvalidRequestError` whose context
-names the `field`, `reason`, `limit_digits` and `route_forward`) before any
-arithmetic, so a nine-byte `"1e5000000"` cannot make the reader allocate a
-five-million-digit integer; text that is not JSON refuses with
-`sequential.source.invalid`. The ceiling holds every supported capture: a
-binary64 observation is an exact dyadic rational with at most 309 numerator
-digits and a 1,075-bit denominator, and retained means and scatters stay near
-1,300 digits even when the largest and smallest finite values alternate.
-In-process `Fraction` and finite `Decimal` values keep their exact meaning.
-A finite Python float normally binds its exact binary64 value; compliance
-`alpha`/`null_lift` and `InferenceSpec.baseline_rate` instead bind its shortest
-decimal spelling (`0.05` is `1/20`). Non-finite inputs refuse with the same code.
-Exporting a state outside the ceiling refuses with `field="export"` instead
-of writing a checkpoint no reader admits.
-
-</details>
 
 The retained family is fixed before data: metric × arm × segment cells
 remain members even when no units enroll. Missing cells contribute log
@@ -420,60 +414,57 @@ The default weight is `DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10`: prior weight
 affects power, not the anytime-valid guarantee. The measurements and
 rare-conversion limitations are folded below.
 
-<details>
-<summary>Prior calibration measurements and interpretation</summary>
+??? info "Prior calibration measurements and interpretation"
+    An automatic exact Bernoulli registration built from
+    `InferenceSpec(kind="always_valid", baseline_rate=p0)` commits `Beta(w * p0, w * (1 - p0))`
+    on both arms. The e-process is valid for every proper prior, so `w` only moves power;
+    `calibration/bernoulli_prior.py` measured it on the grid below (200 replications
+    per cell, one look every 250 units per arm to 4000, `alpha = 0.05`; "type I" is the fraction
+    of null replications that ever crossed, "power" the fraction that crossed by the stated look).
 
-An automatic exact Bernoulli registration built from
-`InferenceSpec(kind="always_valid", baseline_rate=p0)` commits `Beta(w * p0, w * (1 - p0))`
-on both arms. The e-process is valid for every proper prior, so `w` only moves power;
-`calibration/bernoulli_prior.py` measured it on the grid below (200 replications
-per cell, one look every 250 units per arm to 4000, `alpha = 0.05`; "type I" is the fraction
-of null replications that ever crossed, "power" the fraction that crossed by the stated look).
+    | p0 | prior | type I @4000 | power @2000, lift .05 | lift .10 | lift .20 | power @4000, lift .10 | true p0 = 2x: type I @4000 | power @2000, lift .10 |
+    | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+    | 0.02 | Beta(1,1) | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | - | - |
+    | 0.02 | w=2 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+    | 0.02 | w=10 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+    | 0.02 | w=50 | 0.015 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.005 |
+    | 0.02 | w=200 | 0.005 | 0.005 | 0.000 | 0.010 | 0.000 | 0.000 | 0.000 |
+    | 0.1 | Beta(1,1) | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | - | - |
+    | 0.1 | w=2 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+    | 0.1 | w=10 | 0.000 | 0.000 | 0.005 | 0.015 | 0.005 | 0.000 | 0.000 |
+    | 0.1 | w=50 | 0.005 | 0.010 | 0.010 | 0.080 | 0.010 | 0.000 | 0.005 |
+    | 0.1 | w=200 | 0.010 | 0.005 | 0.015 | 0.105 | 0.030 | 0.000 | 0.000 |
+    | 0.3 | Beta(1,1) | 0.000 | 0.000 | 0.015 | 0.335 | 0.065 | - | - |
+    | 0.3 | w=2 | 0.000 | 0.000 | 0.010 | 0.405 | 0.035 | 0.000 | 0.280 |
+    | 0.3 | w=10 | 0.000 | 0.010 | 0.020 | 0.520 | 0.140 | 0.000 | 0.165 |
+    | 0.3 | w=50 | 0.000 | 0.010 | 0.015 | 0.685 | 0.185 | 0.000 | 0.000 |
+    | 0.3 | w=200 | 0.005 | 0.025 | 0.100 | 0.685 | 0.250 | 0.000 | 0.000 |
 
-| p0 | prior | type I @4000 | power @2000, lift .05 | lift .10 | lift .20 | power @4000, lift .10 | true p0 = 2x: type I @4000 | power @2000, lift .10 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0.02 | Beta(1,1) | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | - | - |
-| 0.02 | w=2 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 0.02 | w=10 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 0.02 | w=50 | 0.015 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.005 |
-| 0.02 | w=200 | 0.005 | 0.005 | 0.000 | 0.010 | 0.000 | 0.000 | 0.000 |
-| 0.1 | Beta(1,1) | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | - | - |
-| 0.1 | w=2 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| 0.1 | w=10 | 0.000 | 0.000 | 0.005 | 0.015 | 0.005 | 0.000 | 0.000 |
-| 0.1 | w=50 | 0.005 | 0.010 | 0.010 | 0.080 | 0.010 | 0.000 | 0.005 |
-| 0.1 | w=200 | 0.010 | 0.005 | 0.015 | 0.105 | 0.030 | 0.000 | 0.000 |
-| 0.3 | Beta(1,1) | 0.000 | 0.000 | 0.015 | 0.335 | 0.065 | - | - |
-| 0.3 | w=2 | 0.000 | 0.000 | 0.010 | 0.405 | 0.035 | 0.000 | 0.280 |
-| 0.3 | w=10 | 0.000 | 0.010 | 0.020 | 0.520 | 0.140 | 0.000 | 0.165 |
-| 0.3 | w=50 | 0.000 | 0.010 | 0.015 | 0.685 | 0.185 | 0.000 | 0.000 |
-| 0.3 | w=200 | 0.005 | 0.025 | 0.100 | 0.685 | 0.250 | 0.000 | 0.000 |
+    Every weight is valid: the largest null crossing rate anywhere on the grid, including the
+    misdeclared cells, is `0.015` against `alpha = 0.05`, so the weight is a power choice only.
+    The probe's own rule reads power alone (the smallest weight within five points of the best
+    at lift 0.10 after 2000 units per arm at every declared rate) and selects `w=200`, which at
+    `p0 = 0.3` and 4000 units per arm reaches `0.250` at lift 0.10 against `0.140` for `w=10`
+    and `0.065` for the flat prior. The default is not that weight. It is
+    `DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10`, a robustness choice read off the last two columns:
+    with the true control rate at twice the declared one (`0.3` declared, `0.6` true), power at
+    lift 0.10 after 2000 units per arm is `0.280` for `w=2`, `0.165` for `w=10` and `0.000` for
+    both `w=50` and `w=200`. So `w=10` is clearly better than the flat prior when the declared
+    rate is right (`0.520` against `0.335` at lift 0.20 after 2000 units per arm; `0.140`
+    against `0.065` at lift 0.10 after 4000), and it is the largest weight on the grid that
+    still has power when the rate is wrong by a factor of two. Weights of 50 and above buy
+    more power only when the caller is certain of the rate and give none when they are not. A
+    caller who is confident in the declared rate may take that power by declaring the heavier
+    `Beta` prior on an explicit `SequentialRegistration` (`SequentialModel.control_prior` and
+    `treatment_prior`), which the automatic route then leaves untouched.
 
-Every weight is valid: the largest null crossing rate anywhere on the grid, including the
-misdeclared cells, is `0.015` against `alpha = 0.05`, so the weight is a power choice only.
-The probe's own rule reads power alone (the smallest weight within five points of the best
-at lift 0.10 after 2000 units per arm at every declared rate) and selects `w=200`, which at
-`p0 = 0.3` and 4000 units per arm reaches `0.250` at lift 0.10 against `0.140` for `w=10`
-and `0.065` for the flat prior. The default is not that weight. It is
-`DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10`, a robustness choice read off the last two columns:
-with the true control rate at twice the declared one (`0.3` declared, `0.6` true), power at
-lift 0.10 after 2000 units per arm is `0.280` for `w=2`, `0.165` for `w=10` and `0.000` for
-both `w=50` and `w=200`. So `w=10` is clearly better than the flat prior when the declared
-rate is right (`0.520` against `0.335` at lift 0.20 after 2000 units per arm; `0.140`
-against `0.065` at lift 0.10 after 4000), and it is the largest weight on the grid that
-still has power when the rate is wrong by a factor of two. Weights of 50 and above buy
-more power only when the caller is certain of the rate and give none when they are not. A
-caller who is confident in the declared rate may take that power by declaring the heavier
-`Beta` prior on an explicit `SequentialRegistration` (`SequentialModel.control_prior` and
-`treatment_prior`), which the automatic route then leaves untouched.
+    The grid also shows what the exact route cannot do at these sample sizes: at a declared rate
+    of `0.1` the best cell is `0.105` (w=200, lift 0.20 after 2000 units per arm), at `0.02` it is
+    `0.010`, and most cells at both rates are `0.000`. These are power measurements,
+    not calibration evidence for an alternative method. The asymptotic route
+    (`kind="asymptotic_mean"`) is available, but rare-conversion calibration at
+    base rates `0.10` or below is unverified by this grid and the bounded release audit.
 
-The grid also shows what the exact route cannot do at these sample sizes: at a declared rate
-of `0.1` the best cell is `0.105` (w=200, lift 0.20 after 2000 units per arm), at `0.02` it is
-`0.010`, and most cells at both rates are `0.000`. These are power measurements,
-not calibration evidence for an alternative method. The asymptotic route
-(`kind="asymptotic_mean"`) is available, but rare-conversion calibration at
-base rates `0.10` or below is unverified by this grid and the bounded release audit.
-
-</details>
 
 ## Sequential monitoring of a conversion metric
 
@@ -617,6 +608,12 @@ analysis = Analysis.from_unit_summary(
 row = analysis.run()[0]
 result = row.require_asymptotic_sequential_result()
 ```
+!!! warning "Plan targets below the calibration range raise early-look risk"
+    Smaller `expected_decision_sample_size` values increase early-look
+    approximation risk; this is not only a power choice. Selected calibration
+    checks start at 40 units per arm, rather than the operational withholding
+    minimum of two, and do not verify every smaller planning target.
+
 
 Definitions-based experiments supply the same fixed weights through
 `Experiment.allocation`, and the same inference policy in their plan. Published
@@ -627,76 +624,69 @@ inspection and replay, not as prerequisites for this workflow.
 The library enforces commitment before its own observation capture. It cannot
 establish that nobody examined the outcomes elsewhere beforehand.
 
-<details>
-<summary>Boundary, calibration, and evidence fields</summary>
+??? info "Boundary, calibration, and evidence fields"
+    The actual clock is N=nc+nt finalized independent units. With centered sums of
+    squares M2a, the empirical variance convention is sa²=M2a/na and Va=sa²/na.
+    For a relative null lift ell0, r=1+ell0, the shifted contrast and boundary are
 
-The actual clock is N=nc+nt finalized independent units. With centered sums of
-squares M2a, the empirical variance convention is sa²=M2a/na and Va=sa²/na.
-For a relative null lift ell0, r=1+ell0, the shifted contrast and boundary are
+    ```text
+    Dhat_r = meanT - r * meanC
+    Vr = VT + r² * VC
+    lambda = rho^-2
+    K_N = (1 + lambda/N) * (log1p(N/lambda) - 2*log(alpha))
+    boundary² = Vr * K_N
+    ```
 
-```text
-Dhat_r = meanT - r * meanC
-Vr = VT + r² * VC
-lambda = rho^-2
-K_N = (1 + lambda/N) * (log1p(N/lambda) - 2*log(alpha))
-boundary² = Vr * K_N
-```
+    The ratio confidence set inverts `(meanT-r*meanC)² <= K_N*(VT+r²*VC)` over
+    all real r. `result.bounds.components` retains bounded intervals, rays,
+    disconnected sets, full sets and empty sets in ratio coordinates; subtract one
+    from finite endpoints for lift. There is no -1 lift floor. Rational centered
+    moments, outward logarithms and rational root enclosures avoid raw-sum
+    cancellation, overflow and arbitrary near-singularity tolerances. A displayed
+    numeric point can be unavailable while the confidence set remains available.
+    Before both arm starts, with fewer than two observations in either arm, or with
+    zero observed variance, the result is a full set with a precise availability
+    reason. This is not evidence of zero population variance.
 
-The ratio confidence set inverts `(meanT-r*meanC)² <= K_N*(VT+r²*VC)` over
-all real r. `result.bounds.components` retains bounded intervals, rays,
-disconnected sets, full sets and empty sets in ratio coordinates; subtract one
-from finite endpoints for lift. There is no -1 lift floor. Rational centered
-moments, outward logarithms and rational root enclosures avoid raw-sum
-cancellation, overflow and arbitrary near-singularity tolerances. A displayed
-numeric point can be unavailable while the confidence set remains available.
-Before both arm starts, with fewer than two observations in either arm, or with
-zero observed variance, the result is a full set with a precise availability
-reason. This is not evidence of zero population variance.
+    The start is a per-arm operational withholding threshold, **not finite-sample
+    calibration**. Fixed rho and start are frozen in model, registration and checkpoint
+    identity. The validity regime is asymptotic CS approximation for each fixed
+    supported distribution, following the time-uniform linearization argument for
+    the arm-mean contrast and the AsympCS framework of
+    [Waudby-Smith et al.](https://arxiv.org/html/2103.06476v7).
+    No delayed-start coverage-limit claim or universal finite start guarantee is
 
-The start is a per-arm operational withholding threshold, **not finite-sample
-calibration**. Fixed rho and start are frozen in model, registration and checkpoint
-identity. The validity regime is asymptotic CS approximation for each fixed
-supported distribution, following the time-uniform linearization argument for
-the arm-mean contrast and the AsympCS framework of
-[Waudby-Smith et al.](https://arxiv.org/html/2103.06476v7).
-No delayed-start coverage-limit claim or universal finite start guarantee is
-made. Smaller `expected_decision_sample_size` values also increase early-look
-approximation risk; this is not only a power choice. The selected calibration
-checks start with at least 40 units per arm, not the default operational
-threshold of two, and do not verify every smaller planning target.
+    For `greater`, discovery requires Dhat_r>sqrt(Vr*K_N); for `less`, it
+    requires Dhat_r<-sqrt(Vr*K_N). A one-sided cell outside a family builds `K_N`
+    at `2*alpha` and spends one tail of that symmetric two-sided boundary; by
+    symmetry that tail crosses with probability at most `alpha` plus half the
+    chance of crossing both tails at different looks (simulated at `alpha = 0.05`
+    over 20,000 Gaussian null paths to 20,000 units: upper tail 0.033, both tails
+    never). Its reported set is a ray whose finite endpoint equals the two-sided
+    endpoint at `2*alpha`. A family member builds `K_N` at `alpha` itself: its set,
+    at the registered level or reinverted after selection, holds exactly the
+    ratios whose sign-gated plug-in mixture value stays below `1/alpha`, the evidence e-BH
+    selects on, so `row.stat_sig()` and the family verdict read the same evidence.
+    Planning (`ArmPlanningProcedure.standard(inference=InferenceSpec(kind="asymptotic_mean"))`)
+    builds the same boundary: a one-sided sequential secondary, a family member, is
+    sized against `K_N` at its own `alpha`, and a one-sided primary or guardrail
+    against `K_N` at `2*alpha`.
+    A one-sided cell outside a family registered at `alpha >= 1/2` refuses with
+    `sequential.asymptotic_mean.invalid`. Empty geometry withholds decisions.
 
-For `greater`, discovery requires Dhat_r>sqrt(Vr*K_N); for `less`, it
-requires Dhat_r<-sqrt(Vr*K_N). A one-sided cell outside a family builds `K_N`
-at `2*alpha` and spends one tail of that symmetric two-sided boundary; by
-symmetry that tail crosses with probability at most `alpha` plus half the
-chance of crossing both tails at different looks (simulated at `alpha = 0.05`
-over 20,000 Gaussian null paths to 20,000 units: upper tail 0.033, both tails
-never). Its reported set is a ray whose finite endpoint equals the two-sided
-endpoint at `2*alpha`. A family member builds `K_N` at `alpha` itself: its set,
-at the registered level or reinverted after selection, holds exactly the
-ratios whose sign-gated plug-in mixture value stays below `1/alpha`, the evidence e-BH
-selects on, so `row.stat_sig()` and the family verdict read the same evidence.
-Planning (`ArmPlanningProcedure.standard(inference=InferenceSpec(kind="asymptotic_mean"))`)
-builds the same boundary: a one-sided sequential secondary, a family member, is
-sized against `K_N` at its own `alpha`, and a one-sided primary or guardrail
-against `K_N` at `2*alpha`.
-A one-sided cell outside a family registered at `alpha >= 1/2` refuses with
-`sequential.asymptotic_mean.invalid`. Empty geometry withholds decisions.
+    `AsymptoticSequentialEvidence` carries the checkpoint, actual arm counts, model,
+    null, direction, allocation, start, tuning, geometry and decision. Its
+    `result.log_e` is sign-gated asymptotic log evidence, capped for ratio laws by
+    denominator stability as described below; family selection also masks ratios
+    unresolved at its nominal reporting ceiling. It has no finite-sample p-value.
+    Frame/readout exports include
+    `sequential_validity_regime`, `sequential_alpha`, `sequential_components`, and
+    numeric-null `sequential_log_e`. JSON replay recomputes geometry and rejects
+    changed evidence. Identical capture is idempotent; frozen results require a
+    verified ancestor prefix. The same model follows the existing frame, panel,
+    native, artifact, moments-export, current as-of and registered breakout paths.
+    Native/artifact segment capture retains its immutable-property-relation refusal.
 
-`AsymptoticSequentialEvidence` carries the checkpoint, actual arm counts, model,
-null, direction, allocation, start, tuning, geometry and decision. Its
-`result.log_e` is sign-gated asymptotic log evidence, capped for ratio laws by
-denominator stability as described below; family selection also masks ratios
-unresolved at its nominal reporting ceiling. It has no finite-sample p-value.
-Frame/readout exports include
-`sequential_validity_regime`, `sequential_alpha`, `sequential_components`, and
-numeric-null `sequential_log_e`. JSON replay recomputes geometry and rejects
-changed evidence. Identical capture is idempotent; frozen results require a
-verified ancestor prefix. The same model follows the existing frame, panel,
-native, artifact, moments-export, current as-of and registered breakout paths.
-Native/artifact segment capture retains its immutable-property-relation refusal.
-
-</details>
 
 
 Continuous (metric/arm) secondary families are selected by **e-BH** at the
@@ -745,62 +735,62 @@ arm retains with its full centered scatter:
 | `ratio_mean` | $(N, D)$ | ratio of arm ratios $E[N]/E[D]$ | a ratio metric |
 | `adjusted_ratio_mean` | $(N, D, X)$ | ratio of adjusted arm ratios | a ratio metric with `covariate=` and a CUPED method |
 
-<details>
-<summary>Construction details for adjusted and ratio metrics</summary>
+!!! warning "Check source support before choosing a joint law"
+    Unit panels refuse these laws. `from_unit_day_artifact` additionally
+    requires each adjusted metric's published `cuped_preperiod` extension;
+    default publication does not include it. See [CUPED](cuped.md#the-standard-coefficient-on-the-asymptotic-route)
+    for extension selection.
 
-Each is a delta-method linearisation at the observed means: the contrast
-`f_t - r * f_c` has, with respect to the two retained mean vectors, gradients
-affine in `r`, so `V(r)` is the quadratic form of those gradients over each
-arm's scatter divided by `n_a²`, and `(f_t - r f_c)² <= K_N V(r)` is inverted
-with the scalar law's solver and boundary. The adjusted laws fit $\theta$ from
-the retained within-arm cross moments at every look (the standard CUPED
-coefficient, the same inverse-n weighted slope the fixed-horizon fit uses) and
-anchor both arms on the pooled covariate mean, whose coupling the gradients
-carry; the ratio laws carry the $-2\,\mathrm{Cov}(N, D)$ term through the
-cross scatter, and the adjusted ratio law the covariance the shared covariate
-induces between the adjusted components. What is exact: the retained state,
-the coefficient, the anchor, every gradient and quadratic coefficient, and
-$K_N$. What is asymptotic: the boundary itself and the linearisation with its
-nuisance plug-ins, whose error is an order below the boundary width under the
-contract (Lindon, Ham, Tingley and Bojinov 2022,
-[arXiv:2210.08589](https://arxiv.org/abs/2210.08589); Schmit and Miller
-2022, [pdf](https://svenschmit.com/assets/pdf/code_2022_ci.pdf)). The
-`adjusted_*` laws are admitted on `AsymptoticMean` only; the exact Bernoulli
-route admits neither fitted nor predeclared CUPED. The adjusted laws need a
-per-unit covariate: `from_unit_summary` supplies it through `MetricSpec(covariate=...)`,
-while `from_definitions` derives it from `n_pre_periods > 0`.
-`from_unit_day_artifact` additionally requires each adjusted metric's published
-`cuped_preperiod` extension; default publication does not include it.
-See [CUPED](cuped.md#the-standard-coefficient-on-the-asymptotic-route) for
-extension selection. Unit panels refuse these laws.
-The ratio laws declare
-`positive_population_denominators=True`; a zero or insufficiently separated
-observed denominator leaves that cell unavailable at the requested level
-(`zero_denominator_mean` or `denominator_near_zero`), not its whole family.
-For registered scalar and ratio observations, `MetricSpec(missing="zero")`
-applies to outcome coordinates before they enter the retained sequential
-state: null and NaN numerator values become exact zeroes (and the same
-policy applies to a ratio denominator when declared). This outcome policy is
-independent of covariate missingness: `covariate_missing` controls how a
-declared pre-period covariate is imputed or refused and never changes the
-metric outcome. The sequential route does not silently clip infinities.
 
-Ratio-family log evidence depends on the stopped state, not its current
-inversion alpha, and is capped by denominator stability. This capped evidence
-is dominated by the underlying mixture value, not itself a martingale.
-The family keeps every roster slot and masks a ratio unresolved at the
-nominal reporting ceiling; selection then requires resolved denominators
-at the selected reporting level too.
+??? info "Construction details for adjusted and ratio metrics"
+    Each is a delta-method linearisation at the observed means: the contrast
+    `f_t - r * f_c` has, with respect to the two retained mean vectors, gradients
+    affine in `r`, so `V(r)` is the quadratic form of those gradients over each
+    arm's scatter divided by `n_a²`, and `(f_t - r f_c)² <= K_N V(r)` is inverted
+    with the scalar law's solver and boundary. The adjusted laws fit $\theta$ from
+    the retained within-arm cross moments at every look (the standard CUPED
+    coefficient, the same inverse-n weighted slope the fixed-horizon fit uses) and
+    anchor both arms on the pooled covariate mean, whose coupling the gradients
+    carry; the ratio laws carry the $-2\,\mathrm{Cov}(N, D)$ term through the
+    cross scatter, and the adjusted ratio law the covariance the shared covariate
+    induces between the adjusted components. What is exact: the retained state,
+    the coefficient, the anchor, every gradient and quadratic coefficient, and
+    $K_N$. What is asymptotic: the boundary itself and the linearisation with its
+    nuisance plug-ins, whose error is an order below the boundary width under the
+    contract (Lindon, Ham, Tingley and Bojinov 2022,
+    [arXiv:2210.08589](https://arxiv.org/abs/2210.08589); Schmit and Miller
+    2022, [pdf](https://svenschmit.com/assets/pdf/code_2022_ci.pdf)). The
+    `adjusted_*` laws are admitted on `AsymptoticMean` only; the exact Bernoulli
+    route admits neither fitted nor predeclared CUPED. The adjusted laws need a
+    per-unit covariate: `from_unit_summary` supplies it through `MetricSpec(covariate=...)`,
+    while `from_definitions` derives it from `n_pre_periods > 0`.
+    The ratio laws declare
+    `positive_population_denominators=True`; a zero or insufficiently separated
+    observed denominator leaves that cell unavailable at the requested level
+    (`zero_denominator_mean` or `denominator_near_zero`), not its whole family.
+    For registered scalar and ratio observations, `MetricSpec(missing="zero")`
+    applies to outcome coordinates before they enter the retained sequential
+    state: null and NaN numerator values become exact zeroes (and the same
+    policy applies to a ratio denominator when declared). This outcome policy is
+    independent of covariate missingness: `covariate_missing` controls how a
+    declared pre-period covariate is imputed or refused and never changes the
+    metric outcome. The sequential route does not silently clip infinities.
 
-A ratio unavailable at a tighter registered allocation can therefore become
-reportable at a later, wider selected level, even when its checkpoint is
-frozen. Reinversion uses that same stopped state and refreshes its availability
-note. Alpha-independent failures -- before-start or missing-arm states,
-nonpositive denominators, and degenerate variances -- still abstain.
-New laws retain new state shapes, so no snapshot version bump or migration of
-existing `scalar_mean` checkpoints was needed.
+    Ratio-family log evidence depends on the stopped state, not its current
+    inversion alpha, and is capped by denominator stability. This capped evidence
+    is dominated by the underlying mixture value, not itself a martingale.
+    The family keeps every roster slot and masks a ratio unresolved at the
+    nominal reporting ceiling; selection then requires resolved denominators
+    at the selected reporting level too.
 
-</details>
+    A ratio unavailable at a tighter registered allocation can therefore become
+    reportable at a later, wider selected level, even when its checkpoint is
+    frozen. Reinversion uses that same stopped state and refreshes its availability
+    note. Alpha-independent failures -- before-start or missing-arm states,
+    nonpositive denominators, and degenerate variances -- still abstain.
+    New laws retain new state shapes, so no snapshot version bump or migration of
+    existing `scalar_mean` checkpoints was needed.
+
 
 Percentile winsorization, clustering, repeated units, switchback,
 observational inference and additive sequential decisions remain unsupported.

@@ -329,7 +329,7 @@ class TestDmlEstimate:
             computation = estimate_ate(src, design, methods=[Method(name="dml", folds=2)])
         assert computation.results == ()
         (failure,) = computation.failures.values()
-        # See the typed ratio refusal contract at docs/guides/observational.md:965-967.
+        # See the typed ratio refusal contract at docs/guides/observational.md:977-979.
         assert failure.code == "estimation.adjust_common.supported_ratio_metric"
 
     def test_control_absent_raises_and_lists_available_groups(self):
