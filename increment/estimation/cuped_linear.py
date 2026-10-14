@@ -16,7 +16,7 @@ from increment.errors import InvalidRequestError, RefusalSpec, refusals, refuse
 from increment.estimation._adjust.encoding import is_null
 from increment.estimation._tails import student_t_isf, two_sided_critical_value
 from increment.estimation.armstats import ArmStats
-from increment.estimation.variance import ratio_denominator_precision, stable_log_ratio
+from increment.estimation.variance import ratio_denominator_precision
 
 M1_MAX_ENCODED_COVARIATES = 203
 M1_MAX_CATEGORICAL_LEVELS = 200
@@ -145,7 +145,7 @@ class _LinearCupedCalculator:
     _design: np.ndarray
     _design_factor: np.ndarray
     _design_q: np.ndarray
-    _mean_errors: tuple[float, ...]
+    _means: tuple[tuple[float, float, int], ...]
 
     def _contrast_x(self, j: np.ndarray) -> np.ndarray:
         jsum = math.fsum(float(value) for value in j)
@@ -197,25 +197,38 @@ class _LinearCupedCalculator:
             self._bm_dof(j),
         )
 
-    def _compensated(self, family: int, arm: int) -> tuple[float, float]:
-        """Adjusted mean as a rounded value and the exact error that sum discarded."""
-        index = family * len(self.arm_order) + arm
-        return self.adjusted_means[index], self._mean_errors[index]
+    def _mean(self, family: int, arm: int) -> tuple[float, float, int]:
+        """Adjusted mean as ``(hi + lo) * 2**exponent``; finite even when its rounding is not."""
+        return self._means[family * len(self.arm_order) + arm]
+
+    def _usable(self, family: int, index: int, arm: object, label: str) -> tuple[float, float, int]:
+        """A log-scale projection needs a positive mean whose scaled form is finite."""
+        rounded = self.adjusted_means[family * len(self.arm_order) + index]
+        if not rounded > 0:
+            _fail(
+                "estimation.cuped_linear.nonpositive_component",
+                family=label,
+                arm=arm,
+                value=rounded,
+            )
+        mean = self._mean(family, index)
+        if not math.isfinite(mean[0]):
+            _projection_statistics(rounded, math.nan, math.nan)
+        return mean
 
     def _contrast_value(self, j: np.ndarray, family: int = 0) -> float:
+        """Exact arm contrast of scaled means; overflows only when the result itself does."""
         narm = len(self.arm_order)
-        means = self.adjusted_means[family * narm : (family + 1) * narm]
-        errors = self._mean_errors[family * narm : (family + 1) * narm]
-        return math.fsum(
-            [float(j[a]) * means[a] for a in range(narm)]
-            + [float(j[a]) * errors[a] for a in range(narm)]
+        means = self._means[family * narm : (family + 1) * narm]
+        if not all(math.isfinite(hi) for hi, _, _ in means):
+            return math.nan
+        top = max((exponent for hi, _, exponent in means if hi), default=0)
+        total = math.fsum(
+            float(j[a]) * math.ldexp(part, exponent - top)
+            for a, (hi, lo, exponent) in enumerate(means)
+            for part in (hi, lo)
         )
-
-    def _log_relative_value(self, ti: int, ci: int, family: int = 0) -> float:
-        (mt, et), (mc, ec) = self._compensated(family, ti), self._compensated(family, ci)
-        if min(mt, mc) * 2 >= max(mt, mc):
-            return math.log1p(math.fsum((mt, et, -mc, -ec)) / mc)
-        return stable_log_ratio(mc, mt)
+        return math.ldexp(total, top)
 
     def relative(
         self, arm: object, *, control: object | None = None, alpha: float = 0.05
@@ -228,14 +241,12 @@ class _LinearCupedCalculator:
         self, arm: object, control: object | None
     ) -> tuple[float, float, float]:
         ti, ci = self._pair(arm, control)
-        mt, mc = self.adjusted_means[ti], self.adjusted_means[ci]
-        self._positive(mt, arm, "outcome")
-        self._positive(mc, self.arm_order[ci], "outcome")
-        score = self._arm_score(0, ti) / mt - self._arm_score(0, ci) / mc
+        mt = self._usable(0, ti, arm, "outcome")
+        mc = self._usable(0, ci, self.arm_order[ci], "outcome")
+        score = self._arm_score(0, ti, mt) - self._arm_score(0, ci, mc)
         jac = self._scaled_jacobian(len(self.arm_order), ((ti, mt, 1.0), (ci, mc, -1.0)))
-        return _projection_statistics(
-            self._log_relative_value(ti, ci), _stable_norm(score), self._bm_dof(jac)
-        )
+        value, _ = _log_cross_ratio(mt, _UNIT_MEAN, mc, _UNIT_MEAN)
+        return _projection_statistics(value, _stable_norm(score), self._bm_dof(jac))
 
     def ratio(
         self,
@@ -257,49 +268,31 @@ class _LinearCupedCalculator:
     ) -> tuple[float, float, float]:
         """Delta-method ratio projection.
 
-        Scores divide each arm's own influence by that arm's component mean, so a
-        subnormal mean never forms an overflowing reciprocal; the Jacobian handed to
-        the degrees-of-freedom trace is the same vector scaled by the smallest mean,
-        which leaves the trace ratio unchanged. The point uses the compensated means'
-        cross products, so a contrast below one ulp of the rounded means survives.
+        Each arm's influence is divided by that arm's own component mean in scaled
+        form, so neither a subnormal mean nor a subnormal residual loses the
+        quotient; the Jacobian handed to the degrees-of-freedom trace is the same
+        vector scaled by the smallest mean, which leaves the trace ratio unchanged.
+        The point uses the scaled means' cross products, so a contrast below one
+        ulp of the rounded means survives.
         """
         if not self._components:
             _fail("estimation.cuped_linear.projection_kind", requested="ratio", available="mean")
         ti, ci = self._pair(arm, control)
         narm = len(self.arm_order)
-        nt, nd = self._compensated(0, ti), self._compensated(1, ti)
-        nc, cd = self._compensated(0, ci), self._compensated(1, ci)
-        self._positive(nd[0], arm, "denominator")
-        self._positive(cd[0], self.arm_order[ci], "denominator")
-        self._positive(nt[0], arm, "numerator")
-        self._positive(nc[0], self.arm_order[ci], "numerator")
-        numerator_t, numerator_c = self._arm_score(0, ti), self._arm_score(0, ci)
-        denominator_t, denominator_c = self._arm_score(1, ti), self._arm_score(1, ci)
+        nd = self._usable(1, ti, arm, "denominator")
+        cd = self._usable(1, ci, self.arm_order[ci], "denominator")
+        nt = self._usable(0, ti, arm, "numerator")
+        nc = self._usable(0, ci, self.arm_order[ci], "numerator")
+        numerator_t, numerator_c = self._arm_score(0, ti, nt), self._arm_score(0, ci, nc)
+        denominator_t, denominator_c = self._arm_score(1, ti, nd), self._arm_score(1, ci, cd)
         value, excess = _log_cross_ratio(nt, nd, nc, cd)
         if scale == "log":
-            score = (
-                numerator_t / nt[0]
-                - denominator_t / nd[0]
-                - numerator_c / nc[0]
-                + denominator_c / cd[0]
-            )
-            terms = (
-                (ti, nt[0], 1.0),
-                (ci, nc[0], -1.0),
-                (narm + ti, nd[0], -1.0),
-                (narm + ci, cd[0], 1.0),
-            )
+            score = numerator_t - denominator_t - numerator_c + denominator_c
+            terms = ((ti, nt, 1.0), (ci, nc, -1.0), (narm + ti, nd, -1.0), (narm + ci, cd, 1.0))
         elif scale == "absolute":
-            rt, rc = nt[0] / nd[0], nc[0] / cd[0]
-            score = (numerator_t - rt * denominator_t) / nd[0] - (
-                numerator_c - rc * denominator_c
-            ) / cd[0]
-            terms = (
-                (ti, nd[0], 1.0),
-                (ci, cd[0], -1.0),
-                (narm + ti, nd[0], -rt),
-                (narm + ci, cd[0], rc),
-            )
+            rt, rc = _rounded_ratio(nt, nd), _rounded_ratio(nc, cd)
+            score = rt * (numerator_t - denominator_t) - rc * (numerator_c - denominator_c)
+            terms = ((ti, nd, 1.0), (ci, cd, -1.0), (narm + ti, nd, -rt), (narm + ci, cd, rc))
             value = excess * rc if excess is not None else rt - rc
         else:
             _fail("estimation.cuped_linear.invalid_scale", scale=scale)
@@ -307,18 +300,22 @@ class _LinearCupedCalculator:
             value, _stable_norm(score), self._stacked_bm(self._scaled_jacobian(2 * narm, terms))
         )
 
-    def _arm_score(self, family: int, arm: int) -> np.ndarray:
+    def _arm_score(
+        self, family: int, arm: int, divisor: tuple[float, float, int] | None = None
+    ) -> np.ndarray:
         j = np.zeros(len(self.arm_order))
         j[arm] = 1
-        return self._family_score(family, j)
+        return self._family_score(family, j, divisor)
 
     @staticmethod
-    def _scaled_jacobian(size: int, terms: tuple[tuple[int, float, float], ...]) -> np.ndarray:
+    def _scaled_jacobian(
+        size: int, terms: tuple[tuple[int, tuple[float, float, int], float], ...]
+    ) -> np.ndarray:
         """Jacobian ``weight / mean`` per entry, scaled by the smallest mean so no reciprocal forms."""
-        reference = min(mean for _, mean, _ in terms)
+        reference = min((mean[2], mean[0]) for _, mean, _ in terms)
         jac = np.zeros(size)
-        for index, mean, weight in terms:
-            jac[index] = (reference / mean) * weight
+        for index, (hi, _, exponent), weight in terms:
+            jac[index] = math.ldexp(reference[1] / hi, reference[0] - exponent) * weight
         return jac
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
@@ -338,13 +335,15 @@ class _LinearCupedCalculator:
         out[ci] = -1
         return out
 
-    def _positive(self, value: float, arm: object, family: str) -> None:
-        if not value > 0:
-            _fail(
-                "estimation.cuped_linear.nonpositive_component", family=family, arm=arm, value=value
-            )
+    def _family_score(
+        self, family: int, j: np.ndarray, divisor: tuple[float, float, int] | None = None
+    ) -> np.ndarray:
+        """Per-unit HC2 influence scores of the contrast ``j`` on family ``family``.
 
-    def _family_score(self, family: int, j: np.ndarray) -> np.ndarray:
+        With a ``divisor`` the residual and anchor contributions are divided by
+        that scaled mean before the influence weights multiply them, so a
+        log-scale score keeps contributions whose outcome-unit value underflows.
+        """
         scale = float(np.max(np.abs(j), initial=0.0))
         if scale:
             j = j / scale
@@ -354,14 +353,18 @@ class _LinearCupedCalculator:
             self._design_factor,
             np.linalg.solve(self._design_factor.T, contrast),
         )
+        share = float(j.sum()) / sum(self.n_by_arm)
         residual = np.empty(len(self._x))
         anchor_score = np.empty(len(self._x))
         for a, scores in enumerate(self._residuals[family]):
             mask = self._arm_index == a
+            fitted = self._x[mask] @ self._slopes[family]
+            if divisor is not None:
+                hi, _, exponent = divisor
+                scores = np.ldexp(scores, -exponent) / hi
+                fitted = np.ldexp(fitted, -exponent) / hi
             residual[mask] = scores
-            anchor_score[mask] = (
-                float(j.sum()) / sum(self.n_by_arm) * (self._x[mask] @ self._slopes[family])
-            )
+            anchor_score[mask] = share * fitted
         influence = self._design @ coefficients * self._weights
         return (influence * residual / np.sqrt(1 - self.leverage) + anchor_score) * scale
 
@@ -1039,9 +1042,9 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         )
         for a in range(arm_count)
     )
-    compensated_means = tuple(
+    scaled_means = tuple(
         tuple(
-            _two_sum(
+            _scaled_mean(
                 float(local_means[f][a] - slopes[f] @ arm_differences[a]), outcome_offsets[f][a]
             )
             for a in range(arm_count)
@@ -1122,7 +1125,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         order,
         control,
         counts,
-        tuple(value for family in compensated_means for value, _ in family),
+        tuple(_rounded_mean(mean) for family in scaled_means for mean in family),
         tuple(float(v) for slope in slopes for v in slope),
         tuple(float(v) for v in anchor),
         layout,
@@ -1146,7 +1149,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         _readonly(design),
         _readonly(r_design),
         _readonly(q_design),
-        tuple(error for family in compensated_means for _, error in family),
+        tuple(mean for family in scaled_means for mean in family),
     )
     return calculator, leverage
 
@@ -1358,48 +1361,94 @@ def _two_product(left: float, right: float) -> tuple[float, float]:
 
 
 def _two_sum(left: float, right: float) -> tuple[float, float]:
-    """Rounded sum and the exact remainder it dropped; exact while the sum stays finite."""
+    """Rounded sum and the exact remainder it dropped.
+
+    Ordering the operands by magnitude makes every intermediate difference
+    representable, so the remainder is exact whenever the sum is finite, even
+    when the operands sit at the float ceiling.
+    """
+    if abs(left) < abs(right):
+        left, right = right, left
     total = left + right
-    right_part = total - left
-    return total, (left - (total - right_part)) + (right - right_part)
+    return total, right - (total - left)
 
 
 def _arm_mean(values: np.ndarray) -> float:
-    """Mean of finite values whose plain sum may overflow.
+    """Correctly rounded sum of finite values divided by their count.
 
-    Scaling by a power of two is exact, so in the representable range this is
-    bit-identical to the unscaled mean; near the overflow boundary it is the
-    rounded mean the unscaled sum could not reach.
+    An exact sum overflows only when the running total leaves the float range,
+    so that case is retried with the values scaled down by a power of two that
+    bounds the total; values the scaling would denormalise are summed exactly
+    at their own scale instead, which keeps a small remainder of cancelling
+    extremes.
     """
-    largest = float(np.max(np.abs(values), initial=0.0))
-    if largest == 0:
-        return 0.0
-    exponent = math.frexp(largest)[1]
-    return math.ldexp(float(np.ldexp(values, -exponent).mean()), exponent)
+    items = values.tolist()
+    try:
+        return math.fsum(items) / len(items)
+    except OverflowError:
+        pass
+    shift = len(items).bit_length() + 1
+    large = np.abs(values) >= math.ldexp(1.0, shift - 1022)
+    scaled = math.fsum(np.ldexp(values[large], -shift).tolist()) / len(items)
+    return math.ldexp(scaled, shift) + math.fsum(values[~large].tolist()) / len(items)
 
 
-def _mantissa(mean: tuple[float, float]) -> tuple[tuple[float, float], int]:
-    """Scale a compensated mean into ``[0.5, 1)`` by a power of two, error term included."""
-    value, exponent = math.frexp(mean[0])
-    return (value, math.ldexp(mean[1], -exponent)), exponent
+_UNIT_MEAN = (0.5, 0.0, 1)
 
 
-def _product_terms(left: tuple[float, float], right: tuple[float, float]) -> tuple[float, ...]:
-    """Doubles whose sum is the product of two compensated mantissas to second order."""
+def _scaled_mean(local: float, offset: float) -> tuple[float, float, int]:
+    """``local + offset`` as ``(hi, lo, exponent)`` with ``(hi + lo) * 2**exponent`` exact.
+
+    Both parts are finite but their sum need not be representable, so each is
+    scaled by one power of two before the compensated addition; ``hi`` lies in
+    ``[0.5, 1)`` in magnitude and ``lo`` holds the bits that rounding dropped. A
+    non-finite part is passed through so callers refuse it as such.
+    """
+    if not (math.isfinite(local) and math.isfinite(offset)):
+        return local + offset, 0.0, 0
+    if local == 0 and offset == 0:
+        return 0.0, 0.0, 0
+    exponent = max(math.frexp(part)[1] for part in (local, offset) if part)
+    hi, lo = _two_sum(math.ldexp(local, -exponent), math.ldexp(offset, -exponent))
+    if hi == 0:
+        return 0.0, 0.0, 0
+    mantissa, shift = math.frexp(hi)
+    return mantissa, math.ldexp(lo, -shift), exponent + shift
+
+
+def _rounded_mean(mean: tuple[float, float, int]) -> float:
+    """The scaled mean as one double, infinite when it lies beyond the float range."""
+    hi, _, exponent = mean
+    try:
+        return math.ldexp(hi, exponent)
+    except OverflowError:
+        return math.copysign(math.inf, hi)
+
+
+def _rounded_ratio(
+    numerator: tuple[float, float, int], denominator: tuple[float, float, int]
+) -> float:
+    """Quotient of two scaled means; raises OverflowError beyond the float range."""
+    return math.ldexp(numerator[0] / denominator[0], numerator[2] - denominator[2])
+
+
+def _product_terms(
+    left: tuple[float, float, int], right: tuple[float, float, int]
+) -> tuple[float, ...]:
+    """Doubles whose sum is the product of two scaled mantissas to second order."""
     product, error = _two_product(left[0], right[0])
     return product, error, left[0] * right[1], left[1] * right[0]
 
 
 def _log_cross_ratio(
-    nt: tuple[float, float],
-    nd: tuple[float, float],
-    nc: tuple[float, float],
-    cd: tuple[float, float],
+    nt: tuple[float, float, int],
+    nd: tuple[float, float, int],
+    nc: tuple[float, float, int],
+    cd: tuple[float, float, int],
 ) -> tuple[float, float | None]:
-    """``log(nt * cd / (nc * nd))`` from compensated means, with the ratio's excess over one.
+    """``log(nt * cd / (nc * nd))`` from scaled means, with the ratio's excess over one.
 
-    Each mean is a rounded value with the error that rounding dropped. The cross
-    products are built from power-of-two scaled mantissas, so they can neither
+    The cross products are built from the means' mantissas, so they can neither
     overflow nor underflow, and their difference is a correctly rounded sum of
     exact product terms: a contrast below one ulp of the rounded means survives
     in the excess, which is returned while it lies within ``log1p``'s half-unit
@@ -1407,11 +1456,9 @@ def _log_cross_ratio(
     products' log plus the exponent gap times ``log 2``, which keeps the error
     at a few ulps of the result instead of a few ulps of each component's log.
     """
-    (ntm, nte), (ndm, nde) = _mantissa(nt), _mantissa(nd)
-    (ncm, nce), (cdm, cde) = _mantissa(nc), _mantissa(cd)
-    gap = (nte + cde) - (nce + nde)
-    treatment = _product_terms(ntm, cdm)
-    control = _product_terms(ncm, ndm)
+    gap = (nt[2] + cd[2]) - (nc[2] + nd[2])
+    treatment = _product_terms(nt, cd)
+    control = _product_terms(nc, nd)
     if abs(gap) <= 2:
         treatment_scale = math.ldexp(1.0, min(gap, 0))
         control_scale = math.ldexp(1.0, min(-gap, 0))

@@ -1316,3 +1316,83 @@ def test_log_scale_projections_are_invariant_through_extreme_outcome_scales(fact
             assert getattr(scaled_ratio.ratio("t", scale=scale), field) == pytest.approx(
                 getattr(reference_ratio.ratio("t", scale=scale), field), rel=1e-10
             ), (scale, field)
+
+
+def test_overflowing_adjusted_means_keep_representable_contrasts_and_refuse_the_rest():
+    arm = np.repeat(["c", "t", "z"], 8)
+    x = np.r_[np.tile([-0.25, 0.25], 4), np.tile([-0.25, 0.25], 4), np.tile([5.75, 6.25], 4)]
+    y = np.r_[
+        np.tile([1e308, 1.2e308], 4),
+        np.tile([1e308, 1.2e308], 4),
+        np.tile([-1.2e308, -1e308], 4),
+    ]
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t", "z"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    assert fit.theta[0] == pytest.approx(4e307, rel=1e-12)
+    result = fit.absolute("t")
+    assert result.estimate == 0
+    assert result.se == pytest.approx(0.0, abs=1e308 * 2**-40)
+    assert math.isfinite(result.dof) and result.dof > 0
+    assert fit.relative("t").estimate == 0
+    with pytest.raises(InvalidRequestError) as raised:
+        fit.absolute("z")
+    assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
+
+
+def test_arm_mean_at_the_float_ceiling_keeps_finite_projections():
+    largest = np.finfo(float).max
+    unit = 2.0**971
+    arm = np.repeat(["c", "t"], 4)
+    y = np.tile([largest - 3 * unit, largest - 3 * unit, largest, largest], 2)
+    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    absolute = fit.absolute("t")
+    assert absolute.estimate == 0
+    assert absolute.se == pytest.approx(unit * math.sqrt(1.5), rel=1e-12)
+    assert absolute.dof == pytest.approx(6.0)
+    relative = fit.relative("t")
+    assert relative.estimate == 0
+    assert relative.se == pytest.approx(absolute.se / fit.adjusted_means[0], rel=1e-12)
+
+
+def test_log_scale_uncertainty_survives_outcomes_at_the_smallest_subnormal():
+    tiny = 2.0**-1074
+    arm = np.repeat(["c", "t"], 4)
+    base = np.tile([1.0, 1.0, 3.0, 3.0], 2)
+    reference = fit_cuped_linear(base, arm, control="c", arm_order=("c", "t"))
+    fit = fit_cuped_linear(base * tiny, arm, control="c", arm_order=("c", "t"))
+    assert reference.relative("t").se == pytest.approx(1 / math.sqrt(6), rel=1e-12)
+    for field in ("estimate", "se", "dof"):
+        assert getattr(fit.relative("t"), field) == pytest.approx(
+            getattr(reference.relative("t"), field), rel=1e-12
+        ), field
+    reference_ratio = fit_cuped_linear(
+        None, arm, control="c", arm_order=("c", "t"), numerator=base, denominator=np.ones(8)
+    )
+    ratio = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=base * tiny,
+        denominator=np.full(8, tiny),
+    )
+    for scale in ("log", "absolute"):
+        for field in ("estimate", "se", "dof"):
+            assert getattr(ratio.ratio("t", scale=scale), field) == pytest.approx(
+                getattr(reference_ratio.ratio("t", scale=scale), field), rel=1e-12
+            ), (scale, field)
+
+
+@pytest.mark.parametrize("permutation", [np.arange(6), np.array([5, 0, 1, 2, 3, 4])])
+def test_arm_mean_keeps_small_contributions_beside_cancelling_extremes(permutation):
+    arm = np.repeat(["c", "t"], 6)
+    treatment = np.array([-1e308, 1e308, 0.0, 0.0, 0.0, 1e-20])[permutation]
+    fit = fit_cuped_linear(np.r_[np.zeros(6), treatment], arm, control="c", arm_order=("c", "t"))
+    assert fit.adjusted_means[1] == pytest.approx(1e-20 / 6, rel=1e-15, abs=0)
+    assert fit.absolute("t").estimate == pytest.approx(1e-20 / 6, rel=1e-15, abs=0)
