@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.affected import Selection, _pytest_arguments, select
+from scripts.affected import Selection, _pytest_arguments, _pytest_invocations, select
 
 pytestmark = pytest.mark.integration
 
@@ -76,6 +78,69 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
     ]
 
 
+def test_source_and_doc_change_runs_tach_scope_and_doc_page(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/frame.py": "VALUE = 1\n",
+            "docs/guides/cuped.md": "# CUPED\n",
+        },
+    )
+    (root / "increment/frame.py").write_text("VALUE = 2\n")
+    (root / "docs/guides/cuped.md").write_text("# CUPED\nchanged\n")
+
+    selection = select(base, root)
+
+    assert selection.use_tach is True
+    assert selection.doc_pages == ("docs/guides/cuped.md",)
+    assert _pytest_invocations(selection, base, "fast", []) == [
+        [
+            "-m",
+            "not slow and not parameter_recovery and not numerical_certification",
+            "--tach-base",
+            base,
+            "tests",
+        ],
+        [
+            "-m",
+            "not slow and not parameter_recovery and not numerical_certification",
+            "docs/guides/cuped.md",
+        ],
+    ]
+
+
+def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/frame.py": "VALUE = 1\n",
+            "tests/test_explicit.py": "def test_old(): pass\n",
+            "tests/test_other.py": "def test_other(): pass\n",
+        },
+    )
+    (root / "increment/frame.py").write_text("VALUE = 2\n")
+    (root / "tests/test_explicit.py").write_text("def test_new(): pass\n")
+
+    selection = select(base, root)
+
+    assert selection.use_tach is True
+    assert selection.test_files == ("tests/test_explicit.py",)
+    assert _pytest_invocations(selection, base, "fast", []) == [
+        [
+            "-m",
+            "not slow and not parameter_recovery and not numerical_certification",
+            "--tach-base",
+            base,
+            "tests",
+        ],
+        [
+            "-m",
+            "not slow and not parameter_recovery and not numerical_certification",
+            "tests/test_explicit.py",
+        ],
+    ]
+
+
 def test_config_change_runs_full_tier(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"pyproject.toml": "[tool]\n"})
 
@@ -129,6 +194,7 @@ def test_working_tree_changes_are_selected(tmp_path: Path) -> None:
         },
     )
     (root / "tests/test_existing.py").write_text("def test_changed(): pass\n")
+    _git(root, "add", "tests/test_existing.py")
     (root / "tests/test_new.py").write_text("def test_new(): pass\n")
 
     selection = select(base, root)
@@ -196,3 +262,24 @@ def test_unknown_base_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]
         monkeypatch.undo()
 
     assert capsys.readouterr().err == "affected: base is not a resolvable commit: nope\n"
+
+
+def test_python_module_entrypoint_runs_main_for_bad_base(tmp_path: Path) -> None:
+    root, _ = _repo(tmp_path, {"tests/test_example.py": "def test_example(): pass\n"})
+    project_root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(project_root), environment.get("PYTHONPATH")))
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.affected", "--base", "nope"],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == "affected: base is not a resolvable commit: nope\n"

@@ -34,6 +34,7 @@ def _changed_paths(base: str, root: Path) -> tuple[str, ...]:
     try:
         _git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", root=root)
         paths = set(_git("diff", "--name-only", f"{base}...HEAD", root=root).splitlines())
+        paths.update(_git("diff", "--name-only", "--cached", root=root).splitlines())
         paths.update(_git("diff", "--name-only", root=root).splitlines())
         paths.update(_git("ls-files", "--others", "--exclude-standard", root=root).splitlines())
     except subprocess.CalledProcessError as error:
@@ -92,21 +93,35 @@ def select(base: str, root: Path) -> Selection:
     )
 
 
+def _pytest_invocations(
+    selection: Selection, base: str, tier: str, extra_args: Sequence[str]
+) -> list[list[str]]:
+    markers = ["-m", {"fast": FAST_MARKER, "slow": SLOW_MARKER}[tier]]
+
+    if selection.full_tier:
+        roots = ["tests"] if selection.doc_pages else []
+        return [markers + roots + list(selection.doc_pages) + list(extra_args)]
+
+    if selection.use_tach:
+        tach_args = markers + ["--tach-base", base]
+        if selection.test_files or selection.doc_pages:
+            tach_args.append("tests")
+        tach_args.extend(extra_args)
+        if not (selection.test_files or selection.doc_pages):
+            return [tach_args]
+        direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
+        direct_args.extend(extra_args)
+        return [tach_args, direct_args]
+
+    direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
+    direct_args.extend(extra_args)
+    return [direct_args]
+
+
 def _pytest_arguments(
     selection: Selection, base: str, tier: str, extra_args: Sequence[str]
 ) -> list[str]:
-    markers = {"fast": FAST_MARKER, "slow": SLOW_MARKER}[tier]
-    arguments = ["-m", markers]
-    if selection.use_tach:
-        arguments.extend(("--tach-base", base))
-    if selection.full_tier:
-        if selection.doc_pages:
-            arguments.append("tests")
-    else:
-        arguments.extend(selection.test_files)
-    arguments.extend(selection.doc_pages)
-    arguments.extend(extra_args)
-    return arguments
+    return _pytest_invocations(selection, base, tier, extra_args)[0]
 
 
 def main(argv: list[str]) -> int:
@@ -137,10 +152,14 @@ def main(argv: list[str]) -> int:
     if selection.full_tier:
         print(f"affected: running full {arguments.tier} tier")
 
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        *_pytest_arguments(selection, arguments.base, arguments.tier, extra_args),
-    ]
-    return subprocess.run(command, cwd=root, check=False).returncode
+    status = 0
+    for pytest_args in _pytest_invocations(selection, arguments.base, arguments.tier, extra_args):
+        command = [sys.executable, "-m", "pytest", *pytest_args]
+        result = subprocess.run(command, cwd=root, check=False).returncode
+        if status == 0 and result != 0:
+            status = result
+    return status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
