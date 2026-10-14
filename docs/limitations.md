@@ -743,8 +743,9 @@ The dense closed-form route instead reports its model's point probability; its v
 tolerance remains `0.005`, not a universal bound or finite-sample calibration guarantee.
 Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
 `1e-8` relative tolerance on the relative-effect scale. It does not promise the
-first IEEE-representable effect or silently skip materially earlier unresolved
-bands. Unresolved MDE searches refuse with
+first IEEE-representable effect. A band whose resolved ends fall short refuses; a band the
+budgets leave straddling the target is passed over (see the planning guide).
+Unresolved MDE searches refuse with
 `power.minimum_detectable_effect.numerical_resolution`, or leave a companion
 MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
 The reported power is evaluated at the returned effect. Internal accuracy
@@ -1090,8 +1091,11 @@ deployed SciPy/Boost special-function error model, publishes its point
 midpoint or a substitute approximation. A size or effect reaches a target only when the
 lower end does, so a wide enclosure sizes conservatively: the standard 10% baseline, 10%
 relative lift conversion plan is sized with an enclosure about `3e-4` wide, a few units per
-arm above where its point crosses. Only the explicit point request of a diagnostic
-enclosure refuses with `power.binomial_probability_unresolved`. The Normal-tail replay only
+arm above where its point crosses. A sizing search that reaches its ceiling with an enclosure
+holding the target refuses the probability there as unresolved
+(`power.binomial_probability_unresolved`, with the enclosure and the size reached), as does
+the explicit point request of a diagnostic enclosure; a ceiling whose upper end falls short
+refuses with the replay-bound or size-limit code naming its lower end. The Normal-tail replay only
 proposes sizes; it pays the same replay budget over the same cells as the runtime's replay,
 so its proposal tracks the lower end the search decides from, and the final search steps
 from the proposal by the slope that replay measured (the standard 10% baseline, 10% lift
@@ -1247,7 +1251,9 @@ multiple. The outcome column is historical: its refusals of
 `power.binomial_probability_unresolved` are what stood when the table was measured. A rerun
 today states the enclosure's lower end as `power` (`power_basis="lower_bound"`) at the same
 sizes and times, and a sizing whose lower end never reaches the target climbs to its ceiling
-and refuses there with `power.binomial_replay_bound_exceeded` or
+and refuses there: as an unresolved probability (`power.binomial_probability_unresolved`)
+when the ceiling's enclosure holds the target, otherwise with
+`power.binomial_replay_bound_exceeded` or
 `power.binomial_size_search_unreachable`. An explicit `finite_sample` plan at the ticket's
 dense shapes (10,000 per arm and above at a 10% rate, 20,000 at 50%) has windows of 190,000
 to 2.3 million cells, more than the per-evaluation budgets decide, so the enclosure stays

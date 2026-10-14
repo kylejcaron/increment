@@ -232,8 +232,11 @@ also carries the computed enclosure of that probability, `power_lower` and `powe
   enclosure about `3e-4` wide.
 - The explicit point request, `increment.power.core.planned_enclosure(...).reported`,
   refuses an unresolved enclosure with `power.binomial_probability_unresolved`
-  (context `lower`, `upper`, `error`, `tolerance`). No public solver takes that
-  route, and no accuracy tuning parameter is exposed.
+  (context `point`, `lower`, `upper`, `error`, `tolerance`). `required_sample_size`
+  refuses with the same code, adding `n_per_arm`, when its search reaches the
+  ceiling with an enclosure holding the target; a ceiling whose upper end falls
+  short refuses with the replay-bound or size-limit code naming the certified lower
+  end. No accuracy tuning parameter is exposed.
 
 Enumeration has deterministic work and memory limits, not a timing-dependent
 answer. Delta-decision enumeration is bounded at 100,000 count pairs, and

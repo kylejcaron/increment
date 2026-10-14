@@ -2567,14 +2567,18 @@ class _BinomialMdeState:
     # Probes reserved and not yet decided, in the order they were made.
     deferred: list[_Probe] = field(default_factory=list)
 
-    def passed_over(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> None:
+    def passed_over(
+        self, lo: float, hi: float, left: BinomialPower, right: BinomialPower, bound: float
+    ) -> None:
         """Record the first band the evaluation budgets leave straddling the target that the
         search passes over: an answer found later certifies its own target, but without one
-        the search has not established unattainability."""
+        the search has not established unattainability. The enclosure kept is the better of
+        the endpoints' lower ends and the band's interval ``bound``, which covers its interior
+        (an endpoint's upper end does not, since power need not be monotone in the effect)."""
         if self.straddled is None and self.unresolved is None:
             self.straddled = (lo, hi)
             self.lower = max(left.lower, right.lower)
-            self.upper = max(left.upper, right.upper)
+            self.upper = bound
             self.basis = "lower_bound"
 
 
@@ -2783,7 +2787,7 @@ class _BinomialMdeSearch(_MdeSearch):
         if bound < self.target:
             return None
         if self.straddles(first) and self.straddles(last := self.value(right)):
-            self.state.passed_over(lo, hi, first, last)
+            self.state.passed_over(lo, hi, first, last, bound)
             return None
         width = abs(hi - lo)
         adjacent = abs(float_ordinal(hi) - float_ordinal(lo)) <= 1
@@ -2796,7 +2800,7 @@ class _BinomialMdeSearch(_MdeSearch):
                     )
                 return hi, last.published
             if self.straddles(first) or self.straddles(last):
-                self.state.passed_over(lo, hi, first, last)
+                self.state.passed_over(lo, hi, first, last, bound)
             elif pending is None:
                 self.state.unresolved = (lo, hi)
                 self.state.lower = max(first.lower, last.lower)
@@ -3237,7 +3241,8 @@ def _binomial_size(
                 procedure, _binomial_key(procedure, n_T, n_C), p_c=baseline.mean, scope="requested"
             )
         if not reached.resolved and reached.upper >= target:
-            # The ceiling's enclosure holds the target: the point request's refusal states it.
+            # The ceiling's enclosure holds the target: the point request's refusal states it,
+            # with the size the search reached.
             refuse(
                 _PROBABILITY_UNRESOLVED,
                 point=reached.power,
@@ -3245,6 +3250,7 @@ def _binomial_size(
                 upper=reached.upper,
                 error=reached.absolute_error,
                 tolerance=RESOLUTION,
+                n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
             )
         if ceiling < arm_ceiling:
             cells, p_t = _sizing_cells(_binomial_key(procedure, n_T, n_C), baseline.mean, rate)
@@ -3323,7 +3329,10 @@ class _SizeBracket:
             return float(_ndtri(min(max(values[m].power, 1e-15), 1.0 - 1e-15)))
 
         def gradient(a: int, b: int) -> float:
-            return (probit(b) - probit(a)) / (math.sqrt(b) - math.sqrt(a))
+            """Probit rise per unit of ``sqrt(n)`` between two sizes, as the rise over the
+            integer gap times ``sqrt(a) + sqrt(b)``: adjacent sizes near ``2**60`` share a
+            float square root, so their difference is never divided by."""
+            return (probit(b) - probit(a)) * (math.sqrt(a) + math.sqrt(b)) / (b - a)
 
         def secant(a: int, b: int | None) -> float:
             """Size where the probit line through the evaluated sizes reaches the target; one
@@ -3355,11 +3364,7 @@ class _SizeBracket:
             else:
                 lo = n if lo is None else max(lo, n)
             if hi is not None and (hi <= floor or (lo is not None and hi - lo <= 1)):
-                # Adjacent integers can share a float square root at huge sizes: no slope then.
-                slope_out = (
-                    None if lo is None or math.sqrt(hi) <= math.sqrt(lo) else gradient(lo, hi)
-                )
-                return hi, slope_out
+                return hi, None if lo is None else gradient(lo, hi)
             if hi is None:
                 assert lo is not None
                 if lo >= ceiling:

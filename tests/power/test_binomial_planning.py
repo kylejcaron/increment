@@ -341,9 +341,12 @@ def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     assert achieved_power(sized.n_per_arm - 1, 0.8, baseline, procedure).power < 0.8
 
 
-def test_a_bracket_closed_at_a_huge_size_returns_without_a_slope():
-    """At 2**60 units adjacent integers share a float square root, so the closing bracket has
-    no measurable probit slope: the verified size is returned with ``None``, not an error."""
+@pytest.mark.parametrize("offset", [0, 1, -64, 100_000])
+def test_a_bracket_at_a_huge_size_is_closed_from_every_side(offset):
+    """At 2**60 units adjacent integers share a float square root. Whether the search starts on
+    the answer, just above it, below it (climbing) or far above it (narrowing), every slope it
+    measures is a rise over an integer gap, so the verified size is returned with a finite
+    positive slope rather than a division by zero."""
     from increment.power._binomial import BinomialPower
     from increment.power.core import _SizeBracket
 
@@ -359,7 +362,9 @@ def test_a_bracket_closed_at_a_huge_size_returns_without_a_slope():
 
     search = _SizeBracket(0.8, 2, 2**62, 0.8416, 1.96)
     assert math.sqrt(answer) == math.sqrt(answer - 1)
-    assert search.crossing(evaluate, answer, unreachable=unreachable) == (answer, None)
+    size, slope = search.crossing(evaluate, answer + offset, unreachable=unreachable)
+    assert size == answer
+    assert slope is not None and math.isfinite(slope) and slope > 0.0
 
 
 def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(monkeypatch):

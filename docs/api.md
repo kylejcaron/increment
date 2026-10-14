@@ -593,9 +593,11 @@ most `1e-6` (`power_basis="exact"`) and the enclosure's lower end otherwise
 lower end does. The dense closed-form route reports its model's point probability
 with no enclosure. `PowerResult.numerical_qualification` serializes that scope:
 `scipy_special_function_error_model_conditional_v1` for either enumerated basis
-and `closed_form_model_only_v1` for the asymptotic model. Only the explicit point
+and `closed_form_model_only_v1` for the asymptotic model. The explicit point
 request of a diagnostic enclosure refuses with
-`power.binomial_probability_unresolved`; no accuracy tuning knob is exposed.
+`power.binomial_probability_unresolved`, as does a size search that reaches its
+ceiling with an enclosure holding the target (the context adds `n_per_arm`); no
+accuracy tuning knob is exposed.
 Binomial MDE searches the earliest detectable region to `1e-8` absolute plus
 `1e-8` relative tolerance on the relative-effect scale, not the first
 representable float, and reports power evaluated at the returned effect.
