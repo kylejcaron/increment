@@ -1,36 +1,33 @@
 # CUPED variance reduction for A/B tests
 
-CUPED uses a measurement from before treatment as a covariate to reduce
-variance without changing the target effect or assignment. Declare the
-pre-period covariate on a `MetricSpec` for `Analysis.from_unit_summary`, or use
-`n_pre_periods` in warehouse definitions; `from_unit_panel` has narrower
-fixed-horizon support for constant-per-unit covariates on unwindowed mean and
-ratio metrics. The [dataframe example](#on-the-dataframe-path) compares the
-adjusted and unadjusted rows; the [definitions example](#in-yaml-definitions)
-shows the warehouse declaration. Read the reported method, estimate and
-interval together, with result scope in [Reading results](reading-results.md)
-and [Multiplicity](multiplicity.md).
+CUPED adjusts an outcome using a measurement taken before treatment. Use it
+when that measurement may predict the outcome and improve precision; the
+reported effect still targets the same comparison. On the dataframe path, a
+`MetricSpec(covariate=...)` makes the adjustment available, but you must request
+it in the decision method or sensitivity methods. If a covariate is available
+but no CUPED method is requested, Increment warns with
+`analysis.cuped.covariate_unused`.
 
-A pre-treatment covariate can improve precision but does not guarantee a
-narrower interval. Same-experiment fitted coefficients have asymptotic, not
-finite-sample, guarantees; exact sequential inference additionally requires
-predictable adjustments. See [When CUPED does nothing](#when-cuped-does-nothing)
-and [CUPED under sequential inference](#cuped-under-sequential-inference).
+!!! warning "A covariate does not promise a narrower interval"
+    CUPED can increase uncertainty. A coefficient fitted from experiment
+    outcomes has asymptotic, not finite-sample, guarantees. Check the reported
+    estimate and interval; see [When CUPED does nothing](#when-cuped-does-nothing).
 
-!!! warning "More precision is not guaranteed"
-    A useful covariate can narrow the interval, but some adjustments widen
-    it. Coefficients fitted from experiment outcomes give asymptotic,
-    not finite-sample, guarantees. See [When CUPED does nothing](#when-cuped-does-nothing)
-    and [The math](#the-math).
+The [dataframe example](#on-the-dataframe-path) compares adjusted and
+unadjusted rows. The [definitions example](#in-yaml-definitions) shows the
+warehouse route. See [Reading results](reading-results.md) for row
+interpretation and [Multiplicity](multiplicity.md) for the result population
+and status table.
+
 
 ## On the dataframe path
 
-With `Analysis.from_unit_summary`, set each metric's pre-period column
-in `MetricSpec(covariate=...)`. This makes CUPED available, but does not
-request the adjustment: `run()` keeps its declared/default decision method.
-When a covariate is available but an omitted decision method defaults to
-unadjusted (and no CUPED sensitivity method is selected), `run()` emits
-`analysis.cuped.covariate_unused`. Request CUPED explicitly:
+On `Analysis.from_unit_summary`, set `MetricSpec(covariate=...)` to make
+the covariate available. Availability is not a request: `run()` keeps its
+declared or default decision method. To request CUPED, set
+`variance_reduction="cuped"` on the decision or sensitivity `Method`.
+If CUPED is available but omitted from the effective methods, Increment
+emits `analysis.cuped.covariate_unused`.
 
 ```python
 import numpy as np
@@ -199,16 +196,13 @@ A unit with no pre-period activity gets zero. The same rule applies to
 both groups, preserving independence from assignment. Units without
 history may contribute less precision.
 
-`n_pre_periods` makes pre-period data available for eligible metrics;
-requesting CUPED makes Increment query it. A positive lookback alone does not
-add a covariate query or adjust the decision method. When a metric's covariate
-is available and the effective design, metric, and inference admit CUPED, a
-defaulted unadjusted decision with no CUPED sensitivity method emits
-`analysis.cuped.covariate_unused`. For each metric, call-wide method overrides
-take precedence over the experiment's per-metric bindings.
-
-Requesting `variance_reduction="cuped"` with `n_pre_periods == 0`
-raises a `ValueError`. Set a positive lookback to supply the covariate.
+`n_pre_periods` supplies the pre-period covariate; it does not request
+adjustment. Add CUPED to the decision or sensitivity method to use it.
+If the covariate is available but the effective methods are unadjusted,
+Increment emits `analysis.cuped.covariate_unused`. A positive lookback
+does not query covariates unless a CUPED method is requested. A CUPED
+request with `n_pre_periods == 0` raises `ValueError`; set a positive
+lookback instead. Call-wide methods override per-metric bindings.
 
 ### Per-metric method bindings
 
@@ -602,61 +596,64 @@ not assume every adjustment will improve precision.
 
 ## The math
 
-For outcome $Y$ and pre-period covariate $X$, CUPED adjusts each group's
-mean:
+The equations and variance conditions behind CUPED are in this fold.
 
-$$
-\hat\mu_a = \bar{Y}_a - \theta\,(\bar{X}_a - \bar{X}), \qquad
-\theta = \frac{\operatorname{Cov}(Y_t, X_t)/n_t + \operatorname{Cov}(Y_c, X_c)/n_c}
-              {\operatorname{Var}(X_t)/n_t + \operatorname{Var}(X_c)/n_c}
-$$
+??? info "Statistical details"
+    For outcome $Y$ and pre-period covariate $X$, CUPED adjusts each group's
+    mean:
 
-Here $\bar{X}$ is the covariate mean pooled across both groups. All other
-moments are sample moments computed within each group.
+    $$
+    \hat\mu_a = \bar{Y}_a - \theta\,(\bar{X}_a - \bar{X}), \qquad
+    \theta = \frac{\operatorname{Cov}(Y_t, X_t)/n_t + \operatorname{Cov}(Y_c, X_c)/n_c}
+                  {\operatorname{Var}(X_t)/n_t + \operatorname{Var}(X_c)/n_c}
+    $$
 
-The coefficient minimizes the variance of the additive contrast
-$\hat\mu_t - \hat\mu_c$. For independent groups, that variance is
+    Here $\bar{X}$ is the covariate mean pooled across both groups. All other
+    moments are sample moments computed within each group.
 
-$$
-\sum_a [\operatorname{Var}(Y_a) - 2\theta\operatorname{Cov}(Y_a, X_a) + \theta^2\operatorname{Var}(X_a)]/n_a
-$$
+    The coefficient minimizes the variance of the additive contrast
+    $\hat\mu_t - \hat\mu_c$. For independent groups, that variance is
 
-A pooled regression slope weights the same moments by $n_a - 1$,
-targeting a different quantity. With unequal allocation and different
-group slopes, it can be worse than no adjustment. The two coefficients
-agree with equal allocation or matching within-group slopes. Fitting a
-separate $\theta$ for each group would reintroduce bias.
+    $$
+    \sum_a [\operatorname{Var}(Y_a) - 2\theta\operatorname{Cov}(Y_a, X_a) + \theta^2\operatorname{Var}(X_a)]/n_a
+    $$
 
-Because $X$ is independent of assignment, adjustment preserves the
-target difference. When both groups share a slope, the approximate
-variance-reduction factor is:
+    A pooled regression slope weights the same moments by $n_a - 1$,
+    targeting a different quantity. With unequal allocation and different
+    group slopes, it can be worse than no adjustment. The two coefficients
+    agree with equal allocation or matching within-group slopes. Fitting a
+    separate $\theta$ for each group would reintroduce bias.
 
-$$
-1 - \rho^2, \qquad \rho = \operatorname{Corr}(Y, X)
-$$
+    Because $X$ is independent of assignment, adjustment preserves the
+    target difference. When both groups share a slope, the approximate
+    variance-reduction factor is:
 
-A correlation of $\rho = 0.7$ roughly halves the variance.
-The corresponding interval-width factor is $\sqrt{1 - \rho^2}$.
+    $$
+    1 - \rho^2, \qquad \rho = \operatorname{Corr}(Y, X)
+    $$
 
-!!! note "A planning approximation, not the interval calculation"
-    The $(1 - \rho^2)$ factor helps plan an experiment. Reported intervals
-    use each group's adjusted mean and full quadratic variance calculation,
-    not this correlation shortcut.
+    A correlation of $\rho = 0.7$ roughly halves the variance.
+    The corresponding interval-width factor is $\sqrt{1 - \rho^2}$.
 
-!!! note "What the interval assumes"
-    $\theta$ targets the additive contrast, not relative lift.
-    Relative lift is nonlinear, and its log-scale standard error accounts
-    for the shared pooled mean $\bar{X}$. That mean cancels in a
-    difference but not in a ratio, so the adjusted group means cannot
-    be treated as independent.
+    !!! note "A planning approximation, not the interval calculation"
+        The $(1 - \rho^2)$ factor helps plan an experiment. Reported intervals
+        use each group's adjusted mean and full quadratic variance calculation,
+        not this correlation shortcut.
 
-    The interval calculation treats the fitted $\theta$ as fixed.
-    Its guarantee is therefore asymptotic; there is no finite-sample
-    guarantee that fitting the adjustment cannot widen an interval.
+    !!! note "What the interval assumes"
+        $\theta$ targets the additive contrast, not relative lift.
+        Relative lift is nonlinear, and its log-scale standard error accounts
+        for the shared pooled mean $\bar{X}$. That mean cancels in a
+        difference but not in a ratio, so the adjusted group means cannot
+        be treated as independent.
 
-See the [API reference](../api.md) for `MetricSpec` and `Method`. Planning
-an experiment around an expected $\rho$ is covered in the
-[power analysis guide](power-analysis.md).
+        The interval calculation treats the fitted $\theta$ as fixed.
+        Its guarantee is therefore asymptotic; there is no finite-sample
+        guarantee that fitting the adjustment cannot widen an interval.
+
+    See the [API reference](../api.md) for `MetricSpec` and `Method`. Planning
+    an experiment around an expected $\rho$ is covered in the
+    [power analysis guide](power-analysis.md).
 
 ## Next step
 

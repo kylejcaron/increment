@@ -1,21 +1,15 @@
 # Fixed-horizon switchback contrasts
 
-A switchback is a fixed-horizon randomized design for outcomes with time-varying
-assignment: each two-period cycle has a CT or TC order, drawn independently
-per unit-cycle or once per shared block for a fixed roster. Successive cycles
-may draw the same order. Use
-`Analysis.from_switchback_panel` with one row per unit × cycle × period × step
-and a declared `SwitchbackAssignment`, randomized identification, washout and
-retained-window rules. Its `ContrastResult` is an additive mean-unit difference
-over retained windows, not an individual-level relative lift. The
+A switchback alternates treatment and control over time for outcomes affected
+by time trends. Use it when the assignment order is randomized in two-period
+cycles and treatment carryover is removed by a declared washout.
+
+`Analysis.from_switchback_panel` returns an additive difference over retained
+windows, not an individual-level relative lift. The
 [supported-contract example](#supported-contract) shows the ordinary workflow;
-see [Reading results](reading-results.md) for interpretation and
-[Multiplicity](multiplicity.md) for the canonical population/status table.
-Cycle-order draws are the randomization units for the independent unit-cycle
-law, but inference averages cycle contributions within each unit, so units are
-the inferential replicates; under a shared schedule, blocks are the replicates.
-Carryover and complete schedules constrain use; see the
-[limitations](#deliberate-refusals) before interpreting a result.
+read [Reading results](reading-results.md) and [Multiplicity](multiplicity.md)
+for interpretation. Use [limitations](#deliberate-refusals) to check whether
+your schedule and carryover assumptions fit.
 
 ## Supported contract
 
@@ -122,15 +116,19 @@ variance bound. A zero envelope identifies a singleton under its declared model;
 it must never be inferred from a zero sample standard error. Legitimate all-CT
 or all-TC observations remain admissible when the existing split check accepts them.
 
-For shared block `b`, write the roster means in its two retained periods as
-`M1_b` and `M2_b`. Its contribution is `(M2_b - M1_b)/(2p)` for CT and
-`(M1_b - M2_b)/(2(1-p))` for TC, where `p=probability_ct`. The estimate is the
-mean of the `B` block contributions, with standard error `s_X/sqrt(B)` and
-`B-1` degrees of freedom. This is an approximate HT/Neyman average-effect
-interval; it is not Fisher sharp-null inversion or an exact finite-sample
-coverage guarantee. Heterogeneous fixed-block effects can make its variance
-conservative. Generalizing to future blocks additionally requires a
-superpopulation interpretation; it does not follow from the declared law alone.
+Shared-schedule estimates average block contributions; uncertainty comes
+from variation across independent blocks.
+
+??? info "Shared-schedule calculation"
+    For shared block `b`, write the roster means in its two retained periods as
+    `M1_b` and `M2_b`. Its contribution is `(M2_b - M1_b)/(2p)` for CT and
+    `(M1_b - M2_b)/(2(1-p))` for TC, where `p=probability_ct`. The estimate is the
+    mean of the `B` block contributions, with standard error `s_X/sqrt(B)` and
+    `B-1` degrees of freedom. This is an approximate HT/Neyman average-effect
+    interval; it is not Fisher sharp-null inversion or an exact finite-sample
+    coverage guarantee. Heterogeneous fixed-block effects can make its variance
+    conservative. Generalizing to future blocks additionally requires a
+    superpopulation interpretation; it does not follow from the declared law alone.
 
 The identifying assumption is `no_residual_carryover_after_discarded_steps`: the
 declared washout, plus any additional `carryover_order` steps, must remove

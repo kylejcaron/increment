@@ -1,21 +1,21 @@
 # Power analysis and MDE for A/B tests
 
-Use power analysis to size a planned comparison, estimate power at a proposed
-size, or find its minimum detectable relative effect. The supported parallel-arm
-solvers require a control-arm `Baseline` and an
-`ArmPlanningProcedure` matching the analysis decision; the
-[worked mean-planning example](#procedure-first-api) shows the ordinary flow.
-Read the returned `PowerResult` at its actual integer size and check
-`power_basis` and qualifications before using it as a runtime-power claim.
-See [Reading results](reading-results.md) for row interpretation and
-[Multiplicity](multiplicity.md) for the canonical population/status table.
-Mean-like plans use a log-ratio variance model. Fixed-horizon conversion and
-retention planning instead follows the runtime's count-and-alpha-dependent
-route: each arm's event and non-event counts both matter, so there is no
-universal sample-size cutoff or fixed width premium. See
-[conversion and retention planning](#conversion-and-retention-planning-follows-the-runtimes-route)
-for the route and its numerical limits. Sequential and switchback solvers have
-separate assumptions and should not be inferred from this parallel-arm example.
+Plan conversion tests from a baseline rate, lift, and decision rule. For the
+standard plan, a 10% baseline and 10% relative lift (to 11%), tested two-sided
+at `alpha=0.05`, is sized for 80% power. Its reported `power` is the
+conservative `power_lower`: the runtime's rejection probability is at least
+that value, under the planner's stated numerical qualification. Its interval
+is about `3e-4` wide, so the plan sizes a few units per arm above where the
+point estimate crosses 80%.
+
+Use the parallel-arm solvers to size a comparison, estimate power at a proposed
+size, or find a minimum detectable relative effect. They require a control-arm
+`Baseline` and an `ArmPlanningProcedure` matching the analysis decision.
+Start with the [procedure-first example](#procedure-first-api); use
+[Reading results](reading-results.md) and [Multiplicity](multiplicity.md) to
+interpret the output. Conversion and retention use a separate, count-based
+runtime route; [details](#conversion-and-retention-planning-follows-the-runtimes-route).
+Sequential and switchback planning have separate assumptions.
 
 ## Procedure-first API
 
@@ -185,19 +185,27 @@ above 1 is refused. Every such result reports `power_basis="asymptotic"`.
 
 ### Conversion and retention: planning follows the runtime's route
 
-An unadjusted, unclustered, fixed-horizon conversion or retention plan (no CUPED, no
-absorbed factor, no winsorization, no prior) is routed at runtime by its counts
-(`conversion_inference`, default `"auto"`): a count pair whose four per-arm success and failure
-counts are all dense for the tail allocation is decided by the delta-method test, every other
-pair by the exact Berger-Boos risk-ratio test on the raw counts. Planning reports the
-probability that this union rejects, summed over the binomial count law at the analyzed integer
-counts: the delta-method decision on the routed rectangle of count pairs (the production
-decision itself, each pair decided by the runtime's own calculation) plus the replayed finite-sample decision on the rest. It is neither route's power
-and not a function of the two: a plan whose counts straddle the threshold is not "the smaller
-of the two". The count law is integrated over windows that leave out at most about `1e-12` of
-mass. `ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the
-replay at every size (refused for a mean, clustered or sequential plan, which the finite-sample
-route does not serve). Power depends on the baseline rate alone; `var` does not enter.
+For ordinary fixed-horizon conversion and retention plans, the planner follows
+the runtime's count-based decision. With the default `conversion_inference="auto"`,
+it can use either a delta-method test or a finite-sample test, depending on
+the observed counts. Power is the probability that the runtime's chosen
+decision rejects.
+
+??? info "Conversion and retention route details"
+    This route applies to unadjusted, unclustered fixed-horizon plans without
+    CUPED, absorbed factors, winsorization, or priors. For each count pair,
+    the runtime uses the delta-method test when all four arm success/failure
+    counts are dense for the tail allocation; otherwise it uses the exact
+    Berger–Boos risk-ratio test on the raw counts. Planning sums rejection
+    probability over this combined decision map, rather than taking the
+    smaller of two separate power calculations.
+
+    The count law is integrated over windows omitting at most about `1e-12`
+    of probability mass. `ArmPlanningProcedure.standard(...,
+    conversion_inference="finite_sample")` replays the finite-sample test at
+    every size; that route does not support means, clustered plans, or
+    sequential plans. Conversion and retention power depends on the baseline
+    rate, not `Baseline.var`.
 
 Public `power` is a model-based probability of the runtime's decision. An enumerated result
 also carries the computed enclosure of that probability, `power_lower` and `power_upper`
@@ -238,58 +246,55 @@ also carries the computed enclosure of that probability, `power_lower` and `powe
   short refuses with the replay-bound or size-limit code naming the certified lower
   end. No accuracy tuning parameter is exposed.
 
-Enumeration has deterministic work and memory limits, not a timing-dependent
-answer. Delta-decision enumeration is bounded at 100,000 count pairs, and
-finite-sample replay at 150,000 directional replays per evaluation. A solve
-stores at most 10,000,000 control/treatment count cells across its null and
-evaluated alternative windows. A supplied effect, an MDE search and each
-`power_curve` row are separate solves: each is bounded by the cells of its own
-requests, and an MDE search's interval bounds read only what that search decided.
-A count pair's decision is the runtime's own, the same whichever request decides
-it, so the solves of one design share those decisions: a companion MDE search
-copies the cells the supplied effect or the sizing already decided instead of
-replaying them, and replays of each interval's far endpoint only the cells its
-bound depends on; an endpoint whose power and cells no bound reads (the far end
-of the admissible effects, the far endpoints of wide intervals above the answer)
-is never replayed, while one a curvature term reads is. Exceeding the cell bound raises
-`power.binomial_replay_bound_exceeded`; an MDE search that reaches it can leave
-a companion `mde_relative=None` with `mde_unavailable_reason="numerical_resolution"`.
-These are planner limits: the finite-sample runtime ceiling remains
-1,000,000,000 units per arm. A dense `auto` plan using the closed form does
-not enumerate that lattice.
+??? info "Enumeration budgets and numerical resolution"
+    Enumeration has deterministic work and memory limits, not timing-dependent
+    answers. Delta-decision enumeration is bounded at 100,000 count pairs, and
+    finite-sample replay at 150,000 directional replays per evaluation. A solve
+    stores at most 10,000,000 control/treatment count cells across null and
+    alternative windows. Each supplied-effect solve, MDE search, and
+    `power_curve` row has its own cell budget. Companion calculations may reuse
+    decisions already made for the same design.
 
-The runtime's bounded finite-sample search can produce nonmonotone rejection
-decisions. Planning does not infer a count pair's decision from its neighbour.
-Likewise, power need not be monotone in sample size or effect:
+    Exceeding the cell bound raises `power.binomial_replay_bound_exceeded`; an
+    MDE search may return `mde_relative=None` with
+    `mde_unavailable_reason="numerical_resolution"`. These are planner limits;
+    the runtime's finite-sample ceiling remains 1,000,000,000 units per arm.
+    Dense `auto` plans using the closed form do not enumerate the count lattice.
 
-- `required_sample_size` returns a size meeting the target under the selected
-  planning calculation, not a proof that no smaller size can reach it.
-- `minimum_detectable_effect` searches for the earliest detectable region to
-  an effect tolerance of `1e-8` absolute plus `1e-8` relative, measured on the
-  relative-effect scale, not the first IEEE-representable effect. The result's
-  `power` is evaluated at the reported effect, not copied from the target. A
-  band whose evaluated ends fall short with resolved enclosures refuses with
-  `numerical_resolution`. A band the evaluation budgets leave straddling the
-  target (both evaluated ends at any width, or either end once the band is at
-  tolerance width) is passed over, so `mde_relative` certifies its target but
-  may lie above an effect a fuller evaluation would certify.
-- A target excluded over every admissible effect is `unattainable`. If the
-  search cannot distinguish detectability or exclude an earlier region at its
-  numerical resolution, or the far end's enclosure straddles the target, a
-  companion MDE is unavailable with `numerical_resolution`; a standalone call
-  refuses with `power.minimum_detectable_effect.numerical_resolution`. A
-  supplied effect's own answer still stands without a companion MDE.
+    The runtime's bounded finite-sample search can produce nonmonotone decisions.
+    Planning does not infer one count pair from its neighbour, and power need
+    not be monotone in sample size or effect. A required size meets the target
+    under the selected calculation; it does not prove no smaller size could.
+    MDE search certifies the returned effect under its stated resolution and
+    may pass over an unresolved region. If numerical resolution cannot
+    distinguish an earlier detectable region, a companion MDE is unavailable
+    with `numerical_resolution`; a standalone call refuses with
+    `power.minimum_detectable_effect.numerical_resolution`.
 
-With a shifted null and partial compliance, an initial band can imply
-unrepresentable absolute lifts even though farther effects are representable.
-The planner bounds that band's power before excluding it. An unresolved band
-yields `numerical_resolution`, not a claim that a detectable effect exists
-outside the representable domain.
+    All results are conditional on the selected decision rule and planning
+    model. Numerical bounds address evaluation accuracy, not model
+    misspecification or calibration.
 
-All conclusions are conditional on the selected decision rule and planning
-model. Numerical bounds address evaluation accuracy, not model misspecification
-or calibration. Calibration remains a separate, deferred diagnostic rather
-than a prerequisite on the planning path.
+??? info "Search limits and edge cases"
+    Power and the runtime's finite-sample decisions can be nonmonotone. A
+    required size meets the target under the selected calculation; it does
+    not prove that no smaller size can. MDE search looks for the earliest
+    detectable region to an absolute plus relative tolerance of `1e-8`.
+    Its returned power is evaluated at the reported effect, not copied from
+    the target. A search may pass over unresolved regions; in that case it
+    may return a certified higher effect or mark MDE unavailable with
+    `numerical_resolution`. A target excluded over all admissible effects is
+    `unattainable`.
+
+    With a shifted null and partial compliance, early candidate effects can
+    imply unrepresentable absolute lifts even when larger effects are
+    representable. The planner bounds those candidates before excluding them;
+    unresolved candidates yield `numerical_resolution`, not an assumption
+    that a detectable effect exists outside the representable range.
+
+    Numerical bounds describe evaluation accuracy, not model fit or
+    calibration. Calibration is a separate diagnostic, not a prerequisite
+    for planning.
 
 #### Comparing with statsmodels
 
