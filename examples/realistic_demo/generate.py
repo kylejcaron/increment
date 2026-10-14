@@ -75,7 +75,7 @@ _ORDER_REFUND_RATE = 0.08
 _ORDER_CURRENCY = "USD"
 
 # Order value = user spend level (mean-one lognormal) x per-order Gamma draw.
-# Per-order CV^2 = (1 + sigma_user^2) * (1 + 1/shape) - 1, about 1.0 here:
+# Per-order CV^2 = exp(sigma_user^2) * (1 + 1/shape) - 1, about 1.0 here:
 # right-skewed baskets that vary order to order and between users.
 _ORDER_VALUE_MEAN = 71.25
 _ORDER_VALUE_SHAPE = 1.5
