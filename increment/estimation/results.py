@@ -385,6 +385,79 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
         )
 
 
+class DeltaConversionEvidence(CodedModel, BaseModel):
+    """The count evidence persisted on every conversion or retention row the count rule
+    routed to the delta method (``reference_kind="t"``, ``scale="log"``, no ``binomial_set``).
+
+    ``dense_level`` is ``U``, the smallest level at which the four counts are dense
+    (`conversion_route.dense_level`, in the convention of the level the row's p-value is
+    compared with: ``alpha`` two-sided, the single directional tail otherwise; ``0.0`` for
+    counts dense at every representable level). Every delta-route conversion row persists
+    its counts and ``U``; its p-value is its delta p-value.
+
+    ``composite`` marks a decision row read by a multiplicity family below its own level
+    (a declared secondary family, ``run_breakout(correction="bh")``,
+    ``select_exploratory_family``). Its ``p_value()`` is then the composite
+    `conversion_route.composite_p_value`: its delta p-value when that is at least ``U``, else
+    the smaller of ``escalated_p_value`` and ``U``. ``escalated_p_value`` is the finite-sample
+    route's exact p-value against the row's own null, read at the row's nominal tail with the
+    nuisance budget of its nominal level (never a finer reading), persisted only when the delta
+    p-value is below ``U`` and the exact route could serve it with a p-value able to fall below
+    ``U``. ``exact_unavailable`` is the refusal code of the exact route where it could not (an
+    arm above its ceiling, a tail its float margin dominates); the row's p-value is then ``U``
+    itself, and its ``note`` says so. At most one of the two is set, and only on a composite
+    row.
+
+    A declared family and ``select_exploratory_family`` read the same composite from the same
+    persisted counts (the exploratory path reads the exact p-value on demand at selection), so
+    a row corrected after the fact carries the evidence the family selected on.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    x_c: int = Field(ge=0)
+    n_c: int = Field(ge=1)
+    x_t: int = Field(ge=0)
+    n_t: int = Field(ge=1)
+    dense_level: float = Field(ge=0.0, lt=1.0, allow_inf_nan=False)
+    composite: bool = False
+    escalated_p_value: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    exact_unavailable: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_counts(self):
+        if self.x_c > self.n_c or self.x_t > self.n_t:
+            _raise(
+                "estimation.results.delta.counts_out_of_range",
+                x_c=self.x_c,
+                n_c=self.n_c,
+                x_t=self.x_t,
+                n_t=self.n_t,
+            )
+        if self.escalated_p_value is not None and self.exact_unavailable is not None:
+            _raise(
+                "estimation.results.delta.dense_level",
+                reason="an exact p-value and the exact route's refusal cannot both be recorded",
+            )
+        if not self.composite and (
+            self.escalated_p_value is not None or self.exact_unavailable is not None
+        ):
+            _raise(
+                "estimation.results.delta.dense_level",
+                reason="an exact reading belongs only to a row read by a family (composite)",
+            )
+        return self
+
+    @property
+    def counts(self) -> tuple[int, int, int, int]:
+        """``(x_c, n_c, x_t, n_t)``."""
+        return self.x_c, self.n_c, self.x_t, self.n_t
+
+    def dense_at(self, alpha: float) -> bool:
+        """Whether the counts are dense at level ``alpha`` (in ``dense_level``'s convention)."""
+        return alpha >= self.dense_level
+
+
 class _ReferenceFields(TypedDict):
     dof: float | None
     reference_kind: Literal["normal", "t", "sequential"]
@@ -507,6 +580,9 @@ _REFUSALS = refusals(
         "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} requires df exactly for t, got {df!r}",
         "estimation.results.lift.absolute_alpha_without_interval": "abs_alpha={abs_alpha!r} is the alpha an additive interval was cut at, but this row carries no additive interval (abs_lb/abs_ub)",
         "estimation.results.lift.absolute_alpha_mismatch": "abs_alpha={abs_alpha!r} contradicts the alpha {alpha!r} of the relative interval the same call cut",
+        "estimation.results.delta.counts_out_of_range": "delta-route conversion evidence counts out of range: x_c={x_c}, n_c={n_c}, x_t={x_t}, n_t={n_t}",
+        "estimation.results.delta.dense_level": "delta-route conversion evidence is inconsistent: {reason}",
+        "estimation.results.delta.reference_mismatch": "estimate row for {metric!r}/{group_id!r}: delta-route conversion evidence belongs only to a reference_kind='t' row on the log scale with no binomial_set, got reference_kind={reference_kind!r}",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -570,6 +646,40 @@ def _validate_reference_fields(row: Any) -> Any:
             group_id=row.group_id,
             inference=row.inference,
             reference_kind=row.reference_kind,
+        )
+    return row
+
+
+def _validate_delta_evidence(row: Any) -> Any:
+    """Delta-route conversion evidence sits only on a t-reference log-scale row with no binomial
+    set, and its dense level is the count rule's own inversion of the row's counts under the
+    row's alternative (every row type shares this check)."""
+    evidence = row.delta_evidence
+    if evidence is None:
+        return row
+    from increment.estimation.conversion_route import dense_level_holds
+
+    if (
+        row.reference_kind != "t"
+        or getattr(row, "scale", "log") != "log"
+        or row.binomial_set is not None
+    ):
+        _raise(
+            "estimation.results.delta.reference_mismatch",
+            metric=row.metric,
+            group_id=row.group_id,
+            reference_kind=row.reference_kind,
+        )
+    if not dense_level_holds(
+        *evidence.counts, level=evidence.dense_level, alternative=row.alternative
+    ):
+        _raise(
+            "estimation.results.delta.dense_level",
+            reason=(
+                f"dense_level={evidence.dense_level!r} is not the rule's level for counts "
+                f"{evidence.counts} under {row.alternative!r} (re-run the analysis to cut "
+                "the row under this version's rule)"
+            ),
         )
     return row
 
@@ -1032,6 +1142,13 @@ class LiftEstimate(_RowIdentity):
     # (point-backed or not); see BinomialConfidenceSet. None for every
     # other reference_kind.
     binomial_set: BinomialConfidenceSet | None = None
+    # The four counts and composite p-value evidence of every conversion or retention row the
+    # count rule routed to the delta method; see DeltaConversionEvidence. None for every other
+    # row, including a delta-route conversion row persisted before the evidence existed, which
+    # reads as a plain Wald row (its p-value is the delta p-value at every level).
+    delta_evidence: DeltaConversionEvidence | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     ds: date | datetime | str | int | float | None = None  # None for total-grain estimates
     scale: Literal["log", "linear"] = "log"
     # Scale on which the underlying posterior law is parameterized.
@@ -1073,6 +1190,7 @@ class LiftEstimate(_RowIdentity):
     _check_absolute_reference: ClassVar[Any] = model_validator(mode="after")(
         _validate_absolute_reference_fields
     )
+    _check_delta_evidence: ClassVar[Any] = model_validator(mode="after")(_validate_delta_evidence)
 
     @field_serializer("ds", when_used="json")
     def _serialize_day_axis(self, value: date | datetime | str | int | float | None) -> object:
@@ -1604,6 +1722,9 @@ class LiftEstimate(_RowIdentity):
                 or not math.isclose(decision_alpha, self.lift.alpha or decision_alpha)
             ):
                 interval += f", decision_alpha={decision_alpha:.4g}"
+        route = conversion_route_label(self)
+        if route is not None:
+            interval += f", route={route!r}"
         qualification = _selection_qualification(self)
         suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
         return (
@@ -1886,7 +2007,13 @@ def row_p_value(row: DecisionRow) -> float | None:
     (``<`` for an exact binomial row) exactly when ``stat_sig()``, for the
     alpha its construction decides at (:func:`row_decision_alpha`), except on a
     ``low_reliability`` cell, whose statistic is reported while its verdict is
-    withheld.
+    withheld. A delta-route conversion row read by a multiplicity family
+    (``delta_evidence.composite``) reports the composite p-value of its counts
+    (`conversion_route.composite_p_value`): its delta p-value when that is at
+    least the level its counts become dense at, else the smaller of its exact
+    p-value and that level. The composite agrees with ``stat_sig()`` at the
+    row's own alpha and is valid at every level the family reads it at; a
+    row outside a family reports its delta p-value.
     """
     if row.inference != "fixed":
         from increment.sequential_state import sequential_refuse
@@ -1964,10 +2091,17 @@ def row_p_value(row: DecisionRow) -> float | None:
     distribution = _t if reference_df is not None else _norm
     shapes = (reference_df,) if reference_df is not None else ()
     if row.alternative == "greater":
-        return float(distribution.sf(z, *shapes))
-    if row.alternative == "less":
-        return float(distribution.cdf(z, *shapes))
-    return float(2.0 * distribution.sf(abs(z), *shapes))
+        p_delta = float(distribution.sf(z, *shapes))
+    elif row.alternative == "less":
+        p_delta = float(distribution.cdf(z, *shapes))
+    else:
+        p_delta = float(2.0 * distribution.sf(abs(z), *shapes))
+    evidence = row.delta_evidence
+    if evidence is None or not evidence.composite:
+        return p_delta
+    from increment.estimation.conversion_route import composite_p_value
+
+    return composite_p_value(p_delta, evidence.dense_level, evidence.escalated_p_value)
 
 
 def _sampling_availability(row: DecisionRow) -> bool | None:
@@ -2086,6 +2220,34 @@ def row_decision_available(row: DecisionRow, *, verdict: bool | None = None) -> 
         (lower and upper)
         or (lower and lift.open_side == "upper")
         or (upper and lift.open_side == "lower")
+    )
+
+
+def conversion_route_label(row: DecisionRow) -> str | None:
+    """Which route an unadjusted conversion or retention row took, read from what it persists:
+    ``"finite_sample"`` for an exact binomial set, ``"delta"`` for delta-route count evidence,
+    ``None`` for every other row (a mean metric, an adjusted or clustered conversion, or a
+    delta-route row persisted before its evidence existed)."""
+    if row.binomial_set is not None:
+        return "finite_sample"
+    if row.delta_evidence is not None:
+        return "delta"
+    return None
+
+
+def carry_nominal_evidence(nominal: LiftEstimate, reissued: LiftEstimate) -> LiftEstimate:
+    """*reissued*, a selected row re-estimated at its family's corrected level, carrying the
+    composite evidence of *nominal*, the row the family selected on, when both took the delta
+    route: the exact reading is persisted at the nominal tail only, never the finer one the
+    re-estimation would read, so the selected row's p-value is the one that selected it. A
+    re-estimation the counts route finite-sample at the corrected level keeps its exact set
+    and p-value, as every finite-sample reissue does."""
+    if nominal.delta_evidence is None or reissued.delta_evidence is None:
+        return reissued
+    if nominal.delta_evidence.counts != reissued.delta_evidence.counts:
+        return reissued
+    return reissued.model_copy(
+        update={"delta_evidence": nominal.delta_evidence, "note": nominal.note}
     )
 
 

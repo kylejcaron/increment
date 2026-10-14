@@ -893,14 +893,15 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
     ),
     _case_row(
         "conversion-route-encouragement-family",
-        "Encouragement ITT rows of a BH secondary family are routed at the family's smallest level",
+        "Encouragement ITT rows of a BH secondary family are routed at their own level and carry "
+        "composite p-value evidence",
         "conversion_route_encouragement_family",
         from_switchback_panel=_ENCOURAGEMENT_SWITCHBACK,
     ),
     _case_row(
         "conversion-route-observational-family",
-        "Observational unadjusted rows of a BH secondary family are routed at the family's "
-        "smallest level",
+        "Observational unadjusted rows of a BH secondary family are routed at their own level and "
+        "carry composite p-value evidence",
         "conversion_route_observational_family",
         from_switchback_panel=(_matrix("conversion-run-observational-utc-error", SB),),
     ),

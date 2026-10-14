@@ -1301,20 +1301,23 @@ class TestRunBreakoutBHCorrection:
         assert all(r.discovery is not None for r in real)
 
 
-class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
-    """A flat BH family reads each cell's nominal p-value at a threshold as small as ``q / m``
-    (``m`` the family's hypothesis count), so a conversion cell is routed at that level: a cell
-    dense at the nominal level but not at ``q / m`` must take the finite-sample route."""
+class TestRunBreakoutBHRoutesEachCellAtItsOwnLevel:
+    """A flat BH family reads each cell's p-value at a threshold as small as ``q / m`` (``m``
+    the family's hypothesis count). A conversion cell is still routed and cut at its own level;
+    a cell dense there but not at ``q / m`` keeps the delta route and carries its counts, so
+    the composite p-value the family reads is valid at ``q / m`` too."""
 
     @staticmethod
-    def _segment_rows(country: str, smallest: int, *, metric: str = "conv") -> list[dict[str, Any]]:
+    def _segment_rows(
+        country: str, smallest: int, *, metric: str = "conv", lift: int = 5
+    ) -> list[dict[str, Any]]:
         """A 5% conversion contrast whose sparsest of the four counts is ``smallest``, the
-        treatment arm five conversions up."""
+        treatment arm ``lift`` conversions up."""
         return [
             _conversion_arm_row(
                 20 * smallest, successes, country=country, group_id=group, metric=metric
             )
-            for group, successes in (("control", smallest), ("treatment", smallest + 5))
+            for group, successes in (("control", smallest), ("treatment", smallest + lift))
         ]
 
     @staticmethod
@@ -1326,7 +1329,7 @@ class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
     @pytest.mark.parametrize(
         ("alternative", "alpha", "q"), [("two-sided", 0.2, 0.2), ("greater", 0.1, 0.1)]
     )
-    def test_a_member_of_a_two_cell_family_is_routed_at_q_over_two(self, alternative, alpha, q):
+    def test_a_member_of_a_two_cell_family_keeps_its_own_route(self, alternative, alpha, q):
         # Both nominal levels are a 0.1 tail; q / 2 is a 0.05 tail, whose threshold the "GB"
         # cell clears and the "US" cell, dense at the nominal tail, does not.
         nominal, family = dense_min_count(0.1), dense_min_count(0.05)
@@ -1342,7 +1345,13 @@ class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
             correction="bh",
             q=q,
         )
-        assert self._kinds(estimates) == {"US": "binomial", "GB": "t"}
+        assert self._kinds(estimates) == {"US": "t", "GB": "t"}
+        us = next(row for row in estimates if row.dimension_value == "US")
+        assert us.delta_evidence is not None
+        assert us.delta_evidence.counts == (between, 20 * between, between + 5, 20 * between)
+        # Dense at the nominal level (alpha two-sided, the single tail directional), not at the
+        # level q / 2 the family reads it at: the level lies strictly between the two.
+        assert q / 2 < us.delta_evidence.dense_level <= alpha
 
     @pytest.mark.parametrize("correction", ["none", "bonferroni"])
     def test_the_same_counts_without_a_bh_family_are_routed_at_their_own_level(self, correction):
@@ -1357,13 +1366,124 @@ class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
             correction=correction,
             q=0.2,
         )
-        # Bonferroni divides alpha by the two segments: a 0.05 tail, the level it is routed at.
+        # Bonferroni divides alpha by the two segments: a 0.05 tail is the cell's own level.
         expected = "binomial" if correction == "bonferroni" else "t"
         assert self._kinds(estimates) == {"US": expected, "GB": "t"}
 
+    def test_an_exploratory_family_over_uncorrected_cells_reads_the_same_evidence(self):
+        """The rows of ``correction="none"`` corrected after the fact by
+        ``select_exploratory_family`` reach the p-values, discoveries and intervals of
+        ``correction="bh"`` for cells dense at the nominal level but not at ``q / m``, selected
+        and not: both read the composite p-value from the same persisted counts, and both
+        reissue a selected cell by its counts at the corrected level."""
+        from increment.estimation.family import select_exploratory_family
+
+        nominal, family = dense_min_count(0.1), dense_min_count(0.05)
+        between = (nominal + family) // 2
+        rows = [
+            *self._segment_rows("US", between, lift=120),
+            *self._segment_rows("GB", between + 40, lift=100),
+            *self._segment_rows("FR", 2 * family, lift=0),
+            *self._segment_rows("DE", between + 20, lift=2),
+        ]
+        q = 0.2
+        corrected = run_breakout(
+            rows,
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            alpha=0.2,
+            correction="bh",
+            q=q,
+        )
+        uncorrected = run_breakout(
+            rows, [_conversion_metric()], control_group="control", dimension="country", alpha=0.2
+        )
+        assert all(row.delta_evidence is not None for row in uncorrected)
+        exploratory = select_exploratory_family(list(uncorrected), q=q)
+        by_segment = {row.dimension_value: row for row in corrected}
+        assert {row.discovery for row in corrected} == {True, False}
+        selected_below_level = [
+            row
+            for row in corrected
+            if row.discovery and row.family_threshold is not None and row.binomial_set is not None
+        ]
+        assert selected_below_level, "a selected cell was reissued below its dense level"
+        for row in exploratory:
+            assert isinstance(row, BreakoutEstimate)
+            twin = by_segment[row.dimension_value]
+            assert row.p_value() == twin.p_value()
+            assert row.discovery == twin.discovery
+            assert row.family_threshold == twin.family_threshold
+            assert row.reference_kind == twin.reference_kind
+            assert row.delta_evidence == twin.delta_evidence
+            assert (row.require_lift().lb, row.require_lift().ub) == (
+                twin.require_lift().lb,
+                twin.require_lift().ub,
+            )
+            assert (row.abs_lb, row.abs_ub) == (twin.abs_lb, twin.abs_ub)
+            if row.discovery:
+                assert row.stat_sig() is twin.stat_sig()
+
+    def test_a_selected_directional_cell_is_reissued_at_the_tail_it_reports(self):
+        """A ``greater`` family at ``q = 0.06`` over two cells selects one at ``fcr = 0.03``:
+        its counts are dense at that tail but not at half of it, so the reissued cell keeps
+        the delta route with its bound opened at ``0.03`` -- on the moment path and on the
+        exploratory path alike."""
+        from increment.estimation.family import select_exploratory_family
+
+        rows = [
+            *(
+                _conversion_arm_row(20_000, successes, country="US", group_id=group)
+                for group, successes in (("control", 2_600), ("treatment", 2_900))
+            ),
+            *(
+                _conversion_arm_row(20_000, successes, country="GB", group_id=group)
+                for group, successes in (("control", 2_600), ("treatment", 2_600))
+            ),
+        ]
+        corrected = run_breakout(
+            rows,
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            alpha=0.05,
+            alternative="greater",
+            correction="bh",
+            q=0.06,
+        )
+        us = next(row for row in corrected if row.dimension_value == "US")
+        assert us.discovery is True and us.family_threshold == 0.03
+        assert us.reference_kind == "t"
+        assert us.require_lift().alpha == 0.03 and us.require_lift().open_side == "upper"
+        assert us.delta_evidence is not None
+        assert 0.015 < us.delta_evidence.dense_level <= 0.03
+        exploratory = select_exploratory_family(
+            list(
+                run_breakout(
+                    rows,
+                    [_conversion_metric()],
+                    control_group="control",
+                    dimension="country",
+                    alpha=0.05,
+                    alternative="greater",
+                )
+            ),
+            q=0.06,
+        )
+        twin = next(
+            row
+            for row in exploratory
+            if isinstance(row, BreakoutEstimate) and row.dimension_value == "US"
+        )
+        assert twin.reference_kind == "t"
+        assert twin.require_lift().lb == us.require_lift().lb
+        assert twin.p_value() == us.p_value()
+        assert twin.delta_evidence == us.delta_evidence
+
     def test_the_family_size_counts_only_the_cells_present(self):
-        """``other`` is carried by one segment only: the family is three cells, so its smallest
-        level is ``q / 3`` (the 0.05 tail here), not ``q / 4``."""
+        """``other`` is carried by one segment only: the family is three cells, and every cell
+        keeps the route its own level gives it whatever the family's size."""
         family, deeper = dense_min_count(0.05), dense_min_count(0.0375)
         assert family < deeper
         between_levels = (family + deeper) // 2
@@ -1383,7 +1503,7 @@ class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
                 q=0.3,
             )
         assert "breakout.estimates.no_row_for_group_metric" in warning_codes(rec)
-        assert self._kinds(estimates) == {"US": "binomial", "GB": "t"}
+        assert self._kinds(estimates) == {"US": "t", "GB": "t"}
 
 
 # alternative= forwarding: one-sided per-segment testing.

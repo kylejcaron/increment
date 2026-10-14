@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from increment.estimation._tails import resolvable_expm1, wald_bounds
 from increment.estimation.results import (
+    BINOMIAL_METHOD,
     BINOMIAL_NUMERICAL_QUALIFICATION,
     BinomialConfidenceSet,
+    Estimate,
     _alpha_eff_for,
     _fcr_alpha_for,
     _fixed_fcr_parameters,
@@ -34,7 +36,9 @@ if TYPE_CHECKING:
 
 #: ``unavailable`` rows carry no relative interval (a non-positive arm mean, a degenerate
 #: covariance); the additive interval they report, when they have one, is what is reissued.
-Construction = Literal["wald", "binomial", "joint", "unavailable"]
+#: ``conversion`` rows are delta-route conversion rows with their counts, routed again at the
+#: corrected level.
+Construction = Literal["wald", "conversion", "binomial", "joint", "unavailable"]
 
 
 def classify(view: LiftEstimate) -> tuple[Construction | None, str]:
@@ -66,6 +70,8 @@ def classify(view: LiftEstimate) -> tuple[Construction | None, str]:
         return None, "interval without its allocated alpha"
     if lift.log_mean is None or lift.log_se is None or not lift.log_se > 0.0:
         return None, "interval without persisted sufficient statistics"
+    if view.delta_evidence is not None:
+        return "conversion", "delta-method conversion row with its counts"
     return "wald", "Wald interval on the log scale"
 
 
@@ -90,7 +96,7 @@ def nominal_alpha(view: LiftEstimate, construction: Construction) -> float:
         case "binomial":
             assert view.binomial_set is not None
             return view.binomial_set.decision_alpha
-        case "wald":
+        case "wald" | "conversion":
             assert view.lift is not None and view.lift.alpha is not None
             alpha_eff = view.lift.alpha
             return alpha_eff if view.alternative == "two-sided" else alpha_eff / 2.0
@@ -201,6 +207,86 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
     return view.model_copy(update=updates)
 
 
+def _conversion_parent(
+    view: LiftEstimate, alpha: float, fcr_alpha: float | Fraction
+) -> LiftEstimate:
+    """The row ``estimate_lift`` builds at *alpha* for a conversion contrast the count rule
+    routed to the delta method: routed again by its persisted counts at the tail of the bound
+    the row finally reports at the corrected level *fcr_alpha* (`fcr_route_tail`), the Wald
+    row where they are dense there and the exact binomial row from the counts where they are
+    not (the corrected level fell below the row's dense level), as a fresh finite-sample row
+    would be cut: Normal additive bounds with no t reference, and only the disclosures that
+    still apply."""
+    from increment.estimation import binomial_rr
+    from increment.estimation.conversion_route import (
+        fcr_route_tail,
+        route_for_counts,
+        without_composite_note,
+    )
+    from increment.estimation.engine import _binomial_abs_bounds
+
+    evidence = view.delta_evidence
+    assert evidence is not None, "classified: the row carries its counts"
+    tail = fcr_route_tail(view.alternative, float(fcr_alpha))
+    if route_for_counts(*evidence.counts, tail_alpha=tail, mode="auto") == "asymptotic":
+        return _wald_parent(view, alpha)
+    x_c, n_c, x_t, n_t = evidence.counts
+    alternative = binomial_rr.validate_alternative(view.alternative)
+    interval = binomial_rr.confidence_interval(
+        x_c, n_c, x_t, n_t, alpha=alpha, alternative=alternative, null_r=1.0 + view.null_lift
+    )
+    point = binomial_rr.point_lift(x_c, n_c, x_t, n_t)
+    assert point is not None, "a delta-route row has a positive control count"
+    lower, upper = binomial_rr.to_lift_bounds(interval)
+    alpha_eff = _alpha_eff_for(view.alternative, alpha)
+    level = math.fsum((1.0, -alpha_eff))
+    updates: dict[str, object] = {
+        "lift": Estimate(
+            value=point,
+            lb=lower,
+            ub=upper,
+            open_side="upper" if upper is None else None,
+            level=level,
+            alpha=alpha_eff,
+        ),
+        "binomial_set": BinomialConfidenceSet(
+            lower=lower,
+            upper=upper,
+            alpha=alpha_eff,
+            level=level,
+            geometry=interval.geometry,
+            method=BINOMIAL_METHOD,
+            numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
+            x_c=x_c,
+            n_c=n_c,
+            x_t=x_t,
+            n_t=n_t,
+            nuisance_beta=binomial_rr.nuisance_beta(alpha),
+            decision_alpha=alpha,
+        ),
+        "delta_evidence": None,
+        "reference_kind": "binomial",
+        "reference_df": None,
+        "dof": None,
+        "scale": "linear",
+        "abs_reference_kind": None,
+        "abs_reference_df": None,
+        "note": " | ".join(
+            part
+            for part in (without_composite_note(view.note), binomial_rr.precision_note(interval))
+            if part is not None
+        )
+        or None,
+    }
+    if view.abs_se is not None:
+        assert view.abs_diff is not None
+        updates["abs_lb"], updates["abs_ub"] = _binomial_abs_bounds(
+            view.abs_diff, view.abs_se, alpha_eff
+        )
+        updates["abs_alpha"] = alpha_eff
+    return view.model_copy(update=updates)
+
+
 def _joint_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
     """The Fieller row ``infer_ate`` builds at *alpha* from the persisted joint reference."""
     from increment.estimation.inference import _joint_additive_bounds
@@ -260,6 +346,8 @@ def reinterval_at_fcr(
     match construction:
         case "wald":
             parent = _wald_parent(view, alpha)
+        case "conversion":
+            parent = _conversion_parent(view, alpha, fcr_alpha)
         case "binomial":
             parent = _binomial_parent(view, alpha)
         case "joint":

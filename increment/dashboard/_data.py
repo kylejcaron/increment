@@ -453,9 +453,12 @@ class DashboardSnapshot:
 
 def _csv_human_value(value: Any, *, name: str) -> Any:
     """Retain unrounded set metadata and neutralize spreadsheet formulas."""
-    if name in ("confidence_set", "relative_confidence_set", "binomial_set") and isinstance(
-        value, BaseModel
-    ):
+    if name in (
+        "confidence_set",
+        "relative_confidence_set",
+        "binomial_set",
+        "delta_evidence",
+    ) and isinstance(value, BaseModel):
         value = value.model_dump_json(exclude={"raw", "reference"})
     if isinstance(value, str):
         for char in value:

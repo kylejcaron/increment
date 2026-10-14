@@ -13,9 +13,19 @@ contrast, and a count-only rule picks between them before any interval is built:
 ``Method.conversion_inference`` is ``"auto"`` (the default) or ``"finite_sample"``.
 ``"finite_sample"`` always takes the finite-sample route. ``"auto"`` takes the
 asymptotic route only when every one of the four per-arm success and failure counts
-reaches ``dense_min_count(tail_alpha)``. The rule reads those counts and the tail
-allocation (``alpha / 2`` per tail two-sided, ``alpha`` directional) and nothing
-else: it is fixed before inference and never compares an interval or a p-value.
+reaches ``dense_min_count(tail_alpha)``. The rule reads those counts and the row's own
+tail allocation (``alpha / 2`` per tail two-sided, ``alpha`` directional) and nothing
+else: it is fixed before inference, never compares an interval or a p-value, and is the
+same whether or not the row belongs to a multiplicity family.
+
+A family reads a row's p-value at levels below the row's own, where the delta p-value
+is not validated. A row the rule routes asymptotic therefore reports the composite
+``composite_p_value``: its delta p-value when that is at least ``U``, the smallest level
+at which its own counts are dense (``dense_level``, the rule inverted count by count),
+and otherwise the smaller of its exact p-value (the finite-sample route's, read at the
+nominal tail) and ``U``. Read at any level ``u``, the composite rejects only where the
+pipeline routed by counts at ``u`` rejects: by the delta row at ``u`` on the counts
+dense at ``u``, by the finite-sample test at ``u`` elsewhere (``docs/limitations.md``).
 
 The log risk ratio's Wald interval is skewed at small counts: a count ``s`` gives
 the log-scale statistic skewness of order ``s ** -0.5``, which moves a one-sided
@@ -36,13 +46,16 @@ the ``log_se >= 0.5`` nor the zero-variance guard of ``infer_lift`` can fire.
 from __future__ import annotations
 
 import math
+import re
+import struct
+from collections.abc import Callable
+from fractions import Fraction
 from typing import Literal, NoReturn
 
 import numpy as np
 from scipy.stats import norm
 
 from increment._literals import ConversionInference
-from increment.compatibility import _conservative_divide
 from increment.errors import InvalidRequestError, refusals, refuse
 
 Route = Literal["asymptotic", "finite_sample"]
@@ -65,6 +78,38 @@ _GUARD_FLOOR = 9
 #: A tail below 0.0005 is extrapolated by the same formula, not measured.
 _DENSE_FLOOR = 412
 _DENSE_SLOPE = 145
+
+#: Prefixes of the note a delta-route row carries when its p-value is not its delta p-value
+#: (`composite_p_value`): the exact p-value read in its place, or the dense level itself.
+ESCALATED_NOTE_PREFIX = "conversion p-value escalated to the exact p-value"
+CAPPED_NOTE_PREFIX = "conversion p-value capped at its dense level"
+_COMPOSITE_PREFIXES = (ESCALATED_NOTE_PREFIX, CAPPED_NOTE_PREFIX)
+_NOTE_SEPARATOR = re.compile(r"( \| |; )")
+
+
+def without_composite_note(note: str | None) -> str | None:
+    """*note* with any composite p-value note removed, every other disclosure and its separator
+    intact: a row reissued as an exact binomial set reports the exact p-value at that level,
+    so the note explaining its composite no longer applies while its other qualifications do."""
+    if not note:
+        return None
+    pieces = _NOTE_SEPARATOR.split(note)
+    kept: list[str] = []
+    for index in range(0, len(pieces), 2):
+        if pieces[index].startswith(_COMPOSITE_PREFIXES):
+            continue
+        if kept:
+            kept.append(pieces[index - 1])
+        kept.append(pieces[index])
+    return "".join(kept) or None
+
+
+def fcr_route_tail(alternative: str, fcr_alpha: float | Fraction) -> float:
+    """The one-sided tail the count rule routes a selected row's reissue at: the tail of the
+    interval that row finally reports at the corrected level ``fcr_alpha`` -- half of it for a
+    central two-sided interval, all of it for the single open bound a directional row reports
+    (`open_bound_from_two_sided_at_target` opens the two-sided parent at that full tail)."""
+    return float(fcr_alpha) / 2.0 if alternative == "two-sided" else float(fcr_alpha)
 
 
 _REFUSALS = refusals(
@@ -143,12 +188,101 @@ def route_for_counts(
     return "asymptotic" if smallest >= dense_min_count(tail_alpha) else "finite_sample"
 
 
-def family_route_alpha(q: float, hypotheses: int) -> float | None:
-    """The smallest level a BH family of ``hypotheses`` decides a p-value at, in ``alpha``'s
-    convention: ``q / hypotheses`` rounded downward exactly as the selection threshold is, so a
-    row is never routed at a looser level than the one its p-value is read at. ``None`` for a
-    family with no hypotheses."""
-    return _conservative_divide(q, hypotheses) if hypotheses > 0 else None
+#: Counts from which every representable tail is dense: ``dense_min_count`` of the smallest
+#: positive float, past which the closed-form inversion below would evaluate the rule at a tail
+#: of zero. A contrast with such counts has a dense level of zero and is never escalated.
+_DENSE_CEILING = dense_min_count(math.nextafter(0.0, 1.0))
+
+
+def _float_bisect(lo: float, hi: float, dense: Callable[[float], bool]) -> float:
+    """The least float in ``(lo, hi]`` at which ``dense`` holds, ``dense`` being false at
+    ``lo`` and true at ``hi`` and monotone between (up to the isolated one-float steps the
+    caller settles afterwards), by bisection over the ordered bit patterns of the floats."""
+    pack = struct.Struct("<d")
+    unpack = struct.Struct("<q")
+    low, high = unpack.unpack(pack.pack(lo))[0], unpack.unpack(pack.pack(hi))[0]
+    while high - low > 1:
+        mid = (low + high) // 2
+        if dense(pack.unpack(unpack.pack(mid))[0]):
+            high = mid
+        else:
+            low = mid
+    return pack.unpack(unpack.pack(high))[0]
+
+
+def dense_level_tail(smallest: int) -> float | None:
+    """The least one-sided tail at which a contrast whose smallest per-arm success or failure
+    count is ``smallest`` is dense: the smallest float ``t`` with ``dense_min_count(t) <=
+    smallest``, so the contrast is dense at every tail from it up and at none below it
+    (``dense_min_count`` does not increase with the tail on ``(0, 1/2)``, apart from isolated
+    floats where the normal quantile's own rounding steps the wrong way, which
+    ``calibration.conversion_route.dense_level_check`` counts). The boundary is bisected over
+    the floats of ``(0, 1/2)`` against the rule itself and then settled float by float on both
+    sides, so it is the rule's own boundary, never a closed form's (the closed-form inversion
+    of the ``z ** 4`` law lands on a plateau of the rule that can be billions of floats wide at
+    large counts, and underflows to zero near the ceiling). ``None`` below the floor, where
+    no tail is dense; ``0.0`` from ``_DENSE_CEILING`` on, where every representable tail is.
+    Every tail evaluated lies in ``(0, 1/2)``, the domain on which the rule is monotone (it is
+    not above one half)."""
+    if smallest < _DENSE_FLOOR:
+        return None
+    if smallest >= _DENSE_CEILING:
+        return 0.0
+    tail = _float_bisect(
+        math.nextafter(0.0, 1.0),
+        math.nextafter(0.5, 0.0),
+        lambda t: dense_min_count(t) <= smallest,
+    )
+    while dense_min_count(tail) > smallest:
+        tail = math.nextafter(tail, 1.0)
+    while (below := math.nextafter(tail, 0.0)) > 0.0 and dense_min_count(below) <= smallest:
+        tail = below
+    assert 0.0 < tail < 0.5, "the inversion never leaves the rule's monotone domain"
+    return tail
+
+
+def dense_level(x_c: int, n_c: int, x_t: int, n_t: int, *, alternative: str) -> float | None:
+    """``U``: the smallest level, in the convention of the level a p-value is compared with
+    (``alpha`` two-sided, the single directional tail otherwise), at which the four counts are
+    dense. Twice ``dense_level_tail`` two-sided (an exact doubling, so ``alpha >= U`` is
+    ``alpha / 2 >= dense_level_tail`` float for float), the tail itself directional. ``None``
+    where no level is dense."""
+    tail = dense_level_tail(min(x_c, n_c - x_c, x_t, n_t - x_t))
+    if tail is None:
+        return None
+    return 2.0 * tail if alternative == "two-sided" else tail
+
+
+def dense_level_holds(
+    x_c: int, n_c: int, x_t: int, n_t: int, *, level: float, alternative: str
+) -> bool:
+    """Whether ``level`` is the rule's own dense level for the four counts under
+    ``alternative`` (`dense_level`), read from two evaluations of the rule rather than a fresh
+    inversion: the counts are dense at the level's tail and not one float below it; a level of
+    zero holds from ``_DENSE_CEILING`` on. A row persisted under a build whose normal quantile
+    differs by one float at its count fails this check; re-running the analysis is the remedy."""
+    smallest = min(x_c, n_c - x_c, x_t, n_t - x_t)
+    if level == 0.0:
+        return smallest >= _DENSE_CEILING
+    tail = level / 2.0 if alternative == "two-sided" else level
+    if not 0.0 < tail < 0.5 or smallest >= _DENSE_CEILING:
+        return False
+    if dense_min_count(tail) > smallest:
+        return False
+    below = math.nextafter(tail, 0.0)
+    return below == 0.0 or dense_min_count(below) > smallest
+
+
+def composite_p_value(p_delta: float, dense_level: float, escalated_p_value: float | None) -> float:
+    """The p-value a row the rule routed asymptotic reports: ``p_delta`` when that is at least
+    ``dense_level`` (the row is dense at every level that could reject it), otherwise the
+    smaller of its exact p-value and ``dense_level``, the level itself when no exact p-value
+    was read (the exact route unavailable, or its p-value unable to fall below the level)."""
+    if p_delta >= dense_level:
+        return p_delta
+    if escalated_p_value is None:
+        return dense_level
+    return min(escalated_p_value, dense_level)
 
 
 def _outside_mass(n: int, p: float, m: int) -> float:

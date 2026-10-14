@@ -955,7 +955,9 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     cluster: str | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
-    route_alpha: float | None,
+    *,
+    family_member: bool,
+    route_tail: float | None,
 ) -> _PreparedEncouragementEstimation | DecisionComputation[LiftEstimate]:
     """Resolve request policy, index arms, and delegate ITT construction."""
     if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -1014,7 +1016,8 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
             inference=inference,
             cluster=cluster,
             method_roles=resolved_method_roles,
-            route_alpha=route_alpha,
+            family_member=family_member,
+            route_tail=route_tail,
         )
         results = tuple(
             r.model_copy(
@@ -1683,15 +1686,13 @@ def _estimate_encouragement(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    route_alpha: float | None = None,
+    family_member: bool = False,
+    route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_encouragement`` with the multiplicity routing level its families pass.
-
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
-    reads an ``itt`` p-value at (see ``_estimate_lift``'s ``route_alpha``): the ``itt`` rows of
-    a conversion metric are routed at it. Only the package's own families set it; the public
-    function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
-    """
+    """``estimate_encouragement`` with the family membership and corrected-pass routing tail
+    its families pass: the ``itt`` decision rows of a conversion metric in a BH family read the
+    composite p-value, and a selected one's reissue routes at the tail it reports (see
+    ``_estimate_lift``). Only the package's own families set them."""
     _require_exclusion_for_late(design, estimands)
     if inference is not None:
         from increment.estimation.decision_types import DecisionComputation
@@ -1759,7 +1760,8 @@ def _estimate_encouragement(  # noqa: PLR0913
         inference,
         cluster,
         method_roles,
-        route_alpha,
+        family_member=family_member,
+        route_tail=route_tail,
     )
     if not isinstance(prepared, _PreparedEncouragementEstimation):
         return prepared

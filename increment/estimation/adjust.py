@@ -845,19 +845,19 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     _raise_if_empty: bool = True,
     _prior_scale_judged: bool = False,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    route_alpha: float | None = None,
     evidence: ObservationalEvidence | None = None,
+    family_member: bool = False,
+    route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_ate`` with the multiplicity routing level and moment evidence its callers pass.
+    """``estimate_ate`` with the moment evidence and family membership its callers pass.
 
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
-    reads a p-value at (see ``_estimate_lift``'s ``route_alpha``): the unadjusted conversion
-    rows of a family are routed at it. Only the package's own families set it; the public
-    function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
-
-    ``evidence`` is the moment rows a readout already reduced (and sized its family from): every
-    method, diagnostic, failed cell and FCR re-estimate of this call reads them. Absent, the call
-    reduces required metric moments once itself; clustered unadjusted inference uses unit frames.
+    ``family_member`` marks the unadjusted conversion decision rows as members of a BH family
+    and ``route_tail`` the tail a selected member's corrected pass routes their counts at (see
+    ``_estimate_lift``); only the package's own families set them. ``evidence`` is the
+    moment rows a readout already reduced (and sized its family from): every method,
+    diagnostic, failed cell and FCR re-estimate of this call reads them. Absent, the call
+    reduces required metric moments once itself; clustered unadjusted inference uses unit
+    frames.
     """
     if methods is None:
         methods = [Method(name="iptw")]
@@ -960,7 +960,8 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         preferred_direction=metric.declared_preferred_direction,
                         cluster=cluster,
                         method_roles=method_roles,
-                        route_alpha=route_alpha,
+                        family_member=family_member,
+                        route_tail=route_tail,
                     ).results
                 # The docstring promise "labelled accordingly" must be visible
                 # on the row itself, not just the method name, for a report reader.

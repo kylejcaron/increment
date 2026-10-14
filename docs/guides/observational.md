@@ -691,9 +691,8 @@ clears), whose own family-wise error rate is already bounded by construction
 regardless of how many guardrails are declared.
 
 One readout reduces each metric's whole-window moments once. That evidence
-supplies the arm gate, a primary's Bonferroni split, the family's size `m` and
-the `q / m` level conversion cells are routed at, and every estimate and FCR
-re-estimate, so every one of them sees the same arms. A warehouse-backed
+supplies the arm gate, a primary's Bonferroni split, the family's size `m`, and
+every estimate and FCR re-estimate, so every one of them sees the same arms. A warehouse-backed
 source also pins its inputs for the readout (`readout_snapshot`), so the unit
 frames IPTW, AIPW, DML and clustered unadjusted estimates read are the same
 execution as those moments, and data that lands during the readout joins
