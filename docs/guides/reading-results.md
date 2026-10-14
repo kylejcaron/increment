@@ -70,7 +70,17 @@ you need to preserve the empty view's complete scope evidence; a zero-row
 frame/table has no row on which to store attribution.
 
 An affirmative `r.discovery` is the raw selection result, not another
-significance verdict: it can differ from `r.stat_sig()`. The ordinary
+significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the
+row's own unadjusted sampling p-value; it is never divided by a multiplicity
+factor. The row's decision compares it with the level its construction decides
+at, shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a
+two-sided or open-sided interval, half of it for a closed one-sided interval
+(the display alpha is central-equivalent), `r.binomial_set.decision_alpha` for an
+exact conversion row, and the single-tail `r.abs_alpha` for an additive decision.
+A Bonferroni-split primary or a family reissue sets it below the plan's nominal
+alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
+binomial row decides with a strict `<`; a `low_reliability` breakout cell reports
+its p-value but withholds the verdict). The family verdict is `r.discovery`. The ordinary
 representation and `readout_table` place a selection qualification next to
 that result, including its procedure, exploratory/confirmatory role, retained
 family, and applicable guarantee or assumption. These disclosures do not
@@ -112,7 +122,7 @@ For a `LiftEstimate` row `r`:
 | How big is the effect? | `r.lift.value` | `r.lift` is `None` when no finite point exists. |
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
 | Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see below. |
-| Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. |
+| Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. `None` when the row has no usable sampling evidence (a failed cell, or `r.sampling_available` False, as for a percentile-winsorized primary), matching the readout frame's `stat_sig`; never read `None` as a non-rejection. `BreakoutEstimate` and `DailyLiftEstimate` rows carry the same `stat_sig()` and `p_value()`. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
@@ -276,7 +286,17 @@ each row keeps its remaining evidence, are:
   `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
-  including when both arms are constant. Check the bounds before use.
+  including when both arms are constant. Check the bounds before use. When the
+  additive interval is present and the row's null is the unshifted zero (no
+  absolute or relative margin declared), it is the row's decision: `r.p_value()`
+  is the additive test of the difference against zero under the row's
+  alternative, using the reference the interval was cut from (Welch `t` or
+  Normal, `r.abs_reference_kind`), and `r.stat_sig()` is whether that interval
+  excludes zero. Such a row takes part in its family on that evidence and, when
+  selected, has its additive interval reissued at the family level. A row with
+  no additive interval, or one that declares a relative margin (which has no
+  additive counterpart), keeps `r.p_value() == 1.0` and `r.stat_sig()` False: a
+  non-rejection, never a discovery.
 - A mixed-CUPED (`cuped_linear`) row whose relative projection cannot be
   represented: `r.relative_unavailable_reason == "relative_unrepresentable"`,
   with the exact refusal in `r.relative_error_code`. The relative point lies
@@ -341,7 +361,7 @@ missing point should stop the program rather than be handled.
 
 Two of the other causes are reproducible with small frames. A mean metric whose
 control mean is negative has no relative lift, no relative set, and a reported
-additive interval:
+additive interval that carries the row's decision:
 
 ```python
 k = 40
@@ -363,6 +383,8 @@ flat_mean = Analysis.from_unit_summary(
 assert flat_mean.lift is None and flat_mean.relative_confidence_set is None
 assert flat_mean.relative_unavailable_reason == "nonpositive_arm_mean"
 assert flat_mean.abs_lb < flat_mean.abs_diff < flat_mean.abs_ub
+assert flat_mean.stat_sig() is (flat_mean.abs_lb > 0.0)  # the additive interval decides
+assert flat_mean.p_value() <= 1.0
 ```
 
 A winsorized metric whose control arm sums to zero keeps a confidence set with a
@@ -683,7 +705,12 @@ assert "estimate" in contrasts.to_frame(backend="polars").columns
 rows. Each dict carries `lift`, `lower`, `higher`, `level`, `open_side`,
 `stat_sig`, `null_lift`, `null_abs`, `value_scale`, `estimand`, `inference`,
 `role`, and `discovery`, plus the sequential columns when the row is
-sequential. Contrast rows set `value_scale="absolute"` and
+sequential. `LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` rows
+also carry `decision_scale`, the scale the row's own verdict is made on
+(`"absolute"` for a declared absolute margin, an additive-zero decision, or a
+native absolute row; `"relative"` otherwise), and `decision_available`, whether
+a `False` verdict is a genuine non-rejection rather than the absence of a test;
+contrast rows omit both. Contrast rows set `value_scale="absolute"` and
 `group_id=treatment_group`.
 
 ```python

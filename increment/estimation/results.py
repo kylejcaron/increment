@@ -1783,6 +1783,16 @@ class LiftEstimate(_RowIdentity):
                 interval = "interval=None"
             else:
                 interval = f"interval=({self.lift.lb:+.4g}, {self.lift.ub:+.4g})"
+            decision_alpha = row_decision_alpha(self)
+            # The level this construction decides at, shown where it is not simply the
+            # interval's own level complement: a plan-allocated (Bonferroni-split) or
+            # family-reissued row, or a closed directional interval spending one tail.
+            if decision_alpha is not None and (
+                self.role is not None
+                or self.family_procedure is not None
+                or not math.isclose(decision_alpha, self.lift.alpha or decision_alpha)
+            ):
+                interval += f", decision_alpha={decision_alpha:.4g}"
         qualification = _selection_qualification(self)
         suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
         return (
@@ -1968,226 +1978,403 @@ class LiftEstimate(_RowIdentity):
             sequential_refuse("route.unsupported", "result is not a scalar mean AsympCS")
         return result
 
-    def _sampling_availability(self) -> bool | None:
-        available = getattr(self, "sampling_available", None)
-        if available is None and self.prior_shrunk:
-            from increment.estimation.readout_types import refuse_legacy_sampling
-
-            refuse_legacy_sampling(self)
-        return available
-
-    def stat_sig(self) -> bool:
+    def stat_sig(self) -> bool | None:
         """Whether this row's own interval excludes its own null, honoring
-        ``alternative`` -- the LiftEstimate-specific twin of
-        `increment.tables._stat_sig` (which delegates here), exposed as a
-        method so a caller outside `tables` (a gated extra) can read a
-        row's own interval-exclusion verdict directly. Independent of,
-        and never gated by, this row's family ``discovery`` verdict (see
+        ``alternative``; ``None`` when the row carries no usable sampling
+        evidence (a failed cell, or sampling marked unavailable). The same
+        verdict ``BreakoutEstimate``/``DailyLiftEstimate`` and the readout
+        frame report: see :func:`row_stat_sig`. Independent of, and never
+        gated by, this row's family ``discovery`` verdict (see
         `increment.estimation.family.family_discovery`): a selected
         decision row keeps ``discovery=True`` even when a binding
         nominal-alpha cap leaves ``stat_sig()`` False, and family
-        selection never demotes it to match. A ``null_abs`` row decides
-        against the additive interval (``abs_lb``/``abs_ub``) instead of
-        the relative one; missing additive endpoints report False rather
-        than falling back to the relative interval.
-
-        A ``reference_kind="binomial"`` row (point-backed or not) instead
-        tests ``r0 = 1 + null_lift`` for exclusion from the exact
-        confidence set directly via the persisted counts -- the same
-        Berger-Boos tail functions the set was inverted from, so this is
-        exact even when ``null_lift`` differs from the null the row's own
-        ``lift``/``binomial_set`` bounds were built against.
+        selection never demotes it to match.
         """
-        if self._sampling_availability() is False:
-            return False
-        if self.confidence_set is not None:
-            if self.null_abs is not None:
-                return self.confidence_set.additive.excludes(self.null_abs)
-            return self.confidence_set.relative.excludes(self.null_lift)
-        if self.sequential_result is not None:
-            return self.sequential_result.rejects()
-        if self.null_abs is not None:
-            if self.abs_lb is None or self.abs_ub is None:
-                return False
-            if self.alternative == "greater":
-                return self.abs_lb > self.null_abs
-            if self.alternative == "less":
-                return self.abs_ub < self.null_abs
-            return not (self.abs_lb <= self.null_abs <= self.abs_ub)
-        if self.relative_unavailable_reason is not None:
-            return False
-        if self.relative_confidence_set is not None:
-            return self.relative_confidence_set.contains(self.null_lift) is False
-        if self.reference_kind == "binomial":
-            bset = self.binomial_set
-            assert bset is not None
-            # ``p_two < alpha`` is ``min(p_+, p_-) < alpha / 2``: doubling is exact.
-            return bset.null_p_value(self.null_lift, self.alternative) < bset.decision_alpha
-        if self.alternative == "greater":
-            assert self.lift is not None
-            return self.lift.lb is not None and self.lift.lb > self.null_lift
-        if self.alternative == "less":
-            assert self.lift is not None
-            return self.lift.ub is not None and self.lift.ub < self.null_lift
-        assert self.lift is not None
-        return self.lift.excludes(self.null_lift)
-
-    def _null_abs_p_value(self) -> float:
-        """The additive-margin tail from ``Normal(abs_diff, abs_se)``
-        against ``null_abs`` -- split out of ``p_value`` purely to keep
-        that method's branch count readable; see its docstring for the
-        contract."""
-        if self.n_clusters is not None:
-            _raise(
-                "estimation.results.lift.p_value_cluster_robust_null_abs",
-                reference_df=self.abs_reference_df
-                if self.abs_reference_kind == "t"
-                else self.reference_df,
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.abs_se is None or self.abs_diff is None or not self.abs_se > 0.0:
-            _raise(
-                "estimation.results.lift.p_value_null_abs_missing_abs_se",
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        assert self.null_abs is not None
-        z_abs = (self.null_abs - self.abs_diff) / self.abs_se
-        abs_kind = self.abs_reference_kind or self.reference_kind
-        if abs_kind == "t":
-            if self.abs_reference_df is None:
-                _raise(
-                    "estimation.results.lift.p_value_cluster_robust_null_abs",
-                    reference_df=self.reference_df,
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            from scipy.stats import t as distribution
-
-            distribution = distribution(df=self.abs_reference_df)
-        else:
-            distribution = _norm
-        if self.alternative == "greater":
-            return float(distribution.cdf(z_abs))
-        if self.alternative == "less":
-            return float(distribution.sf(z_abs))
-        return float(2.0 * min(distribution.cdf(z_abs), distribution.sf(z_abs)))
+        return row_stat_sig(self)
 
     def p_value(self) -> float | None:
         """Return a presentation-only sampling p-value for this displayed result.
 
         Sampling evidence is computed from the persisted prior-free reference,
-        independently of any separately stored posterior.
+        independently of any separately stored posterior, and is never divided
+        by a multiplicity factor: compare it with the row's own decision alpha
+        (``lift.alpha``, halved for a directional row) or read ``discovery``
+        for the family verdict. See :func:`row_p_value`.
         """
-        if self.inference != "fixed":
-            from increment.sequential_state import sequential_refuse
+        return row_p_value(self)
 
-            sequential_refuse(
-                "route.unsupported",
-                "sequential confidence sequences do not define fixed-look sampling p-values",
-            )
-        if self._sampling_availability() is False:
-            return None
-        if self.confidence_set is not None:
-            reference = self.confidence_set.reference
-            null = self.null_abs if self.null_abs is not None else self.null_lift
-            if isinstance(reference, BootstrapReference):
-                from increment.estimation._winsor_bootstrap import bootstrap_p_value
 
-                return bootstrap_p_value(reference, null, relative=self.null_abs is None)
-            if isinstance(reference, InfluenceReference):
-                from increment.winsor import influence_p_value
+if TYPE_CHECKING:
+    from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 
-                return influence_p_value(reference, null, relative=self.null_abs is None)
-            return self.confidence_set.alpha if self.stat_sig() else 1.0
-        if self.null_abs is not None:
-            return self._null_abs_p_value()
-        if self.relative_unavailable_reason is not None:
-            return _nonpositive_arm_mean_p_value(self.relative_unavailable_reason)
-        if self.relative_confidence_set is not None:
-            return self.relative_confidence_set.p_value(self.null_lift)
-        if (quantile_p_value := self.quantile_p_value) is not None:
-            return quantile_p_value
-        if self.reference_kind == "binomial":
-            if self.null_lift <= -1.0:
-                _raise(
-                    "estimation.results.lift.p_value_null_lift_not_representable_dof",
-                    group_id=self.group_id,
-                    metric=self.metric,
-                    null_lift=self.null_lift,
-                )
-            bset = self.binomial_set
-            assert bset is not None
-            return bset.null_p_value(self.null_lift, self.alternative)
-        if self.reference_kind == "t" or self.n_clusters is not None:
-            if self.inference != "fixed":
-                self._posterior()
-            e = self.lift
-            assert e is not None, "validated: lift is None only for reference_kind='binomial'"
-            if e.log_mean is None or e.log_se is None:
-                _raise(
-                    "estimation.results.lift.liftestimate_dof_set",
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            if e.log_se <= 0:
-                _raise(
-                    "estimation.results.lift.liftestimate_log_se",
-                    e_log_se=e.log_se,
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            if self.scale == "log" and self.null_lift <= -1.0:
-                _raise(
-                    "estimation.results.lift.p_value_null_lift_not_representable_dof",
-                    group_id=self.group_id,
-                    metric=self.metric,
-                    null_lift=self.null_lift,
-                )
-            null = math.log1p(self.null_lift) if self.scale == "log" else self.null_lift
-            z = (e.log_mean - null) / e.log_se
-            reference_df = self.reference_df
-            distribution = _t if reference_df is not None else _norm
-            shapes = (reference_df,) if reference_df is not None else ()
-            if self.alternative == "greater":
-                return float(distribution.sf(z, *shapes))
-            if self.alternative == "less":
-                return float(distribution.cdf(z, *shapes))
-            return float(2.0 * distribution.sf(abs(z), *shapes))
-        e = self.lift
-        assert e is not None, "validated: lift is None only for reference_kind='binomial'"
-        if e.log_mean is None or e.log_se is None:
-            _raise(
-                "estimation.results.lift.p_value_missing_log_mean_or_se",
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.scale == "log" and self.null_lift <= -1.0:
+    type DecisionRow = LiftEstimate | BreakoutEstimate | DailyLiftEstimate
+
+
+def row_stat_sig(row: DecisionRow) -> bool | None:
+    """Whether ``row``'s own interval excludes its own null, honoring
+    ``alternative`` -- the one verdict every row type and the readout frame
+    report.
+
+    ``None`` means no usable sampling verdict: an explicit producer failure,
+    sampling marked unavailable, or a breakout cell excluded before estimation.
+    ``False`` is a genuine non-rejection; a ``low_reliability`` cell reports it
+    too, because its interval's nominal coverage is not trustworthy.
+
+    A ``null_abs`` row decides against the additive interval
+    (``abs_lb``/``abs_ub``) instead of the relative one, and that takes
+    precedence over a persisted ``binomial_set``; missing additive endpoints
+    report False rather than falling back to the relative interval. A row whose
+    relative scale is undefined because an arm mean is not positive, with no
+    declared margin, decides the same additive interval against zero (see
+    ``_additive_zero_reference``).
+
+    A ``reference_kind="binomial"`` row (point-backed or not) instead tests
+    ``r0 = 1 + null_lift`` for exclusion from the exact confidence set directly
+    via the persisted counts -- the same Berger-Boos tail functions the set was
+    inverted from, so this is exact even when ``null_lift`` differs from the
+    null the row's own ``lift``/``binomial_set`` bounds were built against.
+    """
+    if row.failure_code is not None or _sampling_availability(row) is False:
+        return None
+    if getattr(row, "low_reliability", False):
+        return False
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        if row.null_abs is not None:
+            return confidence_set.additive.excludes(row.null_abs)
+        return confidence_set.relative.excludes(row.null_lift)
+    if row.sequential_result is not None:
+        return row.sequential_result.rejects()
+    if row.null_abs is not None:
+        return _additive_excludes(row, row.null_abs)
+    if row.relative_unavailable_reason is not None:
+        return _additive_zero_reference(row) is not None and _additive_excludes(row, 0.0)
+    if row.relative_confidence_set is not None:
+        return row.relative_confidence_set.contains(row.null_lift) is False
+    if row.reference_kind == "binomial":
+        bset = row.binomial_set
+        assert bset is not None
+        # ``p_two < alpha`` is ``min(p_+, p_-) < alpha / 2``: doubling is exact.
+        return bset.null_p_value(row.null_lift, row.alternative) < bset.decision_alpha
+    lift = row.lift
+    if lift is None:
+        return None
+    if row.alternative == "greater":
+        return lift.lb is not None and lift.lb > row.null_lift
+    if row.alternative == "less":
+        return lift.ub is not None and lift.ub < row.null_lift
+    return lift.excludes(row.null_lift)
+
+
+def row_p_value(row: DecisionRow) -> float | None:
+    """``row``'s prior-free sampling p-value against its own null, or ``None``
+    when the row carries no usable sampling evidence (the cases
+    :func:`row_stat_sig` reports as ``None``). It is never divided by a
+    multiplicity factor; the row's decision alpha is what it is compared with.
+    A fixed-horizon row with an interval satisfies ``p_value() <= alpha``
+    (``<`` for an exact binomial row) exactly when ``stat_sig()``, for the
+    alpha its construction decides at (:func:`row_decision_alpha`), except on a
+    ``low_reliability`` cell, whose statistic is reported while its verdict is
+    withheld.
+    """
+    if row.inference != "fixed":
+        from increment.sequential_state import sequential_refuse
+
+        sequential_refuse(
+            "route.unsupported",
+            "sequential confidence sequences do not define fixed-look sampling p-values",
+        )
+    if row.failure_code is not None or _sampling_availability(row) is False:
+        return None
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        reference = confidence_set.reference
+        null = row.null_abs if row.null_abs is not None else row.null_lift
+        if isinstance(reference, BootstrapReference):
+            from increment.estimation._winsor_bootstrap import bootstrap_p_value
+
+            return bootstrap_p_value(reference, null, relative=row.null_abs is None)
+        if isinstance(reference, InfluenceReference):
+            from increment.winsor import influence_p_value
+
+            return influence_p_value(reference, null, relative=row.null_abs is None)
+        return confidence_set.alpha if row_stat_sig(row) else 1.0
+    if row.null_abs is not None:
+        return _null_abs_p_value(row)
+    if row.relative_unavailable_reason is not None:
+        return _relative_unavailable_p_value(row)
+    if row.relative_confidence_set is not None:
+        return row.relative_confidence_set.p_value(row.null_lift)
+    if (quantile_p_value := getattr(row, "quantile_p_value", None)) is not None:
+        return quantile_p_value
+    if row.reference_kind == "binomial":
+        if row.null_lift <= -1.0:
             _raise(
                 "estimation.results.lift.p_value_null_lift_not_representable_dof",
-                group_id=self.group_id,
-                metric=self.metric,
-                null_lift=self.null_lift,
+                group_id=row.group_id,
+                metric=row.metric,
+                null_lift=row.null_lift,
             )
-        null = math.log1p(self.null_lift) if self.scale == "log" else self.null_lift
-        z = (e.log_mean - null) / e.log_se
-        if self.alternative == "greater":
-            return float(_norm.sf(z))
-        if self.alternative == "less":
-            return float(_norm.cdf(z))
-        return float(2.0 * _norm.sf(abs(z)))
+        bset = row.binomial_set
+        assert bset is not None
+        return bset.null_p_value(row.null_lift, row.alternative)
+    e = row.lift
+    if e is None:
+        return None
+    # A breakout or daily cell carries no ``scale``: its Wald statistics are on
+    # the log scale unless the row itself is additive.
+    scale = getattr(row, "scale", None) or ("linear" if row.value_scale == "absolute" else "log")
+    clustered = row.reference_kind == "t" or getattr(row, "n_clusters", None) is not None
+    if e.log_mean is None or e.log_se is None:
+        _raise(
+            "estimation.results.lift.liftestimate_dof_set"
+            if clustered
+            else "estimation.results.lift.p_value_missing_log_mean_or_se",
+            group_id=row.group_id,
+            metric=row.metric,
+        )
+    if clustered and e.log_se <= 0:
+        _raise(
+            "estimation.results.lift.liftestimate_log_se",
+            e_log_se=e.log_se,
+            group_id=row.group_id,
+            metric=row.metric,
+        )
+    if scale == "log" and row.null_lift <= -1.0:
+        _raise(
+            "estimation.results.lift.p_value_null_lift_not_representable_dof",
+            group_id=row.group_id,
+            metric=row.metric,
+            null_lift=row.null_lift,
+        )
+    null = math.log1p(row.null_lift) if scale == "log" else row.null_lift
+    z = (e.log_mean - null) / e.log_se
+    reference_df = row.reference_df
+    distribution = _t if reference_df is not None else _norm
+    shapes = (reference_df,) if reference_df is not None else ()
+    if row.alternative == "greater":
+        return float(distribution.sf(z, *shapes))
+    if row.alternative == "less":
+        return float(distribution.cdf(z, *shapes))
+    return float(2.0 * distribution.sf(abs(z), *shapes))
 
 
-def _nonpositive_arm_mean_p_value(reason: RelativeUnavailableReason) -> float:
-    """``p_value()``'s ``relative_unavailable_reason`` special case, split
-    out to keep that method's own branching flat. Unlike unavailable
-    covariance or zero relative variance, a nonpositive arm mean's log route
-    is undefined, not indeterminate: the maximal, never-rejecting p-value
-    IS the correct answer, not a missing one."""
-    if reason == "nonpositive_arm_mean":
+def _sampling_availability(row: DecisionRow) -> bool | None:
+    """The row's persisted sampling-availability marker; a prior-bound row
+    serialized before the marker existed is refused rather than guessed."""
+    available = row.sampling_available
+    if available is None and getattr(row, "prior_shrunk", False):
+        from increment.estimation.readout_types import refuse_legacy_sampling
+
+        refuse_legacy_sampling(row)
+    return available
+
+
+def _additive_excludes(row: DecisionRow, null: float) -> bool:
+    """Whether the additive interval lies beyond ``null`` on the tested side."""
+    if row.abs_lb is None or row.abs_ub is None:
+        return False
+    if row.alternative == "greater":
+        return row.abs_lb > null
+    if row.alternative == "less":
+        return row.abs_ub < null
+    return not (row.abs_lb <= null <= row.abs_ub)
+
+
+def _additive_zero_reference(row: DecisionRow) -> tuple[float, float, float | None] | None:
+    """``(abs_diff, abs_se, df)`` when the row's decision is the additive
+    difference tested against zero: the relative scale is undefined because an
+    arm mean is not positive, the row's declared null is the unshifted zero on
+    both scales (no absolute margin, no relative margin -- a declared relative
+    margin has no additive counterpart, so such a row stays a conservative
+    non-rejection), and the additive sidecar carries an interval with its own
+    reference. The reference is the one the interval was cut from -- Welch or
+    cluster ``t`` at ``abs_reference_df``, Normal otherwise -- so ``p_value()``
+    and ``stat_sig()`` read the same construction. ``None`` leaves the row a
+    conservative non-rejection."""
+    if (
+        row.relative_unavailable_reason != "nonpositive_arm_mean"
+        or row.null_abs is not None
+        or row.null_lift != 0.0
+        or row.abs_diff is None
+        or row.abs_se is None
+        or not row.abs_se > 0.0
+        or row.abs_lb is None
+        or row.abs_ub is None
+        or row.abs_reference_kind is None
+    ):
+        return None
+    return row.abs_diff, row.abs_se, row.abs_reference_df
+
+
+#: Sequential bound statuses that carry a usable decision: a non-rejection under
+#: one of these is a genuine non-rejection. ``unresolved``, ``abstained`` and
+#: ``unavailable`` bounds decide nothing.
+DECIDABLE_SEQUENTIAL_STATUSES = frozenset(
+    {"empty", "full-domain", "interval", "full", "ray", "bounded", "disconnected"}
+)
+
+
+def _additive_sidecar_decides(row: DecisionRow) -> bool:
+    """Whether the row's decision reads the additive sidecar (``abs_*``): a declared
+    absolute margin or the automatic additive-zero decision. A native absolute row
+    (``value_scale="absolute"``) is absolute too, but its ``lift`` and ``null_lift``
+    already live on that scale."""
+    return row.null_abs is not None or _additive_zero_reference(row) is not None
+
+
+def row_decision_scale(row: DecisionRow) -> Literal["relative", "absolute"]:
+    """The scale ``row``'s own decision is made on: ``"absolute"`` for a declared
+    absolute margin, an automatic additive-zero decision, or a native absolute row
+    whose ``lift``/``null_lift`` are in the metric's own units; ``"relative"``
+    otherwise. The readout adapter persists it as ``decision_scale`` so table
+    and dashboard consumers label the tested null without re-deriving the rule."""
+    if row.value_scale == "absolute" or _additive_sidecar_decides(row):
+        return "absolute"
+    return "relative"
+
+
+def row_decision_available(row: DecisionRow, *, verdict: bool | None = None) -> bool:
+    """Whether ``row`` carries a usable decision construction, so that a
+    ``False`` verdict from :func:`row_stat_sig` is a genuine non-rejection
+    rather than the absence of a test. Persisted by the readout adapter as
+    ``decision_available``."""
+    verdict = row_stat_sig(row) if verdict is None else verdict
+    if verdict is None or getattr(row, "low_reliability", False):
+        return False
+    if verdict:
+        return True
+    sequential = row.sequential_result
+    if sequential is not None:
+        return getattr(sequential.bounds, "status", None) in DECIDABLE_SEQUENTIAL_STATUSES
+    absolute = _additive_sidecar_decides(row)
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        interval = (
+            confidence_set.additive
+            if absolute or row.value_scale == "absolute"
+            else confidence_set.relative
+        )
+        return all(endpoint.status != "undefined" for endpoint in (interval.lower, interval.upper))
+    if absolute:
+        lower, upper = row.abs_lb is not None, row.abs_ub is not None
+        return (
+            (lower and upper)
+            or (lower and row.alternative == "greater")
+            or (upper and row.alternative == "less")
+        )
+    if row.relative_confidence_set is not None:
+        return row.relative_confidence_set.geometry not in ("empty", "unavailable")
+    if row.binomial_set is not None:
+        return True
+    lift = row.lift
+    if lift is None:
+        return False
+    lower, upper = lift.lb is not None, lift.ub is not None
+    return (
+        (lower and upper)
+        or (lower and lift.open_side == "upper")
+        or (upper and lift.open_side == "lower")
+    )
+
+
+def row_decision_alpha(row: DecisionRow) -> float | None:
+    """The level ``row``'s own fixed-horizon construction decides at: the single
+    tail a directional test spends, so ``p_value() <= row_decision_alpha(row)``
+    (``<`` for an exact binomial row) agrees with ``stat_sig()``. An additive
+    decision reads ``abs_alpha``; an exact binomial row its set's
+    ``decision_alpha``; a joint set its inversion alpha; a scalar interval its
+    ``lift.alpha``, halved for a closed directional interval (the display alpha
+    is central-equivalent) and taken whole for an open directional bound, which
+    a family reissue already cut at the full tail. ``None`` without a fixed
+    construction."""
+    if row.inference != "fixed":
+        return None
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        return confidence_set.alpha
+    if _additive_sidecar_decides(row):
+        abs_alpha = row.abs_alpha
+        if abs_alpha is None:
+            return None
+        return abs_alpha if row.alternative == "two-sided" else abs_alpha / 2.0
+    if row.relative_unavailable_reason is not None:
+        return None
+    if row.relative_confidence_set is not None:
+        return row.relative_confidence_set.alpha
+    if row.binomial_set is not None:
+        return row.binomial_set.decision_alpha
+    lift = row.lift
+    if lift is None or lift.alpha is None:
+        return None
+    if row.alternative == "two-sided" or lift.open_side is not None:
+        return lift.alpha
+    return lift.alpha / 2.0
+
+
+def _null_abs_p_value(row: DecisionRow) -> float:
+    """The additive-margin tail from ``Normal(abs_diff, abs_se)`` against
+    ``null_abs``; a t or cluster-robust reference is refused here (the
+    decision bundle computes that margin test with its own degrees of
+    freedom)."""
+    if (
+        row.reference_kind == "t"
+        or row.abs_reference_kind == "t"
+        or getattr(row, "n_clusters", None) is not None
+    ):
+        _raise(
+            "estimation.results.lift.p_value_cluster_robust_null_abs",
+            reference_df=row.abs_reference_df
+            if row.abs_reference_kind == "t"
+            else row.reference_df,
+            group_id=row.group_id,
+            metric=row.metric,
+        )
+    if row.abs_se is None or row.abs_diff is None:
+        _raise(
+            "estimation.results.lift.p_value_null_abs_missing_abs_se",
+            group_id=row.group_id,
+            metric=row.metric,
+        )
+    assert row.null_abs is not None
+    z_abs = (row.null_abs - row.abs_diff) / row.abs_se
+    if row.alternative == "greater":
+        return float(_norm.cdf(z_abs))
+    if row.alternative == "less":
+        return float(_norm.sf(z_abs))
+    return float(2.0 * min(_norm.cdf(z_abs), _norm.sf(z_abs)))
+
+
+def _relative_unavailable_p_value(row: DecisionRow) -> float:
+    """``p_value()`` for a row with no relative interval. A nonpositive arm
+    mean leaves the log route undefined, not indeterminate: with an additive
+    reference the row is decided on that scale against zero, and without one
+    the maximal, never-rejecting p-value is the correct answer. Unavailable
+    joint covariance and zero relative variance remain indeterminate."""
+    reason = row.relative_unavailable_reason
+    if reason != "nonpositive_arm_mean":
+        _raise("estimation.results.joint.unavailable", reason=reason)
+    reference = _additive_zero_reference(row)
+    if reference is None:
         return 1.0
-    _raise("estimation.results.joint.unavailable", reason=reason)
+    abs_diff, abs_se, df = reference
+    return _additive_tail_p_value(abs_diff, abs_se, 0.0, row.alternative, df)
+
+
+def _additive_tail_p_value(
+    abs_diff: float, abs_se: float, null: float, alternative: str, df: float | None
+) -> float:
+    """The tail of ``abs_diff`` against ``null`` under the additive reference the
+    interval was cut from: Student-t at ``df`` when given, Normal otherwise.
+    Directional alternatives use one tail over the composite null."""
+    z = (abs_diff - null) / abs_se
+    distribution = _t if df is not None else _norm
+    shapes = (df,) if df is not None else ()
+    if alternative == "greater":
+        return float(distribution.sf(z, *shapes))
+    if alternative == "less":
+        return float(distribution.cdf(z, *shapes))
+    return float(2.0 * distribution.sf(abs(z), *shapes))
 
 
 def _fcr_alpha_for(alternative: str, fcr_alpha: float | Fraction) -> float:

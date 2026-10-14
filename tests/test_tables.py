@@ -12,7 +12,7 @@ import re
 import warnings
 from datetime import date
 from fractions import Fraction
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import pytest
 
@@ -529,9 +529,8 @@ class TestLiftEstimateToRowBinomialSetOnly:
         assert estimates_to_readout([est])[0]["stat_sig"] is False
 
     def test_breakout_estimate_set_only_row_matches_the_liftestimate_verdict(self):
-        """A BreakoutEstimate has no stat_sig() method of its own - the
-        table adapter must derive the same binomial-aware verdict from
-        its persisted binomial_set directly."""
+        """The table adapter reports the breakout cell's own binomial-aware verdict,
+        derived from its persisted binomial_set, and it equals the LiftEstimate's."""
         lift_est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
         breakout_est = BreakoutEstimate(
             metric=lift_est.metric,
@@ -546,6 +545,7 @@ class TestLiftEstimateToRowBinomialSetOnly:
         )
         row = estimates_to_readout([breakout_est])[0]
         assert row["stat_sig"] is True
+        assert row["stat_sig"] is breakout_est.stat_sig() is lift_est.stat_sig()
         assert row["lower"] == pytest.approx(lift_est.binomial_set.lower)
         assert row["higher"] == lift_est.binomial_set.upper
         assert row["level"] == pytest.approx(lift_est.binomial_set.level)
@@ -633,7 +633,94 @@ class TestNullAbsPrecedesBinomialSet:
             reference_kind=lift_est.reference_kind,
             sampling_available=True,
         )
+        assert daily_est.stat_sig() is lift_est.stat_sig()
         assert estimates_to_readout([daily_est])[0]["stat_sig"] is lift_est.stat_sig()
+
+
+def _nonpositive_cuped_breakout_segment(*, mean_shift: float) -> BreakoutEstimate:
+    """One CUPED-adjusted breakout segment whose adjusted arm means are negative, cut
+    from a real ``estimate_lift`` row; ``mean_shift`` sets the treatment contrast."""
+    from increment.estimation.armstats import ArmStats
+    from increment.estimation.engine import Method, estimate_lift
+    from increment.semantics.models import MeanMetric
+    from tests.estimation.test_engine import _summary_df
+
+    n, var_x, var_y = 1000, 1.0, 25.0
+    cov_xy = 0.5 * (var_x * var_y) ** 0.5
+
+    def arm(mean_y: float, mean_x: float, group_id: str) -> ArmStats:
+        sum_y, sum_x = n * mean_y, n * mean_x
+        return ArmStats.from_raw_sums(
+            study_id="e",
+            metric="rev",
+            group_id=group_id,
+            n=n,
+            sum_y=sum_y,
+            sum_y2=var_y * (n - 1) + sum_y**2 / n,
+            sum_x=sum_x,
+            sum_x2=var_x * (n - 1) + sum_x**2 / n,
+            sum_xy=cov_xy * (n - 1) + sum_x * sum_y / n,
+        )
+
+    (row,) = estimate_lift(
+        [MeanMetric(name="rev", entity="user", fact="rev")],
+        _summary_df([arm(-2.0, 0.0, "control"), arm(-2.0 + mean_shift, 0.1, "treatment")]),
+        control_group="control",
+        methods=[Method(name="cuped", variance_reduction="cuped")],
+    ).results
+    assert row.relative_unavailable_reason == "nonpositive_arm_mean" and row.null_abs is None
+    from increment.breakout.estimates import _breakout_estimate_row
+
+    return _breakout_estimate_row(
+        row,
+        dimension="country",
+        dimension_value="US",
+        source=None,
+        n_treat=1000,
+        n_control=1000,
+        low_reliability=False,
+    )
+
+
+def _rendered_column(table: Any, label: str) -> list[str]:
+    """The per-row display strings behind the table column labelled ``label``."""
+    (column,) = [c for c in table.columns if getattr(c, "label", None) == label]
+    return list(table.data[column.column].tolist())
+
+
+class TestAdditiveZeroDecisionsThroughTheAdapter:
+    """A nonpositive-mean cell with no margin decides on its additive interval; the
+    adapter and its consumers read that decision, its scale and its availability."""
+
+    def test_significant_cuped_segment_reports_its_verdict(self):
+        cell = _nonpositive_cuped_breakout_segment(mean_shift=1.0)
+        assert cell.stat_sig() is True
+        (row,) = estimates_to_readout([cell])
+        assert row["stat_sig"] is True
+        assert row["decision_scale"] == "absolute"
+        assert row["decision_available"] is True
+        pytest.importorskip("coeftable")
+        assert _rendered_column(readout_table([row]), "Significant") == ["Yes"]
+
+    def test_non_rejecting_cuped_segment_is_an_available_non_rejection(self):
+        cell = _nonpositive_cuped_breakout_segment(mean_shift=0.05)
+        assert cell.stat_sig() is False
+        (row,) = estimates_to_readout([cell])
+        assert row["stat_sig"] is False
+        assert row["decision_scale"] == "absolute"
+        assert row["decision_available"] is True
+        pytest.importorskip("coeftable")
+        assert _rendered_column(readout_table([row]), "Significant") == ["No"]
+
+    def test_unavailable_verdict_renders_as_unavailable(self):
+        est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200).model_copy(
+            update={"sampling_available": False}
+        )
+        assert est.stat_sig() is None
+        (row,) = estimates_to_readout([est])
+        assert row["stat_sig"] is None and row["decision_available"] is False
+        pytest.importorskip("coeftable")
+        assert _rendered_column(readout_table([row]), "Significant") == ["Unavailable"]
 
 
 def test_estimates_to_readout_preserves_order_and_count():

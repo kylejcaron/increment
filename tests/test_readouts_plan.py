@@ -2666,3 +2666,55 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
     finally:
         prior_bound.close()
         prior_free.close()
+
+
+def test_nonpositive_mean_secondary_is_selected_on_its_additive_evidence():
+    """A secondary whose arm means are both negative has no relative lift, but its
+    additive Welch contrast is real evidence: beside two null secondaries it is the
+    family's one discovery, stays in ``m``, and its additive interval is reissued at
+    the family's FCR level rather than kept at nominal."""
+    from tests.analysis_factory import lift_rows
+    from tests.estimation.test_results import _nonpositive_mean_unit_summary
+
+    frame = _nonpositive_mean_unit_summary()
+    noise = np.random.default_rng(22).normal(10.0, 2.0, (len(frame), 2))
+    frame = frame.assign(null_a=noise[:, 0], null_b=noise[:, 1])
+    q = 0.1
+    results = lift_rows(
+        Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"delta": "mean", "null_a": "mean", "null_b": "mean"},
+            plan=AnalysisPlan(q=q, secondaries=["delta", "null_a", "null_b"]),
+        ).run()
+    )
+    by_metric = {row.metric: row for row in results}
+    assert set(by_metric) == {"delta", "null_a", "null_b"}
+    delta = by_metric["delta"]
+    assert delta.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert delta.null_abs is None
+    assert delta.discovery is True
+    assert [by_metric[name].discovery for name in ("null_a", "null_b")] == [False, False]
+    assert [row.family_size for row in results] == [3, 3, 3]
+    assert delta.family_threshold == pytest.approx(q / 3)
+    # FCR reissue: the selected additive interval is cut at min(R*q/m, alpha).
+    assert delta.abs_alpha == pytest.approx(min(q / 3, 0.05))
+    (nominal,) = lift_rows(
+        Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"delta": "mean"},
+        ).run()
+    )
+    assert delta.abs_diff == nominal.abs_diff and delta.abs_se == nominal.abs_se
+    assert delta.abs_lb is not None and nominal.abs_lb is not None
+    assert delta.abs_ub is not None and nominal.abs_ub is not None
+    assert delta.abs_lb < nominal.abs_lb and delta.abs_ub > nominal.abs_ub
+    p_value = delta.p_value()
+    assert p_value is not None
+    assert p_value == pytest.approx(nominal.p_value(), rel=1e-12)
+    assert p_value < q / 3
