@@ -9,15 +9,12 @@ from __future__ import annotations
 import datetime as dt
 import statistics
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from html import escape
 from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment.tables import (
-    _binomial_qualification_disclosure,
-    _decision_available,
-    _format_confidence_set,
-)
+from increment.tables import _decision_available, _format_confidence_set
 
 if TYPE_CHECKING:
     from increment.dashboard._data import DashboardSnapshot
@@ -191,9 +188,6 @@ def complete_confidence_set_text(row: Mapping[str, Any]) -> str | None:
         scale=str(row.get("value_scale", "relative")),
         lift=row.get("lift"),
     )
-    qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
-    if text and qualification:
-        text = f"{text}; {qualification}"
     return esc(text) if text else None
 
 
@@ -221,10 +215,7 @@ def headline_interval(row: Mapping[str, Any]) -> str:
     lower, higher = endpoints
     opening = "(" if lower == -inf else "["
     closing = ")" if higher == inf else "]"
-    return (
-        f"{opening}{headline_endpoint(lower, row)}, "
-        f"{headline_endpoint(higher, row)}{closing}{_interval_qualification(row)}"
-    )
+    return f"{opening}{headline_endpoint(lower, row)}, {headline_endpoint(higher, row)}{closing}"
 
 
 def primary_tone(row: Mapping[str, Any]) -> str:
@@ -238,6 +229,9 @@ def primary_tone(row: Mapping[str, Any]) -> str:
     null_abs = row.get("null_abs")
     if not is_missing(null_abs):
         null, lower, higher = null_abs, row.get("abs_lb"), row.get("abs_ub")
+    elif decision_scale(row) == "absolute" and row.get("value_scale") != "absolute":
+        # The automatic additive-zero decision reads the additive sidecar.
+        null, lower, higher = 0.0, row.get("abs_lb"), row.get("abs_ub")
     else:
         null = row.get("null_lift")
         null = 0.0 if null is None else null
@@ -286,26 +280,54 @@ def interval_html(row: Mapping[str, Any]) -> str:
     if endpoints is None:
         return missing_html("no interval available")
     lower, higher = endpoints
-    return (
-        f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
-        f"{_interval_qualification(row)}"
-    )
+    return f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
 
 
-def _interval_qualification(row: Mapping[str, Any]) -> str:
-    """Keep numerical qualifications beside endpoints shown from the ordinary interval."""
-    qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
-    return f"; {esc(qualification)}" if qualification else ""
+def decision_scale(row: Mapping[str, Any]) -> str:
+    """The scale the row's own decision is made on, as the readout adapter persisted it
+    (``decision_scale`` from ``increment.estimation.results.row_decision_scale``); a row
+    without the column decides on its declared absolute margin when one is set."""
+    scale = row.get("decision_scale")
+    if not is_missing(scale):
+        return str(scale)
+    return "relative" if is_missing(row.get("null_abs")) else "absolute"
 
 
 def null_text(row: Mapping[str, Any]) -> str:
-    null_abs = row.get("null_abs")
-    if null_abs is not None:
-        return f"{null_abs:+,.4g} absolute"
+    """The tested null on the row's own decision scale."""
+    if decision_scale(row) == "absolute":
+        null_abs = row.get("null_abs")
+        if not is_missing(null_abs):
+            null = null_abs
+        elif row.get("value_scale") == "absolute":
+            # A native absolute row's null_lift is already in the metric's units.
+            null = row.get("null_lift") or 0.0
+        else:
+            null = 0.0
+        return f"{null:+,.4g} absolute"
     null_lift = row.get("null_lift")
     if null_lift is None:
         return missing_html("no null boundary reported")
     return f"{float(null_lift):+.1%} relative"
+
+
+@dataclass(frozen=True)
+class ResultOutcome:
+    """Semantic row verdict for dashboard consumers."""
+
+    verdict: Literal["reject", "not_reject", "unavailable"]
+    unavailable_reason: str | None = None
+
+
+def result_outcome(row: Mapping[str, Any]) -> ResultOutcome:
+    """Read the row's persisted verdict without inferring it from interval geometry."""
+    significant = row.get("stat_sig")
+    if significant is True:
+        return ResultOutcome("reject")
+    if significant is False and _decision_available(row):
+        return ResultOutcome("not_reject")
+    reason = row.get("failure_code") or row.get("relative_unavailable_reason")
+    return ResultOutcome("unavailable", str(reason) if reason is not None else None)
 
 
 def outcome_label(row: Mapping[str, Any]) -> str:

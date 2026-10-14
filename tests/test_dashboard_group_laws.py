@@ -77,14 +77,22 @@ def test_fixed_snapshot_keeps_old_rows_headline_and_csv_after_live_correction():
         ] == pytest.approx([4.5, 13])
 
 
+@pytest.mark.filterwarnings(
+    "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning"
+)
 def test_native_cuped_means_are_raw_and_adjusted_headline_matches_frame(tmp_path):
     from increment.dashboard import DashboardConfig, prepare_dashboard
+    from increment.errors import IncrementWarning
     from tests.warehouse_cuped_cases import frame_fixed
+    from tests.warning_codes import warning_codes
 
     with _cuped_native(tmp_path) as (analysis, units):
-        snapshot = prepare_dashboard(
-            analysis, config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1})
-        )
+        with pytest.warns(IncrementWarning) as captured:
+            snapshot = prepare_dashboard(
+                analysis,
+                config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
+            )
+        assert warning_codes(captured) == ["analysis.cuped.covariate_unused"]
         unadjusted, adjusted = frame_fixed(units, "revenue")
         expected = {
             arm: sum(unit["revenue"] for unit in units if unit["variant"] == arm) / 12

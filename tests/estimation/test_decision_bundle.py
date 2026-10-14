@@ -316,7 +316,7 @@ def test_welch_only_absolute_margin_refuses_sampling_pvalue_and_withholds_poster
         assert exc_info.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
         assert exc_info.value.context["reference_df"] == estimate.reference_df
         # Posterior access follows posterior_available; see
-        # docs/guides/priors-and-decisions.md:142-145.
+        # docs/guides/priors-and-decisions.md:81-83.
         assert estimate.prob_favorable() is None
         bundle = _lift_decision_bundle([estimate], inference=None)
         assert _key() not in bundle.evidence

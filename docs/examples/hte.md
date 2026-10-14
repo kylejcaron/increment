@@ -1,8 +1,8 @@
-# Heterogeneous Effects
+# Heterogeneous effects
 
-This notebook fits a CATE model on simulated data with a known per-unit
-effect. On a second cohort with no heterogeneity, the in-sample top group
-overstates the truth, while held-out re-estimation recovers it and
+Fit a conditional average treatment effect (CATE) model on simulated data with
+known effects. In a second cohort with no true heterogeneity, the in-sample top
+group overstates the effect; held-out re-estimation corrects it, and
 `targeting_rule` refuses to target.
 
 [Open the notebook in a full browser tab](hte.html)
@@ -11,4 +11,8 @@ overstates the truth, while held-out re-estimation recovers it and
 
 ## References and assumptions
 
-The heterogeneous-treatment-effect discussion follows Chernozhukov et al., [“Generic Machine Learning Inference on Heterogeneous Treatment Effects in Randomized Experiments”](https://www.nber.org/papers/w24678). Segment effects and targeting decisions require separate validation on held-out or otherwise independent data; a credible overall average effect does not validate a subgroup ranking or targeting rule.
+The discussion follows Chernozhukov et al.,
+[“Generic Machine Learning Inference on Heterogeneous Treatment Effects in Randomized Experiments”](https://www.nber.org/papers/w24678).
+Validate segment effects and targeting decisions on held-out or independent
+data. A credible overall average effect does not validate subgroup rankings or
+a targeting rule.

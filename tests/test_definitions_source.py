@@ -302,16 +302,20 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
 
 @pytest.mark.slow
 def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_analyses):
+    from increment.estimation.engine import Method
     from increment.estimation.inference import Normal
 
     native, adopted = definitions_and_adopted_analyses
     replacement = Normal(mu=0.3, sigma=0.001)
     intervals = []
     for analysis in (native, adopted):
-        inherited = analysis.run(metrics=["d7_retention"])[0]
-        cleared = analysis.run(metrics=["d7_retention"], prior=None)[0]
-        replaced = analysis.run(metrics=["d7_retention"], prior=replacement)[0]
-        unchanged = analysis.run(metrics=["d7_retention"])[0]
+        unadjusted = Method(name="unadjusted")
+        inherited = analysis.run(metrics=["d7_retention"], decision_method=unadjusted)[0]
+        cleared = analysis.run(metrics=["d7_retention"], prior=None, decision_method=unadjusted)[0]
+        replaced = analysis.run(
+            metrics=["d7_retention"], prior=replacement, decision_method=unadjusted
+        )[0]
+        unchanged = analysis.run(metrics=["d7_retention"], decision_method=unadjusted)[0]
         values = [row.posterior_estimate for row in (inherited, cleared, replaced, unchanged)]
         assert values[0] == pytest.approx(values[3])
         assert values[0] != values[1]

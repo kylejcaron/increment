@@ -62,7 +62,7 @@ from increment.errors import (
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
-from increment.estimation.conversion_route import family_route_alpha
+from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
@@ -72,7 +72,6 @@ from increment.estimation.engine import (
     _cuped_linear_unavailable_row,
     _estimate_lift,
     _validate_methods,
-    estimate_lift,
     reintervalize_cuped_decision,
     reject_unbounded_retention,
 )
@@ -87,6 +86,7 @@ from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.readout_types import register_collection_types
 from increment.estimation.results import (
     BinomialConfidenceSet,
+    DeltaConversionEvidence,
     Estimate,
     LiftEstimate,
     RelativeConfidenceSet,
@@ -96,9 +96,14 @@ from increment.estimation.results import (
     _RowIdentity,
     _sequential_display_parts,
     _validate_absolute_reference_fields,
+    _validate_delta_evidence,
     _validate_joint_relative_row,
     _validate_reference_fields,
+    carry_nominal_evidence,
+    conversion_route_label,
     open_bound_from_two_sided_at_target,
+    row_p_value,
+    row_stat_sig,
 )
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
@@ -172,6 +177,11 @@ _REFUSALS = refusals(
         "breakout.run_daily_lift_dimension_found": "run_daily_lift: dimension column {dimension!r} not found in summary. Available columns: {columns}",
         "breakout.run_daily_lift_metric_declared": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {declared}",
         "breakout.run_daily_lift_plan_missing_procedures": "run_daily_lift: compiled plan is missing procedure(s) for {missing_procedures!r}",
+        "results.frame.summary_unavailable": RefusalSpec(
+            "results.frame.summary_unavailable",
+            InvalidRequestError,
+            template="to_frame(columns='summary') is not available for {model}",
+        ),
     },
 )
 
@@ -355,6 +365,7 @@ ExclusionReason = Literal[
     "no_control_arm",
     "no_treatment_arm",
     "nonpositive_mean",
+    "missing_metric_observations",
     "zero_variance",
     "extreme_ratio",
     "estimation_failed",
@@ -537,6 +548,7 @@ _FAMILY_VIEW_FIELDS = (
     "relative_confidence_set",
     "relative_unavailable_reason",
     "binomial_set",
+    "delta_evidence",
     "estimand",
     "value_scale",
     "note",
@@ -650,6 +662,11 @@ class BreakoutEstimate(_RowIdentity):
     # per `binomial_set.point_available`); see `_lift_or_excluded`.
     sequential_result: SequentialResult | None = None
     binomial_set: BinomialConfidenceSet | None = None
+    # The count evidence of every conversion row the count rule routed to the delta method
+    # (see LiftEstimate.delta_evidence); None for every other row.
+    delta_evidence: DeltaConversionEvidence | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     estimand: str = "itt"
     value_scale: ValueScale = "relative"  # mirrors LiftEstimate.value_scale
     note: str | None = None  # guard fallbacks / suppression reasons / caveats
@@ -767,6 +784,7 @@ class BreakoutEstimate(_RowIdentity):
             self,
             refusal_code="breakout.breakout.exactly_one_lift",
         )
+        _validate_delta_evidence(self)
         return self
 
     def require_lift(self) -> Estimate:
@@ -774,6 +792,17 @@ class BreakoutEstimate(_RowIdentity):
         if self.lift is None:
             _refuse("breakout.breakout.point_unavailable")
         return self.lift
+
+    def stat_sig(self) -> bool | None:
+        """Whether this cell's own interval excludes its own null; ``None`` for an
+        excluded or failed cell, ``False`` for a ``low_reliability`` cell. The
+        same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
+        return row_stat_sig(self)
+
+    def p_value(self) -> float | None:
+        """This cell's prior-free sampling p-value against its own null, or
+        ``None`` for an excluded or failed cell; see ``LiftEstimate.p_value()``."""
+        return row_p_value(self)
 
     def _family_view(self) -> LiftEstimate | None:
         """The ``LiftEstimate`` this cell was cut from, which exploratory-family evidence and
@@ -880,6 +909,9 @@ class BreakoutEstimate(_RowIdentity):
             f"value={value} ({self.value_scale})",
             interval,
         ]
+        route = conversion_route_label(self)
+        if route is not None:
+            details.append(f"route={route!r}")
         if self.relative_unavailable_reason is not None:
             details.append(f"relative_unavailable_reason={self.relative_unavailable_reason!r}")
         if self.abs_diff is not None:
@@ -991,6 +1023,7 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "abs_reference_kind": source.abs_reference_kind,
         "abs_reference_df": source.abs_reference_df,
         "abs_alpha": source.abs_alpha,
+        "delta_evidence": source.delta_evidence,
     }
     copied.update({name: getattr(source, name) for name in _RowIdentity.model_fields})
     copied["analysis_population"] = source.analysis_population
@@ -1012,6 +1045,7 @@ class EstimateList[M: BaseModel](list[M]):
     """
 
     _model: ClassVar[type[BaseModel]]
+    _summary_columns: ClassVar[tuple[str, ...] | None] = None
 
     def __init__(
         self,
@@ -1085,12 +1119,26 @@ class EstimateList[M: BaseModel](list[M]):
 
     __str__ = __repr__
 
-    def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
+    def to_frame(
+        self,
+        backend: Backend = "pandas",
+        columns: Sequence[str] | Literal["summary"] | None = None,
+    ) -> IntoDataFrame:
         """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
 
         from increment.breakout.projection import to_frame
 
-        native = to_frame(self, model=self._model, backend=backend)
+        selected_columns: Sequence[str] | None
+        if columns == "summary":
+            selected_columns = self._summary_columns
+            if selected_columns is None:
+                _refuse("results.frame.summary_unavailable", model=self._model.__name__)
+        else:
+            selected_columns = columns
+
+        native = to_frame(self, model=self._model, backend=backend, columns=selected_columns)
+        if selected_columns is not None:
+            selected_columns = nw.from_native(native, eager_only=True).columns
         if not self._has_readout_cells():
             frame = nw.from_native(native, eager_only=True).with_columns(
                 nw.lit(None if self.metadata is None else self.metadata.partial).alias(
@@ -1120,10 +1168,10 @@ class EstimateList[M: BaseModel](list[M]):
             # Without scope metadata the row's own stored availability is the
             # authority: an unknown value on a prior-bound row stays unknown
             # rather than being inferred from the presence of a point.
-            for row, columns in zip(self, evidence, strict=True):
+            for row, row_evidence in zip(self, evidence, strict=True):
                 stored = getattr(row, "sampling_available", None)
                 if stored is not None or getattr(row, "prior_shrunk", False):
-                    columns["sampling_available"] = stored
+                    row_evidence["sampling_available"] = stored
         if evidence:
             evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
         elif interpretation.groups and interpretation.groups[0].source_cells:
@@ -1196,6 +1244,11 @@ class EstimateList[M: BaseModel](list[M]):
                 [None if self.metadata is None else self.metadata.partial] * len(native),
                 dtype="boolean",
             )
+        if selected_columns is not None:
+            selected = [*selected_columns, "view_partial"]
+            if backend == "pandas":
+                return native.loc[:, selected]
+            return nw.from_native(native, eager_only=True).select(selected).to_native()
         return native
 
     @overload
@@ -1361,6 +1414,11 @@ class DailyLiftEstimate(_RowIdentity):
     # `binomial_set.point_available`); see `_lift_or_unavailable`.
     sequential_result: SequentialResult | None = None
     binomial_set: BinomialConfidenceSet | None = None
+    # The count evidence of every conversion row the count rule routed to the delta method
+    # (see LiftEstimate.delta_evidence); None for every other row.
+    delta_evidence: DeltaConversionEvidence | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     # Sufficient counts/method for every exact-binomial-estimated row
     # (point-backed or not); None for every other row.
     estimand: str = "itt"  # "itt" | "compliance" | "late" (mirrors LiftEstimate)
@@ -1519,6 +1577,7 @@ class DailyLiftEstimate(_RowIdentity):
             self,
             refusal_code="breakout.daily_lift.exactly_one_unavailable",
         )
+        _validate_delta_evidence(self)
         return self
 
     def require_lift(self) -> Estimate:
@@ -1526,6 +1585,31 @@ class DailyLiftEstimate(_RowIdentity):
         if self.lift is None:
             _refuse("breakout.daily_lift.point_unavailable")
         return self.lift
+
+    def _require_sampling_marker(self) -> None:
+        """A live fixed-horizon day cell that never recorded whether its sampling
+        reference was persisted is refused rather than guessed."""
+        if (
+            self.failure_code is None
+            and self.sequential_result is None
+            and self.sampling_available is None
+        ):
+            from increment.estimation.readout_types import refuse_legacy_sampling
+
+            refuse_legacy_sampling(self)
+
+    def stat_sig(self) -> bool | None:
+        """Whether this day's own interval excludes its own null; ``None`` for a
+        cell with no usable sampling evidence. The same verdict
+        ``LiftEstimate.stat_sig()`` and the readout frame report."""
+        self._require_sampling_marker()
+        return row_stat_sig(self)
+
+    def p_value(self) -> float | None:
+        """This day's prior-free sampling p-value against its own null, or
+        ``None`` with no usable sampling evidence; see ``LiftEstimate.p_value()``."""
+        self._require_sampling_marker()
+        return row_p_value(self)
 
     def _interval_display_parts(self) -> list[str]:
         from increment._display import format_interval
@@ -1594,6 +1678,9 @@ class DailyLiftEstimate(_RowIdentity):
             parts.append("estimate=unavailable")
 
         parts.extend(self._interval_display_parts())
+        route = conversion_route_label(self)
+        if route is not None:
+            parts.append(f"route={route!r}")
 
         if self.unavailable is not None:
             parts.append(f"unavailable={self.unavailable!r}")
@@ -1655,6 +1742,23 @@ class LiftEstimates(EstimateList[LiftEstimate]):
     analysis.Analysis.run`'s return type."""
 
     _model = LiftEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "failure_code",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+    )
 
 
 class BreakoutEstimates(EstimateList[BreakoutEstimate]):
@@ -1663,6 +1767,26 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
     return type."""
 
     _model = BreakoutEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "dimension",
+        "dimension_value",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+        "excluded",
+        "failure_code",
+    )
 
 
 class DailyMetricValues(EstimateList[DailyMetricValue]):
@@ -1679,6 +1803,27 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     ``run_asof_lift``'s) return type."""
 
     _model = DailyLiftEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "ds",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "unavailable",
+        "relative_unavailable_reason",
+        "failure_code",
+    )
 
 
 def daily_sequential_projection(
@@ -1882,7 +2027,8 @@ def _partition_nonpositive_mean_rows(
 ) -> _MeanPartition:
     """Split *rows* on a per-row, family-dependent estimability gate.
 
-    Drop rows with ``n < 2`` or a nonpositive outcome/denominator mean when
+    Rows with no usable metric observations are retained as a distinct unavailable reason;
+    other rows with ``n < 2`` or a nonpositive outcome/denominator mean are dropped when
     log-scale variance models require those quantities. Exact binomial rows
     remain eligible at ``n=1`` and with zero means. Mixed adjusted/unadjusted
     requests receive a method-specific partition; this function only identifies
@@ -1896,6 +2042,9 @@ def _partition_nonpositive_mean_rows(
     dropped: list[_DroppedRow] = []
     for row in rows:
         metric_name = str(row["metric"])
+        if int(row["n"]) == 0:
+            dropped.append(_DroppedRow(row, "missing_metric_observations"))
+            continue
         if metric_name in binomial_gate_exempt_metrics and _row_has_independent_binomial_family(
             row
         ):
@@ -1937,6 +2086,8 @@ def _warn_nonpositive_mean_partition(part: _MeanPartition, *, label: str) -> Non
     """
     for dropped in part.dropped:
         row = dropped.row
+        if dropped.reason == "missing_metric_observations":
+            continue
         if dropped.reason == "few_units":
             _warn(
                 "breakout.estimates.row_few_units",
@@ -1993,16 +2144,18 @@ def _estimate_lift_or_reason(
     null_abs: float | None = None,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    route_tail: float | None = None,
 ) -> tuple[list[LiftEstimate] | None, str | None, Mapping[Any, Any]]:
     """Call ``estimate_lift`` and retain keyed failures for dense callers.
 
     Catches lift guards and returns their keyed failures rather than dropping
-    otherwise estimable sibling arms.
+    otherwise estimable sibling arms. ``route_tail`` is the tail a selected cell's corrected
+    pass routes conversion counts at (`conversion_route.fcr_route_tail`).
     """
 
     try:
         metrics_by_name = {m.name: m for m in metrics}
-        computation = estimate_lift(
+        computation = _estimate_lift(
             metrics=metrics,
             summary=summary,
             control_group=control_group,
@@ -2014,6 +2167,7 @@ def _estimate_lift_or_reason(
             null_abs=null_abs,
             inference=inference,
             method_roles=method_roles,
+            route_tail=route_tail,
         )
         results = [
             r.model_copy(
@@ -2101,9 +2255,9 @@ def _estimate_lift_computation_or_reason(
     alternative: str,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
-    route_alpha: float | None = None,
     unit_frame: Any | None = None,
     covariates: Sequence[Any] = (),
+    family_member: bool = False,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
     from increment.errors import CodedError
@@ -2231,7 +2385,7 @@ def _estimate_lift_computation_or_reason(
             alternative=alternative,
             inference=inference,
             method_roles=method_roles,
-            route_alpha=route_alpha,
+            family_member=family_member,
         )
     except LiftGuardError as exc:
         guard_failures: dict[Any, Any] = {}
@@ -2267,7 +2421,9 @@ def _estimate_lift_computation_or_reason(
                     alternative=alternative,
                     inference=inference,
                     method_roles=method_roles,
-                    route_alpha=route_alpha,
+                    unit_frame=unit_frame,
+                    covariates=covariates,
+                    family_member=family_member,
                 )
                 if reason is not None:
                     return part, reason
@@ -2652,11 +2808,11 @@ class _BreakoutContext(NamedTuple):
     all_pairs: set[tuple[str, str]]
     reliability_floor: int
     resolved_methods: list[Method]
-    # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
-    # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
-    route_alpha: float | None
     unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None
     covariates_by_metric: Mapping[str, Sequence[Any]] | None
+    # Whether the cells form a ``correction="bh"`` family, whose decision rows are read below
+    # their own level and so report the composite conversion p-value.
+    family_member: bool
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2854,9 +3010,14 @@ def _breakout_unavailable_computation(
             )
             failures[hypothesis] = DecisionFailure(hypothesis, original.code, failure_context)
         else:
+            code = (
+                "readout.cell.missing_metric_observations"
+                if reason == "missing_metric_observations"
+                else f"breakout.{reason}"
+            )
             failures[hypothesis] = DecisionFailure(
                 hypothesis,
-                f"breakout.{reason}",
+                code,
                 {
                     "metric": metric_name,
                     "group_id": group_id,
@@ -3101,7 +3262,6 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     alternative=context.alternative,
                     methods=method_group,
                     inference=context.inference,
-                    route_alpha=context.route_alpha,
                     method_roles={
                         method.name: resolved_roles[method.name] for method in method_group
                     },
@@ -3113,6 +3273,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         else None
                     ),
                     covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
+                    family_member=context.family_member,
                 )
                 if computation is not None:
                     decision_failures: dict[Any, Any] = {}
@@ -3297,6 +3458,35 @@ def _append_breakout_slice_rows(
                     (context.segment_value, estimate, result_start + len(rows) - 1)
                 )
             continue
+        failure_code = (
+            "readout.cell.missing_metric_observations"
+            if outcome.reason == "missing_metric_observations"
+            else None
+        )
+        failure_context = (
+            {
+                "metric": outcome.metric,
+                "group_id": outcome.group_id,
+                "dimension": context.dimension,
+                "dimension_value": context.segment_value,
+                "reason": outcome.reason,
+            }
+            if failure_code is not None
+            else None
+        )
+        family = (
+            {
+                "excluded": outcome.reason,
+                "role": "exploratory",
+                "failure_code": failure_code,
+                "failure_context": failure_context,
+                "sampling_available": False,
+                "sampling_reason_code": failure_code,
+                "sampling_reason_context": failure_context,
+            }
+            if outcome.reason == "missing_metric_observations"
+            else {}
+        )
         rows.append(
             _unavailable_breakout_row(
                 outcome,
@@ -3304,6 +3494,8 @@ def _append_breakout_slice_rows(
                 dimension_value=context.segment_value,
                 source=context.source,
                 alternative=context.alternative,
+                lift=None,
+                **family,
             )
         )
     return _BreakoutRowsPass(rows, family_entries)
@@ -3320,36 +3512,37 @@ def _unavailable_breakout_row(
 ) -> BreakoutEstimate:
     """One identity-preserving unavailable row with its exact reason, and the
     requested posterior's unavailability when the failed estimator row stated it."""
-    return BreakoutEstimate(
-        metric=outcome.metric,
-        group_id=outcome.group_id,
-        method=outcome.method.name,
-        method_role=outcome.method_role,
-        dimension=dimension,
-        dimension_value=dimension_value,
-        source=source,
-        alternative=alternative,
-        lift=None,
-        excluded=outcome.reason,
-        failure_code=None if outcome.failure is None else outcome.failure.code,
-        failure_context=None if outcome.failure is None else outcome.failure.context,
-        sampling_available=False,
-        sampling_reason_code=(
+    fields: dict[str, Any] = {
+        "metric": outcome.metric,
+        "group_id": outcome.group_id,
+        "method": outcome.method.name,
+        "method_role": outcome.method_role,
+        "dimension": dimension,
+        "dimension_value": dimension_value,
+        "source": source,
+        "alternative": alternative,
+        "lift": None,
+        "excluded": outcome.reason,
+        "failure_code": None if outcome.failure is None else outcome.failure.code,
+        "failure_context": None if outcome.failure is None else outcome.failure.context,
+        "sampling_available": False,
+        "sampling_reason_code": (
             f"breakout.{outcome.reason}" if outcome.failure is None else outcome.failure.code
         ),
-        sampling_reason_context=(
+        "sampling_reason_context": (
             {"reason": outcome.reason} if outcome.failure is None else outcome.failure.context
         ),
-        posterior_available=None if outcome.posterior is None else False,
-        posterior_reason_code=(
+        "posterior_available": None if outcome.posterior is None else False,
+        "posterior_reason_code": (
             None if outcome.posterior is None else outcome.posterior.reason_code
         ),
-        posterior_reason_context=(
+        "posterior_reason_context": (
             None if outcome.posterior is None else outcome.posterior.reason_context
         ),
-        role="exploratory",
-        **family,
-    )
+        "role": "exploratory",
+    }
+    fields.update(family)
+    return BreakoutEstimate(**fields)
 
 
 class _BreakoutFamilyContext(NamedTuple):
@@ -3516,6 +3709,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             alternative=alternative,
             inference=None,
             method_roles={decision_name: "decision"},
+            route_tail=fcr_route_tail(alternative, outcome.fcr_alpha),
         )
         if re_estimates:
             reestimated[(segment_value, metric_name)] = [
@@ -3612,7 +3806,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             )
             continue
         results[idx] = _breakout_estimate_row(
-            match,
+            carry_nominal_evidence(estimate, match),
             dimension=dimension,
             dimension_value=segment_value,
             source=original.source,
@@ -3831,10 +4025,6 @@ def run_breakout(  # noqa: PLR0913
     segment_count = len(segments)
     k = max(segment_count, 1) if correction == "bonferroni" else 1
     alpha_seg = _conservative_divide(alpha, k)
-    # A BH family reads each nominal p-value at a threshold as small as ``q / m``: route each
-    # conversion cell at that level, never at the looser per-segment one.
-    family_size = len(_breakout_family_cells(segments, all_pairs)) if correction == "bh" else 0
-    route_alpha = family_route_alpha(q, family_size)
     results: list[BreakoutEstimate] = []
     segment_computations: dict[tuple[str, str], DecisionComputation[LiftEstimate]] = {}
     warned_open_ended: set[str] = set()
@@ -3864,9 +4054,9 @@ def run_breakout(  # noqa: PLR0913
             all_pairs,
             reliability_floor,
             resolved_methods,
-            route_alpha,
             unit_frames_by_metric,
             covariates_by_metric,
+            correction == "bh",
         )
         prepared = _prepare_lift_slice(
             segment_rows,

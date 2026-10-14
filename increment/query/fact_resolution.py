@@ -16,7 +16,7 @@ import ibis
 from ibis import Table
 from ibis.backends.sql import SQLBackend
 
-from increment.errors import InvalidRequestError, raiser, refusals
+from increment.errors import DefinitionError, InvalidRequestError, raiser, refusals
 from increment.query.dims import join_dims
 from increment.semantics.models import Breakout, Definitions, Experiment, Fact, Factor, FactSource
 
@@ -33,6 +33,30 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+_DEFINITION_REFUSALS = refusals(
+    DefinitionError,
+    {
+        "definition.fact_source.missing_columns": (
+            "fact source '{fact_source}' SQL is missing required column alias(es) {missing!r}; "
+            "add those aliases to the source SELECT list"
+        ),
+    },
+)
+_raise_definition = raiser(_DEFINITION_REFUSALS)
+
+
+def validate_fact_source_schema(tbl: Table, fs: FactSource, *, require_event: bool = True) -> None:
+    """Require timestamp/entity aliases and an event alias when consumed as events."""
+    required = {fs.timestamp_column, *fs.entities}
+    if require_event:
+        required.add("event")
+    missing = tuple(sorted(required - set(tbl.columns)))
+    if missing:
+        _raise_definition(
+            "definition.fact_source.missing_columns",
+            fact_source=fs.name,
+            missing=missing,
+        )
 
 
 def _find_fact_source(defs: Definitions, fact_name: str) -> tuple[FactSource, Fact]:
@@ -48,7 +72,7 @@ def _find_fact_source(defs: Definitions, fact_name: str) -> tuple[FactSource, Fa
     )
 
 
-def _require_design(control: str | None, design: object | None, *, constructor: str) -> None:
+def _require_design(control: object | None, design: object | None, *, constructor: str) -> None:
     """Enforce that a seam constructor receives exactly one of control=/design=."""
     if (control is None) == (design is None):
         _raise(
@@ -216,6 +240,7 @@ def _dim_joined_fact_table(
     dim_cache: dict[str, Table],
     *,
     resolve_sql: Callable[[str], Table] | None = None,
+    require_event: bool = True,
 ) -> Table:
     """Fact-source SQL -> declared dim joins -> builder column renames.
 
@@ -230,6 +255,7 @@ def _dim_joined_fact_table(
 
     resolve_sql = resolve_sql or default_resolver
     tbl = resolve_sql(fs.sql)
+    validate_fact_source_schema(tbl, fs, require_event=require_event)
     if fs.dims:
         dim_by_name = {d.name: d for d in defs.dim_sources}
         pairs = []

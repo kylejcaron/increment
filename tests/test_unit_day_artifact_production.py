@@ -1044,10 +1044,13 @@ def test_reverse_ordered_index_table_publishes_and_adopts_like_native() -> None:
     reopened = WarehouseArtifactStore(con, schema_name="artifacts")
     assert reopened.visible_manifests == (ref,)
     adopted = Analysis.from_unit_day_artifact(reopened, ref, expected_context=context)
+    from increment.estimation.engine import Method
+
+    unadjusted = Method(name="unadjusted")
     try:
         metric = native.metrics[0].name
-        native_rows = native.run(metrics=[metric])
-        adopted_rows = adopted.run(metrics=[metric])
+        native_rows = native.run(metrics=[metric], decision_method=unadjusted)
+        adopted_rows = adopted.run(metrics=[metric], decision_method=unadjusted)
         assert len(adopted_rows) == len(native_rows) > 0
         for got, want in zip(adopted_rows, native_rows, strict=True):
             for field in ("abs_diff", "abs_se", "abs_lb", "abs_ub", "abs_alpha"):

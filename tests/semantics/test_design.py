@@ -1,6 +1,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from increment.errors import InvalidRequestError
 from increment.semantics.design import (
     AdjustmentSet,
     Design,
@@ -143,8 +144,9 @@ def test_acknowledged_false_rejected():
 
 
 def test_justification_must_be_substantive():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         ExclusionRestriction(acknowledged=True, justification="ok")
+    assert raised.value.code == "design.exclusion_restriction.justification"
 
 
 def test_uptake_window_days_must_be_positive():

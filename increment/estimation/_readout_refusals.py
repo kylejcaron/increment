@@ -86,7 +86,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
         "readout.randomized.value_scale": RefusalSpec(
             "readout.randomized.value_scale",
             UnsupportedRequestError,
-            template="value_scale= is an observational-only reporting selector -- the randomized path already reports the absolute axis on every row; declare an absolute margin instead.",
+            template="value_scale= is an observational-only reporting selector -- the randomized path already reports the absolute axis on every row, and a row whose relative scale is undefined (a non-positive arm mean) is decided on that additive axis automatically.",
         ),
         "readout.margin.breakout": RefusalSpec(
             "readout.margin.breakout",

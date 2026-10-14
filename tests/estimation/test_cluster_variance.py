@@ -249,7 +249,7 @@ def test_prob_favorable_withholds_missing_posterior_on_cluster_robust_estimate()
     (clustered,) = estimate_lift([METRIC], cluster_rows, control_group="C", cluster="store").results
     favorable = clustered.model_copy(update={"preferred_direction": "increase", "null_abs": -0.5})
     assert favorable.abs_diff is not None and favorable.abs_se is not None
-    # See docs/guides/priors-and-decisions.md:142-145.
+    # See docs/guides/priors-and-decisions.md:81-83.
     assert favorable.prob_favorable() is None
     with pytest.raises(InvalidRequestError) as exc_info:
         favorable.p_value()

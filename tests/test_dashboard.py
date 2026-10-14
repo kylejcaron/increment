@@ -632,6 +632,40 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "candidate" in html
 
 
+def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_allocation(
+    pricing: DashboardSnapshot,
+) -> None:
+    html = render_health(pricing).text
+    assert html.count("5 trigger checks don't apply: no trigger declared.") == 1
+    visible = html[: html.index("<summary>Technical details</summary>")]
+    assert "Assigned Allocation" not in visible
+    assert "Not applicable; this is not an evaluated check." not in visible
+
+
+def test_health_lists_every_triggered_check(tmp_path) -> None:
+    from tests.test_dashboard_population import _triggered_dashboard
+
+    analysis = _triggered_dashboard(tmp_path)
+    try:
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+        )
+        html = render_health(snapshot).text
+        health = snapshot.health
+        assert health is not None
+        triggered_checks = [
+            check
+            for check in health.checks
+            if check.analysis_population == "triggered" and check.availability != "not_applicable"
+        ]
+        assert triggered_checks
+        for check in triggered_checks:
+            assert check.check.replace("_", " ").title() in html
+    finally:
+        analysis.close()
+
+
 def test_health_renderer_consumes_restored_health_report(
     pricing: DashboardSnapshot, tmp_path: Path
 ) -> None:
@@ -686,7 +720,15 @@ def test_health_renderer_consumes_restored_health_report(
         )
     )
     restored = ExperimentHealth.model_validate_json(report.model_dump_json())
-    snapshot = dataclasses.replace(pricing, health=restored)
+    snapshot = dataclasses.replace(
+        pricing,
+        health=restored,
+        allocation=None,
+        allocation_refusal=(
+            "integrity.allocation_scheme_missing",
+            "independent assignment was not declared",
+        ),
+    )
     html_path = tmp_path / "health.html"
     html_path.write_text(render_health(snapshot).text)
     html = html_path.read_text()
@@ -703,6 +745,16 @@ def test_health_renderer_consumes_restored_health_report(
         value = restored.checks[-1].context[condition]
         assert isinstance(value, str)
         assert value in html
+    assert "Declare allocation_scheme" in html[: html.index("<summary>Technical details</summary>")]
+    technical = re.search(
+        r"<details[^>]*><summary>Technical details</summary>(.*?)</details>", html, re.DOTALL
+    )
+    assert technical is not None
+    assert "integrity.allocation_scheme_missing" in technical.group(1)
+    assert "Counterfactual Trigger Invariance" in technical.group(1)
+    assert "pre-trigger assumption sentinel" in technical.group(1)
+    assert "integrity.allocation_scheme_missing" not in html[: html.index("<details")]
+    assert "Assignment-law admission" not in html[: html.index("<details")]
 
 
 def test_both_experiments_share_the_same_sections(
@@ -1096,7 +1148,6 @@ def test_health_shows_a_refused_check_as_a_refusal_not_a_pass(
         allocation_refusal=("facade.analysis.invalid_population", "population is unsupported"),
     )
     html = render_health(snapshot).text
-    assert "facade.analysis.invalid_population" in html
     assert "population is unsupported" in html
     assert "not a passing check" in html
     assert "No allocation issues detected" not in html
@@ -1110,6 +1161,89 @@ def test_health_separates_the_allocation_alpha_from_interval_levels(
 
 
 # Results and metric details.
+
+
+def test_results_table_shows_only_core_readout_columns(pricing: DashboardSnapshot) -> None:
+    html = render_results(pricing).text
+    headers = {
+        re.sub(r"<[^>]+>", "", header).strip()
+        for header in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.DOTALL)
+    }
+    allowed_columns = {
+        "Lift (absolute)",
+        "Lift %",
+        "Lift Plot",
+        "Failure",
+        "Discovery",
+        "Posterior chance to beat",
+        "Posterior risk if shipped",
+        "Posterior P(favorable)",
+    }
+    assert {"Lift %", "Lift Plot"} <= headers
+    structural = {"group_id", "▾Primary"}
+    assert headers - structural <= allowed_columns | {
+        header for header in headers if "Declared plan" in header
+    }
+    assert "Numerical qualification" not in html
+    assert "Selection qualification" not in html
+
+
+def test_results_table_keeps_absolute_scale_values(pricing: DashboardSnapshot) -> None:
+    rows = tuple(
+        {
+            **dict(row),
+            "value_scale": "absolute",
+            "lift": 23.456,
+            "lower": 12.345,
+            "higher": 34.567,
+        }
+        if row["metric"] == pricing.primary_metric
+        else row
+        for row in pricing.readout_rows
+    )
+    html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
+    assert "Lift (absolute)" in html
+    assert "23.46" in html
+
+
+def test_results_keep_selection_qualification_as_a_footnote(pricing: DashboardSnapshot) -> None:
+    qualification = (
+        "Benjamini-Hochberg family selection at q=0.05; retained family size 12; "
+        "FDR qualification requires independence or positive dependence"
+    )
+    rows = tuple(
+        {
+            **dict(row),
+            "discovery": True,
+            "selection_qualification": qualification,
+            "family_q": 0.05,
+            "family_size": 12,
+        }
+        if row["metric"] == pricing.primary_metric
+        else row
+        for row in pricing.readout_rows
+    )
+    html = render_results(dataclasses.replace(pricing, readout_rows=rows)).text
+    assert "Selection qualification" not in html
+    assert "Selection evidence for" in html
+    assert pricing.primary_metric in html
+    assert qualification in html
+
+
+def test_results_show_available_prior_advisory_columns(pricing: DashboardSnapshot) -> None:
+    rows = tuple(
+        {
+            **dict(row),
+            "posterior_available": True,
+            "posterior_chance_to_beat": 0.73,
+            "posterior_risk_if_shipped": 0.27,
+        }
+        for row in pricing.readout_rows
+    )
+    snapshot = dataclasses.replace(pricing, readout_rows=rows)
+    html = render_results(snapshot).text
+    assert "Posterior chance to beat" in html
+    assert "Posterior risk if shipped" in html
 
 
 def test_results_render_every_declared_role_group(storefront: DashboardSnapshot) -> None:
@@ -1861,8 +1995,12 @@ def test_health_renders_not_applicable_allocation_as_not_checked(
     assert snapshot.allocation_history_refusal == snapshot.allocation_refusal
     html = render_health(snapshot).text
     assert "not checked" in html.lower()
-    assert "integrity.allocation_scheme_missing" in html
     assert "independent assignment was not declared" in html
+    technical = re.search(
+        r"<details[^>]*><summary>Technical details</summary>(.*?)</details>", html, re.DOTALL
+    )
+    assert technical is not None
+    assert "integrity.allocation_scheme_missing" in technical.group(1)
 
 
 @pytest.mark.slow
@@ -1970,6 +2108,28 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
         for endpoint in interval:
             if endpoint is not None:
                 assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
+
+
+def test_report_notes_keep_binomial_qualification_out_of_readout(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.dashboard._app import _report_notes
+    from increment.dashboard._format import headline_interval
+    from increment.dashboard._html import results_table
+    from increment.tables import _binomial_qualification_disclosure
+
+    row = next(row for row in storefront.readout_rows if row.get("binomial_set") is not None)
+    qualification = _binomial_qualification_disclosure(row["binomial_set"])
+    assert qualification is not None
+
+    notes = "\n".join(_report_notes(storefront))
+    headline = headline_interval(row)
+    table = results_table(storefront)
+    assert notes.count(qualification) == 1
+    assert str(row["metric"]) in notes
+    assert qualification not in headline
+    assert qualification not in table
+    assert "Numerical qualification" not in table
 
 
 def test_summary_notes_attribute_each_captured_level_to_its_own_metric(

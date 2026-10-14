@@ -92,6 +92,7 @@ for captured_warning in analysis_warnings:
 print(results)
 ```
 
+<!-- output -->
 ```text
 Warning: metric 'complaints': missing='drop' excludes rows with 537 null/NaN value(s) from this metric's moments (complete-case). This is unbiased only when missingness is unrelated to the values; if null means "no events", missing='zero' keeps every unit.
 assigned — treatment vs control
@@ -230,9 +231,19 @@ integrity, completeness, population and multiplicity qualifications.
 
 ## Group identities
 
-Both dataframe constructors convert nonmissing group labels to strings
-using the dataframe library's representation. An integer group column
-containing `0` and `1`, for example, accepts `control="0"`.
+Nonmissing group values are rendered as strings consistently across
+dataframe libraries. Boolean columns use the canonical labels `"true"` and
+`"false"`; on a Boolean column, `control` accepts `True`, `"True"`, or
+`"true"` for the true arm (and the corresponding false spellings). Other
+column types keep their string labels, so a string column containing
+`"True"` and `"False"` retains those exact identities. For example, an
+integer group column containing `0` and `1` accepts `control=0` or
+`control="0"`.
+
+For `from_moments` reloads of a Boolean-group export, use a Python Boolean
+control (`True` or `False`) or the exact canonical string label (`"true"` or
+`"false"`). Moment-cube string controls remain case-sensitive; `"True"` does
+not alias the exported `"true"` group.
 
 Labels must remain distinct after conversion. Values such as `1` and
 `"1"` in a pandas object column raise `frame.validation.group_label_collision`
@@ -241,6 +252,10 @@ rather than merge groups. Rename them to distinct strings before analysis.
 `"(unassigned)"` and `"(mixed assignment)"` are reserved for accounting.
 Using either as a group raises `frame.validation.group_label_reserved`.
 Missing labels stay missing; the literal string `"nan"` is a valid group.
+Saved sequential state keyed by pandas Boolean labels (`"True"`/`"False"`)
+cannot be continued under the canonical labels: retain it as a replay-only
+record, or register a new monitoring protocol rather than relabelling the
+checkpoint.
 
 ## Missing data
 
@@ -250,7 +265,7 @@ Choose how to handle them explicitly.
 ### Missing group labels
 
 Pass `on_unassigned="exclude"` to exclude rows with no assignment.
-`unit_counts()` reports the excluded units under `"(unassigned)"`, and
+`analysis.unit_counts()` reports the excluded units under `"(unassigned)"`, and
 the sample-ratio mismatch (SRM) check reports them separately. They never
 become a treatment group.
 

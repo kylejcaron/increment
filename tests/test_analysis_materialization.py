@@ -193,6 +193,8 @@ def test_repeated_materialize_refreshes_separate_cohorts_on_one_connection():
 @pytest.mark.slow
 def test_metrics_sharing_a_measure_keep_their_numeric_answers(seeded_con, seeded_defs):
     """Different aggregations of a shared measure retain their own answers."""
+    from increment.estimation.engine import Method
+
     original = Analysis.from_definitions(
         "new_onboarding_v2", seeded_defs, seeded_con, store="always"
     )
@@ -208,7 +210,7 @@ def test_metrics_sharing_a_measure_keep_their_numeric_answers(seeded_con, seeded
     with replacement as a:
         shared_results = {
             (r.metric, r.group_id): r.require_lift().value
-            for r in lift_rows(a.run())
+            for r in lift_rows(a.run(decision_method=Method(name="unadjusted")))
             if r.metric == "total_session_duration"
         }
 
@@ -223,7 +225,7 @@ def test_metrics_sharing_a_measure_keep_their_numeric_answers(seeded_con, seeded
     with unshared:
         unshared_results = {
             (r.metric, r.group_id): r.require_lift().value
-            for r in lift_rows(unshared.run())
+            for r in lift_rows(unshared.run(decision_method=Method(name="unadjusted")))
             if r.metric == "total_session_duration"
         }
     assert shared_results, "the shared-measure metric must actually produce rows"

@@ -27,9 +27,11 @@ from ibis.backends.sql import SQLBackend
 from increment import readouts
 from increment._analysis_config import (
     UNSET,
+    ResolvedMetricConfig,
     _Unset,
     effective_methods,
     normalize_display_correction,
+    overlay_configs,
     select_exploratory_metrics,
     select_metrics,
 )
@@ -59,6 +61,7 @@ from increment._source_operations import (
     TriggeredCountsOperation,
     TriggeredHealthEvidenceOperation,
     TriggeredPopulationOperation,
+    UnitCountsOperation,
 )
 from increment._source_types import classify_source
 from increment._study import ParallelStudyEnvelope
@@ -257,6 +260,29 @@ SOURCE_CONTEXT_DESIGN_DISAGREES_ARM = _REFUSALS[
 
 _raise = raiser(_REFUSALS)
 
+
+def _refuse_legacy_boolean_registration(
+    frame: Any, group: str, control: object | None, design: Any, plan: Any
+) -> None:
+    registration = getattr(
+        getattr(getattr(plan, "inference", None), "registration", None), "control_group", None
+    )
+    candidate = control if control is not None else getattr(design, "control_group", None)
+    if registration not in {"True", "False"} or candidate is None:
+        return
+    from increment._frame_validation import canonical_control_for_frame
+    from increment.sequential_state import sequential_refuse
+
+    canonical = canonical_control_for_frame(frame, group, candidate)
+    if (registration, canonical) in {("True", "true"), ("False", "false")}:
+        sequential_refuse(
+            "source.invalid",
+            "pandas Boolean group labels changed from 'True'/'False' to canonical "
+            "'true'/'false'; retain the saved record for replay with its original "
+            "protocol, or create a new sequential registration for canonical labels",
+        )
+
+
 if TYPE_CHECKING:
     import pyarrow as pa
     from ibis.expr.types import Table
@@ -415,6 +441,44 @@ def _stamp_exploratory_rows(rows):
         source=rows.source,
         sequential_snapshot=rows.sequential_snapshot,
     )
+
+
+def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricConfig) -> bool:
+    """Check the proposed CUPED method against the shared arm-support contract."""
+    from increment.estimation.arm_contract import (
+        MetricCapabilities,
+        Supported,
+        arm_cuped_advisory_support,
+    )
+    from increment.estimation.engine import is_open_ended
+    from increment.sequential_source import adjustment_kind
+
+    context = source.context
+    metric = config.metric
+    inference = context.plan.inference
+    registration = getattr(inference, "registration", None)
+    adjustment = adjustment_kind(registration, metric.name) if registration is not None else None
+    capabilities = MetricCapabilities(
+        metric_type=metric.type if metric.type not in ("total", "active") else "mean",
+        value_scale="relative",
+        winsorization=(
+            "percentile"
+            if getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+            else "fixed"
+            if getattr(metric, "winsorization", None) is not None
+            else "none"
+        ),
+        outcome_window="unbounded" if is_open_ended(metric) else "bounded",
+        uptake_window="not_applicable",
+    )
+    support = arm_cuped_advisory_support(
+        dependence="cluster" if context.cluster is not None else "iid",
+        metric=capabilities,
+        inference=inference,
+        adjustment=adjustment,
+        prior_present=config.prior is not None,
+    )
+    return isinstance(support, Supported)
 
 
 class Analysis:
@@ -888,7 +952,7 @@ class Analysis:
         *,
         unit: str,
         group: str,
-        control: str | None = None,
+        control: object | None = None,
         metrics: MetricsArg,
         experiment_id: str = "frame",
         design: Randomized | Encouragement | Observational | None = None,
@@ -898,6 +962,7 @@ class Analysis:
         cluster: str | None = None,
         intervention_grain: Literal["unit", "cluster"] = "unit",
         exposure_date: str | None = None,
+        breakouts: Sequence[str] = (),
     ) -> Analysis:
         """Build an :class:`Analysis` from a one-row-per-unit dataframe.
 
@@ -936,12 +1001,28 @@ class Analysis:
         Sequential inference requires it and reveals units in that order,
         never in row order. With an ``on_unassigned="exclude"`` policy a
         null exposure drops the unit, as on :meth:`from_unit_panel`.
+
+        *breakouts* names unit-stable columns used only for whole-window
+        ``run_breakout`` reads. This source remains total-only: it does not
+        expose daily or as-of methods, or a synthetic day axis.
         """
+        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
+        from increment._frame_validation import (
+            canonical_control_for_frame,
+            canonical_design_for_frame,
+        )
+
+        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_summary")
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_summary as _make_source
         from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
@@ -956,6 +1037,7 @@ class Analysis:
             cluster=cluster,
             intervention_grain=intervention_grain,
             exposure_date=exposure_date,
+            breakouts=breakouts,
         )
         return cls._from_source(src, design)
 
@@ -968,7 +1050,7 @@ class Analysis:
         unit: str,
         group: str,
         date: str,
-        control: str | None = None,
+        control: object | None = None,
         metrics: MetricsArg,
         experiment_id: str = "frame",
         design: Randomized | Encouragement | Observational | None = None,
@@ -1021,11 +1103,23 @@ class Analysis:
         refuses; ``"exclude"`` drops those units, with the count
         surfaced in ``unit_counts()`` and :meth:`srm`.
         """
+        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
+        from increment._frame_validation import (
+            canonical_control_for_frame,
+            canonical_design_for_frame,
+        )
+
+        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_panel")
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_panel as _make_source
         from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
@@ -1051,7 +1145,7 @@ class Analysis:
         rows: Sequence[Mapping[str, object]],
         *,
         metrics: MetricsArg,
-        control: str | None = None,
+        control: object | None = None,
         experiment_id: str | None = None,
         design: Randomized | Encouragement | Observational | None = None,
         plan: AnalysisPlan | None = None,
@@ -1060,10 +1154,19 @@ class Analysis:
         (e.g. exported via :meth:`export`, or a warehouse table of
         pre-aggregated moments).
 
-        Enters at moment grain: ``run()``/``srm()`` work; the unit-frame
-        method (needed for IPTW/DML) raises :class:`CapabilityError`, as do
-        ``sql()`` and every method the other seam constructors already refuse
-        (day axis, ``panel_sql``, ``run_breakout``, ``materialize``).
+        Per-arm ``n``/mean/variance or exact conversion-success summaries
+        are not wire rows; use :func:`increment.moments_from_summaries` to
+        build the supported fixed-horizon mean/conversion cube. That helper
+        does not synthesize ratio, covariate, clustered, or sequential state;
+        use :meth:`from_unit_summary` when those inputs are required.
+
+        At moment grain, ``run()`` works. ``unit_counts()``, ``srm()``, and
+        health allocation checks require source-level ``assignment_counts``;
+        without that field they are unavailable with
+        ``source.moments.assignment_counts``. The unit-frame method (needed
+        for IPTW/DML) raises :class:`CapabilityError`, as do ``sql()`` and
+        every method the other seam constructors already refuse (day axis,
+        ``panel_sql``, ``run_breakout``, ``materialize``).
 
         *rows* must carry centered ``group_summary`` columns, a fixed-horizon
         ``moments_format=12`` stamp, integer ``n``, nullable integer
@@ -1094,13 +1197,28 @@ class Analysis:
         Without an override, the payload's complete roles, methods,
         priors, inference, and view policies are used as exported.
         """
-        _require_design(control, design, constructor="Analysis.from_moments")
-        from increment._frame_validation import _coerce_source_metrics
+
+        from increment._frame_validation import (
+            _coerce_source_metrics,
+            canonical_control_for_moments,
+            canonical_design_for_moments,
+            validate_moments_control,
+        )
         from increment.frame import synthesise_metric
         from increment.semantics.design import Encouragement, Randomized
         from increment.sources import MomentsSource
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = canonical_design_for_moments(design)
+        _require_design(control, design, constructor="Analysis.from_moments")
+        if control is None:
+            assert design is not None
+            control = canonical_control_for_moments(design.control_group)
+        else:
+            control = canonical_control_for_moments(control)
+        validate_moments_control(rows, control)
+        if design is None:
+            design = MomentsSource.design_summary_design(rows, control_group=control)
+        design = design or Randomized(control_group=control)
         specs = _coerce_source_metrics(metrics, design=design)
         from increment._analysis_config import refuse_cuped_linear_moments
 
@@ -1775,6 +1893,20 @@ class Analysis:
             return None if cutoff is None else cutoff.isoformat()
         evidence = self._session.source_snapshot_evidence if self._session is not None else None
         return None if evidence is None else evidence.observation_cutoff_ts.isoformat()
+
+    def unit_counts(self) -> dict[str, int]:
+        """Return enrolled unit counts by canonical group label.
+
+        Excluded unassigned units appear under ``"(unassigned)"``. Sources
+        without total-grain count evidence refuse with a coded capability error.
+        """
+        source = _require_analysis_operation(
+            self._src,
+            "unit_counts",
+            UnitCountsOperation,
+            message="unit_counts() requires a source with enrolled total-grain counts.",
+        )
+        return source.unit_counts()
 
     def srm(
         self,
@@ -2504,7 +2636,94 @@ class Analysis:
             )
             extra = _stamp_exploratory_rows(extra)
             rows = extra if rows.metadata is None else rows.concat(extra)
+        self._warn_run_advisories(
+            selected,
+            added,
+            estimands=estimands,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+        )
         return rows
+
+    def _warn_run_advisories(
+        self,
+        selected: Sequence[Metric],
+        added: Sequence[Metric],
+        *,
+        estimands: Sequence[str] | None,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+        prior: Prior | None | _Unset,
+    ) -> None:
+        from increment._frame_validation import _warn
+
+        state = self._state
+        assert not isinstance(state, ContrastAnalysisState)
+        source = state.source
+        if (
+            estimands is not None
+            and not {"itt", "late"}.intersection(estimands)
+            and getattr(source.context.design, "mechanism", None) == "encouragement"
+        ):
+            return
+        config_sources: list[tuple[Any, MomentSource]] = []
+        if selected:
+            config_sources.extend(
+                (config, state.source)
+                for config in overlay_configs(
+                    selected,
+                    state.source.context.configs,
+                    methods=None,
+                    prior=None,
+                    prior_override=prior,
+                    decision_method=decision_method,
+                    sensitivity_methods=sensitivity_methods,
+                )
+            )
+        if added:
+            exploratory = self._exploratory_analysis(added, caller="run")
+            exploratory_source = cast("MomentSource", exploratory._state.source)
+            config_sources.extend(
+                (config, exploratory_source)
+                for config in overlay_configs(
+                    added,
+                    exploratory_source.context.configs,
+                    methods=None,
+                    prior=None,
+                    prior_override=prior,
+                    decision_method=decision_method,
+                    sensitivity_methods=sensitivity_methods,
+                )
+            )
+        warehouse_covariate = (
+            isinstance(state, DefinitionsArmAnalysisState) and state.experiment.n_pre_periods > 0
+        )
+        unused: list[str] = []
+        for config, source in config_sources:
+            covariate_available = config.covariate_available or warehouse_covariate
+            design = source.context.design
+            if (
+                not covariate_available
+                or not config.decision_defaulted
+                or config.methods_explicitly_empty
+                or getattr(design, "mechanism", None) == "observational"
+                or any(
+                    method.variance_reduction == "cuped" for method in config.sensitivity_methods
+                )
+                or not _cuped_recommendation_admitted(source, config)
+            ):
+                continue
+            unused.append(config.metric.name)
+        if unused:
+            _warn(
+                "analysis.cuped.covariate_unused",
+                metric_names=tuple(unused),
+                route=(
+                    "Request Method(name='cuped', variance_reduction='cuped') "
+                    "as decision_method or a sensitivity method in run()."
+                ),
+            )
 
     def _run_contrast(
         self,
@@ -3073,9 +3292,11 @@ class Analysis:
             q=policy.q if policy.q is not None else self._plan.q,
             population=population,
         )
-        return BreakoutReadouts(src=self._src, experiment=getattr(self, "_experiment", None)).run(
-            request
-        )
+        source = getattr(self._src, "summary_breakout_source", None)
+        return BreakoutReadouts(
+            src=source if source is not None else self._src,
+            experiment=getattr(self, "_experiment", None),
+        ).run(request)
 
     def _refuse_clustered_day_axis(self, method: str) -> None:
         """A declared cluster is total-grain only; see `_CLUSTERED_DAY_AXIS`."""

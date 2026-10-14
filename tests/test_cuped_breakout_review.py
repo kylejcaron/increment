@@ -81,6 +81,7 @@ def test_public_breakout_localizes_failed_cuped_projection_and_keeps_siblings() 
     assert unavailable.failure_context["column"] == "pre"
     assert unavailable.sampling_available is False
     assert unavailable.sampling_reason_code == unavailable.failure_code
+    assert unavailable.sampling_reason_context == unavailable.failure_context
     assert rows.metadata is not None
     record = next(r for r in rows.metadata.cells if r.cell.dimension_value == "unsupported")
     assert record.failure is not None and record.failure.code == unavailable.failure_code

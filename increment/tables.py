@@ -32,11 +32,13 @@ from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_evidence_available
 from increment.estimation.contrast_results import ContrastResult
-from increment.estimation.readout_types import refuse_legacy_sampling
 from increment.estimation.results import (
-    BinomialConfidenceSet,
+    DECIDABLE_SEQUENTIAL_STATUSES,
     LiftEstimate,
     _selection_qualification,
+    conversion_route_label,
+    row_decision_available,
+    row_decision_scale,
 )
 
 if TYPE_CHECKING:
@@ -80,83 +82,6 @@ _raise = raiser(_REFUSALS)
 # LiftEstimate -> readout DataFrame adapter
 
 
-def _binomial_stat_sig(bset: BinomialConfidenceSet, *, null_lift: float, alternative: str) -> bool:
-    """``BreakoutEstimate``/``DailyLiftEstimate`` twin of ``LiftEstimate.stat_sig()``'s
-    binomial branch -- those two models carry a persisted ``binomial_set`` but no
-    ``stat_sig()`` method of their own, so this recomputes the same shifted-null Berger-Boos
-    p-value from the set's own persisted counts/nuisance budget. Exact even for a set-only row
-    with no finite point (``x_c == 0``): the tail test never reads the point estimate."""
-    return bset.null_p_value(null_lift, alternative) < bset.decision_alpha
-
-
-def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool | None:
-    """Whether the interval excludes the null, honoring the row's own
-    one-sided ``alternative`` (``Estimate.excludes`` checks both tails).
-    Always False when ``low_reliability`` is set. A ``null_abs`` row
-    decides against the additive interval (``abs_lb``/``abs_ub``) instead
-    of the relative one, and takes precedence over a persisted
-    ``binomial_set``, exactly as ``LiftEstimate.stat_sig()`` orders its own
-    branches; missing additive endpoints report False rather than falling back
-    to a relative interval. A missing ratio point does not erase additive evidence.
-    ``LiftEstimate.stat_sig()`` for a ``LiftEstimate`` row -- the same
-    decision, reused so a family-selection caller can check a row's own
-    verdict without importing this (tables-extra-gated) module.
-
-    A ``BreakoutEstimate``/``DailyLiftEstimate`` row carrying a
-    persisted ``binomial_set`` (point-backed or, exclusively, a
-    set-only zero-control-count row with ``lift=None``), with no
-    ``null_abs`` guardrail active, instead tests its shifted null
-    directly against that set via :func:`_binomial_stat_sig` -- the
-    exact same construction ``LiftEstimate.stat_sig()`` uses, so a
-    set-only row's real evidence is never erased just because it has no
-    finite point.
-    An explicit producer failure has unavailable significance (``None``), not
-    a non-rejection.
-    """
-    if getattr(est, "failure_code", None) is not None:
-        return None
-    if est.sequential_result is not None:
-        return est.sequential_result.rejects()
-    sampling_available = getattr(est, "sampling_available", None)
-    if sampling_available is False:
-        return None
-    if sampling_available is None and (
-        isinstance(est, DailyLiftEstimate) or getattr(est, "prior_shrunk", False)
-    ):
-        refuse_legacy_sampling(est)
-    if getattr(est, "low_reliability", False):
-        return False
-    if isinstance(est, LiftEstimate):
-        return est.stat_sig()
-    lift = est.lift
-    null_abs = getattr(est, "null_abs", None)
-    if null_abs is not None:
-        abs_lb, abs_ub = getattr(est, "abs_lb", None), getattr(est, "abs_ub", None)
-        if est.alternative == "greater":
-            return abs_lb is not None and abs_lb > null_abs
-        if est.alternative == "less":
-            return abs_ub is not None and abs_ub < null_abs
-        return abs_lb is not None and abs_ub is not None and not (abs_lb <= null_abs <= abs_ub)
-    relative = est.relative_confidence_set
-    if relative is not None:
-        return relative.contains(est.null_lift) is False
-    if est.relative_unavailable_reason is not None:
-        return False
-    bset = getattr(est, "binomial_set", None)
-    if bset is not None:
-        return _binomial_stat_sig(
-            bset, null_lift=getattr(est, "null_lift", 0.0), alternative=est.alternative
-        )
-    if lift is None:
-        return False
-    null_lift = getattr(est, "null_lift", 0.0)
-    if est.alternative == "greater":
-        return lift.lb is not None and lift.lb > null_lift
-    if est.alternative == "less":
-        return lift.ub is not None and lift.ub < null_lift
-    return lift.excludes(null_lift)
-
-
 def _has_additive_interval(estimate: Any) -> bool:
     if (
         getattr(estimate, "abs_lb", None) is not None
@@ -176,6 +101,7 @@ def _base_liftestimate_to_row(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, Any]:
     """Preserve points, canonical confidence evidence, and actual decision metadata."""
+    verdict = est.stat_sig()
     lift = est.lift
     region = getattr(est, "confidence_set", None)
     relative = getattr(est, "relative_confidence_set", None)
@@ -198,7 +124,9 @@ def _base_liftestimate_to_row(
         "higher": higher,
         "open_side": open_side,
         "level": level,
-        "stat_sig": _stat_sig(est),
+        "stat_sig": verdict,
+        "decision_scale": row_decision_scale(est),
+        "decision_available": row_decision_available(est, verdict=verdict),
         "null_lift": getattr(est, "null_lift", 0.0),
         "null_abs": getattr(est, "null_abs", None),
         "abs_diff": getattr(est, "abs_diff", None),
@@ -209,6 +137,8 @@ def _base_liftestimate_to_row(
         "relative_unavailable_reason": getattr(est, "relative_unavailable_reason", None),
         "confidence_set": region,
         "binomial_set": binomial,
+        "conversion_route": conversion_route_label(est),
+        "delta_evidence": getattr(est, "delta_evidence", None),
         "abs_reference_kind": getattr(est, "abs_reference_kind", None),
         "abs_reference_df": getattr(est, "abs_reference_df", None),
         "abs_alpha": getattr(est, "abs_alpha", None),
@@ -1179,8 +1109,10 @@ def _rendered_metadata_columns(
             for text, sig, row in zip(
                 set_text, significance, frame.iter_rows(named=True), strict=True
             ):
-                if not text or _is_missing(sig):
+                if not text:
                     verdict = ""
+                elif _is_missing(sig):
+                    verdict = "Unavailable"
                 elif sig:
                     verdict = "Yes"
                 else:
@@ -1224,18 +1156,18 @@ def _binomial_qualification_disclosure(value: Any) -> str:
 
 
 def _decision_available(row: Mapping[str, Any]) -> bool:
-    """Distinguish a non-rejecting confidence procedure from unavailable inference."""
+    """Distinguish a non-rejecting confidence procedure from unavailable inference.
+
+    A row the adapter built carries ``decision_available`` from
+    :func:`increment.estimation.results.row_decision_available`, the one rule
+    every row type shares; the field-by-field reading below serves only frames
+    assembled without that column."""
+    available = row.get("decision_available")
+    if not _is_missing(available):
+        return bool(available)
     status = row.get("sequential_status")
     if not _is_missing(status):
-        return status in {
-            "empty",
-            "full-domain",
-            "interval",
-            "full",
-            "ray",
-            "bounded",
-            "disconnected",
-        }
+        return status in DECIDABLE_SEQUENTIAL_STATUSES
     low_reliability = row.get("low_reliability")
     if not _is_missing(low_reliability) and low_reliability:
         return False

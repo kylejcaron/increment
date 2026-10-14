@@ -444,20 +444,28 @@ def test_categorical_covariate_matches_all_ingress_paths(postgres_event_connecti
 
 @pytest.mark.parametrize("kind", ["normal", "student_t", "mixture"])
 def test_lift_priors_match_all_ingress_paths(postgres_event_connection, kind):
+    from dataclasses import replace
+
+    from increment.estimation.engine import Method
     from tests.parity_harness.cases import _lift_prior_case
     from tests.parity_harness.runner import assert_parity, run_case
 
     case = _lift_prior_case(
         kind, warehouse_connection=postgres_event_connection, dialect="postgres"
     )
+    case = replace(case, decision_method=Method(name="unadjusted"))
     assert_parity(case, run_case(case))
 
 
 def test_clearing_prior_matches_all_ingress_paths(postgres_event_connection):
+    from dataclasses import replace
+
+    from increment.estimation.engine import Method
     from tests.parity_harness.cases import _prior_reset_case
     from tests.parity_harness.runner import assert_parity, run_case
 
     case = _prior_reset_case(warehouse_connection=postgres_event_connection, dialect="postgres")
+    case = replace(case, decision_method=Method(name="unadjusted"))
     assert_parity(case, run_case(case))
 
 

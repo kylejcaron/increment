@@ -2401,8 +2401,8 @@ def test_observational_relative_margin_context_cannot_produce_an_artifact(tmp_pa
 
 
 _UNITS_PER_ARM = 12_000
-# Per-arm successes: with ``q = 0.1`` a conversion cell is dense (``auto`` routes it asymptotic)
-# at its family level only above 2140 of each count for two hypotheses, 3660 for four.
+# Per-arm successes: with ``alpha = 0.05`` a conversion cell is dense (``auto`` routes it
+# asymptotic) at its own level above 2140 of each count, whatever the family reads it at.
 _SUCCESSES = {"control": 4800, "T2": 3000}
 
 
@@ -2442,9 +2442,10 @@ def _conversion_family_analysis(arms, t1_successes):
 @pytest.mark.parametrize("t1_successes", [4800, 3800], ids=["no_selection", "fcr_reinterval"])
 def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t1_successes):
     """A late arm between reads must not enter the estimates of a family sized without it: the
-    routing level ``q / m``, the BH family and every returned row (including an FCR reinterval)
-    come from the one moments read each metric was sized from."""
-    from increment.estimation.conversion_route import dense_min_count, family_route_alpha
+    BH family and every returned row (including an FCR reinterval) come from the one moments
+    read each metric was sized from, and every member is routed at its own level by the counts
+    of that read."""
+    from increment.estimation.conversion_route import dense_level
 
     early = _conversion_family_analysis(["control", "T1"], t1_successes)
     late = _conversion_family_analysis(["control", "T1", "T2"], t1_successes)
@@ -2462,15 +2463,13 @@ def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t
     for row in rows:
         if row.discovery:
             continue
-        # An unselected cell is decided at its family's smallest level ``q / m``; its route is
-        # the one valid there.
-        assert row.family_q is not None
-        level = family_route_alpha(row.family_q, len(rows))
-        assert level is not None
-        dense = min(t1_successes, _UNITS_PER_ARM - t1_successes, 4800, 7200) >= dense_min_count(
-            level / 2
-        )
-        assert row.reference_kind == ("t" if dense else "binomial")
+        # An unselected cell keeps its nominal pass: dense at its own level, it took the delta
+        # route and carries the counts of the one read with their dense level.
+        assert row.reference_kind == "t"
+        assert row.delta_evidence is not None
+        counts = (4800, _UNITS_PER_ARM, t1_successes, _UNITS_PER_ARM)
+        assert row.delta_evidence.counts == counts
+        assert row.delta_evidence.dense_level == dense_level(*counts, alternative=row.alternative)
 
 
 def _mean_family_analysis(arms):

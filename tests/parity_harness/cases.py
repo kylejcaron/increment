@@ -149,6 +149,7 @@ class ParityCase:
     # A family case whose paths could all select nothing and still agree must
     # show at least one selected and one unselected row.
     require_selection: bool = False
+    decision_method: Any | None = None
     readout_probe: Callable[[Any], None] | None = None
     source_probe: Callable[[str, Analysis], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -847,14 +848,11 @@ def _fixed_horizon_case(
 ) -> ParityCase:
     """Mean/ratio/conversion(/CUPED-mean, when *include_cuped*), fixed
     horizon, under a real two-secondary(-plus-CUPED-sensitivity) plan
-    (q=0.10): supported on from_definitions, from_unit_day_artifact,
-    from_unit_summary, from_unit_panel and from_moments today -- the
-    CUPED covariate is a genuine pre-period value replicated across a
-    unit's panel rows, so from_unit_panel resolves it the same way
-    from_unit_summary's frame already carries it. `_breakout_case` passes
-    `include_cuped=False`: the breakout capability itself has nothing to
-    do with CUPED, and dropping the covariate metric keeps that case's
-    row set focused on breakouts alone.
+    (q=0.10). Breakout cases exercise the declared dimension on definitions,
+    artifacts, unit summaries and unit panels; portable moments deliberately
+    retain their refusal because they contain no per-unit segment labels.
+    CUPED uses a genuine pre-period value replicated across panel rows; the
+    summary and panel reductions resolve the same per-unit covariate.
     """
     rows = (
         _neighboring_ratio_event_rows()
@@ -939,6 +937,7 @@ def _fixed_horizon_case(
             control="control",
             metrics=summary_metrics,
             plan=frame_plan,
+            breakouts=("store",) if breakout else (),
         )
 
     panel_metrics = _fixed_horizon_frame_metrics(
@@ -1190,52 +1189,13 @@ def _lift_prior_case(
 
 
 def _breakout_case(*, boolean: bool = False) -> ParityCase:
-    """Same three metrics and plan (no CUPED -- see `include_cuped=False`
-    below), plus a declared `store` breakout (3 segments, both arms
-    present in every segment). Supported on from_definitions,
-    from_unit_day_artifact and from_unit_panel today. from_unit_summary
-    has no `breakouts=` construction parameter at all (SOURCE cannot
-    supply a declared breakout catalog on a one-row-per-unit frame) and
-    from_moments explicitly refuses run_breakout by its own docstring;
-    both raise `facade.analysis.operation`.
-
-    from_unit_panel used to be waived here too, blamed on the shared
-    metric set's `revenue_cuped` covariate (from_unit_panel does not yet
-    support CUPED at all -- `_mean_ratio_conversion_cuped_case` waives the
-    identical construction gap) -- an unrelated fixture choice, not a
-    breakout limitation: `run_breakout` names `from_unit_panel` as one of
-    only two constructors it supports at all
-    (`_breakout_readouts.py`), and `test_analysis_breakout.py`'s own
-    `test_run_breakout_bh_family_survives_*` tests already run BH-corrected
-    breakouts through it. `include_cuped=False` drops the covariate metric
-    from every constructor's plan/metric set (not just from_unit_panel's),
-    so all five attempted paths emit the identical (metric, arm, segment)
-    row set and from_unit_panel's own breakout row is genuinely compared,
-    not waived.
-
-    An earlier draft of this case mis-attributed the refusal to breakout
-    sample size and waived it as "deferred" without ever building
-    `build_unit_panel` to check; that draft also carried a real bug in
-    `event_rows`' original store formula (`f"s{i % n_stores}"` with
-    `n_stores=3` exactly aliased the exact-binomial skip condition `i % 3
-    != 0`, so segment `s0`'s `revenue`/`rps` mean was identically zero in
-    every arm -- confirmed live, and confirmed still failing at 4x this
-    seed's `n_per_arm`, so no fixture size fixes it) -- corrected now:
-    `event_rows` decorrelates store from the skip condition.
-
-    ``boolean=True`` makes ``store`` a genuine BOOLEAN warehouse column (declared
-    ``dtype: bool``) feeding the native path and the published artifact, and a
-    nullable Boolean column on the panel frame: native DuckDB is the oracle, every
-    path reads out as ``true``/``false``/``__null__``, and the same source
-    refusals apply.
-    """
-    case = _fixed_horizon_case(
+    """Breakout parity for mean, ratio, conversion and CUPED metrics."""
+    return _fixed_horizon_case(
         id="breakout_boolean_store_dimension" if boolean else "breakout_store_dimension",
         breakout=True,
-        include_cuped=False,
+        include_cuped=True,
         fixture=_Fixture(boolean_store=boolean),
     )
-    return case
 
 
 def _dashboard_breakout_reads_case() -> ParityCase:
@@ -1249,6 +1209,7 @@ def _dashboard_breakout_reads_case() -> ParityCase:
         return sorted(row.model_dump_json() for row in rows)
 
     def probe(path: str, analysis: Analysis) -> None:
+        # Summary breakouts work; the dashboard-scoped facade remains definitions-only.
         if path != "from_definitions":
             with pytest.raises(CodedError) as caught:
                 analysis.dashboard_breakout_reads(Breakout(property="store"))
@@ -1714,6 +1675,20 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
     )
 
 
+def _assert_horizon_export_warns_censoring(analysis: Analysis, path: Path) -> None:
+    from tests.warning_codes import warning_codes
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"fetch_arrow_table\(\) is deprecated, use to_arrow_table\(\) instead\.",
+            category=DeprecationWarning,
+        )
+        with pytest.warns(IncrementWarning) as captured:
+            analysis.export(path)
+    assert warning_codes(captured) == ["frame.censoring.dropped_units"]
+
+
 def _ratio_component_horizon_case(
     *,
     complete: bool = False,
@@ -1854,7 +1829,10 @@ def _ratio_component_horizon_case(
         else:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
-                analysis.export(path)
+                if constructor == "from_definitions" and not complete:
+                    _assert_horizon_export_warns_censoring(analysis, path)
+                else:
+                    analysis.export(path)
                 assert_moments(pq.read_table(path).to_pylist())
         if constructor in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
             rows = source.moments(
@@ -6543,6 +6521,7 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
             design=_ENCOURAGEMENT_ITT_DESIGN,
             uptake="uptake",
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7392,6 +7371,7 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
             design=design,
             uptake="clicked",
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7632,9 +7612,9 @@ _ROUTE_FAMILY_SIZE = 8
 
 
 def _route_family_threshold() -> int:
-    """The threshold of a metric in the BH family of `_conversion_route_case`: rows are routed
-    at the family's smallest level, ``q`` over its eight one-arm hypotheses."""
-    return dense_min_count(_ROUTE_ALPHA / (2 * _ROUTE_FAMILY_SIZE))
+    """The threshold of a metric in the BH family of `_conversion_route_case`: every row is
+    routed at its own level, the plan's 0.1 tail, whatever level the family reads it at."""
+    return _route_threshold()
 
 
 def _route_n_per_arm() -> int:
@@ -7643,11 +7623,11 @@ def _route_n_per_arm() -> int:
 
 def _route_conversions() -> dict[str, tuple[int, int, Literal["t", "binomial"]]]:
     """Per metric: control successes, treatment successes, and the route label
-    (`reference_kind`) the count rule assigns at the family's smallest level, as literal
-    offsets from that threshold ``m``: the sparsest of the four success and failure counts is
-    ``m - 1``, ``m`` or ``m + 1``, on the control success side and on its failure side, beside
-    dense and sparse neighbors. The arms differ by one unit, so no row is a BH discovery and
-    every row keeps its nominal pass, which is the one routed at that level."""
+    (`reference_kind`) the count rule assigns at the row's own level, as literal offsets from
+    that threshold ``m``: the sparsest of the four success and failure counts is ``m - 1``,
+    ``m`` or ``m + 1``, on the control success side and on its failure side, beside dense and
+    sparse neighbors. The arms differ by one unit, so no row is a BH discovery and every row
+    keeps its nominal pass; a delta row carries its counts and composite p-value."""
     m, n = _route_family_threshold(), _route_n_per_arm()
     return {
         "dense": (n // 2, n // 2 + 1, "t"),
@@ -7827,6 +7807,8 @@ def _conversion_route_case() -> ParityCase:
                 assert (row.lift.lb, row.lift.ub) == delta_interval(
                     x_c, n, x_t, n, tail=_ROUTE_ALPHA / 2, alternative="two-sided"
                 ), name
+                assert row.delta_evidence is not None, name
+                assert row.delta_evidence.counts == (x_c, n, x_t, n), name
 
     return ParityCase(
         id="conversion_route_straddles_the_dense_threshold",
@@ -7845,12 +7827,12 @@ def _conversion_route_case() -> ParityCase:
 def _route_segment_counts() -> dict[str, tuple[int, int, int, Literal["t", "binomial"]]]:
     """Per store segment: units per arm, control and treatment successes, and the route label.
     One conversion metric spans dense, sparse and threshold-straddling segments. The breakout
-    is a BH family of its four segments, so every row is routed at ``q / 4``, the family's
-    smallest level, and the straddling counts are offsets from that threshold."""
-    m = dense_min_count(_ROUTE_ALPHA / (2 * 4))
+    is a BH family of its four segments; every row is still routed at its own level, the 0.1
+    tail, and the straddling counts are offsets from that threshold."""
+    m = dense_min_count(_ROUTE_ALPHA / 2)
     n = 3 * m
     # The arms differ by one unit, so no row is a BH discovery and every row keeps its nominal
-    # pass, the one routed at the family's level (a discovery is re-estimated at its own FCR level).
+    # pass (a discovery is re-estimated at its own FCR level).
     return {
         "dense_store": (n, n // 2, n // 2 + 1, "t"),
         "edge_below_store": (n, m - 1, m, "binomial"),
@@ -7928,6 +7910,7 @@ def _conversion_route_breakout_case() -> ParityCase:
             control="control",
             metrics=specs,
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7966,20 +7949,19 @@ def _conversion_route_breakout_case() -> ParityCase:
     )
 
 
-# A two-hypothesis BH family at q = 0.2 reads p-values at q / 2 = 0.1, a 0.05 tail, while its
-# rows' own two-sided alpha of 0.2 puts a 0.1 tail on each side: counts dense at the nominal
-# tail but not at the family's must take the finite-sample route under an encouragement or an
-# observational design exactly as under a randomized one.
+# A two-hypothesis BH family at q = 0.2 reads p-values at a 0.05 tail while its rows' own alpha
+# of 0.2 puts a 0.1 tail on each side: counts dense only at the nominal tail keep the delta
+# route and their counts under every design, exactly as under a randomized one.
 def _family_route_between() -> int:
     return (dense_min_count(_ROUTE_ALPHA / 2) + dense_min_count(_ROUTE_ALPHA / 4)) // 2
 
 
 def _family_route_counts() -> dict[str, tuple[int, Literal["t", "binomial"]]]:
     """Per metric: control successes (the treatment arm has one more, so no row is a BH
-    discovery and every row keeps the pass routed at the family's level) and the route label
-    that level assigns."""
+    discovery and every row keeps its nominal pass) and the route label the row's own level
+    assigns."""
     return {
-        "a": (_family_route_between(), "binomial"),
+        "a": (_family_route_between(), "t"),
         "b": (2 * dense_min_count(_ROUTE_ALPHA / 4), "t"),
     }
 
@@ -8126,11 +8108,12 @@ def _family_route_probe(results: Any) -> None:
     for name, (_, kind) in _family_route_counts().items():
         assert rows[name].reference_kind == kind, name
         assert (rows[name].binomial_set is None) == (kind == "t"), name
+        assert (rows[name].delta_evidence is not None) == (kind == "t"), name
 
 
 def _conversion_route_encouragement_case() -> ParityCase:
     """Two conversion secondaries of an Encouragement design, one dense at the nominal tail and
-    one dense at the family's: every ingress must route each ITT row at the family's level."""
+    one at the family's: every ingress routes each ITT row at its own level with its counts."""
     plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=("a", "b"))
     definitions = Definitions.model_validate(
         _family_route_defs_dict(
@@ -8211,7 +8194,7 @@ def _conversion_route_encouragement_case() -> ParityCase:
 def _conversion_route_observational_case() -> ParityCase:
     """The same two conversion secondaries under an Observational design with an explicit
     unadjusted decision method: every ingress, a replayed moments cube included (it keeps the
-    exported plan's method bindings), routes each row at the family's level."""
+    exported plan's method bindings), routes each row at its own level with its counts."""
     unadjusted = {"name": "unadjusted"}
     plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=("a", "b"))
     definitions = Definitions.model_validate(

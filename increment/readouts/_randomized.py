@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._policy_alpha import resolve_cell_alpha
-from increment.estimation.conversion_route import family_route_alpha
+from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.engine import Method, reintervalize_cuped_decision
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.results import (
     LiftEstimate,
     _fcr_alpha_for,
+    carry_nominal_evidence,
     open_bound_from_two_sided_at_target,
 )
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
@@ -72,7 +73,7 @@ def _stamp_fcr_selected_rows(
                 if match is None:
                     continue
                 out.append(
-                    match.model_copy(
+                    carry_nominal_evidence(row, match).model_copy(
                         update={
                             "role": "secondary",
                             "discovery": family_discovery(outcome, key),
@@ -111,13 +112,9 @@ def _load_family_rows(
     plan: CompiledDecisionPlan,
     *,
     by: Sequence[str],
-) -> tuple[dict[str, Any], float | None]:
-    """Each secondary's rows, and the smallest level the family can decide a p-value at.
-
-    That level is the plan's ``q`` over every hypothesis the family tests (the metric x treatment
-    arm cells of its members: an explicit non-member secondary is not one); a conversion
-    decision row is routed at it, so its p-value is never read at a tail it is not dense for.
-    A quantile metric is refused before any data is read."""
+) -> dict[str, Any]:
+    """Each secondary's rows, read once for the nominal pass and reused by the FCR pass. A
+    quantile metric is refused before any data is read."""
     loaded: dict[str, Any] = {}
     for metric, config, test, is_quantile, metric_methods in secondary_entries:
         if is_quantile:
@@ -130,12 +127,7 @@ def _load_family_rows(
             methods=metric_methods,
             covariates=config.covariates,
         )
-    hypotheses = sum(
-        loaded[metric.name].n_treatment_arms
-        for metric, config, test, *_ in secondary_entries
-        if getattr(test.family, "member", False)
-    )
-    return loaded, family_route_alpha(plan.q, hypotheses)
+    return loaded
 
 
 def _secondary_family_cells(family, nominal_by_metric, family_groups_by_metric):
@@ -319,9 +311,8 @@ def _estimate_randomized_secondary_family(
     # frame), reused by the FCR pass instead of re-querying the source.
     evidence_by_metric: dict[str, Any] = {}
     refused_cells: list[tuple[str, str, str, str]] = []
-    loaded, route_alpha = _load_family_rows(src, secondary_entries, design, plan, by=by)
+    loaded = _load_family_rows(src, secondary_entries, design, plan, by=by)
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
-        member_route_alpha = route_alpha if getattr(test.family, "member", False) else None
         metric_rows = loaded[metric.name]
         rows, metric_observed, evidence_component, observed_groups = _secondary_source_rows(
             metric_rows, is_quantile, design.control_group
@@ -355,7 +346,7 @@ def _estimate_randomized_secondary_family(
                     "family" if is_quantile or getattr(test.family, "member", False) else "cells"
                 ),
                 methods=_metric_methods,
-                route_alpha=None if is_quantile else member_route_alpha,
+                family_member=bool(getattr(test.family, "member", False)) and not is_quantile,
             )
         nominal_by_metric[metric.name] = nominal
         nominal_computation_by_metric[metric.name] = computation
@@ -444,6 +435,7 @@ def _estimate_randomized_secondary_family(
                 inference=None if is_quantile else effective_inference,
                 advisory_seen=advisory_seen,
                 methods=_metric_methods[:1],
+                route_tail=None if is_quantile else fcr_route_tail(test.alternative, fcr_alpha),
             )
             computations.append(computation)
         reestimated[metric.name] = [

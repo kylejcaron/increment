@@ -95,6 +95,7 @@ from increment.query.fact_resolution import (
     _rename_to_builder_cols,
     _resolve_breakout_fact_source,
     _resolve_value_column,
+    validate_fact_source_schema,
 )
 from increment.query.integrity import (
     arm_counts,
@@ -192,6 +193,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             "breakout_sources",
             "day_source",
             "exploratory_source",
+            "unit_counts",
         }
     )
     shape: Literal["unit_summary", "unit_panel"] | None = None
@@ -379,9 +381,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         finally:
             self._assignment_validation_depth -= 1
 
-    def _get_fact_table(self, fact_source: FactSource) -> Table:
-        """Memoized fact table for *fact_source*, via the shared warehouse session."""
-        return self._session.fact_table(fact_source, self._experiment.unit)
+    def _get_fact_table(self, fact_source: FactSource, *, require_event: bool = True) -> Table:
+        """Memoized fact table with event-schema validation for event consumers."""
+        return self._session.fact_table(
+            fact_source, self._experiment.unit, require_event=require_event
+        )
 
     def _site_volume_scope_names(
         self, site_volume_metrics: frozenset[str], sources: dict[str, FactSource]
@@ -453,6 +457,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if self._session._source_tables is not None:
             return self
         sources: dict[str, FactSource] = {}
+        event_source_names: set[str] = set()
         queries: list[str] = []
         column_hints: dict[str, tuple[str | None, str | None]] = {}
         # Exposure/trigger SQL stays unscoped: it defines enrollment and the
@@ -463,6 +468,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         def add_fact(fact: str, *, unscoped: bool = False) -> str:
             source, _ = _find_fact_source(self._defs, fact)
             sources[source.name] = source
+            event_source_names.add(source.name)
             if unscoped:
                 unscoped_queries.add(source.sql)
             return source.name
@@ -553,6 +559,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
+        for source in sources.values():
+            validate_fact_source_schema(
+                self._session.source_sql(source.sql),
+                source,
+                require_event=source.name in event_source_names,
+            )
         enrolled = self._scope_enrolled_units()
         # The generous lower margin limits only the snapshot copy, not builder
         # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
@@ -823,7 +835,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         qualifying value is absent from the result and lands in the
         ``"__null__"`` bin via the caller's left join.
         """
-        raw = self._get_fact_table(fact_source)
+        raw = self._get_fact_table(fact_source, require_event=False)
         prop_def = next(p for p in self._defs.properties_of(fact_source) if p.name == property_name)
         scoped_exposures = exposures if prop_def.as_of == "pre_exposure" else None
         return breakout_property_table(raw, property_name, scoped_exposures)
@@ -1034,7 +1046,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # fact table, _get_fact_table synthesizes an all-NULL one, so a post-rename check
         # would always pass and silently drop every row.
         fs, _fact = _find_fact_source(self._defs, exposure_def.fact)
-        raw_has_experiment_id = "experiment_id" in self._session.source_sql(fs.sql).columns
+        source_table = self._session.source_sql(fs.sql)
+        validate_fact_source_schema(source_table, fs)
+        raw_has_experiment_id = "experiment_id" in source_table.columns
         # Scoping before pinning (`dim_joined=False`) skips the dim join when the
         # source declares no dims: scoping reads no joined property, and
         # `_assemble_publication` rebuilds the joined table from the snapshot.
@@ -1042,9 +1056,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if dim_joined or fs.dims:
             tbl = self._get_fact_table(fs)
         else:
-            tbl = _rename_to_builder_cols(
-                self._session.source_sql(fs.sql), fs, self._experiment.unit
-            )
+            tbl = _rename_to_builder_cols(source_table, fs, self._experiment.unit)
         tbl = tbl.filter(tbl.event == exposure_def.fact)
         if raw_has_experiment_id:
             # NULL experiment_id can mark unrelated rows sharing this fact, such as

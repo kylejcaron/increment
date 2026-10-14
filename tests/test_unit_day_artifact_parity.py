@@ -377,11 +377,18 @@ def covariate_pair(covariate_publication):
 def test_adopted_reduction_does_no_upstream_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from increment.estimation.engine import Method
     from increment.query import session as session_module
 
     _connection, native, context, store = _native()
     reference = native.publish_unit_day_artifact(store)
-    baseline = lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value
+    baseline = (
+        lift_rows(native.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted")))[
+            0
+        ]
+        .require_lift()
+        .value
+    )
 
     def upstream_work(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("adopted reduction attempted upstream work")
@@ -1961,6 +1968,9 @@ def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
     adopted = Analysis.from_unit_day_artifact(
         cast(ArtifactStore, RacingStore()), reference, expected_context=context
     )
+    from increment.estimation.engine import Method
+
+    unadjusted = Method(name="unadjusted")
     try:
         rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
         assert state["rebound"]
@@ -1968,7 +1978,9 @@ def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
         assert state["warehouse_rows"]
         assert state["warehouse_rows"][0]["sum_value"] == 999999.0
         assert rows[0].require_lift().value == pytest.approx(
-            lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value
+            lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))[0]
+            .require_lift()
+            .value
         )
         assert rows[0].require_lift().value != 999999.0
     finally:
@@ -2768,6 +2780,9 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
         native_source = _native_source(native)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
+        from increment.estimation.engine import Method
+
+        unadjusted = Method(name="unadjusted")
         return {
             "native_rows": native_source.day_source(metrics=(native_metric,)).moments(
                 native_metric, grain="daily"
@@ -2775,8 +2790,14 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
             "adopted_rows": adopted_source.day_source(metrics=(adopted_metric,)).moments(
                 adopted_metric, grain="daily"
             ),
-            "native_lift": lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value,
-            "adopted_lift": lift_rows(adopted.run(metrics=["purchase_rate"]))[0]
+            "native_lift": lift_rows(
+                native.run(metrics=["purchase_rate"], decision_method=unadjusted)
+            )[0]
+            .require_lift()
+            .value,
+            "adopted_lift": lift_rows(
+                adopted.run(metrics=["purchase_rate"], decision_method=unadjusted)
+            )[0]
             .require_lift()
             .value,
         }
@@ -2865,6 +2886,244 @@ def test_a_naive_utc_minus_five_experiment_publishes_and_adopts_like_from_defini
         experiment = defs.experiment("new_onboarding_v2")
         assert experiment is not None
         assert artifact_source_mapping(context) == native_observation_mapping(defs, experiment)
+    finally:
+        adopted.close()
+        native.close()
+
+
+def _insert_window_boundary_events(connection: Any, window_ns: int) -> list[dict[str, Any]]:
+    end_units = connection.to_pyarrow(
+        connection.sql(
+            f"""
+            WITH exposure AS (
+                SELECT user_id, min(epoch_ns(event_at)) AS exposure_ns
+                FROM analytics.event_log
+                WHERE experiment_id = 'new_onboarding_v2'
+                  AND event = 'page_view' AND group_id = 'treatment'
+                GROUP BY user_id
+            )
+            SELECT exposure.user_id, exposure.exposure_ns
+            FROM exposure
+            WHERE NOT EXISTS (
+                SELECT 1 FROM analytics.event_log AS purchase
+                WHERE purchase.user_id = exposure.user_id
+                  AND purchase.event = 'purchase'
+                  AND epoch_ns(purchase.event_at) >= (exposure.exposure_ns // 1000) * 1000
+                  AND epoch_ns(purchase.event_at)
+                      < (exposure.exposure_ns // 1000) * 1000 + {window_ns}
+            )
+            ORDER BY exposure.user_id
+            LIMIT 3
+            """
+        )
+    ).to_pylist()
+    assert len(end_units) == 3
+    deltas = (window_ns - 1000, window_ns - 999, window_ns - 998)
+    values = ", ".join(
+        f"('{unit['user_id']}', {unit['exposure_ns']}, {delta})"
+        for unit, delta in zip(end_units, deltas, strict=True)
+    )
+    connection.raw_sql(
+        f"""
+        INSERT INTO analytics.event_log
+        SELECT make_timestamp_ns(window_rows.exposure_ns + window_rows.delta_ns),
+               window_rows.user_id, 'window_end_' || window_rows.user_id,
+               'purchase', 1.0, NULL, 'US', 'desktop', 'free', NULL, NULL
+        FROM (VALUES {values}) AS window_rows(user_id, exposure_ns, delta_ns)
+        """
+    )
+    return end_units
+
+
+def _published_boundary_artifact_rows(
+    connection: Any, store: Any, reference: Any
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, int],
+    Any,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    raw_exposures = connection.to_pyarrow(
+        connection.sql(
+            """
+            SELECT user_id, group_id, min(epoch_ns(event_at)) AS first_exposure_ns
+            FROM analytics.event_log
+            WHERE experiment_id = 'new_onboarding_v2' AND event = 'page_view'
+            GROUP BY user_id, group_id
+            ORDER BY first_exposure_ns, user_id
+            """
+        )
+    ).to_pylist()
+    expected_floor = {
+        row["user_id"]: row["first_exposure_ns"] // 1000 * 1000 for row in raw_exposures
+    }
+    with store.open_snapshot(reference) as snapshot:
+        manifest = snapshot.read_manifest(
+            reference.manifest, expected_sha256=reference.manifest_sha256
+        )
+        exposures = snapshot.verify_relation(manifest.base.exposures, expected_role="exposures")
+        stored = connection.to_pyarrow(exposures).to_pylist()
+        stats = snapshot.verify_relation(manifest.base.measure_stats, expected_role="measure_stats")
+        stats_rows = connection.to_pyarrow(stats).to_pylist()
+        uptake_ref = next(
+            item for item in manifest.extensions if item.kind == "encouragement_uptake"
+        )
+        uptake_relation = snapshot.verify_relation(
+            uptake_ref.relation, expected_role="encouragement_uptake"
+        )
+        uptake_rows = connection.to_pyarrow(uptake_relation).to_pylist()
+    return raw_exposures, expected_floor, manifest, stored, stats_rows, uptake_rows
+
+
+@pytest.mark.integration
+def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
+    import yaml
+
+    definitions = _definitions(tmp_path)
+    payload = yaml.safe_load(definitions.read_text())
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["plan"] = {"secondaries": ["purchase_rate"]}
+    experiment["design"] = {
+        "mechanism": "encouragement",
+        "one_sided": False,
+        "uptake": {"fact": "purchase", "window_days": 14},
+        "exclusion_restriction": {
+            "acknowledged": True,
+            "justification": "synthetic test data",
+        },
+    }
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    connection, native, context, store = _native(definitions=definitions)
+    connection.raw_sql(
+        """
+        CREATE OR REPLACE TABLE analytics.event_log AS
+        SELECT make_timestamp_ns(epoch_us(event_at) * 1000 + 999) AS event_at,
+               * EXCLUDE (event_at)
+        FROM analytics.event_log
+        """
+    )
+    connection.raw_sql(
+        """
+        INSERT INTO analytics.event_log
+        WITH anchor AS (
+            SELECT user_id, session_id, epoch_ns(event_at) AS exposure_ns
+            FROM analytics.event_log
+            WHERE experiment_id = 'new_onboarding_v2'
+              AND event = 'page_view' AND group_id = 'treatment'
+            ORDER BY event_at, user_id LIMIT 1
+        ),
+        offsets(delta_ns) AS (
+            VALUES (-1), (0), (1), (500), (999)
+        )
+        SELECT make_timestamp_ns(anchor.exposure_ns + offsets.delta_ns),
+               anchor.user_id, anchor.session_id || '_boundary_' || offsets.delta_ns,
+               'purchase', 1.0, NULL, 'US', 'desktop', 'free', NULL, NULL
+        FROM anchor CROSS JOIN offsets
+        """
+    )
+    elapsed_window_ns = 14 * 24 * 60 * 60 * 1_000_000_000
+    end_units = _insert_window_boundary_events(connection, elapsed_window_ns)
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "encouragement_uptake")
+    )
+    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    from increment import Method
+
+    unadjusted = Method(name="unadjusted")
+    try:
+        expected = native.run(estimands=["itt", "compliance"], decision_method=unadjusted)
+        actual = adopted.run(estimands=["itt", "compliance"], decision_method=unadjusted)
+        assert len(actual) == len(expected)
+        for expected_row, actual_row in zip(expected, actual, strict=True):
+            expected_fields = _flatten_readout_row(expected_row)
+            actual_fields = _flatten_readout_row(actual_row)
+            assert actual_fields.keys() == expected_fields.keys()
+            for field, expected_value in expected_fields.items():
+                actual_value = actual_fields[field]
+                if isinstance(expected_value, float):
+                    assert actual_value == pytest.approx(expected_value, rel=1e-12, abs=1e-12), (
+                        expected_fields,
+                        actual_fields,
+                        field,
+                    )
+                else:
+                    assert actual_value == expected_value
+        (
+            raw_exposures,
+            expected_floor,
+            manifest,
+            stored,
+            stats_rows,
+            uptake_rows,
+        ) = _published_boundary_artifact_rows(connection, store, reference)
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        assert stored
+        for row in stored:
+            delta = row["first_exposure_ts"] - epoch
+            stored_ns = (
+                (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+            ) * 1000
+            assert stored_ns == expected_floor[row["unit_id"]]
+        binding = next(
+            item for item in manifest.metric_measures if item.metric_name == "purchase_rate"
+        )
+        target_unit = next(
+            row["user_id"]
+            for row in raw_exposures
+            if row["group_id"] == "treatment" and row["first_exposure_ns"] % 1000 == 999
+        )
+        target_uptake = next(row for row in uptake_rows if row["unit_id"] == target_unit)
+        assert target_uptake["uptake"] is True
+        assert target_uptake["first_uptake_ts"] == next(
+            row["first_exposure_ts"] for row in stored if row["unit_id"] == target_unit
+        )
+        uptake_by_unit = {row["unit_id"]: row for row in uptake_rows}
+        for unit, should_uptake in zip(end_units, (True, False, False), strict=True):
+            uptake = uptake_by_unit[unit["user_id"]]
+            assert uptake["uptake"] is should_uptake, (unit, uptake)
+            if should_uptake:
+                end_us = unit["exposure_ns"] // 1000 * 1000 + elapsed_window_ns
+                expected_last_inside = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+                    microseconds=(end_us - 1000) // 1000
+                )
+                assert uptake["first_uptake_ts"] == expected_last_inside
+            else:
+                assert uptake["first_uptake_ts"] is None
+        lower = next(
+            row["first_exposure_ns"] for row in raw_exposures if row["user_id"] == target_unit
+        )
+        upper = lower + 14 * 24 * 60 * 60 * 1_000_000_000
+        strict_count = connection.to_pyarrow(
+            connection.sql(
+                f"""
+                SELECT count(*) AS n
+                FROM analytics.event_log
+                WHERE user_id = '{target_unit}' AND event = 'purchase'
+                  AND epoch_ns(event_at) > {lower} AND epoch_ns(event_at) < {upper}
+                """
+            )
+        ).to_pylist()[0]["n"]
+        weak_count = connection.to_pyarrow(
+            connection.sql(
+                f"""
+                SELECT count(*) AS n
+                FROM analytics.event_log
+                WHERE user_id = '{target_unit}' AND event = 'purchase'
+                  AND epoch_ns(event_at) >= {lower} AND epoch_ns(event_at) < {upper}
+                """
+            )
+        ).to_pylist()[0]["n"]
+        assert weak_count == strict_count + 1
+        stored_count = sum(
+            row["n_events"]
+            for row in stats_rows
+            if row["unit_id"] == target_unit and row["measure_key"] == binding.measure_key
+        )
+        assert stored_count == strict_count
     finally:
         adopted.close()
         native.close()

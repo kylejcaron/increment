@@ -1,48 +1,44 @@
 # Statistical limitations
 
-Every number this library reports rests on assumptions. This page puts them in
-one place, so you can see what a result assumes without reading the source.
+Use this page to check which assumptions and guarantees apply to your metric, method or
+decision. Start with [At a glance](#at-a-glance), then open the folds for statistical
+details, refusal codes and measurements; [Evidence status](validation.md#evidence-status)
+explains how the library labels its evidence.
 
-Most entries mark deliberate limits: a method that is standard but
-approximate, an estimand that is narrower than it looks, or a guarantee that
-holds under a condition the library cannot check for you. A few identify gaps:
-a safeguard or diagnostic that one entry point provides and a neighboring one
-does not. Where the package offers a better route, this page names it.
-
-Read the section that matches the decision you are making. Each entry says what
-the library does, what it assumes, and when the assumption matters.
-For how evidence is labelled see [Evidence status](validation.md#evidence-status).
+For a runnable analysis, follow the [quickstart](guides/quickstart.md#one-row-per-randomization-unit).
 
 ## How to read a refusal
 
 A refusal is a coded early stop, not a silent fallback: branch on `.code`
 ([Machine-readable contracts](api.md#machine-readable-contracts)). The labels in the
 [capabilities table](reference/capabilities-by-entry-point.md#what-runs-where) say where a
-refusal comes from, not whether it is permanent.
+refusal comes from, not whether it is permanent; a cell marked **not expressible** means the
+call cannot be written at all, so there is no `.code` to branch on.
 
-Not every unavailable capability is a refusal. Where the entry point has no parameter or
-constructor for the request, the table says **not expressible**: the call cannot be written, so
-Python raises `TypeError` (or there is nothing to call) and there is no `.code` to branch on.
-`from_switchback_panel(..., design=...)` and `from_switchback_panel(..., cluster=...)` are
-examples, as is every logged-policy request made through an `Analysis` entry point.
+??? info "Refusal labels: not expressible, SOURCE, CONSTRUCTION, COMBINATION, not comparable"
+    Not every unavailable capability is a refusal. Where the entry point has no parameter or
+    constructor for the request, the table says **not expressible**: the call cannot be written, so
+    Python raises `TypeError` (or there is nothing to call) and there is no `.code` to branch on.
+    `from_switchback_panel(..., design=...)` and `from_switchback_panel(..., cluster=...)` are
+    examples, as is every logged-policy request made through an `Analysis` entry point.
 
-- **SOURCE**: the entry point's input does not carry what the capability needs, as when a
-  moments cube carries no per-unit rows to attach a covariate to. This is a current absence
-  unless the text says structural, as the `from_switchback_panel` encouragement, observational
-  and cluster rows (not expressible) and quantile requests (a coded refusal) do.
-- **CONSTRUCTION**: no admissible construction exists for the request on that path. Five
-  reasons are stated: filling an outcome with its pooled mean shrinks variance; the margin
-  verdict is carried by `itt`; JSON object keys are strings; windowed and retention metrics
-  have no per-unit collapse for a CUPED covariate (use `from_unit_summary`); and the repair
-  for adaptive logging is not implemented (tracker-owned).
-- **COMBINATION**: stored state from an earlier release meets the current reader, recipe or
-  roster, as when a format-1 artifact context reaches the current reader.
-- **not comparable**: the capability concerns something that entry point lacks, such as an
-  artifact store, so there is no result to compare. The cell also names a SOURCE reason.
+    - **SOURCE**: the entry point's input does not carry what the capability needs, as when a
+      moments cube carries no per-unit rows to attach a covariate to. This is a current absence
+      unless the text says structural, as the `from_switchback_panel` encouragement, observational
+      and cluster rows (not expressible) and quantile requests (a coded refusal) do.
+    - **CONSTRUCTION**: no admissible construction exists for the request on that path. Five
+      reasons are stated: filling an outcome with its pooled mean shrinks variance; the margin
+      verdict is carried by `itt`; JSON object keys are strings; windowed and retention metrics
+      have no per-unit collapse for a CUPED covariate (use `from_unit_summary`); and the repair
+      for adaptive logging is not implemented (tracker-owned).
+    - **COMBINATION**: stored state from an earlier release meets the current reader, recipe or
+      roster, as when a format-1 artifact context reaches the current reader.
+    - **not comparable**: the capability concerns something that entry point lacks, such as an
+      artifact store, so there is no result to compare. The cell also names a SOURCE reason.
 
-The parity harness (`helper:tests/parity_harness/matrix.py`) calls SOURCE `source_limited` and
-CONSTRUCTION `construction_limited`; its waiver strings label the "no switchback schedule"
-cells `COMBINATION:` where this page says SOURCE.
+    The parity harness (`helper:tests/parity_harness/matrix.py`) calls SOURCE `source_limited` and
+    CONSTRUCTION `construction_limited`; its waiver strings label the "no switchback schedule"
+    cells `COMBINATION:` where this page says SOURCE.
 
 ## At a glance
 
@@ -57,29 +53,30 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [Mixed-covariate linear CUPED is fixed-horizon approximate](#mixed-covariate-linear-cuped-is-fixed-horizon-approximate) | approximation | HC2 uncertainty and a Bell–McCaffrey Student-t reference are working approximations, not finite-sample coverage. |
 | [Conversion and retention follow count-based inference routes](#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused) | scope of guarantee | Reading a conversion or retention interval's route, size limits, or extreme alpha. |
 | [Signed effects require a suitable scale and reference](#signed-effects-require-a-suitable-scale-and-reference) | assumption | A control mean can be zero or negative. |
-| [A quantile's reported interval depends on the alpha you asked for](#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for) | scope of guarantee | Comparing quantile intervals across analyses that allocated different alpha. |
-| [A quantile metric's planned variance is a projection from the pilot, not a certified bound](#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound) | approximation | Sizing a quantile experiment from a pilot, or extrapolating far past it. |
-| [Switchback carryover is assumed away, not tested](#switchback-carryover-is-assumed-away-not-tested) | assumption | Choosing a switchback washout; carryover is declared, not verified. |
-| [Switchback inference requires independent units or blocks](#switchback-inference-requires-independent-units-or-blocks) | assumption | Switchback units may correlate, interfere, or share schedules. |
-| [Sequential information fractions are unit counts, not Fisher information](#sequential-information-fractions-are-unit-counts-not-fisher-information) | approximation | Allocation or variance drifts during sequential monitoring. |
+| [A quantile's reported interval depends on the alpha you asked for](#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for) | scope of guarantee | Comparing quantile intervals across analyses that used different alpha. |
+| [A quantile metric's planned variance is a projection from the pilot, not a certified bound](#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound) | approximation | Sizing a quantile experiment from a pilot, especially far past the pilot's size. |
+| [Switchback carryover is assumed away, not tested](#switchback-carryover-is-assumed-away-not-tested) | assumption | Choosing a switchback washout; nothing checks that carryover has faded. |
+| [Switchback inference requires independent units or blocks](#switchback-inference-requires-independent-units-or-blocks) | assumption | Switchback units share a seed or schedule, or can affect each other. |
+| [Sequential information fractions are unit counts, not Fisher information](#sequential-information-fractions-are-unit-counts-not-fisher-information) | approximation | Allocation or variance drifts while you monitor. |
 | [The sequential certification campaign has not been executed](#the-sequential-certification-campaign-has-not-been-executed) | tracked work | Relying on sequential or cluster evidence beyond its bounded release checks; see [Unvalidated regimes](validation.md#unvalidated-regimes). |
-| [Off-policy evaluation of logged decisions is calibrated only under a fixed logger](#off-policy-evaluation-of-logged-decisions-is-calibrated-only-under-a-fixed-logger) | scope of guarantee | Evaluating logged decisions: interval is asymptotic and needs a fixed logger. |
-| [Arm power planning depends on declared alternative-arm variance shapes](#arm-power-planning-depends-on-declared-alternative-arm-variance-shapes) | assumption | Planning with alternative-arm variances that future data may not follow. |
-| [Conversion planning follows the runtime's route; the finite-sample replay is bounded](#conversion-planning-follows-the-runtimes-route-the-finite-sample-replay-is-bounded) | approximation | Planning conversion or retention beyond the exact-replay budget. |
-| [Switchback planning requires its own model](#switchback-planning-requires-its-own-model) | approximation | Sizing a switchback from a pilot; estimation uncertainty is not included. |
-| [DML reports a partially-linear slope, not an average treatment effect](#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect) | narrower estimand | Effects are heterogeneous and DML is read as an average effect. |
-| [Only untrimmed native-logistic IPTW accounts for fitting its propensity](#only-untrimmed-native-logistic-iptw-accounts-for-fitting-its-propensity) | approximation | Trimmed or generic propensity fits: standard error omits propensity estimation. |
-| [Trimming changes which population you estimated](#trimming-changes-which-population-you-estimated) | narrower estimand | Overlap trimming removes units; the estimand changes. |
+| [Off-policy evaluation of logged decisions is calibrated only under a fixed logger](#off-policy-evaluation-of-logged-decisions-is-calibrated-only-under-a-fixed-logger) | scope of guarantee | Evaluating logged decisions; the logging policy must not have changed while logging. |
+| [Arm power planning depends on declared alternative-arm variance shapes](#arm-power-planning-depends-on-declared-alternative-arm-variance-shapes) | assumption | Planning when the treatment arm's variance may not follow the assumed shape. |
+| [Conversion planning follows the runtime's route; the finite-sample replay is bounded](#conversion-planning-follows-the-runtimes-route-the-finite-sample-replay-is-bounded) | approximation | Planning a conversion or retention test at large arms or with `conversion_inference="finite_sample"`. |
+| [Switchback planning requires its own model](#switchback-planning-requires-its-own-model) | approximation | Sizing a switchback from a pilot; the pilot's own uncertainty is not included. |
+| [DML reports a partially-linear slope, not an average treatment effect](#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect) | narrower estimand | Reading DML as an average effect when effects differ across units and treatment-assignment weights vary. |
+| [Only untrimmed native-logistic IPTW accounts for fitting its propensity](#only-untrimmed-native-logistic-iptw-accounts-for-fitting-its-propensity) | approximation | Using a trimmed or custom propensity fit; its standard error omits fitting uncertainty. |
+| [Trimming changes which population you estimated](#trimming-changes-which-population-you-estimated) | narrower estimand | Overlap trimming removed units; the result describes who is left. |
 | [The positivity gate is a fixed threshold with no weight diagnostics](#the-positivity-gate-is-a-fixed-threshold-with-no-weight-diagnostics) | scope of guarantee | Relying on weighting; passing the gate is not evidence of overlap. See [Unvalidated regimes](validation.md#unvalidated-regimes). |
-| [Fixed-horizon FDR control assumes a dependence condition that is not checked](#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked) | assumption | Fixed-horizon selection over correlated outcomes; the dependence condition is not checked. |
+| [Fixed-horizon FDR control assumes a dependence condition that is not checked](#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked) | assumption | Selecting among correlated metrics that share a control arm. |
 | [Sequential selected intervals use the same stopped likelihood](#sequential-selected-intervals-use-the-same-stopped-likelihood) | scope of guarantee | Reading a selected interval as coverage for one metric picked afterwards. |
-| [Stopping-date guarantees require the registered reveal contract](#stopping-date-guarantees-require-the-registered-reveal-contract) | assumption | Monitoring departs from the registered reveal contract, or flags accumulate across dates. |
+| [Stopping-date guarantees require the registered reveal contract](#stopping-date-guarantees-require-the-registered-reveal-contract) | assumption | Monitoring departs from the registered reveal contract, or you tally flags across dates. |
+| [Triggered sequential monitoring assumes trigger invariance and trigger-order stationarity](#triggered-sequential-monitoring-assumes-trigger-invariance-and-trigger-order-stationarity) | assumption | Monitoring a triggered population; treatment must not change who triggers or when. |
 | [Clustered CATE uncertainty is cluster-asymptotic](#clustered-cate-uncertainty-is-cluster-asymptotic) | approximation | Clustered CATE with few, unbalanced, or high-leverage clusters. |
-| [Triggered-population sitewide impact needs an external assumption](#triggered-population-sitewide-impact-needs-an-external-assumption) | assumption | Estimating whole-site impact from the triggered cohort. |
 | [Targeting validation depends on identification and overlap](#targeting-validation-depends-on-identification-and-overlap) | assumption | Validating targeting on observational data; ignorability cannot be checked. |
 | [The targeting workflow carries no joint error control](#the-targeting-workflow-carries-no-joint-error-control) | scope of guarantee | Acting on the strongest of many targeting-workflow tests. |
-| [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling few segments; HKSJ can undercover in the tested design. |
+| [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling two or three segments; the pooled interval can be slightly too narrow. |
 | [The read-only SQL gate is a screen, not a sandbox](#the-read-only-sql-gate-is-a-screen-not-a-sandbox) | operational | Definitions could come from anyone you do not fully trust. |
+| [Triggered secondary readouts](#triggered-secondary-readouts) | assumption | Reading triggered breakouts, sitewide, CATE or targeting; triggering must be unaffected by treatment. |
 
 ## What runs where
 
@@ -91,325 +88,404 @@ points in three families: **dataframe** (`from_unit_summary`, one row per unit;
 into the warehouse); and **portable** (`from_moments`, a file of pre-reduced
 moments exported from any of the others).
 
-The table records measured behavior on every path, using the dataframe unit-summary
-path as the oracle against which the other matched-arm paths are checked. The switchback panel estimates a
-different quantity (a fixed-horizon contrast over a switchback schedule), so it is
-exercised on its own and never compared row for row with that oracle. It lives in
-[Capabilities by entry point](reference/capabilities-by-entry-point.md#what-runs-where).
+[Capabilities by entry point](reference/capabilities-by-entry-point.md#what-runs-where)
+records measured behavior on every path, checked against the dataframe unit-summary path
+as the oracle. The switchback panel estimates a different quantity (a fixed-horizon
+contrast over a switchback schedule), so it is exercised on its own and never compared row
+for row with that oracle.
 
 ## What the intervals assume
 
 ### Uncertainty is estimated on every path
 
-No estimator here is handed a known variance; every one estimates uncertainty from the
-data. What differs is the approximation each family layers on to get there:
+An interval's guarantee depends on its reference and assumptions, not just on estimating
+uncertainty from the data. Approximate references are weakest at small samples, for
+heavy-tailed outcomes and for ratio metrics. Finite-sample guarantees come from eligible
+fixed-horizon conversion and retention relative-risk sets labelled
+`reference_kind="binomial"`, prospective switchback `UnitCycleVarianceEnvelope` bounds,
+or the registered Bernoulli sequential route, each under its own declared assumptions;
+the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
 
-| Family | How uncertainty is obtained |
-|---|---|
-| Conversion and retention arm lift (unadjusted, unit-grain, no informative prior), all four success and failure counts dense | Delta-method log-scale uncertainty against a Welch-Satterthwaite t reference (`reference_kind="t"`), as every unadjusted mean -- an approximation with no finite-sample guarantee, checked at the dense-count threshold (`conversion_inference="auto"`, the default) |
-| Conversion and retention arm lift (same eligibility), any sparse count, or `conversion_inference="finite_sample"` | Exact independent-binomial risk-ratio test inversion (Berger-Boos restricted-nuisance construction) -- no delta method, no Normal reference (`reference_kind="binomial"`) |
-| Unit-grain mean/ratio lift and CUPED, no informative prior | Delta-method log-scale uncertainty against a Welch-Satterthwaite t reference, whose degrees of freedom are persisted on the row |
-| Clustered unadjusted arm lift | Joint additive/control covariance, Fieller relative set; separate additive uncertainty |
-| Sequential | Separate registered observation-model contract; fixed-horizon approximations do not establish anytime validity |
-| Quantiles | Inversion of an order-statistic bracket (Woodruff), not a delta method |
-| Switchback | Independent unit-cycle orders: default `UnitCycleTApproximation` (sample variance, at least two units, `dof = n_units - 1`); a valid prospective `UnitCycleVarianceEnvelope` is a separate stronger route supporting one unit. Shared schedules: block-t on at least two blocks |
-| Observational adjusted methods | Influence-function sandwich |
+!!! warning "A feasibility floor is not a calibration guarantee"
+    The sampling floor (two units per arm for most arm inference, twenty for a quantile)
+    says a method can run, not that its interval is calibrated. No result field diagnoses
+    misspecification or certifies calibration. For ratio metrics, a positive
+    `ratio_denominator_skew` warning marks a measured regime where undercoverage is more
+    likely; it is not a verdict for every numerator/denominator relationship. A
+    `ratio_denominator_skew: unavailable` note means the check could not be computed, not
+    that skew was found. The unchanged interval may under-cover in some measured regimes.
 
-Estimating the variance does not by itself forfeit finite-sample validity — under
-parametric assumptions it need not. But it does mean each family's interval inherits the
-quality of its own approximation, and those are not interchangeable. The gap matters most
-at small n, for heavy-tailed outcomes, and for ratio metrics, where a first-order
-approximation is furthest from the truth.
+??? info "Statistical details: how each family estimates uncertainty"
+    | Family | How uncertainty is obtained |
+    |---|---|
+    | Conversion and retention arm lift (unadjusted, unit-grain, no informative prior), all four success and failure counts dense | Delta-method log-scale uncertainty against a Welch-Satterthwaite t reference (`reference_kind="t"`), as every unadjusted mean -- an approximation with no finite-sample guarantee, checked at the dense-count threshold (`conversion_inference="auto"`, the default) |
+    | Conversion and retention arm lift (same eligibility), any sparse count, or `conversion_inference="finite_sample"` | Exact independent-binomial risk-ratio test inversion (Berger-Boos restricted-nuisance construction) -- no delta method, no Normal reference (`reference_kind="binomial"`) |
+    | Unit-grain mean/ratio lift and CUPED, no informative prior | Delta-method log-scale uncertainty against a Welch-Satterthwaite t reference, whose degrees of freedom are persisted on the row |
+    | Clustered unadjusted arm lift | Joint additive/control covariance, Fieller relative set; separate additive uncertainty |
+    | Sequential | Separate registered observation-model contract; fixed-horizon approximations do not establish anytime validity |
+    | Quantiles | Inversion of an order-statistic bracket (Woodruff), not a delta method |
+    | Switchback | Independent unit-cycle orders: default `UnitCycleTApproximation` (sample variance, at least two units, `dof = n_units - 1`); a valid prospective `UnitCycleVarianceEnvelope` is a separate stronger route supporting one unit. Shared schedules: block-t on at least two blocks |
+    | Observational adjusted methods | Influence-function sandwich |
 
-Absolute effects on the switchback and observational paths are estimated natively on the
-additive scale rather than reconstructed from a log-scale estimate, so they carry their own
-path's approximation and not an additional one.
+    Estimating the variance does not by itself forfeit finite-sample validity — under
+    parametric assumptions it need not. But it does mean each family's interval inherits the
+    quality of its own approximation, and those are not interchangeable. The gap matters most
+    at small n, for heavy-tailed outcomes, and for ratio metrics, where a first-order
+    approximation is furthest from the truth.
 
-Approximate inference paths do not promise finite-sample exactness for a discrete outcome.
-Eligible fixed-horizon conversion/retention results with `reference_kind="binomial"`
-retain a finite-sample guarantee for the relative-risk confidence set and its
-relative-scale decisions. Only those rows do: the default `conversion_inference="auto"`
-labels a row with dense counts `reference_kind="t"`, an approximation whose noncoverage was
-measured to stay within a stated tolerance at the dense-count threshold (see the next
-section) and is not a finite-sample guarantee; the default is never a universally
-finite-sample route. Their additive `abs_lb`/`abs_ub` sidecar, when available,
-uses a Normal-Wald approximation on either route; that interval is not exact.
-Asymptotic and empirically qualified methods are labeled as such rather than treated as
-exact; an unfinished or unsupported capability refuses before producing a result.
-No result field diagnoses model misspecification.
-For approximate results, no field certifies calibration. A procedure declares a coarse
-sampling floor — two units per arm for most arm inference, twenty for a quantile.
-Cluster methods require estimable independent contributions, not a universal
-ten-cluster admission rule. A feasibility minimum is not a calibration guarantee.
+    Absolute effects on the switchback and observational paths are estimated natively on the
+    additive scale rather than reconstructed from a log-scale estimate, so they carry their own
+    path's approximation and not an additional one.
 
-It is not the estimator's own feasibility check either, and the two can disagree in both
-directions. The quantile order-statistic bracket needs a sample that depends on the
-requested quantile and the alpha it is evaluated at: a median at 95% is feasible on six
-units per arm, well under the declared twenty, while a 99th percentile needs 368.
+    Approximate inference paths do not promise finite-sample exactness for a discrete outcome.
+    Eligible fixed-horizon conversion/retention results with `reference_kind="binomial"`
+    retain a finite-sample guarantee for the relative-risk confidence set and its
+    relative-scale decisions. Only those rows do: the default `conversion_inference="auto"`
+    labels a row with dense counts `reference_kind="t"`, an approximation whose noncoverage was
+    measured to stay within a stated tolerance at the dense-count threshold (see the next
+    section) and is not a finite-sample guarantee; the default is never a universally
+    finite-sample route. Their additive `abs_lb`/`abs_ub` sidecar, when available,
+    uses a Normal-Wald approximation on either route; that interval is not exact.
+    Asymptotic and empirically qualified methods are labeled as such rather than treated as
+    exact; an unfinished or unsupported capability refuses before producing a result.
+    No result field diagnoses model misspecification.
 
-The quantile interval stays valid as the recording grid coarsens relative to the
-sample size, rather than refusing on ties: while an arm's order-statistic bracket
-holds a tie and does not yet span a dozen repeated values, the reported interval
-contains that bracket, so the bracket's distribution-free coverage carries over
-whatever the grid (values recorded off it, prices ending in both .99 and .00). The
-price is width, about 1.1 to 3 times the classical formula's on coarse grids
-(milliseconds, seconds or low-value cents at large sample sizes; counts). It has no
-fixed bound, because a bracket collapsed onto one value has zero classical width, so
-each widened row states its own ratio in its note.
+??? info "Statistical details: sampling floors, quantile feasibility and recording grids"
+    For approximate results, no field certifies calibration. A procedure declares a coarse
+    sampling floor — two units per arm for most arm inference, twenty for a quantile.
+    Cluster methods require estimable independent contributions, not a universal
+    ten-cluster admission rule. A feasibility minimum is not a calibration guarantee.
 
-This feasibility bound applies to a single reported interval, evaluated at one caller alpha.
-The p-value computation (see below) scans across alpha internally and never surfaces this
-refusal to the caller: past the infeasible boundary it treats the construction as "does not
-exclude the null" and stops searching there, rather than raising.
+    It is not the estimator's own feasibility check either, and the two can disagree in both
+    directions. The quantile order-statistic bracket needs a sample that depends on the
+    requested quantile and the alpha it is evaluated at: a median at 95% is feasible on six
+    units per arm, well under the declared twenty, while a 99th percentile needs 368.
 
-Calibration is metric-specific for approximate methods. Unadjusted unit-grain
-conversion/retention uses the delta method only where every success and failure count is
-dense and the exact binomial method below at every other event count.
-CUPED and ratio-denominator routes retain their delta approximation. Clustered
-unadjusted arm lift instead retains joint covariance and relative-set geometry;
-that representation prevents misleading finite intervals near zero controls,
-but does not establish finite-sample coverage for rare events or few clusters.
+    The quantile interval stays valid as the recording grid coarsens relative to the
+    sample size, rather than refusing on ties: while an arm's order-statistic bracket
+    holds a tie and does not yet span a dozen repeated values, the reported interval
+    contains that bracket, so the bracket's distribution-free coverage carries over
+    whatever the grid (values recorded off it, prices ending in both .99 and .00). The
+    price is width, about 1.1 to 3 times the classical formula's on coarse grids
+    (milliseconds, seconds or low-value cents at large sample sizes; counts). It has no
+    fixed bound, because a bracket collapsed onto one value has zero classical width, so
+    each widened row states its own ratio in its note.
 
-A unit-grain ratio row (unadjusted or CUPED, fixed horizon) is checked against the
-measured under-covering region of the delta-method interval. The moments wire carries
-the denominator's centered third moment, so each arm's standardized sample skewness
-`g1 = m3 / m2^1.5` is known at inference time, and the statistic that governs the
-interval's failure is the skewness of the denominator MEAN, `g1 / sqrt(n)`. When either
-arm exceeds 0.30 the engine raises the coded `estimation.engine.ratio_denominator_skew`
-runtime warning (context: metric, arm, n, skewness, statistic, threshold) and the row
-carries a `ratio_denominator_skew` note naming each flagged arm. Either arm additionally
-resolving its denominator mean to a relative standard error `sqrt(var_d / n) / d_bar`
-above 0.15 carries the older `ratio_denominator_precision` note. Both are advisory
-qualifications, not refusals or corrected intervals: the estimate and interval are
-emitted unchanged, and a flagged row is still anticonservative.
+    This feasibility bound applies to a single reported interval, evaluated at one caller alpha.
+    The p-value computation (see below) scans across alpha internally and never surfaces this
+    refusal to the caller: past the infeasible boundary it treats the construction as "does not
+    exclude the null" and stops searching there, rather than raising.
 
-The cutoff comes from `campaign-module:calibration.ratio_skew` (seed 20261010, 6,000 replications
-per cell, lognormal denominators with an independent `Normal(2, 1)` numerator, coverage
-among the rows the log-scale admission guard admits at nominal 95%):
+??? info "Statistical details: the ratio-denominator skew check and its calibration"
+    Calibration is metric-specific for approximate methods. Unadjusted unit-grain
+    conversion/retention uses the delta method only where every success and failure count is
+    dense and the exact binomial method below at every other event count.
+    CUPED and ratio-denominator routes retain their delta approximation. Clustered
+    unadjusted arm lift instead retains joint covariance and relative-set geometry;
+    that representation prevents misleading finite intervals near zero controls,
+    but does not establish finite-sample coverage for rare events or few clusters.
 
-| denominator | n = 50 | n = 100 | n = 200 | n = 400 |
-|---|---|---|---|---|
-| lognormal(0.5) | 95.1% | 94.8% | 95.5% | 94.5% |
-| lognormal(1.0) | 93.3% | 94.6% | 94.3% | 94.8% |
-| lognormal(1.5) | 90.2% (16% refused) | 92.7% | 93.1% | 93.7% |
-| lognormal(2.0) | 85.1% (62% refused) | 87.6% (33% refused) | 90.1% (15% refused) | 91.7% (5% refused) |
+    A unit-grain ratio row (unadjusted or CUPED, fixed horizon) is checked against the
+    measured under-covering region of the delta-method interval. The moments wire carries
+    the denominator's centered third moment, so each arm's standardized sample skewness
+    `g1 = m3 / m2^1.5` is known at inference time, and the statistic that governs the
+    interval's failure is the skewness of the denominator MEAN, `g1 / sqrt(n)`. When either
+    arm exceeds 0.30 the engine raises the coded `estimation.engine.ratio_denominator_skew`
+    runtime warning (context: metric, arm, n, skewness, statistic, threshold) and the row
+    carries a `ratio_denominator_skew` note naming each flagged arm. Either arm additionally
+    resolving its denominator mean to a relative standard error `sqrt(var_d / n) / d_bar`
+    above 0.15 carries the older `ratio_denominator_precision` note. Both are advisory
+    qualifications, not refusals or corrected intervals: the estimate and interval are
+    emitted unchanged. The measured flagged regimes show undercoverage, but this is not
+    universal: correlated numerator and denominator can retain near-nominal coverage.
 
-Pooled over the grid, rows whose observed statistic lies below 0.25 cover at 94.3–94.8%,
-rows in [0.25, 0.30) at 93.6%, and every bin from 0.30 to 0.75 at 92.0–93.0%; the cutoff
-is the first bin edge from which two consecutive bins cover below 93.5%. At 0.30 the
-warning reaches 83–100% of admitted lognormal(1.5) and lognormal(2.0) rows, 24–85% of
-lognormal(1.0) rows, and 0–20% of lognormal(0.5) rows (20% at n = 50, 0% at n = 400);
-flagged rows cover at 92.2% pooled and unflagged rows at 94.3%. The statistic is read off
-the sample, and the samples that miss a heavy tail look benign while under-covering most,
-so the warning marks where observed skew begins to predict under-coverage rather than a
-line that separates safe rows from unsafe ones. The precision note sees only the
-denominator's own spread: a numerator that moves with the denominator covers close to
-nominal even when flagged, and a numerator independent of it under-covers most. The
-heavy-tail correction itself remains unresolved.
+    The cutoff comes from `campaign-module:calibration.ratio_skew` (seed 20261010, 6,000 replications
+    per cell, lognormal denominators with an independent `Normal(2, 1)` numerator, coverage
+    among the rows the log-scale admission guard admits at nominal 95%):
 
-The check runs where its inputs are defined. `from_definitions`, `from_unit_day_artifact`,
-`from_unit_summary`, `from_unit_panel` and current `from_moments` cubes carry the third
-moment through every partition merge (day slices, breakout cells) and reach the same
-decision for the same units. A preceding-format moments cube or a format-1 raw-sum row
-has no third moment: its ratio rows load, and every lift row estimated from them carries
-`ratio_denominator_skew: unavailable` instead of a silent pass. A CUPED-adjusted ratio
-row is checked on the unadjusted denominator; the adjusted denominator's third moment
-and its calibration are not carried, so this raw-denominator diagnostic does not establish
-whether adjustment changes the warning or the adjusted ratio interval's coverage.
-Clustered ratio rows and sequential ratio rows carry neither note nor warning: the
-region was measured for the single-look unit-grain interval, and a clustered
-denominator is a cluster total whose skew/count regime was not measured. Ratio metrics
-do not declare winsorization, so the two never meet.
+    | denominator | n = 50 | n = 100 | n = 200 | n = 400 |
+    |---|---|---|---|---|
+    | lognormal(0.5) | 95.1% | 94.8% | 95.5% | 94.5% |
+    | lognormal(1.0) | 93.3% | 94.6% | 94.3% | 94.8% |
+    | lognormal(1.5) | 90.2% (16% refused) | 92.7% | 93.1% | 93.7% |
+    | lognormal(2.0) | 85.1% (62% refused) | 87.6% (33% refused) | 90.1% (15% refused) | 91.7% (5% refused) |
+
+    Pooled over the grid, rows whose observed statistic lies below 0.25 cover at 94.3–94.8%,
+    rows in [0.25, 0.30) at 93.6%, and every bin from 0.30 to 0.75 at 92.0–93.0%; the cutoff
+    is the first bin edge from which two consecutive bins cover below 93.5%. At 0.30 the
+    warning reaches 83–100% of admitted lognormal(1.5) and lognormal(2.0) rows, 24–85% of
+    lognormal(1.0) rows, and 0–20% of lognormal(0.5) rows (20% at n = 50, 0% at n = 400);
+    flagged rows cover at 92.2% pooled and unflagged rows at 94.3%. The statistic is read off
+    the sample, and the samples that miss a heavy tail look benign while under-covering most,
+    so the warning marks where observed skew begins to predict under-coverage rather than a
+    line that separates safe rows from unsafe ones. The precision note sees only the
+    denominator's own spread: a numerator that moves with the denominator covers close to
+    nominal even when flagged, and a numerator independent of it under-covers most. The
+    heavy-tail correction itself remains unresolved.
+
+    The check runs where its inputs are defined. `from_definitions`, `from_unit_day_artifact`,
+    `from_unit_summary`, `from_unit_panel` and current `from_moments` cubes carry the third
+    moment through every partition merge (day slices, breakout cells) and reach the same
+    decision for the same units. A preceding-format moments cube or a format-1 raw-sum row
+    has no third moment: its ratio rows load, and every lift row estimated from them carries
+    `ratio_denominator_skew: unavailable` instead of a silent pass. A CUPED-adjusted ratio
+    row is checked on the unadjusted denominator; the adjusted denominator's third moment
+    and its calibration are not carried, so this raw-denominator diagnostic does not establish
+    whether adjustment changes the warning or the adjusted ratio interval's coverage.
+    Clustered ratio rows and sequential ratio rows carry neither note nor warning: the
+    region was measured for the single-look unit-grain interval, and a clustered
+    denominator is a cluster total whose skew/count regime was not measured. Ratio metrics
+    do not declare winsorization, so the two never meet.
 
 ### The switchback t reference is itself an approximation
 
-Independent unit-cycle orders use `UnitCycleTApproximation()` by default
-(equivalent to passing it) unless a valid prospective `UnitCycleVarianceEnvelope`
-is supplied; the shared-block reference is separate. Both use the independent
-contributions' sample variance. That is not a claim of finite-sample coverage, and the
-approximation is not confined to discrete outcomes.
+The default switchback reference, `UnitCycleTApproximation`, is a t test on the sample
+variance of the per-unit contributions. It is an approximation, and the declared floor
+admits as few as two units, where it is weakest. A prospective `UnitCycleVarianceEnvelope`
+gives a finite-sample bound instead, but only under a residual-variance assumption you
+justify externally; a fitted pilot variance is not a valid envelope. Shared schedules use a
+block-t reference over at least two blocks.
 
-Under independent unit-cycle orders, each mean-outcome contribution is inverse-probability
-weighted, so it takes
-one of only two values, and those two are asymmetric whenever the declared CT/TC probability
-is not 0.5. The per-unit deltas are means of such contributions, so the t reference relies on
-those means being approximately Normal — a condition that is not among the contract's
-declared assumptions, which name only `no_residual_carryover_after_discarded_steps` and
-`independent_units`. Coverage therefore degrades with few units, with an assignment
-probability far from 0.5, and with skewed, heteroskedastic, or high-leverage outcomes, and the
-declared floor admits as few as two units — the regime where the approximation is weakest. The
-asymmetric/skew calibration includes a small-N counterexample to nominal coverage.
-Unit-cycle variance envelopes instead give a finite-sample bound under the declared
-prospective residual-variance assumption, including at one unit. That assumption
-must be justified externally; a fitted pilot variance is not a valid envelope. Shared schedules instead apply
-`switchback_block_t` with a `block_t` reference to block contributions; their floor is two
-independent blocks, even with a one-unit roster. More roster units do not increase the
-replication count or establish finite-sample coverage.
+!!! warning "Few units or lopsided assignment can break coverage"
+    Coverage degrades with few units, an assignment probability far from 0.5, and skewed,
+    heteroskedastic or high-leverage outcomes; the asymmetric/skew calibration includes a
+    small-N counterexample to nominal coverage. Adding roster units to a shared schedule
+    does not add replication.
+
+??? info "Statistical details: the unit-cycle t reference"
+    Independent unit-cycle orders use `UnitCycleTApproximation()` by default
+    (equivalent to passing it) unless a valid prospective `UnitCycleVarianceEnvelope`
+    is supplied; the shared-block reference is separate. Both use the independent
+    contributions' sample variance. That is not a claim of finite-sample coverage, and the
+    approximation is not confined to discrete outcomes.
+
+    Under independent unit-cycle orders, each mean-outcome contribution is inverse-probability
+    weighted, so it takes
+    one of only two values, and those two are asymmetric whenever the declared CT/TC probability
+    is not 0.5. The per-unit deltas are means of such contributions, so the t reference relies on
+    those means being approximately Normal — a condition that is not among the contract's
+    declared assumptions, which name only `no_residual_carryover_after_discarded_steps` and
+    `independent_units`. Coverage therefore degrades with few units, with an assignment
+    probability far from 0.5, and with skewed, heteroskedastic, or high-leverage outcomes, and the
+    declared floor admits as few as two units — the regime where the approximation is weakest. The
+    asymmetric/skew calibration includes a small-N counterexample to nominal coverage.
+    Unit-cycle variance envelopes instead give a finite-sample bound under the declared
+    prospective residual-variance assumption, including at one unit. That assumption
+    must be justified externally; a fitted pilot variance is not a valid envelope. Shared schedules instead apply
+    `switchback_block_t` with a `block_t` reference to block contributions; their floor is two
+    independent blocks, even with a one-unit roster. More roster units do not increase the
+    replication count or establish finite-sample coverage.
 
 ### Cluster references are qualified working approximations
 
-Disjoint unadjusted arms retain each arm's cluster-ratio uncertainty. The relative
-Fieller set uses a fixed t reference with `min(K_treatment - 1, K_control - 1)`
-degrees of freedom; the additive interval separately uses Welch–Satterthwaite.
-Shared-arm dependence retains the complete response-corrected covariance.
-Observational IPTW/AIPW/DML use their joint influence-function covariance and an
-asymptotic Normal reference. Neither a Bessel multiplier nor a generic t choice
-establishes finite-sample validity for arbitrary small, unbalanced, or skewed clusters.
-Encouragement LATE and sitewide impacts retain their own component-based references.
-The cluster-asymptotic justification also needs no cluster to dominate its arm's
-variance. Neither a large total row count nor crossing the 40-cluster warning
-threshold establishes that condition. Concentrated cluster masses can bias the
-disjoint-arm variance estimate downward; a t reference alone does not correct it.
+Clustered intervals use t references with cluster-count degrees of freedom, and the
+observational cluster methods an asymptotic Normal reference; all are working
+approximations, not finite-sample guarantees. They weaken when clusters are few,
+unbalanced or skewed, or when one cluster dominates its arm's variance, and neither a large
+row count nor crossing the 40-cluster warning threshold establishes otherwise.
 
-Triggered daily/as-of values and outcome lifts are available for definitions
-and unit-day artifacts with explicit trigger evidence. Each unit enters on its
-first eligible trigger day, and outcome maturity is evaluated from that anchor.
-Triggered encouragement compliance is also available through
-`run_daily_lift(estimands=("compliance",), population="triggered")` and
-`run_asof_lift(...)`: the cohort grows at each unit's trigger date, while
-uptake windows remain anchored at assignment and obey their declared half-open
-window and completion rules. The compliance-only request reads trigger and
-uptake evidence without reducing outcomes. Clustered outcome histories still
-refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
-histories use the declared cluster uptake sufficient state.
+!!! warning "Concentrated clusters bias the variance downward"
+    Concentrated cluster masses can bias the disjoint-arm variance estimate downward, and a
+    t reference alone does not correct it.
+
+??? info "Statistical details: cluster references by route"
+    Disjoint unadjusted arms retain each arm's cluster-ratio uncertainty. The relative
+    Fieller set uses a fixed t reference with `min(K_treatment - 1, K_control - 1)`
+    degrees of freedom; the additive interval separately uses Welch–Satterthwaite.
+    Shared-arm dependence retains the complete response-corrected covariance.
+    Observational IPTW/AIPW/DML use their joint influence-function covariance and an
+    asymptotic Normal reference. Neither a Bessel multiplier nor a generic t choice
+    establishes finite-sample validity for arbitrary small, unbalanced, or skewed clusters.
+    Encouragement LATE and sitewide impacts retain their own component-based references.
+    The cluster-asymptotic justification also needs no cluster to dominate its arm's
+    variance. Neither a large total row count nor crossing the 40-cluster warning
+    threshold establishes that condition. Concentrated cluster masses can bias the
+    disjoint-arm variance estimate downward; a t reference alone does not correct it.
+
+??? info "Triggered daily and as-of readouts on clustered histories"
+    Triggered daily/as-of values and outcome lifts are available for definitions
+    and unit-day artifacts with explicit trigger evidence. Each unit enters on its
+    first eligible trigger day, and outcome maturity is evaluated from that anchor.
+    Triggered encouragement compliance is also available through
+    `run_daily_lift(estimands=("compliance",), population="triggered")` and
+    `run_asof_lift(...)`: the cohort grows at each unit's trigger date, while
+    uptake windows remain anchored at assignment and obey their declared half-open
+    window and completion rules. The compliance-only request reads trigger and
+    uptake evidence without reducing outcomes. Clustered outcome histories still
+    refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
+    histories use the declared cluster uptake sufficient state.
 
 ### Triggered-population sitewide impact needs an external assumption
 
-`Analysis.sitewide(population="triggered")` reports a conditional, fixed-
-membership estimate: the triggered-stratum lift is scaled by the number of
-enrolled units in finalized trigger membership, while the site-volume
-counterfactual remains full-site. Reading it as the whole-site impact
-requires that trigger membership is independent of treatment and that
-never-triggered units are unaffected. The allocation balance diagnostic can
-detect some treatment-dependent trigger rates, but its non-rejection does not
-prove either assumption; equal marginal trigger rates do not rule out
-treatment-dependent membership or timing.
+`Analysis.sitewide(population="triggered")` scales the triggered-cohort lift to the
+enrolled triggered members while keeping the full-site volume. Reading it as whole-site
+impact assumes that trigger membership does not depend on treatment and that
+never-triggered units are unaffected; the allocation balance diagnostic can catch some
+treatment-dependent trigger rates but cannot prove either assumption. Use the
+assigned-population result when those assumptions are not defensible.
 
-Both assigned and triggered `Analysis.sitewide()` require randomized
-identification. Observational and encouragement designs refuse before
-sitewide evidence is loaded; use `Analysis.run()` for their estimands.
+!!! warning "The balance check can pass while the triggered reading is wrong"
+    In the assumption-failure simulations, a 0.1 effect among never-triggered units left the
+    triggered reading covering 3% (the assigned reading still covered 95%), and
+    treatment-dependent membership with equal trigger rates left it covering almost never
+    while the triggered sample-ratio check rejected in only 4.7% of runs.
 
-Both populations refuse conversion metrics with
-`facade.analysis.sitewide_metric_unaligned`: a converter indicator is a
-per-unit maximum over events, not an additive event total, so it cannot align
-with the site's whole-window total. To read conversion events site-wide,
-declare a `count` metric (mean metric, `aggregation: count`) on the conversion
-fact. Windowed metrics and components with non-additive aggregation (anything
-but sum or count) use the same refusal because a per-unit window or
-non-additive outcome cannot align with the additive site total.
+??? info "Statistical details: what the triggered estimate conditions on"
+    `Analysis.sitewide(population="triggered")` reports a conditional, fixed-
+    membership estimate: the triggered-stratum lift is scaled by the number of
+    enrolled units in finalized trigger membership, while the site-volume
+    counterfactual remains full-site. Reading it as the whole-site impact
+    requires that trigger membership is independent of treatment and that
+    never-triggered units are unaffected. The allocation balance diagnostic can
+    detect some treatment-dependent trigger rates, but its non-rejection does not
+    prove either assumption; equal marginal trigger rates do not rule out
+    treatment-dependent membership or timing.
 
-For the triggered population, the estimate omits any reach effect among
-never-triggered units and does not adjust for multiplicity or provide
-anytime-valid inference. It uses assignment-anchored experiment-calendar
-outcomes rather than `run()`'s trigger-anchored windows. Use the
-assigned-population sitewide result when these conditional assumptions are
-not defensible.
+    Both assigned and triggered `Analysis.sitewide()` require randomized
+    identification. Observational and encouragement designs refuse before
+    sitewide evidence is loaded; use `Analysis.run()` for their estimands.
 
-Assigned and triggered arm outcomes and the site total use only the
-experiment-calendar window (`start .. end`), even if `observation_end` is
-later. Triggered readings need every outcome feed certified complete through
-the end day by a watermark. Assigned readings refuse when the snapshot cutoff
-or a declared watermark stops before the end day; without certification they
-assume the loaded outcomes are complete, as a native analysis without
-snapshot evidence always has. Both refusals use
-`facade.analysis.sitewide_outcomes_incomplete`.
-Conversion metrics do not have a sitewide total through `sitewide()`; use a
-count metric on the conversion fact to count site events.
+    Both populations refuse conversion metrics with
+    `facade.analysis.sitewide_metric_unaligned`: a converter indicator is a
+    per-unit maximum over events, not an additive event total, so it cannot align
+    with the site's whole-window total. To read conversion events site-wide,
+    declare a `count` metric (mean metric, `aggregation: count`) on the conversion
+    fact. Windowed metrics and components with non-additive aggregation (anything
+    but sum or count) use the same refusal because a per-unit window or
+    non-additive outcome cannot align with the additive site total.
 
-Population counts retain every assigned arm, including explicit zero counts
-for arms with no triggered members. The estimator scales all triggered members
-in the complete requested roster; `unobserved_members` counts members across
-that full roster omitted from the reductions and is zero when the required
-complete outcome certificates are present.
+    For the triggered population, the estimate omits any reach effect among
+    never-triggered units and does not adjust for multiplicity or provide
+    anytime-valid inference. It uses assignment-anchored experiment-calendar
+    outcomes rather than `run()`'s trigger-anchored windows. Use the
+    assigned-population sitewide result when these conditional assumptions are
+    not defensible.
 
-The full calibration gates use two-arm, unclustered designs with 20% trigger
-reach and measure coverage against realized potential-outcome site totals;
-each gated statistic uses 107,100 replications. Run the campaign with an
-explicit new output directory:
+    Assigned and triggered arm outcomes and the site total use only the
+    experiment-calendar window (`start .. end`), even if `observation_end` is
+    later. Triggered readings need every outcome feed certified complete through
+    the end day by a watermark. Assigned readings refuse when the snapshot cutoff
+    or a declared watermark stops before the end day; without certification they
+    assume the loaded outcomes are complete, as a native analysis without
+    snapshot evidence always has. Both refusals use
+    `facade.analysis.sitewide_outcomes_incomplete`.
+    Conversion metrics do not have a sitewide total through `sitewide()`; use a
+    count metric on the conversion fact to count site events.
 
-```bash
-python -m calibration.triggered_sitewide --campaign full \
-  --output .cache/triggered-sitewide-calibration
-```
+    Population counts retain every assigned arm, including explicit zero counts
+    for arms with no triggered members. The estimator scales all triggered members
+    in the complete requested roster; `unobserved_members` counts members across
+    that full roster omitted from the reductions and is zero when the required
+    complete outcome certificates are present.
 
-For sum metrics (20% and 100% of the site enrolled) and a benign ratio metric,
-the assigned and triggered readings each covered 95.12%–95.66% for absolute
-and relative impact at nominal 95%; every Clopper–Pearson lower bound, at a
-family-allocated error of 7.5e-5, cleared 94.5%. The campaign checks the
-Normal-reference intervals the sitewide functions report; it does not cover
-count metrics, multi-arm netting, clustered designs, or uncertainty about
-future traffic or trigger reach.
+??? info "Statistical details: the sitewide calibration campaign"
+    The full calibration gates use two-arm, unclustered designs with 20% trigger
+    reach and measure coverage against realized potential-outcome site totals;
+    each gated statistic uses 107,100 replications. Run the campaign with an
+    explicit new output directory:
 
-Calibration does not establish the real-world assumptions needed to interpret
-the triggered result as whole-site impact. The explicit assumption-failure
-simulations demonstrate this limitation: when never-triggered units have a
-0.1 effect, the triggered reading undercounts by the omitted complement total
-(about −800 of a true 1,400) and covers 3%, while the assigned reading still
-covers 95%. When membership depends on treatment despite equal trigger rates,
-the triggered reading covers almost never, while the triggered sample-ratio
-check rejects in only 4.7% of runs.
+    ```bash
+    python -m calibration.triggered_sitewide --campaign full \
+      --output .cache/triggered-sitewide-calibration
+    ```
 
-Precision relative to the assigned reading was measured separately in the T3
-descriptive designs: 10% trigger reach and 4,000 replications for each
-variance ratio. The observed ratios were 0.91, 0.65 and 0.10 for a binary
-post-trigger-only outcome, a lognormal post-trigger-only outcome and a broad
-metric respectively. Each was within 5% of
-$p\sigma_T^2 / (p\sigma_T^2 + (1-p)\sigma_{NT}^2 + p(1-p)(\mu_T-\mu_{NT})^2)$.
+    For sum metrics (20% and 100% of the site enrolled) and a benign ratio metric,
+    the assigned and triggered readings each covered 95.12%–95.66% for absolute
+    and relative impact at nominal 95%; every Clopper–Pearson lower bound, at a
+    family-allocated error of 7.5e-5, cleared 94.5%. The campaign checks the
+    Normal-reference intervals the sitewide functions report; it does not cover
+    count metrics, multi-arm netting, clustered designs, or uncertainty about
+    future traffic or trigger reach.
 
-The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
-reference over the two arms' own cluster-ratio variance components. Measured by
-`tests/calibration/test_cluster_late_welch_df.py` (2000 replications per cell over 5/5,
-5/25 and 10/50 treatment/control clusters, treatment between-cluster variance 1, 4 and 16
-times the control's, mean cluster size 20; binomial Monte-Carlo standard error 0.5 points
-at 95% and 0.9 points at 82%): with equal cluster sizes the interval covers the true LATE
-94.3–96.0% at nominal 95% in every cell, including 94.55% at 5/25 clusters with 16 times
-the variance in the small arm, where a pooled `t_(K_treatment + K_control - 2)` reference
-over the same components would cover 89.15%. Log-normally dispersed cluster sizes (sigma 0.75)
-cost about 3–6 points that the reference does not recover: 88.5–92.7% across those nine
-cells, 89.7% at 5/25 with the 16x ratio, against 82.0% pooled. The first-stage gate withheld
-at most 4 of 2000 replications in any cell.
+    Calibration does not establish the real-world assumptions needed to interpret
+    the triggered result as whole-site impact. The explicit assumption-failure
+    simulations demonstrate this limitation: when never-triggered units have a
+    0.1 effect, the triggered reading undercounts by the omitted complement total
+    (about −800 of a true 1,400) and covers 3%, while the assigned reading still
+    covers 95%. When membership depends on treatment despite equal trigger rates,
+    the triggered reading covers almost never, while the triggered sample-ratio
+    check rejects in only 4.7% of runs.
 
-`relative_confidence_set` preserves bounded, disconnected, one-sided, full-real,
-empty, or unavailable geometry. A zero control mean can leave a confidence set
-without a finite point. Numeric nulls are not infinities. A genuinely indefinite
-or unrepresentable joint covariance sets `relative_unavailable_reason`; additive
-output survives rather than being replaced by a clipped covariance or fabricated
-relative precision. Scalar posterior decision probabilities are not recovered
-from a joint frequentist set.
+    Precision relative to the assigned reading was measured separately in the T3
+    descriptive designs: 10% trigger reach and 4,000 replications for each
+    variance ratio. The observed ratios were 0.91, 0.65 and 0.10 for a binary
+    post-trigger-only outcome, a lognormal post-trigger-only outcome and a broad
+    metric respectively. Each was within 5% of
+    $p\sigma_T^2 / (p\sigma_T^2 + (1-p)\sigma_{NT}^2 + p(1-p)(\mu_T-\mu_{NT})^2)$.
 
-Representative release checks are diagnostics, not certification of the original
-stress matrix. Run the preserved cases and paired-width criteria explicitly:
+??? info "Statistical details: the clustered encouragement LATE reference"
+    The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
+    reference over the two arms' own cluster-ratio variance components. Measured by
+    `tests/calibration/test_cluster_late_welch_df.py` (2000 replications per cell over 5/5,
+    5/25 and 10/50 treatment/control clusters, treatment between-cluster variance 1, 4 and 16
+    times the control's, mean cluster size 20; binomial Monte-Carlo standard error 0.5 points
+    at 95% and 0.9 points at 82%): with equal cluster sizes the interval covers the true LATE
+    94.3–96.0% at nominal 95% in every cell, including 94.55% at 5/25 clusters with 16 times
+    the variance in the small arm, where a pooled `t_(K_treatment + K_control - 2)` reference
+    over the same components would cover 89.15%. Log-normally dispersed cluster sizes (sigma 0.75)
+    cost about 3–6 points that the reference does not recover: 88.5–92.7% across those nine
+    cells, 89.7% at 5/25 with the 16x ratio, against 82.0% pooled. The first-stage gate withheld
+    at most 4 of 2000 replications in any cell.
 
-```bash
-uv run python -m calibration.cluster_diagnostics --output /tmp/cluster-diagnostics --repetitions 4
-uv run python -m calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress
-```
+??? info "Statistical details: relative confidence-set geometry and non-positive arm means"
+    `relative_confidence_set` preserves bounded, disconnected, one-sided, full-real,
+    empty, or unavailable geometry. A zero control mean can leave a confidence set
+    without a finite point. Numeric nulls are not infinities. A genuinely indefinite
+    or unrepresentable joint covariance sets `relative_unavailable_reason`; additive
+    output survives rather than being replaced by a clipped covariance or fabricated
+    relative precision. Scalar posterior decision probabilities are not recovered
+    from a joint frequentist set. A fixed-horizon mean row whose arm mean is not
+    positive (`relative_unavailable_reason="nonpositive_arm_mean"`) has no relative
+    scale at all; with no declared absolute margin its decision is the additive
+    difference tested against zero under the reference its additive interval was cut
+    from, so `p_value()`, `stat_sig()` and family selection read that scale. Only a
+    row with no additive interval remains a conservative non-rejection. A directional
+    row decided this way and selected by its family has that interval reissued
+    centrally (each tail at half the family level), so it can show `discovery=True`
+    beside `stat_sig()` False when its p-value lies between half the family level and
+    the family level.
 
-The module entrypoints are `campaign-module:calibration.cluster_diagnostics --output /tmp/cluster-diagnostics --repetitions 4` and `campaign-module:calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress`.
+??? info "Statistical details: cluster diagnostics release checks"
+    Representative release checks are diagnostics, not certification of the original
+    stress matrix. Run the preserved cases and paired-width criteria explicitly:
 
-Output directories must be new. Budgets are bounded at one hour; started,
-completed, refused, failed, unfinished, and unstarted work remain distinguishable.
-The full route preserves original seeds, repetition rules, and paired-width
-thresholds. Interrupted or diagnostic prefixes never pass those historical gates.
+    ```bash
+    uv run python -m calibration.cluster_diagnostics --output /tmp/cluster-diagnostics --repetitions 4
+    uv run python -m calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress
+    ```
+
+    The module entrypoints are `campaign-module:calibration.cluster_diagnostics --output /tmp/cluster-diagnostics --repetitions 4` and `campaign-module:calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress`.
+
+    Output directories must be new. Budgets are bounded at one hour; started,
+    completed, refused, failed, unfinished, and unstarted work remain distinguishable.
+    The full route preserves original seeds, repetition rules, and paired-width
+    thresholds. Interrupted or diagnostic prefixes never pass those historical gates.
 
 ### CUPED treats its adjustment coefficient as known
 
-The CUPED standard error conditions on a theta estimated from the same data it adjusts. The
-uncertainty in that estimate is not propagated, so the reported interval is slightly
-narrower than one holding the coefficient fixed. Measured by
-`tests/calibration/test_cuped_theta_uncertainty.py` (16 cells: covariate correlation 0.1 to
-0.9 by 20 to 2000 units per arm, equal allocation, one homogeneous slope, 3000 replications
-each, intervals cut at the row's Welch–Satterthwaite t reference; binomial Monte-Carlo
-standard error 0.4 points): the fitted interval is 1.3–1.4% narrower on the log scale than
-a known-coefficient comparator at 20 units per arm, 0.5% at 50, 0.1% at 200 and 0.01% at
-2000, the same at every covariate correlation, and within Monte-Carlo error of
-`sqrt(1 - 1/(N - 2))` with `N` the total sample. Coverage of the fitted interval is
-93.4–95.3% at nominal 95% across the 16 cells, against 93.8–95.6% for the comparator, and
-the reported standard error runs 0.94–1.01 times the empirical spread of the log estimate
-(0.95–0.98 at 20 per arm). The comparator is the same log-scale delta method with the true
-coefficient substituted, not exact finite-sample inference, so the width ratio measures the
-residual-variance shrinkage from fitting theta and does not isolate the added sampling
-variance of the estimate. Unequal allocation and arm-specific slopes are outside that design.
+CUPED's standard error treats the fitted coefficient as known, so the interval is slightly
+narrower than one holding the coefficient fixed: about 1.3–1.4% on the log scale at 20
+units per arm, 0.5% at 50, 0.1% at 200 and negligible beyond. Coverage stayed within
+93.4–95.3% at nominal 95% in the tested design (equal allocation, one homogeneous slope);
+unequal allocation and arm-specific slopes were not tested.
+
+??? info "Statistical details: the CUPED coefficient measurement"
+    The CUPED standard error conditions on a theta estimated from the same data it adjusts. The
+    uncertainty in that estimate is not propagated, so the reported interval is slightly
+    narrower than one holding the coefficient fixed. Measured by
+    `tests/calibration/test_cuped_theta_uncertainty.py` (16 cells: covariate correlation 0.1 to
+    0.9 by 20 to 2000 units per arm, equal allocation, one homogeneous slope, 3000 replications
+    each, intervals cut at the row's Welch–Satterthwaite t reference; binomial Monte-Carlo
+    standard error 0.4 points): the fitted interval is 1.3–1.4% narrower on the log scale than
+    a known-coefficient comparator at 20 units per arm, 0.5% at 50, 0.1% at 200 and 0.01% at
+    2000, the same at every covariate correlation, and within Monte-Carlo error of
+    `sqrt(1 - 1/(N - 2))` with `N` the total sample. Coverage of the fitted interval is
+    93.4–95.3% at nominal 95% across the 16 cells, against 93.8–95.6% for the comparator, and
+    the reported standard error runs 0.94–1.01 times the empirical spread of the log estimate
+    (0.95–0.98 at 20 per arm). The comparator is the same log-scale delta method with the true
+    coefficient substituted, not exact finite-sample inference, so the width ratio measures the
+    residual-variance shrinkage from fitting theta and does not isolate the added sampling
+    variance of the estimate. Unequal allocation and arm-specific slopes are outside that design.
 
 ### Mixed-covariate linear CUPED is fixed-horizon approximate
 
@@ -430,163 +506,83 @@ campaign status is tracked separately in
 
 ### Percentile winsorization needs the cutoff above the zero atom, and its size route is provisional
 
-The pooled upper-percentile winsorized mean is defined for nonnegative outcomes with a mass
-at zero: a zero is an ordinary pool member for the cutoff, the clipped means and the
-cutoff indicator, and the arm-wise log-kernel pilot resamples each arm's zeros with the
-same probability as any positive value. Two limits are inherent to that estimand, and one
-is a construction restriction. First, the percentile must sit strictly above the pooled
-zero share: at or below it the population cutoff is zero, every winsorized mean is
-identically zero and the relative contrast is undefined. The implemented guard is the
-empirical type-7 rule "the cutoff's lower neighbour is a zero", which also refuses the
-straddle case where the cutoff interpolates between zero and the smallest positive
-outcome: there the capped means are positive (each arm's cutoff times its positive share),
-but the cutoff is an interpolation artefact below every positive outcome that no
-smooth-cutoff construction describes, so the request refuses
-(`estimation.winsor.cutoff_in_zero_atom`) rather than reporting such a contrast. Second,
-just above that boundary the sampling law of the
-cutoff has an atom at zero; the bootstrap reproduces it, each replicate whose resampled
-cutoff lands on a zero is a failed root, and the interval is reported unavailable
-(`bootstrap_replicate_failure`). The probability of such a replicate is the probability
-that the pooled zero count of the resample exceeds the cutoff rank, which falls below
-`1e-5` once `(q - pi) N` exceeds roughly `4.5 sqrt(N pi (1 - pi))` for pooled zero share `pi`.
+A percentile-winsorized mean needs its cutoff strictly above the pooled share of zeros: at
+or below it the request refuses (`estimation.winsor.cutoff_in_zero_atom`), and just above
+it the bootstrap interval can come back unavailable (`bootstrap_replicate_failure`). The
+rule that picks the bootstrap-t or the analytic interval (`pooled-size-route-v1`: the
+bootstrap below 20,000 pooled units or fewer than 100 expected units above the cutoff) is a
+provisional engineering choice; both constructions stay `experimental` and withhold
+decision evidence.
 
-The default `pooled-size-route-v1` chooses between two constructions of the same
-estimand: the full-procedure bootstrap-t below 20,000 pooled units or fewer than 100
-expected units above the cutoff, the analytic normal influence interval otherwise. The
-thresholds are a provisional engineering choice; the campaign that would calibrate both
-constructions on zero-inflated designs across that boundary (tracked as `1e0h`) has not been executed, and the
-positive-only calibration record (12 alternative rows with clipped-variance failures,
-contamination width failures) carries over to both. Prototype evidence only (300
-repetitions per design, zero-inflated lognormal arms): at 1,000 and 10,000 units per arm the
-two constructions produce intervals of the same width within 1% and the same coverage within
-Monte-Carlo resolution; at 200 units per arm neither is at nominal. The influence interval is
-a first-order normal approximation and omits the bootstrap-t refinement, which is why small
-pools keep the bootstrap. Both methods remain `experimental` and withhold decision evidence.
+??? info "Statistical details: the zero atom and the size route"
+    The pooled upper-percentile winsorized mean is defined for nonnegative outcomes with a mass
+    at zero: a zero is an ordinary pool member for the cutoff, the clipped means and the
+    cutoff indicator, and the arm-wise log-kernel pilot resamples each arm's zeros with the
+    same probability as any positive value. Two limits are inherent to that estimand, and one
+    is a construction restriction. First, the percentile must sit strictly above the pooled
+    zero share: at or below it the population cutoff is zero, every winsorized mean is
+    identically zero and the relative contrast is undefined. The implemented guard is the
+    empirical type-7 rule "the cutoff's lower neighbour is a zero", which also refuses the
+    straddle case where the cutoff interpolates between zero and the smallest positive
+    outcome: there the capped means are positive (each arm's cutoff times its positive share),
+    but the cutoff is an interpolation artefact below every positive outcome that no
+    smooth-cutoff construction describes, so the request refuses
+    (`estimation.winsor.cutoff_in_zero_atom`) rather than reporting such a contrast. Second,
+    just above that boundary the sampling law of the
+    cutoff has an atom at zero; the bootstrap reproduces it, each replicate whose resampled
+    cutoff lands on a zero is a failed root, and the interval is reported unavailable
+    (`bootstrap_replicate_failure`). The probability of such a replicate is the probability
+    that the pooled zero count of the resample exceeds the cutoff rank, which falls below
+    `1e-5` once `(q - pi) N` exceeds roughly `4.5 sqrt(N pi (1 - pi))` for pooled zero share `pi`.
+
+    The default `pooled-size-route-v1` chooses between two constructions of the same
+    estimand: the full-procedure bootstrap-t below 20,000 pooled units or fewer than 100
+    expected units above the cutoff, the analytic normal influence interval otherwise. The
+    thresholds are a provisional engineering choice; the campaign that would calibrate both
+    constructions on zero-inflated designs across that boundary (tracked as `1e0h`) has not been executed, and the
+    positive-only calibration record (12 alternative rows with clipped-variance failures,
+    contamination width failures) carries over to both. Prototype evidence only (300
+    repetitions per design, zero-inflated lognormal arms): at 1,000 and 10,000 units per arm the
+    two constructions produce intervals of the same width within 1% and the same coverage within
+    Monte-Carlo resolution; at 200 units per arm neither is at nominal. The influence interval is
+    a first-order normal approximation and omits the bootstrap-t refinement, which is why small
+    pools keep the bootstrap. Both methods remain `experimental` and withhold decision evidence.
 
 ## Metric types with no supported estimand
 
 ### Conversion and retention arms: dense counts use the delta method, sparse counts are estimated exactly, not refused
 
-An unadjusted (no CUPED, no declared cluster), unit-grain conversion or retention arm pair
-has two routes, and a rule that reads only the four per-arm success and failure counts and
-the tail allocation (`alpha / 2` per tail two-sided, `alpha` directional) picks one before any
-interval is computed. It never compares an interval or a p-value, and it labels the row:
+An unadjusted conversion or retention row takes one of two routes, picked from its four
+success and failure counts before any interval is computed and labelled on the row
+(`reference_kind`, shown as `route`): the delta-method route (`"t"`) when every count is
+dense, and the exact finite-sample route (`"binomial"`), which handles every count,
+otherwise. Only finite-sample rows carry a finite-sample guarantee; the default
+`conversion_inference="auto"` is never a universally finite-sample route, and
+`"finite_sample"` forces the exact route where it exists. The exact route refuses, rather
+than degrading, above a billion units per arm or at an alpha below about `3.2e-8` (higher
+at very large arms), and its cost grows with arm size.
 
-* **Delta-method route** (`reference_kind="t"`, `scale="log"`, no `binomial_set`): the log
-  risk ratio against a Welch-Satterthwaite t reference that every unadjusted mean uses,
-  taken when the smallest of `x_c`, `n_c - x_c`, `x_t` and `n_t - x_t` is at least
-  `dense_min_count(tail)`. It has no arm-size ceiling and no `log_se >= 0.5` risk (every
-  count is at least 9 there, which keeps the combined log standard error below
-  `sqrt(2/9)`), and it carries no finite-sample guarantee.
-* **Finite-sample route** (`reference_kind="binomial"`, `scale="linear"`, a `binomial_set`):
-  an exact independent-binomial risk-ratio method (Berger-Boos restricted-nuisance test
-  inversion; see `helper:increment/estimation/binomial_rr.py`) for every other count pair. It
-  handles every event count directly, with no admission rule and no continuity correction,
-  and only these rows carry the finite-sample guarantee. The hybrid default is never a
-  universally finite-sample route.
+The finite-sample interval is wider than necessary at moderate counts: on the log scale it
+is about 1.07–1.45× the Katz (log-scale Wald) interval at the measured shapes, because it
+orders candidates by the `r = 1` difference for every candidate. A tighter candidate-ordered
+construction that removes the gap at exact coverage is being evaluated.
 
-`Method.conversion_inference` selects: `"auto"` (the default, on `Method`, `MethodSpec` and the
-wire format) routes by counts, and `"finite_sample"` always takes the finite-sample route
-(refused by code, `estimation.binomial.finite_sample_unavailable`, with an informative prior,
-clustered units, sequential inference or an observational adjustment; and on a metric that is
-not a conversion or retention rate or on a CUPED-adjusted method, with
-`conversion_inference.finite_sample.metric_type` and `conversion_inference.finite_sample.cuped`,
-the one code per hazard whether a definition, a frame metric, a method or a plan carries it).
-There is no forced
-delta-method value and no analysis-wide knob. A multiplicity family that reads p-values at
-levels below the row's own routes each row at the smallest level it can be decided at (for a
-BH family, `q` over the hypotheses it tests), never at a looser one. A stored plan or wire payload
-written before the field existed decodes each method to the route it ran under: `"finite_sample"`
-for a prior-free, fixed-horizon method on a conversion or retention metric, whatever its
-`Method.name` label, unless it is CUPED or an observational estimator; `"auto"` for every other method.
+!!! warning "Neither conversion route supports repeated peeking"
+    Both routes are fixed-horizon: neither proves validity under optional stopping or
+    repeated peeking. To make decisions while monitoring an experiment, register
+    [sequential inference](guides/sequential-inference.md) before reading outcomes.
 
-`dense_min_count(tail) = max(412, ceil(145 z^4))` with `z = Phi^-1(1 - tail)`. It is an envelope
-of a measured requirement, not a fit: the requirement is the least count at which the
-delta-method interval's one-sided noncoverage in the boundary cells below stays within
-`tests.mc.scientific_delta(tail)` of the tail (a tenth of the tail below 0.05, 0.005 at and above
-it) at that count and at every larger step of a geometric ladder (ratio 1.15) through 1.25 times
-it. The law is at least 1.25 times the requirement at every production tail; the 0.1 tail sets
-its floor and the 0.0005 tail its slope. The tail error of a log risk ratio Wald interval grows
-like `z^3` relative to the tail, so extreme tails need thousands of events. The requirement
-grows more slowly than `z^4` below them, so the middle tails carry a margin well above 1.25
-(about 3.7 times at 0.025 and 0.05), and counts the interval already covers take the
-finite-sample route there, which is valid at every count. A tail below 0.0005 is extrapolated by
-the same formula, not measured. Per tail, the requirement is a step of a ladder of that ratio
-with every step of that candidate's own ladder through 1.25 times it measured; the ladders are
-anchored at 10 for the tails from 0.025 up and at 1,637 below (the 0.005 tail's on the
-continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step.
-The same numeric rung counts regardless of which scan measured it, but a differently numbered
-rung cannot replace a missing candidate rung. The `python -m calibration.conversion_route required` command (`campaign-module:calibration.conversion_route required`)
-reads saved scans, inferring compatible anchors for legacy rows and refusing a legacy scan
-that no single ladder fits:
+!!! warning "Choose the route by the guarantee you need, not by width"
+    Expect a wider interval on the finite-sample route when counts are moderate, and a null
+    p-value 1.7–4× the pivotal exact p-value at those shapes. A BH-selected row is
+    re-estimated at its corrected level and routed there, so its label can differ from the
+    nominal row's.
 
-| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Measured requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
-| `dense_min_count` | 17,000 | 13,224 | 6,384 | 4,247 | 2,140 | 1,062 | 412 |
-| Law over requirement | 1.28 | 1.31 | 2.23 | 1.96 | 3.72 | 3.71 | 1.25 |
-
-`python -m calibration.conversion_route select` (`campaign-module:calibration.conversion_route select`) integrates the interval's noncoverage over
-the exact binomial lattice in rare, failure-limited and central boundary cells (control sizes
-1e3 to 1e7 at every 1, 2 and 5 of a decade, allocations 1:1, 1:4 and 4:1, risk ratios 0.5 to 2)
-and reports, per tail, the worst excess over the tail in tolerance units (at most 1 passes); the
-failure-limited cells bind at every tail. The excess just below each requirement and at it:
-
-| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Last failing step | 11,583 | 8,758 | 2,490 | 1,883 | 501 | 249 | 286 |
-| Worst excess there | 1.15 | 1.09 | 1.29 | 1.01 | 1.16 | 1.21 | 1.03 |
-| Requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
-| Worst excess there | 0.87 | 0.98 | 0.97 | 0.99 | 0.98 | 0.93 | 0.97 |
-
-and, at counts every tail was measured at (worst excess in tolerance units):
-
-| Count `m` | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 435 | 6.84 | 5.47 | 3.07 | 2.25 | 1.39 | 0.88 | 0.95 |
-| 1,637 | 2.86 | 2.35 | 1.37 | 1.03 | 0.64 | 0.41 | 0.45 |
-| 2,165 | 2.73 | 2.25 | 1.31 | 0.99 | 0.62 | 0.39 | 0.42 |
-
-`verify` re-checks the shipped count at each tail and at 1.25 times it in the same cells; every
-cell passes (worst excess in tolerance units, at the count and at 1.25 times it):
-
-| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| At `dense_min_count` | 0.84 | 0.72 | 0.62 | 0.69 | 0.62 | 0.56 | 0.97 |
-| At 1.25 times it | 0.83 | 0.71 | 0.65 | 0.60 | 0.47 | 0.42 | 0.76 |
-
-The 0.1 tail passes by 3% at its floor. `hybrid` sums the production pipeline's noncoverage
-exactly over the count lattice at design counts two below to two above the shipped count (the
-three cells with the most routed noncoverage at each offset, two-sided at `alpha = 2 * tail`,
-plus the worst cell read directionally at `alpha = tail`: `greater`, and `less` at the tails a
-production alpha reaches directionally, run at the 0.1 and 0.05 tails). At every one of the
-seven tails every cell stays within tolerance; the worst excess over each tail's cells is
-0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
-0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
-0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
-that check was not run below the 0.025 tail. The calibration-only vectorised interval uses
-the runtime's `student_t_isf` for both direct quantiles and the interpolation nodes, rather
-than a separate `scipy.stats.t.isf` inversion. On the measured `conformance` cells with
-Python 3.14 and SciPy 1.16.3, it agreed with `estimate_lift` within `2.0e-14` (relative),
-and the interpolated Student quantile agreed with the runtime quantile within `2.6e-15`.
-The conformance bounds remain `1e-9` and `1e-12`, respectively. These empirical comparisons
-are not numerical certificates; planning and exact enumeration use the runtime calculation
-directly. A bounded grid is evidence at those cells, not coverage for every data-generating
-process.
-
-A BH-selected row is re-estimated at its own corrected level and routed there, so its label can
-differ from the label of the nominal row whose p-value selected it.
-
-An Encouragement design's ITT on a conversion metric takes the same
-routes (ITT and LATE readouts of a retention metric under an Encouragement design are refused
-with `readout.encouragement.retention`; a compliance-only request, `estimands=("compliance",)`,
-ignores the retention outcome and is measured to succeed on `from_definitions` only, see the
-[capabilities table](reference/capabilities-by-entry-point.md#what-runs-where)): the
-design's uptake (first-stage compliance) moments are a
-different random variable over the same units and do not change the
-ITT's own sufficient statistics, so they are stripped before either route
-reads the arm rather than disqualifying it.
-Triggered compliance is supported on the daily and as-of lift axes for definitions and unit-day artifacts when explicit trigger evidence is present. Each day includes units whose first eligible trigger is observed by that date; uptake windows and completion remain anchored at assignment. Other ingresses are source-limited because they cannot reconstruct trigger membership.
+!!! tip "Latency on the finite-sample route"
+    One finite-sample interval takes seconds at millions of units per arm and minutes at
+    hundreds of millions, most at a 50% control rate; a readout multiplies that across
+    metrics, arms and breakout cells. Narrow `metrics=` or run large-arm breakouts
+    separately if latency matters more than exactness at your arm sizes.
 
 | Observations | Point estimate | Confidence set |
 |---|---:|---|
@@ -595,182 +591,8 @@ Triggered compliance is supported on the daily and as-of lift axes for definitio
 | Control has zero events | **Unavailable** (the empirical ratio's denominator is zero) | A typed, point-less confidence set: finite lower endpoint, genuinely unbounded ceiling |
 | Both arms have zero events | **Unavailable** | The full relative-lift support, `[-1, +inf)` |
 
-A row with no finite point (`LiftEstimate.lift is None`) still carries a typed
-`LiftEstimate.binomial_set` (a `BinomialConfidenceSet`: sufficient counts, the frozen
-nuisance budget, and finite/unbounded endpoints on the relative-lift scale) and answers
-`stat_sig()`/`p_value()` exactly from it — point availability, confidence-set availability,
-and reportability are three distinct, independently tracked properties; a point-less row is
-never a failed one. An unbounded ceiling is represented as `upper=None` on the set, never as
-a serialized infinity.
-
-Both routes are fixed-horizon: neither proves validity under optional
-stopping or repeated peeking (see the sequential-inference limitations elsewhere on this
-page for that separate guarantee). A conversion/retention request with an informative
-prior uses the established Normal approximation on every count. A registered sequential specification
-instead uses its declared raw-observation likelihood and matching sequential inversion,
-subject to the registered sampling and finalized-window contract.
-
-The finite-sample route also has three boundaries, each a refusal rather than silent degradation (dense counts under `auto` meet none of them):
-
-* **Arm size.** Each arm is capped at `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`
-  (1,000,000,000; it replaces `binomial_rr.MAX_ARM_SIZE`, which capped arms at 4,000,000 and is
-  removed without an alias -- code that imported the old name imports the new one and gets the
-  new cap). This is a compute-resource applicability boundary, not a statistical
-  one: a call with either arm above the cap refuses immediately
-  (`estimation.binomial.finite_sample_arm_ceiling_exceeded`, the cap in `max_arm_size`; it replaces the retired
-  `estimation.binomial.arm_too_large_for_exact_enumeration`, which `increment.errors.RETIRED_CODES` maps to it;
-  a dense cell runs at any size under `auto`)
-  rather than running a search whose cost keeps growing with the arm. The cap is the
-  largest arm the numerical safeguards were validated at against an independent decimal
-  oracle (`helper:calibration/binomial_oracle.py`, run by `helper:scripts/measure_binomial_ceiling.py`
-  `ulp` and `recovery` at 4,000,000, 16,000,000, 64,000,000, 100,000,000 and 1,000,000,000
-  per arm): the SciPy binomial primitives' error allowance (the worst relative error of a
-  pmf, cdf or sf that bears weight, as a share of `n` units of `2^-52`, was 0.198, 0.245,
-  0.212, 0.236 and 0.226 at those sizes, against an allowance of one), the Clopper-Pearson
-  enclosure, the support window's omitted mass (each held at every size), and exact-count
-  transport from the DuckDB producer: the integer `successes` it exports is the count the
-  route uses, and the float first and second moments only validate it, the Bernoulli
-  second-moment check scaling with `n`. The producer's counts passed that validation at
-  every size and rate measured (0.5, 0.002, 1e-4 and a single success), the second-moment
-  error reaching at most 0.24 of the check's rounding bound (2,442 times `variance_slack` at
-  a billion units), and a constant-0.5 arm, which carries no integer count, was refused at
-  every size. Count thresholds are computed in exact
-  integers, which a float quotient cannot keep above about 67,000,000 per arm. The error
-  allowance is derived for the stated SciPy/Boost model and measured against a decimal oracle
-  on arm64 with fused multiply-subtract; it is not a uniform proof across library or compiler
-  builds. The x86 build has not been run, which remains a verification gap, not a reproduced
-  failure.
-* **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one
-  two-sided `alpha=0.05` `confidence_interval` with the treatment count at a risk ratio of
-  1.02 of the control rate, measured on an Apple M3 Pro with
-  `scripts/measure_binomial_ceiling.py latency` (commits `d9b136b` to `2cad484`, none touching
-  the estimation code; wall time depends on machine load):
-
-  | Units per arm | 5% control rate | 1e-4 | 50% |
-  |---:|---:|---:|---:|
-  | 4,000,000 | 5.16 s / 178 MiB | 0.07 s / 122 MiB | 13.7 s / 207 MiB |
-  | 16,000,000 | 10.8 s / 198 MiB | 0.227 s / 128 MiB | 44.2 s / 237 MiB |
-  | 64,000,000 | 44.5 s / 228 MiB | 0.731 s / 148 MiB | 159 s / 242 MiB |
-  | 100,000,000 | 82.3 s / 222 MiB | 1.21 s / 150 MiB | 179 s / 415 MiB |
-  | 1,000,000,000 | 234 s / 336 MiB | 2.92 s / 165 MiB | 787 s / 424 MiB |
-
-  The cost follows the control-count window, which follows the nuisance rate, so a rare rate
-  is cheap at any size and the window is widest at a 50% control rate.
-  Each p-value bounds a supremum over the control rate's Clopper-Pearson
-  interval. The search splits that interval until the bound's distance above a
-  witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
-  and the tail level it is compared with, plus the certificate's own float noise
-  (2.9e-12 at 1,000 per arm, 8.9e-10 at 1,000,000, 3.6e-9 at 4,000,000, 8.9e-8 at
-  100,000,000 and 8.9e-7 at 1,000,000,000, which no search narrows), or
-  after 2,048 splits. The reported p-value is therefore a certified upper bound that
-  exceeds the supremum-based p-value by no more than that gap: 2^-14 of the p-value
-  above the tail level and 2^-14 of the tail level below it, plus the noise. For one tail
-  at a billion units per arm that is at most 2.4e-6 at a 0.025 tail (1.5e-6 plus 8.9e-7) and
-  1.5e-6 at a 0.01 tail (6.1e-7 plus 8.9e-7); at 1,000 units the noise is negligible and it
-  is 1.5e-6 and 6.1e-7. A two-sided p-value is twice the smaller certified tail, so its gap
-  is twice those. The target is never tighter than a fixed 1e-6 stop at a tail
-  level of 0.0164 or more. A certificate whose bounds still straddle the tail level is
-  conservatively non-rejecting; a certified upper bound below the tail rejects even
-  within the declared gap. The endpoint search only compares p-values with the tail
-  level, so each probe also stops once that comparison is certified either way.
-  A search the cap ends is not an error: its p-value stays a valid,
-  conservative bound, and the row's `note` says how many probes ended so and the largest
-  gap they left, in units of the p-value the row reports (twice a directional gap on a
-  two-sided row). No tolerance beyond that disclosure is promised. Every
-  `BinomialConfidenceSet` records `binomial_bb_difference_v3`: its Clopper–Pearson
-  widening is relative to the smaller endpoint/complement, its numerical allowance
-  scales with arm size, and its lattice thresholds use integer arithmetic. A row
-  persisted under v1 (the absolute-gap stop), v2 (the earlier nuisance envelope),
-  another construction, or no construction is refused when read
-  (`estimation.results.binomial.obsolete_construction`), rather than combining its
-  endpoints with a verdict recomputed by a different rule. Re-run the analysis to cut
-  it again. Each endpoint is the outer end of a search
-  bracket no wider than 0.05% (2^-11) and no wider than 1/128 of the log risk
-  ratio's standard error, whichever is finer, so the search works harder as
-  arms grow and the standard error shrinks. The stop is the resolution of the
-  evaluated tail envelope only, not a bound on SciPy's primitive error; a
-  search that cannot reach it keeps its conservative
-  endpoint and says so in the row's `note`. The process caches up to 24 MiB of control and
-  24 MiB of treatment tail vectors between searches. A readout multiplies this across
-  metrics, arms, and breakout cells. Only sparse counts, or an explicit
-  `conversion_inference="finite_sample"`, take this route. A further large
-  speedup would need a genuinely different tail-evaluation construction (a
-  closed-form or recurrence update between adjacent risk-ratio candidates);
-  none is implemented today. Reduce the number of eligible contrasts in a single
-  call (narrow `metrics=`, run large-arm breakouts separately) if latency
-  matters more than exactness at your arm sizes.
-  FCR-selected rows refresh this disclosure for the returned interval; an
-  obsolete nominal disclosure is removed while unrelated notes are retained.
-* **Extreme alpha.** Two floors bound the tail level. The frozen nuisance tail budget passed
-  to the Clopper-Pearson endpoint solver is `min(1e-6, alpha / 32)`; below `1e-9` (i.e.
-  `alpha < 3.2e-8`), SciPy's iterative beta-quantile solver has demonstrated large relative
-  error against an exact oracle for small `n` in the validated regime, so the endpoint is
-  refused (`estimation.binomial.tail_unrepresentable`) rather than certified outside that
-  regime. And every certified tail carries a float margin that grows with the arms,
-  `(A(n_c) + A(n_t) + m) * 2^-52` with `A(n) = max(2048, n)` (SciPy's binomial primitives
-  were measured against an exact decimal oracle to a billion trials, where their relative
-  error stays within a quarter of `n` units of `2^-52`): once it reaches what the tail
-  level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
-  `alpha - min(1e-6, alpha / 32)` one-sided) no p-value read from an evaluated tail can be
-  certified below the tail, and the call refuses with the same code (context `alpha`,
-  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever the structure
-  alone stops it. The one exception is a null the structure alone rejects: a two-sided or
-  "less" test of a null ratio above `1 / a`, `a` the control arm's Clopper-Pearson lower
-  bound at the nuisance budget, has an empty nuisance domain, so its p-value is the budget
-  itself (doubled two-sided) with no tail evaluated, and the upper endpoint is the first
-  candidate above `1 / a`, which the control arm certifies by itself; that call is answered,
-  the lower endpoint at zero. Persisted rows retain that guard: `stat_sig()`/`p_value()` and
-  table adapters refuse a non-structural null with the same code and context as fresh
-  inference, rather than reporting a margin-floored non-rejection. For equal arms the
-  two-sided threshold is about `3.8e-9` at
-  4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
-  1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
-  about 34,000,000 per arm, so below that size the solver floor binds. The margin is
-  absent from ordinary levels. Its effect depends on its ratio to the tail level, so it was
-  measured on the production search at 10,000 units per arm with the margin set to the
-  ratio a billion-unit arm has (it was not run at a billion): at `alpha >= 1e-4` it does not
-  move an interval, at `1e-5` it widens it by about 1%, and from about `3e-6` it degrades
-  it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: a tail level they refuse
-  leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
-  planned as zero. Under a dominating margin the runtime decides only the count pairs whose
-  control count rejects the null on its Clopper-Pearson bound alone, and refuses the rest;
-  a `finite_sample` plan whose control window at the baseline rate holds a refused count is
-  refused too, and an `auto` plan whose refused pairs carry more than half of `1e-6`, never
-  planned with those pairs as non-rejections. `achieved_power`, `minimum_detectable_effect`
-  and each `power_curve` row refuse it with `power.binomial_tail_level_unrepresentable`
-  (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from` -- the
-  smallest control count the runtime decides, `None` when it decides none -- `solver_floor`,
-  `cause`, `solver_floor` or `float_margin`, and `scope`, `requested`) and an arm above the
-  ceiling with `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`, `max_arm_size`),
-  before any replay. `required_sample_size` searches only sizes whose decision reads the
-  treatment arm: one the margin dominates even at the smallest design is refused before
-  searching, with `power.binomial_tail_level_unrepresentable` (`scope` `smallest`); a float
-  margin that starts dominating only at larger arms ends the search at that size with
-  `power.binomial_size_search_unreachable` (context `power`, `maximum_power`, `n_per_arm`,
-  `max_arm_size`). An allocation so lopsided that the smallest design has an arm above the arm
-  ceiling is refused with `power.binomial_arm_ceiling_below_smallest_design`. There is no
-  finite-sample route at a smaller alpha; use a larger alpha, or `conversion_inference="auto"`,
-  which takes the delta-method route at counts dense for the tail and has neither floor.
-
-For these fixed-horizon binomial plans, public power is a model-based point
-probability, not a conservative numerical lower bound. Enumeration publishes
-computed rejection mass only when its internal enclosure establishes maximum
-absolute error at most `1e-6` conditional on the deployed SciPy/Boost
-special-function error model; this is not a cross-build floating-point proof.
-The dense closed-form route instead reports its model's point probability; its validation
-tolerance remains `0.005`, not a universal bound or finite-sample calibration guarantee.
-Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
-`1e-8` relative tolerance on the relative-effect scale. It does not promise the
-first IEEE-representable effect or silently skip materially earlier unresolved
-bands. Unresolved MDE searches refuse with
-`power.minimum_detectable_effect.numerical_resolution`, or leave a companion
-MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
-The reported power is evaluated at the returned effect. Internal accuracy
-bounds address numerical evaluation, not model misspecification; calibration
-remains a separate, deferred diagnostic. The planning model is
-`hybrid_finite_plus_delta_v3`, and persisted v1/v2 plans require recomputation.
-See [power planning](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
-for replay limits and comparisons with other tests.
+A row with no finite point still carries a typed `binomial_set` and answers
+`stat_sig()`/`p_value()` from it; a point-less row is never a failed one.
 
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
@@ -778,538 +600,1038 @@ unadjusted arm instead uses joint relative inference, without the scalar log-SE
 admission rule. None of those approximate routes inherits finite-sample validity.
 The remaining scalar log-path refusal is:
 
+<!-- output -->
 ```text
 log-scale relative-lift inference is undefined (zero events, or a signed metric
 that needs an absolute-scale estimand)
 ```
 
+??? info "Statistical details: finite-sample width against Katz and the score-ordered construction"
+    Its ordering is the `r = 1` difference for every candidate, so at moderate counts the set
+    is wider than the log-scale Wald (Katz) interval by 1.07× (20,000/arm, 10%), 1.14×
+    (5,000/arm, 10%, r = 1), 1.24× (r = 1.2) and 1.36× (2,000/arm, 5%) in log width (the
+    audit's earlier measurement of the same shapes: 1.07×, 1.16×, 1.24× and 1.45×), and its
+    null p-value is 1.7–4× the pivotal (score-ordered) exact p-value at those shapes
+    (500/5000 vs 600/5000: 2.38e-3 against 1.39e-3; 50/500 vs 75/500: 4.35e-2 against
+    1.69e-2; 20/200 vs 40/200: 2.19e-2 against 5.18e-3). A candidate-ordered construction
+    that removes the gap at exact coverage was measured against the shipped ordering on the
+    same Berger-Boos frame: exact-lattice coverage at or above nominal on all 372 grid cells
+    (worst one-sided miss `2.0e-6` below `alpha / 2`), log width 1.000–1.004× Katz at those
+    shapes, eligibility unchanged. It is held back by the cost of certifying its nuisance
+    supremum (1.8–15× the shipped runtime at the shipped endpoint tolerance, 0.7–4.2× at an
+    eight-times coarser one) and by a threshold-monotonicity lemma that is measured
+    (0 violations in 6,000 candidate steps per count pair) but unproven. Adopting it would
+    change the stored-set construction token, so persisted sets would be refused by
+    `estimation.results.binomial.obsolete_construction` and re-run.
+
+??? info "Statistical details: route selection and labels"
+    An unadjusted (no CUPED, no declared cluster), unit-grain conversion or retention arm pair
+    has two routes, and a rule that reads only the four per-arm success and failure counts and
+    the row's own tail allocation (`alpha / 2` per tail two-sided, `alpha` directional) picks one
+    before any interval is computed. It never compares an interval or a p-value, it is the same
+    whether or not the row belongs to a multiplicity family, and it labels the row
+    (`reference_kind`; the repr and readout show it as `route`):
+
+    * **Delta-method route** (`reference_kind="t"`, `scale="log"`, no `binomial_set`): the log
+      risk ratio against a Welch-Satterthwaite t reference that every unadjusted mean uses,
+      taken when the smallest of `x_c`, `n_c - x_c`, `x_t` and `n_t - x_t` is at least
+      `dense_min_count(tail)`. It has no arm-size ceiling and no `log_se >= 0.5` risk (every
+      count is at least 9 there, which keeps the combined log standard error below
+      `sqrt(2/9)`), and it carries no finite-sample guarantee.
+    * **Finite-sample route** (`reference_kind="binomial"`, `scale="linear"`, a `binomial_set`):
+      an exact independent-binomial risk-ratio method (Berger-Boos restricted-nuisance test
+      inversion; see `helper:increment/estimation/binomial_rr.py`) for every other count pair. It
+      handles every event count directly, with no admission rule and no continuity correction,
+      and only these rows carry the finite-sample guarantee. The hybrid default is never a
+      universally finite-sample route.
+
+    `Method.conversion_inference` selects: `"auto"` (the default, on `Method`, `MethodSpec` and the
+    wire format) routes by counts, and `"finite_sample"` always takes the finite-sample route
+    (refused by code, `estimation.binomial.finite_sample_unavailable`, with an informative prior,
+    clustered units, sequential inference or an observational adjustment; and on a metric that is
+    not a conversion or retention rate or on a CUPED-adjusted method, with
+    `conversion_inference.finite_sample.metric_type` and `conversion_inference.finite_sample.cuped`,
+    the one code per hazard whether a definition, a frame metric, a method or a plan carries it).
+    There is no forced
+    delta-method value and no analysis-wide knob.
+
+??? info "Statistical details: multiplicity families and the composite p-value"
+    A multiplicity family (a BH secondary family, `run_breakout(correction="bh")`,
+    `select_exploratory_family`) reads a member's p-value at levels below the row's own, as low as
+    `q / m`, where the delta p-value is not validated. The member is still routed and cut at its own
+    level; what changes is its p-value. Every delta-method conversion row persists its four counts
+    (`delta_evidence`) with `U`, the smallest level at which those counts are dense
+    (`dense_level`, the count rule inverted float by float against itself; `0.0` for counts dense
+    at every representable level). A row no family reads -- a sole primary, a guardrail, a
+    sensitivity method's row, a breakout cell under `correction="none"` or `"bonferroni"` --
+    keeps its delta p-value. A family member's decision row (`delta_evidence.composite`) reports
+    the composite `p* = p_delta` when `p_delta >= U`, otherwise `min(p_exact, U)`, where
+    `p_exact` is the finite-sample route's p-value against the row's null read at the row's
+    nominal tail with its nominal nuisance budget (`escalated_p_value`); `select_exploratory_family`
+    reads the same composite on demand from the persisted counts of the uncorrected rows it is
+    given, so it and `run_breakout(correction="bh")` select on identical evidence. Read at any
+    level `u`, `p* <= u` only where the pipeline routed by counts
+    at `u` rejects: by the delta row at `u` on counts dense at `u` (where `{p* <= u}` equals
+    `{p_delta <= u}`), by the finite-sample test at `u` elsewhere, up to an exact float tie and the
+    certification gap between the nominal reading of the exact p-value and a finer one (both
+    measured zero on the lattice; `calibration.conversion_route composite`). The composite is a
+    valid p-value at every level `u` with a tail in `(0, 1/2)`, including levels above the row's
+    own alpha, and `p* <= alpha` agrees with the row's own interval. A row whose `p_delta` lies
+    below `U` carries a note: `conversion p-value escalated to the exact p-value` when `p* =
+    p_exact`, or `conversion p-value capped at its dense level` when `p* = U` -- because the exact
+    p-value is not below `U`, because `U` is within the nuisance budget (no exact p-value falls
+    below it, so none is read), or because the exact route is unavailable (an arm above its
+    ceiling, a tail its float margin dominates; the refusal code is persisted as
+    `exact_unavailable`). A capped `p*` is not a tail probability but is valid: the row rejects
+    nowhere below `U`, and at `U` and above only where its delta p-value does; it can lie below the
+    nuisance budget `1e-6` that bounds every exact p-value. A row persisted before the counts
+    existed restores as a plain Wald row whose p-value is the delta p-value at every level; a
+    family that corrects such a restored row below `U` reads an unvalidated delta p-value there,
+    as every family did before the counts were persisted. A restored row's `U` is checked against
+    the rule (dense at `U`, not one float below); a row cut under a build whose normal quantile
+    differs by one float at its count is refused by code (`estimation.results.delta.dense_level`),
+    and re-running the analysis is the remedy.
+
+    A selected member is reissued at `min(R q / m, alpha)` by its counts at that level with no
+    family floor: the delta interval where they are dense there, the exact binomial set from the
+    counts where they are not (its label changes to `binomial` and its p-value is then the exact
+    p-value read at that level). Discovery agrees with the reissued interval excluding the null on
+    both sides of `U`, with two residuals: an exact float tie `p* = R q / m` (selection compares
+    with `<=`, the interval with `<`), and a corrected level below `3.2e-5`, where the reissue's
+    nuisance budget is smaller than the nominal one and the two certified bounds are not ordered;
+    the nominal-alpha cap (`stat_sig()` False with `discovery=True`) is unchanged. A stored plan or wire payload
+    written before the field existed decodes each method to the route it ran under: `"finite_sample"`
+    for a prior-free, fixed-horizon method on a conversion or retention metric, whatever its
+    `Method.name` label, unless it is CUPED or an observational estimator; `"auto"` for every other method.
+
+??? info "Statistical details: `dense_min_count` and its measurement"
+    `dense_min_count(tail) = max(412, ceil(145 z^4))` with `z = Phi^-1(1 - tail)`. It is an envelope
+    of a measured requirement, not a fit: the requirement is the least count at which the
+    delta-method interval's one-sided noncoverage in the boundary cells below stays within
+    `tests.mc.scientific_delta(tail)` of the tail (a tenth of the tail below 0.05, 0.005 at and above
+    it) at that count and at every larger step of a geometric ladder (ratio 1.15) through 1.25 times
+    it. The law is at least 1.25 times the requirement at every production tail; the 0.1 tail sets
+    its floor and the 0.0005 tail its slope. The tail error of a log risk ratio Wald interval grows
+    like `z^3` relative to the tail, so extreme tails need thousands of events. The requirement
+    grows more slowly than `z^4` below them, so the middle tails carry a margin well above 1.25
+    (about 3.7 times at 0.025 and 0.05), and counts the interval already covers take the
+    finite-sample route there, which is valid at every count. A tail below 0.0005 is extrapolated by
+    the same formula, not measured. Per tail, the requirement is a step of a ladder of that ratio
+    with every step of that candidate's own ladder through 1.25 times it measured; the ladders are
+    anchored at 10 for the tails from 0.025 up and at 1,637 below (the 0.005 tail's on the
+    continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step.
+    The same numeric rung counts regardless of which scan measured it, but a differently numbered
+    rung cannot replace a missing candidate rung. The `python -m calibration.conversion_route required` command (`campaign-module:calibration.conversion_route required`)
+    reads saved scans, inferring compatible anchors for legacy rows and refusing a legacy scan
+    that no single ladder fits:
+
+    | One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+    |---|---:|---:|---:|---:|---:|---:|---:|
+    | Measured requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
+    | `dense_min_count` | 17,000 | 13,224 | 6,384 | 4,247 | 2,140 | 1,062 | 412 |
+    | Law over requirement | 1.28 | 1.31 | 2.23 | 1.96 | 3.72 | 3.71 | 1.25 |
+
+    `python -m calibration.conversion_route select` (`campaign-module:calibration.conversion_route select`) integrates the interval's noncoverage over
+    the exact binomial lattice in rare, failure-limited and central boundary cells (control sizes
+    1e3 to 1e7 at every 1, 2 and 5 of a decade, allocations 1:1, 1:4 and 4:1, risk ratios 0.5 to 2)
+    and reports, per tail, the worst excess over the tail in tolerance units (at most 1 passes); the
+    failure-limited cells bind at every tail. The excess just below each requirement and at it:
+
+    | One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+    |---|---:|---:|---:|---:|---:|---:|---:|
+    | Last failing step | 11,583 | 8,758 | 2,490 | 1,883 | 501 | 249 | 286 |
+    | Worst excess there | 1.15 | 1.09 | 1.29 | 1.01 | 1.16 | 1.21 | 1.03 |
+    | Requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
+    | Worst excess there | 0.87 | 0.98 | 0.97 | 0.99 | 0.98 | 0.93 | 0.97 |
+
+    and, at counts every tail was measured at (worst excess in tolerance units):
+
+    | Count `m` | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+    |---:|---:|---:|---:|---:|---:|---:|---:|
+    | 435 | 6.84 | 5.47 | 3.07 | 2.25 | 1.39 | 0.88 | 0.95 |
+    | 1,637 | 2.86 | 2.35 | 1.37 | 1.03 | 0.64 | 0.41 | 0.45 |
+    | 2,165 | 2.73 | 2.25 | 1.31 | 0.99 | 0.62 | 0.39 | 0.42 |
+
+    `verify` re-checks the shipped count at each tail and at 1.25 times it in the same cells; every
+    cell passes (worst excess in tolerance units, at the count and at 1.25 times it):
+
+    | One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+    |---|---:|---:|---:|---:|---:|---:|---:|
+    | At `dense_min_count` | 0.84 | 0.72 | 0.62 | 0.69 | 0.62 | 0.56 | 0.97 |
+    | At 1.25 times it | 0.83 | 0.71 | 0.65 | 0.60 | 0.47 | 0.42 | 0.76 |
+
+    The 0.1 tail passes by 3% at its floor. `hybrid` sums the production pipeline's noncoverage
+    exactly over the count lattice at design counts two below to two above the shipped count (the
+    three cells with the most routed noncoverage at each offset, two-sided at `alpha = 2 * tail`,
+    plus the worst cell read directionally at `alpha = tail`: `greater`, and `less` at the tails a
+    production alpha reaches directionally, run at the 0.1 and 0.05 tails). At every one of the
+    seven tails every cell stays within tolerance; the worst excess over each tail's cells is
+    0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
+    0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
+    0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
+    that check was not run below the 0.025 tail. The calibration-only vectorised interval uses
+    the runtime's `student_t_isf` for both direct quantiles and the interpolation nodes, rather
+    than a separate `scipy.stats.t.isf` inversion. On the measured `conformance` cells with
+    Python 3.14 and SciPy 1.16.3, it agreed with `estimate_lift` within `2.0e-14` (relative),
+    and the interpolated Student quantile agreed with the runtime quantile within `2.6e-15`.
+    The conformance bounds remain `1e-9` and `1e-12`, respectively. These empirical comparisons
+    are not numerical certificates; planning and exact enumeration use the runtime calculation
+    directly. A bounded grid is evidence at those cells, not coverage for every data-generating
+    process.
+
+    A BH-selected row is re-estimated at its own corrected level and routed there, so its label can
+    differ from the label of the nominal row whose p-value selected it.
+
+??? info "Statistical details: encouragement designs, point-less rows and fixed-horizon scope"
+    An Encouragement design's ITT on a conversion metric takes the same
+    routes (ITT and LATE readouts of a retention metric under an Encouragement design are refused
+    with `readout.encouragement.retention`; a compliance-only request, `estimands=("compliance",)`,
+    ignores the retention outcome and is measured to succeed on `from_definitions` only, see the
+    [capabilities table](reference/capabilities-by-entry-point.md#what-runs-where)): the
+    design's uptake (first-stage compliance) moments are a
+    different random variable over the same units and do not change the
+    ITT's own sufficient statistics, so they are stripped before either route
+    reads the arm rather than disqualifying it.
+    Triggered compliance is supported on the daily and as-of lift axes for definitions and unit-day artifacts when explicit trigger evidence is present. Each day includes units whose first eligible trigger is observed by that date; uptake windows and completion remain anchored at assignment. Other ingresses are source-limited because they cannot reconstruct trigger membership.
+
+    A row with no finite point (`LiftEstimate.lift is None`) still carries a typed
+    `LiftEstimate.binomial_set` (a `BinomialConfidenceSet`: sufficient counts, the frozen
+    nuisance budget, and finite/unbounded endpoints on the relative-lift scale) and answers
+    `stat_sig()`/`p_value()` exactly from it — point availability, confidence-set availability,
+    and reportability are three distinct, independently tracked properties; a point-less row is
+    never a failed one. An unbounded ceiling is represented as `upper=None` on the set, never as
+    a serialized infinity.
+
+    Both routes are fixed-horizon: neither proves validity under optional
+    stopping or repeated peeking (see the sequential-inference limitations elsewhere on this
+    page for that separate guarantee). A conversion/retention request with an informative
+    prior uses the established Normal approximation on every count. A registered sequential specification
+    instead uses its declared raw-observation likelihood and matching sequential inversion,
+    subject to the registered sampling and finalized-window contract.
+
+??? info "Statistical details: the three finite-sample boundaries (arm size, latency, extreme alpha)"
+    The finite-sample route also has three boundaries, each a refusal rather than silent degradation (dense counts under `auto` meet none of them):
+
+    * **Arm size.** Each arm is capped at `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`
+      (1,000,000,000; it replaces `binomial_rr.MAX_ARM_SIZE`, which capped arms at 4,000,000 and is
+      removed without an alias -- code that imported the old name imports the new one and gets the
+      new cap). This is a compute-resource applicability boundary, not a statistical
+      one: a call with either arm above the cap refuses immediately
+      (`estimation.binomial.finite_sample_arm_ceiling_exceeded`, the cap in `max_arm_size`; it replaces the retired
+      `estimation.binomial.arm_too_large_for_exact_enumeration`, which `increment.errors.RETIRED_CODES` maps to it;
+      a dense cell runs at any size under `auto`)
+      rather than running a search whose cost keeps growing with the arm. The cap is the
+      largest arm the numerical safeguards were validated at against an independent decimal
+      oracle (`helper:calibration/binomial_oracle.py`, run by `helper:scripts/measure_binomial_ceiling.py`
+      `ulp` and `recovery` at 4,000,000, 16,000,000, 64,000,000, 100,000,000 and 1,000,000,000
+      per arm): the SciPy binomial primitives' error allowance (the worst relative error of a
+      pmf, cdf or sf that bears weight, as a share of `n` units of `2^-52`, was 0.198, 0.245,
+      0.212, 0.236 and 0.226 at those sizes, against an allowance of one), the Clopper-Pearson
+      enclosure, the support window's omitted mass (each held at every size), and exact-count
+      transport from the DuckDB producer: the integer `successes` it exports is the count the
+      route uses, and the float first and second moments only validate it, the Bernoulli
+      second-moment check scaling with `n`. The producer's counts passed that validation at
+      every size and rate measured (0.5, 0.002, 1e-4 and a single success), the second-moment
+      error reaching at most 0.24 of the check's rounding bound (2,442 times `variance_slack` at
+      a billion units), and a constant-0.5 arm, which carries no integer count, was refused at
+      every size. Count thresholds are computed in exact
+      integers, which a float quotient cannot keep above about 67,000,000 per arm. The error
+      allowance is derived for the stated SciPy/Boost model and measured against a decimal oracle
+      on arm64 with fused multiply-subtract; it is not a uniform proof across library or compiler
+      builds. The x86 build has not been run, which remains a verification gap, not a reproduced
+      failure.
+    * **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one
+      two-sided `alpha=0.05` `confidence_interval` with the treatment count at a risk ratio of
+      1.02 of the control rate, measured on an Apple M3 Pro with
+      `scripts/measure_binomial_ceiling.py latency` (commits `d9b136b` to `2cad484`, none touching
+      the estimation code; wall time depends on machine load):
+
+      | Units per arm | 5% control rate | 1e-4 | 50% |
+      |---:|---:|---:|---:|
+      | 4,000,000 | 5.16 s / 178 MiB | 0.07 s / 122 MiB | 13.7 s / 207 MiB |
+      | 16,000,000 | 10.8 s / 198 MiB | 0.227 s / 128 MiB | 44.2 s / 237 MiB |
+      | 64,000,000 | 44.5 s / 228 MiB | 0.731 s / 148 MiB | 159 s / 242 MiB |
+      | 100,000,000 | 82.3 s / 222 MiB | 1.21 s / 150 MiB | 179 s / 415 MiB |
+      | 1,000,000,000 | 234 s / 336 MiB | 2.92 s / 165 MiB | 787 s / 424 MiB |
+
+      The cost follows the control-count window, which follows the nuisance rate, so a rare rate
+      is cheap at any size and the window is widest at a 50% control rate.
+      Each p-value bounds a supremum over the control rate's Clopper-Pearson
+      interval. The search splits that interval until the bound's distance above a
+      witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
+      and the tail level it is compared with, plus the certificate's own float noise
+      (2.9e-12 at 1,000 per arm, 8.9e-10 at 1,000,000, 3.6e-9 at 4,000,000, 8.9e-8 at
+      100,000,000 and 8.9e-7 at 1,000,000,000, which no search narrows), or
+      after 2,048 splits. The reported p-value is therefore a certified upper bound that
+      exceeds the supremum-based p-value by no more than that gap: 2^-14 of the p-value
+      above the tail level and 2^-14 of the tail level below it, plus the noise. For one tail
+      at a billion units per arm that is at most 2.4e-6 at a 0.025 tail (1.5e-6 plus 8.9e-7) and
+      1.5e-6 at a 0.01 tail (6.1e-7 plus 8.9e-7); at 1,000 units the noise is negligible and it
+      is 1.5e-6 and 6.1e-7. A two-sided p-value is twice the smaller certified tail, so its gap
+      is twice those. The target is never tighter than a fixed 1e-6 stop at a tail
+      level of 0.0164 or more. A certificate whose bounds still straddle the tail level is
+      conservatively non-rejecting; a certified upper bound below the tail rejects even
+      within the declared gap. The endpoint search only compares p-values with the tail
+      level, so each probe also stops once that comparison is certified either way.
+      A search the cap ends is not an error: its p-value stays a valid,
+      conservative bound, and the row's `note` says how many probes ended so and the largest
+      gap they left, in units of the p-value the row reports (twice a directional gap on a
+      two-sided row). No tolerance beyond that disclosure is promised. Every
+      `BinomialConfidenceSet` records `binomial_bb_difference_v3`: its Clopper–Pearson
+      widening is relative to the smaller endpoint/complement, its numerical allowance
+      scales with arm size, and its lattice thresholds use integer arithmetic. A row
+      persisted under v1 (the absolute-gap stop), v2 (the earlier nuisance envelope),
+      another construction, or no construction is refused when read
+      (`estimation.results.binomial.obsolete_construction`), rather than combining its
+      endpoints with a verdict recomputed by a different rule. Re-run the analysis to cut
+      it again. Each endpoint is the outer end of a search
+      bracket no wider than 0.05% (2^-11) and no wider than 1/128 of the log risk
+      ratio's standard error, whichever is finer, so the search works harder as
+      arms grow and the standard error shrinks. The stop is the resolution of the
+      evaluated tail envelope only, not a bound on SciPy's primitive error; a
+      search that cannot reach it keeps its conservative
+      endpoint and says so in the row's `note`. The process caches up to 24 MiB of control and
+      24 MiB of treatment tail vectors between searches. A readout multiplies this across
+      metrics, arms, and breakout cells. Only sparse counts, or an explicit
+      `conversion_inference="finite_sample"`, take this route. A further large
+      speedup would need a genuinely different tail-evaluation construction (a
+      closed-form or recurrence update between adjacent risk-ratio candidates);
+      none is implemented today. Reduce the number of eligible contrasts in a single
+      call (narrow `metrics=`, run large-arm breakouts separately) if latency
+      matters more than exactness at your arm sizes.
+      FCR-selected rows refresh this disclosure for the returned interval; an
+      obsolete nominal disclosure is removed while unrelated notes are retained.
+    * **Extreme alpha.** Two floors bound the tail level. The frozen nuisance tail budget passed
+      to the Clopper-Pearson endpoint solver is `min(1e-6, alpha / 32)`; below `1e-9` (i.e.
+      `alpha < 3.2e-8`), SciPy's iterative beta-quantile solver has demonstrated large relative
+      error against an exact oracle for small `n` in the validated regime, so the endpoint is
+      refused (`estimation.binomial.tail_unrepresentable`) rather than certified outside that
+      regime. And every certified tail carries a float margin that grows with the arms,
+      `(A(n_c) + A(n_t) + m) * 2^-52` with `A(n) = max(2048, n)` (SciPy's binomial primitives
+      were measured against an exact decimal oracle to a billion trials, where their relative
+      error stays within a quarter of `n` units of `2^-52`): once it reaches what the tail
+      level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
+      `alpha - min(1e-6, alpha / 32)` one-sided) no p-value read from an evaluated tail can be
+      certified below the tail, and the call refuses with the same code (context `alpha`,
+      `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever the structure
+      alone stops it. The one exception is a null the structure alone rejects: a two-sided or
+      "less" test of a null ratio above `1 / a`, `a` the control arm's Clopper-Pearson lower
+      bound at the nuisance budget, has an empty nuisance domain, so its p-value is the budget
+      itself (doubled two-sided) with no tail evaluated, and the upper endpoint is the first
+      candidate above `1 / a`, which the control arm certifies by itself; that call is answered,
+      the lower endpoint at zero. Persisted rows retain that guard: `stat_sig()`/`p_value()` and
+      table adapters refuse a non-structural null with the same code and context as fresh
+      inference, rather than reporting a margin-floored non-rejection. For equal arms the
+      two-sided threshold is about `3.8e-9` at
+      4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
+      1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
+      about 34,000,000 per arm, so below that size the solver floor binds. The margin is
+      absent from ordinary levels. Its effect depends on its ratio to the tail level, so it was
+      measured on the production search at 10,000 units per arm with the margin set to the
+      ratio a billion-unit arm has (it was not run at a billion): at `alpha >= 1e-4` it does not
+      move an interval, at `1e-5` it widens it by about 1%, and from about `3e-6` it degrades
+      it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: a tail level they refuse
+      leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
+      planned as zero. Under a dominating margin the runtime decides only the count pairs whose
+      control count rejects the null on its Clopper-Pearson bound alone, and refuses the rest;
+      a `finite_sample` plan whose control window at the baseline rate holds a refused count is
+      refused too, and an `auto` plan whose refused pairs carry more than half of `1e-6`, never
+      planned with those pairs as non-rejections. `achieved_power`, `minimum_detectable_effect`
+      and each `power_curve` row refuse it with `power.binomial_tail_level_unrepresentable`
+      (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from` -- the
+      smallest control count the runtime decides, `None` when it decides none -- `solver_floor`,
+      `cause`, `solver_floor` or `float_margin`, and `scope`, `requested`) and an arm above the
+      ceiling with `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`, `max_arm_size`),
+      before any replay. `required_sample_size` searches only sizes whose decision reads the
+      treatment arm: one the margin dominates even at the smallest design is refused before
+      searching, with `power.binomial_tail_level_unrepresentable` (`scope` `smallest`); a float
+      margin that starts dominating only at larger arms ends the search at that size with
+      `power.binomial_size_search_unreachable` (context `power`, `maximum_power`, `n_per_arm`,
+      `max_arm_size`). An allocation so lopsided that the smallest design has an arm above the arm
+      ceiling is refused with `power.binomial_arm_ceiling_below_smallest_design`. There is no
+      finite-sample route at a smaller alpha; use a larger alpha, or `conversion_inference="auto"`,
+      which takes the delta-method route at counts dense for the tail and has neither floor.
+
+??? info "Statistical details: planning on the binomial routes"
+    For these fixed-horizon binomial plans, public power is a model-based point
+    probability, not a conservative numerical lower bound. Enumeration publishes
+    computed rejection mass only when its internal enclosure establishes maximum
+    absolute error at most `1e-6` conditional on the deployed SciPy/Boost
+    special-function error model; this is not a cross-build floating-point proof.
+    The dense closed-form route instead reports its model's point probability; its validation
+    tolerance remains `0.005`, not a universal bound or finite-sample calibration guarantee.
+    Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
+    `1e-8` relative tolerance on the relative-effect scale. It does not promise the
+    first IEEE-representable effect. A band whose resolved ends fall short refuses; a band the
+    budgets leave straddling the target is passed over (see the planning guide).
+    Unresolved MDE searches refuse with
+    `power.minimum_detectable_effect.numerical_resolution`, or leave a companion
+    MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
+    The reported power is evaluated at the returned effect. Internal accuracy
+    bounds address numerical evaluation, not model misspecification; calibration
+    remains a separate, deferred diagnostic. The planning model is
+    `hybrid_finite_plus_delta_v3`, and persisted v1/v2 plans require recomputation. A v3 result
+    saved before `power_lower`/`power_upper` existed was sized by its computed point and carries
+    no enclosure; recompute it for the lower-bound certificate.
+    See [power planning](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
+    for replay limits and comparisons with other tests.
+
 ### Signed effects require a suitable scale and reference
 
-Prior-free adjusted and clustered unadjusted routes preserve additive inference
-and signed joint-relative sets. A negative control mean is allowed; a zero one
-can leave no finite ratio point. Ordinary unclustered log-scale arm lift still
-requires positive means. Absolute-scale estimation is supported directly by
-observational adjusted methods, encouragement LATE, switchback contrasts,
-and sitewide impact APIs; `Analysis.run(value_scale="absolute")` remains an
-observational selector rather than a general randomized arm-lift option.
+Ordinary unclustered log-scale arm lift needs positive arm means. A control mean that can
+be zero or negative needs an additive-scale route: observational adjusted methods,
+encouragement LATE, switchback contrasts, sitewide impact, or the clustered unadjusted
+route's signed joint-relative set. `Analysis.run(value_scale="absolute")` is an
+observational selector, not a general randomized arm-lift option.
 
-A randomized experiment is not shut out, though. `Analysis.sitewide()` derives an additive
-effect directly from enrolled-arm moments, so it is a conditional randomized route for a
-signed quantity. It is conditional on where the analysis came from: a definitions-backed
-analysis carries the site-volume evidence it needs, and an artifact-backed one qualifies
-when the published artifact includes a site-volume evidence extension. It also has its own
-baseline requirements. Otherwise reach for one of the designs above, or compare a
-transformed quantity that stays positive.
+??? info "Statistical details: additive routes and the sitewide option"
+    Prior-free adjusted and clustered unadjusted routes preserve additive inference
+    and signed joint-relative sets. A negative control mean is allowed; a zero one
+    can leave no finite ratio point. Ordinary unclustered log-scale arm lift still
+    requires positive means. Absolute-scale estimation is supported directly by
+    observational adjusted methods, encouragement LATE, switchback contrasts,
+    and sitewide impact APIs; `Analysis.run(value_scale="absolute")` remains an
+    observational selector rather than a general randomized arm-lift option.
+
+    A randomized experiment is not shut out, though. `Analysis.sitewide()` derives an additive
+    effect directly from enrolled-arm moments, so it is a conditional randomized route for a
+    signed quantity. It is conditional on where the analysis came from: a definitions-backed
+    analysis carries the site-volume evidence it needs, and an artifact-backed one qualifies
+    when the published artifact includes a site-volume evidence extension. It also has its own
+    baseline requirements. Otherwise reach for one of the designs above, or compare a
+    transformed quantity that stays positive.
 
 ### A quantile's reported interval depends on the alpha you asked for
 
-The quantile standard error is derived from an order-statistic bracket evaluated at the
-caller's alpha, then divided by the corresponding normal critical value. Change the alpha —
-which multiplicity allocation does — and the same data and the same quantile yield a
-different standard error and a different reported interval. This is necessary, not a defect:
-the bracket must be built at the caller's own alpha for the reported interval to cover at
-that alpha; a fixed-reference-alpha SE, rescaled to other alphas, was measured to fail
-coverage on the same grid that validates this construction.
+A quantile's standard error and interval are built at the alpha you asked for, so the same
+data give a different interval under a different alpha, which is what a multiplicity
+allocation does. The p-value is computed once from the data by inverting the same
+construction and does not move with the allocation.
 
-The p-value used to decide significance does not share this dependence: it is computed once,
-by inverting this same construction (the smallest alpha at which the construction's own
-interval excludes the null), so it is a function of the data alone and does not move when a
-multiplicity allocation changes the alpha assigned to the row. Do not compare quantile
-standard errors or reported intervals across analyses that allocated different alpha
-budgets — they are not on the same scale — but the p-value is comparable across them.
-Fixed-horizon family selection uses that same inversion rather than reconstructing
-a p-value from the alpha-dependent standard error. A null that is never excluded
-has p-value exactly one, so every admissible family threshold leaves it unselected.
+!!! warning "Do not compare quantile intervals across different alpha budgets"
+    Quantile standard errors and reported intervals from analyses that allocated different
+    alpha are not on the same scale. Compare their p-values instead.
+
+??? info "Statistical details: the order-statistic bracket and its p-value"
+    The quantile standard error is derived from an order-statistic bracket evaluated at the
+    caller's alpha, then divided by the corresponding normal critical value. Change the alpha —
+    which multiplicity allocation does — and the same data and the same quantile yield a
+    different standard error and a different reported interval. This is necessary, not a defect:
+    the bracket must be built at the caller's own alpha for the reported interval to cover at
+    that alpha; a fixed-reference-alpha SE, rescaled to other alphas, was measured to fail
+    coverage on the same grid that validates this construction.
+
+    The p-value used to decide significance does not share this dependence: it is computed once,
+    by inverting this same construction (the smallest alpha at which the construction's own
+    interval excludes the null), so it is a function of the data alone and does not move when a
+    multiplicity allocation changes the alpha assigned to the row. Do not compare quantile
+    standard errors or reported intervals across analyses that allocated different alpha
+    budgets — they are not on the same scale — but the p-value is comparable across them.
+    Fixed-horizon family selection uses that same inversion rather than reconstructing
+    a p-value from the alpha-dependent standard error. A null that is never excluded
+    has p-value exactly one, so every admissible family threshold leaves it unselected.
 
 ### A quantile metric's planned variance is a projection from the pilot, not a certified bound
 
-`Analysis.planning_baseline(metric)` builds a `QuantileBaseline` from the pilot's own
-control-arm values; at each candidate sample size the solver applies the runtime's own
-half-width rule to a bracket projected from the pilot -- on continuous data the pilot's
-classical order-statistic standard error scaled by the asymptotic `1/sqrt(n)` rate, on
-rounded data the pilot's recorded distribution, averaged over where the quantile falls within
-its recording cell -- since resampling at every candidate size the search visits is not
-possible from a single pilot draw. The projection is close when the candidate size is a
-modest multiple of the pilot's own size; extrapolating far past it, especially toward an
-extreme quantile where the pilot has few points, inherits that region's own sampling noise
-and can be off by a larger margin. This is a property of the SOURCE: a finite pilot is one
-draw, not a certified estimate of the runtime's exact variance at an arbitrary future size.
-A bigger or more representative pilot narrows it; planning a design still sizes an
-experiment, it does not certify a final result. Measured directly (Monte Carlo, 1500
-two-arm draws at the planned size): a 90th-percentile metric with a 5,000-unit pilot,
-15% relative lift, and target power 0.80 achieved empirical power as low as 0.73 on one
-draw -- a real, several-point shortfall the deterministic projection does not eliminate,
-not merely simulation noise.
+Quantile sample-size planning projects the pilot's own order-statistic variance to each
+candidate size. The projection is close when the candidate is a modest multiple of the
+pilot's size and can fall several points short far past it or at an extreme quantile
+(measured: a 90th-percentile plan targeting power 0.80 achieved 0.73 on one draw). On
+rounded data power has a ceiling below one, and `required_sample_size` refuses a target
+above it with `power.quantile_size_search_unreachable`.
 
-On rounded data the runtime's interval never narrows below the log gap from the quantile to
-the next recorded value, however large the sample. Power therefore has a ceiling below one:
-`required_sample_size` refuses a target above it with
-`power.quantile_size_search_unreachable`, naming in `maximum_power` the largest power any
-size reaches (`limiting_condition="recording_grid"`). This is a property of the SOURCE's
-recording resolution; recording the metric more finely raises the ceiling.
+??? info "Statistical details: the pilot projection and the recording-grid ceiling"
+    `Analysis.planning_baseline(metric)` builds a `QuantileBaseline` from the pilot's own
+    control-arm values; at each candidate sample size the solver applies the runtime's own
+    half-width rule to a bracket projected from the pilot -- on continuous data the pilot's
+    classical order-statistic standard error scaled by the asymptotic `1/sqrt(n)` rate, on
+    rounded data the pilot's recorded distribution, averaged over where the quantile falls within
+    its recording cell -- since resampling at every candidate size the search visits is not
+    possible from a single pilot draw. The projection is close when the candidate size is a
+    modest multiple of the pilot's own size; extrapolating far past it, especially toward an
+    extreme quantile where the pilot has few points, inherits that region's own sampling noise
+    and can be off by a larger margin. This is a property of the SOURCE: a finite pilot is one
+    draw, not a certified estimate of the runtime's exact variance at an arbitrary future size.
+    A bigger or more representative pilot narrows it; planning a design still sizes an
+    experiment, it does not certify a final result. Measured directly (Monte Carlo, 1500
+    two-arm draws at the planned size): a 90th-percentile metric with a 5,000-unit pilot,
+    15% relative lift, and target power 0.80 achieved empirical power as low as 0.73 on one
+    draw -- a real, several-point shortfall the deterministic projection does not eliminate,
+    not merely simulation noise.
+
+    On rounded data the runtime's interval never narrows below the log gap from the quantile to
+    the next recorded value, however large the sample. Power therefore has a ceiling below one:
+    `required_sample_size` refuses a target above it with
+    `power.quantile_size_search_unreachable`, naming in `maximum_power` the largest power any
+    size reaches (`limiting_condition="recording_grid"`). This is a property of the SOURCE's
+    recording resolution; recording the metric more finely raises the ceiling.
 
 ## Design assumptions
 
 ### Switchback carryover is assumed away, not tested
 
-The switchback contract's identifying assumption is
-`no_residual_carryover_after_discarded_steps`. You declare a washout window, and a
-`SwitchbackWindow.carryover_order` (validated `0 <= carryover_order < observation_steps`,
-default `0`) names how many additional post-washout steps are still assumed contaminated.
-The retained window is `step >= washout_steps + carryover_order`, of length
-`observation_steps - carryover_order`. Declaring a nonzero order records the assumption
-precisely and is applied by `from_switchback_panel`'s runtime reduction; it does not prove
-that carryover has vanished.
+You declare the washout window and a `SwitchbackWindow.carryover_order`; the retained
+window starts at `washout_steps + carryover_order`. Declaring an order records the
+assumption precisely, and nothing verifies that it was long enough.
 
-Nothing verifies that `washout_steps + carryover_order` was long enough. The library
-validates the logged schedule, but cannot establish that the scheduler was random or that
-carryover has actually vanished by the retained window's start. If residual carryover
-remains past that point, the contrast can be biased and the interval need not cover.
+!!! warning "Residual carryover biases the contrast"
+    If carryover remains past the retained window's start, the contrast can be biased and
+    the interval need not cover. The library validates the logged schedule; it cannot
+    establish that the scheduler was random or that carryover has vanished.
 
-`from_switchback_panel` retains `step >= washout_steps + carryover_order` for declared orders
-0, 1, and 2 (whenever enough observation steps remain) under both `IndependentBernoulliOrder`
-and `SharedScheduleOrder`; declaring an order only records the assumption; nothing here proves
-carryover actually vanished by that point.
+??? info "Statistical details: the carryover declaration"
+    The switchback contract's identifying assumption is
+    `no_residual_carryover_after_discarded_steps`. You declare a washout window, and a
+    `SwitchbackWindow.carryover_order` (validated `0 <= carryover_order < observation_steps`,
+    default `0`) names how many additional post-washout steps are still assumed contaminated.
+    The retained window is `step >= washout_steps + carryover_order`, of length
+    `observation_steps - carryover_order`. Declaring a nonzero order records the assumption
+    precisely and is applied by `from_switchback_panel`'s runtime reduction; it does not prove
+    that carryover has vanished.
+
+    Nothing verifies that `washout_steps + carryover_order` was long enough. The library
+    validates the logged schedule, but cannot establish that the scheduler was random or that
+    carryover has actually vanished by the retained window's start. If residual carryover
+    remains past that point, the contrast can be biased and the interval need not cover.
+
+    `from_switchback_panel` retains `step >= washout_steps + carryover_order` for declared orders
+    0, 1, and 2 (whenever enough observation steps remain) under both `IndependentBernoulliOrder`
+    and `SharedScheduleOrder`; declaring an order only records the assumption; nothing here proves
+    carryover actually vanished by that point.
 
 ### Switchback inference requires independent units or blocks
 
-Under independent unit-cycle orders, the estimator averages all cycles within a labelled
-unit and applies a t test
-with `n_units - 1` degrees of freedom. This accommodates arbitrary serial correlation
-*within* a unit, which is the point of the design. It assumes the units are independent of
-each other, and that each unit's order was drawn independently.
+The unit-cycle estimator assumes units are independent of each other and that each
+unit's order was drawn independently; a shared seed, a balanced or stratified schedule,
+or interference between units breaks that, and the direction of the error is not
+characterized. A shared schedule is declared with `SharedScheduleOrder` and analysed at the
+block grain, where the block is the replicate and cloning the roster changes nothing.
 
-Several common patterns bear on that assumption. What each one does to the reported interval
-depends on the randomization law and on which target you are inferring about, and none of it
-is characterized here:
+!!! warning "A schedule check cannot establish independence"
+    The schedule integrity check refuses an implausibly lopsided realized split
+    (`source.frame.switchback.schedule`, reason `implausible_realized_split`); it cannot
+    establish independent randomization or absence of carryover. Interference biases the
+    point estimate and can make the interval anticonservative as well.
 
-- **Correlated schedules.** If unit orders are not drawn independently — a shared seed, or a
-  balanced or stratified schedule — independent-unit inference is not valid. The direction of
-  the error depends on both the randomization law and how units' potential outcomes respond to
-  order, not the law alone: when units respond to order in the same direction, shared orders
-  tend to induce positive covariance between contributions and balanced schedules tend to
-  induce negative covariance (leaving the independent-unit standard error conservative); when
-  units respond to order in opposite directions, these signs can reverse.
-- **Shared time shocks.** Conditional on the outcomes actually realized, an additive shock
-  shared across units does not couple contributions, because the only randomness is each
-  unit's independent order draw. Whether such a shock matters for a target beyond the periods
-  you ran depends on the mechanism: what makes that broader target random is a treatment
-  effect that varies with the shock, not the shock level on its own. The library does not
-  state which target it addresses.
-- **Interference.** If one unit's assignment changes another unit's outcome, the estimator is
-  no longer targeting the intended contrast, so the point estimate can be biased. This is
-  fundamentally an identification failure, and there is no exposure-mapping facility to
-  address it — but because one unit's outcome now depends on another unit's assignment, it can
-  also couple unit contributions and invalidate the independent-unit standard error, so the
-  reported interval is not reliably conservative either.
-- **Geographic or network correlation of outcomes, without interference.** Nearby units
-  having similar outcomes is not the same as one unit affecting another. On its own it does
-  not bias the point estimate; as with a shared shock, whether it matters depends on the
-  target.
+??? info "Statistical details: correlated schedules, shared shocks, interference and shared-schedule blocks"
+    Under independent unit-cycle orders, the estimator averages all cycles within a labelled
+    unit and applies a t test
+    with `n_units - 1` degrees of freedom. This accommodates arbitrary serial correlation
+    *within* a unit, which is the point of the design. It assumes the units are independent of
+    each other, and that each unit's order was drawn independently.
 
-A `SharedScheduleOrder` sequence declares a coarser randomization: one shared Bernoulli
-CT/TC order per two-period block, drawn once for a fixed, complete unit roster rather than
-independently per unit. `from_switchback_panel` reduces it with a block-level Student-t
-reference (`n_blocks - 1` degrees of freedom): the independent replicate is the block, not
-the roster unit, so a uniformly cloned roster changes neither the estimate nor its width.
+    Several common patterns bear on that assumption. What each one does to the reported interval
+    depends on the randomization law and on which target you are inferring about, and none of it
+    is characterized here:
 
-Both laws target the mean-unit retained-window additive effect. Results record
-`observation_steps` and `retained_steps=observation_steps-carryover_order`; the
-total/conversion estimand labels explicitly name that retained window.
+    - **Correlated schedules.** If unit orders are not drawn independently — a shared seed, or a
+      balanced or stratified schedule — independent-unit inference is not valid. The direction of
+      the error depends on both the randomization law and how units' potential outcomes respond to
+      order, not the law alone: when units respond to order in the same direction, shared orders
+      tend to induce positive covariance between contributions and balanced schedules tend to
+      induce negative covariance (leaving the independent-unit standard error conservative); when
+      units respond to order in opposite directions, these signs can reverse.
+    - **Shared time shocks.** Conditional on the outcomes actually realized, an additive shock
+      shared across units does not couple contributions, because the only randomness is each
+      unit's independent order draw. Whether such a shock matters for a target beyond the periods
+      you ran depends on the mechanism: what makes that broader target random is a treatment
+      effect that varies with the shock, not the shock level on its own. The library does not
+      state which target it addresses.
+    - **Interference.** If one unit's assignment changes another unit's outcome, the estimator is
+      no longer targeting the intended contrast, so the point estimate can be biased. This is
+      fundamentally an identification failure, and there is no exposure-mapping facility to
+      address it — but because one unit's outcome now depends on another unit's assignment, it can
+      also couple unit contributions and invalidate the independent-unit standard error, so the
+      reported interval is not reliably conservative either.
+    - **Geographic or network correlation of outcomes, without interference.** Nearby units
+      having similar outcomes is not the same as one unit affecting another. On its own it does
+      not bias the point estimate; as with a shared shock, whether it matters depends on the
+      target.
 
-A schedule integrity check cannot establish either independent randomization or absence of
-carryover. Under a unit-cycle declaration, a realized schedule too lopsided to be plausible
-(for example 320 CT and 0 TC unit-cycle draws) refuses before statistics are constructed
-with `source.frame.switchback.schedule` and reason `implausible_realized_split`. Correctly
-declared, nondegenerate shared schedules are supported.
+    A `SharedScheduleOrder` sequence declares a coarser randomization: one shared Bernoulli
+    CT/TC order per two-period block, drawn once for a fixed, complete unit roster rather than
+    independently per unit. `from_switchback_panel` reduces it with a block-level Student-t
+    reference (`n_blocks - 1` degrees of freedom): the independent replicate is the block, not
+    the roster unit, so a uniformly cloned roster changes neither the estimate nor its width.
+
+    Both laws target the mean-unit retained-window additive effect. Results record
+    `observation_steps` and `retained_steps=observation_steps-carryover_order`; the
+    total/conversion estimand labels explicitly name that retained window.
+
+    A schedule integrity check cannot establish either independent randomization or absence of
+    carryover. Under a unit-cycle declaration, a realized schedule too lopsided to be plausible
+    (for example 320 CT and 0 TC unit-cycle draws) refuses before statistics are constructed
+    with `source.frame.switchback.schedule` and reason `implausible_realized_split`. Correctly
+    declared, nondegenerate shared schedules are supported.
 
 ### Sequential information fractions are unit counts, not Fisher information
 
-Alpha-spending boundaries are computed at information fractions taken as cumulative
-analyzed-unit fractions of the planned maximum. That equals the true information fraction
-only when information is proportional to analyzed count: stable allocation, stable
-variance, comparable independent increments.
+Alpha-spending boundaries take the analysed-unit fraction of the planned maximum as the
+information fraction. Under drifting allocation or drifting variance the spending
+schedule is mis-timed and can over- or under-spend error.
 
-Under drifting allocation or drifting variance the spending schedule is mis-timed, which
-can over- or under-spend error — in exactly the non-stationary conditions that motivate
-continuous monitoring in the first place.
+??? info "Statistical details: when unit counts equal information"
+    Alpha-spending boundaries are computed at information fractions taken as cumulative
+    analyzed-unit fractions of the planned maximum. That equals the true information fraction
+    only when information is proportional to analyzed count: stable allocation, stable
+    variance, comparable independent increments.
+
+    Under drifting allocation or drifting variance the spending schedule is mis-timed, which
+    can over- or under-spend error — in exactly the non-stationary conditions that motivate
+    continuous monitoring in the first place.
 
 ### The sequential certification campaign has not been executed
 
-The public Bernoulli likelihood route has a finite-sample anytime-valid
-derivation under its registered model, assignment and reveal assumptions.
-That argument and verification of the deployed numerical implementation are
-separate obligations. Continuous-mean, adjusted-mean and ratio sequential
-routes carry asymptotic qualifications; they do not inherit the Bernoulli
-finite-sample guarantee.
+The Bernoulli likelihood route has a finite-sample anytime-valid derivation under its
+registered assumptions; the full empirical campaign that would verify the deployed
+implementation over its registered manifest has not been run (its recorded cost is months
+on twelve cores). Continuous-mean, adjusted-mean and ratio sequential routes carry
+asymptotic qualifications only. Release review uses bounded checks instead; their record is
+under [Unvalidated regimes](validation.md#unvalidated-regimes).
 
-The complete empirical campaign over the registered runtime manifest has
-not been executed. Its recorded cost is months on twelve cores even after
-the measured speedups; budgeted profiles deliberately cover only subsets.
-The presence of this machinery is a specification of the check, not evidence
-that its cells passed. Complete clustered and unit-cycle research matrices
-likewise remain uncertified.
+??? info "Statistical details: what the bounded release checks can and cannot establish"
+    The public Bernoulli likelihood route has a finite-sample anytime-valid
+    derivation under its registered model, assignment and reveal assumptions.
+    That argument and verification of the deployed numerical implementation are
+    separate obligations. Continuous-mean, adjusted-mean and ratio sequential
+    routes carry asymptotic qualifications; they do not inherit the Bernoulli
+    finite-sample guarantee.
 
-Release review for public sequential and difficult-cluster methods instead
-uses a bounded claim audit, independent numerical oracles and preselected
-risk-focused calibration, with unchanged per-case thresholds. Those checks
-can identify concrete failures and establish evidence for their stated cases;
-they cannot establish universal calibration, resolve unrun regimes, or turn
-small-cluster/asymptotic approximations into finite-sample guarantees.
-Incomplete or insufficiently precise checks remain unverified. This narrower
-release evidence requirement does not claim completion of the full campaigns
-or change the separate unit-cycle research obligations.
+    The complete empirical campaign over the registered runtime manifest has
+    not been executed. Its recorded cost is months on twelve cores even after
+    the measured speedups; budgeted profiles deliberately cover only subsets.
+    The presence of this machinery is a specification of the check, not evidence
+    that its cells passed. Complete clustered and unit-cycle research matrices
+    likewise remain uncertified.
 
-Evidence status for these campaigns is recorded under
-[Unvalidated regimes](validation.md#unvalidated-regimes).
+    Release review for public sequential and difficult-cluster methods instead
+    uses a bounded claim audit, independent numerical oracles and preselected
+    risk-focused calibration, with unchanged per-case thresholds. Those checks
+    can identify concrete failures and establish evidence for their stated cases;
+    they cannot establish universal calibration, resolve unrun regimes, or turn
+    small-cluster/asymptotic approximations into finite-sample guarantees.
+    Incomplete or insufficiently precise checks remain unverified. This narrower
+    release evidence requirement does not claim completion of the full campaigns
+    or change the separate unit-cycle research obligations.
+
+    Evidence status for these campaigns is recorded under
+    [Unvalidated regimes](validation.md#unvalidated-regimes).
 
 ### Off-policy evaluation of logged decisions is calibrated only under a fixed logger
 
-`estimate_policy_contrast` evaluates a target policy against a reference policy from a
-logged decision trace with a trajectory-level self-normalized importance-weighted
-estimator, cumulative likelihood ratios, and a unit-clustered sandwich interval on a `t`
-reference. The interval is asymptotic in the number of units. It runs on no `Analysis`
-path (SOURCE: none carries a decision trace); its ingress is `LoggedTrace.from_records`
-/ `from_frame`, and the [guide](guides/logged-policy.md) states the estimand.
+`estimate_policy_contrast` reports an interval that is asymptotic in the number of units
+and calibrated only when the logging policy was fixed: a trace logged under more than one
+policy version is refused (`logged_policy.inference.adaptive_logging_unsupported`), and
+every positive registered or recorded logging probability, chosen or not, must meet the
+0.05 floor (`logged_policy.trace.propensity_below_floor`). Exact zero support is allowed
+only where the evaluated policies also assign zero mass. Under a fixed logger the interval
+is nominal from an effective sample size of 20 up (`ESS_FLOOR = 20`).
 
-Admission requires every positive registered or recorded logging probability, chosen or not,
-to meet the declared `0.05` floor (`logged_policy.trace.propensity_below_floor`).
-Exact zero support is allowed only where the evaluated policies also assign zero
-mass. A sub-floor positive probability violates the promised importance-weight
-bound; it does not imply mathematically unbounded weights.
-The recorded-law constructor is an alternative to registry reconstruction,
-not a certificate of logger truthfulness or permission to relabel adaptive data.
+!!! warning "Adaptive loggers under-cover"
+    Measured before the gate existed, adaptive loggers covered 86.4–89.6% at nominal 95%,
+    with a biased surviving slice under contextual Thompson sampling. The recorded-law
+    constructor is not permission to relabel adaptive data.
 
-A trace logged under more than one policy version is refused (CONSTRUCTION,
-`logged_policy.inference.adaptive_logging_unsupported`). Measured before that gate
-existed, with the same estimator on batch-refit adaptive loggers at horizon 5 under
-context dependence 0.8 (`tests/calibration/test_logged_policy_adaptive.py`'s design, 400
-replications at 200 units): an epsilon-greedy logger covered 86.4%, with the estimate's
-bias within its Monte-Carlo error but the sandwich standard error 27% smaller than the
-estimate's realized spread; a Thompson-sampling logger covered 89.6% over the 67% of
-replications its own propensities kept above the floor; and a contextual Thompson logger
-at horizon 2, 1000 units, covered 87.2% over the 24% of replications that survived the
-floor, with a bias of seven Monte-Carlo standard errors in that surviving slice. The
-variance understatement comes from units coupled through the batch refits and from
-heavy-tailed cumulative weights; the surviving-slice bias is selection on the outcomes
-that drove the propensities down. The construction that repairs both (stabilized or
-adaptively weighted estimators with a martingale variance; Hadad et al. 2021, Zhang,
-Janson and Murphy 2021) is not implemented, so the refusal names one policy version per
-trace as the route forward.
+??? info "Statistical details: the adaptive-logger measurements"
+    `estimate_policy_contrast` evaluates a target policy against a reference policy from a
+    logged decision trace with a trajectory-level self-normalized importance-weighted
+    estimator, cumulative likelihood ratios, and a unit-clustered sandwich interval on a `t`
+    reference. The interval is asymptotic in the number of units. It runs on no `Analysis`
+    path (SOURCE: none carries a decision trace); its ingress is `LoggedTrace.from_records`
+    / `from_frame`, and the [guide](guides/logged-policy.md) states the estimand.
 
-The record of where these figures come from is under
-[Unvalidated regimes](validation.md#unvalidated-regimes).
+    Admission requires every positive registered or recorded logging probability, chosen or not,
+    to meet the declared `0.05` floor (`logged_policy.trace.propensity_below_floor`).
+    Exact zero support is allowed only where the evaluated policies also assign zero
+    mass. A sub-floor positive probability violates the promised importance-weight
+    bound; it does not imply mathematically unbounded weights.
+    The recorded-law constructor is an alternative to registry reconstruction,
+    not a certificate of logger truthfulness or permission to relabel adaptive data.
 
-Under a fixed logger the interval is nominal from the effective-sample-size floor up.
-Measured on 26 fixed-logger cells over target divergence, horizon and unit count (9188
-emitted intervals; `tests/calibration/test_logged_policy_ess_floor.py`), coverage by band
-of the smallest per-index ESS was 0.862 / 0.892 / 0.933 / 0.933 / 0.943 / 0.947 / 0.949 for
-`[2,5)`, `[5,10)`, `[10,20)`, `[20,40)`, `[40,80)`, `[80,160)` and `[160,inf)`, with
-700 to 2190 intervals per band; `[20,40)` is the smallest band from which every band is
-within three Monte-Carlo standard errors of nominal, so `ESS_FLOOR = 20` and, since the
-ESS never exceeds the unit count, the independent-unit floor is 20 as well. The two
-bands just above the floor sit 1 to 2 points under nominal -- within tolerance, not at
-it -- because the sandwich standard error is about 7% too small there; from 80 effective
-units on it is within 1 point. On the nine fixed-logger cells of the adaptive study
-(T in {1, 2, 5}, 50 to 1000 units, 160 to 800 replications each) coverage ranged from
-0.931 to 0.960, every cell inside its own three-MCSE band; at horizon 5 with 100 units
-the floor screened 126 of 600 replications and the emitted intervals covered 0.941.
+    A trace logged under more than one policy version is refused (CONSTRUCTION,
+    `logged_policy.inference.adaptive_logging_unsupported`). Measured before that gate
+    existed, with the same estimator on batch-refit adaptive loggers at horizon 5 under
+    context dependence 0.8 (`tests/calibration/test_logged_policy_adaptive.py`'s design, 400
+    replications at 200 units): an epsilon-greedy logger covered 86.4%, with the estimate's
+    bias within its Monte-Carlo error but the sandwich standard error 27% smaller than the
+    estimate's realized spread; a Thompson-sampling logger covered 89.6% over the 67% of
+    replications its own propensities kept above the floor; and a contextual Thompson logger
+    at horizon 2, 1000 units, covered 87.2% over the 24% of replications that survived the
+    floor, with a bias of seven Monte-Carlo standard errors in that surviving slice. The
+    variance understatement comes from units coupled through the batch refits and from
+    heavy-tailed cumulative weights; the surviving-slice bias is selection on the outcomes
+    that drove the propensities down. The construction that repairs both (stabilized or
+    adaptively weighted estimators with a martingale variance; Hadad et al. 2021, Zhang,
+    Janson and Murphy 2021) is not implemented, so the refusal names one policy version per
+    trace as the route forward.
 
-The cumulative-product weighting is what makes the estimator target the dynamic policy
-value. Measured against a current-step-only comparator at horizon 5, 1000 units, under
-context dependence 0.8 (truth 0.0275): the current-step estimator is biased by +0.0026,
-more than three Monte-Carlo standard errors from zero, while the shipped estimator's
-bias of +0.0006 stays within its own.
+    The record of where these figures come from is under
+    [Unvalidated regimes](validation.md#unvalidated-regimes).
+
+??? info "Statistical details: fixed-logger calibration and the effective-sample-size floor"
+    Under a fixed logger the interval is nominal from the effective-sample-size floor up.
+    Measured on 26 fixed-logger cells over target divergence, horizon and unit count (9188
+    emitted intervals; `tests/calibration/test_logged_policy_ess_floor.py`), coverage by band
+    of the smallest per-index ESS was 0.862 / 0.892 / 0.933 / 0.933 / 0.943 / 0.947 / 0.949 for
+    `[2,5)`, `[5,10)`, `[10,20)`, `[20,40)`, `[40,80)`, `[80,160)` and `[160,inf)`, with
+    700 to 2190 intervals per band; `[20,40)` is the smallest band from which every band is
+    within three Monte-Carlo standard errors of nominal, so `ESS_FLOOR = 20` and, since the
+    ESS never exceeds the unit count, the independent-unit floor is 20 as well. The two
+    bands just above the floor sit 1 to 2 points under nominal -- within tolerance, not at
+    it -- because the sandwich standard error is about 7% too small there; from 80 effective
+    units on it is within 1 point. On the nine fixed-logger cells of the adaptive study
+    (T in {1, 2, 5}, 50 to 1000 units, 160 to 800 replications each) coverage ranged from
+    0.931 to 0.960, every cell inside its own three-MCSE band; at horizon 5 with 100 units
+    the floor screened 126 of 600 replications and the emitted intervals covered 0.941.
+
+    The cumulative-product weighting is what makes the estimator target the dynamic policy
+    value. Measured against a current-step-only comparator at horizon 5, 1000 units, under
+    context dependence 0.8 (truth 0.0275): the current-step estimator is biased by +0.0026,
+    more than three Monte-Carlo standard errors from zero, while the shipped estimator's
+    bias of +0.0006 stays within its own.
 
 ## Power and planning
 
 ### Arm power planning depends on declared alternative-arm variance shapes
 
-The three arm solvers evaluate the treatment and control terms at their own
-means under the alternative. Starting from the control-arm effective variance
-`v`, mean-like metrics assume equal absolute variance in the two arms
-(`v_treatment = v`). Conversion and retention metrics that the runtime does not
-decide with the finite-sample binomial test (CUPED, clustered, absorbed-factor,
-sequential, and counts the runtime takes the delta-method route at) instead rescale `v` by the Bernoulli shape at the alternative rate:
-`v_treatment = v * p_treatment * (1 - p_treatment) / (p_control * (1 - p_control))`.
-These are explicit planning assumptions (`power_basis="asymptotic"`). They do
-not guarantee that a future data-generating process has either variance shape.
+Mean-like metrics are planned with equal absolute variance in the two arms; conversion
+and retention metrics planned on the asymptotic route rescale the control variance by the
+Bernoulli shape at the alternative rate. These are declared planning assumptions
+(`power_basis="asymptotic"`), not guarantees that future data will follow either shape.
+
+??? info "Statistical details: the alternative-arm variance rule"
+    The three arm solvers evaluate the treatment and control terms at their own
+    means under the alternative. Starting from the control-arm effective variance
+    `v`, mean-like metrics assume equal absolute variance in the two arms
+    (`v_treatment = v`). Conversion and retention metrics that the runtime does not
+    decide with the finite-sample binomial test (CUPED, clustered, absorbed-factor,
+    sequential, and counts the runtime takes the delta-method route at) instead rescale `v` by the Bernoulli shape at the alternative rate:
+    `v_treatment = v * p_treatment * (1 - p_treatment) / (p_control * (1 - p_control))`.
+    These are explicit planning assumptions (`power_basis="asymptotic"`). They do
+    not guarantee that a future data-generating process has either variance shape.
 
 ### Conversion planning follows the runtime's route; the finite-sample replay is bounded
 
-Unadjusted, unclustered, fixed-horizon conversion and retention plans mirror the runtime's
-count rule. A count pair is decided by the delta method when its four per-arm success and
-failure counts are all at least `m = dense_min_count` for the plan's tail allocation and by the
-finite-sample test otherwise, so a plan's power is the rejection probability of that union
-over the count lattice: the production delta decision on the routed rectangle plus the replayed
-finite-sample decision on the rest (`power_basis="exact"` or `"approximate"`).
-Public `power` is the computed rejection mass, admitted only when its internal
-enclosure establishes absolute error at most `1e-6` conditional on the deployed
-SciPy/Boost special-function error model; this is not a cross-build floating-point
-proof. It is neither route's power: a plan whose counts straddle the threshold is not the
-smaller of the two. An `"approximate"` diagnostic makes no runtime-power claim.
-A plan whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
-arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
-the same for every design), retaining any undecided finite-route mass in the upper bound.
-Larger dense lattices use the closed-form model above (`power_basis="asymptotic"`, no replay,
-no cell budget, no arm ceiling, so a dense plan above a billion units per arm is planned).
-Its figures have the measured 0.005 agreement criterion, not a runtime lower-bound guarantee.
-A decision the runtime refuses in full on the finite-sample
-route (a tail level its margin dominates, an arm above its ceiling) is refused for a plan that
-keeps more than half of `1e-6` of its counts there, never reported as zero power; under a
-dominating margin the finite-sample route still decides the count pairs whose control count
-alone rejects a shifted null (see **Extreme alpha**), and a plan is refused only when the
-counts it keeps on that route *below* that control count carry more than half of `1e-6`, the
-context's `decided_from` naming the count. A minimum
-detectable effect whose whole path from the null is closed-form is solved without a lattice.
-Every enumerated plan is subject to the cell bound below, including sparse and borderline
-`auto` plans. `conversion_inference="finite_sample"` always uses enumeration; sufficiently
-dense `auto` plans can instead use the closed-form route.
+Conversion and retention plans mirror the runtime's count rule: the delta-method decision
+where the counts are dense and a replay of the finite-sample test elsewhere, summed over
+the count lattice. Public `power` is that computed value when its numerical enclosure is
+within `1e-6` (`power_basis="exact"`) and the enclosure's lower end otherwise
+(`"lower_bound"`), never a midpoint; sufficiently dense `auto` plans use the closed-form
+model instead (`"asymptotic"`, measured agreement 0.005). The replay is bounded, so an
+explicit `finite_sample` plan refuses (`power.binomial_replay_bound_exceeded`) at roughly
+a million units per arm at a 5% baseline and 190,000 at 50%, while a dense `auto` plan has
+no such bound.
 
-For these eligible dense rows, the runtime reconstructs Bernoulli moments from the validated
-integer counts before computing the delta interval. Accepted producer-rounding differences
-therefore cannot change the decision for identical counts. Other metrics and adjusted
-conversion rows continue to use their supplied moments.
+!!! warning "Sizing is a verified crossing, and a target can be unattainable"
+    Sizing returns a verified bracket crossing, not a proven global minimum, and a lower-bound
+    enclosure sizes conservatively (a few units per arm for the standard 10% baseline, 10%
+    lift plan). At a fixed size a target power can be genuinely unattainable: the companion
+    `mde_relative` is then null with `mde_unavailable_reason` `unattainable`, `unrepresentable`
+    or `numerical_resolution`.
 
-`python -m calibration.conversion_route bound` (`campaign-module:calibration.conversion_route bound`) compares each route's plan with the pipeline's
-exact rejection probability, summed over the count lattice, and judges each by the claim of its
-route. The 534 designs run so far reach every production tail at central and rare-event rates,
-with falls (negative lifts) at the 0.01, 0.025, 0.05 and 0.1 tails; the `tails` and `window`
-grids define every production request at its own alpha, two-sided against a rise and
-directional in both directions, and the directional requests have been run at the 0.05 and 0.1
-tails (central and rare-event) and two 0.01 designs. Those figures were measured against the
-interim planner (the smaller of the replayed and the closed-form power for a plan whose counts
-straddle the threshold, and a Normal-tail replay above 16,000 cells): a sparse plan was
-between 1.8e-5 above and 3.3e-4 below the pipeline's exact probability, and a borderline plan
-between 1.6e-5 above and 0.072 below it. Neither is a claim of the hybrid planner, whose
-enclosure is checked against the same enumeration with no tolerance beyond its own undecided
-mass and numerical error (the dense closed form keeps its 0.005 ceiling; its two failures, at
-1,236 per arm and a 50% baseline with a 6% lift, are now enumerated).
+??? info "Statistical details: the hybrid planner and its enclosure"
+    Unadjusted, unclustered, fixed-horizon conversion and retention plans mirror the runtime's
+    count rule. A count pair is decided by the delta method when its four per-arm success and
+    failure counts are all at least `m = dense_min_count` for the plan's tail allocation and by the
+    finite-sample test otherwise, so a plan's power is the rejection probability of that union
+    over the count lattice: the production delta decision on the routed rectangle plus the replayed
+    finite-sample decision on the rest (`power_basis="exact"` or `"lower_bound"`).
+    Public `power` is the computed rejection mass when its internal enclosure establishes
+    absolute error at most `1e-6`, and the enclosure's lower end otherwise, both conditional on
+    the deployed SciPy/Boost special-function error model; this is not a cross-build
+    floating-point proof. It is neither route's power: a plan whose counts straddle the
+    threshold is not the smaller of the two.
+    A plan whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
+    arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
+    the same for every design), retaining any undecided finite-route mass in the upper bound.
+    Larger dense lattices use the closed-form model above (`power_basis="asymptotic"`, no replay,
+    no cell budget, no arm ceiling, so a dense plan above a billion units per arm is planned).
+    Its figures have the measured 0.005 agreement criterion, not a runtime lower-bound guarantee.
+    A decision the runtime refuses in full on the finite-sample
+    route (a tail level its margin dominates, an arm above its ceiling) is refused for a plan that
+    keeps more than half of `1e-6` of its counts there, never reported as zero power; under a
+    dominating margin the finite-sample route still decides the count pairs whose control count
+    alone rejects a shifted null (see **Extreme alpha**), and a plan is refused only when the
+    counts it keeps on that route *below* that control count carry more than half of `1e-6`, the
+    context's `decided_from` naming the count. A minimum
+    detectable effect whose whole path from the null is closed-form is solved without a lattice.
+    Every enumerated plan is subject to the cell bound below, including sparse and borderline
+    `auto` plans. `conversion_inference="finite_sample"` always uses enumeration; sufficiently
+    dense `auto` plans can instead use the closed-form route.
 
-A `bound --out` checkpoint records each design's enumeration beside the finite-sample
-construction and routing floor it was summed under, and its plan beside the planner model. A
-resumed run retains compatible runtime enumerations and replans retired-model records with the
-current planner, `hybrid_finite_plus_delta_v3`. Its v1 and v2 predecessors must be
-recomputed, not relabelled. Unknown models and earlier undated layouts refuse with
-the file line and a route to a new `--out`. Saved earlier files remain unchanged as evidence.
+    For these eligible dense rows, the runtime reconstructs Bernoulli moments from the validated
+    integer counts before computing the delta interval. Accepted producer-rounding differences
+    therefore cannot change the decision for identical counts. Other metrics and adjusted
+    conversion rows continue to use their supplied moments.
 
-A plan not evaluated in closed form integrates the count lattice with a bounded decision
-budget. Evaluated pairs use the runtime's delta-method calculation on the routed rectangle
-and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 routed pairs
-and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
-cells and retaining unprocessed probability in the upper bound. Selection depends on the
-request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
-An enumeration that cannot establish maximum point error at most `1e-6`
-conditional on the deployed SciPy/Boost special-function error model refuses
-with `power.binomial_probability_unresolved`; it does not substitute the lower
-endpoint. Diagnostic enclosures can remain wide. The Normal-tail replay only proposes sizes.
+??? info "Statistical details: the `bound` campaign against exact rejection probabilities"
+    `python -m calibration.conversion_route bound` (`campaign-module:calibration.conversion_route bound`) compares each route's plan with the pipeline's
+    exact rejection probability, summed over the count lattice, and judges each by the claim of its
+    route. The 534 designs run so far reach every production tail at central and rare-event rates,
+    with falls (negative lifts) at the 0.01, 0.025, 0.05 and 0.1 tails; the `tails` and `window`
+    grids define every production request at its own alpha, two-sided against a rise and
+    directional in both directions, and the directional requests have been run at the 0.05 and 0.1
+    tails (central and rare-event) and two 0.01 designs. Those figures were measured against the
+    interim planner (the smaller of the replayed and the closed-form power for a plan whose counts
+    straddle the threshold, and a Normal-tail replay above 16,000 cells): a sparse plan was
+    between 1.8e-5 above and 3.3e-4 below the pipeline's exact probability, and a borderline plan
+    between 1.6e-5 above and 0.072 below it. Neither is a claim of the hybrid planner, whose
+    enclosure is checked against the same enumeration with no tolerance beyond its own undecided
+    mass and numerical error (the dense closed form keeps its 0.005 ceiling; its two failures, at
+    1,236 per arm and a 50% baseline with a 6% lift, are now enumerated).
 
-On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
-the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
-require further evaluations. Broader calibration certification of this implementation is
-pending; the saved campaign results above describe the interim planner.
+    A `bound --out` checkpoint records each design's enumeration beside the finite-sample
+    construction and routing floor it was summed under, and its plan beside the planner model. A
+    resumed run retains compatible runtime enumerations and replans retired-model records with the
+    current planner, `hybrid_finite_plus_delta_v3`. Its v1 and v2 predecessors must be
+    recomputed, not relabelled. Unknown models and earlier undated layouts refuse with
+    the file line and a route to a new `--out`. Saved earlier files remain unchanged as evidence.
 
-Each evaluated finite-sample pair uses its own replay or a root exit settled by the replay's
-first step; no pair inherits a neighbour's decision, because the runtime's stopped search
-need not be monotone in a count. Sizing returns a verified bracket crossing,
-not a proven global minimum.
+??? info "Statistical details: decision budgets, the effect search and MDE resolution"
+    A plan not evaluated in closed form integrates the count lattice with a bounded decision
+    budget. Evaluated pairs use the runtime's delta-method calculation on the routed rectangle
+    and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 routed pairs
+    and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
+    cells and retaining unprocessed probability in the upper bound. Selection depends on the
+    request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
+    An enumeration that establishes maximum point error at most `1e-6`, conditional on the
+    deployed SciPy/Boost special-function error model, publishes its point
+    (`power_basis="exact"`); one that cannot publishes the enclosure's lower end as `power`
+    (`power_basis="lower_bound"`), with both ends in `power_lower` and `power_upper`, and never a
+    midpoint or a substitute approximation. A size or effect reaches a target only when the
+    lower end does, so a wide enclosure sizes conservatively: the standard 10% baseline, 10%
+    relative lift conversion plan is sized with an enclosure about `3e-4` wide, a few units per
+    arm above where its point crosses. A sizing search that reaches its ceiling with an enclosure
+    holding the target refuses the probability there as unresolved
+    (`power.binomial_probability_unresolved`, with the enclosure and the size reached), as does
+    the explicit point request of a diagnostic enclosure; a ceiling whose upper end falls short
+    refuses with the replay-bound or size-limit code naming its lower end. The Normal-tail replay only
+    proposes sizes; it pays the same replay budget over the same cells as the runtime's replay,
+    so its proposal tracks the lower end the search decides from, and the final search steps
+    from the proposal by the slope that replay measured (the standard 10% baseline, 10% lift
+    plan is then decided by two runtime replays, the proposal and its predecessor).
 
-An effect search bisects from the null toward the far end of the admissible effects. The far
-endpoint of each interval it forms is reserved when the interval is formed (its refusals and
-the cell bound are charged then) and replayed only once something reads it: its power (an
-interval narrow enough that its curvature term is below one reads both endpoint powers
-before it is bounded; a narrow interval at the tolerance; the unattainable report), or an
-interval bound whose value its cells could change. A bound decides of those cells only the
-ones it could depend on: deciding a cell only moves a control row's first plus rejection up
-and its last minus rejection down, so where the row's bound at the two extremes of that box
-agrees it is fixed, and only the other rows' reserved cells inside the bound's frame are
-decided. The far end of the admissible effects and the far endpoints of the wide intervals
-above the answer are never replayed; an endpoint a curvature term reads is, even when the
-answer then lands below it. The intervals formed, the bounds read and the answer are those
-of replaying every endpoint when it is formed. The solves of one design (a supplied effect,
-its companion search, a curve's rows at one size) share the count-pair decisions any of them
-made, each decision the runtime's own; a search's bounds still read only the cells that
-search decided, so its stopping point is the same on a fresh geometry. The last table of
-this section records what that saves.
+    On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
+    the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
+    require further evaluations. Broader calibration certification of this implementation is
+    pending; the saved campaign results above describe the interim planner.
 
-The internal numerical enclosure accounts for the runtime's SciPy allowance,
-summation error, omitted support and unresolved decisions, conditional on the
-stated SciPy/Boost special-function error model. It is not a uniform proof
-across builds. Public solvers compare the admitted computed point power with
-the target, not an enclosure endpoint. The closed-form route reports its own
-model probability; its dense agreement criterion remains `0.005`, not a
-universal runtime error bound.
+    Each evaluated finite-sample pair uses its own replay or a root exit settled by the replay's
+    first step; no pair inherits a neighbour's decision, because the runtime's stopped search
+    need not be monotone in a count. Sizing returns a verified bracket crossing,
+    not a proven global minimum.
 
-MDE searches the earliest detectable region to `1e-8` absolute plus `1e-8`
-relative effect tolerance, not the first representable floating-point effect.
-It excludes an earlier interval only with a valid upper bound and cannot skip
-a materially earlier unresolved region. Reported power is evaluated at the
-reported effect. If the search cannot resolve that region, a supplied-effect
-answer preserves its valid power and has `mde_relative=None` with
-`mde_unavailable_reason="numerical_resolution"`. A direct
-`minimum_detectable_effect` refusal additionally retains structured context.
-Triggered plans use the rounded analyzed counts.
+    An effect search bisects from the null toward the far end of the admissible effects. The far
+    endpoint of each interval it forms is reserved when the interval is formed (its refusals and
+    the cell bound are charged then) and replayed only once something reads it: its power (an
+    interval narrow enough that its curvature term is below one reads both endpoint powers
+    before it is bounded; a narrow interval at the tolerance; the unattainable report), or an
+    interval bound whose value its cells could change. A bound decides of those cells only the
+    ones it could depend on: deciding a cell only moves a control row's first plus rejection up
+    and its last minus rejection down, so where the row's bound at the two extremes of that box
+    agrees it is fixed, and only the other rows' reserved cells inside the bound's frame are
+    decided. The far end of the admissible effects and the far endpoints of the wide intervals
+    above the answer are never replayed; an endpoint a curvature term reads is, even when the
+    answer then lands below it. The intervals formed, the bounds read and the answer are those
+    of replaying every endpoint when it is formed. The solves of one design (a supplied effect,
+    its companion search, a curve's rows at one size) share the count-pair decisions any of them
+    made, each decision the runtime's own; a search's bounds still read only the cells that
+    search decided, so its stopping point is the same on a fresh geometry. The last table of
+    this section records what that saves.
 
-A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
-count cells, the control window by the treatment windows at the null rate and at every
-alternative that solve evaluates. A supplied effect, an effect search (the union of the
-windows it evaluates) and each row of a power curve are separate solves: the cells an
-earlier row or the supplied effect left on the shared geometry are a cache, dropped when
-the next solve needs the room (the solve's own cells never are, and its union is what the
-bound counts), so a curve row answers as its scalar call does. The work
-follows that count, not the arm size, which the runtime decides up to a billion units.
-Planning refuses a decision whose null rectangle exceeds the bound before any replay
-(`power.binomial_replay_bound_exceeded`), and with the same code (its context then names
-the alternative treatment rate `p_t`) an alternative whose window would take its solve past
-it, before any mask is allocated. An effect search that would exceed it ends unresolved:
-the companion `mde_relative` of a supplied-effect answer is null with `numerical_resolution`
-(the supplied effect's power is unchanged), and `minimum_detectable_effect` is refused with
-the bound after the work that preceded it. An effect search stores more than the null
-rectangle, so it reaches the bound at smaller arms than a supplied effect does.
-`required_sample_size` searches only sizes about 1/128 under the largest whose null and
-supplied-effect rectangles fit, and a search that reaches that ceiling refuses with
-`power.binomial_replay_bound_exceeded`, whose context adds the target `power` and
-`power_reached` there (a skipped size just above may reach more). The other ends of a size
-search have their own codes (see the sizing table in the power-analysis guide): the arm
-ceiling or a float margin that dominates the tail level at larger arms ends it with
-`power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
-smallest design is refused before any search (see **Extreme alpha**). Under `conversion_inference="finite_sample"` a supplied effect
-reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
-and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
-Under default `"auto"`, dense plans using the closed-form route have no replay and no
-such bound; small enumerated dense plans remain subject to the replay bound. Measured with
-`scripts/measure_binomial_ceiling.py planning` (`--conversion-inference finite_sample` or
-`auto`) on a 12-core machine, cold CPU seconds of the call and the process's peak resident set,
-under a shared load that varied by several times between cells (null cells are the null
-rectangle). Explicit `finite_sample` plans at 1e5, 1e6, 5e6 and 5e7 units per arm, dense (a 5%
-baseline) and sparse (about a hundred events per arm):
+    The internal numerical enclosure accounts for the runtime's SciPy allowance,
+    summation error, omitted support and unresolved decisions, conditional on the
+    stated SciPy/Boost special-function error model. It is not a uniform proof
+    across builds. Public solvers compare the admitted computed point power with
+    the target, not an enclosure endpoint. The closed-form route reports its own
+    model probability; its dense agreement criterion remains `0.005`, not a
+    universal runtime error bound.
 
-| Baseline, units per arm | Call | CPU / peak | Outcome |
-|---|---|---:|---|
-| 5%, 100,000 | `achieved_power`, lift 5% | 9.8 s / 1.34 GiB | 0.97M null cells, companion effect available |
-| 5%, 1,000,000 | `achieved_power`, lift 1.5% | 198 s / 1.72 GiB | 9.67M null cells; companion effect `numerical_resolution` |
-| 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 48.3M null cells |
-| 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 483M null cells |
-| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.19 to 0.20 s / 0.21 to 0.26 GiB | Historical timing for 20,164 null cells per size on the internal Normal-tail sizing proposal, not a returned power or MDE. Current public calls admit only a resolved exact value or refuse. |
+    MDE searches the earliest detectable region to `1e-8` absolute plus `1e-8`
+    relative effect tolerance, not the first representable floating-point effect.
+    It excludes an earlier interval only with a valid upper bound and cannot skip
+    a materially earlier unresolved region. Reported power is evaluated at the
+    reported effect. If the search cannot resolve that region, a supplied-effect
+    answer preserves its valid power and has `mde_relative=None` with
+    `mde_unavailable_reason="numerical_resolution"`. A direct
+    `minimum_detectable_effect` refusal additionally retains structured context.
+    Triggered plans use the rounded analyzed counts.
 
-The same calls under `"auto"`:
+??? info "Statistical details: the replay bound and measured cost"
+    A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
+    count cells, the control window by the treatment windows at the null rate and at every
+    alternative that solve evaluates. A supplied effect, an effect search (the union of the
+    windows it evaluates) and each row of a power curve are separate solves: the cells an
+    earlier row or the supplied effect left on the shared geometry are a cache, dropped when
+    the next solve needs the room (the solve's own cells never are, and its union is what the
+    bound counts), so a curve row answers as its scalar call does. The work
+    follows that count, not the arm size, which the runtime decides up to a billion units.
+    Planning refuses a decision whose null rectangle exceeds the bound before any replay
+    (`power.binomial_replay_bound_exceeded`), and with the same code (its context then names
+    the alternative treatment rate `p_t`) an alternative whose window would take its solve past
+    it, before any mask is allocated. An effect search that would exceed it ends unresolved:
+    the companion `mde_relative` of a supplied-effect answer is null with `numerical_resolution`
+    (the supplied effect's power is unchanged), and `minimum_detectable_effect` is refused with
+    the bound after the work that preceded it. An effect search stores more than the null
+    rectangle, so it reaches the bound at smaller arms than a supplied effect does.
+    `required_sample_size` searches only sizes about 1/128 under the largest whose null and
+    supplied-effect rectangles fit, and a search that reaches that ceiling refuses with
+    `power.binomial_replay_bound_exceeded`, whose context adds the target `power` and
+    `power_reached` there (a skipped size just above may reach more). The other ends of a size
+    search have their own codes (see the sizing table in the power-analysis guide): the arm
+    ceiling or a float margin that dominates the tail level at larger arms ends it with
+    `power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
+    smallest design is refused before any search (see **Extreme alpha**). Under `conversion_inference="finite_sample"` a supplied effect
+    reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
+    and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
+    Under default `"auto"`, dense plans using the closed-form route have no replay and no
+    such bound; small enumerated dense plans remain subject to the replay bound. Measured with
+    `scripts/measure_binomial_ceiling.py planning` (`--conversion-inference finite_sample` or
+    `auto`) on a 12-core machine, cold CPU seconds of the call and the process's peak resident set,
+    under a shared load that varied by several times between cells (null cells are the null
+    rectangle). Explicit `finite_sample` plans at 1e5, 1e6, 5e6 and 5e7 units per arm, dense (a 5%
+    baseline) and sparse (about a hundred events per arm):
 
-| Baseline, units per arm | Call | CPU / peak | Outcome |
-|---|---|---:|---|
-| 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
-| 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
-| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.19 to 0.21 s / 0.23 to 0.25 GiB | Historical timing of the internal Normal-tail sizing proposal; not a returned power. Current public calls admit only resolved exact/asymptotic values or refuse; no current timing was re-measured here. |
+    | Baseline, units per arm | Call | CPU / peak | Outcome |
+    |---|---|---:|---|
+    | 5%, 100,000 | `achieved_power`, lift 5% | 9.8 s / 1.34 GiB | 0.97M null cells, companion effect available |
+    | 5%, 1,000,000 | `achieved_power`, lift 1.5% | 198 s / 1.72 GiB | 9.67M null cells; companion effect `numerical_resolution` |
+    | 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 48.3M null cells |
+    | 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 483M null cells |
+    | 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.19 to 0.20 s / 0.21 to 0.26 GiB | Historical timing for 20,164 null cells per size on the internal Normal-tail sizing proposal, not a returned power or MDE. Current public calls admit only a resolved exact value or refuse. |
 
-Earlier measurements of the replay at other sizes (an Apple M3 Pro at `45829f1`, `2da355f`),
-which an explicit `finite_sample` plan still takes and which were not repeated at this commit.
-The cells marked † were re-measured at `45829f1`, after a companion effect search became a solve
-of its own (it no longer inherits the supplied effect's cells, so an unresolved companion costs
-what a refused `minimum_detectable_effect` does); the others are from `2da355f`:
+    The same calls under `"auto"`:
 
-| Baseline, units per arm | Call | CPU / peak | Outcome |
-|---|---|---:|---|
-| 5%, 250,000 | `achieved_power`, lift 3% | 16.5 s / 1.6 GiB | 2.4M null cells, companion effect available |
-| 5%, 500,000 † | `achieved_power`, lift 2% | 35.3 s / 1.8 GiB | 4.8M null cells, companion effect available |
-| 5%, 500,000 † | `minimum_detectable_effect` | 35.7 s / 1.9 GiB | answered |
-| 5%, 1,000,000 † | `minimum_detectable_effect` | refused after 61.0 s / 1.8 GiB | needs 19.7M cells |
-| 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` (not re-measured) |
-| 50%, 100,000 | `minimum_detectable_effect` | refused after 57.5 s / 1.3 GiB | needs 10.6M cells (5.1M null) |
-| 50%, 190,000 † | `achieved_power`, lift 3% | 201 s / 1.7 GiB | 9.7M null cells; companion effect `numerical_resolution` |
-| 50%, 190,000 † | `minimum_detectable_effect` | refused after 210 s / 1.1 GiB | needs 10.8M cells |
-| 1e-4 at 1e6, 1e-6 at 1e8, 1e-7 at 1e9 (100 events) | `achieved_power`, lift 50% | 0.85 s / 0.2 GiB | 20,164 null cells, answered |
+    | Baseline, units per arm | Call | CPU / peak | Outcome |
+    |---|---|---:|---|
+    | 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
+    | 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
+    | 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.19 to 0.21 s / 0.23 to 0.25 GiB | Historical timing of the internal Normal-tail sizing proposal; not a returned power. Current public calls admit only resolved exact/asymptotic values or refuse; no current timing was re-measured here. |
 
-Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm under
-`finite_sample`. Planning a design above the bound has no replay: under `auto` a dense one is
-planned in closed form, an explicit `finite_sample` one is refused. Before the bound existed a
-call took 574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
+    Earlier measurements of the replay at other sizes (an Apple M3 Pro at `45829f1`, `2da355f`),
+    which an explicit `finite_sample` plan still takes and which were not repeated at this commit.
+    The cells marked † were re-measured at `45829f1`, after a companion effect search became a solve
+    of its own (it no longer inherits the supplied effect's cells, so an unresolved companion costs
+    what a refused `minimum_detectable_effect` does); the others are from `2da355f`:
 
-What the effect search's reserved endpoints and the shared decisions save, measured as
-paired runs (the two revisions alternating, three cold processes each, the best of three;
-a shared 12-core Apple arm64 host under a load of 15 to 140, so the absolute times are
-contended and the ratios are the evidence) at commit `e39f3ce` against its parent
-`e51117e`, with the finite-sample replay rows each call ran (the replay kernel is unchanged,
-so the row count is the work). Every decision, route, size, power (to `1e-11`), effect (to
-`1e-9` relative) and refusal is the same at every cell; every call is faster, by 1.0 to 2.8
-times, and peak resident growth stays within 1.4 times:
+    | Baseline, units per arm | Call | CPU / peak | Outcome |
+    |---|---|---:|---|
+    | 5%, 250,000 | `achieved_power`, lift 3% | 16.5 s / 1.6 GiB | 2.4M null cells, companion effect available |
+    | 5%, 500,000 † | `achieved_power`, lift 2% | 35.3 s / 1.8 GiB | 4.8M null cells, companion effect available |
+    | 5%, 500,000 † | `minimum_detectable_effect` | 35.7 s / 1.9 GiB | answered |
+    | 5%, 1,000,000 † | `minimum_detectable_effect` | refused after 61.0 s / 1.8 GiB | needs 19.7M cells |
+    | 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` (not re-measured) |
+    | 50%, 100,000 | `minimum_detectable_effect` | refused after 57.5 s / 1.3 GiB | needs 10.6M cells (5.1M null) |
+    | 50%, 190,000 † | `achieved_power`, lift 3% | 201 s / 1.7 GiB | 9.7M null cells; companion effect `numerical_resolution` |
+    | 50%, 190,000 † | `minimum_detectable_effect` | refused after 210 s / 1.1 GiB | needs 10.8M cells |
+    | 1e-4 at 1e6, 1e-6 at 1e8, 1e-7 at 1e9 (100 events) | `achieved_power`, lift 50% | 0.85 s / 0.2 GiB | 20,164 null cells, answered |
 
-| Design | Call | Replay rows before -> after | Wall before -> after | Outcome |
-|---|---|---:|---:|---|
-| 10%, 701/arm, `finite_sample` | `achieved_power`, lift 50% / `minimum_detectable_effect` / `required_sample_size` | 96,728 -> 41,132 / 96,954 -> 41,132 / 190,340 -> 121,142 | 5.3 -> 2.2 s / 4.5 -> 1.8 s / 7.3 -> 4.6 s | exact; sized 831 |
-| 10%, 2,600/arm, `finite_sample` | the same three calls | 449,080 -> 152,864 / 449,516 -> 152,864 / 745,142 -> 424,798 | 13.5 -> 6.7 s / 10.6 -> 5.4 s / 21.5 -> 14.4 s | exact; sized 2,926 |
-| 10%, 5,000/arm, `finite_sample` | the same three calls, and a 2x2 `power_curve` | 663,072 -> 249,790 / 663,096 -> 249,790 / 1,080,367 -> 659,139 / 1,430,212 -> 527,340 | 25.1 -> 13.5 s / 23.8 -> 13.9 s / 48.3 -> 35.1 s / 57.4 -> 28.6 s | exact; sized 5,473 |
-| 10%, 7,000/arm, `finite_sample` | the same three calls | 732,830 -> 246,166 / 732,540 -> 246,162 / 1,241,231 -> 750,463 | 50.3 -> 18.2 s / 26.3 -> 16.1 s / 40.3 -> 31.6 s | exact; sized 7,570, companion `numerical_resolution` |
-| 2%, 20,000/arm, `finite_sample` | the same three calls | 738,438 -> 221,306 / 738,612 -> 221,306 / 1,183,354 -> 662,616 | 20.0 -> 11.1 s / 17.1 -> 10.6 s / 31.2 -> 21.0 s | exact; sized 22,384 |
-| 10%, 6,000 treatment at allocation 0.8, `finite_sample` | the same three calls, and a 2x2 curve | 551,282 -> 180,580 / 552,610 -> 180,580 / 1,772,330 -> 1,354,440 / 1,268,806 -> 438,350 | 38.2 -> 19.4 s / 32.8 -> 13.5 s / 81.7 -> 77.9 s / 45.4 -> 23.2 s | exact; sized 7,245 |
-| 10%, 2,000 treatment at allocation 0.2, `finite_sample` | the same three calls | 565,918 -> 206,776 / 565,836 -> 206,776 / 1,308,035 -> 947,653 | 13.0 -> 7.2 s / 13.6 -> 6.6 s / 66.3 -> 39.8 s | exact; sized 2,041 |
-| 10%, 7,000/arm, `greater`, `null_lift=0.2`, `finite_sample` | the same three calls | 645,735 -> 208,348 / 649,673 -> 208,348 / 1,528,176 -> 1,528,176 | 13.3 -> 7.5 s / 13.9 -> 7.0 s / 26.4 -> 26.1 s | exact; sizing refused `power.binomial_probability_unresolved` at its ceiling |
-| 30%, 3,500/arm, `less`, `null_lift=-0.1`, `finite_sample` | the same three calls | 575,856 -> 197,604 / 572,760 -> 197,604 / 1,544,062 -> 1,544,062 | 16.2 -> 8.7 s / 17.6 -> 8.7 s / 37.7 -> 30.7 s | exact; sizing refused likewise |
-| 10%, 20,000 assigned at trigger 0.35, `finite_sample` | the same three calls | 732,830 -> 246,166 / 732,540 -> 246,162 / 1,241,231 -> 750,463 | 33.1 -> 19.7 s / 32.8 -> 21.2 s / 61.8 -> 53.0 s | exact at 7,000 analyzed; sized 21,628, companion `numerical_resolution` |
-| 0.1% at 100,000/arm and 0.01% at 1,000,000/arm, `auto` (sparse) | the same three calls | 384,840 -> 69,102 / 385,692 -> 69,102 / 607,933 -> 251,555 (and 444,308 -> 67,684 / 445,160 -> 67,684 / 676,550 -> 250,146) | 4.2 -> 1.6 s / 3.5 -> 1.9 s / 8.7 -> 5.9 s (and 2.9 -> 1.5 s / 3.2 -> 1.6 s / 7.9 -> 5.6 s) | exact; sized 122,373 and 1,223,792 |
-| 10%, 5,000/arm, `auto` (sparse) | the same three calls | as the explicit `finite_sample` plan | 22.1 -> 12.4 s / 23.0 -> 12.7 s / 42.5 -> 31.1 s | exact; sized 5,473 |
-| 10%, 23,000/arm, `auto` (borderline) | the same three calls | 149,894 -> 149,894 / 718,770 -> 273,622 / 278,591 -> 278,591 | 10.5 -> 10.5 s / 34.6 -> 27.9 s / 17.4 -> 16.8 s | refused `power.binomial_probability_unresolved` (effect: `numerical_resolution`): the budgets leave 4e-3 of the mass undecided |
+    Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm under
+    `finite_sample`. Planning a design above the bound has no replay: under `auto` a dense one is
+    planned in closed form, an explicit `finite_sample` one is refused. Before the bound existed a
+    call took 574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
 
-A supplied effect's own evaluation and a sizing's heuristic probes replay as before; the
-companion search after them now costs a fraction of the evaluation it follows rather than a
-multiple. An explicit `finite_sample` plan at the ticket's dense shapes (10,000 per arm and
-above at a 10% rate, 20,000 at 50%) is not planned at all: its windows hold 190,000 to 2.3
-million cells, more than the per-evaluation budgets decide, so the enclosure stays wider
-than `1e-6` and the call refuses with `power.binomial_probability_unresolved` after one
-evaluation (10 to 50 s here). Under the default `auto` the same refusal reaches the designs
-the count rule does not route to the delta method with near certainty: at a 10% rate 10,000
-per arm is `sparse` and 20,000 to 23,000 `borderline` (the routing floor is 2,140 successes
-and failures per arm at the default two-sided alpha, where those arms expect 1,000 to 2,300),
-so they are enumerated and refused likewise; 35,000 per arm at 10% and 20,000 at 50% are
-`dense` and planned in closed form without a replay.
+    What the effect search's reserved endpoints and the shared decisions save, measured as
+    paired runs (the two revisions alternating, three cold processes each, the best of three;
+    a shared 12-core Apple arm64 host under a load of 15 to 140, so the absolute times are
+    contended and the ratios are the evidence) at commit `e39f3ce` against its parent
+    `e51117e`, with the finite-sample replay rows each call ran (the replay kernel is unchanged,
+    so the row count is the work). Every decision, route, size, power (to `1e-11`), effect (to
+    `1e-9` relative) and refusal is the same at every cell; every call is faster, by 1.0 to 2.8
+    times, and peak resident growth stays within 1.4 times:
 
-Bounded-metric baselines and implied null/alternative rates must stay strictly
-positive and at most 1. A requested rate above 1 is refused rather than treated
-as a conservative approximation. At a fixed sample size, the directed
-noncentrality can peak before the effect-domain boundary, so a target power can
-be genuinely unattainable. In that case an achieved-power query still reports
-power for its supplied effect, but its companion `mde_relative` is null and
-`mde_unavailable_reason` states `unattainable`, `unrepresentable`, or
-`numerical_resolution`.
+    | Design | Call | Replay rows before -> after | Wall before -> after | Outcome |
+    |---|---|---:|---:|---|
+    | 10%, 701/arm, `finite_sample` | `achieved_power`, lift 50% / `minimum_detectable_effect` / `required_sample_size` | 96,728 -> 41,132 / 96,954 -> 41,132 / 190,340 -> 121,142 | 5.3 -> 2.2 s / 4.5 -> 1.8 s / 7.3 -> 4.6 s | exact; sized 831 |
+    | 10%, 2,600/arm, `finite_sample` | the same three calls | 449,080 -> 152,864 / 449,516 -> 152,864 / 745,142 -> 424,798 | 13.5 -> 6.7 s / 10.6 -> 5.4 s / 21.5 -> 14.4 s | exact; sized 2,926 |
+    | 10%, 5,000/arm, `finite_sample` | the same three calls, and a 2x2 `power_curve` | 663,072 -> 249,790 / 663,096 -> 249,790 / 1,080,367 -> 659,139 / 1,430,212 -> 527,340 | 25.1 -> 13.5 s / 23.8 -> 13.9 s / 48.3 -> 35.1 s / 57.4 -> 28.6 s | exact; sized 5,473 |
+    | 10%, 7,000/arm, `finite_sample` | the same three calls | 732,830 -> 246,166 / 732,540 -> 246,162 / 1,241,231 -> 750,463 | 50.3 -> 18.2 s / 26.3 -> 16.1 s / 40.3 -> 31.6 s | exact; sized 7,570, companion `numerical_resolution` |
+    | 2%, 20,000/arm, `finite_sample` | the same three calls | 738,438 -> 221,306 / 738,612 -> 221,306 / 1,183,354 -> 662,616 | 20.0 -> 11.1 s / 17.1 -> 10.6 s / 31.2 -> 21.0 s | exact; sized 22,384 |
+    | 10%, 6,000 treatment at allocation 0.8, `finite_sample` | the same three calls, and a 2x2 curve | 551,282 -> 180,580 / 552,610 -> 180,580 / 1,772,330 -> 1,354,440 / 1,268,806 -> 438,350 | 38.2 -> 19.4 s / 32.8 -> 13.5 s / 81.7 -> 77.9 s / 45.4 -> 23.2 s | exact; sized 7,245 |
+    | 10%, 2,000 treatment at allocation 0.2, `finite_sample` | the same three calls | 565,918 -> 206,776 / 565,836 -> 206,776 / 1,308,035 -> 947,653 | 13.0 -> 7.2 s / 13.6 -> 6.6 s / 66.3 -> 39.8 s | exact; sized 2,041 |
+    | 10%, 7,000/arm, `greater`, `null_lift=0.2`, `finite_sample` | the same three calls | 645,735 -> 208,348 / 649,673 -> 208,348 / 1,528,176 -> 1,528,176 | 13.3 -> 7.5 s / 13.9 -> 7.0 s / 26.4 -> 26.1 s | exact; sizing refused `power.binomial_probability_unresolved` at its ceiling |
+    | 30%, 3,500/arm, `less`, `null_lift=-0.1`, `finite_sample` | the same three calls | 575,856 -> 197,604 / 572,760 -> 197,604 / 1,544,062 -> 1,544,062 | 16.2 -> 8.7 s / 17.6 -> 8.7 s / 37.7 -> 30.7 s | exact; sizing refused likewise |
+    | 10%, 20,000 assigned at trigger 0.35, `finite_sample` | the same three calls | 732,830 -> 246,166 / 732,540 -> 246,162 / 1,241,231 -> 750,463 | 33.1 -> 19.7 s / 32.8 -> 21.2 s / 61.8 -> 53.0 s | exact at 7,000 analyzed; sized 21,628, companion `numerical_resolution` |
+    | 0.1% at 100,000/arm and 0.01% at 1,000,000/arm, `auto` (sparse) | the same three calls | 384,840 -> 69,102 / 385,692 -> 69,102 / 607,933 -> 251,555 (and 444,308 -> 67,684 / 445,160 -> 67,684 / 676,550 -> 250,146) | 4.2 -> 1.6 s / 3.5 -> 1.9 s / 8.7 -> 5.9 s (and 2.9 -> 1.5 s / 3.2 -> 1.6 s / 7.9 -> 5.6 s) | exact; sized 122,373 and 1,223,792 |
+    | 10%, 5,000/arm, `auto` (sparse) | the same three calls | as the explicit `finite_sample` plan | 22.1 -> 12.4 s / 23.0 -> 12.7 s / 42.5 -> 31.1 s | exact; sized 5,473 |
+    | 10%, 23,000/arm, `auto` (borderline) | the same three calls | 149,894 -> 149,894 / 718,770 -> 273,622 / 278,591 -> 278,591 | 10.5 -> 10.5 s / 34.6 -> 27.9 s / 17.4 -> 16.8 s | refused `power.binomial_probability_unresolved` (effect: `numerical_resolution`): the budgets leave 4e-3 of the mass undecided |
 
-The segment-pairwise solvers deliberately retain their baseline-only
-four-arm approximation. Their numbers should not be compared with the changed
-arm trio as though the two models were identical.
+    A supplied effect's own evaluation and a sizing's heuristic probes replay as before; the
+    companion search after them now costs a fraction of the evaluation it follows rather than a
+    multiple. The outcome column is historical: its refusals of
+    `power.binomial_probability_unresolved` are what stood when the table was measured. A rerun
+    today states the enclosure's lower end as `power` (`power_basis="lower_bound"`) at the same
+    sizes and times, and a sizing whose lower end never reaches the target climbs to its ceiling
+    and refuses there: as an unresolved probability (`power.binomial_probability_unresolved`)
+    when the ceiling's enclosure holds the target, otherwise with
+    `power.binomial_replay_bound_exceeded` or
+    `power.binomial_size_search_unreachable`. An explicit `finite_sample` plan at the ticket's
+    dense shapes (10,000 per arm and above at a 10% rate, 20,000 at 50%) has windows of 190,000
+    to 2.3 million cells, more than the per-evaluation budgets decide, so the enclosure stays
+    wider than `1e-6` and the lower end is stated after one evaluation (10 to 50 s). Under the
+    default `auto` the same budgets reach the designs the count rule does not route to the delta
+    method with near certainty: at a 10% rate 10,000 per arm is `sparse` and 20,000 to 23,000
+    `borderline` (the routing floor is 2,140 successes and failures per arm at the default
+    two-sided alpha, where those arms expect 1,000 to 2,300), so they are enumerated and stated
+    likewise; 35,000 per arm at 10% and 20,000 at 50% are `dense` and planned in closed form
+    without a replay.
 
-Sequential MDE inversion recomputes the alternative-arm standard error and
-boundary at each candidate. Its crossing calculation uses composite
-eight-point Gauss–Legendre panels. Classical derivative-remainder bounds are
-propagated through every surviving-density and exit-mass integral; floating
-arithmetic and normal-tail allowances are added separately. Expected
-information has its own propagated bound. Observed differences between
-quadrature levels are diagnostics, not the basis of the enclosure.
+??? info "Statistical details: bounded rates, segment solvers, sequential MDE and boundary quadrature"
+    Bounded-metric baselines and implied null/alternative rates must stay strictly
+    positive and at most 1. A requested rate above 1 is refused rather than treated
+    as a conservative approximation. At a fixed sample size, the directed
+    noncentrality can peak before the effect-domain boundary, so a target power can
+    be genuinely unattainable. In that case an achieved-power query still reports
+    power for its supplied effect, but its companion `mde_relative` is null and
+    `mde_unavailable_reason` states `unattainable`, `unrepresentable`, or
+    `numerical_resolution`.
 
-Public scalar power and expected-information values require their respective
-enclosures to meet independent convergence tolerances. An inverse that cannot
-distinguish the target within the declared quadrature, interval, or resource
-limits refuses with `power.minimum_detectable_effect.numerical_resolution`
-instead of consuming an unresolved midpoint or claiming an effect or
-unattainability. Information fractions remain the analyzed-unit-count
-approximation described above.
+    The segment-pairwise solvers deliberately retain their baseline-only
+    four-arm approximation. Their numbers should not be compared with the changed
+    arm trio as though the two models were identical.
 
-The prospective Gaussian boundary evaluator certifies its results within a
-256-look limit, a 300,000,000 kernel-element work limit and a 4,096-node
-ceiling. Larger schedules refuse with `power.boundary_crossing_quadrature`
-and a reason naming the limit, because certifying them takes well over a few
-seconds per public call. Reduce or group planned looks to stay within the
-limits; grouping changes the planned schedule rather than approximating the
-original design. Registered likelihood policies remain unsupported by this
-Gaussian planning route.
+    Sequential MDE inversion recomputes the alternative-arm standard error and
+    boundary at each candidate. Its crossing calculation uses composite
+    eight-point Gauss–Legendre panels. Classical derivative-remainder bounds are
+    propagated through every surviving-density and exit-mass integral; floating
+    arithmetic and normal-tail allowances are added separately. Expected
+    information has its own propagated bound. Observed differences between
+    quadrature levels are diagnostics, not the basis of the enclosure.
+
+    Public scalar power and expected-information values require their respective
+    enclosures to meet independent convergence tolerances. An inverse that cannot
+    distinguish the target within the declared quadrature, interval, or resource
+    limits refuses with `power.minimum_detectable_effect.numerical_resolution`
+    instead of consuming an unresolved midpoint or claiming an effect or
+    unattainability. Information fractions remain the analyzed-unit-count
+    approximation described above.
+
+    The prospective Gaussian boundary evaluator certifies its results within a
+    256-look limit, a 300,000,000 kernel-element work limit and a 4,096-node
+    ceiling. Larger schedules refuse with `power.boundary_crossing_quadrature`
+    and a reason naming the limit, because certifying them takes well over a few
+    seconds per public call. Reduce or group planned looks to stay within the
+    limits; grouping changes the planned schedule rather than approximating the
+    original design. Registered likelihood policies remain unsupported by this
+    Gaussian planning route.
 
 ### Switchback planning requires its own model
 
-Ordinary switchback planning derives its reference effect and centered
-contribution/order-slope covariance from a validated pilot, at the independent
-unit or shared-block grain. Moment-t power conditions on those fitted estimates;
-it does not account for their estimation uncertainty or certify finite-sample
-calibration. Optional prospective envelopes and complete-law research oracles
-retain separate lower-bound and Monte Carlo meanings. Existing small-sample
-failures and the unresolved computational-certification work remain; see the
+Switchback planning conditions on a pilot's fitted effect and covariance; it does not
+include their estimation uncertainty or certify finite-sample calibration. Parallel-arm
+`Baseline.icc` does not describe within-unit switchback dependence; see the
 [switchback guide](guides/switchback.md).
-Parallel-arm `Baseline.icc` does not describe within-unit switchback dependence.
+
+??? info "Statistical details: pilot-conditioned switchback power"
+    Ordinary switchback planning derives its reference effect and centered
+    contribution/order-slope covariance from a validated pilot, at the independent
+    unit or shared-block grain. Moment-t power conditions on those fitted estimates;
+    it does not account for their estimation uncertainty or certify finite-sample
+    calibration. Optional prospective envelopes and complete-law research oracles
+    retain separate lower-bound and Monte Carlo meanings. Existing small-sample
+    failures and the unresolved computational-certification work remain; see the
+    [switchback guide](guides/switchback.md).
+    Parallel-arm `Baseline.icc` does not describe within-unit switchback dependence.
 
 ## Observational estimands
 
@@ -1317,65 +1639,85 @@ Increment checks overlap and post-adjustment balance. It cannot validate conditi
 ignorability, and no diagnostic on this page substitutes for a defensible identification
 argument.
 
-Categorical strings are internally encoded with a modal reference and one
-indicator per remaining training level. High-cardinality columns therefore
-produce many columns; no automatic pooling or cohort trimming is applied.
-Encoding and per-level balance diagnostics do not establish overlap.
-Definitions and artifact ingress preserve their default missing-value refusal
-for numeric and categorical nulls alike. YAML rejects `missing`/`gate` tuning;
-other policies use a full `Observational` design on the two dataframe routes.
+??? info "Categorical encoding and missing values on the observational routes"
+    Categorical strings are internally encoded with a modal reference and one
+    indicator per remaining training level. High-cardinality columns therefore
+    produce many columns; no automatic pooling or cohort trimming is applied.
+    Encoding and per-level balance diagnostics do not establish overlap.
+    Definitions and artifact ingress preserve their default missing-value refusal
+    for numeric and categorical nulls alike. YAML rejects `missing`/`gate` tuning;
+    other policies use a full `Observational` design on the two dataframe routes.
 
 ### DML reports a partially-linear slope, not an average treatment effect
 
-The double machine-learning estimator identifies the slope of the partially linear model,
-which weights conditional effects by the conditional variance of treatment. That equals the
-average treatment effect only under homogeneous effects or a constant weight
-(`e(1-e)` with one treatment, `p_a p_0 / (p_a + p_0)` with several). The result labels its estimand
-`plr_slope` and carries a note saying so.
+DML estimates the slope of a partially linear model, labelled `plr_slope`, which equals
+the average treatment effect under homogeneous effects or constant weighting across the
+analysed population. With heterogeneous effects and varying weights, do not read a DML lift
+as a population ATE or compare it with IPTW or AIPW as though all three targeted the same
+quantity.
 
-A relative DML row divides that slope by the augmented control-arm mean of the analysed
-population, with their joint influence covariance; it is not `mu1 / mu0 - 1`. With several
-treatments, each row keeps its own comparison-specific slope over one shared control mean.
-Do not read a DML relative lift as a population ATE when you expect effect heterogeneity,
-and do not compare it against IPTW or AIPW as though all three targeted the same quantity.
-Its interval is asymptotic: finite-sample calibration of multi-arm and small-cluster
-designs is not established.
+??? info "Statistical details: the slope's weighting and the relative DML row"
+    The double machine-learning estimator identifies the slope of the partially linear model,
+    which weights conditional effects by the conditional variance of treatment. That equals the
+    average treatment effect only under homogeneous effects or a constant weight
+    (`e(1-e)` with one treatment, `p_a p_0 / (p_a + p_0)` with several). The result labels its estimand
+    `plr_slope` and carries a note saying so.
+
+    A relative DML row divides that slope by the augmented control-arm mean of the analysed
+    population, with their joint influence covariance; it is not `mu1 / mu0 - 1`. With several
+    treatments, each row keeps its own comparison-specific slope over one shared control mean.
+    Do not read a DML relative lift as a population ATE when you expect effect heterogeneity,
+    and do not compare it against IPTW or AIPW as though all three targeted the same quantity.
+    Its interval is asymptotic: finite-sample calibration of multi-arm and small-cluster
+    designs is not established.
 
 ### Only untrimmed native-logistic IPTW accounts for fitting its propensity
 
-The propensity model is fit on the same data used for estimation. Untrimmed IPTW with the
-default pooled logistic learner includes those estimating equations, and with several
-treatments the equations of every treatment-versus-control model that shares the control.
-Generic, pattern-specific and trimmed fits still treat the fitted propensity as known, so
-their standard error omits the propensity-estimation contribution, with no guarantee of
-being conservative once trimming is applied. High-capacity or custom learners can overfit
-assignment and destabilize the weights.
+Only untrimmed IPTW with the default logistic learner includes the propensity fit's
+estimating equations in its standard error. Generic, pattern-specific and trimmed fits
+treat the fitted propensity as known, so their standard error omits that contribution with
+no guarantee of being conservative.
 
-The multi-arm construction couples pairwise treatment-versus-control fits into marginal
-arm propensities. With the default logistic learner this is consistent for a multinomial
-logit propensity, but it is not that model's joint maximum-likelihood fit.
+??? info "Statistical details: propensity estimating equations and the multi-arm fit"
+    The propensity model is fit on the same data used for estimation. Untrimmed IPTW with the
+    default pooled logistic learner includes those estimating equations, and with several
+    treatments the equations of every treatment-versus-control model that shares the control.
+    Generic, pattern-specific and trimmed fits still treat the fitted propensity as known, so
+    their standard error omits the propensity-estimation contribution, with no guarantee of
+    being conservative once trimming is applied. High-capacity or custom learners can overfit
+    assignment and destabilize the weights.
+
+    The multi-arm construction couples pairwise treatment-versus-control fits into marginal
+    arm propensities. With the default logistic learner this is consistent for a multinomial
+    logit propensity, but it is not that model's joint maximum-likelihood fit.
 
 ### Trimming changes which population you estimated
 
-When overlap trimming removes units, IPTW and AIPW relabel the estimand to
-`overlap_subpopulation_ate` and record the retained population on the result, so the change
-of target is visible. The standard error conditions on that fitted retained set: it does not
-include the variability of the trim boundary itself, which depends on estimated
-propensities.
+When overlap trimming removes units, IPTW and AIPW relabel the estimand
+`overlap_subpopulation_ate` and record the retained population; DML keeps `plr_slope`
+either way, so check the recorded population. The standard error does not include the
+variability of the trim boundary itself.
 
-DML reports `plr_slope` whether or not trimming occurred, so a DML result alone does not
-tell you that the population changed. Check the recorded population.
+??? info "Statistical details: the retained population and its standard error"
+    When overlap trimming removes units, IPTW and AIPW relabel the estimand to
+    `overlap_subpopulation_ate` and record the retained population on the result, so the change
+    of target is visible. The standard error conditions on that fitted retained set: it does not
+    include the variability of the trim boundary itself, which depends on estimated
+    propensities.
+
+    DML reports `plr_slope` whether or not trimming occurred, so a DML result alone does not
+    tell you that the population changed. Check the recorded population.
 
 ### The positivity gate is a fixed threshold with no weight diagnostics
 
 The default identification gate requires propensities within `[0.01, 0.99]`, which caps a
-raw inverse weight at 100. Passing that gate is not evidence of good overlap. The result
-reports no effective sample size, no leverage, no weight-tail concentration, and no
-sensitivity across thresholds.
+raw inverse weight at 100. Passing it is not evidence of good overlap: the result reports
+no effective sample size, leverage, weight-tail concentration or sensitivity across
+thresholds.
 
-A handful of near-boundary units can dominate an IPTW or AIPW estimate while the gate still
-passes, producing an estimate that looks precise and is not stable. If you are relying on
-weighting, compute weight diagnostics yourself.
+!!! warning "Compute weight diagnostics yourself"
+    A handful of near-boundary units can dominate an IPTW or AIPW estimate while the gate
+    still passes, producing an estimate that looks precise and is not stable.
 
 For the evidence record see [Unvalidated regimes](validation.md#unvalidated-regimes).
 
@@ -1383,389 +1725,481 @@ For the evidence record see [Unvalidated regimes](validation.md#unvalidated-regi
 
 ### Fixed-horizon FDR control assumes a dependence condition that is not checked
 
-Selection across the metric × arm × segment family uses ordinary Benjamini–Hochberg, which
-controls FDR at the stated level under independence or positive dependence (PRDS). An
-exploratory family sharing a control arm and correlated outcomes can violate that
-condition, and there is no Benjamini–Yekutieli option at selection time.
+Fixed-horizon selection across the metric × arm × segment family uses ordinary
+Benjamini–Hochberg, which controls FDR under independence or positive dependence (PRDS).
+That condition is not checked; a family sharing a control arm with correlated outcomes can
+violate it, and there is no Benjamini–Yekutieli option at selection time.
 
-This applies to the fixed-horizon path. Registered sequential inference uses
-current or explicitly frozen likelihood e-values, whose family validity requires
-the declared common joint-unit filtration. Distributional assumptions are
-pre-data declarations; timestamps and observed means do not establish them.
+??? info "Statistical details: fixed-horizon versus registered sequential families"
+    Selection across the metric × arm × segment family uses ordinary Benjamini–Hochberg, which
+    controls FDR at the stated level under independence or positive dependence (PRDS). An
+    exploratory family sharing a control arm and correlated outcomes can violate that
+    condition, and there is no Benjamini–Yekutieli option at selection time.
+
+    This applies to the fixed-horizon path. Registered sequential inference uses
+    current or explicitly frozen likelihood e-values, whose family validity requires
+    the declared common joint-unit filtration. Distributional assumptions are
+    pre-data declarations; timestamps and observed means do not establish them.
 
 ### Sequential selected intervals use the same stopped likelihood
 
-What this assumes is the family's declared common joint-unit filtration. It matters when a
-selected interval is read as coverage for one metric chosen afterwards, which is a different
-statement.
-Sequential families retain every registered cell, including missing or abstaining
-cells. Selected intervals are reinverted at `min(q * R / m, nominal alpha)` on
-the checkpoint used for selection. This selected-set statement is distinct from
-coverage conditional on selecting one particular metric. Unbounded, full, empty,
-and numerically abstaining sets remain explicit in the result.
+A selected sequential interval is a statement about the selected set under the family's
+declared joint-unit filtration, reinverted at `min(q * R / m, nominal alpha)` on the
+selection checkpoint. It is not coverage for one metric you chose afterwards.
+
+??? info "Statistical details: the selected-set statement"
+    What this assumes is the family's declared common joint-unit filtration. It matters when a
+    selected interval is read as coverage for one metric chosen afterwards, which is a different
+    statement.
+    Sequential families retain every registered cell, including missing or abstaining
+    cells. Selected intervals are reinverted at `min(q * R / m, nominal alpha)` on
+    the checkpoint used for selection. This selected-set statement is distinct from
+    coverage conditional on selecting one particular metric. Unbounded, full, empty,
+    and numerically abstaining sets remain explicit in the result.
 
 ### Stopping-date guarantees require the registered reveal contract
 
-Native, frame-panel and artifact monitoring require explicit finalized capture.
-All relevant metrics must be revealed together after their longest required window,
-in outcome-independent unit order. Previously finalized values and assignments
-cannot be corrected during continuation. A changed generation or freshness hash
-is insufficient proof of append. Current as-of readouts expose the retained labeled
-checkpoint; historical curves require retained per-date checkpoints.
+Sequential guarantees hold under the registered reveal contract: explicit finalized
+capture, every relevant metric revealed together after its longest window in
+outcome-independent unit order, and no corrections during continuation. The discovery set
+is guaranteed for the current date only.
 
-The finite-sample public route uses raw Bernoulli/Beta likelihoods and matching
-inversion. The public mean, adjusted-mean and ratio routes instead provide
-asymptotic confidence sequences and family approximations; estimated variance
-does not preserve the exact e-value martingale argument. Scalar Gaussian NIG
-and paired-Gaussian NIW kernels are private research diagnostics and do not
-produce public anytime-valid evidence or decision rows. The filtration qualification is the declared common,
-outcome-independent joint-unit reveal order; a timestamp or observed mean does
-not establish it. Primary references are
-[Ville's maximal inequality](https://doi.org/10.1007/BF01503646) and
-[Howard et al.'s time-uniform concentration framework](https://arxiv.org/abs/1810.08240).
-The bounded release evidence review is separate from these mathematical claims;
-the full sequential research matrix remains uncertified.
+!!! warning "Do not accumulate flags across dates"
+    "This metric was flagged at least once this week" has inflated FDR and no stated
+    guarantee, and neither does picking the date with the most flags. Act on the current
+    date's discovery set.
 
-The union across dates is not controlled. "This metric was flagged at least once this week"
-has inflated FDR and no stated guarantee, and neither does picking the date with the most
-flags. Act on the current date's discovery set; do not accumulate flags across days.
+??? info "Statistical details: the reveal contract and the likelihood routes"
+    Native, frame-panel and artifact monitoring require explicit finalized capture.
+    All relevant metrics must be revealed together after their longest required window,
+    in outcome-independent unit order. Previously finalized values and assignments
+    cannot be corrected during continuation. A changed generation or freshness hash
+    is insufficient proof of append. Current as-of readouts expose the retained labeled
+    checkpoint; historical curves require retained per-date checkpoints.
+
+    The finite-sample public route uses raw Bernoulli/Beta likelihoods and matching
+    inversion. The public mean, adjusted-mean and ratio routes instead provide
+    asymptotic confidence sequences and family approximations; estimated variance
+    does not preserve the exact e-value martingale argument. Scalar Gaussian NIG
+    and paired-Gaussian NIW kernels are private research diagnostics and do not
+    produce public anytime-valid evidence or decision rows. The filtration qualification is the declared common,
+    outcome-independent joint-unit reveal order; a timestamp or observed mean does
+    not establish it. Primary references are
+    [Ville's maximal inequality](https://doi.org/10.1007/BF01503646) and
+    [Howard et al.'s time-uniform concentration framework](https://arxiv.org/abs/1810.08240).
+    The bounded release evidence review is separate from these mathematical claims;
+    the full sequential research matrix remains uncertified.
 
 ### Triggered sequential monitoring assumes trigger invariance and trigger-order stationarity
 
-A trigger-declared registered plan monitors the triggered population as a
-second chain whose members are revealed in first-trigger order once their
-trigger-anchored windows close. Its per-cell anytime coverage rests on the
-assigned route's assumptions plus two that no diagnostic can establish: that
-neither whether nor when a unit triggers depends on its arm (treatment may
-change which units trigger while leaving both arms' trigger rates equal, which
-`srm(population="triggered")` and `trigger_rates()` cannot see), and that
-trigger timing carries no information about the retained outcome, ratio
-components or pre-period covariate. Outside those assumptions the triggered
-contrast describes arm-selected cohorts, not the triggered intent-to-treat
-effect, and no null guarantee is asserted. Assignment-window uptake is
-mechanically tied to trigger timing, so triggered compliance cells stay
-unavailable (`triggered_uptake_unsupported`).
+Triggered monitoring additionally assumes that neither whether nor when a unit triggers
+depends on its arm, and that trigger timing carries no information about the retained
+outcome; no diagnostic can establish either, and outside them the triggered contrast
+describes arm-selected cohorts. Triggered compliance cells stay unavailable
+(`triggered_uptake_unsupported`).
 
-The per-cell guarantee holds for any look schedule under those assumptions.
-The triggered family keeps the assigned family's e-BH guarantee only under
-correct triggering (no treatment effect before the trigger, arm-independent
-trigger propensity and timing) and stopping/freezing decisions adapted to its
-joint triggered filtration. Use only already-revealed triggered information;
-do not time a triggered family look, stop or freeze on any assigned result that
-reveals future triggered outcomes, including the same metric's result. Correct
-triggering does not prevent this leak: trigger-day-only outcomes can be identical
-in both populations yet close earlier in the assigned window. Lookahead can
-inflate the stopped e-value's expectation without changing the per-cell crossing
-bound. Guarantee labels are conditional on this unverified decision rule.
-Both chains need every contributing feed certified complete through the capture
-horizon; a process committed without a triggered chain stays assigned-only and
-is never backfilled.
-Clustered assignment, registered segments and breakouts remain unsupported on
-the triggered chain for the same reasons they are on the assigned one.
+!!! warning "Time triggered decisions on triggered information only"
+    Timing a triggered family look, stop or freeze on an assigned result that reveals future
+    triggered outcomes, including the same metric's, can inflate the stopped e-value's
+    expectation; guarantee labels are conditional on this unverified decision rule.
+
+??? info "Statistical details: the triggered chain's assumptions and family guarantee"
+    A trigger-declared registered plan monitors the triggered population as a
+    second chain whose members are revealed in first-trigger order once their
+    trigger-anchored windows close. Its per-cell anytime coverage rests on the
+    assigned route's assumptions plus two that no diagnostic can establish: that
+    neither whether nor when a unit triggers depends on its arm (treatment may
+    change which units trigger while leaving both arms' trigger rates equal, which
+    `srm(population="triggered")` and `trigger_rates()` cannot see), and that
+    trigger timing carries no information about the retained outcome, ratio
+    components or pre-period covariate. Outside those assumptions the triggered
+    contrast describes arm-selected cohorts, not the triggered intent-to-treat
+    effect, and no null guarantee is asserted. Assignment-window uptake is
+    mechanically tied to trigger timing, so triggered compliance cells stay
+    unavailable (`triggered_uptake_unsupported`).
+
+    The per-cell guarantee holds for any look schedule under those assumptions.
+    The triggered family keeps the assigned family's e-BH guarantee only under
+    correct triggering (no treatment effect before the trigger, arm-independent
+    trigger propensity and timing) and stopping/freezing decisions adapted to its
+    joint triggered filtration. Use only already-revealed triggered information;
+    do not time a triggered family look, stop or freeze on any assigned result that
+    reveals future triggered outcomes, including the same metric's result. Correct
+    triggering does not prevent this leak: trigger-day-only outcomes can be identical
+    in both populations yet close earlier in the assigned window. Lookahead can
+    inflate the stopped e-value's expectation without changing the per-cell crossing
+    bound. Guarantee labels are conditional on this unverified decision rule.
+    Both chains need every contributing feed certified complete through the capture
+    horizon; a process committed without a triggered chain stays assigned-only and
+    is never backfilled.
+    Clustered assignment, registered segments and breakouts remain unsupported on
+    the triggered chain for the same reasons they are on the assigned one.
 
 ### Clustered CATE uncertainty is cluster-asymptotic
 
-Clustered `estimate_cate` uses a weighted CR1/HC0 score sandwich and `K-1`
-reference degrees of freedom, with every declared observed cluster counted.
-It does not implement CR2. Small K, imbalance and high leverage still require
-scientific calibration; matching the intended sandwich calculation does not
-establish coverage.
+Clustered `estimate_cate` uses a CR1/HC0 score sandwich with `K-1` reference degrees of
+freedom and no CR2. Few, unbalanced or high-leverage clusters still need calibration
+evidence, and the unclustered calibration figures do not certify clustered AUTOC, Qini,
+GATES, CLAN or selected policy values.
 
-Cluster ARD uses `trace(G @ V_JJ) / q` as its noise variance, with `G` the
-weighted residualized interaction Gram matrix. This is a directional-average
-precision approximation, not a full correlated-likelihood ARD model. Unclustered
-ARD retains its existing residual-variance calculation.
+??? info "Statistical details: the sandwich, cluster ARD and duplication invariance"
+    Clustered `estimate_cate` uses a weighted CR1/HC0 score sandwich and `K-1`
+    reference degrees of freedom, with every declared observed cluster counted.
+    It does not implement CR2. Small K, imbalance and high leverage still require
+    scientific calibration; matching the intended sandwich calculation does not
+    establish coverage.
 
-Uniformly cloning rows **within the same cluster IDs** preserves fixed-design
-point estimates, covariance and cluster ARD precision. Assigning new IDs to the
-copies declares new independent clusters: under complete doubling the specified
-sandwich covariance is multiplied by `(K-1)/(2*K-1)`. Invariance to that operation
-is incompatible with the specified sandwich and literal cluster count; copies
-that remain dependent must retain their original cluster identity. Learned
-continuous bases can also change when refitted on duplicated rows.
+    Cluster ARD uses `trace(G @ V_JJ) / q` as its noise variance, with `G` the
+    weighted residualized interaction Gram matrix. This is a directional-average
+    precision approximation, not a full correlated-likelihood ARD model. Unclustered
+    ARD retains its existing residual-variance calculation.
 
-Exact duplication checks therefore freeze scores and nuisance fits and replicate
-the entire within-cluster row pattern. A fully refitted pipeline, or a roster-size
-change that also changes member noise, needs separate behavioral and Monte Carlo
-evidence. Neither an unchanged independent cluster count nor one replayed p-value
-establishes null calibration. The existing unclustered calibration figures do not
-certify clustered AUTOC, Qini, GATES, CLAN or selected policy values.
+    Uniformly cloning rows **within the same cluster IDs** preserves fixed-design
+    point estimates, covariance and cluster ARD precision. Assigning new IDs to the
+    copies declares new independent clusters: under complete doubling the specified
+    sandwich covariance is multiplied by `(K-1)/(2*K-1)`. Invariance to that operation
+    is incompatible with the specified sandwich and literal cluster count; copies
+    that remain dependent must retain their original cluster identity. Learned
+    continuous bases can also change when refitted on duplicated rows.
+
+    Exact duplication checks therefore freeze scores and nuisance fits and replicate
+    the entire within-cluster row pattern. A fully refitted pipeline, or a roster-size
+    change that also changes member noise, needs separate behavioral and Monte Carlo
+    evidence. Neither an unchanged independent cluster count nor one replayed p-value
+    establishes null calibration. The existing unclustered calibration figures do not
+    certify clustered AUTOC, Qini, GATES, CLAN or selected policy values.
 
 ### Targeting validation depends on identification and overlap
 
-With an `Observational` design, `validate_cate`, `targeting_rule`, and `select_targeting_rule` use doubly-robust scores; `Randomized` keeps IPW scores.
-Observational GATES and the holdout ATE summarize score means, not raw-outcome Welch contrasts; identification still requires conditional ignorability and overlap.
-When holdout trimming removes units, `CateValidation.population == "overlap_subpopulation"`: AUTOC, Qini, and GATES describe that retained population, not the full one.
-[`estimate_cate`][increment.estimate_cate] remains randomized-only (`cate.identification.randomized_only`); its per-unit point predictions are not doubly robust.
+Observational targeting validation (`validate_cate`, `targeting_rule`,
+`select_targeting_rule`) uses doubly-robust scores but still needs conditional
+ignorability and overlap, which cannot be checked; after holdout trimming it describes the
+retained population only (`CateValidation.population == "overlap_subpopulation"`).
+Clustered intervals combine a whole-cluster bootstrap-t with a cluster jackknife-t and
+reject only when both do, which preserves a valid component's coverage without proving
+finite-cluster validity.
 
-Declared clusters retain unit-level scores and outcomes. `cluster_weight="member_count"`
-weights members equally; `"equal"` gives each retained cluster total weight one and
-requires cluster IDs. Smooth means use centered cluster contributions with the
-`K/(K-1)` scale: disjoint randomized arms use their own cluster counts and Welch
-reference degrees, overlapping contrasts combine signed contributions within each
-cluster, and observational DR scores use pooled cluster influence.
+!!! warning "Few unequal clusters still under-cover"
+    In the null screen's tightest design (10 unequal clusters, skewed errors, member
+    weighting, correlation 0.5) each GATES interval missed 18 of 256 times against a nominal
+    2.5%; the screen is a regression check, not a guarantee, and more repetitions do not
+    remedy too few independent clusters.
 
-Clustered DR nuisance models are fitted once on the training half, with frozen
-heldout predictions. Ranks, empirical GATES/CLAN cutoffs, and policy values are
-recomputed in a whole-cluster bootstrap (default
-[`ClusterBootstrap(seed=0, repetitions=999)`][increment.ClusterBootstrap]).
-Randomized pure-arm clusters are resampled within
-arms; pooled DR and mixed-arm clusters have no arm stratum. Repeated cluster
-draws are separate sampled instances. Weighted empirical cutoffs keep tied scores
-together; the clustered AUTOC/Qini integrate the empirical weighted TOC with
-uniform interpolation within each tied block, making uniform row cloning invariant.
-Unclustered rank calculations retain their existing discrete definition.
+!!! warning "Selecting a policy does not give its value a nominal interval"
+    The selected inner winner and a policy value reported after the outer validation gate
+    still have no nominal confidence interval. The bootstrap does not remove this
+    selection restriction.
 
-Clustered intervals and tests use `bootstrap-t+cluster-jackknife-t`. The interval
-is the smallest interval containing both component intervals; the one-sided
-p-value is the larger component p-value. Thus a rejection requires both tests to
-reject, and the reported interval cannot be narrower than either component.
-This preserves a component's coverage when that component is valid; it does not
-prove finite-cluster validity of either component.
+??? info "Statistical details: scores, clusters and weighting"
+    With an `Observational` design, `validate_cate`, `targeting_rule`, and `select_targeting_rule` use doubly-robust scores; `Randomized` keeps IPW scores.
+    Observational GATES and the holdout ATE summarize score means, not raw-outcome Welch contrasts; identification still requires conditional ignorability and overlap.
+    When holdout trimming removes units, `CateValidation.population == "overlap_subpopulation"`: AUTOC, Qini, and GATES describe that retained population, not the full one.
+    [`estimate_cate`][increment.estimate_cate] remains randomized-only (`cate.identification.randomized_only`); its per-unit point predictions are not doubly robust.
 
-For the bootstrap component, use the complete statistic
-\(T\), its bootstrap draw \(T_b^*\), and positive covariance reference scales
-\(s,s_b^*\) to form \(R_b^*=(T_b^*-T)/s_b^*\). Centering at \(T\) retains the
-bootstrap estimate of ratio and cutoff bias; centering at the bootstrap mean
-would erase it. Dividing by each draw's own scale retains the dependence between
-estimation error and uncertainty, which matters for skewed cluster contributions
-and unequal cluster masses. Even for an ordinary mean of \(K\) IID clusters,
-the raw empirical-bootstrap variance is \((K-1)/K\) times the usual unbiased
-variance estimate; more repetitions do not remove that finite-\(K\) difference.
-For nonlinear ratios, replicates that omit a large cluster can also have both a
-large estimation error and a much smaller reference scale. Intervals invert the root tails as
-\([T-sR^*_{\mathrm{upper}},T-sR^*_{\mathrm{lower}}]\); one-sided rank tests compare
-these same roots with \(T/s\). The reported `se` is the standard deviation of the
-complete bootstrap statistics, including rank and cutoff variation, rather than
-the conditional reference scale used inside the roots.
+    Declared clusters retain unit-level scores and outcomes. `cluster_weight="member_count"`
+    weights members equally; `"equal"` gives each retained cluster total weight one and
+    requires cluster IDs. Smooth means use centered cluster contributions with the
+    `K/(K-1)` scale: disjoint randomized arms use their own cluster counts and Welch
+    reference degrees, overlapping contrasts combine signed contributions within each
+    cluster, and observational DR scores use pooled cluster influence.
 
-For GATES, CLAN, and policy values, the reference is the centered ratio-mean
-covariance described above, recomputed for each draw's groups. For ranks, let a
-tied score block occupy probability interval \((a,b]\). Integrating the response
-weights gives \(r_A=(-b\log b+a\log a)/(b-a)\) for AUTOC (with \(0\log0=0\))
-and \(r_Q=(1-a-b)/2\) for Qini. Holding these response weights fixed, the
-functional \(E[r\psi]-E[r]E[\psi]\) has influence
-\((r-E[r])(\psi-E[\psi])-\operatorname{Cov}(r,\psi)\).
-The reference scale sums these signed, member-weighted influences inside each
-cluster before squaring, with the \(K/(K-1)\) correction. It is a conditional
-response covariance, **not** a claim that estimated ranks or cutoffs are fixed.
-Inner policy selection similarly uses the cluster covariance of each member's
-targeted net-benefit contribution as its reference. All deployed statistics and
-reference scales are recomputed on every whole-cluster draw; there is no nested
-bootstrap or extra rank sort for the rank reference.
+    Clustered DR nuisance models are fitted once on the training half, with frozen
+    heldout predictions. Ranks, empirical GATES/CLAN cutoffs, and policy values are
+    recomputed in a whole-cluster bootstrap (default
+    [`ClusterBootstrap(seed=0, repetitions=999)`][increment.ClusterBootstrap]).
+    Randomized pure-arm clusters are resampled within
+    arms; pooled DR and mixed-arm clusters have no arm stratum. Repeated cluster
+    draws are separate sampled instances. Weighted empirical cutoffs keep tied scores
+    together; the clustered AUTOC/Qini integrate the empirical weighted TOC with
+    uniform interpolation within each tied block, making uniform row cloning invariant.
+    Unclustered rank calculations retain their existing discrete definition.
 
-The second component deletes each observed cluster once and recomputes the
-**complete** statistic \(T_{(-g)}\), including ranks, cutoffs, groups, weights,
-and policy budgets. It uses the full-estimate-centered cluster jackknife scale
-\[
-s_J^2=\frac{K-1}{K}\sum_{g=1}^K (T_{(-g)}-T)^2.
-\]
-This is the CV3 construction in
-[MacKinnon, Nielsen and Webb, equation (18)](https://doi.org/10.1002/jae.2969).
-That paper treats regression; applying the construction here requires regularity
-of the complete nonlinear statistic. For a ratio mean with cluster target-mass
-share \(h_g\) and signed contribution \(u_g\), the exact deletion identity is
-\(T-T_{(-g)}=u_g/(1-h_g)\). This captures observed leverage without a fitted
-multiplier. At equal masses it reduces to the usual cluster-mean standard error.
-For shared-cluster contrasts, deletion differences combine both sides before
-squaring, preserving their signed covariance. Estimated cuts and ranks are
-recomputed, so their deletion changes also enter the scale.
+    Clustered intervals and tests use `bootstrap-t+cluster-jackknife-t`. The interval
+    is the smallest interval containing both component intervals; the one-sided
+    p-value is the larger component p-value. Thus a rejection requires both tests to
+    reject, and the reported interval cannot be narrower than either component.
+    This preserves a component's coverage when that component is valid; it does not
+    prove finite-cluster validity of either component.
 
-The jackknife interval is \(T\pm t_{\nu,\alpha/(2m)}s_J\), where \(m\) is
-the existing family size and \(t\) denotes an upper-tail quantile. Its test uses
-the Student-t survival probability at \(T/s_J\). The reference has
-\(\nu=\min_h(K_h-1)\), using the bootstrap arm/fold strata; without strata it
-is \(K-1\). Deletions retain all remaining clusters and their declared target
-weights, without compensating other clusters in the omitted cluster's stratum.
-This unrestricted deletion scale can include composition variation absent from
-the stratified bootstrap. The smaller stratum reference is conservative relative
-to using \(K-1\), but is not an exact small-sample law. This adds \(K\) full
-evaluations and no random draws; the bootstrap stream and repetition count are
-unchanged. `reference_df` on rank/group/CLAN results describes this jackknife
-component, while `covariance_method` describes the bootstrap response reference.
+??? info "Statistical details: the bootstrap-t and jackknife-t construction"
+    For the bootstrap component, use the complete statistic
+    \(T\), its bootstrap draw \(T_b^*\), and positive covariance reference scales
+    \(s,s_b^*\) to form \(R_b^*=(T_b^*-T)/s_b^*\). Centering at \(T\) retains the
+    bootstrap estimate of ratio and cutoff bias; centering at the bootstrap mean
+    would erase it. Dividing by each draw's own scale retains the dependence between
+    estimation error and uncertainty, which matters for skewed cluster contributions
+    and unequal cluster masses. Even for an ordinary mean of \(K\) IID clusters,
+    the raw empirical-bootstrap variance is \((K-1)/K\) times the usual unbiased
+    variance estimate; more repetitions do not remove that finite-\(K\) difference.
+    For nonlinear ratios, replicates that omit a large cluster can also have both a
+    large estimation error and a much smaller reference scale. Intervals invert the root tails as
+    \([T-sR^*_{\mathrm{upper}},T-sR^*_{\mathrm{lower}}]\); one-sided rank tests compare
+    these same roots with \(T/s\). The reported `se` is the standard deviation of the
+    complete bootstrap statistics, including rank and cutoff variation, rather than
+    the conditional reference scale used inside the roots.
 
-Cost grows with the number of clusters \(K\): with the default 999 draws,
-`validate_cate` takes about half a second at \(K=400\) and a few seconds at
-\(K=2{,}000\), while `targeting_rule` and `select_targeting_rule` take tens of
-seconds to about a minute at \(K=2{,}000\). The jackknife deletions account for
-most of the extra rule and selection time at large \(K\).
+    For GATES, CLAN, and policy values, the reference is the centered ratio-mean
+    covariance described above, recomputed for each draw's groups. For ranks, let a
+    tied score block occupy probability interval \((a,b]\). Integrating the response
+    weights gives \(r_A=(-b\log b+a\log a)/(b-a)\) for AUTOC (with \(0\log0=0\))
+    and \(r_Q=(1-a-b)/2\) for Qini. Holding these response weights fixed, the
+    functional \(E[r\psi]-E[r]E[\psi]\) has influence
+    \((r-E[r])(\psi-E[\psi])-\operatorname{Cov}(r,\psi)\).
+    The reference scale sums these signed, member-weighted influences inside each
+    cluster before squaring, with the \(K/(K-1)\) correction. It is a conditional
+    response covariance, **not** a claim that estimated ranks or cutoffs are fixed.
+    Inner policy selection similarly uses the cluster covariance of each member's
+    targeted net-benefit contribution as its reference. All deployed statistics and
+    reference scales are recomputed on every whole-cluster draw; there is no nested
+    bootstrap or extra rank sort for the rank reference.
 
-The bootstrap component has a first-order asymptotic justification when the complete
-cluster bootstrap is consistent and \(\sqrt K s\) and \(\sqrt K s^*\) converge
-to the same positive limit: Slutsky's theorem then gives the same limiting law
-for the observed and bootstrap roots. The reference need not equal the full
-rank/cutoff asymptotic standard error for this argument. It does not establish a
-higher-order accuracy improvement for these nonlinear statistics. Jackknife-t
-also requires an asymptotically linear statistic and consistent deletion variance;
-it is not generally valid for a nonsmooth quantile statistic. Independent
-clusters, adequate moments, no dominating cluster, and regular population
-quantiles are needed; stable tied blocks can be evaluated, but a quantile exactly
-at a jump boundary can be nonregular. The AUTOC logarithmic tail additionally
-needs an integrable squared response-weight envelope. Training-only nuisance
-predictions remain frozen. Neither this argument nor a calibration screen
-establishes distribution-free finite-cluster coverage, particularly with few
-skewed, high-leverage clusters. See the
-[bootstrap-t inversion](https://www.stat.cmu.edu/~cshalizi/ADAfaEPoV/ADAfaEPoV.pdf)
-and [RATE asymptotics](https://arxiv.org/abs/2111.07966) for the underlying methods;
-the latter does not by itself certify this clustered implementation.
+    The second component deletes each observed cluster once and recomputes the
+    **complete** statistic \(T_{(-g)}\), including ranks, cutoffs, groups, weights,
+    and policy budgets. It uses the full-estimate-centered cluster jackknife scale
+    \[
+    s_J^2=\frac{K-1}{K}\sum_{g=1}^K (T_{(-g)}-T)^2.
+    \]
+    This is the CV3 construction in
+    [MacKinnon, Nielsen and Webb, equation (18)](https://doi.org/10.1002/jae.2969).
+    That paper treats regression; applying the construction here requires regularity
+    of the complete nonlinear statistic. For a ratio mean with cluster target-mass
+    share \(h_g\) and signed contribution \(u_g\), the exact deletion identity is
+    \(T-T_{(-g)}=u_g/(1-h_g)\). This captures observed leverage without a fitted
+    multiplier. At equal masses it reduces to the usual cluster-mean standard error.
+    For shared-cluster contrasts, deletion differences combine both sides before
+    squaring, preserving their signed covariance. Estimated cuts and ranks are
+    recomputed, so their deletion changes also enter the scale.
 
-Measured behaviour on a null screen with frozen oracle scores (constant effect,
-independent CLAN covariate), 256 replications and 199 draws per cell: every one
-of 72 designs stays within its family-aware binomial miss bound for AUTOC, Qini,
-each GATES interval, the joint GATES family and CLAN, and within the rejection
-bound for the AUTOC and Qini tests. The designs cross 10, 40 or 200 clusters,
-equal sizes of 20 or repeating sizes 5/20/100, intracluster correlation 0, 0.2
-or 0.5, Gaussian or skewed errors with one high-leverage score per cluster, and
-both weightings. The tightest design has 10 unequal clusters, skewed errors,
-member weighting and correlation 0.5: each GATES interval missed 18 of 256
-times against a nominal 2.5% (6.4 expected, bound 19). Few unequal clusters
-therefore still undercover; the screen is a regression check, not a guarantee.
+    The jackknife interval is \(T\pm t_{\nu,\alpha/(2m)}s_J\), where \(m\) is
+    the existing family size and \(t\) denotes an upper-tail quantile. Its test uses
+    the Student-t survival probability at \(T/s_J\). The reference has
+    \(\nu=\min_h(K_h-1)\), using the bootstrap arm/fold strata; without strata it
+    is \(K-1\). Deletions retain all remaining clusters and their declared target
+    weights, without compensating other clusters in the omitted cluster's stratum.
+    This unrestricted deletion scale can include composition variation absent from
+    the stratified bootstrap. The smaller stratum reference is conservative relative
+    to using \(K-1\), but is not an exact small-sample law. This adds \(K\) full
+    evaluations and no random draws; the bootstrap stream and repetition count are
+    unchanged. `reference_df` on rank/group/CLAN results describes this jackknife
+    component, while `covariance_method` describes the bootstrap response reference.
 
-GATES and CLAN retain separate Bonferroni budgets. Tail indices use the exact
-binary64 input alpha divided rationally by twice the family size, rounded outward
-on the \(B+1\) order-statistic grid. Monte Carlo p-values also round upward.
-A failed bootstrap statistic makes uncertainty unavailable instead of conditioning
-on successful draws. A finite draw whose reference scale is nonpositive or
-nonfinite uses the observed positive reference scale in its root denominator.
-This fallback retains the complete draw; it alone supplies no coverage correction.
-`bootstrap_valid_repetitions` counts finite complete bootstrap statistics,
-independently of their scale availability and of jackknife evaluations. Repeated
-draws of one source cluster are still distinct instances. The observed response
-and deletion scales must be positive and finite. An undefined deletion reports
-`estimation.targeting.jackknife_unavailable_replicate`; it is never dropped from
-the sum or replaced by a successful deletion. Small cluster
-counts, empty groups, constant rankings, zero variance, and inadequate tail
-resolution retain nullable fields and explicit `unavailable_reason` codes.
-Results record cluster count, weighting, method, seed, and requested and valid
-repetitions. Increasing repetitions resolves smaller tails; it does not remedy
-insufficient independent clusters.
+    Cost grows with the number of clusters \(K\): with the default 999 draws,
+    `validate_cate` takes about half a second at \(K=400\) and a few seconds at
+    \(K=2{,}000\), while `targeting_rule` and `select_targeting_rule` take tens of
+    seconds to about a minute at \(K=2{,}000\). The jackknife deletions account for
+    most of the extra rule and selection time at large \(K\).
 
-Deployment grain follows the explicitly declared intervention, independently of
-uncertainty clustering. A cluster intervention cannot request unit deployment
-(`estimation.targeting.unsupported_unit_deployment`). Cluster policies pool
-member scores and select a score-ordered whole-cluster prefix, breaking ties by
-canonical ID. Member/equal weighting determines both the budget and the reported
-population. This prefix is feasible, not a knapsack optimum: unused budget stays
-unused when the next cluster does not fit. Empty prefixes have no conditional
-policy effect; zero and one fractions select nobody and everybody. Bootstrap
-replicates recompute the pooled ranking and budget, counting repeated draws as
-separate cluster instances while preserving canonical source IDs for score ties.
-Overlap trimming that retains only part of a cluster is refused for cluster
-deployment (`estimation.targeting.overlap.partial_cluster`).
+    The bootstrap component has a first-order asymptotic justification when the complete
+    cluster bootstrap is consistent and \(\sqrt K s\) and \(\sqrt K s^*\) converge
+    to the same positive limit: Slutsky's theorem then gives the same limiting law
+    for the observed and bootstrap roots. The reference need not equal the full
+    rank/cutoff asymptotic standard error for this argument. It does not establish a
+    higher-order accuracy improvement for these nonlinear statistics. Jackknife-t
+    also requires an asymptotically linear statistic and consistent deletion variance;
+    it is not generally valid for a nonsmooth quantile statistic. Independent
+    clusters, adequate moments, no dominating cluster, and regular population
+    quantiles are needed; stable tied blocks can be evaluated, but a quantile exactly
+    at a jump boundary can be nonregular. The AUTOC logarithmic tail additionally
+    needs an integrable squared response-weight envelope. Training-only nuisance
+    predictions remain frozen. Neither this argument nor a calibration screen
+    establishes distribution-free finite-cluster coverage, particularly with few
+    skewed, high-leverage clusters. See the
+    [bootstrap-t inversion](https://www.stat.cmu.edu/~cshalizi/ADAfaEPoV/ADAfaEPoV.pdf)
+    and [RATE asymptotics](https://arxiv.org/abs/2111.07966) for the underlying methods;
+    the latter does not by itself certify this clustered implementation.
 
-Saved policy JSON retains its fitted scoring basis and coefficients.
-`predict(cols, cluster_ids=...)` returns the candidate actions; consult
-`recommendation` before deployment. Cluster prediction needs a complete member
-roster for each deployment cluster and computes the budget over the supplied
-batch. Unit prediction retains its fitted threshold even with dependence IDs.
-Neither new-data outcomes nor nuisance refitting enter prediction.
+??? info "Statistical details: the null screen and tail handling"
+    Measured behaviour on a null screen with frozen oracle scores (constant effect,
+    independent CLAN covariate), 256 replications and 199 draws per cell: every one
+    of 72 designs stays within its family-aware binomial miss bound for AUTOC, Qini,
+    each GATES interval, the joint GATES family and CLAN, and within the rejection
+    bound for the AUTOC and Qini tests. The designs cross 10, 40 or 200 clusters,
+    equal sizes of 20 or repeating sizes 5/20/100, intracluster correlation 0, 0.2
+    or 0.5, Gaussian or skewed errors with one high-leverage score per cluster, and
+    both weightings. The tightest design has 10 unequal clusters, skewed errors,
+    member weighting and correlation 0.5: each GATES interval missed 18 of 256
+    times against a nominal 2.5% (6.4 expected, bound 19). Few unequal clusters
+    therefore still undercover; the screen is a regression check, not a guarantee.
 
-Fraction selection freezes all inner-fold scores before resampling within folds
-(and arms for randomized designs). The selected inner winner and a policy value
-reported after the outer validation gate still have no nominal confidence interval;
-the bootstrap does not remove this selection restriction. A declared cluster
-intervention defaults to whole-cluster prefix deployment and rejects explicit
-unit deployment.
+    GATES and CLAN retain separate Bonferroni budgets. Tail indices use the exact
+    binary64 input alpha divided rationally by twice the family size, rounded outward
+    on the \(B+1\) order-statistic grid. Monte Carlo p-values also round upward.
+    A failed bootstrap statistic makes uncertainty unavailable instead of conditioning
+    on successful draws. A finite draw whose reference scale is nonpositive or
+    nonfinite uses the observed positive reference scale in its root denominator.
+    This fallback retains the complete draw; it alone supplies no coverage correction.
+    `bootstrap_valid_repetitions` counts finite complete bootstrap statistics,
+    independently of their scale availability and of jackknife evaluations. Repeated
+    draws of one source cluster are still distinct instances. The observed response
+    and deletion scales must be positive and finite. An undefined deletion reports
+    `estimation.targeting.jackknife_unavailable_replicate`; it is never dropped from
+    the sum or replaced by a successful deletion. Small cluster
+    counts, empty groups, constant rankings, zero variance, and inadequate tail
+    resolution retain nullable fields and explicit `unavailable_reason` codes.
+    Results record cluster count, weighting, method, seed, and requested and valid
+    repetitions. Increasing repetitions resolves smaller tails; it does not remedy
+    insufficient independent clusters.
+
+??? info "Cluster deployment, saved policies and fraction selection"
+    Deployment grain follows the explicitly declared intervention, independently of
+    uncertainty clustering. A cluster intervention cannot request unit deployment
+    (`estimation.targeting.unsupported_unit_deployment`). Cluster policies pool
+    member scores and select a score-ordered whole-cluster prefix, breaking ties by
+    canonical ID. Member/equal weighting determines both the budget and the reported
+    population. This prefix is feasible, not a knapsack optimum: unused budget stays
+    unused when the next cluster does not fit. Empty prefixes have no conditional
+    policy effect; zero and one fractions select nobody and everybody. Bootstrap
+    replicates recompute the pooled ranking and budget, counting repeated draws as
+    separate cluster instances while preserving canonical source IDs for score ties.
+    Overlap trimming that retains only part of a cluster is refused for cluster
+    deployment (`estimation.targeting.overlap.partial_cluster`).
+
+    Saved policy JSON retains its fitted scoring basis and coefficients.
+    `predict(cols, cluster_ids=...)` returns the candidate actions; consult
+    `recommendation` before deployment. Cluster prediction needs a complete member
+    roster for each deployment cluster and computes the budget over the supplied
+    batch. Unit prediction retains its fitted threshold even with dependence IDs.
+    Neither new-data outcomes nor nuisance refitting enter prediction.
+
+    Fraction selection freezes all inner-fold scores before resampling within folds
+    (and arms for randomized designs). The selected inner winner and a policy value
+    reported after the outer validation gate still have no nominal confidence interval;
+    the bootstrap does not remove this selection restriction. A declared cluster
+    intervention defaults to whole-cluster prefix deployment and rejects explicit
+    unit deployment.
 
 ### The targeting workflow carries no joint error control
 
-Within the targeting workflow, group-effect tests are Bonferroni-corrected inside their own
-family, and characteristic tests inside theirs. The rank-based tests are not corrected
-alongside them, and no guarantee spans the whole workflow.
+Group-effect tests are Bonferroni-corrected inside their own family and characteristic
+tests inside theirs; the rank-based tests are not corrected alongside them, and no
+guarantee spans the whole workflow.
 
-If you scan every interval and test the workflow displays and act on whichever looks
-strongest, you are not protected at your stated alpha. The per-family scope is real but easy
-to over-read.
+!!! warning "Scanning every displayed test is not protected"
+    If you scan every interval and test the workflow displays and act on whichever looks
+    strongest, you are not protected at your stated alpha. The per-family scope is real but
+    easy to over-read.
 
 ### Meta-analysis can be anticonservative at small K
 
-Pooling uses a DerSimonian–Laird heterogeneity estimate followed by an unmodified
-Hartung–Knapp–Sidik–Jonkman adjustment, with no variance floor. Measured by
-`tests/calibration/test_hksj_small_k.py` (10000 replications per cell, unequal segment
-variances with log-scale standard errors 0.10–0.20, between-segment variance 0, 0.5 and 2
-times the average sampling variance; binomial Monte-Carlo standard error 0.2 points at 95%
-and 0.4 points at 80%): the HKSJ interval covers the random-effects mean 93.7–95.2% at
-nominal 95% for every K from 2 to 12 and every heterogeneity level. The plug-in
-random-effects interval covers 80.0% at K = 2, 85.2% at K = 3, 87.2% at K = 4, 88.6% at
-K = 5, 90.9% at K = 8 and 92.2% at K = 12 when the between-segment variance is twice the
-average sampling variance, and over-covers (96.0–96.4%) when there is none. HKSJ is the
-narrower of the two in 12–35% of replications without heterogeneity and 2–13% with it. The
-degeneracy fallback to the plug-in interval fired in 1 of 10000 replications in two of the
-K = 2 cells and never otherwise on continuous data. The anticonservatism at small K is real
-but bounded at about 1.3 points in this design; treat a pooled interval over two or three
-segments as indicative for that reason, not because it is narrower than plug-in.
+Pooled intervals use a DerSimonian–Laird heterogeneity estimate with an unmodified
+Hartung–Knapp–Sidik–Jonkman adjustment. In the tested design the HKSJ interval covers
+93.7–95.2% at nominal 95% for every K from 2 to 12, against 80.0% at K = 2 for the plug-in
+interval. For segment-specific inference prefer the marginalized segment intervals, which
+integrate over the heterogeneity posterior.
 
-Bayesian segment shrinkage places a half-normal prior on the heterogeneity scale, with
-a configurable default scale of 0.30. This prior remains consequential: a scale suitable
-for log relative effects may strongly shrink effects measured in dollars or other absolute
-units. Adaptive integration now resolves posterior mass beyond the old fixed grid for both
-shrinkage and rollout pricing; it does not remove prior sensitivity. The reported
-Wald intervals use posterior means and variances, rather than posterior quantiles;
-they carry no finite-sample frequentist coverage guarantee.
+!!! warning "Treat a pooled interval over two or three segments as indicative"
+    The anticonservatism at small K is bounded at about 1.3 points in the tested design, and
+    Bayesian shrinkage's half-normal prior (default scale 0.30, suited to log relative
+    effects) can strongly shrink effects measured in absolute units; its Wald intervals carry
+    no finite-sample frequentist coverage guarantee.
 
-For segment-specific inference, prefer the marginalized segment intervals, which integrate
-over the heterogeneity posterior instead of plugging in a point estimate. They are a better
-per-segment answer; they are not a substitute for the pooled interval, which answers a
-different question.
+??? info "Statistical details: the HKSJ small-K measurement"
+    Pooling uses a DerSimonian–Laird heterogeneity estimate followed by an unmodified
+    Hartung–Knapp–Sidik–Jonkman adjustment, with no variance floor. Measured by
+    `tests/calibration/test_hksj_small_k.py` (10000 replications per cell, unequal segment
+    variances with log-scale standard errors 0.10–0.20, between-segment variance 0, 0.5 and 2
+    times the average sampling variance; binomial Monte-Carlo standard error 0.2 points at 95%
+    and 0.4 points at 80%): the HKSJ interval covers the random-effects mean 93.7–95.2% at
+    nominal 95% for every K from 2 to 12 and every heterogeneity level. The plug-in
+    random-effects interval covers 80.0% at K = 2, 85.2% at K = 3, 87.2% at K = 4, 88.6% at
+    K = 5, 90.9% at K = 8 and 92.2% at K = 12 when the between-segment variance is twice the
+    average sampling variance, and over-covers (96.0–96.4%) when there is none. HKSJ is the
+    narrower of the two in 12–35% of replications without heterogeneity and 2–13% with it. The
+    degeneracy fallback to the plug-in interval fired in 1 of 10000 replications in two of the
+    K = 2 cells and never otherwise on continuous data. The anticonservatism at small K is real
+    but bounded at about 1.3 points in this design; treat a pooled interval over two or three
+    segments as indicative for that reason, not because it is narrower than plug-in.
+
+??? info "Statistical details: Bayesian segment shrinkage"
+    Bayesian segment shrinkage places a half-normal prior on the heterogeneity scale, with
+    a configurable default scale of 0.30. This prior remains consequential: a scale suitable
+    for log relative effects may strongly shrink effects measured in dollars or other absolute
+    units. Adaptive integration now resolves posterior mass beyond the old fixed grid for both
+    shrinkage and rollout pricing; it does not remove prior sensitivity. The reported
+    Wald intervals use posterior means and variances, rather than posterior quantiles;
+    they carry no finite-sample frequentist coverage guarantee.
+
+    For segment-specific inference, prefer the marginalized segment intervals, which integrate
+    over the heterogeneity posterior instead of plugging in a point estimate. They are a better
+    per-segment answer; they are not a substitute for the pooled interval, which answers a
+    different question.
 
 ## Operational limits
 
 ### The read-only SQL gate is a screen, not a sandbox
 
-The gate assumes definitions are trusted code; it matters whenever a definitions file could
-come from someone you do not trust.
+The gate admits each definitions SQL string as exactly one read-only query and rejects a
+fixed list of side-effecting functions; that list cannot be complete. Treat it as
+protection against a mistake in a definitions file, not as a security boundary: review
+definitions as code, never load them from an untrusted source, and connect with read-only,
+least-privilege warehouse credentials.
 
-Every SQL string in a definitions file is admitted as exactly one read-only query. The check
-parses the string with the declared (or the connection's) dialect and rejects:
+!!! warning "Unlisted functions pass the gate"
+    A side-effecting function outside the list, including any user-defined function, is
+    admitted as an ordinary `SELECT`. Verify yourself that definitions change only through
+    your review process and that the warehouse role is read-only on the tables in scope.
 
-- more than one statement (`definition.sql.statement_count`);
-- any statement that is not a query, including `INSERT`, `UPDATE`, `DELETE`, DDL, and DML/DDL
-  nested under a `WITH`;
-- `SELECT ... INTO`, `FOR UPDATE`/`FOR SHARE`, `LOCK IN SHARE MODE`, and locking table hints such
-  as T-SQL `WITH (UPDLOCK)`, `SERIALIZABLE` and `REPEATABLEREAD` (`definition.sql.not_read_only`);
-  benign hints such as `NOLOCK`, `READPAST` and `INDEX(...)` are admitted;
-- calls to a fixed list of known side-effecting functions (advisory locks, sleeps, large-object
-  and file writers, `dblink`, session and query cancellation, and similar).
+??? info "What the gate rejects and what it cannot see"
+    The gate assumes definitions are trusted code; it matters whenever a definitions file could
+    come from someone you do not trust.
 
-That list cannot be complete. A side-effecting function outside it, including any user-defined
-function, is admitted, because syntactically it is an ordinary `SELECT`. Increment makes no claim
-that an unlisted function is safe. The connection and its privileges belong to you.
+    Every SQL string in a definitions file is admitted as exactly one read-only query. The check
+    parses the string with the declared (or the connection's) dialect and rejects:
 
-Treat the gate as protection against a mistake in a definitions file, not as a security
-boundary against a definitions author you do not trust. Definitions are trusted, governed code:
-review them like any other code that runs against your warehouse, and never load a definitions
-file from an untrusted source. Connect with read-only, least-privilege warehouse credentials
-(no write, DDL, or execute grants beyond what the queries need).
+    - more than one statement (`definition.sql.statement_count`);
+    - any statement that is not a query, including `INSERT`, `UPDATE`, `DELETE`, DDL, and DML/DDL
+      nested under a `WITH`;
+    - `SELECT ... INTO`, `FOR UPDATE`/`FOR SHARE`, `LOCK IN SHARE MODE`, and locking table hints such
+      as T-SQL `WITH (UPDLOCK)`, `SERIALIZABLE` and `REPEATABLEREAD` (`definition.sql.not_read_only`);
+      benign hints such as `NOLOCK`, `READPAST` and `INDEX(...)` are admitted;
+    - calls to a fixed list of known side-effecting functions (advisory locks, sleeps, large-object
+      and file writers, `dblink`, session and query cancellation, and similar).
 
-Repository code cannot tell you how a downstream application accepts definitions, or what grants
-your warehouse role actually holds. Before relying on the gate, verify both yourself: that
-definitions can be changed only through your review process, that the application never builds
-definitions from end-user input, and that the warehouse role is read-only on the tables in scope
-(for example by attempting a write with that role and confirming it fails).
+    That list cannot be complete. A side-effecting function outside it, including any user-defined
+    function, is admitted, because syntactically it is an ordinary `SELECT`. Increment makes no claim
+    that an unlisted function is safe. The connection and its privileges belong to you.
+
+    Treat the gate as protection against a mistake in a definitions file, not as a security
+    boundary against a definitions author you do not trust. Definitions are trusted, governed code:
+    review them like any other code that runs against your warehouse, and never load a definitions
+    file from an untrusted source. Connect with read-only, least-privilege warehouse credentials
+    (no write, DDL, or execute grants beyond what the queries need).
+
+    Repository code cannot tell you how a downstream application accepts definitions, or what grants
+    your warehouse role actually holds. Before relying on the gate, verify both yourself: that
+    definitions can be changed only through your review process, that the application never builds
+    definitions from end-user input, and that the warehouse role is read-only on the tables in scope
+    (for example by attempting a write with that role and confirming it fails).
 
 ## Triggered secondary readouts
 
-Triggered breakouts and their moment summaries report both the full assigned
-cohort and the trigger-eligible cohort, with separate population/family
-identity. They assume triggering is unaffected by treatment; conditioning on
-post-assignment triggering otherwise changes the causal estimand. Definitions
-are the raw-event route. Unit-day artifacts need current trigger population and
-measure-stat evidence; breakouts also need the matching breakout-dimension
-extension. A stale or incomplete artifact is refused instead of falling back
-to assigned segments.
+Triggered breakouts, moment summaries, sitewide impact, CATE and targeting on the
+trigger-eligible cohort assume that triggering is unaffected by treatment; conditioning on
+post-assignment triggering otherwise changes the causal estimand. Missing trigger evidence
+or an unsupported source is a coded refusal, never a fallback to the assigned population.
 
-`dashboard_group_data(population=...)` and `allocation_history(population=...)`
-are warehouse-native operations: the former preserves pre-assignment property
-values, while the latter dates triggered cohorts at their first eligible
-trigger. Artifacts do not retain the raw enrollment timeline or provide the
-dashboard aggregation operation, so those reads refuse with source-specific
-capability reasons. Triggered sitewide is available only for unwindowed mean
-and ratio metrics whose components use sum or count aggregation, with explicit
-trigger and site-volume evidence; it uses calendar-window
-outcomes restricted to finalized membership and remains conditional on the
-assumptions above. CATE, CATE
-validation, and targeting use the triggered unit population when the source
-provides triggered outcomes and pre-assignment covariates; artifacts require
-the corresponding trigger, metric, and unit-covariate evidence. Missing
-evidence and unsupported source routes remain coded refusals, never assigned
-population fallbacks.
+??? info "Where triggered readouts run and what each source must carry"
+    Triggered breakouts and their moment summaries report both the full assigned
+    cohort and the trigger-eligible cohort, with separate population/family
+    identity. They assume triggering is unaffected by treatment; conditioning on
+    post-assignment triggering otherwise changes the causal estimand. Definitions
+    are the raw-event route. Unit-day artifacts need current trigger population and
+    measure-stat evidence; breakouts also need the matching breakout-dimension
+    extension. A stale or incomplete artifact is refused instead of falling back
+    to assigned segments.
+
+    `dashboard_group_data(population=...)` and `allocation_history(population=...)`
+    are warehouse-native operations: the former preserves pre-assignment property
+    values, while the latter dates triggered cohorts at their first eligible
+    trigger. Artifacts do not retain the raw enrollment timeline or provide the
+    dashboard aggregation operation, so those reads refuse with source-specific
+    capability reasons. Triggered sitewide is available only for unwindowed mean
+    and ratio metrics whose components use sum or count aggregation, with explicit
+    trigger and site-volume evidence; it uses calendar-window
+    outcomes restricted to finalized membership and remains conditional on the
+    assumptions above. CATE, CATE
+    validation, and targeting use the triggered unit population when the source
+    provides triggered outcomes and pre-assignment covariates; artifacts require
+    the corresponding trigger, metric, and unit-covariate evidence. Missing
+    evidence and unsupported source routes remain coded refusals, never assigned
+    population fallbacks.

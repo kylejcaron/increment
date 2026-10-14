@@ -60,6 +60,9 @@ from increment.estimation.armstats import (
     welch_satterthwaite_df,
 )
 from increment.estimation.conversion_route import (
+    CAPPED_NOTE_PREFIX,
+    ESCALATED_NOTE_PREFIX,
+    dense_level,
     finite_sample_blocker,
     refuse_finite_sample_unavailable,
     route_for_counts,
@@ -76,9 +79,12 @@ from increment.estimation.results import (
     BINOMIAL_METHOD,
     BINOMIAL_NUMERICAL_QUALIFICATION,
     BinomialConfidenceSet,
+    DeltaConversionEvidence,
     Estimate,
     LiftEstimate,
     _alpha_eff_for,
+    row_decision_alpha,
+    row_p_value,
 )
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
@@ -184,7 +190,6 @@ _REFUSALS = refusals(
         "estimation.engine.method_name_observational": "Method(name={m!r}) is an observational adjustment (estimate_ate / Observational design); this randomized path would label an unadjusted randomized estimate with it.",
         "estimation.engine.metric_found_group": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {metric_types}",
         "estimation.engine.control_group_found": "control_group '{control_group}' not found in arms. Available groups: {known_groups}",
-        "estimation.engine.route_alpha": "route_alpha must lie in (0, 1], got {route_alpha!r}",
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -851,7 +856,7 @@ def _validate_typed_direct_compatibility(
                     if getattr(metric, "winsorization", None) is not None
                     else "none"
                 ),
-                outcome_window="unbounded" if _is_open_ended(metric) else "bounded",
+                outcome_window="unbounded" if is_open_ended(metric) else "bounded",
                 uptake_window="not_applicable",
             ),
             decision=decision,
@@ -1124,12 +1129,11 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
         )
 
 
-def _is_open_ended(metric: Metric) -> bool:
-    """A metric whose per-unit value can still change between analyses."""
+def is_open_ended(metric: Metric) -> bool:
+    """Whether a metric's per-unit value can still change between analyses."""
     if metric.type == "ratio":
         return metric.numerator.window_days is None or metric.denominator.window_days is None
     if metric.type == "retention":
-        # The band's right edge, not window_days - vacated on retention.
         return metric.band[1] is None
     return metric.window_days is None
 
@@ -1143,7 +1147,7 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
     and the estimand drifts with the enrollment mix.
     """
     for m in metrics:
-        if not _is_open_ended(m):
+        if not is_open_ended(m):
             continue
         if m.type == "ratio":
             windows = "one or both windows unset"
@@ -1166,7 +1170,7 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
 
 
 def _open_ended_advisory(metric: Metric) -> ReadoutAdvisory | None:
-    if not _is_open_ended(metric):
+    if not is_open_ended(metric):
         return None
     if metric.type == "ratio":
         windows = "one or both windows unset"
@@ -1361,8 +1365,12 @@ def _raw_stats_evidence(
 ) -> tuple[PValueEvidence | None, DecisionFailure | None]:
     """Fixed-horizon p-value evidence from a row's own raw (point, se): the
     fallback decision statistic once always_valid/asymptotic_mean/absolute
-    margin paths don't apply."""
+    margin paths don't apply. A row with no relative interval reads the
+    row's own ``p_value()``: its joint relative set, or -- for a
+    nonpositive arm mean with no declared margin -- the additive difference
+    against zero under the reference its interval was cut from."""
     from increment.estimation.decision_types import DecisionFailure, PValueEvidence
+    from increment.estimation.results import _additive_zero_reference
 
     if result.relative_confidence_set is not None or result.relative_unavailable_reason is not None:
         try:
@@ -1387,7 +1395,17 @@ def _raw_stats_evidence(
                     "reason": "missing_sampling_statistic",
                 },
             )
-        return PValueEvidence(hypothesis, result.method, p_value, "relative_confidence_set"), None
+        if result.relative_confidence_set is not None:
+            reference = "relative_confidence_set"
+        elif _additive_zero_reference(result) is None:
+            reference = (
+                "relative_margin_conservative_nonrejection"
+                if result.null_lift != 0.0 and result.null_abs is None
+                else "degenerate_arm_conservative_nonrejection"
+            )
+        else:
+            reference = "student_t" if result.abs_reference_kind == "t" else "normal"
+        return PValueEvidence(hypothesis, result.method, p_value, reference), None
 
     if result.lift is None:
         return None, DecisionFailure(
@@ -1630,6 +1648,15 @@ def _lift_decision_bundle(  # noqa: PLR0915
                 evidence[hypothesis] = PValueEvidence(
                     hypothesis, result.method, p_value, bset.method
                 )
+            continue
+        if result.delta_evidence is not None and result.delta_evidence.composite:
+            # The composite p-value the row itself reports (its persisted counts, dense level
+            # and exact reading), the same evidence a family assembled after the fact reads.
+            p_value = result.p_value()
+            assert p_value is not None, "a delta-route row carries its sampling reference"
+            evidence[hypothesis] = PValueEvidence(
+                hypothesis, result.method, p_value, "conversion_composite"
+            )
             continue
         evidence_row, failure_row = _raw_stats_evidence(result, hypothesis)
         if failure_row is not None:
@@ -3060,13 +3087,19 @@ def _lift_for_method(  # noqa: PLR0913
     null_lift: float,
     null_abs: float | None,
     preferred_direction: PreferredDirection | None,
-    route_alpha: float | None = None,
+    *,
+    family_member: bool = False,
+    route_tail: float | None = None,
 ) -> tuple[LiftEstimate | None, DecisionFailure | None]:
     """One (contrast, method) row.
 
-    Auto conversion routing is selected from the counts independently of
-    the prior. The prior can add a separately guarded posterior, but cannot
-    replace the prior-free sampling construction.
+    Auto conversion routing is selected from the counts and the row's own tail allocation
+    (``route_tail`` when a family's corrected pass opens the resulting parent at another tail:
+    `conversion_route.fcr_route_tail`), independently of the prior and of any family the row
+    belongs to. The prior can add a separately guarded posterior, but cannot replace the
+    prior-free sampling construction. A row routed to the delta method carries its four counts
+    and dense level; a decision row of a multiplicity family (``family_member``) additionally
+    reads the composite p-value the family decides on (`escalate_family_member`).
     """
     treatment, control = contrast
     method = method_strategy.method
@@ -3113,15 +3146,10 @@ def _lift_for_method(  # noqa: PLR0913
         counts = _contrast_counts(treatment, control, metric_type)
     except binomial_rr.BinomialDataError as exc:
         return _binomial_data_failure(treatment, exc, method_role)
-    # A multiplicity procedure may read this row's p-value at a smaller family level
-    # (``route_alpha``, in ``alpha``'s convention): the route is the one valid at the smallest
-    # level the row can be decided at, never a looser one.
-    route_level = alpha_eff
-    if route_alpha is not None and method_role == "decision":
-        floor = route_alpha if valid_alternative == "two-sided" else 2.0 * route_alpha
-        route_level = min(alpha_eff, floor)
     route = route_for_counts(
-        *counts, tail_alpha=route_level / 2.0, mode=method.conversion_inference
+        *counts,
+        tail_alpha=alpha_eff / 2.0 if route_tail is None else route_tail,
+        mode=method.conversion_inference,
     )
     if route == "finite_sample":
         result, failure = _infer_binomial_lift_result(
@@ -3151,7 +3179,7 @@ def _lift_for_method(  # noqa: PLR0913
                 )
             )
         return result, failure
-    return _asymptotic_lift_outcome(
+    result, failure = _asymptotic_lift_outcome(
         _contrast_of_counts(treatment, control, counts),
         method_strategy,
         strategy,
@@ -3163,6 +3191,102 @@ def _lift_for_method(  # noqa: PLR0913
         null_lift,
         null_abs,
         preferred_direction,
+    )
+    if result is None or null_abs is not None:
+        # An additive margin decides on the additive sidecar, which neither route cuts.
+        return result, failure
+    level = dense_level(*counts, alternative=valid_alternative)
+    assert level is not None, "routed asymptotic: the counts are dense at the nominal level"
+    x_c, n_c, x_t, n_t = counts
+    result = result.model_copy(
+        update={
+            "delta_evidence": DeltaConversionEvidence(
+                x_c=x_c, n_c=n_c, x_t=x_t, n_t=n_t, dense_level=level
+            )
+        }
+    )
+    if family_member and method_role == "decision":
+        result = escalate_family_member(result)
+    return result, failure
+
+
+def escalate_family_member(row: LiftEstimate) -> LiftEstimate:
+    """*row*, a delta-route conversion decision row with its counts, read as a member of a
+    multiplicity family: its ``delta_evidence`` becomes composite, carrying the exact p-value
+    where the composite needs it, and its note says when its p-value is not its delta p-value.
+    A row already read as a member, or one without counts, is returned unchanged."""
+    evidence = row.delta_evidence
+    if evidence is None or evidence.composite:
+        return row
+    alpha = row_decision_alpha(row)
+    assert alpha is not None, "a delta-route row carries its decision alpha"
+    composite, note = _composite_evidence(
+        row, evidence, alpha, binomial_rr.validate_alternative(row.alternative)
+    )
+    notes = [part for part in (row.note, note) if part is not None]
+    return row.model_copy(update={"delta_evidence": composite, "note": "; ".join(notes) or None})
+
+
+def _composite_evidence(
+    row: LiftEstimate,
+    evidence: DeltaConversionEvidence,
+    alpha: float,
+    alternative: Alternative,
+) -> tuple[DeltaConversionEvidence, str | None]:
+    """The composite evidence of a family-member conversion row routed to the delta method, and
+    the note it carries when its p-value is not its delta p-value.
+
+    ``U`` is the smallest level at which the counts are dense (`conversion_route.dense_level`).
+    A delta p-value at or above ``U`` is the row's p-value. Below ``U`` the exact p-value is read
+    at the row's nominal tail with its nominal nuisance budget ``beta`` -- only where it can
+    matter: when ``U <= beta`` no exact p-value falls below ``U``, and the row reports ``U``
+    without the work. The exact route's own refusals (an arm above `FINITE_SAMPLE_MAX_ARM_SIZE`,
+    a tail its float margin dominates) are recorded as the reason the row reports ``U``: a
+    p-value of ``U`` is valid at every level (the row rejects nowhere below ``U``, and at ``U``
+    and above only where its delta p-value does), and is never a silent fallback.
+    """
+    level = evidence.dense_level
+    null_lift = row.null_lift
+    p_delta = row_p_value(row)
+    assert p_delta is not None, "a delta-route row carries its sampling reference"
+    x_c, n_c, x_t, n_t = evidence.counts
+    evidence = evidence.model_copy(update={"composite": True})
+    if p_delta >= level:
+        return evidence, None
+    below = (
+        f"the delta p-value {p_delta:.3g} lies below {level:.3g}, the smallest level at "
+        "which these counts are dense"
+    )
+    beta = binomial_rr.nuisance_beta(alpha)
+    if level <= beta:
+        return evidence, (
+            f"{CAPPED_NOTE_PREFIX}: {below}, and no exact p-value falls below the nuisance "
+            f"budget {beta:.3g}, so the row reports {level:.3g}"
+        )
+    if max(n_c, n_t) > binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE:
+        code = "estimation.binomial.finite_sample_arm_ceiling_exceeded"
+    else:
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        try:
+            exact = binomial_rr.null_p_value(
+                1.0 + null_lift, x_c, n_c, x_t, n_t, beta, alternative=alternative, tail=tail
+            )
+        except binomial_rr.BinomialDataError as exc:
+            code = exc.code
+        else:
+            evidence = evidence.model_copy(update={"escalated_p_value": exact})
+            if exact < level:
+                return evidence, (
+                    f"{ESCALATED_NOTE_PREFIX}: {below}, so the row reports the exact p-value "
+                    f"{exact:.3g} read at its nominal tail"
+                )
+            return evidence, (
+                f"{CAPPED_NOTE_PREFIX}: {below}, and the exact p-value {exact:.3g} does not, "
+                f"so the row reports {level:.3g}"
+            )
+    return evidence.model_copy(update={"exact_unavailable": code}), (
+        f"{CAPPED_NOTE_PREFIX}: {below}, and the exact route is unavailable ({code}), so the "
+        f"row reports {level:.3g}"
     )
 
 
@@ -3752,21 +3876,23 @@ def _estimate_lift(  # noqa: PLR0913
     | None = None,
     *,
     summary_population: Literal["assigned", "triggered"] | None = None,
-    route_alpha: float | None = None,
+    family_member: bool = False,
+    route_tail: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_lift`` with the multiplicity routing level its families pass.
+    """``estimate_lift`` with the family membership and corrected-pass routing tail its
+    multiplicity families pass.
 
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
-    can later decide a decision row's p-value at, in ``(0, 1]``: a conversion decision row
-    takes the delta-method route only if its counts are dense at that level too, so an
-    approximate p-value is never read at a tail it was not validated at. Omitted, the row's
-    own ``alpha`` decides. Only the package's own families set it; the public function
-    never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
+    ``family_member`` marks the decision rows as members of a multiplicity family that reads
+    their p-values below their own level: a delta-route conversion decision row then reports
+    the composite p-value of its counts (`escalate_family_member`). ``route_tail`` is the
+    one-sided tail a selected row's corrected pass routes conversion counts at, the tail of the
+    bound it finally reports (`conversion_route.fcr_route_tail`; a directional reissue is
+    requested at half the corrected level and opened at the whole of it). Only the package's
+    own families set either; the public function never does, so a row's p-value outside a
+    family is its own delta p-value and its route its own tail's.
     """
     from increment.estimation.decision_types import DecisionComputation
 
-    if route_alpha is not None and not 0.0 < route_alpha <= 1.0:
-        _refuse("estimation.engine.route_alpha", route_alpha=route_alpha)
     percentile_metrics = [
         m for m in metrics if getattr(getattr(m, "winsorization", None), "has_percentile", False)
     ]
@@ -3856,7 +3982,8 @@ def _estimate_lift(  # noqa: PLR0913
                 preferred_direction=preferred_direction,
                 cluster=cluster,
                 method_roles=method_roles,
-                route_alpha=route_alpha,
+                family_member=family_member,
+                route_tail=route_tail,
             )
             from increment.estimation.decision_types import DecisionComputation
 
@@ -3953,7 +4080,8 @@ def _estimate_lift(  # noqa: PLR0913
                 null_lift,
                 null_abs,
                 preferred_direction,
-                route_alpha,
+                family_member=family_member,
+                route_tail=route_tail,
             )
             _attach_lift_advisories(advisory_map, treatment, advisories, result, failure)
             if failure is not None:

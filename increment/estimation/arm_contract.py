@@ -282,6 +282,12 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
     decision_method: MethodSpec
     sensitivity_methods: tuple[MethodSpec, ...]
     prior_present: bool
+    # The per-row alpha a fixed-horizon secondary family member is estimated and routed at by
+    # the runtime (the plan's alpha; the family reads its p-value down to q / m). None where
+    # the compiled alpha is the row's own level.
+    member_alpha: float | None = Field(
+        default=None, gt=0.0, lt=1.0, allow_inf_nan=False, exclude_if=lambda v: v is None
+    )
 
     @model_validator(mode="after")
     def _family_expansion_matches_policy(self) -> ArmPlanningProcedure:
@@ -503,6 +509,7 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
             ),
             sensitivity_methods=(),
             prior_present=False,
+            member_alpha=alpha if role == "secondary" and not is_sequential else None,
         )
 
     @property
@@ -523,6 +530,17 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
             1,
             self.family_expansion.family_size * 2,
         )
+
+    @property
+    def routing_tail_alpha(self) -> float:
+        """The one-sided tail the runtime's count rule routes a conversion row at: the member's
+        own tail for a fixed-horizon secondary family member (``member_alpha``, halved
+        two-sided), the compiled tail otherwise."""
+        if self.member_alpha is None:
+            return self.compiled_tail_alpha
+        if self.decision.alternative != "two-sided":
+            return self.member_alpha
+        return self.member_alpha / 2.0
 
 
 class ContrastCompatibilityRequest(CodedModel, BaseModel):
@@ -634,6 +652,28 @@ def arm_runtime_support(request: ArmCompatibilityRequest) -> Support:
         cuped=cuped,
         coefficient_admissible=admissible,
         prior_present=request.prior_present,
+    )
+
+
+def arm_cuped_advisory_support(
+    *,
+    dependence: str,
+    metric: MetricCapabilities,
+    inference: RuntimeInference,
+    adjustment: Literal["predeclared", "retained"] | None,
+    prior_present: bool,
+) -> Support:
+    """Return shared admission for a proposed CUPED adjustment."""
+    asymptotic = isinstance(inference, ASYMPTOTIC_PROCEDURE_POLICIES)
+    flavour = f"{adjustment}_cuped" if adjustment is not None else "cuped"
+    cuped, admissible = _cuped_axes((_PlanningMethodFlavour(flavour),), asymptotic=asymptotic)
+    return _arm_support(
+        dependence=dependence,
+        metric=metric,
+        sequential=not isinstance(inference, FixedInference),
+        cuped=cuped,
+        coefficient_admissible=admissible,
+        prior_present=prior_present,
     )
 
 
@@ -816,6 +856,7 @@ __all__ = [
     "AbsoluteDecisionPolicy",
     "AnalysisAxes",
     "ARM_COMPATIBILITY_REFUSALS",
+    "arm_cuped_advisory_support",
     "ARM_EVIDENCE_CONTRACT",
     "ArmCompatibilityRequest",
     "ArmEvidenceContract",
