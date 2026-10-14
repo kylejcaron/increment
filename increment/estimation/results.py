@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, TypedDict, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Self, TypedDict, cast
 
 from pydantic import (
     BaseModel,
@@ -636,6 +636,40 @@ class PosteriorComponents(CodedModel, BaseModel):
         return self
 
 
+_ROW_CONTEXT_FIELDS = frozenset(
+    {
+        "sampling_reason_context",
+        "posterior_reason_context",
+        "absolute_error_context",
+        "relative_error_context",
+        "failure_context",
+        "decision_scope_reason_context",
+        "weight_diagnostics_reason_context",
+    }
+)
+
+
+def _freeze_row_contexts(row: Any) -> None:
+    """Replace each reason context on *row* with an immutable, canonical,
+    picklable mapping, so a refusal survives pickle, deepcopy and JSON."""
+    from increment._canonical import canonical_json_bytes
+    from increment._immutable import _FrozenMapping
+
+    def freeze(value):
+        if isinstance(value, Mapping):
+            frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
+            canonical_json_bytes(dict(frozen))
+            return frozen
+        if isinstance(value, (tuple, list)):
+            return tuple(freeze(item) for item in value)
+        return value
+
+    for name in _ROW_CONTEXT_FIELDS:
+        value = getattr(row, name)
+        if value is not None:
+            object.__setattr__(row, name, freeze(value))
+
+
 class _RowIdentity(CodedModel, BaseModel):
     """Leading identity fields shared, in the same declared order, by
     LiftEstimate, BreakoutEstimate and DailyLiftEstimate. Only a field
@@ -708,31 +742,18 @@ class _RowIdentity(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _freeze_readout_contexts(self):
-        from increment._canonical import canonical_json_bytes
-        from increment._immutable import _FrozenMapping
-
-        def freeze(value):
-            if isinstance(value, Mapping):
-                frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
-                canonical_json_bytes(dict(frozen))
-                return frozen
-            if isinstance(value, (tuple, list)):
-                return tuple(freeze(item) for item in value)
-            return value
-
-        for name in (
-            "sampling_reason_context",
-            "posterior_reason_context",
-            "absolute_error_context",
-            "relative_error_context",
-            "failure_context",
-            "decision_scope_reason_context",
-            "weight_diagnostics_reason_context",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, freeze(value))
+        _freeze_row_contexts(self)
         return self
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """``BaseModel.model_copy`` whose reason contexts stay immutable and
+        picklable: a copy bypasses validation, so a context supplied through
+        *update* (an error's mapping proxy, a plain dict) is frozen here as
+        construction would freeze it."""
+        copied = super().model_copy(update=update, deep=deep)
+        if update and not _ROW_CONTEXT_FIELDS.isdisjoint(update):
+            _freeze_row_contexts(copied)
+        return copied
 
     @model_validator(mode="after")
     def _validate_posterior_payload(self):
@@ -1142,21 +1163,10 @@ class LiftEstimate(_RowIdentity):
 
             ref = self.independent_mean_reference
             lift = self.lift
-            # A withheld interval (the reference's level cannot be represented;
-            # ``relative_error_code`` names the refusal) keeps the point and
-            # statistics only, so the level's critical value is not recomputed.
-            withheld = (
-                lift is not None
-                and lift.lb is None
-                and lift.ub is None
-                and self.relative_error_code is not None
-            )
-            if withheld:
-                expected_bounds: tuple[float | None, float | None] = (None, None)
-                expected_alpha: float | None = None
-                expected_level: float | None = None
-                expected_open = None
-            else:
+
+            def expected_interval() -> tuple[
+                tuple[float | None, float | None], float | None, float | None, str | None
+            ]:
                 resolved = _resolve_fixed_horizon(
                     ref.alpha,
                     ref.alternative,
@@ -1166,13 +1176,11 @@ class LiftEstimate(_RowIdentity):
                     independent_means=ref,
                 )
                 assert resolved.crit is not None
-                expected_bounds = (
+                bounds: tuple[float | None, float | None] = (
                     ref.point - resolved.crit * ref.se(),
                     ref.point + resolved.crit * ref.se(),
                 )
-                expected_alpha = resolved.alpha_eff
-                expected_level = math.fsum((1.0, -resolved.alpha_eff))
-                expected_open = None
+                open_side = None
                 if ref.interval == "directional-fcr":
                     if ref.alternative == "two-sided":
                         winsor_refuse(
@@ -1181,11 +1189,43 @@ class LiftEstimate(_RowIdentity):
                     critical = tail_isf(
                         student_t_isf, resolved.alpha_eff, ref.df, what="fixed FCR endpoint"
                     )
-                    bounds = wald_bounds(ref.point, critical, ref.se(), what="fixed FCR endpoint")
-                    expected_bounds = (
-                        (bounds[0], None) if ref.alternative == "greater" else (None, bounds[1])
+                    one_sided = wald_bounds(
+                        ref.point, critical, ref.se(), what="fixed FCR endpoint"
                     )
-                    expected_open = "upper" if ref.alternative == "greater" else "lower"
+                    bounds = (
+                        (one_sided[0], None)
+                        if ref.alternative == "greater"
+                        else (None, one_sided[1])
+                    )
+                    open_side = "upper" if ref.alternative == "greater" else "lower"
+                return bounds, resolved.alpha_eff, math.fsum((1.0, -resolved.alpha_eff)), open_side
+
+            # A withheld interval (``relative_error_code`` names the refusal)
+            # keeps the point and statistics only; it is accepted only when the
+            # reference's level really cannot be represented.
+            withheld = (
+                lift is not None
+                and lift.lb is None
+                and lift.ub is None
+                and self.relative_error_code is not None
+            )
+            if withheld:
+                try:
+                    expected_interval()
+                except CodedError as exc:
+                    if exc.code != "estimation.tails.unresolvable":
+                        raise
+                else:
+                    winsor_refuse(
+                        "invalid_state",
+                        "Independent mean interval withheld at a representable level.",
+                    )
+                expected_bounds: tuple[float | None, float | None] = (None, None)
+                expected_alpha: float | None = None
+                expected_level: float | None = None
+                expected_open: str | None = None
+            else:
+                expected_bounds, expected_alpha, expected_level, expected_open = expected_interval()
             if (
                 self.reference_kind != "t"
                 or self.reference_df != ref.df

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import pickle
 from typing import Any, Literal, cast
 
 import pyarrow as pa
@@ -328,6 +330,22 @@ def test_selected_cell_with_unrepresentable_fcr_bounds_keeps_its_selection_evide
     assert record.sampling is not None and record.sampling.available is True
     assert isinstance(record.sampling.evidence, PValueEvidence)
     assert record.sampling.evidence.p_value == pytest.approx(p_value)
+    # The withheld-interval row and the collection carrying it survive every
+    # retained-evidence route.
+    for restored in (
+        pickle.loads(pickle.dumps(results)),
+        copy.deepcopy(results),
+        ReadoutResults.model_validate_json(results.model_dump_json()),
+    ):
+        assert list(restored) == list(results)
+        assert restored.metadata == results.metadata
+        restored_deep = next(
+            row
+            for row in cast(list[LiftEstimate], list(restored))
+            if row.metric == "revenue" and row.group_id == "deep"
+        )
+        assert restored_deep.relative_error_code == "estimation.tails.unresolvable"
+        assert restored_deep.p_value() == pytest.approx(p_value)
 
 
 def test_selected_breakout_cell_with_unrepresentable_fcr_bounds_keeps_its_selection_evidence():
@@ -360,6 +378,13 @@ def test_selected_breakout_cell_with_unrepresentable_fcr_bounds_keeps_its_select
         if c.cell.dimension_value == "north" and c.cell.group_id == "deep"
     )
     assert record.sampling is not None and record.sampling.available is True
+    for restored in (
+        pickle.loads(pickle.dumps(result)),
+        copy.deepcopy(result),
+        ReadoutResults.model_validate_json(result.model_dump_json()),
+    ):
+        assert list(restored) == list(result)
+        assert restored.metadata == result.metadata
 
 
 def test_fcr_reinversion_rebuilds_selected_cuped_cells_only_in_breakout():

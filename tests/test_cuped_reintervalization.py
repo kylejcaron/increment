@@ -6,6 +6,7 @@ from typing import Literal, cast
 import pytest
 from scipy.stats import t
 
+from increment.errors import CodedError
 from increment.estimation.armstats import IndependentMeanComponent, IndependentMeanReference
 from increment.estimation.inference import infer_ate
 from increment.estimation.results import Estimate, LiftEstimate
@@ -221,3 +222,32 @@ def test_later_reintervalization_clears_a_stale_relative_refusal() -> None:
     assert welch.relative_error_code is None
     assert welch.require_lift().lb is not None
     assert LiftEstimate.model_validate_json(welch.model_dump_json()) == welch
+
+
+def test_withheld_interval_rows_survive_pickle_and_deepcopy() -> None:
+    import copy
+    import pickle
+
+    from increment.estimation.results import LiftEstimate
+    from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
+
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+    for withheld in (row.reintervalize(1e-100), _welch_df_one_row().reintervalize(1e-310)):
+        assert withheld.relative_error_code is not None
+        assert pickle.loads(pickle.dumps(withheld)) == withheld
+        assert copy.deepcopy(withheld) == withheld
+        assert LiftEstimate.model_validate_json(withheld.model_dump_json()) == withheld
+
+
+def test_forged_withheld_interval_at_a_representable_level_is_refused() -> None:
+    import json
+
+    row = _independent_mean_row()
+    assert row.independent_mean_reference is not None
+    payload = json.loads(row.model_dump_json())
+    payload["lift"].update({"lb": None, "ub": None, "alpha": None, "level": None})
+    payload["relative_error_code"] = "estimation.tails.unresolvable"
+    payload["relative_error_context"] = {"what": "forged"}
+
+    with pytest.raises(CodedError):
+        LiftEstimate.model_validate_json(json.dumps(payload))
