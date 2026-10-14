@@ -1,58 +1,24 @@
 # Reading results
 
-`Analysis.run()` returns lift estimates for arm comparisons or additive
-contrasts for switchbacks. Read each row on its own scale and in its own
-population; then check its estimate, uncertainty, availability, and selection
-status. The [Multiplicity](multiplicity.md) guide defines the status labels.
+`Analysis.run()` returns one `LiftEstimate` per metric and treatment arm, or
+one additive `ContrastResult` per switchback contrast. This guide shows what
+to read on each row, how to guard the rows that have no point estimate, and
+how to get everything into a table.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|
 | Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Check each row's `value_scale`. |
 | Switchback: `from_switchback_panel` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
 
-A `LiftEstimate` can also be absolute. Encouragement designs can return
-additive or relative LATE rows; observational rows can be made absolute with
-`run(value_scale={metric: "absolute"})`. Check `r.value_scale` and
-`r.estimand` before comparing values. `LiftEstimates.to_frame` and readout
-rows include `value_scale`; `ContrastResults.to_frame` does not because all
-contrasts are additive.
-
-The row's own `r.p_value()` is an **unadjusted** sampling p-value. It is not
-divided by a family correction. `r.stat_sig()` is the row's sampling decision:
-`True` means the row's evidence meets its construction's decision level,
-`False` means it does not, and `None` means no usable sampling verdict is
-available. In particular, `None` is not a non-rejection.
-
-`decision_alpha` is the row's decision level, which may be lower than the
-plan's nominal alpha after a correction or family reissue. A p-value at or
-below this row-specific level means a positive verdict for most tests; exact
-conversion tests use a strict comparison. Low-reliability breakout cells can
-report a p-value while withholding `stat_sig()`.
-`r.discovery` is different: it records whether the row was selected by the
-family procedure. It is not another name for statistical significance.
-Inspect the row or `readout_table` for the selection procedure, role, retained
-family, and guarantee or assumption; these disclosures do not alter the
-stored selection or interval.
-
-`readout_table` keeps estimate evidence compact. It shows decision-scope
-completeness, partial-view state, and multiplicity provenance as header notes
-when informative. These fields remain available on result objects and in
-`to_frame()`; failure rows retain their structured context on the result.
-
-Ordinary `str(row)` and `repr(row)` use the same compact display for arm,
-breakout, daily, and additive contrast rows. A missing point can still have
-an unbounded or disconnected confidence set. For coded cell failures,
-`row.reason` returns the persisted failure reason, or the code when no reason
-was saved; other unavailable reasons remain on their specific fields.
-
-For triggered experiments, `Analysis.run()` returns assigned and triggered
-rows separately by default. Select with `population="assigned"` or
-`population="triggered"`; results never pool populations. With registered
-sequential inference, each population uses its own retained checkpoint chain.
-
-Daily and as-of `DailyLiftEstimate` rows print their identity, estimate,
-interval, scale, inference/status, and any unavailable reason. Inspect
-`row.sequential_result` for exact sequential checkpoint and certificate state.
+!!! warning "Check scale and population before comparing rows"
+    A `LiftEstimate` can be absolute: encouragement designs can return
+    additive or relative LATE rows, and observational rows can be made
+    absolute with `run(value_scale={metric: "absolute"})`. Read
+    `r.value_scale` and `r.estimand` before comparing values. For triggered
+    experiments, `run()` returns assigned and triggered rows separately
+    (select with `population="assigned"` or `population="triggered"`) and
+    never pools them; a triggered row answers a different population
+    question and belongs to its own multiplicity family.
 
 ## What to read
 
@@ -62,81 +28,101 @@ For a `LiftEstimate` row `r`:
 |---|---|---|
 | How big is the effect? | `r.lift.value` | `r.lift` is `None` when no finite point exists. |
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
-| Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see below. |
+| Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see [below](#fixed-horizon-guard-the-missing-point). |
 | Is it significant? | `r.stat_sig()` | Tri-state: `True` means the row meets its decision rule, `False` means it does not, and `None` means no usable sampling verdict is available. `None` is not a non-rejection. Honors direction and the row's inference; breakout and daily rows also provide it. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
-| Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
+| Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason`; `row.reason` for a coded cell failure | The exact persisted reason. `row.reason` returns the persisted failure reason, or the code when none was saved. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
 
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 `c.estimate.ub`, `c.null_abs`, and `c.alternative`. All are additive.
 
-Scoped readouts carry a `source_snapshot_id` that identifies the canonical
-request, pinned source evidence and source identity, and integer sufficient
-statistics such as counts. The identity excludes floating-point aggregates
-and derived estimates, so the same unchanged evidence and request retains its
-identity even when warehouse reduction order changes the last bits of a
-floating-point result. Different requests, effective methods, populations, or
-sources remain distinct; a saved result retains the identity it was created
-with. If the request, pinned source identity, and counts stay the same while
-floating-point outcome data change, this identity cannot distinguish those
-changes. It is an identity for the recorded inputs, not a checksum of all
-numeric outputs.
+`str(row)` and `repr(row)` share one compact display for arm, breakout,
+daily, and contrast rows, including a set-only row's unbounded or
+disconnected set and a `DailyLiftEstimate`'s unavailable reason.
 
-## Read the result as a decision, not just a number
+## Significance, p-values and selection
 
-For the question you intend to answer, first confirm the population, estimand,
-scale, and analysis window. Then read the point together with its interval or
-confidence set, the null and alternative, the inference regime, and the row's
-decision status. An interval excluding zero is not a substitute for checking
-the declared null, direction, family status, and whether the result is complete.
-For relative and additive rows, keep the scale attached to every value.
+`r.p_value()` is the row's **unadjusted** sampling p-value; it is not divided
+by a family correction. `r.stat_sig()` is the row's sampling decision at
+`decision_alpha`, the row's own decision level, which can be lower than the
+plan's nominal alpha after a correction or family reissue. `r.discovery` is
+different: it records whether the family procedure selected the row, and is
+not another name for statistical significance.
 
-Before acting on a collection, check that all required cells are represented.
-A required cell may be an estimate or an unavailable row; unavailable rows
-preserve the requested cell identity and carry the reason. Do not interpret a
-missing estimate as a null effect or silently drop a failed cell. Use the
-reason to choose the next step: correct missing or invalid source evidence,
-request a supported analysis, or report that the requested result could not be
-estimated. A partial result is not a complete decision.
+??? info "Statistical details: decision level and disclosures"
+    A p-value at or below `decision_alpha` means a positive verdict for most
+    tests; exact conversion tests use a strict comparison. Low-reliability
+    breakout cells can report a p-value while withholding `stat_sig()`.
+    Inspect the row or `readout_table` for the selection procedure, role,
+    retained family, and guarantee or assumption; these disclosures do not
+    alter the stored selection or interval. `readout_table` keeps estimate
+    evidence compact and shows decision-scope completeness, partial-view
+    state, and multiplicity provenance as header notes when informative;
+    the fields remain on result objects and in `to_frame()`, and failure
+    rows retain their structured context on the result. With registered
+    sequential inference, each population uses its own retained checkpoint
+    chain; inspect `row.sequential_result` for exact checkpoint and
+    certificate state.
 
-### Interpret status and scope
+    Scoped readouts carry a `source_snapshot_id` that identifies the
+    canonical request, pinned source evidence and source identity, and
+    integer sufficient statistics such as counts. The identity excludes
+    floating-point aggregates and derived estimates, so the same unchanged
+    evidence and request retains its identity even when warehouse reduction
+    order changes the last bits of a floating-point result. Different
+    requests, effective methods, populations, or sources remain distinct; a
+    saved result retains the identity it was created with. If the request,
+    pinned source identity, and counts stay the same while floating-point
+    outcome data change, this identity cannot distinguish those changes. It
+    is an identity for the recorded inputs, not a checksum of all numeric
+    outputs.
 
-- **`NotApplicable` assignment integrity is not a passing check.** It means
-  assignment integrity could not be evaluated for that source, design, or
-  population. Read the status and reason, and use the assigned population at
-  its stated assignment grain for assignment-law checks. Triggered counts
-  describe an outcome subset; they do not validate randomization.
-- **`exploratory_unadjusted` means no family adjustment.** Treat that result
-  as exploratory rather than as a confirmatory discovery. If the question is
-  decision-critical, define the appropriate family and role before using
-  results to decide; see [Multiplicity](multiplicity.md). Filtering displayed
-  rows does not change the retained family scope.
-- **A sampling result does not imply a posterior.** Sampling estimates,
-  confidence sets, p-values, and significance remain distinct from posterior
-  estimates and probabilities. If `posterior_available` is false, use its
-  recorded reason; do not reconstruct a posterior from sampling fields. Read
-  the valid sampling interval if that is the question, or choose a supported
-  posterior route if a Bayesian decision is required.
-- **A triggered result answers a different population question.** It includes
-  units at their first eligible trigger and anchors their outcome window there.
-  Keep it separate from the assigned-population result and its multiplicity
-  family. Conditioning on triggering is causally valid only under the
-  experiment's assumptions; triggering affected by treatment changes the
-  estimand and can introduce selection bias. Use the assigned result for an
-  assignment-based estimate when that is the intended question.
+## Before you act
 
-After resolving the status, report the estimate with its scale, interval or
-set, population, and any unavailable or multiplicity caveat. If a requirement
-cannot be supported by the source or construction, use the specific coded
-refusal and its stated route forward instead of substituting another
-population or inference method.
+Confirm the population, estimand, scale, and window; then read the point with
+its interval or set, the null and alternative, the inference regime, and the
+decision status. An interval excluding zero is not a substitute for that
+check. Report the estimate with its scale, interval or set, population, and
+any unavailable or multiplicity caveat.
 
+!!! warning "Four readings that are not what they look like"
+    - **A missing estimate is not a null effect.** Unavailable rows keep the
+      cell identity and carry a reason; a partial result is not a complete
+      decision.
+    - **`NotApplicable` assignment integrity is not a passing check.** It
+      could not be evaluated for that source, design, or population.
+    - **`exploratory_unadjusted` is not a confirmatory discovery.** No family
+      adjustment was applied.
+    - **A sampling result is not a posterior.** If `posterior_available` is
+      false, use its recorded reason.
+
+??? info "What to do in each case"
+    Before acting on a collection, check that every required cell is present
+    as an estimate or an unavailable row. Use the reason to correct the
+    source, request a supported analysis, or report that the result could not
+    be estimated. If the source or construction cannot support a requirement,
+    use the coded refusal and its stated route forward instead of
+    substituting another population or inference method.
+
+    For assignment-law checks, use the assigned population at its stated
+    assignment grain; triggered counts describe an outcome subset and do not
+    validate randomization. A triggered result includes units at their first
+    eligible trigger and anchors their window there, which is causally valid
+    only under the experiment's assumptions; triggering affected by treatment
+    changes the estimand and can introduce selection bias. Use the assigned
+    result for an assignment-based estimate.
+
+    For a decision-critical question, define the family and role before
+    reading results ([Multiplicity](multiplicity.md)); filtering displayed
+    rows does not change the retained family scope. Do not reconstruct a
+    posterior from sampling fields: read the sampling interval if that is the
+    question, or choose a supported posterior route for a Bayesian decision.
 
 ## Fixed horizon: guard the missing point
 
-Most rows carry `r.lift`. A few reachable rows do not. The loop below guards for
-them and runs on data where one occurs: no control user converts, so the
+Most rows carry `r.lift`. A few reachable rows do not. The loop below guards
+for them and runs on data where one occurs: no control user converts, so the
 relative lift has no finite point.
 
 ```python
@@ -182,14 +168,17 @@ custom_table = results.to_frame(
 )
 ```
 
-The default `columns=None` returns the full projection. Use
-`to_frame(columns="summary")` for a compact, per-model preset of existing
-fields. It keeps row identity (`estimand`, `value_scale`), decision-scope
-completeness, and multiplicity status; breakout and daily summaries retain
-segment identity, and daily summaries keep unavailable reasons. Models without
-a summary preset refuse. Every view appends `view_partial`, so slicing never
-looks complete. Custom column lists are validated and returned in canonical
-projection order; unknown names raise `results.frame.unknown_columns`.
+`to_frame(columns="summary")` is a compact per-model preset; the default
+`columns=None` returns the full projection, and unknown custom column names
+raise `results.frame.unknown_columns`.
+
+??? info "What the summary preset keeps"
+    It keeps row identity (`estimand`, `value_scale`), decision-scope
+    completeness, and multiplicity status; breakout and daily summaries keep
+    segment identity and unavailable reasons, and models without a preset
+    refuse. Custom column lists are validated and returned in canonical
+    projection order. Every view appends `view_partial`, so slicing never
+    looks complete.
 
 
 <!-- output -->
@@ -198,60 +187,43 @@ revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
 LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), route='finite_sample', discovery=None)
 ```
 
-`r.lift` is `None` when no finite point estimate exists. The causes, and where
-each row keeps its remaining evidence, are:
+`r.lift` is `None` when no finite point estimate exists. Do not assume a
+missing point comes with a set: when `r.relative_unavailable_reason` is set,
+the row has **no** relative set, so read the additive `r.abs_diff`, plus
+`r.abs_lb` and `r.abs_ub` when they are not `None`. When the reason is
+`None`, read whichever set the table names.
 
-- An exact conversion row whose control arm has zero events. The ratio has a
-  zero denominator, but the exact binomial set `r.binomial_set` still bounds the
-  lift.
-- A joint ratio set with no representable point. The set is
-  `r.relative_confidence_set`, and `r.relative_confidence_set.point_unavailable_reason`
-  names the reason.
-- A fixed-horizon mean row whose arm mean is not positive:
-  `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
-  relative lift is undefined and there is **no** relative set. The additive
-  difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
-  including when both arms are constant. Check the bounds before use. When the
-  additive interval is present and the row's null is the unshifted zero (no
-  absolute or relative margin declared), it is the row's decision: `r.p_value()`
-  is the additive test of the difference against zero under the row's
-  alternative, using the reference the interval was cut from (Welch `t` or
-  Normal, `r.abs_reference_kind`), and `r.stat_sig()` is whether that interval
-  excludes zero. Such a row takes part in its family on that evidence and, when
-  selected, has its additive interval reissued at the family level. A row with
-  no additive interval, or one that declares a relative margin (which has no
-  additive counterpart), keeps `r.p_value() == 1.0` and `r.stat_sig()` False: a
-  non-rejection, never a discovery.
-- A row whose joint relative covariance is unusable: it cannot be represented as
-  a float (extremely large scores) or is not positive semidefinite (a singular
-  positive semidefinite covariance is still usable).
-  `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` or
-  `"joint_covariance_indefinite"`, and there is **no** relative set. Whether the
-  point survives depends on the producer: an adjusted estimate with extremely large
-  scores has `r.lift is None`, while other rows keep the point and withhold
-  only its bounds (see "A point without an interval"). Only `r.abs_diff` is
-  guaranteed to survive: `r.abs_se`, `r.abs_lb`, and `r.abs_ub` can each be
-  `None`, so check them before use.
-- A winsorized metric with a `confidence_set`. A missing point leaves
-  `r.confidence_set.relative` with a status and reason per endpoint (for
-  example `unbounded` with `denominator_nonseparation`), and the additive
-  interval stays in `r.abs_lb` and `r.abs_ub`.
-- A sequential row whose point is withheld. The confidence set is in
-  `r.sequential_result.bounds`, and `r.sequential_result.point_reason` names the
-  reason. An asymptotic set can itself be unavailable: check that
-  `r.sequential_result.bounds.status` is not `"unavailable"` before reading
-  endpoints, and read `bounds.reason` when it is.
+| Cause | Where the evidence is |
+|---|---|
+| Exact conversion row whose control arm has zero events | The ratio has a zero denominator, but `r.binomial_set` still bounds the lift. |
+| Joint ratio set with no representable point | `r.relative_confidence_set`; `r.relative_confidence_set.point_unavailable_reason` names the reason. |
+| Fixed-horizon mean row whose arm mean is not positive | `r.relative_unavailable_reason == "nonpositive_arm_mean"`: the log-scale relative lift is undefined and there is **no** relative set. `r.abs_diff` survives; `r.abs_lb` and `r.abs_ub` can be `None`, including when both arms are constant. |
+| Joint relative covariance unusable | `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` (not representable as a float, extremely large scores) or `"joint_covariance_indefinite"` (not positive semidefinite; a singular one is still usable), with **no** relative set. Only `r.abs_diff` is guaranteed; `r.abs_se`, `r.abs_lb`, and `r.abs_ub` can each be `None`. |
+| Winsorized metric with a `confidence_set` | `r.confidence_set.relative` keeps a status and reason per endpoint (for example `unbounded` with `denominator_nonseparation`); the additive interval stays in `r.abs_lb` and `r.abs_ub`. |
+| Sequential row whose point is withheld | `r.sequential_result.bounds`, with `r.sequential_result.point_reason`. Check that `bounds.status` is not `"unavailable"` before reading endpoints, and read `bounds.reason` when it is. |
 
-Do not assume a missing point comes with a set. When `r.lift` is `None` and
-`r.relative_unavailable_reason` is set, the row has **no** relative set: read
-the additive `r.abs_diff`, plus `r.abs_lb` and `r.abs_ub` when they are not
-`None`. When the reason is `None`, read whichever of `r.binomial_set`,
-`r.relative_confidence_set`, `r.confidence_set`, and `r.sequential_result` is
-present, as named above.
+??? info "Statistical details: how a row without a relative set decides"
+    For a nonpositive arm mean, when the additive interval is present and
+    the row's null is the unshifted zero (no absolute or relative margin
+    declared), it is the row's decision: `r.p_value()` is the additive test
+    of the difference against zero under the row's alternative, using the
+    reference the interval was cut from (Welch `t` or Normal,
+    `r.abs_reference_kind`), and `r.stat_sig()` is whether that interval
+    excludes zero. Such a row takes part in its family on that evidence and,
+    when selected, has its additive interval reissued at the family level. A
+    row with no additive interval, or one that declares a relative margin
+    (which has no additive counterpart), keeps `r.p_value() == 1.0` and
+    `r.stat_sig()` False: a non-rejection, never a discovery.
+
+    For an unusable joint covariance, whether the point survives depends on
+    the producer: an adjusted estimate with extremely large scores has
+    `r.lift is None`, while other rows keep the point and withhold only its
+    bounds (see [A point without an interval](#a-point-without-an-interval)).
 
 A missing point does not erase the evidence. The `converted` row is
-significant. Its interval lives on `r.binomial_set`, and the upper end is
-unbounded:
+significant; its interval lives on `r.binomial_set`, and the upper end is
+unbounded. `require_lift()` returns the point or raises a coded refusal, for
+when a missing point should stop the program rather than be handled:
 
 ```python
 from increment import CodedError
@@ -270,12 +242,9 @@ else:
     raise AssertionError("a set-only row has no point to require")
 ```
 
-`require_lift()` returns the point or raises a coded refusal. Use it when a
-missing point should stop the program rather than be handled.
-
-Two of the other causes are reproducible with small frames. A mean metric whose
-control mean is negative has no relative lift, no relative set, and a reported
-additive interval that carries the row's decision:
+Two of the other causes are reproducible with small frames. A mean metric
+whose control mean is negative has no relative lift and no relative set; its
+additive interval carries the decision:
 
 ```python
 k = 40
@@ -301,8 +270,9 @@ assert flat_mean.stat_sig() is (flat_mean.abs_lb > 0.0)  # the additive interval
 assert flat_mean.p_value() <= 1.0
 ```
 
-A winsorized metric whose control arm sums to zero keeps a confidence set with a
-finite lower and an unbounded upper relative endpoint, each with its own status:
+A winsorized metric whose control arm sums to zero keeps a confidence set with
+a finite lower and an unbounded upper relative endpoint, each with its own
+status:
 
 ```python
 from increment import MetricSpec
@@ -342,10 +312,10 @@ assert winsorized.abs_lb < winsorized.abs_diff < winsorized.abs_ub
 
 A point can exist while its relative interval does not. When the estimated
 variance of the relative contrast is exactly zero, the row keeps the point,
-withholds the relative bounds and relative-scale decision, and names the reason.
-A row with `null_abs` can still decide from available additive bounds. The
-relative interval is unavailable, for example, with clustered data whose
-values are identical within each arm:
+withholds the relative bounds and relative-scale decision, and names the
+reason; a row with `null_abs` can still decide from available additive
+bounds. Clustered data whose values are identical within each arm is one
+example:
 
 ```python
 m = 100
@@ -373,10 +343,9 @@ assert flat.abs_diff == 1.0  # the additive difference is still reported
 ```
 
 Check `lb` and `ub` against `None`, or read `r.relative_unavailable_reason`
-first, before formatting them. A row with `relative_unavailable_reason` set to
-`"joint_covariance_unrepresentable"` or `"joint_covariance_indefinite"` and a
-finite point is the same case: its bounds are `None`, so the loop above prints
-its `repr`.
+first, before formatting them. A finite point with
+`"joint_covariance_unrepresentable"` or `"joint_covariance_indefinite"` is
+the same case: its bounds are `None`, so the loop above prints its `repr`.
 
 ## One-sided tests
 
@@ -408,20 +377,22 @@ assert lift.lb <= lift.value  # the finite bound and the point share one scale
 assert lift.excludes(0.0) and directional.stat_sig()
 ```
 
-`excludes()` reads only the finite side of an open interval. A one-sided test
-spends all of `alpha` on its single tail, so its `level` is the central
-equivalent: `level=0.9` for the default `alpha=0.05`. An ordinary fixed-horizon
-mean row tests the same direction but returns a closed interval at that level.
-A secondary row selected into the discovery family is the exception: its
-interval is selection-adjusted, so it keeps its open side at a different
-`level` (for example `open_side == "upper"` at `level=0.975`). Read
-`open_side` instead of assuming it is set.
+`excludes()` reads only the finite side of an open interval. Read `open_side`
+instead of assuming it is set: an ordinary fixed-horizon mean row tests the
+same direction but returns a closed interval.
+
+??? info "Statistical details: one-sided levels"
+    A one-sided test spends all of `alpha` on its single tail, so its `level`
+    is the central equivalent: `level=0.9` for the default `alpha=0.05`. A
+    secondary row selected into the discovery family is the exception: its
+    interval is selection-adjusted, so it keeps its open side at a different
+    `level` (for example `open_side == "upper"` at `level=0.975`).
 
 ## Sequential inference: two coordinate systems
 
-A sequential row stores its confidence set in exact **ratio** coordinates, where
-`1.0` means no effect, and displays it on the **lift** scale, where `0.0` means
-no effect. Know which one you are reading:
+A sequential row stores its confidence set in exact **ratio** coordinates,
+where `1.0` means no effect, and displays it on the **lift** scale, where
+`0.0` means no effect. Know which one you are reading:
 
 | Where | Scale |
 |---|---|
@@ -430,14 +401,14 @@ no effect. Know which one you are reading:
 | `r.lift.lb`, `r.lift.ub`; frame columns `lb`, `ub` | Displayed lift bounds: ratio endpoints minus one, rounded outward to floats; withheld when no single interval is displayed. |
 | Frame columns `sequential_lower`, `sequential_upper`; sequential readout `lower`, `higher` | Retained-set endpoints on the lift scale, rounded outward to floats. For a disconnected set these are outer endpoints, **not a confidence interval**; inspect `sequential_status` and `sequential_components`. |
 
-The lift-scale endpoints are never narrower than the ratio bounds, because
-rounding moves them outward. Asymptotic sets can be disconnected, empty, or
-unbounded. For a disconnected or empty set `r.lift` carries only the point,
-because collapsing a set to its hull would misstate it. Read
-`sequential_status` and `sequential_components` for the geometry; for a
-disconnected set, `sequential_lower` and `sequential_upper` are the outer
-endpoints, not an interval. A missing endpoint is `None` and is never replaced by
-a number on the wrong scale.
+!!! warning "A disconnected set is not an interval"
+    Asymptotic sets can be disconnected, empty, or unbounded. For a
+    disconnected or empty set `r.lift` carries only the point, because
+    collapsing a set to its hull would misstate it; read `sequential_status`
+    and `sequential_components` for the geometry. A missing endpoint is
+    `None` and is never replaced by a number on the wrong scale. Lift-scale
+    endpoints are never narrower than the ratio bounds, because rounding
+    moves them outward.
 
 ```python
 import polars as pl
@@ -523,9 +494,9 @@ sets are built, including the e-BH secondary family.
 
 ## Switchback contrasts are additive
 
-`from_switchback_panel` returns `ContrastResults`. Each `ContrastResult` carries
-an additive `estimate` in the metric's own units, with `null_abs` as its null.
-This panel has four independent blocks over a three-unit roster:
+`from_switchback_panel` returns `ContrastResults`. Each `ContrastResult`
+carries an additive `estimate` in the metric's own units, with `null_abs` as
+its null. This panel has four independent blocks over a three-unit roster:
 
 ```python
 import math
@@ -579,29 +550,32 @@ assert c.alternative == "two-sided" and c.null_abs == 0.0
 assert math.isclose(estimate.value, 6.0)  # the mean unit effect, in outcome units
 ```
 
-The estimate is not a relative lift. `ContrastResult` has no `stat_sig()`; the
-readout adapter below supplies the verdict.
-
-For the other designs, see [Switchback contrasts](switchback.md) for the
-estimand and its unit-cycle `standard_error_unavailable_reason`,
-[Multiplicity](multiplicity.md) for `role`, `discovery`, and `family_q`, and
-[Observational comparisons](observational.md#near-zero-baselines-reporting-the-additive-effect) for
-`relative_unavailable_reason`.
+The estimate is not a relative lift. `ContrastResult` has no `stat_sig()`;
+the readout adapter below supplies the verdict. See
+[Switchback contrasts](switchback.md) for the estimand and its unit-cycle
+`standard_error_unavailable_reason`, [Multiplicity](multiplicity.md) for
+`role`, `discovery`, and `family_q`, and
+[Observational comparisons](observational.md#near-zero-baselines-reporting-the-additive-effect)
+for `relative_unavailable_reason`.
 
 ## Results as frames and flat rows
 
-Every result list converts to a frame in your preferred library. The call is
-`to_frame(backend="polars")` for `LiftEstimates` and, by keyword only, for
-`ContrastResults`. A set-only exact binomial row keeps its interval in the
-`set_lower`, `set_upper`, `set_level`, and `set_numerical_qualification` columns.
-`set_numerical_qualification` is `scipy_special_function_error_model_conditional_v1`
-for an enclosure conditional on the deployed SciPy/Boost special-function error
-model, or `legacy_unrecorded_v1` when an older serialized set records no arithmetic
-qualification claim. These columns come from `binomial_set` only. A sequential row's
-set is in `sequential_lower`, `sequential_upper`, `sequential_status`, and
-`sequential_components`. A `relative_confidence_set` or winsor `confidence_set`
-appears in the frame only as a `repr` text column of the same name, so read the set
-from the result object, and use `abs_lb` and `abs_ub` for the additive interval:
+Every result list converts to a frame in your preferred library with
+`to_frame(backend="polars")` (keyword-only for `ContrastResults`). A
+`relative_confidence_set` or winsor `confidence_set` appears only as a `repr`
+text column of the same name, so read those sets from the result object and
+use `abs_lb` and `abs_ub` for the additive interval.
+
+| Row | Frame columns |
+|---|---|
+| Set-only exact binomial row | `set_lower`, `set_upper`, `set_level`, `set_numerical_qualification`, from `binomial_set` only. |
+| Sequential row | `sequential_lower`, `sequential_upper`, `sequential_status`, `sequential_components`. |
+
+??? info "Statistical details: `set_numerical_qualification`"
+    `scipy_special_function_error_model_conditional_v1` marks an enclosure
+    conditional on the deployed SciPy/Boost special-function error model;
+    `legacy_unrecorded_v1` marks an older serialized set that records no
+    arithmetic qualification claim.
 
 ```python
 table = results.to_frame(backend="polars")
@@ -613,18 +587,17 @@ assert "estimate" in contrasts.to_frame(backend="polars").columns
 ```
 
 `increment.tables.estimates_to_readout` adapts either family to one flat
-`dict` per row, so one loop or one dataframe reads a mixed list. It accepts
+`dict` per row, so one loop or one dataframe reads a mixed list of
 `LiftEstimate`, `BreakoutEstimate`, `DailyLiftEstimate`, and `ContrastResult`
-rows. Each dict carries `lift`, `lower`, `higher`, `level`, `open_side`,
-`stat_sig`, `null_lift`, `null_abs`, `value_scale`, `estimand`, `inference`,
-`role`, and `discovery`, plus the sequential columns when the row is
-sequential. `LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` rows
-also carry `decision_scale`, the scale the row's own verdict is made on
-(`"absolute"` for a declared absolute margin, an additive-zero decision, or a
-native absolute row; `"relative"` otherwise), and `decision_available`, whether
-a `False` verdict is a genuine non-rejection rather than the absence of a test;
-contrast rows omit both. Contrast rows set `value_scale="absolute"` and
-`group_id=treatment_group`.
+rows:
+
+| Key | Meaning |
+|---|---|
+| `lift`, `lower`, `higher`, `level`, `open_side` | The row's estimate and interval. On a contrast row `lift` holds the additive estimate, so read it with `value_scale`. `open_side` comes from the row's `lift`, so a set-only row's open upper end shows only as `higher is None`. |
+| `stat_sig`, `null_lift`, `null_abs` | The verdict and the nulls it was tested against. |
+| `value_scale`, `estimand`, `inference`, `role`, `discovery` | Row identity and status. Contrast rows set `value_scale="absolute"` and `group_id=treatment_group`. |
+| `decision_scale`, `decision_available` | `LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` only: the scale the verdict is made on (`"absolute"` for a declared absolute margin, an additive-zero decision, or a native absolute row; `"relative"` otherwise), and whether a `False` verdict is a genuine non-rejection rather than the absence of a test. |
+| `sequential_*` | Added when the row is sequential. |
 
 ```python
 from increment.tables import estimates_to_readout
@@ -642,14 +615,11 @@ assert additive["group_id"] == additive["treatment_group"] == "treatment"
 assert additive["lower"] <= additive["lift"] <= additive["higher"]
 ```
 
-`lift` holds the contrast's additive estimate on a contrast row, which is why
-`value_scale` must be read with it. `open_side` comes from the row's `lift`, so
-a set-only row's open upper end shows only as `higher is None`, as above.
-
-The adapter needs only the core install. `estimates_to_readout` imports
-without `pandas` or `coeftable`; in a wheel-only environment with `pyarrow` and
-neither of them, it converted a zero-control conversion row to
-`lift=None`, a finite `lower`, `higher=None`, and `stat_sig=True`. Rendering the
-rows with `readout_table` requires the `tables` extra. `to_frame` defaults to
-`backend="pandas"`, so without pandas pass `backend="pyarrow"`, which the core
-install provides.
+??? info "Install notes"
+    The adapter needs only the core install: `estimates_to_readout` imports
+    without `pandas` or `coeftable`, and in a wheel-only environment with
+    `pyarrow` and neither of them it converted a zero-control conversion row
+    to `lift=None`, a finite `lower`, `higher=None`, and `stat_sig=True`.
+    Rendering the rows with `readout_table` requires the `tables` extra.
+    `to_frame` defaults to `backend="pandas"`, so without pandas pass
+    `backend="pyarrow"`, which the core install provides.
