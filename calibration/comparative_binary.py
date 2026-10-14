@@ -97,7 +97,7 @@ def _production_outcome(row: LiftEstimate) -> tuple[float | None, bool]:
         if lift is not None and lift.lb is not None and lift.ub is not None
         else None
     )
-    return width, row.stat_sig()
+    return width, row.stat_sig() is True
 
 
 def run(*, reps: int = 200, seed: int = 20261008) -> dict[str, object]:

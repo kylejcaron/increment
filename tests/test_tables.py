@@ -529,9 +529,8 @@ class TestLiftEstimateToRowBinomialSetOnly:
         assert estimates_to_readout([est])[0]["stat_sig"] is False
 
     def test_breakout_estimate_set_only_row_matches_the_liftestimate_verdict(self):
-        """A BreakoutEstimate has no stat_sig() method of its own - the
-        table adapter must derive the same binomial-aware verdict from
-        its persisted binomial_set directly."""
+        """The table adapter reports the breakout cell's own binomial-aware verdict,
+        derived from its persisted binomial_set, and it equals the LiftEstimate's."""
         lift_est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
         breakout_est = BreakoutEstimate(
             metric=lift_est.metric,
@@ -546,6 +545,7 @@ class TestLiftEstimateToRowBinomialSetOnly:
         )
         row = estimates_to_readout([breakout_est])[0]
         assert row["stat_sig"] is True
+        assert row["stat_sig"] is breakout_est.stat_sig() is lift_est.stat_sig()
         assert row["lower"] == pytest.approx(lift_est.binomial_set.lower)
         assert row["higher"] == lift_est.binomial_set.upper
         assert row["level"] == pytest.approx(lift_est.binomial_set.level)
@@ -633,6 +633,7 @@ class TestNullAbsPrecedesBinomialSet:
             reference_kind=lift_est.reference_kind,
             sampling_available=True,
         )
+        assert daily_est.stat_sig() is lift_est.stat_sig()
         assert estimates_to_readout([daily_est])[0]["stat_sig"] is lift_est.stat_sig()
 
 

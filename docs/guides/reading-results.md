@@ -32,7 +32,13 @@ objects and in `to_frame()`; failure rows keep a concise `Failure` column
 with their full structured context on the result object.
 
 An affirmative `r.discovery` is the raw selection result, not another
-significance verdict: it can differ from `r.stat_sig()`. The ordinary
+significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the
+row's own unadjusted sampling p-value; it is never divided by a multiplicity
+factor. The row's decision compares it with the alpha its interval was cut at
+(`r.lift.alpha`, halved for a one-sided row, and shown as `decision_alpha` in
+the row's representation), which a Bonferroni-split primary or a family
+reissue sets below the plan's nominal alpha, so `p_value() <= decision alpha`
+exactly when `stat_sig()`. The family verdict is `r.discovery`. The ordinary
 representation and `readout_table` place a selection qualification next to
 that result, including its procedure, exploratory/confirmatory role, retained
 family, and applicable guarantee or assumption. These disclosures do not
@@ -74,7 +80,7 @@ For a `LiftEstimate` row `r`:
 | How big is the effect? | `r.lift.value` | `r.lift` is `None` when no finite point exists. |
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
 | Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see below. |
-| Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. |
+| Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. `None` when the row has no usable sampling evidence (a failed cell, or `r.sampling_available` False, as for a percentile-winsorized primary), matching the readout frame's `stat_sig`; never read `None` as a non-rejection. `BreakoutEstimate` and `DailyLiftEstimate` rows carry the same `stat_sig()` and `p_value()`. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |

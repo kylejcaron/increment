@@ -1178,6 +1178,7 @@ def _raw_stats_evidence(
     nonpositive arm mean with no declared margin -- the additive difference
     against zero under the reference its interval was cut from."""
     from increment.estimation.decision_types import DecisionFailure, PValueEvidence
+    from increment.estimation.results import _additive_zero_reference
 
     if result.relative_confidence_set is not None or result.relative_unavailable_reason is not None:
         try:
@@ -1204,7 +1205,7 @@ def _raw_stats_evidence(
             )
         if result.relative_confidence_set is not None:
             reference = "relative_confidence_set"
-        elif result._additive_zero_reference() is None:
+        elif _additive_zero_reference(result) is None:
             reference = "degenerate_arm_conservative_nonrejection"
         else:
             reference = "student_t" if result.abs_reference_kind == "t" else "normal"

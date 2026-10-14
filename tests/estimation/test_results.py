@@ -1975,3 +1975,87 @@ class TestJointRelativeRowsExcludesNonpositiveArmMean:
 
         row = self._row(relative_unavailable_reason="joint_covariance_indefinite")
         assert _joint_relative_rows([row], metric="refunds") is True
+
+
+class TestStatSigIsUnavailableWithoutSamplingEvidence:
+    """``stat_sig()`` is tri-state: ``None`` when the row carries no usable
+    sampling evidence, matching the readout frame, so an unavailable verdict is
+    never read as a non-rejection."""
+
+    def test_percentile_winsorized_primary_has_no_verdict(self):
+        import numpy as np
+        import pyarrow as pa
+
+        from increment import Analysis
+        from increment.semantics.models import AnalysisPlan
+        from tests.analysis_factory import lift_rows
+
+        rng = np.random.default_rng(3)
+        n = 200
+        table = pa.table(
+            {
+                "unit": list(range(2 * n)),
+                "group": ["C"] * n + ["T"] * n,
+                "revenue": np.concatenate([rng.lognormal(1.0, 1.0, n), rng.lognormal(1.3, 1.0, n)]),
+            }
+        )
+        rows = lift_rows(
+            Analysis.from_unit_summary(
+                table,
+                unit="unit",
+                group="group",
+                control="C",
+                metrics=[
+                    {
+                        "name": "revenue",
+                        "winsorization": {
+                            "upper_percentile": 0.95,
+                            "support": {"lower": 0, "upper": 1000, "provenance": "fixture"},
+                        },
+                    }
+                ],
+                plan=AnalysisPlan(primary="revenue"),
+            ).run()
+        )
+        (row,) = rows
+        assert row.confidence_set is not None
+        assert row.sampling_available is False
+        assert row.stat_sig() is None
+        assert row.p_value() is None
+        pytest.importorskip("coeftable")
+        from increment.tables import estimates_to_readout, readout_table
+
+        (readout,) = estimates_to_readout(rows)
+        assert readout["stat_sig"] is None
+        assert readout["failure_code"] == row.failure_code
+        rendered = readout_table([readout]).data
+        assert rendered["stat_sig"].isna().all()
+
+    def test_failed_cell_has_no_verdict(self):
+        row = LiftEstimate(
+            metric="revenue",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            lift=None,
+            failure_code="readout.cell.missing_metric_observations",
+            failure_context={"reason": "no observations"},
+        )
+        assert row.stat_sig() is None
+        assert row.p_value() is None
+
+    def test_available_rows_keep_their_boolean_verdict(self):
+        from increment.estimation.inference import infer_lift
+
+        row = infer_lift(
+            metric="m",
+            group_id="t",
+            method="unadjusted",
+            method_role="decision",
+            log_rr=0.1,
+            se_t=0.02,
+            se_c=0.02,
+            alpha=0.05,
+        )
+        assert row.stat_sig() is True
+        assert row.model_copy(update={"null_lift": 0.1}).stat_sig() is False
