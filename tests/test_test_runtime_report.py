@@ -626,3 +626,524 @@ def test_runtime_table_rows_render_with_run_and_case_warnings(tmp_path: Path):
     parser = TableCells()
     parser.feed(MarkdownIt("commonmark").enable("table").render(markdown_output.read_text()))
     assert {incomplete, expensive} <= set(parser.cells)
+
+
+def test_duration_guard_flags_file_regression_with_test_evidence(tmp_path: Path):
+    baseline_values = [2.0, 1.0, 1.0, 1.0]
+    current_values = [6.0, 1.0, 1.0, 1.0]
+    evidence = tmp_path / "evidence"
+    baseline = tmp_path / "baseline.json"
+    nodeids = [
+        "tests/a.py::t1",
+        "tests/a.py::t2",
+        "tests/c.py::t3",
+        "tests/d.py::t4",
+    ]
+    events = [
+        _event(phase, value if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+        for nodeid, value in zip(nodeids, current_values, strict=True)
+        for phase in ("setup", "call", "teardown")
+    ]
+    _write_run(evidence, events=events)
+    baseline.write_text(json.dumps(dict(zip(nodeids, baseline_values, strict=True))))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    guard = json.loads(output.read_text())["duration_guard"]
+    entry = next(file for file in guard["files"] if file["file"] == "tests/a.py")
+    assert guard["status"] == "compared"
+    assert entry["baseline_seconds"] == pytest.approx(3.0)
+    assert entry["current_seconds"] == pytest.approx(7.0)
+    assert entry["regressed"] is True
+    assert entry["top_tests"][0]["nodeid"] == nodeids[0]
+    assert entry["top_tests"][0]["delta_seconds"] == pytest.approx(4.0)
+    assert guard["regressed_files"] == ["tests/a.py"]
+    assert any(
+        line.startswith("::warning::") and "tests/a.py" in line
+        for line in result.stdout.splitlines()
+    )
+
+
+def test_duration_guard_floor_suppresses_small_absolute_changes(tmp_path: Path):
+    _assert_duration_guard_change_is_not_regressed(tmp_path, 0.01, 0.05)
+
+
+def test_duration_guard_ratio_suppresses_proportionally_small_changes(tmp_path: Path):
+    _assert_duration_guard_change_is_not_regressed(tmp_path, 20.0, 23.0)
+
+
+def _assert_duration_guard_change_is_not_regressed(
+    tmp_path: Path, baseline_seconds: float, current_seconds: float
+):
+    evidence = tmp_path / "evidence"
+    nodeids = ["tests/a.py::t1", "tests/b.py::t2", "tests/c.py::t3", "tests/d.py::t4"]
+    current = [current_seconds, 1.0, 1.0, 1.0]
+    baseline_values = [baseline_seconds, 1.0, 1.0, 1.0]
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, value if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+            for nodeid, value in zip(nodeids, current, strict=True)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(dict(zip(nodeids, baseline_values, strict=True))))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+
+    assert result.returncode == 0
+    entry = next(file for file in guard["files"] if file["file"] == "tests/a.py")
+    assert entry["regressed"] is False
+    assert guard["regressed_files"] == []
+
+
+def test_duration_guard_compares_only_shared_nodeids(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    baseline = tmp_path / "baseline.json"
+    nodeid = "tests/a.py::t1"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 2 if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline.write_text(json.dumps({nodeid: 2.0, "tests/b.py::t9": 100.0}))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    guard = json.loads(output.read_text())["duration_guard"]
+    assert guard["shard_case_work"]["baseline_seconds"] == pytest.approx(2.0)
+
+
+def test_duration_guard_shard_case_work_regression(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    baseline = tmp_path / "baseline.json"
+    values = {f"tests/test_{i}.py::t": 10.0 for i in range(10)}
+    events = [
+        _event(phase, (14 if phase == "call" else 0), nodeid=nodeid, canonical_nodeid=nodeid)
+        for nodeid in values
+        for phase in ("setup", "call", "teardown")
+    ]
+    _write_run(evidence, events=events)
+    baseline.write_text(json.dumps(values))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    guard = json.loads(output.read_text())["duration_guard"]
+    assert guard["shard_case_work"]["baseline_seconds"] == pytest.approx(100.0)
+    assert guard["shard_case_work"]["current_seconds"] == pytest.approx(140.0)
+    assert guard["shard_case_work"]["regressed"] is True
+    assert any(
+        "shard" in line.lower()
+        for line in result.stdout.splitlines()
+        if line.startswith("::warning::")
+    )
+
+
+def test_duration_guard_caps_annotations_with_file_and_shard_regressions(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    baseline = tmp_path / "baseline.json"
+    durations = {f"tests/test_{index}.py::t": 10.0 for index in range(5)}
+    events = [
+        _event(phase, 18 if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+        for nodeid in durations
+        for phase in ("setup", "call", "teardown")
+    ]
+    _write_run(evidence, events=events)
+    baseline.write_text(json.dumps(durations))
+
+    result = _run_report(evidence, "--duration-baseline", str(baseline))
+    guard_annotations = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith("::warning::Runtime regression")
+    ]
+
+    assert result.returncode == 0
+    assert len(guard_annotations) <= 6
+    assert any("tests/test_0.py" in line for line in guard_annotations)
+    assert any("shard case work" in line for line in guard_annotations)
+
+
+def test_duration_guard_inconclusive_when_coverage_low(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 1, nodeid=f"tests/{i}.py::t", canonical_nodeid=f"tests/{i}.py::t")
+            for i in range(4)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    output = tmp_path / "report.json"
+    baseline.write_text(json.dumps({"tests/0.py::t": 1.0}))
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+    assert result.returncode == 0
+    assert guard["status"] == "inconclusive"
+    assert "low_baseline_coverage" in guard["reasons"]
+    assert any(line.startswith("::warning::") for line in result.stdout.splitlines())
+
+    baseline.write_text("{}")
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+    assert result.returncode == 0
+    assert guard["status"] == "inconclusive"
+    assert "no_comparable_tests" in guard["reasons"]
+
+
+def test_duration_guard_empty_baseline_is_inconclusive(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    nodeid = "tests/a.py::t"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 1, nodeid=nodeid, canonical_nodeid=nodeid)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{}")
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+
+    assert result.returncode == 0
+    assert guard["status"] == "inconclusive"
+    assert "no_comparable_tests" in guard["reasons"]
+
+
+def test_duration_guard_ignores_incomplete_cases(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    complete = "tests/a.py::complete"
+    incomplete = "tests/a.py::incomplete"
+    _write_run(
+        evidence,
+        metadata={"status": "interrupted", "exit_code": 1},
+        events=[
+            *[
+                _event(phase, 1, nodeid=complete, canonical_nodeid=complete)
+                for phase in ("setup", "call", "teardown")
+            ],
+            _event("setup", 1, nodeid=incomplete, canonical_nodeid=incomplete),
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({complete: 1.0, incomplete: 1.0}))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+
+    assert result.returncode == 0
+    assert guard["compared_tests"] == 1
+    assert "run_incomplete" in guard["reasons"]
+
+
+def test_duration_guard_excludes_long_setup_phases(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    long_id, shared_id = "tests/a.py::long", "tests/a.py::shared"
+    events = [
+        *[
+            _event(phase, 700 if phase == "setup" else 1, nodeid=long_id, canonical_nodeid=long_id)
+            for phase in ("setup", "call", "teardown")
+        ],
+        *[
+            _event(phase, 1, nodeid=shared_id, canonical_nodeid=shared_id)
+            for phase in ("setup", "call", "teardown")
+        ],
+        *[
+            _event(phase, 1, nodeid=f"tests/{i}.py::u", canonical_nodeid=f"tests/{i}.py::u")
+            for i in range(3)
+            for phase in ("setup", "call", "teardown")
+        ],
+    ]
+    _write_run(evidence, events=events)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(dict.fromkeys([long_id, shared_id], 3.0)))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+
+    assert result.returncode == 0
+    assert guard["incomparable"]["count"] == 1
+    assert guard["compared_tests"] == 1
+    assert guard["status"] == "inconclusive"
+    assert "low_baseline_coverage" in guard["reasons"]
+
+
+def test_duration_guard_groups_parametrized_nodeids_by_file(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    nodeids = ["tests/p.py::T::test[x::y]", "tests/p.py::test[1]"]
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 1, nodeid=nodeid, canonical_nodeid=nodeid)
+            for nodeid in nodeids
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(dict.fromkeys(nodeids, 3.0)))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+    assert result.returncode == 0
+    assert [file["file"] for file in guard["files"]] == ["tests/p.py"]
+    assert len(guard["files"][0]["top_tests"]) == 2
+
+
+def test_duration_guard_absent_without_flag(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    _write_run(evidence, events=[_event(phase, 1) for phase in ("setup", "call", "teardown")])
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--json", str(output))
+    assert result.returncode == 0
+    assert json.loads(output.read_text())["duration_guard"] is None
+
+
+@pytest.mark.parametrize("baseline_data", ["[1, 2]", '{"x": -1}', '{"x": "nan"}'])
+def test_duration_guard_rejects_malformed_baseline(tmp_path: Path, baseline_data: str):
+    evidence = tmp_path / "evidence"
+    _write_run(evidence, events=[_event(phase, 1) for phase in ("setup", "call", "teardown")])
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(baseline_data)
+    result = _run_report(evidence, "--duration-baseline", str(baseline))
+    assert result.returncode == 2
+    assert result.stderr
+
+
+def test_duration_guard_inconsistent_inventory_is_inconclusive(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    nodeid = "tests/a.py::t"
+    _write_run(
+        evidence,
+        metadata={"selected_nodeids": [nodeid, "tests/missing.py::t"]},
+        events=[
+            _event(phase, 1, nodeid=nodeid, canonical_nodeid=nodeid)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({nodeid: 3.0}))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+
+    assert result.returncode == 0
+    guard = json.loads(output.read_text())["duration_guard"]
+    assert "run_incomplete" in guard["reasons"]
+
+
+def test_duration_guard_annotation_survives_cap(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    regressed = "tests/regressed.py::t"
+    events = [
+        *[
+            _event(
+                phase,
+                6,
+                nodeid=f"tests/advisory.py::t{i}",
+                canonical_nodeid=f"tests/advisory.py::t{i}",
+            )
+            for i in range(30)
+            for phase in ("setup", "call", "teardown")
+        ],
+        *[
+            _event(phase, 6 if phase == "call" else 0, nodeid=regressed, canonical_nodeid=regressed)
+            for phase in ("setup", "call", "teardown")
+        ],
+    ]
+    _write_run(evidence, events=events)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({regressed: 2.0}))
+    result = _run_report(evidence, "--duration-baseline", str(baseline))
+
+    assert result.returncode == 0
+    assert any(
+        line.startswith("::warning::") and "tests/regressed.py" in line
+        for line in result.stdout.splitlines()
+    )
+
+
+def test_duration_guard_markdown_contains_regression_summary(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    nodeid = "tests/a.py::t"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 6 if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({nodeid: 2.0}))
+    markdown = tmp_path / "report.md"
+    result = _run_report(
+        evidence, "--duration-baseline", str(baseline), "--markdown", str(markdown)
+    )
+
+    assert result.returncode == 0
+    text = markdown.read_text()
+    assert "### Runtime regression guard" in text
+    assert "tests/a.py" in text
+    assert "same PR" in text
+
+
+def test_duration_guard_markdown_keeps_pipe_in_test_identity(tmp_path: Path):
+    from html.parser import HTMLParser
+
+    from markdown_it import MarkdownIt
+
+    evidence = tmp_path / "evidence"
+    nodeid = "tests/pipe.py::test_name[a|b]"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 6 if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({nodeid: 2.0}))
+    markdown = tmp_path / "report.md"
+    result = _run_report(
+        evidence,
+        "--duration-baseline",
+        str(baseline),
+        "--markdown",
+        str(markdown),
+    )
+
+    class TableRows(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.rows: list[list[str]] = []
+            self.row: list[str] | None = None
+            self.cell: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "tr":
+                self.row = []
+            elif tag in {"td", "th"}:
+                self.cell = []
+
+        def handle_data(self, data):
+            if self.cell is not None:
+                self.cell.append(data)
+
+        def handle_endtag(self, tag):
+            if tag in {"td", "th"} and self.cell is not None:
+                assert self.row is not None
+                self.row.append("".join(self.cell).strip())
+                self.cell = None
+            elif tag == "tr" and self.row is not None:
+                self.rows.append(self.row)
+                self.row = None
+
+    assert result.returncode == 0
+    rows = TableRows()
+    rows.feed(MarkdownIt("commonmark").enable("table").render(markdown.read_text()))
+    evidence_cell = next(row[-1] for row in rows.rows if row[0] == "tests/pipe.py")
+    assert nodeid in evidence_cell
+    assert "2.000" in evidence_cell
+    assert "6.000" in evidence_cell
+    assert "+4.000" in evidence_cell
+
+
+@pytest.mark.parametrize("long_phase", ["setup", "teardown"])
+def test_duration_guard_low_coverage_counts_incomparable_cases(tmp_path: Path, long_phase: str):
+    evidence = tmp_path / "evidence"
+    nodeids = [f"tests/{index}.py::t" for index in range(4)]
+    events = [
+        _event(
+            phase,
+            700 if index and phase == long_phase else 1,
+            nodeid=nodeid,
+            canonical_nodeid=nodeid,
+        )
+        for index, nodeid in enumerate(nodeids)
+        for phase in ("setup", "call", "teardown")
+    ]
+    _write_run(evidence, events=events)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(dict.fromkeys(nodeids, 3.0)))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+
+    assert result.returncode == 0
+    assert guard["compared_tests"] == 1
+    assert guard["unbaselined"]["count"] == 0
+    assert guard["incomparable"]["count"] == 3
+    assert guard["status"] == "inconclusive"
+    assert "low_baseline_coverage" in guard["reasons"]
+
+
+def test_duration_guard_reports_high_unbaselined_runtime(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    compared, unbaselined = "tests/a.py::compared", "tests/b.py::unbaselined"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, seconds, nodeid=nodeid, canonical_nodeid=nodeid)
+            for nodeid, seconds in ((compared, 1.0), (unbaselined, 10.0))
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({compared: 1.0}))
+    output = tmp_path / "report.json"
+    result = _run_report(evidence, "--duration-baseline", str(baseline), "--json", str(output))
+    guard = json.loads(output.read_text())["duration_guard"]
+
+    assert result.returncode == 0
+    assert guard["compared_tests"] == 1
+    assert guard["unbaselined"]["count"] == 1
+    assert "low_baseline_coverage" not in guard["reasons"]
+    assert guard["status"] == "inconclusive"
+    assert "unbaselined_runtime_high" in guard["reasons"]
+
+
+def test_duration_guard_ratio_override_suppresses_file_regression(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    nodeid = "tests/a.py::t"
+    _write_run(
+        evidence,
+        events=[
+            _event(phase, 10 if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+            for phase in ("setup", "call", "teardown")
+        ],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({nodeid: 4.0}))
+    default_output = tmp_path / "default.json"
+    default_result = _run_report(
+        evidence,
+        "--duration-baseline",
+        str(baseline),
+        "--json",
+        str(default_output),
+    )
+    override_output = tmp_path / "override.json"
+    override_result = _run_report(
+        evidence,
+        "--duration-baseline",
+        str(baseline),
+        "--regression-ratio",
+        "3.0",
+        "--json",
+        str(override_output),
+    )
+
+    assert default_result.returncode == 0
+    assert override_result.returncode == 0
+    assert json.loads(default_output.read_text())["duration_guard"]["regressed_files"] == [
+        "tests/a.py"
+    ]
+    assert json.loads(override_output.read_text())["duration_guard"]["regressed_files"] == []

@@ -401,6 +401,171 @@ def _git_test_inventory(base: str, cwd: Path) -> tuple[set[str], str]:
     return names, revision
 
 
+def _load_duration_baseline(path: Path) -> dict[str, float]:
+    try:
+        raw = _load_json(path)
+        if not isinstance(raw, dict):
+            raise ValueError("baseline must contain a JSON object")
+        result = {}
+        for nodeid, value in raw.items():
+            if not isinstance(nodeid, str) or not nodeid:
+                raise ValueError("baseline keys must be non-empty nodeids")
+            try:
+                result[nodeid] = _duration(value)
+            except ValueError as error:
+                raise ValueError(f"invalid duration for {nodeid!r}: {error}") from error
+        return result
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        print(f"duration baseline: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
+
+
+def _duration_guard(
+    cases: Sequence[Mapping[str, Any]],
+    baseline: Mapping[str, float],
+    *,
+    run_complete: bool,
+    python: str | None,
+    ratio: float,
+    floor: float,
+    shard_ratio: float,
+    shard_floor: float,
+) -> dict[str, Any]:
+    files: dict[str, dict[str, Any]] = {}
+    compared_tests = 0
+    unbaselined_count = 0
+    unbaselined_seconds = 0.0
+    incomparable_count = 0
+    for case in cases:
+        if not case["complete"]:
+            continue
+        current = case["total_seconds"]
+        if current is None or not math.isfinite(current):
+            continue
+        if any(case["phases"].get(phase, 0) > 600 for phase in ("setup", "teardown")):
+            incomparable_count += 1
+            continue
+        nodeid = case["nodeid"]
+        if nodeid not in baseline:
+            unbaselined_count += 1
+            unbaselined_seconds += current
+            continue
+        previous = baseline[nodeid]
+        compared_tests += 1
+        filename = nodeid.split("::", 1)[0]
+        file_data = files.setdefault(
+            filename,
+            {"file": filename, "baseline_seconds": 0.0, "current_seconds": 0.0, "top_tests": []},
+        )
+        file_data["baseline_seconds"] += previous
+        file_data["current_seconds"] += current
+        file_data["top_tests"].append(
+            {
+                "nodeid": nodeid,
+                "baseline_seconds": previous,
+                "current_seconds": current,
+                "delta_seconds": current - previous,
+            }
+        )
+
+    for data in files.values():
+        data["top_tests"].sort(key=lambda test: test["delta_seconds"], reverse=True)
+        data["top_tests"] = data["top_tests"][:3]
+        delta = data["current_seconds"] - data["baseline_seconds"]
+        data["regressed"] = (
+            data["current_seconds"] > data["baseline_seconds"] * ratio and delta > floor
+        )
+        data["_delta"] = delta
+    ordered_files = sorted(files.values(), key=lambda data: data["_delta"], reverse=True)
+    regressed_files = [data["file"] for data in ordered_files if data["regressed"]]
+    current_total = sum(data["current_seconds"] for data in files.values())
+    shard_baseline = sum(data["baseline_seconds"] for data in files.values())
+    shard_current = current_total
+    shard_delta = shard_current - shard_baseline
+    shard_regressed = shard_current > shard_baseline * shard_ratio and shard_delta > shard_floor
+    reasons = []
+    if not run_complete:
+        reasons.append("run_incomplete")
+    if compared_tests == 0:
+        reasons.append("no_comparable_tests")
+    denominator = compared_tests + unbaselined_count + incomparable_count
+    if denominator and compared_tests < 0.5 * denominator:
+        reasons.append("low_baseline_coverage")
+    if unbaselined_seconds > 0.25 * (current_total + unbaselined_seconds):
+        reasons.append("unbaselined_runtime_high")
+    for data in ordered_files:
+        data.pop("_delta")
+    return {
+        "status": "inconclusive" if reasons else "compared",
+        "reasons": reasons,
+        "baseline_path": None,
+        "python": python,
+        "thresholds": {
+            "ratio": ratio,
+            "floor_seconds": floor,
+            "shard_ratio": shard_ratio,
+            "shard_floor_seconds": shard_floor,
+        },
+        "compared_tests": compared_tests,
+        "unbaselined": {"count": unbaselined_count, "seconds": unbaselined_seconds},
+        "incomparable": {"count": incomparable_count},
+        "shard_case_work": {
+            "baseline_seconds": shard_baseline,
+            "current_seconds": shard_current,
+            "regressed": shard_regressed,
+        },
+        "files": ordered_files,
+        "regressed_files": regressed_files,
+    }
+
+
+def _markdown_cell(identity: str) -> str:
+    return identity.replace("|", r"\|")
+
+
+def _duration_guard_markdown(guard: Mapping[str, Any]) -> list[str]:
+    thresholds = guard["thresholds"]
+    lines = [
+        "### Runtime regression guard",
+        "",
+        f"- Status: **{guard['status']}**; reasons: {', '.join(guard['reasons']) or '—'}.",
+        f"- Provisional thresholds: file ratio {thresholds['ratio']} and floor "
+        f"{thresholds['floor_seconds']}s; shard ratio {thresholds['shard_ratio']} "
+        f"and floor {thresholds['shard_floor_seconds']}s.",
+        f"- Compared {guard['compared_tests']} tests; unbaselined "
+        f"{guard['unbaselined']['count']} ({guard['unbaselined']['seconds']:.3f}s); "
+        f"incomparable {guard['incomparable']['count']}.",
+        "",
+        "| Shard case work | Baseline seconds | Current seconds | Regressed |",
+        "|---|---:|---:|---|",
+        f"| Compared tests | {guard['shard_case_work']['baseline_seconds']:.3f} | "
+        f"{guard['shard_case_work']['current_seconds']:.3f} | "
+        f"{str(guard['shard_case_work']['regressed']).lower()} |",
+        "",
+        "| File | Baseline seconds | Current seconds | Regressed | Top tests (baseline → current, delta) |",
+        "|---|---:|---:|---|---|",
+    ]
+    for item in guard["files"][:10]:
+        top = "; ".join(
+            f"`{_markdown_cell(test['nodeid'])}` ({test['baseline_seconds']:.3f} → "
+            f"{test['current_seconds']:.3f}, {test['delta_seconds']:+.3f})"
+            for test in item["top_tests"]
+        )
+        lines.append(
+            f"| `{_markdown_cell(item['file'])}` | {item['baseline_seconds']:.3f} | "
+            f"{item['current_seconds']:.3f} | {str(item['regressed']).lower()} | {top} |"
+        )
+    lines.extend(
+        [
+            "",
+            "Record an intentional increase by refreshing `.github/fast-test-durations.json` "
+            "in the same PR, with the reason stated (see CONTRIBUTING).",
+            "",
+        ]
+    )
+    return lines
+
+
 def _markdown(report: Mapping[str, Any], json_path: str | None) -> str:
     cases = report["cases"]
     threshold = report["threshold_seconds"]
@@ -444,7 +609,7 @@ def _markdown(report: Mapping[str, Any], json_path: str | None) -> str:
     for case in rows:
         phase_values = [case["phases"].get(name, "—") for name in _PHASES]
         lines.append(
-            f"| `{case['canonical_nodeid']}` | {phase_values[0]} | {phase_values[1]} | {phase_values[2]} | "
+            f"| `{_markdown_cell(case['canonical_nodeid'])}` | {phase_values[0]} | {phase_values[1]} | {phase_values[2]} | "
             f"{case['total_seconds'] if case['total_seconds'] is not None else 'unknown'} | "
             f"{', '.join(case['markers']) or '—'} | {case['suggestion'] or '—'} | "
             f"{case['new'] if case['new'] is not None else 'unknown'} | "
@@ -453,6 +618,8 @@ def _markdown(report: Mapping[str, Any], json_path: str | None) -> str:
             f"{str(case['priority']).lower()} | {str(case['complete']).lower()} |"
         )
     lines.append("")
+    if report["duration_guard"] is not None:
+        lines.extend(_duration_guard_markdown(report["duration_guard"]))
     for warning in report["warnings"][:20]:
         lines.append(f"> **Warning:** {warning}")
     if len(report["warnings"]) > 20:
@@ -497,12 +664,75 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", metavar="PATH", help="Write the complete JSON report to PATH.")
     parser.add_argument("--markdown", metavar="PATH", help="Write the Markdown report to PATH.")
+    parser.add_argument(
+        "--duration-baseline",
+        type=Path,
+        help="Optional nodeid-to-duration baseline for advisory runtime regression checks.",
+    )
+    parser.add_argument("--regression-ratio", type=float, default=1.5)
+    parser.add_argument("--regression-floor-seconds", type=float, default=2.0)
+    parser.add_argument("--shard-regression-ratio", type=float, default=1.25)
+    parser.add_argument("--shard-regression-floor-seconds", type=float, default=30.0)
     return parser
 
 
 def _github_warning(message: str) -> None:
     escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     print(f"::warning::{escaped}")
+
+
+def _emit_duration_guard_annotations(guard: Mapping[str, Any]) -> None:
+    shard = guard["shard_case_work"]
+    shard_summary = (
+        f"; shard case work regressed from {shard['baseline_seconds']:.3f}s "
+        f"to {shard['current_seconds']:.3f}s"
+        if shard["regressed"]
+        else ""
+    )
+    if guard["status"] == "inconclusive":
+        summary = (
+            f"Runtime regression comparison inconclusive ({', '.join(guard['reasons'])}); "
+            f"{len(guard['regressed_files'])} regressed files; "
+            f"{guard['compared_tests']} compared, "
+            f"{guard['unbaselined']['count']} unbaselined, "
+            f"{guard['incomparable']['count']} incomparable; refresh duration weights"
+        )
+    else:
+        summary = (
+            f"Runtime regression summary: {len(guard['regressed_files'])} regressed files; "
+            f"{guard['compared_tests']} compared tests"
+        )
+    _github_warning(summary + shard_summary)
+    for item in [file for file in guard["files"] if file["regressed"]][:5]:
+        _github_warning(
+            f"Runtime regression for {item['file']}: "
+            f"{item['baseline_seconds']:.3f}s to {item['current_seconds']:.3f}s"
+        )
+
+
+def _duration_guard_report(
+    path: Path,
+    cases: Sequence[Mapping[str, Any]],
+    metadata: Mapping[str, Any],
+    *,
+    run_complete: bool,
+    ratio: float,
+    floor: float,
+    shard_ratio: float,
+    shard_floor: float,
+) -> dict[str, Any]:
+    guard = _duration_guard(
+        cases,
+        _load_duration_baseline(path),
+        run_complete=run_complete,
+        python=metadata.get("python"),
+        ratio=ratio,
+        floor=floor,
+        shard_ratio=shard_ratio,
+        shard_floor=shard_floor,
+    )
+    guard["baseline_path"] = str(path)
+    return guard
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -512,6 +742,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.priority_threshold < 0 or not math.isfinite(args.priority_threshold):
         print("priority threshold must be finite and non-negative", file=sys.stderr)
+        return 2
+    duration_thresholds = (
+        args.regression_ratio,
+        args.regression_floor_seconds,
+        args.shard_regression_ratio,
+        args.shard_regression_floor_seconds,
+    )
+    if any(not math.isfinite(value) or value < 0 for value in duration_thresholds):
+        print("duration regression thresholds must be finite and non-negative", file=sys.stderr)
         return 2
     try:
         run, metadata, events, journal_warnings = _read_run(args.evidence_root)
@@ -544,6 +783,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "baseline": None,
         "base": None,
         "outputs": {"json": args.json, "markdown": args.markdown},
+        "duration_guard": None,
     }
     if missing:
         report["warnings"].append("missing or unknown run metadata: " + ", ".join(missing))
@@ -551,6 +791,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["warnings"].append("source run is incomplete or did not finish successfully")
     if not cases:
         report["warnings"].append("no usable report events found")
+    if args.duration_baseline:
+        report["duration_guard"] = _duration_guard_report(
+            args.duration_baseline,
+            cases,
+            metadata,
+            run_complete=complete,
+            ratio=args.regression_ratio,
+            floor=args.regression_floor_seconds,
+            shard_ratio=args.shard_regression_ratio,
+            shard_floor=args.shard_regression_floor_seconds,
+        )
     if args.baseline:
         report["baseline"] = _baseline_report(cases, args.baseline, metadata, journal_warnings)
         if not report["baseline"]["comparable"]:
@@ -584,6 +835,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, subprocess.CalledProcessError) as error:
             report["base"] = {"comparable": False, "reason": f"git inventory unavailable: {error}"}
             report["warnings"].append(report["base"]["reason"])
+    if report["duration_guard"] is not None:
+        _emit_duration_guard_annotations(report["duration_guard"])
     annotation_messages = list(report["warnings"])
     for case in cases:
         annotation_messages.extend(
