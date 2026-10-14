@@ -8,10 +8,11 @@ routes an unadjusted, unclustered, fixed-horizon conversion or retention
 contrast by its counts (``conversion_inference``), planning follows that route:
 the rejection probability of the runtime's union of the delta-method decision on dense counts
 and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice.
-An admitted finite-sample point resolves to absolute error at most ``1e-6`` conditional on the
-deployed SciPy/Boost special-function error model; this is not a cross-build floating-point
-proof. An ``"approximate"`` basis is an unresolved diagnostic with no runtime-power claim, and
-materially unresolved probabilities are refused.
+An enumerated point resolves to absolute error at most ``1e-6`` conditional on the deployed
+SciPy/Boost special-function error model; this is not a cross-build floating-point proof.
+Where the evaluation budgets leave the enclosure wider, the result states its lower end
+(``"lower_bound"``) with both ends in ``power_lower``/``power_upper``; a size or effect
+reaches a target only when the lower end does.
 Where counts are dense with near certainty and the lattice is too large to
 enumerate, ``"asymptotic"`` reports the closed-form model's own point probability.
 Segment-pairwise planning deliberately retains its separate baseline-only

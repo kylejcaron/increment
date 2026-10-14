@@ -184,10 +184,10 @@ _SURROGATE_SLACK = 1e-12
 #: Maximum absolute numerical error of an enumerated public point probability.
 RESOLUTION = 1e-6
 
-#: Directional replays (a count pair is replayed once per direction its alternative reads) of the
-#: runtime's own finite-sample search one evaluation's request pays for, at about 100 to 400
-#: CPU-microseconds each at the arm sizes where counts reach the routing floor. The lightest pairs
-#: past it are undecided in that evaluation and add their mass to the upper end of the enclosure.
+#: Directional replays (a count pair is replayed once per direction its alternative reads) one
+#: evaluation's request pays for, at about 100 to 400 CPU-microseconds each on the runtime's own
+#: finite-sample search and on a sizing proposal's Normal-tail replay, over the same cells. The
+#: lightest pairs past it are undecided and add their mass to the upper end of the enclosure.
 EVALUATION_REPLAY_BUDGET = 150_000
 
 #: Runtime calculations (`conversion_delta.production_decision`, about 0.2 CPU-milliseconds each:
@@ -1547,8 +1547,11 @@ class BinomialPower:
     SciPy special-function error model; it is not a cross-build floating-point proof. Statistical
     finiteness of the decision construction and this arithmetic qualification are separate claims.
     ``closed_form`` is only the delta-method model and ``certified=False`` is a diagnostic with
-    no claim on runtime power.
+    no claim on runtime power: its enclosure is ``[0, 1]``.
 
+    A result states `published`: the point when the enclosure is resolved to `RESOLUTION`,
+    otherwise its lower end, with `basis` naming which. `reported` is the explicit point
+    request, refused while the enclosure is unresolved.
     """
 
     plus: float
@@ -1589,6 +1592,11 @@ class BinomialPower:
         return self.power
 
     @property
+    def published(self) -> float:
+        """The power a result states: the point when resolved, the lower end otherwise."""
+        return self.power if self.resolved else self.lower
+
+    @property
     def lower(self) -> float:
         """Computed lower endpoint conditional on the stated SciPy error allowance."""
         if self.closed_form:
@@ -1607,13 +1615,14 @@ class BinomialPower:
         return min(1.0, _up(_up(_up(self.power * self.inflation) + self.ambiguous) + self.omitted))
 
     @property
-    def basis(self) -> Literal["asymptotic", "exact", "approximate"]:
-        """Planning route for this value."""
+    def basis(self) -> Literal["asymptotic", "exact", "lower_bound"]:
+        """How `published` was computed: the closed-form model, the resolved enumeration, or
+        the lower end of an unresolved enclosure."""
         if self.closed_form:
             return "asymptotic"
         if self.resolved:
             return "exact"
-        return "approximate"
+        return "lower_bound"
 
 
 @dataclass(slots=True)
@@ -2050,7 +2059,10 @@ class RejectionGeometry:
         (`_finite_rows`: none when the runtime refuses that decision in full), unless
         `_off_route_bound` of those pairs is at most half of `RESOLUTION`, while
         `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside
-        the choice is undecided in this evaluation, even if an earlier one decided it."""
+        the choice is undecided in this evaluation, even if an earlier one decided it. The
+        ``approximate`` route chooses the same cells: its replay is cheaper, and a proposal
+        summed over the cells the runtime's own replay will decide tracks the lower end of
+        that replay's enclosure, which the size search decides from."""
         row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
         routed = row_in[:, None] & col_in[None, :]
         weights = (wc.weights, wt.weights)
@@ -2059,10 +2071,8 @@ class RejectionGeometry:
         if self._off_route_bound(wc, wt, finite) <= RESOLUTION / 2.0:
             return selected
         pending = ~routed & finite[:, None]
-        if self.route == "exact":
-            kinds = len(self.decision.kinds)
-            pending = self._heaviest(pending, weights, EVALUATION_REPLAY_BUDGET, kinds)
-        return selected | pending
+        kinds = len(self.decision.kinds)
+        return selected | self._heaviest(pending, weights, EVALUATION_REPLAY_BUDGET, kinds)
 
     @staticmethod
     def _heaviest(
