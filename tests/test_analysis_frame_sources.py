@@ -363,6 +363,7 @@ def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable(
 def test_encouragement_breakout_deduplicates_multiple_empty_segments():
     import pandas as pd
 
+    from increment.estimation.inference import Normal
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     frame = pd.DataFrame(
@@ -396,7 +397,22 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
             breakouts=("segment",),
         )
 
-    rows = analysis.run_breakout()
+    rows = analysis.run_breakout(prior=Normal(mu=0.0, sigma=0.1))
+    for value in ("A", "C"):
+        segment_rows = [row for row in rows if row.dimension_value == value]
+        assert segment_rows
+        for unavailable in segment_rows:
+            assert unavailable.posterior_available is False
+            assert unavailable.posterior_reason_code == ("readout.cell.missing_metric_observations")
+            assert unavailable.posterior_reason_context is not None
+            assert unavailable.posterior_reason_context["reason"] == (
+                "no usable metric observations"
+            )
+            assert unavailable.posterior_model is None
+            assert unavailable.posterior_scale is None
+            assert (
+                type(unavailable).model_validate_json(unavailable.model_dump_json()) == unavailable
+            )
     identities = [
         (row.dimension_value, row.metric, row.group_id, row.estimand, row.value_scale, row.method)
         for row in rows

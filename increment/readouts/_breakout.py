@@ -73,6 +73,8 @@ def _missing_encouragement_observation(
             "posterior_available": False,
             "posterior_reason_code": "readout.cell.missing_metric_observations",
             "posterior_reason_context": context,
+            "posterior_model": None,
+            "posterior_scale": None,
             "posterior_estimate": None,
             "posterior_lb": None,
             "posterior_ub": None,
