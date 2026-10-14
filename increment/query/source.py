@@ -734,6 +734,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         has_trigger_population = any(
             extension.kind == "trigger_population" for extension in manifest.extensions
         )
+        if assignment_extensions:
+            operations.add("unit_counts")
         if has_trigger_population and assignment_extensions:
             operations.update({"triggered_counts", "triggered_source"})
         catalog = unit_day_artifact_extension_catalog(expected_context)

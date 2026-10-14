@@ -165,7 +165,7 @@ class _DaySource:
     """
 
     capabilities: frozenset[Grain] = frozenset({"daily", "asof"})
-    operations: frozenset[SourceOperation] = frozenset()
+    operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
 
     # Keep source callbacks together: construction and cache state form one adapter.
