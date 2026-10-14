@@ -62,7 +62,7 @@ or Studio server; keep the example's host stylesheet beside the notebook.
 `prepare_dashboard` validates the experiment and config, then captures
 allocation, enrollment, headline estimates, group data, and supported Explore
 views from one pinned source snapshot into an immutable `DashboardSnapshot`.
-It does not rebind your `Analysis`. Rendering reads captured evidence only:
+It does not rebind your `Analysis`. `render_dashboard` reads captured evidence only:
 browser controls select prepared data and never query the warehouse, change
 the plan, or recompute confirmatory results. To update data or policy, rebind
 and prepare again; you own `analysis` and its connection, so close the old
@@ -95,7 +95,7 @@ changes the analysis contract.
 
 | Config | Rule |
 |---|---|
-| `expected_allocation` | Required: exactly two distinct, non-empty arm labels with finite positive weights. The definitions-backed SRM check has no safe implicit default; an assumed even split would silently turn an unequal design into a false mismatch. The configured control arm must match the bound experiment; the treatment label is whatever the other declared arm is called. |
+| `DashboardConfig.expected_allocation` (`expected_allocation`) | Required: exactly two distinct, non-empty arm labels with finite positive weights. The definitions-backed SRM check has no safe implicit default; an assumed even split would silently turn an unequal design into a false mismatch. The configured control arm must match the bound experiment; the treatment label is whatever the other declared arm is called. |
 | `metric_units` | Presentation labels, not statistical settings. Conversion and retention values use percentages; other metrics use the explicit unit or the generic label `value`. Currency is never inferred from a metric's name. Unknown metric names and empty labels are refused before source reads. |
 
 **When it refuses.** An unusable configuration raises `InvalidRequestError`
@@ -227,8 +227,8 @@ counts, and confidence-set shape without changing the inference.
     it does not mean "no harm". An interval entirely on the adverse side
     stays visibly unfavorable even when `stat_sig=False`: Readout and Report
     call out wholly adverse decision intervals, including one-sided
-    guardrails whose declared null was not rejected, rather than relying on
-    someone reading the table correctly.
+    guardrails whose declared null was not rejected; `render_results` makes
+    this explicit rather than relying on someone reading the table correctly.
 
 ??? info "Statistical details: interval display rules"
     An ordinary, non-FCR point-backed Fieller result retains its central
@@ -288,19 +288,21 @@ exclude zero. A cell the family cannot take (for example a quantile metric or
 an informative prior) is left out with its reason in **Overview notes**, shown
 or not; it is never marked as a discovery and never blocks the other cells.
 
+!!! warning "Exploratory discoveries carry an unchecked assumption"
+    The exploratory cells form one Benjamini-Hochberg family at the plan's
+    `q`. BH controls the false discovery rate under independence or
+    positive dependence; these cells share units and the control arm, and
+    [that condition is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked).
+    Changing the selection reads nothing; only re-running preparation reads
+    the warehouse, and a read on more data is a new look, not a
+    continuation of this family.
+
 ??? info "Statistical details: the exploratory family"
-    The eligible exploratory cells form one Benjamini-Hochberg family at the
-    plan's `q`, fixed for the snapshot, so switching **Compare by** never
+    The family is fixed for the snapshot, so switching **Compare by** never
     changes a cell. Eligible cells count whether or not their metric is
     shown, so choosing what to display, before or after seeing results, never
-    changes the correction. Changing the selection reads nothing; only
-    re-running preparation reads the warehouse, and a read on more data is a
-    new look, not a continuation of this family. BH controls the false
-    discovery rate under independence or positive dependence; these cells
-    share units and the control arm, and
-    [that condition is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked).
-    Under a registered sequential plan the added metrics and uncorrected
-    segments are refused with their coded reasons.
+    changes the correction. Under a registered sequential plan the added
+    metrics and uncorrected segments are refused with their coded reasons.
 
 ### Added exploratory metrics
 
@@ -494,7 +496,7 @@ uv run --extra dashboard --extra demo marimo edit examples/ab_testing_dashboard.
 `uv run --extra dashboard --extra demo python examples/ab_testing_dashboard.py`
 runs it as a script for a quick smoke check.
 
-??? info "Why the bare `uv run` form is not supported"
+??? info "Why the bare `uv run examples/ab_testing_dashboard.py` form is not supported"
     Notebook-local `# /// script` metadata keeps marimo's own chrome light;
     the embedded dashboard has its independent light/dark toggle. Without an
     explicit `python`/`marimo` command, `uv run` treats a directly executed

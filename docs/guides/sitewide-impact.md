@@ -1,9 +1,8 @@
 # Sitewide impact
 
-`Analysis.sitewide()` estimates how much a metric's whole-site total would
-have changed if the per-unit effect had applied to every enrolled unit during
-the experiment window. Use it for a rollout estimate, not as another per-unit
-effect.
+`Analysis.sitewide()` estimates the whole-site change if the per-unit effect
+had applied to every enrolled unit during the experiment window. Use it for
+a rollout estimate, not as another per-unit effect.
 
 It needs the site's raw event volume, so it runs on a native
 `Analysis.from_definitions` source or on an adopted
@@ -187,18 +186,25 @@ for m in ("revenue", "revenue_per_session"):
 
 ## Read the result
 
-`sitewide()` returns a `SitewideImpact`, or a `SitewideRatioImpact` for a
-ratio metric. Both are `exploratory_unadjusted`: no family adjustment is
-applied, and their fixed-horizon intervals are not anytime-valid.
+`sitewide()` returns a `SitewideImpact` for a mean metric and a
+`SitewideRatioImpact` for a ratio metric. Both are `exploratory_unadjusted`:
+no family adjustment is applied, and their fixed-horizon intervals are not
+anytime-valid. Both baselines net out every enrolled non-control arm's lift
+(`other_arm_ids`), not only the arm being scored.
 
-| Field | Meaning |
+| Field (both models) | Meaning |
 |---|---|
-| `absolute_impact`, `absolute_impact_lb`, `absolute_impact_ub` | The gain, in the metric's own units, if every enrolled unit received the effect, with its interval. |
-| `relative_impact`, `relative_impact_lb`, `relative_impact_ub` | That gain as a fraction of what the site would have produced with nobody treated. |
-| `delta` | The per-unit absolute lift being scaled up. |
-| `site_total_volume`, `baseline_volume` | Observed site volume in the window, and the counterfactual baseline with the treatment arm's lift removed. |
-| `baseline_ratio`, `shipped_ratio` | Ratio metrics only: the site ratio with nobody treated and with everyone treated. |
+| `absolute_impact`, `absolute_impact_lb`, `absolute_impact_ub` | The ship-to-all gain with its interval. For a mean metric it is in the metric's own units; for a ratio metric it is `shipped_ratio - baseline_ratio`, a difference of site ratios. |
+| `relative_impact`, `relative_impact_lb`, `relative_impact_ub` | That gain as a fraction of the baseline (`baseline_volume` or `baseline_ratio`). |
 | `analysis_population`, `membership_cutoff`, `window`, `snapshot_id` | The population read, its trigger-membership cutoff, the experiment window, and the evidence identity. |
+| `n_clusters`, `absolute_dof`, `relative_dof` | `None` at unit grain; otherwise the cluster count and the degrees of freedom each interval was cut at. |
+
+| `SitewideImpact` (mean metric) | `SitewideRatioImpact` (ratio metric) | Meaning |
+|---|---|---|
+| `delta` | `delta_num`, `delta_den` | The per-unit absolute lift being scaled up; a ratio metric has one per component. |
+| `site_total_volume` | `site_total_numerator`, `site_total_denominator` | The observed site-window total(s). |
+| `baseline_volume` | `baseline_numerator`, `baseline_denominator`, `baseline_ratio` | The counterfactual total(s) with nobody exposed to treatment. |
+| — | `shipped_numerator`, `shipped_denominator`, `shipped_ratio` | The ship-to-all total(s) with every enrolled unit treated. |
 
 ??? info "Statistical details: the ship-to-all counterfactual"
     Given a per-unit absolute lift
@@ -315,16 +321,18 @@ applied, and their fixed-horizon intervals are not anytime-valid.
     V_0 = V - \sum_i \delta_i\,n_i
     $$
 
-    $N_{\text{exp}}$ counts all enrolled units. The lift estimates share the
-    control mean, so their covariance is positive. Absolute impact depends
-    only on the selected arm's lift; relative impact also carries the
-    shared-baseline covariance into its interval.
+    $N_{\text{exp}}$ counts all enrolled units. The arms' lifts are not
+    independent -- every $\delta_i$ subtracts the same control mean, so
+    $\mathrm{Cov}(\delta_i, \delta_j) = \mathrm{Var}(\bar y_C) = \mathrm{Var}(y_C)/n_C$,
+    which is *positive*. Absolute impact depends only on the selected arm's
+    lift; relative impact also carries the shared-baseline covariance into
+    its interval.
 
 ## Assigned or triggered
 
-`population="assigned"` (the default) estimates the intent-to-treat impact of
-assignment. `population="triggered"` scales the effect among units in
-finalized trigger membership by the triggered enrolled count.
+With a declared `trigger:`, `population="assigned"` (the default) estimates
+the intent-to-treat impact of assignment. `population="triggered"` scales
+the effect among finalized trigger members by the triggered enrolled count.
 
 | Rule | Both populations |
 |---|---|
@@ -356,8 +364,8 @@ finalized trigger membership by the triggered enrolled count.
 
 ## Multi-arm experiments
 
-`sitewide()` scores one arm at a time: pass `arm=` when several treatment
-arms are enrolled. The question is what would happen if that arm alone
+`sitewide()` scores one arm at a time: pass `arm="treatment_b"` to select it
+when several treatment arms are enrolled. The question is what would happen if that arm alone
 shipped to everyone, compared with no treatment; arms are never combined into
 an unshippable scenario. Every enrolled arm's lift is removed from site volume
 to form the baseline, so co-enrolled arms add sampling variance to the
