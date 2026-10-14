@@ -1,38 +1,21 @@
 # Registered sequential inference
 
-Sequential monitoring answers whether a declared treatment effect is supported as
-finalized observations arrive, without treating repeated looks like independent
-tests. Declare the analysis plan, inference regime, metric roles and look policy
-before reading outcomes; the plan determines each role's error budget and what
-the result's guarantee means. For a common conversion workflow, start with
-[sequential monitoring of a conversion metric](#sequential-monitoring-of-a-conversion-metric);
-the [error-control table](#error-control-by-plan-role) explains primary,
-guardrail and secondary claims. See [Reading results](reading-results.md) for
-population and inference disclosures and [Multiplicity](multiplicity.md) for
-the canonical status and family table.
+Use sequential monitoring when you need to make decisions as finalized
+experiment data arrives. Register the plan before looking at outcomes; exact
+Bernoulli monitoring is anytime-valid, while continuous means and ratios use
+an asymptotic method.
 
-The exact public anytime-valid route is Bernoulli with a proper Beta prior.
-Mean and ratio monitoring use the separate `asymptotic_mean` construction,
-which has asymptotic rather than finite-sample coverage. Every observation must
-be finalized under the declared reveal contract; choosing when to look from
-outcomes can invalidate a stopped family claim. For triggered estimates,
-treatment-independent trigger membership and timing and counterfactual logging
-are substantive assumptions, not consequences of balanced rates. Call
-[`Analysis.health_check()`](../api.md#diagnostics-and-robustness) as a sanity
-check, not proof of causal validity; the [triggered-population workflow](#triggered-populations)
-keeps that risk beside its examples.
+!!! warning "Guarantees depend on the data and reveal process"
+    Every observation must follow the registered reveal contract. Outcome-driven
+    choices about when to look can invalidate a family claim. Triggered effects
+    also require treatment-independent trigger membership and timing, plus
+    counterfactual logging; balanced rates do not prove these assumptions.
+    [`Analysis.health_check()`](../api.md#diagnostics-and-robustness) is a
+    sanity check, not proof of causal validity.
 
-The hand-written registration below is the low-level route for declarations
-not covered by plan-derived registration. A posterior effect prior, an
-estimated log standard error, or a freshness timestamp cannot replace this
-registration.
-The exact public anytime-valid observation model is Bernoulli with a proper Beta
-prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
-normal–inverse-Wishart kernels remain available only through the private
-research-diagnostic route; they do not produce certified `EValueEvidence` or
-public sequential decisions. Gaussian arms may have different unknown
-variances. Declare positive population control means, and positive denominator
-means for ratios; positive observed averages do not establish these assumptions.
+The example below shows the low-level registration route for declarations not
+covered by an `AnalysisPlan`. A posterior effect prior, estimated log standard
+error, or freshness timestamp cannot replace this registration.
 
 ```python
 from fractions import Fraction
@@ -99,7 +82,21 @@ snapshot = capture_sequential_snapshot(
 )
 decision = estimate_sequential(snapshot, policy)
 ```
+<details>
+<summary>Model scope for manual registrations</summary>
 
+The exact public anytime-valid observation model is Bernoulli with a proper
+Beta prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
+normal–inverse-Wishart kernels remain available only through the private
+research-diagnostic route; they do not produce certified `EValueEvidence` or
+public sequential decisions. Gaussian arms may have different unknown
+variances. Declare positive population control means, and positive denominator
+means for ratios; positive observed averages do not establish these assumptions.
+
+</details>
+
+For population and result-status interpretation, see [Reading
+results](reading-results.md) and [Multiplicity](multiplicity.md).
 Each record supplies canonical string `unit_id` and `group_id`, a `values`
 mapping with every registered metric, and any registered `segments`. The
 continuous public route accepts scalar values, not `(numerator, denominator)`
@@ -148,6 +145,9 @@ can replay this exact state. The preceding sequential format 9 remains
 readable; fixed-horizon format 12 carries the same source identity, while the
 preceding fixed-horizon format 11 remains readable.
 
+<details>
+<summary>Checkpoint rational encoding and limits</summary>
+
 Every rational in that envelope -- prior hyperparameters, `rho`,
 `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment
 coefficients and centres, and each retained arm mean and scatter entry -- is
@@ -172,6 +172,8 @@ A finite Python float normally binds its exact binary64 value; compliance
 decimal spelling (`0.05` is `1/20`). Non-finite inputs refuse with the same code.
 Exporting a state outside the ceiling refuses with `field="export"` instead
 of writing a checkpoint no reader admits.
+
+</details>
 
 The retained family is fixed before data: metric × arm × segment cells
 remain members even when no units enroll. Missing cells contribute log
@@ -414,6 +416,12 @@ continuing under the weaker false-discovery guarantee; start a new
 registration by capturing without `previous=`.
 
 ### Choosing the Beta prior weight for a declared baseline rate
+The default weight is `DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10`: prior weight
+affects power, not the anytime-valid guarantee. The measurements and
+rare-conversion limitations are folded below.
+
+<details>
+<summary>Prior calibration measurements and interpretation</summary>
 
 An automatic exact Bernoulli registration built from
 `InferenceSpec(kind="always_valid", baseline_rate=p0)` commits `Beta(w * p0, w * (1 - p0))`
@@ -464,6 +472,8 @@ of `0.1` the best cell is `0.105` (w=200, lift 0.20 after 2000 units per arm), a
 not calibration evidence for an alternative method. The asymptotic route
 (`kind="asymptotic_mean"`) is available, but rare-conversion calibration at
 base rates `0.10` or below is unverified by this grid and the bounded release audit.
+
+</details>
 
 ## Sequential monitoring of a conversion metric
 
@@ -617,6 +627,9 @@ inspection and replay, not as prerequisites for this workflow.
 The library enforces commitment before its own observation capture. It cannot
 establish that nobody examined the outcomes elsewhere beforehand.
 
+<details>
+<summary>Boundary, calibration, and evidence fields</summary>
+
 The actual clock is N=nc+nt finalized independent units. With centered sums of
 squares M2a, the empirical variance convention is sa²=M2a/na and Va=sa²/na.
 For a relative null lift ell0, r=1+ell0, the shifted contrast and boundary are
@@ -683,6 +696,9 @@ verified ancestor prefix. The same model follows the existing frame, panel,
 native, artifact, moments-export, current as-of and registered breakout paths.
 Native/artifact segment capture retains its immutable-property-relation refusal.
 
+</details>
+
+
 Continuous (metric/arm) secondary families are selected by **e-BH** at the
 plan's `q`, labeled `asymptotic_sequential` whenever any member is asymptotic
 (`finite_sample` only if every member is exact -- see Secondaries above).
@@ -728,6 +744,9 @@ arm retains with its full centered scatter:
 | `adjusted_mean` | $(Y, X)$ | ratio of CUPED-adjusted arm means | a mean metric with `covariate=` and a CUPED method |
 | `ratio_mean` | $(N, D)$ | ratio of arm ratios $E[N]/E[D]$ | a ratio metric |
 | `adjusted_ratio_mean` | $(N, D, X)$ | ratio of adjusted arm ratios | a ratio metric with `covariate=` and a CUPED method |
+
+<details>
+<summary>Construction details for adjusted and ratio metrics</summary>
 
 Each is a delta-method linearisation at the observed means: the contrast
 `f_t - r * f_c` has, with respect to the two retained mean vectors, gradients
@@ -780,6 +799,8 @@ note. Alpha-independent failures -- before-start or missing-arm states,
 nonpositive denominators, and degenerate variances -- still abstain.
 New laws retain new state shapes, so no snapshot version bump or migration of
 existing `scalar_mean` checkpoints was needed.
+
+</details>
 
 Percentile winsorization, clustering, repeated units, switchback,
 observational inference and additive sequential decisions remain unsupported.

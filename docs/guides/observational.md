@@ -1,22 +1,18 @@
 # Causal inference in Python: IPTW, DML, and AIPW
 
-Use observational analysis when treatment is self-selected, phased, or opt-in
-and the target is an adjusted comparison rather than a randomized arm
-difference. The `Observational` design requires a declared `AdjustmentSet`
-whose covariates you can defend as sufficient for conditional ignorability;
-Increment checks overlap and post-adjustment balance but cannot establish that
-causal assumption. The worked [IPTW example](#declaring-an-adjustment-set)
-uses `Analysis.from_unit_summary`; the same unwindowed mean/conversion
-estimators are supported by `from_definitions`, `from_unit_day_artifact`, and
-`from_unit_panel`. Read each row's estimand, scale, interval and method, and
-consult [Reading results](reading-results.md) for result status and
-[Multiplicity](multiplicity.md) for the canonical population/status table.
+Use observational analysis for self-selected, phased, or opt-in treatment when
+you need an adjusted comparison. You must justify that the declared
+`AdjustmentSet` contains the confounders; overlap and balance checks cannot
+prove that causal assumption.
 
-IPTW is the default; AIPW and DML are available when their assumptions and
-target are appropriate. These adjustments do not make observational data
-randomized: overlap and balance are necessary diagnostics, not proof of
-identification. Ratio metrics and `from_moments` are outside this supported
-route; see [Current limits](#current-limits).
+IPTW is the default; AIPW and DML are alternatives with different targets and
+assumptions. Ratio metrics and `from_moments` are not supported on this route;
+see [Current limits](#current-limits).
+The same unwindowed mean/conversion estimators are supported by
+`from_definitions`, `from_unit_day_artifact`, and `from_unit_panel`. Read each
+row's estimand, scale, interval, and method; see [Reading
+results](reading-results.md) for result status and [Multiplicity](multiplicity.md)
+for the population and status table.
 
 ## Declaring an adjustment set
 
@@ -222,6 +218,9 @@ weights, not a new overlap test, a guarantee about causal identification, or
 a correction to the reported interval. In particular, ESS does not select
 degrees of freedom.
 
+<details>
+<summary>How the concentration diagnostics are calculated</summary>
+
 For arm weights $w_i$, the reported Kish effective sample size is
 $(\sum_i w_i)^2 / \sum_i w_i^2$, and maximum share is
 $\max_i(w_i)/\sum_i w_i$. Both are invariant to the arm's self-normalization;
@@ -248,6 +247,9 @@ panel has a scheduled contrast, not observational per-unit treatment
 propensities, so these diagnostics do not apply there. Other methods retain
 null diagnostic numbers and an explicit not-applicable reason rather than
 borrowing another method's weights.
+
+</details>
+
 
 ### Balance checks
 
@@ -296,6 +298,13 @@ before either gate runs:
   over every analysed arm jointly, never per arm. Append each incomplete
   column's missingness indicator, which enters propensity fitting and SMD
   diagnostics. The estimate carries a `note` recording the repair.
+For structured missingness, `pattern` is IPTW-only; `allow` needs explicit
+NaN-native learners; complete-case analysis changes the population. Implementation
+details and refusal conditions are folded here.
+
+<details>
+<summary>Pattern, NaN-native learner, and complete-case details</summary>
+
 - `missing="pattern"`: fit the propensity separately per missingness
   pattern — the generalized propensity e(X_observed, pattern), which
   balances the observed covariates and the pattern itself with no
@@ -342,6 +351,8 @@ before either gate runs:
   never suggested by the refusal messages: it is biased whenever
   missingness is informative. Prefer the options above, which keep every
   unit.
+
+</details>
 
 !!! warning "NaN tolerance is not capacity"
     `allow` realizes its identification claim only up to the supplied
@@ -398,6 +409,9 @@ An explicitly informative IID prior retains the separate scalar path and its
 near-zero denominator guard: it refuses `abs(mu0) <= 4 * SE(mu0)`. A declared
 cluster excludes that prior path.
 
+<details>
+<summary>How directional intervals and additive fields are constructed</summary>
+
 Directional joint sets use the full `alpha` tail; two-sided sets use `alpha/2`.
 That closure shapes the set the decision reads -- `stat_sig` and the p-value
 test the null against it -- while the row *displays* the pre-closure central
@@ -414,6 +428,8 @@ Additive bounds are reconstructed using their own persisted reference and the
 same alpha and alternative, with exact binary64 equality on serialization.
 Zero additive variance carries `abs_se=None` and `(abs_lb, abs_ub)=(None, None)`;
 it does not fabricate a zero-width additive interval.
+
+</details>
 
 The additive effect `tau = mu1 - mu0` is perfectly well identified there.
 Ask for it per metric:
@@ -529,6 +545,9 @@ results = analysis.run(decision_method=Method(name="dml"))  # default: iptw
 heterogeneous treatment effects.** `dml`'s partially-linear model solves
 for a propensity-variance-weighted average slope
 
+<details>
+<summary>The DML estimand and relative-scale calculation</summary>
+
 ```text
 theta = E[(D - e)(Y - l)] / E[(D - e)^2] = E[e(1-e)·tau(X)] / E[e(1-e)]
 ```
@@ -561,6 +580,17 @@ The denominator is consistent if either `m0` or `p0` is right; the slope is
 not, and the joint Fieller set uses the covariance of both influences. The
 absolute slope is identical whether or not the relative row is requested.
 
+</details>
+
+Under heterogeneous effects, choose `iptw` or `aipw` for the unit-weighted
+ATE; choose `dml` when its propensity-weighted partially linear slope is the
+target. The two are different estimands, not competing estimates of one
+quantity.
+
+
+<details>
+<summary>Default learners and custom learner configuration</summary>
+
 All three pass through the same identification gate and default to the
 same built-in learners: a ridge-stabilized logistic regression for the
 propensity model, plus a closed-form ridge linear regression for the
@@ -587,6 +617,9 @@ declared `missing=` policy.
 `iptw` has no outcome model or folds. Setting either option on an `iptw`
 `Method` raises a refusal.
 
+</details>
+
+
 !!! warning "Flexible IPTW learners can overfit"
     IPTW fits and evaluates propensities on the same units; only `dml` and
     `aipw` cross-fit. A learner that memorizes treatment assignments pushes
@@ -597,6 +630,9 @@ declared `missing=` policy.
     Prefer `dml` or `aipw` for flexible learners. Unlike overlap and balance
     failures, this modeling risk has no runtime flag: fitted propensities
     alone cannot establish whether the learner overfit.
+
+<details>
+<summary>Cross-fitting and cluster-fold details</summary>
 
 For `dml` and `aipw`, cross-fitting is deterministic and balances treatment arms
 across folds. With a declared cluster, the cluster is the split unit: every unit
@@ -613,6 +649,9 @@ encouragement designs. With several treatments one fold vector, stratified by
 every arm, serves every model of the metric, and each fold's training rows must
 still contain each treatment and the control; otherwise the fold refuses, naming
 the comparison.
+
+</details>
+
 
 
 `Method(name="unadjusted")` is allowed under an observational design, but
@@ -631,6 +670,9 @@ Identification needs, for every arm, conditional ignorability of that arm
 given the covariates and positive arm support over the whole population. A
 comparison is not re-estimated on its own treatment/control rows, which would
 average over a different, comparison-specific covariate mix.
+
+<details>
+<summary>How multiple-arm propensities are combined</summary>
 
 Increment keeps the ordinary binary learners. For each treatment `a` it fits
 the propensity learner on that treatment's and the control's rows only, giving
@@ -651,6 +693,8 @@ each arm by `1 / p_a`; AIPW fits one outcome model per arm and adds the
 self-normalized residual correction. The untrimmed default logistic IPTW
 covariance includes the estimating equations of every treatment-versus-control
 model, whose scores share control units.
+
+</details>
 
 DML keeps each comparison's own partially-linear slope. On the comparison's
 rows it solves the pooled partialling-out equation, which as a functional of
@@ -752,6 +796,9 @@ target. The reference is asymptotic Normal (`reference_kind="normal"`,
 multiplier does not correct fitted-response leverage or establish small-K
 coverage. This path does not certify small-sample coverage.
 
+<details>
+<summary>Cluster support and covariance details</summary>
+
 With several treatment arms, support is checked per comparison on its own
 rows, after any trimming: every comparison needs at least two distinct
 clusters among its treatment and control units, and at least two treatment
@@ -798,6 +845,8 @@ pattern-specific and trimmed propensity fits still lack that correction.
 Cross-fitted AIPW/DML require cluster-level nuisance-rate assumptions; linear
 cross-fit residual geometry has not yet received a finite-sample correction.
 The result note records these limitations. Target weighting is unchanged.
+
+</details>
 
 The randomized path's small-K policy applies as an advisory: when a
 comparison's own treatment and control units span fewer than 40 clusters, a
