@@ -1361,8 +1361,12 @@ def _raw_stats_evidence(
 ) -> tuple[PValueEvidence | None, DecisionFailure | None]:
     """Fixed-horizon p-value evidence from a row's own raw (point, se): the
     fallback decision statistic once always_valid/asymptotic_mean/absolute
-    margin paths don't apply."""
+    margin paths don't apply. A row with no relative interval reads the
+    row's own ``p_value()``: its joint relative set, or -- for a
+    nonpositive arm mean with no declared margin -- the additive difference
+    against zero under the reference its interval was cut from."""
     from increment.estimation.decision_types import DecisionFailure, PValueEvidence
+    from increment.estimation.results import _additive_zero_reference
 
     if result.relative_confidence_set is not None or result.relative_unavailable_reason is not None:
         try:
@@ -1387,7 +1391,17 @@ def _raw_stats_evidence(
                     "reason": "missing_sampling_statistic",
                 },
             )
-        return PValueEvidence(hypothesis, result.method, p_value, "relative_confidence_set"), None
+        if result.relative_confidence_set is not None:
+            reference = "relative_confidence_set"
+        elif _additive_zero_reference(result) is None:
+            reference = (
+                "relative_margin_conservative_nonrejection"
+                if result.null_lift != 0.0 and result.null_abs is None
+                else "degenerate_arm_conservative_nonrejection"
+            )
+        else:
+            reference = "student_t" if result.abs_reference_kind == "t" else "normal"
+        return PValueEvidence(hypothesis, result.method, p_value, reference), None
 
     if result.lift is None:
         return None, DecisionFailure(

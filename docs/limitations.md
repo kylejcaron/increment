@@ -375,7 +375,16 @@ without a finite point. Numeric nulls are not infinities. A genuinely indefinite
 or unrepresentable joint covariance sets `relative_unavailable_reason`; additive
 output survives rather than being replaced by a clipped covariance or fabricated
 relative precision. Scalar posterior decision probabilities are not recovered
-from a joint frequentist set.
+from a joint frequentist set. A fixed-horizon mean row whose arm mean is not
+positive (`relative_unavailable_reason="nonpositive_arm_mean"`) has no relative
+scale at all; with no declared absolute margin its decision is the additive
+difference tested against zero under the reference its additive interval was cut
+from, so `p_value()`, `stat_sig()` and family selection read that scale. Only a
+row with no additive interval remains a conservative non-rejection. A directional
+row decided this way and selected by its family has that interval reissued
+centrally (each tail at half the family level), so it can show `discovery=True`
+beside `stat_sig()` False when its p-value lies between half the family level and
+the family level.
 
 Representative release checks are diagnostics, not certification of the original
 stress matrix. Run the preserved cases and paired-width criteria explicitly:

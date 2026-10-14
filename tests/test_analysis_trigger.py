@@ -759,8 +759,23 @@ def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingres
             revenue_treatment = next(
                 row for row in triggered if row.metric == "revenue" and row.group_id == "T"
             )
-            assert revenue_treatment.family_size == 3
-            assert revenue_treatment.family_threshold == pytest.approx(0.1 / 3)
+            partial_treatment = next(
+                row for row in triggered if row.metric == "partial" and row.group_id == "T"
+            )
+            assert revenue_treatment.family_size == partial_treatment.family_size == 3
+            assert revenue_treatment.family_threshold == pytest.approx(0.2 / 3)
+            assert {row.metric for row in triggered if row.discovery is True} == {
+                "revenue",
+                "partial",
+            }
+            assert partial_treatment.relative_unavailable_reason == "nonpositive_arm_mean"
+            assert partial_treatment.p_value() == pytest.approx(1.7335351563063364e-157)
+            from increment.tables import estimates_to_readout
+
+            partial_readout = next(
+                row for row in estimates_to_readout(triggered) if row["metric"] == "partial"
+            )
+            assert partial_readout["decision_scale"] == "absolute"
             assert revenue_treatment.require_lift().value == pytest.approx(0.5, rel=0.12)
 
         native_triggered = {
