@@ -22,6 +22,8 @@ EXPECTED_COLUMNS = [
     "target_power",
     "alpha",
     "power",
+    "power_lower",
+    "power_upper",
     "power_basis",
     "numerical_qualification",
     "mde_relative",
@@ -44,6 +46,8 @@ def _assert_power_result_fields(point: PowerCurvePoint, result: Any) -> None:
     assert point.n_per_arm == result.n_per_arm
     assert point.n_total == result.n_total
     assert point.power == result.power
+    assert point.power_lower == result.power_lower
+    assert point.power_upper == result.power_upper
     assert point.power_basis == result.power_basis
     assert point.numerical_qualification == result.numerical_qualification
     assert point.mde_relative == result.mde_relative
@@ -573,18 +577,17 @@ class TestPowerCurveCollection:
         assert [row.n_per_arm for row in combined] == [1_000, 2_000]
         assert [row.n_per_arm for row in left] == [1_000, 2_000]
 
-    def test_approximate_diagnostic_has_no_runtime_power_claim(self):
+    def test_a_lower_bound_row_carries_its_enclosure(self):
         point = _point().model_copy(
-            update={
-                "power_basis": "approximate",
-                "numerical_qualification": "unclaimed_approximation_diagnostic_v1",
-            }
+            update={"power_basis": "lower_bound", "power_lower": 0.7, "power_upper": 0.7004}
         )
 
-        assert point.numerical_qualification == "unclaimed_approximation_diagnostic_v1"
-        assert PowerCurve([point]).to_dicts()[0]["numerical_qualification"] == (
-            "unclaimed_approximation_diagnostic_v1"
+        assert point.numerical_qualification == (
+            "scipy_special_function_error_model_conditional_v1"
         )
+        row = PowerCurve([point]).to_dicts()[0]
+        assert (row["power"], row["power_lower"], row["power_upper"]) == (0.7, 0.7, 0.7004)
+        assert PowerCurvePoint.model_validate_json(point.model_dump_json()) == point
 
     @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
     def test_to_frame_has_stable_columns(self, backend: Literal["pandas", "polars", "pyarrow"]):

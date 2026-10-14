@@ -583,18 +583,19 @@ for method assumptions, finalization, and the qualified asymptotic guarantee.
 
 ## Power planning
 
-Fixed-horizon binomial planning reports model-based point power. Enumerated
-rejection mass is published only when its computed enclosure is resolved to
-absolute error at most `1e-6`, conditional on the deployed SciPy/Boost
+Fixed-horizon binomial planning reports the rejection probability of the runtime's
+decision over the count lattice. An enumerated result carries its computed
+enclosure, `power_lower` and `power_upper`, conditional on the deployed SciPy/Boost
 special-function error model; this is not a cross-build floating-point proof.
-A materially unresolved probability refuses with
-`power.binomial_probability_unresolved`, rather than returning its lower bound.
-The dense closed-form route reports its model's point probability.
-`PowerResult.numerical_qualification` serializes that scope:
-`scipy_special_function_error_model_conditional_v1` for a resolved finite-sample
-enclosure, `closed_form_model_only_v1` for the asymptotic model, and
-`unclaimed_approximation_diagnostic_v1` for an unresolved diagnostic. No public
-numerical-bracket field or accuracy tuning knob is exposed.
+`power` is the enumerated point when the enclosure resolves to absolute error at
+most `1e-6` (`power_basis="exact"`) and the enclosure's lower end otherwise
+(`power_basis="lower_bound"`); a size or effect reaches a target only when the
+lower end does. The dense closed-form route reports its model's point probability
+with no enclosure. `PowerResult.numerical_qualification` serializes that scope:
+`scipy_special_function_error_model_conditional_v1` for either enumerated basis
+and `closed_form_model_only_v1` for the asymptotic model. Only the explicit point
+request of a diagnostic enclosure refuses with
+`power.binomial_probability_unresolved`; no accuracy tuning knob is exposed.
 Binomial MDE searches the earliest detectable region to `1e-8` absolute plus
 `1e-8` relative tolerance on the relative-effect scale, not the first
 representable float, and reports power evaluated at the returned effect.

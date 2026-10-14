@@ -1024,12 +1024,12 @@ count rule. A count pair is decided by the delta method when its four per-arm su
 failure counts are all at least `m = dense_min_count` for the plan's tail allocation and by the
 finite-sample test otherwise, so a plan's power is the rejection probability of that union
 over the count lattice: the production delta decision on the routed rectangle plus the replayed
-finite-sample decision on the rest (`power_basis="exact"` or `"approximate"`).
-Public `power` is the computed rejection mass, admitted only when its internal
-enclosure establishes absolute error at most `1e-6` conditional on the deployed
-SciPy/Boost special-function error model; this is not a cross-build floating-point
-proof. It is neither route's power: a plan whose counts straddle the threshold is not the
-smaller of the two. An `"approximate"` diagnostic makes no runtime-power claim.
+finite-sample decision on the rest (`power_basis="exact"` or `"lower_bound"`).
+Public `power` is the computed rejection mass when its internal enclosure establishes
+absolute error at most `1e-6`, and the enclosure's lower end otherwise, both conditional on
+the deployed SciPy/Boost special-function error model; this is not a cross-build
+floating-point proof. It is neither route's power: a plan whose counts straddle the
+threshold is not the smaller of the two.
 A plan whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
 arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
 the same for every design), retaining any undecided finite-route mass in the upper bound.
@@ -1081,10 +1081,16 @@ and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 
 and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
 cells and retaining unprocessed probability in the upper bound. Selection depends on the
 request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
-An enumeration that cannot establish maximum point error at most `1e-6`
-conditional on the deployed SciPy/Boost special-function error model refuses
-with `power.binomial_probability_unresolved`; it does not substitute the lower
-endpoint. Diagnostic enclosures can remain wide. The Normal-tail replay only proposes sizes.
+An enumeration that establishes maximum point error at most `1e-6`, conditional on the
+deployed SciPy/Boost special-function error model, publishes its point
+(`power_basis="exact"`); one that cannot publishes the enclosure's lower end as `power`
+(`power_basis="lower_bound"`), with both ends in `power_lower` and `power_upper`, and never a
+midpoint or a substitute approximation. A size or effect reaches a target only when the
+lower end does, so a wide enclosure sizes conservatively: the standard 10% baseline, 10%
+relative lift conversion plan is sized with an enclosure about `3e-4` wide, a few units per
+arm above where its point crosses. Only the explicit point request of a diagnostic
+enclosure refuses with `power.binomial_probability_unresolved`. The Normal-tail replay only
+proposes sizes.
 
 On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
 the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
@@ -1233,15 +1239,16 @@ times, and peak resident growth stays within 1.4 times:
 A supplied effect's own evaluation and a sizing's heuristic probes replay as before; the
 companion search after them now costs a fraction of the evaluation it follows rather than a
 multiple. An explicit `finite_sample` plan at the ticket's dense shapes (10,000 per arm and
-above at a 10% rate, 20,000 at 50%) is not planned at all: its windows hold 190,000 to 2.3
-million cells, more than the per-evaluation budgets decide, so the enclosure stays wider
-than `1e-6` and the call refuses with `power.binomial_probability_unresolved` after one
-evaluation (10 to 50 s here). Under the default `auto` the same refusal reaches the designs
-the count rule does not route to the delta method with near certainty: at a 10% rate 10,000
-per arm is `sparse` and 20,000 to 23,000 `borderline` (the routing floor is 2,140 successes
-and failures per arm at the default two-sided alpha, where those arms expect 1,000 to 2,300),
-so they are enumerated and refused likewise; 35,000 per arm at 10% and 20,000 at 50% are
-`dense` and planned in closed form without a replay.
+above at a 10% rate, 20,000 at 50%) has windows of 190,000 to 2.3 million cells, more than
+the per-evaluation budgets decide, so the enclosure stays wider than `1e-6` (the rows above
+record the refusal that stood then; the call now states the enclosure's lower end with
+`power_basis="lower_bound"` after the same one evaluation, 10 to 50 s here). Under the
+default `auto` the same budgets reach the designs the count rule does not route to the delta
+method with near certainty: at a 10% rate 10,000 per arm is `sparse` and 20,000 to 23,000
+`borderline` (the routing floor is 2,140 successes and failures per arm at the default
+two-sided alpha, where those arms expect 1,000 to 2,300), so they are enumerated and stated
+likewise; 35,000 per arm at 10% and 20,000 at 50% are `dense` and planned in closed form
+without a replay.
 
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated

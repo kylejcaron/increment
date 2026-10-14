@@ -192,7 +192,7 @@ _FLOAT_MAX = sys.float_info.max
 _MAX_QUANTILE_ARM = 2**40
 
 MdeUnavailableReason = Literal["unattainable", "unrepresentable", "numerical_resolution"]
-PowerBasis = Literal["asymptotic", "exact", "approximate"]
+PowerBasis = Literal["asymptotic", "exact", "lower_bound"]
 
 
 # ``limiting_condition`` is "recording_grid" when target power is at or above
@@ -269,6 +269,10 @@ _REFUSALS = refusals(
         ),
         "power.power.check": "power must be in [0, 1], got {power}",
         "power.power.effective_var": "effective_var must be > 0, got {effective_var}",
+        "power.power_bounds_paired": "power_lower and power_upper are stated together, got power_lower={power_lower!r}, power_upper={power_upper!r}",
+        "power.power_bounds_enclose": "the enclosure must satisfy 0 <= power_lower <= power <= power_upper <= 1, got power_lower={power_lower}, power={power}, power_upper={power_upper}",
+        "power.power_bounds_required": "power_basis='lower_bound' states the enclosure whose lower end power is: power_lower and power_upper are required",
+        "power.power_is_lower_bound": "power_basis='lower_bound' means power is the enclosure's lower end, got power={power} and power_lower={power_lower}",
         "power.log_exp_needs": "log(1 - exp(x)) needs x <= 0, got {x}",
         "power.procedure_armplanningprocedure": "procedure must be ArmPlanningProcedure, got {procedure_type}",
         "power.power_solvers_relative": POWER_SOLVERS_RELATIVE,
@@ -726,22 +730,27 @@ class PowerResult(CodedModel, BaseModel):
         ``minimum_detectable_effect`` it describes the returned effect's
         implied absolute alternative, which can exceed the target when the
         answer is a domain endpoint. Enumerated binomial power is computed rejection
-        mass admitted only when its enclosure resolves maximum absolute error to
-        ``1e-6`` conditional on the deployed SciPy/Boost special-function error
-        model; this is not a cross-build proof. It is not a lower confidence bound.
+        mass: the point when its enclosure resolves maximum absolute error to
+        ``1e-6``, otherwise the enclosure's lower end (``power_basis="lower_bound"``).
+        Either is conditional on the deployed SciPy/Boost special-function error
+        model; this is not a cross-build proof, and it is not a confidence bound.
         Where the basis is ``"asymptotic"``, power is the planning model's own value.
-    power_basis : {"asymptotic", "exact", "approximate"}
+    power_lower, power_upper : float | None
+        The computed enclosure of an enumerated binomial power: the runtime's rejection
+        probability lies in ``[power_lower, power_upper]`` conditional on the same error
+        model, and ``power`` lies in it too. ``None`` for a closed-form or sequential plan.
+    power_basis : {"asymptotic", "exact", "lower_bound"}
         How ``power`` was computed. ``"asymptotic"`` is the log-ratio planning
         model; ``"exact"`` is the runtime's decision summed over the binomial count
-        lattice with a resolved computed enclosure; ``"approximate"`` is an
-        unresolved diagnostic with no runtime-power claim. Materially unresolved
-        enumerations are refused rather than published.
-    numerical_qualification : {"closed_form_model_only_v1", "sequential_crossing_quadrature_v1", "scipy_special_function_error_model_conditional_v1", "unclaimed_approximation_diagnostic_v1"}
+        lattice with a resolved computed enclosure; ``"lower_bound"`` is the lower
+        end of an enclosure the evaluation budgets leave wider than ``1e-6``, which
+        sizing and detection decide from (a target is reached only when the lower
+        end reaches it).
+    numerical_qualification : {"closed_form_model_only_v1", "sequential_crossing_quadrature_v1", "scipy_special_function_error_model_conditional_v1"}
         Arithmetic scope accompanying the planning basis in saved results.
         Sequential asymptotic power uses its crossing quadrature; finite-sample
-        enclosure claims are conditional on deployed SciPy special-function
-        error allowance, not uniform across builds.
-        ``approximate`` is an unresolved diagnostic and makes no runtime-power claim.
+        enclosure claims, resolved or a lower bound, are conditional on deployed SciPy
+        special-function error allowance, not uniform across builds.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -820,7 +829,6 @@ class PowerResult(CodedModel, BaseModel):
         "closed_form_model_only_v1",
         "sequential_crossing_quadrature_v1",
         "scipy_special_function_error_model_conditional_v1",
-        "unclaimed_approximation_diagnostic_v1",
     ]:
         """Arithmetic scope of the reported model, not its statistical guarantee."""
         if self.power_basis == "asymptotic":
@@ -829,8 +837,6 @@ class PowerResult(CodedModel, BaseModel):
                 if self.inference_to_declare is not None
                 else "closed_form_model_only_v1"
             )
-        if self.power_basis == "approximate":
-            return "unclaimed_approximation_diagnostic_v1"
         return "scipy_special_function_error_model_conditional_v1"
 
     model_config = ConfigDict(frozen=True)
@@ -838,6 +844,8 @@ class PowerResult(CodedModel, BaseModel):
     n_per_arm: int
     n_total: int
     power: float
+    power_lower: float | None = None
+    power_upper: float | None = None
     power_basis: PowerBasis
     mde_relative: float | None
     mde_unavailable_reason: MdeUnavailableReason | None = None
@@ -879,9 +887,14 @@ class PowerResult(CodedModel, BaseModel):
             else f"sequential ({self.inference_to_declare.kind})"
         )
         planned = "" if self.planned_for is None else f", {self.planned_for}"
+        bounds = (
+            ""
+            if self.power_lower is None
+            else f"power_lower={self.power_lower:.4g}, power_upper={self.power_upper:.4g}, "
+        )
         return (
             f"PowerResult({size}, power={self.power:.4g}, "
-            f"power_basis={self.power_basis!r}, "
+            f"power_basis={self.power_basis!r}, {bounds}"
             f"numerical_qualification={self.numerical_qualification!r}, "
             f"mde_relative={mde}, effective_var={self.effective_var:.4g}, "
             f"plan={sequential}{planned})"
@@ -911,6 +924,11 @@ class PowerResult(CodedModel, BaseModel):
             ("size", size),
             ("power", self.power),
             ("power_basis", self.power_basis),
+        ]
+        if self.power_lower is not None:
+            args.append(("power_lower", self.power_lower))
+            args.append(("power_upper", self.power_upper))
+        args += [
             ("numerical_qualification", self.numerical_qualification),
             ("mde_relative", mde),
             ("effective_var", self.effective_var),
@@ -923,18 +941,37 @@ class PowerResult(CodedModel, BaseModel):
     @model_validator(mode="after")
     def _check(self) -> PowerResult:
         """Closing invariant every solver's result satisfies regardless
-        of path: a probability stays in ``[0, 1]``, an available relative
+        of path: a probability stays in ``[0, 1]``, stated bounds enclose it (and are
+        the power itself when the basis is its lower end), an available relative
         effect stays above the shared ``-1.0`` floor and carries no
         unavailability reason, a missing one always does, and every
         numeric field is finite."""
         _require_finite("power", self.power)
         if not 0.0 <= self.power <= 1.0:
             _raise("power.power.check", power=self.power)
+        self._check_bounds()
         _require_companion_mde(self.mde_relative, self.mde_unavailable_reason)
         _require_finite("effective_var", self.effective_var)
         if self.effective_var <= 0.0:
             _raise("power.power.effective_var", effective_var=self.effective_var)
         return self
+
+    def _check_bounds(self) -> None:
+        lower, upper = self.power_lower, self.power_upper
+        if (lower is None) != (upper is None):
+            _raise("power.power_bounds_paired", power_lower=lower, power_upper=upper)
+        if lower is None or upper is None:
+            if self.power_basis == "lower_bound":
+                _raise("power.power_bounds_required")
+            return
+        _require_finite("power_lower", lower)
+        _require_finite("power_upper", upper)
+        if not 0.0 <= lower <= self.power <= upper <= 1.0:
+            _raise(
+                "power.power_bounds_enclose", power_lower=lower, power=self.power, power_upper=upper
+            )
+        if self.power_basis == "lower_bound" and self.power != lower:
+            _raise("power.power_is_lower_bound", power=self.power, power_lower=lower)
 
 
 # Internal helpers
@@ -2191,6 +2228,16 @@ def _modelled(power: float) -> BinomialPower:
     return BinomialPower(plus=power, minus=0.0, omitted=0.0, inflation=1.0, closed_form=True)
 
 
+def _enclosure_fields(
+    enclosure: BinomialPower | None,
+) -> tuple[PowerBasis, float | None, float | None]:
+    """The basis and bounds a result states for its power: an enumerated enclosure's basis and
+    both ends; the closed-form model, or a plan without one, states ``asymptotic`` alone."""
+    if enclosure is None or enclosure.closed_form:
+        return "asymptotic", None, None
+    return enclosure.basis, enclosure.lower, enclosure.upper
+
+
 #: A decision nothing is known of: the plan's finite-sample route does not exist and the counts
 #: it would decide carry the probability. Enclosed by ``[0, 1]``.
 _UNDECIDED = BinomialPower(0.0, 0.0, 0.0, 1.0, ambiguous=1.0)
@@ -2521,17 +2568,23 @@ class _BinomialMdeSearch(_MdeSearch):
     """Search intervals in distance order without assuming point-power monotonicity.
 
     Discard an interval only if an upper bound excludes every computed point.
-    Otherwise subdivide left first. A returned evaluated point reaches the target,
-    and every unexcluded earlier effect is within ``atol + rtol * abs(effect)``.
-    Wider unresolved intervals refuse instead of being skipped for a later band.
+    Otherwise subdivide left first. A returned evaluated point certifies the target: the lower
+    end of its enclosure reaches it. Every unexcluded earlier effect is within
+    ``atol + rtol * abs(effect)`` of it, or lies in an interval both of whose evaluated
+    endpoints the evaluation budgets leave straddling the target (an unresolved enclosure
+    holding it): such an interval is not searched further, since no bound excludes
+    certification inside it and none establishes it. An interval the bound cannot exclude whose
+    resolved endpoints both fall short at tolerance width is unresolved, and refuses instead
+    of being skipped for a later band.
 
     An interval's far endpoint is reserved when the interval is formed and decided only once
     its power is read (a narrow interval, the curvature term of an interval narrow enough for
-    it to be below one, the unattainable report); an interval bound decides of its cells only
-    those the bound could depend on (`RejectionGeometry.closure_bound_before`). The intervals
-    formed, the bounds read and the answer are those of deciding every endpoint when it is
-    formed; an endpoint no bound reads (the far end of the admissible effects, the far
-    endpoints of wide intervals above the answer) is never replayed.
+    it to be below one, the unattainable report, the far end of an interval whose near end
+    straddles); an interval bound decides of its cells only those the bound could depend on
+    (`RejectionGeometry.closure_bound_before`). The intervals formed, the bounds read and the
+    answer are those of deciding every endpoint when it is formed; an endpoint no bound reads
+    (the far end of the admissible effects, the far endpoints of wide intervals above the
+    answer) is never replayed.
     """
 
     model: _BinomialPlan
@@ -2628,7 +2681,13 @@ class _BinomialMdeSearch(_MdeSearch):
         return probe.power
 
     def detected(self, power: BinomialPower) -> bool:
-        return power.resolved and power.power >= self.target
+        """Whether the enclosure certifies the target: its lower end reaches it."""
+        return power.lower >= self.target
+
+    def straddles(self, power: BinomialPower) -> bool:
+        """Whether an unresolved enclosure holds the target: the budgets, not the decision,
+        leave it uncertified."""
+        return not power.resolved and power.lower < self.target <= power.upper
 
     @staticmethod
     def tolerance(effect: float) -> float:
@@ -2703,9 +2762,11 @@ class _BinomialMdeSearch(_MdeSearch):
             return self.unresolved(lo, hi, "an earlier detectable region remains unresolved")
         first = self.value(left)
         if self.detected(first):
-            return lo, first.reported
+            return lo, first.published
         bound = self._bound(lo, hi, left, right)
         if bound < self.target:
+            return None
+        if self.straddles(first) and self.straddles(self.value(right)):
             return None
         width = abs(hi - lo)
         adjacent = abs(float_ordinal(hi) - float_ordinal(lo)) <= 1
@@ -2716,13 +2777,13 @@ class _BinomialMdeSearch(_MdeSearch):
                     return self.unresolved(
                         lo, hi, "an earlier detectable region remains unresolved"
                     )
-                return hi, last.reported
-            if pending is None:
+                return hi, last.published
+            if pending is None and not (self.straddles(first) or self.straddles(last)):
                 self.state.unresolved = (lo, hi)
                 self.state.lower = max(first.lower, last.lower)
                 self.state.upper = bound
                 self.state.basis = (
-                    "approximate" if not first.resolved or not last.resolved else first.basis
+                    "lower_bound" if not first.resolved or not last.resolved else first.basis
                 )
             return None
         mid = self._midpoint(lo, hi)
@@ -2833,18 +2894,28 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
     try:
         first = search.begin(m_min)
         if search.detected(search.value(first)):
-            return m_min, search.value(first).reported
+            return m_min, search.value(first).published
         last = search.begin(m_max)
         found = search.between(m_min, m_max, first, last)
         if found is not None:
             return found
         if search.state.unresolved is not None:
             return search.unresolved(m_min, m_max, "no resolved point reaches the target")
-        limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
         final = search.value(last)
-        return search.unattainable(
-            final.power if final.resolved else None, limiting, power_basis=final.basis
-        )
+        if search.straddles(final):
+            # No effect certifies the target and the far end's enclosure holds it: the
+            # evaluation budgets, not the decision, leave the answer open.
+            search.state.unresolved = (m_max, m_max)
+            search.state.lower, search.state.upper = final.lower, final.upper
+            search.state.basis = final.basis
+            return search.unresolved(
+                m_min, m_max, "the evaluation budgets leave the far end's enclosure unresolved"
+            )
+        limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
+        # The maximum named is the far end's computed mass, or the upper end of its
+        # enclosure when the budgets leave that mass unresolved.
+        maximum = final.power if final.resolved else final.upper
+        return search.unattainable(maximum, limiting, power_basis=final.basis)
     except _SearchBudgetExhausted:
         return search.unresolved(m_min, m_max, "the ordered interval search exhausted its budget")
 
@@ -3081,11 +3152,12 @@ def _binomial_size(  # noqa: PLR0915
     proposal: int,
     cache: _GeometryCache,
 ) -> tuple[int, int, _BinomialPlan, BinomialPower]:
-    """Assigned ``(n_T, n_C)`` whose admitted point power reaches the target while
-    assigned ``n_T - 1`` does not (or ``n_T`` is the per-arm floor), with its plan and power.
-    Each candidate's binomial law uses its analyzed counts
-    (``_analyzed_counts``), exactly as ``achieved_power`` evaluates the returned
-    size.
+    """Assigned ``(n_T, n_C)`` whose enclosure certifies the target (its lower end reaches it)
+    while assigned ``n_T - 1`` does not (or ``n_T`` is the per-arm floor), with its plan and
+    power. A candidate whose enclosure's upper end falls short fails; one the enclosure
+    straddles is not reached either, and the search continues upward from it. Each
+    candidate's binomial law uses its analyzed counts (``_analyzed_counts``), exactly as
+    ``achieved_power`` evaluates the returned size.
 
     Every candidate is evaluated at its own size. The
     search starts at ``proposal`` and brackets upward or downward, stepping
@@ -3156,11 +3228,7 @@ def _binomial_size(  # noqa: PLR0915
         while True:
             width = None if lo is None or hi is None else hi - lo
             candidate = value(n)
-            reaches = (
-                candidate is not _UNDECIDED and candidate.reported >= target
-                if final
-                else candidate.power >= target
-            )
+            reaches = candidate.lower >= target if final else candidate.power >= target
             if reaches:
                 hi = n if hi is None else min(hi, n)
             else:
@@ -3174,7 +3242,7 @@ def _binomial_size(  # noqa: PLR0915
                 if lo >= ceiling:
                     if not final:
                         return ceiling
-                    if values[lo].ambiguous >= 1.0:
+                    if values[lo] is _UNDECIDED:
                         n_T, n_C = _analyzed_counts(
                             *_compute_arms(lo, design, minimum_per_arm=floor), baseline
                         )
@@ -3198,7 +3266,7 @@ def _binomial_size(  # noqa: PLR0915
                             cells,
                             p_t=p_t,
                             power=target,
-                            power_reached=values[lo].reported,
+                            power_reached=values[lo].published,
                             **plan_at(lo).routing_context(),
                         )
                     refuse(
@@ -3209,7 +3277,7 @@ def _binomial_size(  # noqa: PLR0915
                                 *_compute_arms(arm_ceiling, design, minimum_per_arm=floor), baseline
                             )
                         ),
-                        maximum_power=values[lo].reported,
+                        maximum_power=values[lo].published,
                         n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
                         conversion_inference=_conversion_mode(procedure),
                     )
@@ -3447,10 +3515,13 @@ def required_sample_size(  # noqa: PLR0915
 
     ``n_per_arm`` is the treatment-arm size after ceiling to whole units;
     ``power`` is the actual (slightly >= target) power at that integer size.
-    A runtime-binomial plan uses admitted point power, with computed enclosure error at most
-    ``1e-6`` conditional on the deployed SciPy/Boost special-function error model; this is
-    not a cross-build proof. A materially unresolved candidate refuses rather than silently
-    undersizing. ``mde_relative`` is the companion minimum detectable effect at that size,
+    A runtime-binomial plan sizes from its computed enclosure: a size reaches the target
+    when the enclosure's lower end does, and the result states the point when the enclosure
+    resolves to ``1e-6`` or that lower end otherwise (``power_basis="lower_bound"``), with
+    both ends in ``power_lower``/``power_upper``; every claim is conditional on the deployed
+    SciPy/Boost special-function error model, not a cross-build proof. A size the enclosure
+    straddles is never returned, so a wide enclosure sizes conservatively rather than short.
+    ``mde_relative`` is the companion minimum detectable effect at that size,
     ``None`` with ``mde_unavailable_reason`` when none exists at ``design.power``.
 
     ``GaussianScoreMixture`` computes the always-valid Gaussian-model
@@ -3677,7 +3748,7 @@ def required_sample_size(  # noqa: PLR0915
             e_value_dual=e_value_dual,
         )
     elif binomial_power is not None:
-        power = binomial_power.reported
+        power = binomial_power.published
         expected_t = None
     else:
         power = plan.power(distance, theta)
@@ -3700,11 +3771,14 @@ def required_sample_size(  # noqa: PLR0915
     n_total = assigned_T + assigned_C
     k_per_arm, k_total = _cluster_counts(assigned_T, assigned_C, baseline)
     planned_metric_name, planned_quantile = _planned_quantile_fields(baseline)
+    basis, power_lower, power_upper = _enclosure_fields(binomial_power)
     return PowerResult(
         n_per_arm=assigned_T,
         n_total=n_total,
         power=min(power, 1.0),
-        power_basis="asymptotic" if binomial_power is None else binomial_power.basis,
+        power_basis=basis,
+        power_lower=power_lower,
+        power_upper=power_upper,
         mde_relative=mde_relative,
         mde_unavailable_reason=mde_unavailable_reason,
         effective_var=baseline.effective_var,
@@ -3737,9 +3811,10 @@ def achieved_power(
     """Compute achieved power at a fixed arm size under a planning procedure.
 
     ``power`` describes the supplied ``relative_lift``. A runtime-binomial plan sums
-    the hybrid rejection decision over the count law and admits its computed point
-    only when absolute numerical error is at most ``1e-6``. Otherwise it refuses with
-    ``power.binomial_probability_unresolved``. A closed-form plan reports its model
+    the hybrid rejection decision over the count law and states its computed point
+    when the enclosure's absolute numerical error is at most ``1e-6``, otherwise the
+    enclosure's lower end (``power_basis="lower_bound"``); ``power_lower`` and
+    ``power_upper`` carry the enclosure either way. A closed-form plan reports its model
     power, with treatment variance evaluated at the alternative. ``mde_relative`` is the
     minimum detectable effect at the same size and target under the same
     model; when none exists there it is ``None`` with
@@ -3834,7 +3909,7 @@ def _achieved_power(
         )
     elif model is not None:
         enclosure = model.supplied(theta, distance)
-        power = enclosure.reported
+        power = enclosure.published
         expected_t = None
     else:
         power = plan.power(distance, theta)
@@ -3856,11 +3931,14 @@ def _achieved_power(
     k_per_arm, k_total = _cluster_counts(n_T, n_C, baseline)
     n_total = n_T + n_C
     planned_metric_name, planned_quantile = _planned_quantile_fields(baseline)
+    basis, power_lower, power_upper = _enclosure_fields(enclosure)
     return PowerResult(
         n_per_arm=n_T,
         n_total=n_total,
         power=min(power, 1.0),
-        power_basis="asymptotic" if enclosure is None else enclosure.basis,
+        power_basis=basis,
+        power_lower=power_lower,
+        power_upper=power_upper,
         mde_relative=mde_relative,
         mde_unavailable_reason=mde_unavailable_reason,
         effective_var=baseline.effective_var,
@@ -3890,16 +3968,20 @@ def minimum_detectable_effect(
     """Compute the minimum detectable relative effect at a fixed arm size.
 
     The returned effect reaches ``design.power`` under the model named by
-    ``power_basis``; ``power`` is the evaluated point power at its implied absolute
+    ``power_basis``; ``power`` is the evaluated power at its implied absolute
     alternative, not the target substituted for it.
 
     Fixed-horizon binomial searches locate the earliest detectable region within
     ``1e-8 + 1e-8 * abs(mde_relative)`` in relative effect. Interval upper bounds,
-    not monotonicity assumptions, exclude earlier regions. A materially unresolved
-    earlier interval refuses with ``numerical_resolution`` rather than being skipped
-    for a later band. Enumerated points are admitted only with absolute error at most
-    ``1e-6`` conditional on the deployed SciPy/Boost special-function error model;
-    this is not a cross-build floating-point proof. Closed-form power is the delta-method
+    not monotonicity assumptions, exclude earlier regions, and an effect is detected when
+    the lower end of its computed enclosure reaches the target; the result states the
+    enumerated point when that enclosure resolves to ``1e-6`` and the lower end otherwise
+    (``power_basis="lower_bound"``, both ends in ``power_lower``/``power_upper``),
+    conditional on the deployed SciPy/Boost special-function error model, not a cross-build
+    floating-point proof. A materially unresolved earlier interval refuses with
+    ``numerical_resolution`` rather than being skipped for a later band; an interval both of
+    whose evaluated ends the evaluation budgets leave straddling the target is left
+    unsearched and the search continues. Closed-form power is the delta-method
     model's own value. A target excluded throughout the admissible domain is ``unattainable``;
     one with no representable answer is ``unrepresentable``. Refusals carry a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves as in
@@ -3944,7 +4026,7 @@ def _minimum_detectable_effect(
     model: _BinomialPlan | None = (
         _binomial_plan(procedure, baseline, plan, cache) if runtime_binomial else None
     )
-    power_basis: PowerBasis = "asymptotic"
+    enclosure: BinomialPower | None = None
 
     if looks is not None:
         alpha_seq, exit_side, e_value_dual = _sequential_side(procedure)
@@ -3977,7 +4059,7 @@ def _minimum_detectable_effect(
                 alternative=decision.alternative,
             ).candidate(mde_relative)
             assert answer is not None
-            power_basis = model.evaluate(answer[1], answer[0]).basis
+            enclosure = model.evaluate(answer[1], answer[0])
         if mde_relative == 0.0:
             _raise(
                 "power.minimum_detectable_effect.design_search_minimum",
@@ -3990,11 +4072,14 @@ def _minimum_detectable_effect(
     k_per_arm, k_total = _cluster_counts(n_T, n_C, baseline)
     n_total = n_T + n_C
     planned_metric_name, planned_quantile = _planned_quantile_fields(baseline)
+    basis, power_lower, power_upper = _enclosure_fields(enclosure)
     return PowerResult(
         n_per_arm=n_T,
         n_total=n_total,
         power=min(power, 1.0),
-        power_basis=power_basis,
+        power_basis=basis,
+        power_lower=power_lower,
+        power_upper=power_upper,
         mde_relative=mde_relative,
         effective_var=baseline.effective_var,
         n_clusters_per_arm=k_per_arm,

@@ -212,15 +212,16 @@ Finite-sample binomial confidence sets distinguish their statistical constructio
 arithmetic qualification: new rows record `scipy_special_function_error_model_conditional_v1`,
 conditional on the deployed SciPy/Boost error model rather than a uniform cross-build proof.
 Rows saved before that marker existed use `legacy_unrecorded_v1` and make no numerical
-qualification claim. Enumerated binomial planning points likewise publish only when their
+qualification claim. Enumerated binomial planning points publish as points when their
 computed enclosure resolves to absolute error at most `1e-6` conditional on that model;
-`power_basis="approximate"` is an unresolved diagnostic with no runtime-power claim.
+`power_basis="lower_bound"` states the enclosure's lower end as `power`, with both ends in
+`power_lower`/`power_upper`, under the same conditional qualification.
 
 In the binomial-planning inventory row, the Normal-tail conditional route describes an
 internal sizing proposal when exact replay geometry exceeds its budget. It is not a
-public `power_basis="approximate"` result: a public point is returned only when its
-computed enclosure resolves (`power_basis="exact"`) or through the stated asymptotic
-planning model, and unresolved finite-sample results are refused.
+public result: a public point is returned only when its computed enclosure resolves
+(`power_basis="exact"`) or through the stated asymptotic planning model, and an unresolved
+finite-sample enclosure is published by its lower end (`power_basis="lower_bound"`).
 
 Status values: `none_found` (a matched reference was not found or does not match the estimand),
 `derivation_only` (in-repo derivation or enumeration, with no Monte Carlo evidence),

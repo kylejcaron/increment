@@ -1095,19 +1095,59 @@ class TestPowerResultInvariants:
         assert result.mde_unavailable_reason is None
 
     @pytest.mark.parametrize(
-        ("basis", "qualification"),
+        ("basis", "bounds", "qualification"),
         [
-            ("asymptotic", "closed_form_model_only_v1"),
-            ("exact", "scipy_special_function_error_model_conditional_v1"),
-            ("approximate", "unclaimed_approximation_diagnostic_v1"),
+            ("asymptotic", {}, "closed_form_model_only_v1"),
+            ("exact", {}, "scipy_special_function_error_model_conditional_v1"),
+            (
+                "exact",
+                {"power_lower": 0.8 - 1e-7, "power_upper": 0.8 + 1e-7},
+                "scipy_special_function_error_model_conditional_v1",
+            ),
+            (
+                "lower_bound",
+                {"power_lower": 0.8, "power_upper": 0.8004},
+                "scipy_special_function_error_model_conditional_v1",
+            ),
         ],
     )
-    def test_numerical_qualification_is_serialized_and_matches_basis(self, basis, qualification):
-        result = self._result(power_basis=basis)
+    def test_numerical_qualification_is_serialized_and_matches_basis(
+        self, basis, bounds, qualification
+    ):
+        result = self._result(power_basis=basis, **bounds)
         assert result.numerical_qualification == qualification
         payload = result.model_dump(mode="json")
         assert payload["numerical_qualification"] == qualification
+        assert payload["power_lower"] == bounds.get("power_lower")
+        assert payload["power_upper"] == bounds.get("power_upper")
         assert PowerResult.model_validate_json(result.model_dump_json()) == result
+
+    @pytest.mark.parametrize(
+        ("overrides", "code"),
+        [
+            ({"power_lower": 0.79}, "power.power_bounds_paired"),
+            ({"power_upper": 0.81}, "power.power_bounds_paired"),
+            ({"power_lower": 0.81, "power_upper": 0.82}, "power.power_bounds_enclose"),
+            ({"power_lower": 0.7, "power_upper": 0.79}, "power.power_bounds_enclose"),
+            ({"power_lower": 0.7, "power_upper": float("nan")}, "power.finite"),
+            ({"power_lower": -0.1, "power_upper": 0.9}, "power.power_bounds_enclose"),
+            ({"power_lower": 0.7, "power_upper": 1.1}, "power.power_bounds_enclose"),
+            ({"power_basis": "lower_bound"}, "power.power_bounds_required"),
+            (
+                {"power_basis": "lower_bound", "power_lower": 0.79, "power_upper": 0.81},
+                "power.power_is_lower_bound",
+            ),
+        ],
+    )
+    def test_rejects_bounds_that_do_not_enclose_the_power(self, overrides, code):
+        with pytest.raises(InvalidRequestError) as exc_info:
+            self._result(**overrides)
+        assert exc_info.value.code == code
+
+    def test_repr_names_the_bounds_when_present(self):
+        bounded = self._result(power_basis="lower_bound", power_lower=0.8, power_upper=0.8004)
+        assert "power_lower=0.8" in repr(bounded) and "power_upper=0.8004" in repr(bounded)
+        assert "power_lower" not in repr(self._result())
 
     @pytest.mark.parametrize("reason", ["unattainable", "unrepresentable", "numerical_resolution"])
     def test_accepts_a_missing_mde_with_its_reason_and_round_trips(self, reason):

@@ -1547,8 +1547,11 @@ class BinomialPower:
     SciPy special-function error model; it is not a cross-build floating-point proof. Statistical
     finiteness of the decision construction and this arithmetic qualification are separate claims.
     ``closed_form`` is only the delta-method model and ``certified=False`` is a diagnostic with
-    no claim on runtime power.
+    no claim on runtime power: its enclosure is ``[0, 1]``.
 
+    A result states `published`: the point when the enclosure is resolved to `RESOLUTION`,
+    otherwise its lower end, with `basis` naming which. `reported` is the explicit point
+    request, refused while the enclosure is unresolved.
     """
 
     plus: float
@@ -1589,6 +1592,11 @@ class BinomialPower:
         return self.power
 
     @property
+    def published(self) -> float:
+        """The power a result states: the point when resolved, the lower end otherwise."""
+        return self.power if self.resolved else self.lower
+
+    @property
     def lower(self) -> float:
         """Computed lower endpoint conditional on the stated SciPy error allowance."""
         if self.closed_form:
@@ -1607,13 +1615,14 @@ class BinomialPower:
         return min(1.0, _up(_up(_up(self.power * self.inflation) + self.ambiguous) + self.omitted))
 
     @property
-    def basis(self) -> Literal["asymptotic", "exact", "approximate"]:
-        """Planning route for this value."""
+    def basis(self) -> Literal["asymptotic", "exact", "lower_bound"]:
+        """How `published` was computed: the closed-form model, the resolved enumeration, or
+        the lower end of an unresolved enclosure."""
         if self.closed_form:
             return "asymptotic"
         if self.resolved:
             return "exact"
-        return "approximate"
+        return "lower_bound"
 
 
 @dataclass(slots=True)
