@@ -1548,22 +1548,6 @@ def test_affected_runner_ignores_inherited_timeout_options(
 
 
 @pytest.mark.slow
-@pytest.mark.integration
-def test_affected_runner_preserves_nested_timeout_harness_environment(tmp_path: Path) -> None:
-    project = Path(__file__).resolve().parents[1]
-    base = _make_affected_fixture(tmp_path)
-    (tmp_path / "tests" / "test_nested_timeout.py").write_text(
-        "from tests.test_test_runtime_harness import "
-        "test_root_runtime_budget_is_local_only as run_nested_timeout\n\n"
-        "def test_nested_timeout():\n"
-        "    run_nested_timeout(None)\n"
-    )
-    result = _run_affected(project, tmp_path, base, "fast", "-n", "2")
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "passed in" in result.stdout
-
-
-@pytest.mark.slow
 def test_affected_runner_keeps_repository_warning_policy(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)

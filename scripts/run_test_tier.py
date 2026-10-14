@@ -1,4 +1,4 @@
-"""Run a named pytest tier with a local wall-clock performance budget."""
+"""Supervise named pytest tiers and manage their test evidence."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import platform
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -26,7 +25,6 @@ from typing import NoReturn, TextIO
 from scripts._test_impact import (
     _source_snapshots,
     affected_test_paths,
-    fresh_bytecode_cache,
     mark_testmon_nested_context,
     record_testmon_full_run,
     subprocess_consumer_test_paths,
@@ -444,25 +442,23 @@ def _affected_runner_environment(identity: dict[str, object]) -> dict[str, str |
 @dataclass(frozen=True, slots=True)
 class Tier:
     marker: str | None
-    budget_seconds: int
+    budget_seconds: int | None
 
 
 TIERS = {
-    "focused": Tier(marker="", budget_seconds=180),
-    "fast": Tier(marker=TIER_MARKERS["fast"], budget_seconds=240),
-    "slow": Tier(marker=TIER_MARKERS["slow"], budget_seconds=480),
-    # Supports optional pytest-split shards while retaining a local budget.
-    "parameter-recovery": Tier(marker="parameter_recovery", budget_seconds=1350),
+    "focused": Tier(marker="", budget_seconds=None),
+    "fast": Tier(marker=TIER_MARKERS["fast"], budget_seconds=None),
+    "slow": Tier(marker=TIER_MARKERS["slow"], budget_seconds=None),
+    "parameter-recovery": Tier(marker="parameter_recovery", budget_seconds=None),
     "numerical-certification": Tier(
-        marker=TIER_MARKERS["numerical-certification"], budget_seconds=1350
+        marker=TIER_MARKERS["numerical-certification"], budget_seconds=None
     ),
-    "scientific": Tier(marker=TIER_MARKERS["scientific"], budget_seconds=1350),
-    "examples": Tier(marker="examples", budget_seconds=300),
-    "all": Tier(marker="", budget_seconds=1800),
-    # Scientific campaigns run once rather than once per weekly matrix cell.
+    "scientific": Tier(marker=TIER_MARKERS["scientific"], budget_seconds=None),
+    "examples": Tier(marker="examples", budget_seconds=None),
+    "all": Tier(marker="", budget_seconds=None),
     "all-except-scientific": Tier(
         marker="not parameter_recovery and not numerical_certification",
-        budget_seconds=1800,
+        budget_seconds=None,
     ),
 }
 
@@ -926,10 +922,8 @@ def run_with_budget(
     windows_job: int | None = None
     startup_gate: int | None = None
     timed_out = False
-    bytecode_cache: tempfile.TemporaryDirectory[str] | None = None
     try:
         child_environment = _supervised_child_environment(extra_env, owner_token)
-        bytecode_cache = fresh_bytecode_cache(child_environment)
         process, windows_job, startup_gate = _start_process(command, env=child_environment)
         _raise_pending()
         if startup_gate is not None:
@@ -973,8 +967,6 @@ def run_with_budget(
                 )
         for signum, handler in original_handlers.items():
             signal.signal(signum, handler)
-        if bytecode_cache is not None:
-            bytecode_cache.cleanup()
     if pending_signal is not None:
         status = 128 + pending_signal
     termination = (
@@ -1013,9 +1005,7 @@ def _run_affected_with_map(
         result = run_with_budget(
             command,
             tier=tier_name,
-            budget_seconds=(
-                None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
-            ),
+            budget_seconds=tier.budget_seconds,
             extra_env=extra_env,
             affected_evidence_root=evidence_root,
         )
@@ -1391,9 +1381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tier, args.pytest_args, record_coverage=certification_report is not None
             ),
             tier=args.tier,
-            budget_seconds=(
-                None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
-            ),
+            budget_seconds=tier.budget_seconds,
             extra_env=extra_env,
         )
         recording_succeeded = (

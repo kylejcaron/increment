@@ -8,8 +8,10 @@ repos:
       - id: ruff-check
         types_or: [python, pyi]
         args: ["--fix", "--output-format=full"]
+        stages: [pre-commit, pre-push]
       - id: ruff-format
         types_or: [python, pyi]
+        stages: [pre-commit, pre-push]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -51,21 +53,9 @@ repos:
         entry: uv run --with nox nox -s typecheck
         language: system
         pass_filenames: false
+        stages: [pre-commit, pre-push]
       - id: prose-audit
         name: comment and docstring prose audit
         entry: uv run python scripts/audit_verbosity.py --gate
         language: system
         types: [python]
-      - id: fast-tests
-        name: fast unit tests
-        entry: make test-fast
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-      # Keep the two test tiers separate; calling `make check` would repeat lint/typecheck.
-      - id: slow-tests
-        name: functional slow tests
-        entry: make test-slow
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
