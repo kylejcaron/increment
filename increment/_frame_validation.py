@@ -424,12 +424,19 @@ def canonical_control_for_moments(control: object) -> str:
     return str(control)
 
 
+def _moment_group_label(value: object) -> str | None:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return None
+    label = str(value)
+    return label or None
+
+
 def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
     """Read exact arm identities from ordinary rows or typed moments envelopes."""
     labels = {
-        str(row["group_id"])
-        for row in rows
-        if isinstance(row.get("group_id"), str) and row.get("group_id")
+        label for row in rows if (label := _moment_group_label(row.get("group_id"))) is not None
     }
     for row in rows:
         counts = row.get(ASSIGNMENT_COUNTS_FIELD)

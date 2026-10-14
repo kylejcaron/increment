@@ -208,10 +208,68 @@ def test_design_summary_boolean_controls_use_only_python_bool_alias(tmp_path):
             metrics=[],
             design=Encouragement(control_group="True", uptake=UptakeSpec(fact="clicked")),
         )
-    assert "control=True" in str(wrong_case.value)
     assert wrong_case.value.code == "source.frame.control_missing"
-    assert "'true'" in str(wrong_case.value) and "'false'" in str(wrong_case.value)
+    assert wrong_case.value.context["observed"] == ("false", "true")
+    assert isinstance(wrong_case.value.context["route"], str)
+    assert wrong_case.value.context["route"]
     replay = Analysis.from_moments(payload, metrics=[], control=True)
+    assert replay.unit_counts() == {"true": 2, "false": 2}
+
+
+def test_numeric_moments_control_matches_stringified_group_label(tmp_path):
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": [0, 0, "treatment", "treatment"],
+                "y": [1, 2, 3, 4],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control=0,
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "numeric-control-moments.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        row.pop("assignment_counts", None)
+        if row["group_id"] == "0":
+            row["group_id"] = 0
+    replay = Analysis.from_moments(rows, metrics={"y": "mean"}, control=0)
+    assert len(replay.run()) == 1
+
+
+def test_design_summary_control_only_reload_accepts_mapping_compliance(tmp_path):
+    import json
+
+    from increment import Encouragement, UptakeSpec
+
+    frame = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": [True, True, False, False],
+            "clicked": [0, 1, 0, 1],
+        }
+    )
+    original = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=[],
+        design=Encouragement(control_group="true", uptake=UptakeSpec(fact="clicked")),
+        uptake="clicked",
+    )
+    path = tmp_path / "boolean-design-summary-mapping.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    rows[0]["compliance_summary"] = json.loads(rows[0]["compliance_summary"])
+    replay = Analysis.from_moments(rows, metrics=[], control=True)
     assert replay.unit_counts() == {"true": 2, "false": 2}
 
 

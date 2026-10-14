@@ -1177,6 +1177,29 @@ class MomentsSource(SequentialSourceMixin):
     mandatory format stamp so an old additive-sum cube cannot be misread.
     """
 
+    @staticmethod
+    def design_summary_design(
+        rows: Sequence[Mapping[str, object]], *, control_group: str
+    ) -> Encouragement | None:
+        """Decode a complete design-summary envelope into its declared design."""
+        if not rows or rows[0].get("record_kind") != "design_summary":
+            return None
+        row = rows[0]
+        study_id = row.get("experiment_id")
+        if not isinstance(study_id, str) or not study_id:
+            invalid_compliance_state("design_summary requires its exported experiment identity")
+        compliance = ComplianceSummary.from_wire(
+            _parse_compliance_payload(row.get(COMPLIANCE_SUMMARY_FIELD)),
+            study_id=study_id,
+        )
+        from increment.semantics.design import Encouragement, UptakeSpec
+
+        return Encouragement(
+            control_group=control_group,
+            uptake=UptakeSpec(fact=compliance.cohort, window_days=compliance.window_days),
+            one_sided=compliance.one_sided,
+        )
+
     capabilities: frozenset[Grain] = frozenset({"total"})
     operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
