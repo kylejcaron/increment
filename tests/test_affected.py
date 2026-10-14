@@ -166,6 +166,36 @@ def test_changed_test_module_selects_its_test_importers(tmp_path: Path) -> None:
     )
 
 
+def test_changed_test_module_selects_two_hop_importing_tests(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_unit_day_artifact_facade.py": (
+                "from tests.source_conformance import check\ndef _definitions(): pass\n"
+            ),
+            "tests/source_conformance.py": (
+                "from tests.test_unit_day_artifact_facade import _definitions\n"
+            ),
+            "tests/test_source_conformance.py": (
+                "from tests.source_conformance import check\n"
+                "def test_source_conformance(): check()\n"
+            ),
+        },
+    )
+
+    selection = _change(
+        root,
+        base,
+        "tests/test_unit_day_artifact_facade.py",
+        ("from tests.source_conformance import check\ndef _definitions(): return None\n"),
+    )
+
+    assert selection.test_files == (
+        "tests/test_source_conformance.py",
+        "tests/test_unit_day_artifact_facade.py",
+    )
+
+
 @pytest.mark.parametrize(
     ("pytest_statuses", "expected_stdout"),
     [

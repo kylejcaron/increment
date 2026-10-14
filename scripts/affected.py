@@ -58,42 +58,70 @@ def _test_files_under(root: Path, directory: str) -> set[str]:
     }
 
 
+def _test_module_imports(path: Path, module: str, known_modules: set[str]) -> set[str]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError):
+        return set()
+
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names if alias.name in known_modules)
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+
+        base = node.module or ""
+        if node.level:
+            package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+            parts = package.split(".")
+            if node.level > 1:
+                parts = parts[: -(node.level - 1)]
+            base = ".".join((*parts, *base.split("."))) if base else ".".join(parts)
+        if base in known_modules:
+            imports.add(base)
+        imports.update(
+            candidate
+            for alias in node.names
+            if alias.name != "*"
+            if (candidate := f"{base}.{alias.name}") in known_modules
+        )
+    return imports
+
+
 def _test_module_importers(root: Path, module_names: set[str]) -> set[str]:
     test_root = root / "tests"
     if not test_root.is_dir():
         return set()
-    importers: set[str] = set()
-    targets = sorted(module_names)
-    for path in test_root.rglob("test_*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, SyntaxError):
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported = tuple(alias.name for alias in node.names)
-                if any(
-                    name == target or name.startswith(target + ".")
-                    for name in imported
-                    for target in targets
-                ):
-                    importers.add(path.relative_to(root).as_posix())
-                    break
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported_module = node.module
-                if any(
-                    imported_module == target
-                    or imported_module.startswith(target + ".")
-                    or (
-                        target.startswith(imported_module + ".")
-                        and target[len(imported_module) + 1 :].split(".", 1)[0]
-                        in {alias.name for alias in node.names}
-                    )
-                    for target in targets
-                ):
-                    importers.add(path.relative_to(root).as_posix())
-                    break
-    return importers
+
+    module_paths: dict[str, Path] = {}
+    for path in test_root.rglob("*.py"):
+        parts = path.relative_to(test_root).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        module_paths[".".join(("tests", *parts))] = path
+
+    reverse_imports: dict[str, set[str]] = {}
+    known_modules = set(module_paths)
+    for module, path in module_paths.items():
+        for imported in _test_module_imports(path, module, known_modules):
+            reverse_imports.setdefault(imported, set()).add(module)
+
+    visited = set(module_names)
+    pending = list(module_names)
+    test_importers: set[str] = set()
+    while pending:
+        imported = pending.pop()
+        for importer in reverse_imports.get(imported, ()):
+            if importer in visited:
+                continue
+            visited.add(importer)
+            pending.append(importer)
+            path = module_paths.get(importer)
+            if path is not None and path.name.startswith("test_"):
+                test_importers.add(path.relative_to(root).as_posix())
+    return test_importers
 
 
 def select(base: str, root: Path) -> Selection:
@@ -124,7 +152,7 @@ def select(base: str, root: Path) -> Selection:
             use_tach = True
         else:
             uncovered.add(path)
-    if changed_test_modules:
+    if changed_test_modules and not full_tier:
         test_files.update(_test_module_importers(root, changed_test_modules))
 
     return Selection(
