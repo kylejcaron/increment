@@ -38,9 +38,6 @@ from increment.errors import (
     CodedError as _CodedError,
 )
 from increment.errors import (
-    InvalidRequestError as _InvalidRequestError,
-)
-from increment.errors import (
     RefusalSpec as _RefusalSpec,
 )
 from increment.errors import (
@@ -191,11 +188,6 @@ _MOMENTS_COUNTS = _RefusalSpec(
     "source.moments.assignment_counts",
     _CapabilityError,
     template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
-)
-_MOMENTS_ASSIGNMENT_COUNTS_IDENTITY_MISMATCH = _RefusalSpec(
-    "moments.assignment_counts.identity_mismatch",
-    _InvalidRequestError,
-    template="assignment_counts include arm labels not present in moments rows: {mismatched!r}",
 )
 _MOMENTS_CLUSTER_GRAIN = _RefusalSpec(
     "source.moments.cluster_grain",
@@ -643,10 +635,7 @@ def _cube_assignment_counts(
             for group, count in decoded.items():
                 identity = {"True": "true", "False": "false"}.get(group, group)
                 if identity in normalized:
-                    _refuse(
-                        _MOMENTS_ASSIGNMENT_COUNTS_IDENTITY_MISMATCH,
-                        mismatched=tuple(sorted((group, identity))),
-                    )
+                    return None
                 normalized[identity] = count
             decoded = normalized
         if decoded is None or (candidate is not None and decoded != candidate):
@@ -655,33 +644,13 @@ def _cube_assignment_counts(
     return candidate
 
 
-def _validate_assignment_count_identities(
-    counts: Mapping[str, int] | None,
-    rows: Sequence[Mapping[str, object]],
-) -> None:
-    if counts is None:
-        return
-    row_identities = {str(row["group_id"]) for row in rows if row.get("group_id") is not None}
-    if not row_identities:
-        return
-    excluded = {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
-    mismatched = tuple(sorted(set(counts) - row_identities - excluded))
-    if mismatched:
-        _refuse(
-            _MOMENTS_ASSIGNMENT_COUNTS_IDENTITY_MISMATCH,
-            mismatched=mismatched,
-        )
-
-
 def _validated_cube_assignment_counts(
     rows: Sequence[Mapping[str, object]],
-    group_rows: Sequence[Mapping[str, object]],
     *,
     boolean_group_ids: bool,
     design_summary: bool,
 ) -> dict[str, int] | None:
     counts = _cube_assignment_counts(rows, boolean_group_ids=boolean_group_ids)
-    _validate_assignment_count_identities(counts, group_rows)
     if design_summary and counts is None:
         invalid_compliance_state(
             "design_summary requires valid assignment counts; re-export the complete source"
@@ -983,7 +952,6 @@ def _check_moments_format(
         seen_keys.add(key)
     assignment_counts = _validated_cube_assignment_counts(
         rows,
-        out,
         boolean_group_ids=boolean_group_ids,
         design_summary=envelope_identity is not None,
     )

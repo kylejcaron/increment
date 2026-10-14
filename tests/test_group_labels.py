@@ -159,6 +159,40 @@ def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
     assert wrong_case.value.code == "source.frame.control_missing"
 
 
+def test_dropped_boolean_arm_remains_in_enrollment_counts_after_export(tmp_path):
+    from increment import IncrementWarning, MetricSpec
+
+    frame = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": [True, True, False, False],
+            "y": [1.0, 2.0, None, None],
+        }
+    )
+    with pytest.warns(IncrementWarning):
+        original = Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control=True,
+            metrics=[MetricSpec(name="y", missing="drop")],
+        )
+    path = tmp_path / "dropped-boolean-arm.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    replay = Analysis.from_moments(
+        rows,
+        metrics=[MetricSpec(name="y", missing="drop")],
+        control=True,
+    )
+    with pytest.raises(InvalidRequestError) as no_treatment:
+        replay.run()
+    assert no_treatment.value.code == "readout.arms.no_treatment"
+    assert no_treatment.value.context["control_group"] == "true"
+
+
 def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):
     import json
 
@@ -181,11 +215,9 @@ def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):
 
     rows = pq.read_table(path).to_pylist()
     boolean_rows = copy.deepcopy(rows)
-    string_mismatch_rows = copy.deepcopy(rows)
-    for boolean_row, string_row in zip(boolean_rows, string_mismatch_rows, strict=True):
+    for boolean_row in boolean_rows:
         boolean_row["group_id"] = boolean_row["group_id"] == "true"
         boolean_row["assignment_counts"] = json.dumps({"True": 2, "False": 2})
-        string_row["assignment_counts"] = json.dumps({"True": 2, "False": 2})
 
     boolean_analysis = Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control=True)
     expected_rows = copy.deepcopy(rows)
@@ -197,37 +229,6 @@ def test_assignment_counts_match_canonical_moments_group_identities(tmp_path):
     with pytest.raises(InvalidRequestError) as wrong_case:
         Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control="True")
     assert wrong_case.value.code == "source.frame.control_missing"
-    with pytest.raises(InvalidRequestError) as mismatched:
-        Analysis.from_moments(string_mismatch_rows, metrics={"y": "mean"}, control="true")
-    assert mismatched.value.code == "moments.assignment_counts.identity_mismatch"
-
-
-def test_string_moments_reject_mismatched_assignment_count_identities(tmp_path):
-    import json
-
-    original = Analysis.from_unit_summary(
-        pd.DataFrame(
-            {
-                "unit": ["c1", "c2", "t1", "t2"],
-                "arm": ["true", "true", "false", "false"],
-                "y": [1, 2, 3, 4],
-            }
-        ),
-        unit="unit",
-        group="arm",
-        control="true",
-        metrics={"y": "mean"},
-    )
-    path = tmp_path / "string-mismatched-count-identities.parquet"
-    original.export(path)
-    import pyarrow.parquet as pq
-
-    rows = pq.read_table(path).to_pylist()
-    for row in rows:
-        row["assignment_counts"] = json.dumps({"True": 2, "False": 2})
-    with pytest.raises(InvalidRequestError) as mismatched:
-        Analysis.from_moments(rows, metrics={"y": "mean"}, control="true")
-    assert mismatched.value.context["mismatched"] == ("False", "True")
 
 
 def test_string_boolean_looking_moments_labels_stay_case_sensitive(tmp_path):
