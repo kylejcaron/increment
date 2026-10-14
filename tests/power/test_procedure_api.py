@@ -47,6 +47,20 @@ def test_scalar_requires_a_validated_relative_procedure() -> None:
     assert exc_info.value.code == "power.procedure_armplanningprocedure"
 
 
+def test_fixed_horizon_planning_refuses_cuped_linear_before_using_scalar_rho() -> None:
+    from increment.semantics.models import MethodSpec
+
+    procedure = make_procedure().model_copy(
+        update={"decision_method": MethodSpec(name="linear", variance_reduction="cuped_linear")}
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        required_sample_size(0.1, Baseline(mean=1.0, var=1.0, cuped_rho=0.8), procedure)
+
+    assert raised.value.code == "power.cuped_linear_unavailable"
+    assert "scalar CUPED" in str(raised.value)
+
+
 def test_baseline_refusal_precedes_solver_numerics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -324,6 +324,12 @@ oracles for that model.
 effective decision method uses CUPED. A CUPED sensitivity readout does not
 reduce an unadjusted decision's sample requirement. Mixed power/MDE curves
 apply this rule independently to each procedure.
+
+Power planning does not construct the mixed `cuped_linear` estimator and
+refuses procedures that request it with `power.cuped_linear_unavailable`.
+Use scalar CUPED as a conservative planning proxy, or plan without variance
+reduction; do not interpret scalar planning credit as a `cuped_linear` power
+claim.
 `compliance` rescales a diluted encouragement effect, and `trigger_rate`
 accounts for the fraction of assigned units entering a triggered analysis. For clustered
 randomization, `avg_cluster_size` is the assigned mean size; `cluster_icc`

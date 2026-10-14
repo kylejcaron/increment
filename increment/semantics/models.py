@@ -278,6 +278,11 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
         DefinitionError,
         _render_definition_message,
     ),
+    "definition.experiment.covariate_name_reserved": RefusalSpec(
+        "definition.experiment.covariate_name_reserved",
+        DefinitionError,
+        _render_definition_message,
+    ),
     "definition.experiment.metric_cuped_linear_needs_covariates": RefusalSpec(
         "definition.experiment.metric_cuped_linear_needs_covariates",
         DefinitionError,
@@ -1755,7 +1760,14 @@ class CupedCovariateBinding(CupedCovariate):
     measure: Measure | None = None
 
     @model_validator(mode="after")
-    def _one_source(self) -> "CupedCovariateBinding":
+    def _validate_binding_name_and_source(self) -> "CupedCovariateBinding":
+        if self.name in {"unit_id", "group_id", "y", "y_den", "y_raw", "cluster_id"}:
+            _definition_refusal(
+                "definition.experiment.covariate_name_reserved",
+                f"CUPED covariate name {self.name!r} is reserved for unit-frame identity, "
+                "outcome, or metadata; choose a distinct alias",
+                name=self.name,
+            )
         property_bound = self.property is not None
         measure_bound = self.measure is not None
         if property_bound == measure_bound:
@@ -3322,6 +3334,14 @@ class Definitions(CodedModel, _Base):
                             index.fact_to_column,
                             errors,
                         )
+                        self._validate_filters_on_source(
+                            f"experiment '{experiment.name}' CUPED covariate '{covariate.name}'",
+                            fact,
+                            index,
+                            covariate.measure.filters,
+                            errors,
+                        )
+
                     continue
 
                 assert covariate.property is not None

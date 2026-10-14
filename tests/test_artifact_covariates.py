@@ -88,6 +88,25 @@ def test_artifact_auto_publishes_declared_covariate_without_explicit_request(tmp
     assert rows == pytest.approx(tenure)
 
 
+def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_path):
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {primary: revenue}",
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: tenure, kind: categorical, property: region, source: events}]}}",
+        )
+    )
+    analysis, _ = _publish_categorical(defs_path, con)
+    source = _moment_source(analysis)
+    table = nw.from_native(
+        source.unit_frame(source.context.metrics[0], covariates=["tenure"]), eager_only=True
+    ).to_arrow()
+    rows = {row["unit_id"]: row["tenure"] for row in table.to_pylist()}
+
+    assert rows["u0"] == units["u0"]["tenure"]
+
+
 def test_undeclared_covariate_cannot_be_published(tmp_path):
     """The catalog is compiled from declared state: a randomized experiment
     offers no covariate extension, so a request for one is refused."""

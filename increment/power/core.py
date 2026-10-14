@@ -205,6 +205,11 @@ _REFUSALS = refusals(
     {
         "power.mde_relative_unavailable": "mde_relative is unavailable but mde_unavailable_reason is None: a missing minimum detectable effect must state why",
         "power.mde_unavailable_reason": "mde_unavailable_reason={mde_unavailable_reason!r} contradicts an available mde_relative={mde_relative}",
+        "power.cuped_linear_unavailable": RefusalSpec(
+            "power.cuped_linear_unavailable",
+            InvalidRequestError,
+            template="power planning does not construct the requested CUPED-linear estimator; use scalar CUPED as a conservative proxy or plan without variance reduction",
+        ),
         "power.minimum_detectable_effect.design_search_minimum": "fixed-horizon design cannot search for a minimum detectable effect when target_power={target} is at or below the null's own crossing probability ({estimate:.6g}) -- zero distance already qualifies, so no strictly nonzero minimum detectable effect exists",
         "power.baseline.mean": "mean must be > 0",
         "power.baseline.var_zero_variance": "var must be > 0 -- a zero-variance (deterministic) metric has no power question to answer (every solver divides by the log-ratio variance); from_proportion(p) requires 0 < p < 1",
@@ -1355,6 +1360,14 @@ def _cluster_dof(
     return float(min(represented_t - 1, represented_c - 1))
 
 
+def _refuse_cuped_linear_planning(procedure: ArmPlanningProcedure) -> None:
+    if any(
+        method.variance_reduction == "cuped_linear"
+        for method in (procedure.decision_method, *procedure.sensitivity_methods)
+    ):
+        _raise("power.cuped_linear_unavailable")
+
+
 def _prepare_solver(
     procedure: ArmPlanningProcedure,
     baseline: Baseline,
@@ -1366,6 +1379,7 @@ def _prepare_solver(
     procedure = ArmPlanningProcedure.model_validate(procedure)
     if not isinstance(procedure.decision, RelativeDecisionPolicy):
         _raise("power.power_solvers_relative")
+    _refuse_cuped_linear_planning(procedure)
     baseline = Baseline.model_validate(baseline)
     procedure = _derive_axes_from_baseline(procedure, baseline)
     if procedure.decision_method.variance_reduction == "none" and baseline.cuped_rho != 0.0:
