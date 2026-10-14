@@ -568,6 +568,18 @@ construction that removes the gap at exact coverage is being evaluated.
 A row with no finite point still carries a typed `binomial_set` and answers
 `stat_sig()`/`p_value()` from it; a point-less row is never a failed one.
 
+CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
+guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
+unadjusted arm instead uses joint relative inference, without the scalar log-SE
+admission rule. None of those approximate routes inherits finite-sample validity.
+The remaining scalar log-path refusal is:
+
+<!-- output -->
+```text
+log-scale relative-lift inference is undefined (zero events, or a signed metric
+that needs an absolute-scale estimand)
+```
+
 ??? info "Statistical details: finite-sample width against Katz and the score-ordered construction"
     Its ordering is the `r = 1` difference for every candidate, so at moderate counts the set
     is wider than the log-scale Wald (Katz) interval by 1.07× (20,000/arm, 10%), 1.14×
@@ -937,18 +949,6 @@ A row with no finite point still carries a typed `binomial_set` and answers
     no enclosure; recompute it for the lower-bound certificate.
     See [power planning](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
     for replay limits and comparisons with other tests.
-
-CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
-guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
-unadjusted arm instead uses joint relative inference, without the scalar log-SE
-admission rule. None of those approximate routes inherits finite-sample validity.
-The remaining scalar log-path refusal is:
-
-<!-- output -->
-```text
-log-scale relative-lift inference is undefined (zero events, or a signed metric
-that needs an absolute-scale estimand)
-```
 
 ### Signed effects require a suitable scale and reference
 
