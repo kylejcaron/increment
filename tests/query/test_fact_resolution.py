@@ -283,3 +283,67 @@ def test_fact_source_missing_event_refuses_before_data_query_and_survives_transp
     for restored in (copy.deepcopy(error), pickle.loads(pickle.dumps(error))):
         assert restored.code == error.code
         assert dict(restored.context) == dict(error.context)
+
+
+@pytest.mark.parametrize("missing_source", ["exposure", "metric"])
+@pytest.mark.parametrize("operation", ["run", "publish"])
+def test_missing_fact_source_event_refuses_before_public_data_query(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, missing_source: str, operation: str
+) -> None:
+    import yaml
+
+    from tests.test_unit_day_artifact_facade import _definitions, _native
+
+    definitions = _definitions(tmp_path)
+    payload = yaml.safe_load(definitions.read_text())
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    if missing_source == "metric":
+        experiment.pop("factors", None)
+        experiment.pop("breakouts", None)
+    experiment["plan"] = {"secondaries": ["purchase_rate"]}
+    if missing_source == "metric":
+        source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+        source["facts"] = [fact for fact in source["facts"] if fact["name"] != "purchase"]
+        payload["fact_sources"].append(
+            {
+                "name": "purchase_rows",
+                "sql": (
+                    "SELECT user_id, session_id, event_at, revenue, country_code, "
+                    "device_type, plan FROM analytics.event_log WHERE event = 'purchase'"
+                ),
+                "timestamp_column": "event_at",
+                "entities": ["user_id", "session_id"],
+                "facts": [{"name": "purchase", "column": "revenue"}],
+                "properties": source["properties"],
+            }
+        )
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    connection, analysis, _context, store = _native(definitions=definitions)
+    if missing_source == "exposure":
+        connection.raw_sql(
+            """
+            CREATE OR REPLACE TABLE analytics.event_log AS
+            SELECT * EXCLUDE (event) FROM analytics.event_log
+            """
+        )
+
+    data_queries: list[object] = []
+
+    def reject_data_query(*args: object, **kwargs: object) -> None:
+        data_queries.append((args, kwargs))
+        raise AssertionError("schema refusal must precede source snapshot execution")
+
+    monkeypatch.setattr(connection, "create_table", reject_data_query)
+    try:
+        with pytest.raises(DefinitionError) as raised:
+            if operation == "run":
+                analysis.run()
+            else:
+                analysis.publish_unit_day_artifact(store)
+        assert raised.value.code == "definition.fact_source.missing_columns"
+        assert raised.value.context["missing"] == ("event",)
+        assert not data_queries
+    finally:
+        analysis.close()

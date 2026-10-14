@@ -45,6 +45,18 @@ _DEFINITION_REFUSALS = refusals(
 _raise_definition = raiser(_DEFINITION_REFUSALS)
 
 
+def validate_fact_source_schema(tbl: Table, fs: FactSource) -> None:
+    """Refuse a source whose SQL omits columns required by fact consumers."""
+    required = {"event", fs.timestamp_column, *fs.entities}
+    missing = tuple(sorted(required - set(tbl.columns)))
+    if missing:
+        _raise_definition(
+            "definition.fact_source.missing_columns",
+            fact_source=fs.name,
+            missing=missing,
+        )
+
+
 def _find_fact_source(defs: Definitions, fact_name: str) -> tuple[FactSource, Fact]:
     """Locate the FactSource and Fact for a fact name."""
     for fs in defs.fact_sources:
@@ -240,14 +252,7 @@ def _dim_joined_fact_table(
 
     resolve_sql = resolve_sql or default_resolver
     tbl = resolve_sql(fs.sql)
-    required = {"event", fs.timestamp_column, *fs.entities}
-    missing = tuple(sorted(required - set(tbl.columns)))
-    if missing:
-        _raise_definition(
-            "definition.fact_source.missing_columns",
-            fact_source=fs.name,
-            missing=missing,
-        )
+    validate_fact_source_schema(tbl, fs)
     if fs.dims:
         dim_by_name = {d.name: d for d in defs.dim_sources}
         pairs = []
