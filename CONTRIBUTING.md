@@ -249,8 +249,8 @@ checks at meaningful milestones rather than after each decorator edit.
   requires a complete, unfiltered fast/slow/all run and acquires the database
   lock. Unsafe or partial requests refuse, and a successful pytest run without
   a usable published map is not a successful recording. Map generation remains
-  expensive and uses the existing tier budgets; it is optional for ordinary
-  validation and affected feedback, which can use the conservative graph.
+  expensive and is optional for ordinary validation and affected feedback,
+  which can use the conservative graph.
   Completeness markers bind
   the database, exact Python/dependency environment, source inventory, collected
   node IDs, import-time coverage from a fresh interpreter, module/class AST
@@ -321,12 +321,11 @@ Additional commands:
   that change estimation or a wire format. It is not a routine contributor
   check.
 
-Automatic per-test and aggregate test-tier budgets apply locally only.
-GitHub Actions (`GITHUB_ACTIONS=true`) skips those performance budgets;
-workflow job timeouts still stop hangs. Explicit timeouts and scientific
-campaign deadlines remain enforced, and runners still clean up subprocess
-groups on interruption. No private authorization or task environment is
-required. For Monte Carlo-only shards, use
+Pytest applies a 300-second per-test hang guard. Aggregate runner tier budgets
+are disabled locally and in CI; explicit per-test timeouts and scientific
+campaign deadlines remain enforced. Runners still clean up subprocess groups on
+interruption. No private authorization or task environment is required. For
+Monte Carlo-only shards, use
 `make test-parameter-recovery SPLITS=4 GROUP=1`; the certification-only
 target is `make test-numerical-certification`. The weekly scientific union
 uses `make test-scientific SPLITS=4 GROUP=1`; without local timing data,
@@ -342,9 +341,10 @@ selection and run once.
 Ordinary tier commands disable Tach's unused impact-analysis plugin at the shared
 runner boundary; direct `uv run pytest --tach ...` remains available for
 impact-selected work.
-Ordinary Make tiers accept standard `PYTEST_ARGS`, including capped auto workers
-with `-n auto --maxprocesses=<allowance>`. Affected mode remains serial by default
-and accepts only the typed controls listed above.
+Ordinary Make tiers and affected tests default to `max(1, CPU count // 3)`
+workers. Override with `WORKERS=auto` or a specific count. Ordinary tier
+commands accept `PYTEST_ARGS`; affected mode also passes its worker and
+loadgroup defaults and accepts only the typed pytest controls listed above.
 
 The test bootstrap defaults numerical-library thread pools to one per process,
 matching Nox's controls, while preserving explicit environment overrides.

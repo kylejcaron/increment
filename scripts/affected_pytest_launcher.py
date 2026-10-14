@@ -95,6 +95,7 @@ def _fixed_pytest_config(root: Path) -> str:
         "[pytest]\n"
         "addopts =\n"
         "testpaths = tests\n"
+        f"timeout = {policy['timeout']}\n"
         f"markers =\n{markers}\n"
         f"filterwarnings =\n{filters}\n"
     )
@@ -137,7 +138,7 @@ def _testmon_map_ready(root: Path, tier: str, changed_paths: list[str]) -> bool:
     )
 
 
-def _prepare_testmon_environment(root: Path, tier: str, workers: int | None) -> None:
+def _prepare_testmon_environment(root: Path, tier: str, workers: int | str | None) -> None:
     from scripts._test_impact import mark_testmon_nested_context, testmon_nested_context
 
     mark_testmon_nested_context(root)
@@ -170,6 +171,18 @@ def _tier_expression(tier: str, additional: str | None) -> str:
     return tier_mark_expression(tier, additional)
 
 
+def _parse_affected_workers(value: str) -> int | str:
+    if value == "auto":
+        return value
+    try:
+        workers = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("-n must be a positive worker count or auto") from error
+    if workers < 1:
+        raise argparse.ArgumentTypeError("-n must be a positive worker count or auto")
+    return workers
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _AffectedArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--tach-base", required=True)
@@ -181,15 +194,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("-q", dest="quiet", action="count", default=0)
     parser.add_argument("-v", dest="verbose", action="count", default=0)
     parser.add_argument("--durations", type=int)
-    parser.add_argument("-n", dest="workers", type=int)
+    parser.add_argument("-n", dest="workers", type=_parse_affected_workers)
     parser.add_argument("--dist", choices=("loadgroup",))
     parser.add_argument("--evidence-root", default=".test-evidence/affected")
     parser.add_argument("--runtime-diagnostics", action="store_true")
     args = parser.parse_args(argv)
     if args.maxfail_one and args.maxfail is not None:
         parser.error("-x and --maxfail cannot be combined")
-    if args.workers is not None and not 1 <= args.workers <= 8:
-        parser.error("-n must be a numeric worker count from 1 through 8")
     if args.dist is not None and args.workers is None:
         parser.error("--dist requires -n")
 

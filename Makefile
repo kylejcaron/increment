@@ -3,7 +3,8 @@
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
 AFFECTED_TEST_RUNNER = uv run --no-sync --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
-PYTEST_ARGS = -n auto --dist loadgroup
+WORKERS ?= $(shell python3 -c 'import os; print(max(1, (os.cpu_count() or 1) // 3))')
+PYTEST_ARGS = -n $(WORKERS) --dist loadgroup
 install:
 	uv sync --group dev --extra demo --extra tables --extra dashboard
 	uv run python -m scripts.install_dev_hooks --repo "$(CURDIR)"
@@ -78,10 +79,9 @@ test-map:
 		*) echo 'usage: make test-map TIER=fast|slow' >&2; exit 2 ;; esac
 	$(TEST_RUNNER) --record-testmon-map "$(TIER)" -q $(PYTEST_ARGS) --evidence-root .test-evidence
 
-test-affected: PYTEST_ARGS =
 test-affected:
 	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow] [PYTEST_ARGS=<typed-options>]' >&2; exit 2; }
-	$(AFFECTED_TEST_RUNNER) --affected-base "$(BASE)" "$(if $(TIER),$(TIER),fast)" -q $(PYTEST_ARGS)
+	$(AFFECTED_TEST_RUNNER) --affected-base "$(BASE)" "$(if $(TIER),$(TIER),fast)" -q -n $(WORKERS) --dist loadgroup $(PYTEST_ARGS)
 sim:
 	uv run --extra demo python -m increment.simulate --replications 200
 demo:

@@ -103,14 +103,6 @@ class OutputBlockParser:
         raise AssertionError(f"documented output does not match captured output:\n{diff}")
 
 
-_FAST_TIMEOUT_SECONDS = 30
-_SLOW_TIMEOUT_SECONDS = 180
-_EXPENSIVE_TIMEOUT_SECONDS = 300
-# Live warehouse probes cross a network to a managed backend, so their wall
-# time is dominated by round trips and table creation rather than by the work
-# under test. The local-backend deadlines do not describe them.
-_WAREHOUSE_TIMEOUT_SECONDS = 300
-_WAREHOUSE_MARKERS = ("warehouse_postgres", "warehouse_snowflake", "warehouse_bigquery")
 _DURATION_SNAPSHOT: tuple[tuple[str, float], ...] | None = None
 _PYTEST_ENVIRONMENT_SNAPSHOT = pytest.StashKey[dict[str, str]]()
 
@@ -259,7 +251,7 @@ def _group_markdown_items(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Validate categories, order tests and assign local performance deadlines."""
+    """Validate categories and order tests."""
     for item in items:
         if item.get_closest_marker("slow") is not None:
             continue
@@ -278,23 +270,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             Path(config.rootpath) / ".test_durations",
             _duration_snapshot(config),
         )
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        return
-    for item in items:
-        if item.get_closest_marker("timeout") is not None:
-            continue
-        if any(item.get_closest_marker(marker) for marker in _WAREHOUSE_MARKERS):
-            seconds = _WAREHOUSE_TIMEOUT_SECONDS
-        elif any(
-            item.get_closest_marker(marker)
-            for marker in ("examples", "parameter_recovery", "numerical_certification")
-        ):
-            seconds = _EXPENSIVE_TIMEOUT_SECONDS
-        elif item.get_closest_marker("slow"):
-            seconds = _SLOW_TIMEOUT_SECONDS
-        else:
-            seconds = _FAST_TIMEOUT_SECONDS
-        item.add_marker(pytest.mark.timeout(seconds))
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

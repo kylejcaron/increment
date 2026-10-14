@@ -1225,10 +1225,8 @@ def test_affected_runner_rejects_inherited_pytest_plugins(tmp_path: Path) -> Non
         ("-VV",),
         ("--lf",),
         ("--collect-only",),
-        ("-n", "auto"),
         ("-n", "logical"),
         ("-n", "0"),
-        ("-n", "9"),
         ("--maxprocesses", "2"),
         ("-d",),
         ("--tx", "popen"),
@@ -1252,9 +1250,9 @@ def test_affected_runner_rejects_untyped_pytest_arguments(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("workers", ["1", "8"])
+@pytest.mark.parametrize("workers", ["1", "2"])
 @pytest.mark.integration
-def test_affected_runner_accepts_bounded_numeric_workers(tmp_path: Path, workers: str) -> None:
+def test_affected_runner_accepts_numeric_workers(tmp_path: Path, workers: str) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
     (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 1  # changed\n")
@@ -1548,22 +1546,6 @@ def test_affected_runner_ignores_inherited_timeout_options(
 
 
 @pytest.mark.slow
-@pytest.mark.integration
-def test_affected_runner_preserves_nested_timeout_harness_environment(tmp_path: Path) -> None:
-    project = Path(__file__).resolve().parents[1]
-    base = _make_affected_fixture(tmp_path)
-    (tmp_path / "tests" / "test_nested_timeout.py").write_text(
-        "from tests.test_test_runtime_harness import "
-        "test_root_runtime_budget_is_local_only as run_nested_timeout\n\n"
-        "def test_nested_timeout():\n"
-        "    run_nested_timeout(None)\n"
-    )
-    result = _run_affected(project, tmp_path, base, "fast", "-n", "2")
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "passed in" in result.stdout
-
-
-@pytest.mark.slow
 def test_affected_runner_keeps_repository_warning_policy(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1591,6 +1573,7 @@ def test_affected_config_uses_repository_warning_policy(tmp_path: Path) -> None:
         assert f"    {marker}" in content
     for warning in pytest_config["filterwarnings"]:
         assert f"    {warning}" in content
+    assert f"timeout = {pytest_config['timeout']}" in content
 
 
 def test_private_pytest_parser_adapter_is_exactly_pinned() -> None:
@@ -1955,25 +1938,60 @@ def test_affected_runner_rejects_effective_options_from_argfiles_and_config(
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_affected_runner_bounds_xdist_and_requires_loadgroup(tmp_path: Path) -> None:
+def test_affected_runner_accepts_auto_workers_and_arbitrary_positive_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from typing import cast
+
+    from scripts.affected_pytest_launcher import main as affected_launcher_main
+    from scripts.run_test_tier_plugin import pytest_xdist_setupnodes
+
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
+    for worker_count in ("auto", "9"):
+        result = _run_affected(
+            project,
+            tmp_path,
+            base,
+            "fast",
+            "-n",
+            worker_count,
+            "-x",
+            "--maxfail",
+            "2",
+        )
+        assert result.returncode == 2
+        assert "-x and --maxfail cannot be combined" in result.stderr
+
+        with pytest.raises(SystemExit) as error:
+            affected_launcher_main(
+                [
+                    "--tach-base",
+                    base,
+                    "--tier",
+                    "fast",
+                    "-n",
+                    worker_count,
+                    "-x",
+                    "--maxfail",
+                    "2",
+                ]
+            )
+        assert error.value.code == 2
+        assert "-x and --maxfail cannot be combined" in capsys.readouterr().err
+
     (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 1  # changed\n")
-    unbounded = _run_affected(
-        project,
-        tmp_path,
-        base,
-        "fast",
-        "-n",
-        "auto",
-        env_overrides={"PYTEST_XDIST_AUTO_NUM_WORKERS": None},
-    )
-    assert "affected runner accepts only typed options" in unbounded.stderr
-    assert unbounded.returncode == 2
     workers = _run_affected(project, tmp_path, base, "fast", "-n", "2")
     assert workers.returncode == 0, workers.stdout + workers.stderr
     assert "worker_allowance=2" in workers.stdout
     assert "dist=loadgroup" in workers.stdout
+
+    monkeypatch.setenv("INCREMENT_AFFECTED_EVIDENCE", "{}")
+    specs = [type("Worker", (), {"popen": True, "env": {}})() for _ in range(9)]
+    for allowance in ("auto", "9"):
+        monkeypatch.setenv("INCREMENT_AFFECTED_WORKER_ALLOWANCE", allowance)
+        pytest_xdist_setupnodes(cast(pytest.Config, None), specs)
+        assert os.environ["INCREMENT_AFFECTED_RESOLVED_WORKER_COUNT"] == "9"
 
 
 def test_environment_identity_includes_dependency_set(monkeypatch: pytest.MonkeyPatch) -> None:

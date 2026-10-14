@@ -41,45 +41,6 @@ def test_pytest_environment_guard_reports_unrestored_control():
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("github_actions", [None, "false", "true"])
-def test_root_runtime_budget_is_local_only(github_actions):
-    repository = Path(__file__).parents[1]
-    environment = _clean_pytest_environment(os.environ)
-    if github_actions is None:
-        environment.pop("GITHUB_ACTIONS", None)
-    else:
-        environment["GITHUB_ACTIONS"] = github_actions
-    with tempfile.TemporaryDirectory(dir=repository) as temporary:
-        test_directory = Path(temporary)
-        completed = test_directory / "completed"
-        (test_directory / "conftest.py").write_text(
-            "def pytest_sessionstart(session):\n"
-            "    root = session.config.pluginmanager.getplugin(\n"
-            "        str(session.config.rootpath / 'conftest.py'))\n"
-            "    root._FAST_TIMEOUT_SECONDS = 0.05\n"
-        )
-        sleeping = test_directory / "test_sleeping_runtime_guard.py"
-        sleeping.write_text(
-            "import time\nfrom pathlib import Path\n\n"
-            "def test_runtime_guard_sleeper():\n"
-            "    time.sleep(0.2)\n"
-            f"    Path({str(completed)!r}).touch()\n"
-            "    assert False, 'test failures must still propagate'\n"
-        )
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:tach", str(sleeping)],
-            cwd=repository,
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=120,
-        )
-        assert result.returncode == 1, result.stdout + result.stderr
-        assert completed.exists() == (github_actions == "true"), result.stdout + result.stderr
-
-
-@pytest.mark.slow
 def test_unbounded_runner_keeps_heartbeats_and_failure_status():
     status = run_with_budget(
         [sys.executable, "-c", "import time; time.sleep(0.2); raise SystemExit(7)"],
