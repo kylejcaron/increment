@@ -336,6 +336,7 @@ experiments:
 - An experiment can also declare `n_pre_periods` (a CUPED lookback in
   days, see [CUPED](cuped.md)) and `breakouts` (per-segment lift
   breakdowns on a declared property).
+  The CUPED window is `[first exposure date − n_pre_periods days, first exposure timestamp)`, including exposure-day events before exposure.
 
 ### Window edges and the day boundary
 

@@ -144,6 +144,53 @@ def _row(analysis):
     return rows[0]
 
 
+def test_boolean_sequential_checkpoint_reloads_from_moments_with_bool_control(tmp_path):
+    import pyarrow.parquet as pq
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    design = Randomized(control_group="true")
+    base = registration("bernoulli")
+    source_mapping = frame_observation_mapping(unit="unit", group="arm", exposure_date="exposure")
+    legacy = SequentialRegistration.model_validate(
+        {
+            **base.model_dump(),
+            "control_group": "true",
+            "roster": [
+                {**base.roster[0].model_dump(), "group_id": "false"},
+            ],
+            "definitions_id": sequential_definition_id(
+                [synthesise_metric(spec) for spec in specs],
+                design,
+                transformations=specs,
+                source_mapping=source_mapping,
+            ),
+        }
+    )
+    plan = AnalysisPlan(
+        primary="outcome",
+        inference=InferenceSpec(kind="always_valid", registration=legacy),
+    )
+    frame = _frame([0, 1] * 24, [1, 1] * 24)
+    frame["arm"] = frame["arm"].map({"control": True, "treatment": False})
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=design,
+        metrics=specs,
+        experiment_id="experiment",
+        plan=plan,
+        exposure_date="exposure",
+    )
+    snapshot = analysis.sequential_snapshot()
+    path = tmp_path / "boolean-checkpoint.parquet"
+    analysis.export(path)
+    payload = pq.read_table(path).to_pylist()
+    assert "group_id" not in payload[0]
+    replay = Analysis.from_moments(payload, metrics=specs, control=True)
+    assert replay.sequential_snapshot() == snapshot
+
+
 def test_registered_whole_window_family_scope_reports_registration_q():
     specs = [MetricSpec(name="outcome", type="conversion")]
     plan = gaussian_plan(

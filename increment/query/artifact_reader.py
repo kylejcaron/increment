@@ -100,7 +100,7 @@ if TYPE_CHECKING:
 
 
 ARTIFACT_OPERATIONS: frozenset[SourceOperation] = frozenset(
-    {"moments_source", "day_source", "export_moments"}
+    {"moments_source", "day_source", "export_moments", "unit_counts"}
 )
 
 _ARTIFACT_GRAIN = RefusalSpec(

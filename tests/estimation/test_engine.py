@@ -9,6 +9,7 @@ import pytest
 
 from increment.errors import InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import ArmStats
+from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
@@ -443,8 +444,14 @@ class TestNonPositiveArmMeanFailsOneCell:
         assert row.abs_diff == pytest.approx(-1.0)
         assert row.abs_se == pytest.approx(math.hypot(0.0, math.sqrt(0.04 / 200)))
         assert row.abs_lb is not None and row.abs_ub is not None
-        assert row.stat_sig() is False
-        assert row.p_value() == 1.0
+        # The additive difference is the row's decision: -1.0 at a tiny SE excludes zero.
+        assert row.abs_ub < 0.0
+        assert row.stat_sig() is True
+        p_value = row.p_value()
+        assert p_value is not None and p_value < 1e-6
+        (evidence,) = computation.evidence.values()
+        assert isinstance(evidence, PValueEvidence)
+        assert evidence.p_value == p_value
 
     def test_negative_control_mean_on_ratio_metric_yields_an_additive_only_row(self):
         """The unclustered ratio log route also raises check_positive_mean's

@@ -85,7 +85,7 @@ def run(*, reps: int = 50, seed: int = 20261008) -> dict[str, object]:
             refusal_codes[code] = refusal_codes.get(code, 0) + 1
             continue
         candidate_widths.append(estimate.ub - estimate.lb)
-        candidate_power += candidate.stat_sig()
+        candidate_power += candidate.stat_sig() is True
         candidate_cover += estimate.lb <= true_lift <= estimate.ub
 
         started = time.perf_counter()

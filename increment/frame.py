@@ -76,6 +76,7 @@ from increment._frame_validation import (  # noqa: F401
     _validate_frame_boundary,
     _validate_single_group_per_unit,
     _validate_uptake_binary,
+    canonical_control_for_frame,
     refuse_observational_quantile,
 )
 from increment._metric_specs import (
@@ -288,7 +289,7 @@ class FrameTotalsSource(SequentialSourceMixin):
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_summary"
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset({"export_moments"})
+    operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
     breakouts: tuple[str, ...] = ()
 
     # Public constructor signature is the API for frame-backed sources.
@@ -733,6 +734,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         )
 
         uptake, uptake_role = _resolve_uptake_column(design, uptake)
+        control = canonical_control_for_frame(frame, group, control)
         design, compiled_plan = _resolve_design_and_plan(
             design,
             control,
@@ -990,7 +992,7 @@ class FramePanelSource(SequentialSourceMixin):
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_panel"
     capabilities: frozenset[Grain] = frozenset({"total", "daily", "asof"})
-    operations: frozenset[SourceOperation] = frozenset({"export_moments"})
+    operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
     #: `from_unit_panel` takes no `cluster=` argument, so this shape never
     #: carries a randomization-cluster column (see `cluster_counts` below).
 
@@ -1573,6 +1575,8 @@ class FramePanelSource(SequentialSourceMixin):
             frame_observation_mapping,
             validate_frame_registration,
         )
+
+        control = canonical_control_for_frame(frame, group, control)
 
         uptake, uptake_role = _resolve_uptake_column(design, uptake)
         sequential_mapping = frame_observation_mapping(

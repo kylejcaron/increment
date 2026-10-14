@@ -66,7 +66,6 @@ from increment.dashboard._format import (
     timestamp_label,
 )
 from increment.dashboard._native import (
-    drop_columns,
     native_html,
     readout_native,
     resize_forest,
@@ -77,7 +76,11 @@ from increment.dashboard._theme import (
     coeftable_theme,
     standalone_css,
 )
-from increment.tables import _format_confidence_set, estimates_to_readout
+from increment.tables import (
+    _binomial_qualification_disclosure,
+    _format_confidence_set,
+    estimates_to_readout,
+)
 
 if TYPE_CHECKING:
     from increment.breakout.estimates import (
@@ -310,7 +313,7 @@ def _primary_status(tone: str, *, significant: bool) -> str:
 
 
 def render_health(snapshot: DashboardSnapshot) -> mo.Html:
-    """The allocation and caveat section, shown above the results."""
+    """The allocation, applicable checks, and caveat section shown above results."""
     return _section(
         "health",
         "Experiment health",
@@ -322,6 +325,7 @@ def render_health(snapshot: DashboardSnapshot) -> mo.Html:
             else ""
         )
         + _health_checks_block(snapshot.health)
+        + _technical_details_block(snapshot)
         + _flags_block(snapshot)
         + _caveats_block(snapshot),
     )
@@ -340,7 +344,7 @@ def _allocation_block(
         title = "Assigned-population assignment integrity"
     heading = f"<h3>{esc(title)}</h3>"
     if allocation is None:
-        code, reason = refusal or ("", "")
+        code = refusal[0] if refusal is not None else ""
         not_checked = code == "dashboard.allocation_not_applicable"
         label = (
             (
@@ -355,12 +359,7 @@ def _allocation_block(
                 else "Assignment integrity unavailable; this is not a passing check."
             )
         )
-        return (
-            heading
-            + _status("warn", label)
-            + f'<p class="inc-dashboard-code">{esc(code)}</p>'
-            + f'<p class="inc-dashboard-reason">{esc(reason)}</p>'
-        )
+        return heading + _status("warn", label)
     enrolled = sum(allocation.observed.values())
     verdict = allocation_verdict(allocation, population=population)
     return (
@@ -378,8 +377,23 @@ def _allocation_block(
 def _health_checks_block(report: ExperimentHealth | None) -> str:
     if report is None:
         return ""
-    blocks: list[str] = ['<h3 class="inc-dashboard-subheading">Additional diagnostics</h3>']
-    for check in report.checks:
+    inapplicable_trigger = [
+        check
+        for check in report.checks
+        if check.analysis_population == "triggered"
+        and check.availability == "not_applicable"
+        and check.context.get("reason") == "This experiment does not declare a trigger."
+    ]
+    checks = [
+        check
+        for check in report.checks
+        if check not in inapplicable_trigger
+        and not (check.check == "assigned_allocation" and check.availability == "available")
+    ]
+    blocks: list[str] = []
+    if checks:
+        blocks.append('<h3 class="inc-dashboard-subheading">Additional checks</h3>')
+    for check in checks:
         identity = [check.analysis_population]
         if check.metric is not None:
             identity.append(f"metric {check.metric}")
@@ -389,13 +403,13 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
             f"<h4>{esc(check.check.replace('_', ' ').title())} "
             f'<span class="inc-dashboard-note">({esc(", ".join(identity))})</span></h4>'
         )
-        if check.availability == "not_applicable":
-            line = "Not applicable; this is not an evaluated check."
-            tone = "warn"
-        elif check.availability == "unavailable":
+        if check.availability == "unavailable":
             line = "Unavailable; this is not a passing check."
             tone = "warn"
-        elif check.conclusion == "warning":
+        elif check.availability == "not_applicable":
+            line = "Not applicable; this is not an evaluated check."
+            tone = "warn"
+        elif check.availability == "warning" or check.conclusion == "warning":
             line = "Warning; inspect the available diagnostic evidence."
             tone = "bad"
         elif check.conclusion == "not_rejected":
@@ -405,11 +419,6 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
             line = "Descriptive evidence; it does not test the assumption."
             tone = "neutral"
         body = heading + _status(tone, line)
-        if check.code is not None:
-            body += f'<p class="inc-dashboard-code">{esc(check.code)}</p>'
-        reason = check.context.get("reason")
-        if reason is not None:
-            body += f'<p class="inc-dashboard-reason">{esc(str(reason))}</p>'
         route = check.context.get("route")
         if route is not None:
             body += (
@@ -420,28 +429,54 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
                 ["Arm", "Observed trigger rate"],
                 [[esc(arm), f"{rate:.1%}"] for arm, rate in sorted(check.rates.items())],
             )
-        for key in (
-            "counterfactual_trigger_invariance",
-            "trigger_order_stationarity",
-            "no_effect_before_trigger",
-            "triggered_look_predictability",
-            "family_guarantee_status",
-            "family_guarantee",
-            "observed_edge",
-            "finalized_edge",
-            "watermark",
-        ):
-            value = check.context.get(key)
-            if value is not None or key in check.context:
-                body += (
-                    f'<p class="inc-dashboard-note"><strong>{esc(key.replace("_", " ").title())}:'
-                    f"</strong> {esc(str(value))}</p>"
-                )
-        risk = check.context.get("risk")
-        if isinstance(risk, (tuple, list)):
-            body += _list([esc(str(item)) for item in risk], css_class="inc-dashboard-caveats")
         blocks.append(body)
+    if inapplicable_trigger:
+        blocks.append(
+            '<p class="inc-dashboard-note">'
+            f"{len(inapplicable_trigger)} trigger checks don't apply: no trigger declared."
+            "</p>"
+        )
     return "".join(blocks)
+
+
+def _technical_details_block(snapshot: DashboardSnapshot) -> str:
+    details: list[str] = []
+    for label, refusal in (
+        ("Assigned allocation", snapshot.allocation_refusal),
+        ("Assigned allocation history", snapshot.allocation_history_refusal),
+        ("Triggered allocation", snapshot.triggered_allocation_refusal),
+        ("Triggered allocation history", snapshot.triggered_allocation_history_refusal),
+    ):
+        if refusal is not None:
+            code, reason = refusal
+            details.append(
+                f"<h4>{esc(label)}</h4><dl><dt>Code</dt><dd>{esc(code)}</dd>"
+                f"<dt>Reason</dt><dd>{esc(reason)}</dd></dl>"
+            )
+    if snapshot.health is not None:
+        for check in snapshot.health.checks:
+            if check.code is None and not check.context:
+                continue
+            identity = [check.analysis_population]
+            if check.metric is not None:
+                identity.append(f"metric {check.metric}")
+            if check.feed is not None:
+                identity.append(f"feed {check.feed}")
+            values = []
+            if check.code is not None:
+                values.append(f"<dt>Code</dt><dd>{esc(check.code)}</dd>")
+            values.extend(
+                f"<dt>{esc(key.replace('_', ' ').title())}</dt><dd>{esc(value)}</dd>"
+                for key, item in check.context.items()
+                for value in [str(item)]
+            )
+            details.append(
+                f"<h4>{esc(check.check.replace('_', ' ').title())} "
+                f"({esc(', '.join(identity))})</h4><dl>{''.join(values)}</dl>"
+            )
+    if not details:
+        return ""
+    return _disclosure("Technical details", "".join(details))
 
 
 def _allocation_history_table(
@@ -795,6 +830,9 @@ def _geometry_explanations(snapshot: DashboardSnapshot, row: Mapping[str, Any]) 
         and relative.geometry == "one_sided"
     ):
         open_side = "lower" if relative.intervals[0][0] is None else "upper"
+    qualification = _binomial_qualification_disclosure(binomial)
+    if qualification:
+        explanations.append(qualification)
     if binomial is not None and not is_missing(binomial) and binomial.geometry == "upper_bound":
         explanations.append(
             "This is a one-sided binary test for a decrease. Its lower endpoint is the physical "
@@ -859,14 +897,33 @@ def _geometry_explanations(snapshot: DashboardSnapshot, row: Mapping[str, Any]) 
 
 
 def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Omit the family selection column only from the visual readout."""
-    return [{key: value for key, value in row.items() if key != "discovery"} for row in rows]
+    """Preserve readout metadata so the core-column filter can choose what to display."""
+    return [dict(row) for row in rows]
 
 
-# Numeric confidence-set evidence lives in interval disclosures and the per-level wording beside
-# each table, so the verdict, set and per-row level columns are not repeated in the grid. The
-# unrounded values stay in the readout frame and CSV.
-_REDUNDANT_COLUMNS = frozenset({"Significant", "Confidence set", "Interval"})
+# Keep only the dashboard's core readout and declared advisory columns.
+_CORE_COLUMNS = frozenset(
+    {
+        "Lift (absolute)",
+        "Lift %",
+        "Lift Plot",
+        "Failure",
+        "Discovery",
+        "Posterior chance to beat",
+        "Posterior risk if shipped",
+        "Posterior P(favorable)",
+    }
+)
+
+
+# This column is the Explore trajectory chart, not a readout evidence column.
+_EXPLORE_SERIES_COLUMNS = _CORE_COLUMNS | {"Cumulative lift"}
+
+
+def _keep_core_columns(table: ct.CoefTable) -> None:
+    table.columns = tuple(
+        column for column in table.columns if getattr(column, "label", None) in _CORE_COLUMNS
+    )
 
 
 INTERVALS_DISCLOSURE = "How to read these intervals"
@@ -888,7 +945,29 @@ def _geometry_disclosure(
         ],
         css_class="inc-dashboard-reasons",
     )
+
     return _disclosure(label, geometry) if geometry else ""
+
+
+def _selection_qualification_notes(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    name: Callable[[Mapping[str, Any]], str],
+) -> str:
+    """Keep selected-row qualifications beside a table without adding a per-row column."""
+    affected: dict[str, list[str]] = {}
+    for row in rows:
+        qualification = row.get("selection_qualification")
+        if is_missing(qualification):
+            continue
+        affected.setdefault(str(qualification), []).append(name(row))
+    return _list(
+        [
+            f"Selection evidence for {esc(', '.join(dict.fromkeys(names)))}: {esc(qualification)}."
+            for qualification, names in affected.items()
+        ],
+        css_class="inc-dashboard-family-qualifications",
+    )
 
 
 def results_table(snapshot: DashboardSnapshot) -> str:
@@ -899,13 +978,16 @@ def results_table(snapshot: DashboardSnapshot) -> str:
         subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
         nest_by="arm",
-        advisory=False,
+        advisory=True,
         show_interval_level=True,
     )
-    drop_columns(table, _REDUNDANT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
-    return _TABLE_WRAP.format(native_html(table, metrics))
+    return _TABLE_WRAP.format(native_html(table, metrics)) + _selection_qualification_notes(
+        snapshot.readout_rows,
+        name=lambda row: f"{row.get('metric')} · {row.get('group_id')}",
+    )
 
 
 _WHOLE = "Whole experiment"
@@ -967,10 +1049,10 @@ def overview_table(snapshot: DashboardSnapshot, breakout: tuple[str | None, str]
         subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
         nest_by="arm" if breakout is None else "segment",
-        advisory=False,
+        advisory=True,
         show_interval_level=True,
     )
-    drop_columns(table, _REDUNDANT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
     _colour_discoveries_only(table)
@@ -987,6 +1069,7 @@ def overview_table(snapshot: DashboardSnapshot, breakout: tuple[str | None, str]
         _TABLE_WRAP.format(native_html(table, metrics))
         + _geometry_disclosure(snapshot, explained, label=INTERVALS_DISCLOSURE, name=name)
         + _caveats_list(result_caveats([{**row, "metric": name(row)} for row in explained]))
+        + _selection_qualification_notes(rows, name=name)
     )
 
 
@@ -1796,13 +1879,16 @@ def _lift_trajectory_table(
         nest_by="segment" if segmented else "arm",
         trend=list(estimates),
         trend_label="Cumulative lift",
-        advisory=False,
+        advisory=True,
         show_interval_level=True,
     )
     axis = _percent_axis(estimates)
     columns = []
     for column in table.columns:
-        if isinstance(column, ct.Forest) or getattr(column, "label", None) in _REDUNDANT_COLUMNS:
+        if (
+            isinstance(column, ct.Forest)
+            or getattr(column, "label", None) not in _EXPLORE_SERIES_COLUMNS
+        ):
             continue
         if isinstance(column, ct.Sparkline):
             column = replace(
@@ -1902,9 +1988,10 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
         subtitle=f"Relative lift of {snapshot.treatment_group} vs {snapshot.control_group}",
         theme=coeftable_theme(snapshot.config.theme),
         nest_by="segment",
+        advisory=True,
         show_interval_level=True,
     )
-    drop_columns(table, _REDUNDANT_COLUMNS)
+    _keep_core_columns(table)
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.segment_forest_width, height=charts.segment_forest_height)
     return (
@@ -1912,6 +1999,9 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
         + _segments_caption(rows)
         + _caveats_list(_segment_caveats(rows))
         + _geometry_disclosure(snapshot, rows, label=INTERVALS_DISCLOSURE)
+        + _selection_qualification_notes(
+            rows, name=lambda row: f"{row.get('metric')} · {row.get('segment')}"
+        )
     )
 
 

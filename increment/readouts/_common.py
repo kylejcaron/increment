@@ -87,7 +87,7 @@ _REFUSALS = refusals(
         "readout.value_scale_randomized_absolute": RefusalSpec(
             "readout.value_scale_randomized_absolute",
             UnsupportedRequestError,
-            template="value_scale= is an observational-only reporting selector -- the randomized path already reports the absolute axis (abs_diff/abs_se/abs_lb/abs_ub) on every row; declare an absolute margin instead.",
+            template="value_scale= is an observational-only reporting selector -- the randomized path already reports the absolute axis (abs_diff/abs_se/abs_lb/abs_ub) on every row, and a row whose relative scale is undefined (a non-positive arm mean) is decided on that additive axis automatically.",
         ),
         "readout.metric_declare_non": RefusalSpec(
             "readout.metric_declare_non",
