@@ -3024,9 +3024,12 @@ def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
         store, extensions=_extensions(context, "encouragement_uptake")
     )
     adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    from increment import Method
+
+    unadjusted = Method(name="unadjusted")
     try:
-        expected = native.run(estimands=["itt", "compliance"])
-        actual = adopted.run(estimands=["itt", "compliance"])
+        expected = native.run(estimands=["itt", "compliance"], decision_method=unadjusted)
+        actual = adopted.run(estimands=["itt", "compliance"], decision_method=unadjusted)
         assert len(actual) == len(expected)
         for expected_row, actual_row in zip(expected, actual, strict=True):
             expected_fields = _flatten_readout_row(expected_row)

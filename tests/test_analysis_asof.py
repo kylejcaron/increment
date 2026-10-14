@@ -598,11 +598,15 @@ def _analysis_with_asof_encouragement_events(
 
 
 def test_analysis_run_native_encouragement_forwards_prior(con):
+    from increment import Method
     from increment.estimation import Normal
 
     analysis = _analysis_with_asof_encouragement_events(con)
-    flat = analysis.run(estimands=("itt",))[0]
-    shrunk = analysis.run(estimands=("itt",), prior=Normal(mu=0.0, sigma=0.01))[0]
+    unadjusted = Method(name="unadjusted")
+    flat = analysis.run(estimands=("itt",), decision_method=unadjusted)[0]
+    shrunk = analysis.run(
+        estimands=("itt",), decision_method=unadjusted, prior=Normal(mu=0.0, sigma=0.01)
+    )[0]
 
     assert flat.estimand == shrunk.estimand == "itt"
     assert flat.require_lift().value > 0.0
