@@ -1,6 +1,6 @@
 # Increment
 
-> Increment is an open-source Python library for warehouse-native A/B testing, causal inference, and experiment analysis.
+> Increment is an open-source Python library for A/B test analysis. It helps teams measure the impact of product changes using dataframes or SQL warehouses, with reusable metric definitions, effect estimates, uncertainty intervals, and shareable reports.
 
 Analyze randomized experiments from dataframes or SQL warehouses, or
 observational treatments from dataframes or warehouse definitions. Increment supports CUPED, power
@@ -13,10 +13,10 @@ separate event store.
 ## Documentation
 
 - [README](https://raw.githubusercontent.com/kylejcaron/increment/main/README.md): Project overview and installation.
-- [Quickstart](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/quickstart.md): Analyze A/B tests from Python dataframes.
-- [Method selection](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/choose-a-method.md): Choose a design and estimator from the treatment process and analysis goal.
-- [Data model](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/data-model.md): Declare warehouse sources, exposures, metrics, and experiments.
-- [Observational causal inference](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/observational.md): Use IPTW, DML, and AIPW with explicit causal assumptions.
-- [CUPED](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/cuped.md): Reduce variance with pre-treatment data.
-- [Power analysis](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/power-analysis.md): Calculate sample size, power, and MDE.
-- [API reference](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/api.md): Public Python API.
+- [Quickstart](https://getincrement.io/docs/guides/quickstart/): Analyze A/B tests from Python dataframes.
+- [Method selection](https://getincrement.io/docs/guides/choose-a-method/): Choose a design and estimator from the treatment process and analysis goal.
+- [Data model](https://getincrement.io/docs/guides/data-model/): Declare warehouse sources, exposures, metrics, and experiments.
+- [Observational causal inference](https://getincrement.io/docs/guides/observational/): Use IPTW, DML, and AIPW with explicit causal assumptions.
+- [CUPED](https://getincrement.io/docs/guides/cuped/): Reduce variance with pre-treatment data.
+- [Power analysis](https://getincrement.io/docs/guides/power-analysis/): Calculate sample size, power, and MDE.
+- [API reference](https://getincrement.io/docs/api/): Public Python API.

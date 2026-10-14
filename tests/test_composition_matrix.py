@@ -33,6 +33,7 @@ owns ordering and the sole narrowly scoped Ibis/DuckDB deprecation exemption.
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import math
 import warnings
@@ -66,7 +67,10 @@ from tests.warning_codes import warning_codes
 
 # The module-scoped ``native`` fixture runs eight analyses; one worker builds
 # it once instead of every worker that draws a probe rebuilding it.
-pytestmark = pytest.mark.xdist_group("composition_matrix")
+pytestmark = [
+    pytest.mark.xdist_group("composition_matrix"),
+    pytest.mark.filterwarnings("ignore:metric .* has window_days=None"),
+]
 
 # Axes
 
@@ -369,7 +373,14 @@ def native(tmp_path_factory):
                 }
             )
         for k in range(1 + i % 2):
-            rows.append({**base, "ts": d0 + dt.timedelta(hours=2, minutes=k), "event": "order"})
+            rows.append(
+                {
+                    **base,
+                    "ts": d0 + dt.timedelta(hours=2, minutes=k),
+                    "event": "order",
+                    "revenue": 1.0,
+                }
+            )
         if (i % 5 < 3) if arm == "treatment" else (i % 5 < 2):
             rows.append({**base, "ts": d0 + dt.timedelta(days=1, hours=2), "event": "page_view"})
         if i % 3 != 1:
@@ -503,6 +514,24 @@ def native(tmp_path_factory):
     defs_path.write_text(yaml.safe_dump(defs, sort_keys=False))
     con = ibis.duckdb.connect()
     con.create_table("raw_events", obj=rows)
+    sitewide_defs = copy.deepcopy(defs)
+    for source in sitewide_defs["fact_sources"]:
+        for fact in source["facts"]:
+            if fact["name"] == "order":
+                fact["column"] = "revenue"
+    for metric in sitewide_defs["metrics"]:
+        if metric["name"] not in {"revenue", "purchase_rate", "rev_per_order"}:
+            continue
+        metric.pop("window_days", None)
+        if metric["type"] == "ratio":
+            for component in (metric["numerator"], metric["denominator"]):
+                component.pop("window_days", None)
+                component["aggregation"] = "sum"
+            metric["denominator"]["fact"] = "order"
+    sitewide_defs_path = tmp / "sitewide_defs.yaml"
+    sitewide_defs_path.write_text(yaml.safe_dump(sitewide_defs, sort_keys=False))
+    sitewide_analysis = Analysis("exp_main", sitewide_defs_path, con)
+    clustered_sitewide_analysis = Analysis("exp_cluster", sitewide_defs_path, con)
 
     main = Analysis("exp_main", defs_path, con)
     cuped = Analysis("exp_cuped", defs_path, con)
@@ -583,7 +612,9 @@ def native(tmp_path_factory):
         export_rows: Any
         export_metrics: Any
         analysis: Any
+        sitewide_analysis: Any
         clustered_analysis: Any
+        sitewide_clustered_analysis: Any
         run = main.run()
         seq_run = _main_with_always_valid_inference(defs_path, con).run()
         cuped_run = cuped.run(decision_method=Method(name="cuped", variance_reduction="cuped"))
@@ -596,7 +627,9 @@ def native(tmp_path_factory):
     Native.export_rows = export_rows
     Native.export_metrics = {row["metric"] for row in export_rows}
     Native.analysis = main
+    Native.sitewide_analysis = sitewide_analysis
     Native.clustered_analysis = clustered
+    Native.sitewide_clustered_analysis = clustered_sitewide_analysis
     return Native
 
 
@@ -1024,7 +1057,7 @@ def test_sitewide(metric_type, native, tmp_path):
     def probe():
         if metric_type == "quantile":
             return _quantile_experiment_analysis(tmp_path).sitewide("bad_metric")
-        return native.analysis.sitewide(name)
+        return native.sitewide_analysis.sitewide(name)
 
     if cell.status == "refused":
         _expect_refusal(cell, probe)
@@ -1032,6 +1065,16 @@ def test_sitewide(metric_type, native, tmp_path):
     impact = probe()
     assert math.isfinite(impact.absolute_impact)
     assert impact.absolute_impact_lb <= impact.absolute_impact <= impact.absolute_impact_ub
+
+
+@pytest.mark.parametrize(
+    "metric_name",
+    ("revenue", "purchase_rate", "rev_per_order"),
+)
+def test_sitewide_refuses_windowed_metrics(metric_name, native):
+    with pytest.raises(CapabilityError) as excinfo:
+        native.analysis.sitewide(metric_name)
+    assert excinfo.value.code == "facade.analysis.sitewide_metric_unaligned"
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
@@ -1129,7 +1172,7 @@ def test_capability_pairs(pair, native):
             cluster="seg",
         ),
         ("cluster", "export"): lambda: native.clustered_analysis.export("unreachable.parquet"),
-        ("cluster", "sitewide"): lambda: native.clustered_analysis.sitewide("revenue"),
+        ("cluster", "sitewide"): lambda: native.sitewide_clustered_analysis.sitewide("revenue"),
         ("cluster", "encouragement"): lambda: readouts.run(
             clustered_src(uptake="uptake", design=_ENCOURAGEMENT)
         ),

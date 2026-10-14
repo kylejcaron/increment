@@ -332,15 +332,18 @@ MATRIX: dict[str, dict[str, Cell]] = {
     },
     "sitewide": {
         "mean": S(
-            note="assigned intent-to-treat sitewide impact is supported under a declared trigger"
+            note="randomized identification only; an unwindowed sum or count outcome aligns with the calendar-window site total; windowed or non-additive metrics are refused for both populations"
         ),
-        "conversion": S(
-            note="assigned intent-to-treat sitewide impact is supported under a declared trigger"
+        "conversion": R(
+            "converter indicators are not additive across events; use a count metric on the conversion fact",
+            CapabilityError,
+            code="facade.analysis.sitewide_metric_unaligned",
         ),
         "ratio": S(
             note=(
-                "numerator and denominator get independent site sums; the assigned "
-                "intent-to-treat impact is supported under a declared trigger"
+                "randomized identification only; numerator and denominator get independent site sums; "
+                "both components must be unwindowed sums or counts; windowed or non-additive components are refused "
+                "for both populations"
             )
         ),
         "retention": R(
@@ -407,7 +410,7 @@ PAIRS: dict[tuple[str, str], Cell] = {
     ),
     ("cluster", "sitewide"): S(
         warns="enrolled units exhaust the treated population",
-        note="mean/conversion/retention/ratio decompose over cluster-grain moments via from_clusters",
+        note="additive mean/ratio components decompose over cluster-grain moments via from_clusters; conversion is refused as non-additive",
         advisory=(
             "Clustered sitewide can miss treated units with no exposure row, "
             "so the relative-impact estimate is a lower bound; the "
