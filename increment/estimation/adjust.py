@@ -33,9 +33,9 @@ from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
-    _estimate_lift,
     _validate_unique_method_names,
     _winsorization_result_fields,
+    estimate_lift,
 )
 from increment.estimation.inference import (
     Prior,
@@ -845,15 +845,9 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     _raise_if_empty: bool = True,
     _prior_scale_judged: bool = False,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    route_alpha: float | None = None,
     evidence: ObservationalEvidence | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_ate`` with the multiplicity routing level and moment evidence its callers pass.
-
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
-    reads a p-value at (see ``_estimate_lift``'s ``route_alpha``): the unadjusted conversion
-    rows of a family are routed at it. Only the package's own families set it; the public
-    function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
+    """``estimate_ate`` with the moment evidence its callers pass.
 
     ``evidence`` is the moment rows a readout already reduced (and sized its family from): every
     method, diagnostic, failed cell and FCR re-estimate of this call reads them. Absent, the call
@@ -947,7 +941,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         null_abs=(null_abs or {}).get(metric.name),
                     )
                 else:
-                    unadj = _estimate_lift(
+                    unadj = estimate_lift(
                         [metric],
                         list(evidence.metric_rows(metric)),
                         design.control_group,
@@ -960,7 +954,6 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         preferred_direction=metric.declared_preferred_direction,
                         cluster=cluster,
                         method_roles=method_roles,
-                        route_alpha=route_alpha,
                     ).results
                 # The docstring promise "labelled accordingly" must be visible
                 # on the row itself, not just the method name, for a report reader.

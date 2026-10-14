@@ -323,7 +323,7 @@ def test_capability_refusal_propagates_after_a_valid_sibling(request, monkeypatc
         if source_fixture == "triggered_warehouse"
         else _analysis(con, plan)
     )
-    estimate_lift = _passes._estimate_lift
+    estimate_lift = _passes.estimate_lift
     attempted = []
 
     def refuse_conversion(*args, **kwargs):
@@ -337,7 +337,7 @@ def test_capability_refusal_propagates_after_a_valid_sibling(request, monkeypatc
             )
         return estimate_lift(*args, **kwargs)
 
-    monkeypatch.setattr(_passes, "_estimate_lift", refuse_conversion)
+    monkeypatch.setattr(_passes, "estimate_lift", refuse_conversion)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:

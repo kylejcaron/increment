@@ -10,13 +10,13 @@ from increment.estimation.adjust import (
     judge_shared_prior_scales,
     weight_diagnostics_projection,
 )
-from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.engine import Method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.results import (
     LiftEstimate,
     _fcr_alpha_for,
+    carry_nominal_evidence,
     open_bound_from_two_sided_at_target,
 )
 from increment.readouts._common import (
@@ -182,9 +182,7 @@ def _estimate_observational_secondary_family(
 
     out: list[LiftEstimate] = []
 
-    def _nominal_pass(
-        metric: Metric, alpha: float, route_alpha: float | None = None
-    ) -> DecisionComputation[LiftEstimate]:
+    def _nominal_pass(metric: Metric, alpha: float) -> DecisionComputation[LiftEstimate]:
         config = config_by_name[metric.name]
         computation = _estimate_ate(
             src,
@@ -201,7 +199,6 @@ def _estimate_observational_secondary_family(
             alternatives=resolved_alternatives or None,
             _raise_if_empty=False,
             _prior_scale_judged=True,
-            route_alpha=route_alpha,
             evidence=evidence,
         )
         if computations is not None:
@@ -218,14 +215,8 @@ def _estimate_observational_secondary_family(
 
     nominal_by_metric: dict[str, list[LiftEstimate]] = {}
     computation_by_metric: dict[str, DecisionComputation[LiftEstimate]] = {}
-    # The family reads each p-value at a threshold as small as ``q / m`` (``m`` its metric x arm
-    # hypotheses): route its members at that level, never a looser one. ``m`` counts the arms of
-    # the very evidence every estimate below is computed from.
-    control = str(design.control_group)
-    hypotheses = sum(len(evidence.arms(metric) - {control}) for metric in family)
-    route_alpha = family_route_alpha(plan.q, hypotheses)
     for metric in family:
-        computation = _nominal_pass(metric, plan.alpha, route_alpha)
+        computation = _nominal_pass(metric, plan.alpha)
         nominal_by_metric[metric.name] = list(computation.results)
         computation_by_metric[metric.name] = computation
 
@@ -338,7 +329,7 @@ def _estimate_observational_secondary_family(
                     ),
                     None,
                 )
-                stamped = match if match is not None else row
+                stamped = carry_nominal_evidence(row, match) if match is not None else row
             else:
                 stamped = row
             out.append(

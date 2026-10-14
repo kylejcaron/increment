@@ -57,9 +57,9 @@ line and the next action). ``mirror`` compares the plan with the simulated rejec
 ``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
 
 A decision row of a multiplicity family is read below its own level. ``composite`` measures
-the per-row composite p-value such a row would carry when it routes and cuts its interval at
-its nominal level: its delta p-value when that is at least ``U``, the smallest level at which
-its own counts are dense (``dense_level_tail``, the runtime's rule inverted count by count),
+the per-row composite p-value such a row carries when it routes and cuts its interval at its
+nominal level: its delta p-value when that is at least ``U``, the smallest level at which its
+own counts are dense (the runtime's ``dense_level_tail``, its rule inverted count by count),
 and otherwise the smaller of its exact p-value and ``U``. Read at any level ``u``, the
 composite rejects pair by pair only where the pipeline routed by counts at ``u`` rejects --
 its delta row at ``u`` on the pairs dense at ``u``, its finite-sample test at ``u`` on the
@@ -103,7 +103,12 @@ from scipy.stats import norm as _norm
 
 from increment.errors import CodedError, raiser, refusals
 from increment.estimation._tails import student_t_isf
-from increment.estimation.conversion_route import _DENSE_SLOPE, dense_min_count, routed_share
+from increment.estimation.conversion_route import (
+    _DENSE_SLOPE,
+    dense_level_tail,
+    dense_min_count,
+    routed_share,
+)
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
     scientific_delta,
@@ -1176,26 +1181,6 @@ def replicate_check(
 
 
 # --- Composite p-value of a family decision row ----------------------------------------------
-
-
-def dense_level_tail(smallest: int) -> float | None:
-    """The least one-sided tail at which a contrast whose smallest per-arm success or failure
-    count is ``smallest`` is dense: the smallest float ``t`` with ``dense_min_count(t) <=
-    smallest``, so the contrast is dense at every tail from it up and at none below it
-    (``dense_min_count`` does not increase with the tail below one half, apart from isolated
-    floats where the normal quantile's own rounding steps the wrong way, which
-    ``dense_level_check`` counts). The closed-form inversion of the ``z ** 4`` law,
-    ``Phi_bar((smallest / 145) ** 0.25)``, is moved by whole floats until the runtime's rule
-    agrees on both sides of it. ``None`` below the floor, where no tail is dense. The level of
-    a request whose tail this is: twice it two-sided, itself directional (``_level``)."""
-    if smallest < dense_min_count(0.5):
-        return None
-    tail = float(_norm.sf((smallest / _DENSE_SLOPE) ** 0.25))
-    while dense_min_count(tail) > smallest:
-        tail = _next_up(tail)
-    while dense_min_count(_next_down(tail)) <= smallest:
-        tail = _next_down(tail)
-    return tail
 
 
 #: Floats either side of a dense level over which ``dense_level_check`` reads the rule.

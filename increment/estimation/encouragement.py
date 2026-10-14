@@ -62,7 +62,6 @@ from increment.estimation.cuped import fit_cuped
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
-    _estimate_lift,
     _validate_methods,
     _warn_if_open_ended_sequential,
     _winsorization_result_fields,
@@ -955,7 +954,6 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     cluster: str | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
-    route_alpha: float | None,
 ) -> _PreparedEncouragementEstimation | DecisionComputation[LiftEstimate]:
     """Resolve request policy, index arms, and delegate ITT construction."""
     if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -1001,7 +999,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     itt_bundle: DecisionComputation[LiftEstimate] | None = None
     results: tuple[LiftEstimate, ...] = ()
     if "itt" in estimands:
-        itt_bundle = _estimate_lift(
+        itt_bundle = estimate_lift(
             metrics,
             summary,
             control_group=design.control_group,
@@ -1014,7 +1012,6 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
             inference=inference,
             cluster=cluster,
             method_roles=resolved_method_roles,
-            route_alpha=route_alpha,
         )
         results = tuple(
             r.model_copy(
@@ -1651,47 +1648,6 @@ def estimate_encouragement(  # noqa: PLR0913
     ``inference``, and any ratio metric on any estimand; withholds the
     complier-relative ``late`` row (unbuilt moment family).
     """
-    return _estimate_encouragement(
-        metrics,
-        summary,
-        design,
-        estimands=estimands,
-        methods=methods,
-        prior=prior,
-        alpha=alpha,
-        alternative=alternative,
-        null_lift=null_lift,
-        null_abs=null_abs,
-        inference=inference,
-        cluster=cluster,
-        method_roles=method_roles,
-    )
-
-
-def _estimate_encouragement(  # noqa: PLR0913
-    metrics: Sequence[Metric],
-    summary: SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]],
-    design: Encouragement,
-    *,
-    estimands: Sequence[str] = ESTIMANDS,
-    methods: list[Method] | None = None,
-    prior: Prior | None = None,
-    alpha: float | None = None,
-    alternative: str | None = None,
-    null_lift: float | None = None,
-    null_abs: float | None = None,
-    inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
-    cluster: str | None = None,
-    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    route_alpha: float | None = None,
-) -> DecisionComputation[LiftEstimate]:
-    """``estimate_encouragement`` with the multiplicity routing level its families pass.
-
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
-    reads an ``itt`` p-value at (see ``_estimate_lift``'s ``route_alpha``): the ``itt`` rows of
-    a conversion metric are routed at it. Only the package's own families set it; the public
-    function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
-    """
     _require_exclusion_for_late(design, estimands)
     if inference is not None:
         from increment.estimation.decision_types import DecisionComputation
@@ -1759,7 +1715,6 @@ def _estimate_encouragement(  # noqa: PLR0913
         inference,
         cluster,
         method_roles,
-        route_alpha,
     )
     if not isinstance(prepared, _PreparedEncouragementEstimation):
         return prepared

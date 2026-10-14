@@ -62,13 +62,11 @@ from increment.errors import (
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
-from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
     UNBOUNDED_RETENTION_DAILY_REMEDY,
     Method,
-    _estimate_lift,
     _validate_methods,
     estimate_lift,
     reject_unbounded_retention,
@@ -84,6 +82,7 @@ from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.readout_types import register_collection_types
 from increment.estimation.results import (
     BinomialConfidenceSet,
+    DeltaConversionEvidence,
     Estimate,
     LiftEstimate,
     RelativeConfidenceSet,
@@ -93,8 +92,11 @@ from increment.estimation.results import (
     _RowIdentity,
     _sequential_display_parts,
     _validate_absolute_reference_fields,
+    _validate_delta_evidence,
     _validate_joint_relative_row,
     _validate_reference_fields,
+    carry_nominal_evidence,
+    conversion_route_label,
     open_bound_from_two_sided_at_target,
     row_p_value,
     row_stat_sig,
@@ -541,6 +543,7 @@ _FAMILY_VIEW_FIELDS = (
     "relative_confidence_set",
     "relative_unavailable_reason",
     "binomial_set",
+    "delta_evidence",
     "estimand",
     "value_scale",
     "note",
@@ -650,6 +653,11 @@ class BreakoutEstimate(_RowIdentity):
     # per `binomial_set.point_available`); see `_lift_or_excluded`.
     sequential_result: SequentialResult | None = None
     binomial_set: BinomialConfidenceSet | None = None
+    # The count evidence of every conversion row the count rule routed to the delta method
+    # (see LiftEstimate.delta_evidence); None for every other row.
+    delta_evidence: DeltaConversionEvidence | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     estimand: str = "itt"
     value_scale: ValueScale = "relative"  # mirrors LiftEstimate.value_scale
     note: str | None = None  # guard fallbacks / suppression reasons / caveats
@@ -767,6 +775,7 @@ class BreakoutEstimate(_RowIdentity):
             self,
             refusal_code="breakout.breakout.exactly_one_lift",
         )
+        _validate_delta_evidence(self)
         return self
 
     def require_lift(self) -> Estimate:
@@ -891,6 +900,9 @@ class BreakoutEstimate(_RowIdentity):
             f"value={value} ({self.value_scale})",
             interval,
         ]
+        route = conversion_route_label(self)
+        if route is not None:
+            details.append(f"route={route!r}")
         if self.relative_unavailable_reason is not None:
             details.append(f"relative_unavailable_reason={self.relative_unavailable_reason!r}")
         if self.abs_diff is not None:
@@ -1002,6 +1014,7 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "abs_reference_kind": source.abs_reference_kind,
         "abs_reference_df": source.abs_reference_df,
         "abs_alpha": source.abs_alpha,
+        "delta_evidence": source.delta_evidence,
     }
     copied.update({name: getattr(source, name) for name in _RowIdentity.model_fields})
     copied["analysis_population"] = source.analysis_population
@@ -1272,6 +1285,11 @@ class DailyLiftEstimate(_RowIdentity):
     # `binomial_set.point_available`); see `_lift_or_unavailable`.
     sequential_result: SequentialResult | None = None
     binomial_set: BinomialConfidenceSet | None = None
+    # The count evidence of every conversion row the count rule routed to the delta method
+    # (see LiftEstimate.delta_evidence); None for every other row.
+    delta_evidence: DeltaConversionEvidence | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     # Sufficient counts/method for every exact-binomial-estimated row
     # (point-backed or not); None for every other row.
     estimand: str = "itt"  # "itt" | "compliance" | "late" (mirrors LiftEstimate)
@@ -1430,6 +1448,7 @@ class DailyLiftEstimate(_RowIdentity):
             self,
             refusal_code="breakout.daily_lift.exactly_one_unavailable",
         )
+        _validate_delta_evidence(self)
         return self
 
     def require_lift(self) -> Estimate:
@@ -1530,6 +1549,9 @@ class DailyLiftEstimate(_RowIdentity):
             parts.append("estimate=unavailable")
 
         parts.extend(self._interval_display_parts())
+        route = conversion_route_label(self)
+        if route is not None:
+            parts.append(f"route={route!r}")
 
         if self.unavailable is not None:
             parts.append(f"unavailable={self.unavailable!r}")
@@ -2089,10 +2111,9 @@ def _estimate_lift_computation_or_reason(
     alternative: str,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
-    route_alpha: float | None = None,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     try:
-        computation = _estimate_lift(
+        computation = estimate_lift(
             metrics=[metric],
             summary=summary,
             control_group=control_group,
@@ -2102,7 +2123,6 @@ def _estimate_lift_computation_or_reason(
             alternative=alternative,
             inference=inference,
             method_roles=method_roles,
-            route_alpha=route_alpha,
         )
         from increment.decision import DecisionComputation
 
@@ -2455,9 +2475,6 @@ class _BreakoutContext(NamedTuple):
     all_pairs: set[tuple[str, str]]
     reliability_floor: int
     resolved_methods: list[Method]
-    # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
-    # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
-    route_alpha: float | None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2822,7 +2839,6 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     methods=method_group,
                     inference=context.inference,
                     method_roles=resolved_roles,
-                    route_alpha=context.route_alpha,
                 )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
@@ -3136,7 +3152,7 @@ def _apply_breakout_family_correction(
             )
         original = results[idx]
         results[idx] = _breakout_estimate_row(
-            match,
+            carry_nominal_evidence(estimate, match),
             dimension=dimension,
             dimension_value=segment_value,
             source=original.source,
@@ -3350,10 +3366,6 @@ def run_breakout(  # noqa: PLR0913
     segment_count = len(segments)
     k = max(segment_count, 1) if correction == "bonferroni" else 1
     alpha_seg = _conservative_divide(alpha, k)
-    # A BH family reads each nominal p-value at a threshold as small as ``q / m``: route each
-    # conversion cell at that level, never at the looser per-segment one.
-    family_size = len(_breakout_family_cells(segments, all_pairs)) if correction == "bh" else 0
-    route_alpha = family_route_alpha(q, family_size)
     results: list[BreakoutEstimate] = []
     segment_computations: dict[tuple[str, str], DecisionComputation[LiftEstimate]] = {}
     warned_open_ended: set[str] = set()
@@ -3383,7 +3395,6 @@ def run_breakout(  # noqa: PLR0913
             all_pairs,
             reliability_floor,
             resolved_methods,
-            route_alpha,
         )
         prepared = _prepare_lift_slice(
             segment_rows,

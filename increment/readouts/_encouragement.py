@@ -5,10 +5,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
 from increment.errors import InvalidRequestError
-from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.encouragement import (
     ESTIMANDS,
-    _estimate_encouragement,
     estimate_compliance,
     estimate_encouragement,
 )
@@ -18,6 +16,7 @@ from increment.estimation.family import decision_cells, family_discovery, select
 from increment.estimation.results import (
     LiftEstimate,
     _fcr_alpha_for,
+    carry_nominal_evidence,
     open_bound_from_two_sided_at_target,
 )
 from increment.readouts._common import (
@@ -69,7 +68,6 @@ class _EncouragementCellGroup(NamedTuple):
     alpha: float
     null_lift: float
     null_abs: float | None
-    route_alpha: float | None
     metrics: list[Metric]
 
 
@@ -81,7 +79,6 @@ def _encouragement_cell_groups(
     alternative_by_metric: Mapping[str, str],
     null_lift_by_metric: Mapping[str, float],
     null_abs_by_metric: Mapping[str, float | None],
-    route_alpha_by_metric: Mapping[str, float | None],
 ) -> list[_EncouragementCellGroup]:
     groups: list[_EncouragementCellGroup] = []
     for metric, config in zip(metrics, configs, strict=True):
@@ -89,7 +86,6 @@ def _encouragement_cell_groups(
         alpha = alpha_by_metric[metric.name]
         null_lift = null_lift_by_metric[metric.name]
         null_abs = null_abs_by_metric[metric.name]
-        route_alpha = route_alpha_by_metric[metric.name]
         metric_methods = _runtime_methods(config, design)
         for group in groups:
             if (
@@ -99,7 +95,6 @@ def _encouragement_cell_groups(
                 and group.alpha == alpha
                 and group.null_lift == null_lift
                 and group.null_abs == null_abs
-                and group.route_alpha == route_alpha
             ):
                 group.metrics.append(metric)
                 break
@@ -112,33 +107,10 @@ def _encouragement_cell_groups(
                     alpha,
                     null_lift,
                     null_abs,
-                    route_alpha,
                     [metric],
                 )
             )
     return groups
-
-
-def _family_route_alphas(
-    metrics: Sequence[Metric],
-    family_metric_names: set[str],
-    rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
-    q: float,
-    control: str,
-) -> dict[str, float | None]:
-    """The level each metric's p-values are routed at: a secondary family reads each ITT p-value
-    at a threshold as small as ``q / m`` (``m`` its metric x arm hypotheses), so its members are
-    routed at that level and never a looser one; every other metric at its own."""
-    hypotheses = sum(
-        len({str(row["group_id"]) for row in rows_by_metric[name]} - {control})
-        for name in family_metric_names
-    )
-    return {
-        metric.name: family_route_alpha(q, hypotheses)
-        if metric.name in family_metric_names
-        else None
-        for metric in metrics
-    }
 
 
 def _compliance_only_rows(src, design, wanted, plan, capture):
@@ -190,7 +162,6 @@ def _prepare_encouragement_groups(metrics, rows_by_metric, configs, design, plan
         cell_alternative_by_metric,
         cell_null_lift_by_metric,
         cell_null_abs_by_metric,
-        _family_route_alphas(metrics, family_metric_names, rows_by_metric, plan.q, control),
     )
     return role_by_metric, family_metric_names, groups
 
@@ -250,7 +221,7 @@ def encouragement_rows(
         summary = [row for m in group.metrics for row in rows_by_metric[m.name]]
         method_roles = _runtime_method_roles(group.methods)
         try:
-            computation = _estimate_encouragement(
+            computation = estimate_encouragement(
                 metrics=group.metrics,
                 summary=summary,
                 design=design,
@@ -263,7 +234,6 @@ def encouragement_rows(
                 null_abs=group.null_abs,
                 cluster=cluster,
                 method_roles=method_roles,
-                route_alpha=group.route_alpha,
             )
         except InvalidRequestError as exc:
             if exc.code != "estimation.encouragement.control.missing" or any(
@@ -531,7 +501,7 @@ def _select_encouragement_family(
                 )
             )
             continue
-        base = match if match is not None else r
+        base = carry_nominal_evidence(r, match) if match is not None else r
         out.append(
             base.model_copy(
                 update={

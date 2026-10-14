@@ -709,10 +709,16 @@ _FAMILY_FIELDS = (
     "family_nominal_alpha",
     "family_size",
 )
-#: Reissued interval fields and their disclosures; everything else is the row's own.
+#: Reissued interval fields and their disclosures; everything else is the row's own. A
+#: delta-route conversion row reissued below its dense level becomes an exact binomial row, so
+#: the reference and the route evidence travel with the interval.
 _INTERVAL_FIELDS = (
     "lift",
     "binomial_set",
+    "delta_evidence",
+    "reference_kind",
+    "reference_df",
+    "dof",
     "relative_confidence_set",
     "abs_lb",
     "abs_ub",
@@ -922,6 +928,8 @@ def _stamped[R: BaseModel](row: R, view: LiftEstimate | None, **family: object) 
     data: dict[str, Any] = {name: getattr(row, name) for name in fields}
     if view is not None:
         data.update({name: getattr(view, name) for name in _INTERVAL_FIELDS})
+        if "scale" in fields:
+            data["scale"] = view.scale
     data.update(family)
     data["multiplicity_status"] = "exploratory_family"
     return type(row)(**data)
