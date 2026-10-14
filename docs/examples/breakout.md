@@ -1,9 +1,8 @@
 # Breakouts
 
-This notebook shows per-segment lift breakdowns and per-day metric and lift
-trends. It uses the same estimator as the end-to-end notebook, sliced by a
-declared breakout dimension and calendar day rather than collapsed into one
-top-line number.
+See lift by declared segment and track metrics and lift by day. The analysis
+uses the same estimator as the end-to-end notebook, but reports each breakout
+and day instead of one overall result.
 
 [Open the notebook in a full browser tab](breakout.html)
 
