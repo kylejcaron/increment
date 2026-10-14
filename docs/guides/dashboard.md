@@ -95,6 +95,12 @@ dashboard remains assigned-only.
 Switching populations retains the selected Readout metric and Explore scope,
 metric, and series controls when those selections exist in both views.
 
+The Health tab keeps the allocation summary and available, warning, and
+unavailable checks visible. Checks that do not apply because no trigger is
+declared collapse into one summary line; diagnostic codes and context are in
+the **Technical details** disclosure.
+
+
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
 checks. Triggered-cohort inference is appropriate only if triggering is

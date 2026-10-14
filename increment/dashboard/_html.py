@@ -313,7 +313,7 @@ def _primary_status(tone: str, *, significant: bool) -> str:
 
 
 def render_health(snapshot: DashboardSnapshot) -> mo.Html:
-    """The allocation and caveat section, shown above the results."""
+    """The allocation, applicable checks, and caveat section shown above results."""
     return _section(
         "health",
         "Experiment health",
@@ -325,6 +325,7 @@ def render_health(snapshot: DashboardSnapshot) -> mo.Html:
             else ""
         )
         + _health_checks_block(snapshot.health)
+        + _technical_details_block(snapshot)
         + _flags_block(snapshot)
         + _caveats_block(snapshot),
     )
@@ -343,7 +344,7 @@ def _allocation_block(
         title = "Assigned-population assignment integrity"
     heading = f"<h3>{esc(title)}</h3>"
     if allocation is None:
-        code, reason = refusal or ("", "")
+        code = refusal[0] if refusal is not None else ""
         not_checked = code == "dashboard.allocation_not_applicable"
         label = (
             (
@@ -358,12 +359,7 @@ def _allocation_block(
                 else "Assignment integrity unavailable; this is not a passing check."
             )
         )
-        return (
-            heading
-            + _status("warn", label)
-            + f'<p class="inc-dashboard-code">{esc(code)}</p>'
-            + f'<p class="inc-dashboard-reason">{esc(reason)}</p>'
-        )
+        return heading + _status("warn", label)
     enrolled = sum(allocation.observed.values())
     verdict = allocation_verdict(allocation, population=population)
     return (
@@ -381,8 +377,23 @@ def _allocation_block(
 def _health_checks_block(report: ExperimentHealth | None) -> str:
     if report is None:
         return ""
-    blocks: list[str] = ['<h3 class="inc-dashboard-subheading">Additional diagnostics</h3>']
-    for check in report.checks:
+    inapplicable_trigger = [
+        check
+        for check in report.checks
+        if check.analysis_population == "triggered"
+        and check.availability == "not_applicable"
+        and check.context.get("reason") == "This experiment does not declare a trigger."
+    ]
+    checks = [
+        check
+        for check in report.checks
+        if check not in inapplicable_trigger
+        and not (check.check == "assigned_allocation" and check.availability == "available")
+    ]
+    blocks: list[str] = []
+    if checks:
+        blocks.append('<h3 class="inc-dashboard-subheading">Additional checks</h3>')
+    for check in checks:
         identity = [check.analysis_population]
         if check.metric is not None:
             identity.append(f"metric {check.metric}")
@@ -392,13 +403,13 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
             f"<h4>{esc(check.check.replace('_', ' ').title())} "
             f'<span class="inc-dashboard-note">({esc(", ".join(identity))})</span></h4>'
         )
-        if check.availability == "not_applicable":
-            line = "Not applicable; this is not an evaluated check."
-            tone = "warn"
-        elif check.availability == "unavailable":
+        if check.availability == "unavailable":
             line = "Unavailable; this is not a passing check."
             tone = "warn"
-        elif check.conclusion == "warning":
+        elif check.availability == "not_applicable":
+            line = "Not applicable; this is not an evaluated check."
+            tone = "warn"
+        elif check.availability == "warning" or check.conclusion == "warning":
             line = "Warning; inspect the available diagnostic evidence."
             tone = "bad"
         elif check.conclusion == "not_rejected":
@@ -408,11 +419,6 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
             line = "Descriptive evidence; it does not test the assumption."
             tone = "neutral"
         body = heading + _status(tone, line)
-        if check.code is not None:
-            body += f'<p class="inc-dashboard-code">{esc(check.code)}</p>'
-        reason = check.context.get("reason")
-        if reason is not None:
-            body += f'<p class="inc-dashboard-reason">{esc(str(reason))}</p>'
         route = check.context.get("route")
         if route is not None:
             body += (
@@ -423,28 +429,54 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
                 ["Arm", "Observed trigger rate"],
                 [[esc(arm), f"{rate:.1%}"] for arm, rate in sorted(check.rates.items())],
             )
-        for key in (
-            "counterfactual_trigger_invariance",
-            "trigger_order_stationarity",
-            "no_effect_before_trigger",
-            "triggered_look_predictability",
-            "family_guarantee_status",
-            "family_guarantee",
-            "observed_edge",
-            "finalized_edge",
-            "watermark",
-        ):
-            value = check.context.get(key)
-            if value is not None or key in check.context:
-                body += (
-                    f'<p class="inc-dashboard-note"><strong>{esc(key.replace("_", " ").title())}:'
-                    f"</strong> {esc(str(value))}</p>"
-                )
-        risk = check.context.get("risk")
-        if isinstance(risk, (tuple, list)):
-            body += _list([esc(str(item)) for item in risk], css_class="inc-dashboard-caveats")
         blocks.append(body)
+    if inapplicable_trigger:
+        blocks.append(
+            '<p class="inc-dashboard-note">'
+            f"{len(inapplicable_trigger)} trigger checks don't apply: no trigger declared."
+            "</p>"
+        )
     return "".join(blocks)
+
+
+def _technical_details_block(snapshot: DashboardSnapshot) -> str:
+    details: list[str] = []
+    for label, refusal in (
+        ("Assigned allocation", snapshot.allocation_refusal),
+        ("Assigned allocation history", snapshot.allocation_history_refusal),
+        ("Triggered allocation", snapshot.triggered_allocation_refusal),
+        ("Triggered allocation history", snapshot.triggered_allocation_history_refusal),
+    ):
+        if refusal is not None:
+            code, reason = refusal
+            details.append(
+                f"<h4>{esc(label)}</h4><dl><dt>Code</dt><dd>{esc(code)}</dd>"
+                f"<dt>Reason</dt><dd>{esc(reason)}</dd></dl>"
+            )
+    if snapshot.health is not None:
+        for check in snapshot.health.checks:
+            if check.code is None and not check.context:
+                continue
+            identity = [check.analysis_population]
+            if check.metric is not None:
+                identity.append(f"metric {check.metric}")
+            if check.feed is not None:
+                identity.append(f"feed {check.feed}")
+            values = []
+            if check.code is not None:
+                values.append(f"<dt>Code</dt><dd>{esc(check.code)}</dd>")
+            values.extend(
+                f"<dt>{esc(key.replace('_', ' ').title())}</dt><dd>{esc(value)}</dd>"
+                for key, item in check.context.items()
+                for value in [str(item)]
+            )
+            details.append(
+                f"<h4>{esc(check.check.replace('_', ' ').title())} "
+                f"({esc(', '.join(identity))})</h4><dl>{''.join(values)}</dl>"
+            )
+    if not details:
+        return ""
+    return _disclosure("Technical details", "".join(details))
 
 
 def _allocation_history_table(

@@ -534,6 +534,40 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "candidate" in html
 
 
+def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_allocation(
+    pricing: DashboardSnapshot,
+) -> None:
+    html = render_health(pricing).text
+    assert html.count("5 trigger checks don't apply: no trigger declared.") == 1
+    visible = html[: html.index("<summary>Technical details</summary>")]
+    assert "Assigned Allocation" not in visible
+    assert "Not applicable; this is not an evaluated check." not in visible
+
+
+def test_health_lists_every_triggered_check(tmp_path) -> None:
+    from tests.test_dashboard_population import _triggered_dashboard
+
+    analysis = _triggered_dashboard(tmp_path)
+    try:
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+        )
+        html = render_health(snapshot).text
+        health = snapshot.health
+        assert health is not None
+        triggered_checks = [
+            check
+            for check in health.checks
+            if check.analysis_population == "triggered" and check.availability != "not_applicable"
+        ]
+        assert triggered_checks
+        for check in triggered_checks:
+            assert check.check.replace("_", " ").title() in html
+    finally:
+        analysis.close()
+
+
 def test_health_renderer_consumes_restored_health_report(
     pricing: DashboardSnapshot, tmp_path: Path
 ) -> None:
@@ -588,7 +622,15 @@ def test_health_renderer_consumes_restored_health_report(
         )
     )
     restored = ExperimentHealth.model_validate_json(report.model_dump_json())
-    snapshot = dataclasses.replace(pricing, health=restored)
+    snapshot = dataclasses.replace(
+        pricing,
+        health=restored,
+        allocation=None,
+        allocation_refusal=(
+            "integrity.allocation_scheme_missing",
+            "independent assignment was not declared",
+        ),
+    )
     html_path = tmp_path / "health.html"
     html_path.write_text(render_health(snapshot).text)
     html = html_path.read_text()
@@ -605,6 +647,16 @@ def test_health_renderer_consumes_restored_health_report(
         value = restored.checks[-1].context[condition]
         assert isinstance(value, str)
         assert value in html
+    assert "Declare allocation_scheme" in html[: html.index("<summary>Technical details</summary>")]
+    technical = re.search(
+        r"<details[^>]*><summary>Technical details</summary>(.*?)</details>", html, re.DOTALL
+    )
+    assert technical is not None
+    assert "integrity.allocation_scheme_missing" in technical.group(1)
+    assert "Counterfactual Trigger Invariance" in technical.group(1)
+    assert "pre-trigger assumption sentinel" in technical.group(1)
+    assert "integrity.allocation_scheme_missing" not in html[: html.index("<details")]
+    assert "Assignment-law admission" not in html[: html.index("<details")]
 
 
 def test_both_experiments_share_the_same_sections(
@@ -1802,8 +1854,12 @@ def test_health_renders_not_applicable_allocation_as_not_checked(
     assert snapshot.allocation_history_refusal == snapshot.allocation_refusal
     html = render_health(snapshot).text
     assert "not checked" in html.lower()
-    assert "integrity.allocation_scheme_missing" in html
     assert "independent assignment was not declared" in html
+    technical = re.search(
+        r"<details[^>]*><summary>Technical details</summary>(.*?)</details>", html, re.DOTALL
+    )
+    assert technical is not None
+    assert "integrity.allocation_scheme_missing" in technical.group(1)
 
 
 @pytest.mark.slow
