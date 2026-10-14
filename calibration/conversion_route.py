@@ -56,6 +56,18 @@ refuses what names neither (a ``CheckpointError``: its code names the reason, it
 line and the next action). ``mirror`` compares the plan with the simulated rejection rate of
 ``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
 
+A decision row of a multiplicity family is read below its own level. ``composite`` measures
+the per-row composite p-value such a row would carry when it routes and cuts its interval at
+its nominal level: its delta p-value when that is at least ``U``, the smallest level at which
+its own counts are dense (``dense_level_tail``, the runtime's rule inverted count by count),
+and otherwise the smaller of its exact p-value and ``U``. Read at any level ``u``, the
+composite rejects pair by pair only where the pipeline routed by counts at ``u`` rejects --
+its delta row at ``u`` on the pairs dense at ``u``, its finite-sample test at ``u`` on the
+rest -- so ``composite_noncoverage`` sums both from the same runtime decisions over the
+lattice, with the nominal route read at ``u`` beside them, at the cells where the pipeline
+at ``u`` and the nominal route are worst, and ``composite_readings`` compares the persisted
+exact p-value, read at the nominal tail, with the finite-sample decision at ``u``.
+
 Every lattice sum streams over blocks of control counts (``_BLOCK_CELLS`` cells each), so a
 worker's footprint stays near a gibibyte whatever the arm sizes: the largest boundary cell has
 a count lattice of tens of millions of cells.
@@ -67,6 +79,7 @@ a count lattice of tens of millions of cells.
     python -m calibration.conversion_route hybrid --workers 4 --tails 0.025 0.01
     python -m calibration.conversion_route bound --workers 4 --out /tmp/route-bound.jsonl
     python -m calibration.conversion_route mirror --reps 3000 --workers 4
+    python -m calibration.conversion_route composite --workers 4 --tails 0.005 0.0005 --power
 """
 
 from __future__ import annotations
@@ -90,7 +103,7 @@ from scipy.stats import norm as _norm
 
 from increment.errors import CodedError, raiser, refusals
 from increment.estimation._tails import student_t_isf
-from increment.estimation.conversion_route import dense_min_count, routed_share
+from increment.estimation.conversion_route import _DENSE_SLOPE, dense_min_count, routed_share
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
     scientific_delta,
@@ -882,16 +895,20 @@ def _finite_blocks(
 
 
 def _decision_key(
-    cell: Cell, *, alpha: float, alternative: Literal["two-sided", "greater", "less"]
+    cell: Cell,
+    *,
+    alpha: float,
+    alternative: Literal["two-sided", "greater", "less"],
+    null_ratio: float | None = None,
 ) -> BinomialDecision:
-    """The runtime's finite-sample decision of ``cell``'s contrast at its true ratio."""
+    """The runtime's finite-sample decision of ``cell``'s contrast at ``null_ratio`` (its true
+    ratio unless given)."""
     from increment.estimation.binomial_rr import nuisance_beta
     from increment.power._binomial import BinomialDecision
 
     tail = _tail(alpha, alternative)
-    return BinomialDecision(
-        cell.n_c, cell.n_t, cell.p_t / cell.p_c, nuisance_beta(alpha), tail, alternative
-    )
+    ratio = cell.p_t / cell.p_c if null_ratio is None else null_ratio
+    return BinomialDecision(cell.n_c, cell.n_t, ratio, nuisance_beta(alpha), tail, alternative)
 
 
 def _count_windows(cell: Cell) -> tuple[_Window, _Window]:
@@ -1156,6 +1173,462 @@ def replicate_check(
             flush=True,
         )
     return ok
+
+
+# --- Composite p-value of a family decision row ----------------------------------------------
+
+
+def dense_level_tail(smallest: int) -> float | None:
+    """The least one-sided tail at which a contrast whose smallest per-arm success or failure
+    count is ``smallest`` is dense: the smallest float ``t`` with ``dense_min_count(t) <=
+    smallest``, so the contrast is dense at every tail from it up and at none below it
+    (``dense_min_count`` does not increase with the tail below one half, apart from isolated
+    floats where the normal quantile's own rounding steps the wrong way, which
+    ``dense_level_check`` counts). The closed-form inversion of the ``z ** 4`` law,
+    ``Phi_bar((smallest / 145) ** 0.25)``, is moved by whole floats until the runtime's rule
+    agrees on both sides of it. ``None`` below the floor, where no tail is dense. The level of
+    a request whose tail this is: twice it two-sided, itself directional (``_level``)."""
+    if smallest < dense_min_count(0.5):
+        return None
+    tail = float(_norm.sf((smallest / _DENSE_SLOPE) ** 0.25))
+    while dense_min_count(tail) > smallest:
+        tail = _next_up(tail)
+    while dense_min_count(_next_down(tail)) <= smallest:
+        tail = _next_down(tail)
+    return tail
+
+
+#: Floats either side of a dense level over which ``dense_level_check`` reads the rule.
+_LEVEL_NEIGHBOURHOOD = 32
+
+
+def dense_level_check(through: int, *, stride: int) -> tuple[int, int, int]:
+    """``(checked, nudged, glitches)`` over the counts from the floor through ``through``: every
+    count's dense level satisfies the rule on both sides (an assertion), ``nudged`` is the most
+    floats any closed-form inversion had to move, and ``glitches`` the counts, one in every
+    ``stride``, within ``_LEVEL_NEIGHBOURHOOD`` floats of whose level the rule steps up with
+    the tail."""
+    checked = nudged = glitches = 0
+    for smallest in range(dense_min_count(0.5), through + 1):
+        level = dense_level_tail(smallest)
+        assert level is not None
+        assert dense_min_count(level) <= smallest < dense_min_count(_next_down(level))
+        checked += 1
+        start = float(_norm.sf((smallest / _DENSE_SLOPE) ** 0.25))
+        moved = 0
+        while start != level:
+            start = _next_up(start) if start < level else _next_down(start)
+            moved += 1
+        nudged = max(nudged, moved)
+        if (smallest - dense_min_count(0.5)) % stride:
+            continue
+        below, above = [level], [level]
+        for _ in range(_LEVEL_NEIGHBOURHOOD):
+            below.append(_next_down(below[-1]))
+            above.append(_next_up(above[-1]))
+        counts = [dense_min_count(t) for t in [*reversed(below[1:]), *above]]
+        glitches += any(b > a for a, b in zip(counts, counts[1:], strict=False))
+    return checked, nudged, glitches
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeNoncoverage:
+    """Exact per-side rejection mass at one cell, read at a level below the row's nominal one:
+    of the composite p-value, of the pipeline routed by counts at the read level, and of the
+    nominal route read at that level. ``nominal_share`` is the mass dense at the nominal tail,
+    ``read_share`` the mass dense at the read tail, ``escalated`` the mass between the two
+    whose delta p-value is below its own dense level (the rows that need an exact p-value),
+    and ``undominated`` the mass the composite rejects and the pipeline at the read level does
+    not."""
+
+    lower: float
+    upper: float
+    pipeline_lower: float
+    pipeline_upper: float
+    nominal_lower: float
+    nominal_upper: float
+    nominal_share: float
+    read_share: float
+    escalated: float
+    undominated: float
+    omitted: float
+
+
+def _delta_p_values(
+    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int, log_null: float, alternative: str
+) -> np.ndarray:
+    """The delta-method route's p-value at ``log_null`` for count arrays with ``0 < x < n``,
+    as ``row_p_value`` forms it from the row's log statistic and Welch reference: a
+    measurement over a lattice, deciding nothing."""
+    from scipy.stats import t as _student
+
+    log_rr, se, df = delta_statistic(x_c, n_c, x_t, n_t)
+    with np.errstate(all="ignore"):
+        z = (log_rr - log_null) / se
+        if alternative == "greater":
+            return _student.sf(z, df)
+        if alternative == "less":
+            return _student.cdf(z, df)
+        return 2.0 * _student.sf(np.abs(z), df)
+
+
+def composite_noncoverage(
+    cell: Cell,
+    *,
+    nominal_tail: float,
+    tail: float,
+    alternative: Alternative = "two-sided",
+    null_lift: float | None = None,
+) -> CompositeNoncoverage:
+    """Exact rejection mass at ``cell`` of a family decision row's composite p-value, read at the
+    level whose one-sided tail is ``tail``, against ``null_lift`` (the cell's true lift unless
+    given, when the mass is noncoverage), summed over the joint binomial law of the counts as
+    ``hybrid_noncoverage`` sums it.
+
+    The row routes at ``nominal_tail``: a pair whose four counts reach
+    ``dense_min_count(nominal_tail)`` is a delta-method row, every other pair a finite-sample
+    row whose p-value is exact. A delta-method row's composite p-value is its delta p-value
+    when that is at least ``U``, the level at which its own counts become dense
+    (``dense_level_tail``), and otherwise the smaller of its exact p-value and ``U``. Read at a
+    level ``u``: a pair dense at ``u`` rejects when its delta row at ``u`` does
+    (`production_decision`, the runtime's own calculation); a pair not dense at ``u`` rejects
+    only when the finite-sample test at ``u`` rejects (``_finite_blocks``, the runtime's
+    replay, run on those pairs) and its delta row at ``U`` rejects (``p_delta < U``, the same
+    runtime calculation at its own dense tail, asked only where the finite-sample test
+    rejects); a finite-sample row rejects when that test does. The pipeline routed by counts at
+    ``u`` is summed from the same decisions, delta at ``u`` where dense at ``u`` and the
+    finite-sample test elsewhere, so the composite's rejections are a subset of its pair by
+    pair. The nominal route read at ``u`` is delta at ``u`` on every pair dense at
+    ``nominal_tail`` and the finite-sample test elsewhere; it and the escalated share are read
+    from the vectorised interval and p-value on the pairs not dense at ``u``: measurements no
+    decision depends on. A side the alternative does not read never rejects."""
+    from increment.estimation.conversion_delta import production_decision
+
+    null = cell.lift if null_lift is None else null_lift
+    log_null = math.log1p(null)
+    window_c, window_t = _count_windows(cell)
+    key = _decision_key(
+        cell, alpha=_level(tail, alternative), alternative=alternative, null_ratio=1.0 + null
+    )
+    floor_nominal, floor_read = dense_min_count(nominal_tail), dense_min_count(tail)
+    own_tails: list[float] = []
+    for count in range(floor_nominal, floor_read):
+        own = dense_level_tail(count)
+        assert own is not None
+        own_tails.append(own)
+    own_levels = np.array([_level(own, alternative) for own in own_tails] + [math.nan])
+    x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
+    totals = np.zeros(10)
+    for rows, plus, minus in _finite_blocks(key, window_c, window_t, floor_read):
+        x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
+        weight = np.outer(window_c.weights[rows], window_t.weights)
+        smallest = np.minimum(np.minimum(x_c, cell.n_c - x_c), np.minimum(x_t, cell.n_t - x_t))
+        nominal = smallest >= floor_nominal
+        read = smallest >= floor_read
+        between = nominal & ~read
+        delta_plus, delta_minus = _delta_decisions(
+            x_c, cell.n_c, x_t, cell.n_t, read, tail=tail, alternative=alternative, null_lift=null
+        )
+        escalated = np.zeros(between.shape, bool)
+        for i, j in np.argwhere(between & (plus | minus)):
+            escalated[i, j] = any(
+                production_decision(
+                    int(x_c[i, 0]),
+                    cell.n_c,
+                    int(x_t[0, j]),
+                    cell.n_t,
+                    tail=own_tails[int(smallest[i, j]) - floor_nominal],
+                    alternative=alternative,
+                    null_lift=null,
+                )
+            )
+        composite_plus = np.where(read, delta_plus, plus & (escalated | ~nominal))
+        composite_minus = np.where(read, delta_minus, minus & (escalated | ~nominal))
+        pipeline_plus = np.where(read, delta_plus, plus)
+        pipeline_minus = np.where(read, delta_minus, minus)
+        low, high = delta_log_bounds(x_c, cell.n_c, x_t, cell.n_t, tail)
+        nominal_plus = np.where(between, (alternative != "less") & (low > log_null), pipeline_plus)
+        nominal_minus = np.where(
+            between, (alternative != "greater") & (high < log_null), pipeline_minus
+        )
+        p_delta = _delta_p_values(x_c, cell.n_c, x_t, cell.n_t, log_null, alternative)
+        levels = own_levels[np.where(between, smallest - floor_nominal, -1)]
+        totals += (
+            weight[composite_plus].sum(),
+            weight[composite_minus].sum(),
+            weight[pipeline_plus].sum(),
+            weight[pipeline_minus].sum(),
+            weight[nominal_plus].sum(),
+            weight[nominal_minus].sum(),
+            weight[nominal].sum(),
+            weight[read].sum(),
+            weight[between & (p_delta < levels)].sum(),
+            weight[(composite_plus & ~pipeline_plus) | (composite_minus & ~pipeline_minus)].sum(),
+        )
+    (
+        lower,
+        upper,
+        pipeline_lower,
+        pipeline_upper,
+        nominal_lower,
+        nominal_upper,
+        nominal_share,
+        read_share,
+        escalated_share,
+        undominated,
+    ) = totals.tolist()
+    return CompositeNoncoverage(
+        lower,
+        upper,
+        pipeline_lower,
+        pipeline_upper,
+        nominal_lower,
+        nominal_upper,
+        nominal_share,
+        read_share,
+        escalated_share,
+        undominated,
+        window_c.omitted + window_t.omitted,
+    )
+
+
+def nominal_boundary_cells(
+    nominal_tail: float, tail: float, factor: float, *, count: int, workers: int = 1
+) -> list[Cell]:
+    """The ``count`` boundary cells at design count ``factor * dense_min_count(nominal_tail)``
+    whose delta-method side, routed at the nominal tail, has the largest noncoverage at
+    ``tail``: the cells where a row routed at its nominal level and read below it is worst."""
+    shipped = dense_min_count(nominal_tail)
+    table = noncoverage_table(factor * shipped, (tail,), threshold=shipped, workers=workers)
+    ranked = sorted(table, key=lambda item: -max(item[1][tail][2], item[1][tail][3]))
+    return [cell for cell, _ in ranked[:count]]
+
+
+def _composite_job(args: tuple[Cell, float, float, Alternative, float | None]):
+    cell, nominal_tail, tail, alternative, null_lift = args
+    return composite_noncoverage(
+        cell, nominal_tail=nominal_tail, tail=tail, alternative=alternative, null_lift=null_lift
+    )
+
+
+def composite_readings(
+    cell: Cell,
+    *,
+    nominal_tail: float,
+    tail: float,
+    alternative: Alternative,
+    probes: int,
+    seed: int,
+) -> tuple[int, int, int, int, float]:
+    """``(compared, rejected, disagreements, raised, gap)``: the exact p-value a row persists,
+    read at its nominal tail with its nominal nuisance budget, against the finite-sample
+    decision at ``tail`` the pipeline replays, on ``probes`` pairs of ``cell`` dense at
+    ``nominal_tail`` but not at ``tail`` whose vectorised delta p-value lies within a factor
+    of three of the read level (at a unit risk ratio, the pairs the exact decision is close
+    on; ``rejected`` counts those it rejects). ``disagreements`` counts the pairs where
+    ``p <= level`` and the replayed rejection differ, ``gap`` the largest distance of such a
+    p-value from the level, and ``raised`` the pairs where the same p-value read at ``tail``
+    instead exceeds the nominal reading: a finer reading never raises a certified bound."""
+    from increment.estimation.binomial_rr import nuisance_beta, null_p_value
+    from increment.power._binomial import PLANNING_CELL_CEILING, RejectionGeometry
+
+    level = _level(tail, alternative)
+    x_c, w_c = _lattice(cell.n_c, cell.p_c)
+    x_t, w_t = _lattice(cell.n_t, cell.p_t)
+    grid_c, grid_t = x_c[:, None], x_t[None, :]
+    smallest = np.minimum(
+        np.minimum(grid_c, cell.n_c - grid_c), np.minimum(grid_t, cell.n_t - grid_t)
+    )
+    between = (smallest >= dense_min_count(nominal_tail)) & (smallest < dense_min_count(tail))
+    log_rr, se, df = delta_statistic(grid_c, cell.n_c, grid_t, cell.n_t)
+    z = (log_rr - cell.truth) / se
+    p_delta = 2.0 * _norm.sf(np.abs(z)) if alternative == "two-sided" else _norm.sf(z)
+    if alternative == "less":
+        p_delta = _norm.cdf(z)
+    near = np.argwhere(between & (p_delta >= level / 3.0) & (p_delta <= 3.0 * level))
+    rng = np.random.default_rng(seed)
+    chosen = near[rng.choice(near.shape[0], size=min(probes, near.shape[0]), replace=False)]
+    key = _decision_key(cell, alpha=level, alternative=alternative)
+    geometry = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING)
+    beta = nuisance_beta(_level(nominal_tail, alternative))
+    ratio = cell.p_t / cell.p_c
+    compared = rejected_count = disagreements = raised = 0
+    gap = 0.0
+    for i, j in chosen:
+        c, t = int(x_c[i]), int(x_t[j])
+        plus, minus = geometry.cells(c, c, t, t)
+        rejected = bool(plus[0, 0] or minus[0, 0])
+        nominal = null_p_value(
+            ratio, c, cell.n_c, t, cell.n_t, beta, alternative=alternative, tail=nominal_tail
+        )
+        read = null_p_value(
+            ratio, c, cell.n_c, t, cell.n_t, beta, alternative=alternative, tail=tail
+        )
+        compared += 1
+        rejected_count += rejected
+        raised += read > nominal
+        if (nominal <= level) != rejected:
+            disagreements += 1
+            gap = max(gap, abs(nominal - level))
+    return compared, rejected_count, disagreements, raised, gap
+
+
+def reading_cell(nominal_tail: float) -> Cell:
+    """The equal-arm central cell at a unit risk ratio and the nominal threshold: the exact
+    p-value and the delta p-value are closest there, so ``composite_readings`` probes the
+    exact decision's edge from the delta p-value."""
+    return next(
+        cell
+        for cell in cells(dense_min_count(nominal_tail))
+        if cell.family == "central" and cell.risk_ratio == 1.0 and cell.n_c == cell.n_t
+    )
+
+
+#: Design counts of the nominal-boundary cells, in units of the nominal threshold: at it, where
+#: half the draws are delta-method rows, and above it, where nearly all are.
+NOMINAL_FACTORS = (1.0, 1.5)
+
+
+def family_power_cells(nominal_tail: float) -> tuple[Cell, ...]:
+    """Central designs every draw of which is a delta-method row at ``nominal_tail``, at lifts
+    whose power at the family's read levels is moderate: where a planner that keeps the
+    finite-sample decision alone below the dense level would overstate a member's power."""
+    n = math.ceil(1.2 * dense_min_count(nominal_tail) / 0.3)
+    return tuple(
+        Cell("central", n, n, 0.3, 0.3 * (1.0 + lift), 1.0 + lift, 0.36 * n)
+        for lift in (0.06, 0.08, 0.1)
+    )
+
+
+def composite(
+    tails: Sequence[float],
+    *,
+    nominal_tails: Sequence[float],
+    workers: int,
+    count: int = 3,
+    boundary_count: int = 2,
+    probes: int = 24,
+    power: bool = False,
+    levels_through: int = 20_000,
+) -> int:
+    """The composite p-value of a family decision row, read below its nominal level, on the
+    exact lattice. First the dense level of every count through ``levels_through``
+    (``dense_level_check``). Then, per nominal tail and each smaller read tail: the ``count``
+    cells straddling the read tail's threshold with the most routed noncoverage there (where
+    the pipeline at the read level is worst) and the ``boundary_count`` cells at each of
+    ``NOMINAL_FACTORS`` times the nominal threshold with the most delta-method noncoverage at
+    the read tail (where the nominal route read there is worst), each two-sided and, at the
+    first cell of each kind, directionally where a production alpha reaches the nominal tail
+    directionally. A cell passes when the composite rejects nothing the pipeline at the read
+    level does not, and its per-tail and two-sided noncoverage are within the repository's
+    tolerance of the read level. Then ``probes`` readings of the persisted exact p-value at
+    the unit-ratio cell of the nominal threshold (``reading_cell``, ``composite_readings``)
+    and, with ``power``, the two rejection masses at the null for ``family_power_cells``."""
+    checked, nudged, glitches = dense_level_check(levels_through, stride=50)
+    print(
+        f"dense levels: {checked} counts through {levels_through} invert the rule on both "
+        f"sides; the closed form moved at most {nudged} floats; {glitches} sampled "
+        f"neighbourhoods step up with the tail",
+        flush=True,
+    )
+    failed = 0
+    for nominal_tail in nominal_tails:
+        alternatives = hybrid_alternatives(nominal_tail)
+        for tail in tails:
+            if tail >= nominal_tail:
+                continue
+            read_cells = hybrid_cells(tail, 0, count=count, workers=workers) if count else []
+            boundary = (
+                [
+                    cell
+                    for factor in NOMINAL_FACTORS
+                    for cell in nominal_boundary_cells(
+                        nominal_tail, tail, factor, count=boundary_count, workers=workers
+                    )
+                ]
+                if boundary_count
+                else []
+            )
+            firsts = {0, len(read_cells)}
+            jobs: list[tuple[Cell, float, float, Alternative, float | None]] = [
+                (cell, nominal_tail, tail, alternative, None)
+                for rank, cell in enumerate([*read_cells, *boundary])
+                for alternative in alternatives
+                if alternative == "two-sided" or rank in firsts
+            ]
+            if power:
+                jobs.extend(
+                    (cell, nominal_tail, tail, "two-sided", 0.0)
+                    for cell in family_power_cells(nominal_tail)
+                )
+            results = (
+                _pool(workers).imap(_composite_job, jobs)
+                if workers > 1
+                else map(_composite_job, jobs)
+            )
+            for (cell, _, _, alternative, null_lift), result in zip(jobs, results, strict=True):
+                failed += not _report_composite(
+                    cell, nominal_tail, tail, alternative, null_lift, result
+                )
+            if not probes:
+                continue
+            compared, rejected, disagreements, raised, gap = composite_readings(
+                reading_cell(nominal_tail),
+                nominal_tail=nominal_tail,
+                tail=tail,
+                alternative="two-sided",
+                probes=probes,
+                seed=20261004,
+            )
+            failed += bool(raised)
+            print(
+                f"readings tail={tail:g} nominal={nominal_tail:g} compared={compared} "
+                f"rejected={rejected} disagree={disagreements} gap={gap:.3g} raised={raised} "
+                f"{'ok' if not raised else 'FAIL'}",
+                flush=True,
+            )
+    return 1 if failed else 0
+
+
+def _report_composite(
+    cell: Cell,
+    nominal_tail: float,
+    tail: float,
+    alternative: Alternative,
+    null_lift: float | None,
+    result: CompositeNoncoverage,
+) -> bool:
+    """Print one composite line and return whether it passes; a line at a null other than the
+    truth reports rejection masses and always passes."""
+    delta = scientific_delta(tail)
+    if null_lift is not None:
+        print(
+            f"power tail={tail:g} nominal={nominal_tail:g} {alternative:<9} "
+            f"cell={cell.family}/{cell.n_c}/{cell.n_t}/rr{cell.risk_ratio:g} null={null_lift:g} "
+            f"nominal_share={result.nominal_share:.3f} escalated={result.escalated:.4f} "
+            f"composite={result.lower + result.upper:.6f} "
+            f"pipeline={result.pipeline_lower + result.pipeline_upper:.6f} "
+            f"nominal_route={result.nominal_lower + result.nominal_upper:.6f}",
+            flush=True,
+        )
+        return True
+    ok = result.undominated == 0.0
+    ok &= max(result.lower, result.upper) <= tail + delta + result.omitted
+    if alternative == "two-sided":
+        level = 2.0 * tail
+        ok &= result.lower + result.upper <= level + scientific_delta(level) + result.omitted
+    print(
+        f"tail={tail:<7g} nominal={nominal_tail:<6g} m={cell.m:<7g} {alternative:<9} "
+        f"cell={cell.family}/{cell.n_c}/{cell.n_t}/rr{cell.risk_ratio:g} "
+        f"nominal_share={result.nominal_share:.3f} read_share={result.read_share:.3f} "
+        f"escalated={result.escalated:.4f} lower={result.lower:.6f} upper={result.upper:.6f} "
+        f"excess={(max(result.lower, result.upper) - tail) / delta:+.3f} "
+        f"pipeline={(max(result.pipeline_lower, result.pipeline_upper) - tail) / delta:+.3f} "
+        f"nominal_route={(max(result.nominal_lower, result.nominal_upper) - tail) / delta:+.3f} "
+        f"undominated={result.undominated:.3g} {'ok' if ok else 'FAIL'}",
+        flush=True,
+    )
+    return bool(ok)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1874,6 +2347,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     mirror_parser.add_argument("--reps", type=int, default=20_000)
     mirror_parser.add_argument("--workers", type=int, default=1)
     mirror_parser.add_argument("--seed", type=int, default=20261004)
+    composite_parser = sub.add_parser(
+        "composite", help="a family row's composite p-value read below its nominal level"
+    )
+    composite_parser.add_argument("--workers", type=int, default=1)
+    composite_parser.add_argument(
+        "--tails", type=float, nargs="+", default=[0.0005, 0.001, 0.005, 0.01]
+    )
+    composite_parser.add_argument("--nominal-tails", type=float, nargs="+", default=[0.025])
+    composite_parser.add_argument("--count", type=int, default=3)
+    composite_parser.add_argument("--boundary-count", type=int, default=2)
+    composite_parser.add_argument("--probes", type=int, default=24)
+    composite_parser.add_argument("--power", action="store_true")
+    composite_parser.add_argument("--levels-through", type=int, default=20_000)
     args = parser.parse_args(argv)
     if args.command == "select":
         return select(
@@ -1907,6 +2393,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         except CheckpointError as refusal:
             print(f"{refusal.code}: {refusal}", file=sys.stderr)
             return 2
+    if args.command == "composite":
+        return composite(
+            args.tails,
+            nominal_tails=args.nominal_tails,
+            workers=args.workers,
+            count=args.count,
+            boundary_count=args.boundary_count,
+            probes=args.probes,
+            power=args.power,
+            levels_through=args.levels_through,
+        )
     return hybrid(
         args.tails, workers=args.workers, count=args.count, replicate_tails=args.replicate_tails
     )

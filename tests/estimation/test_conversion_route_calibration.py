@@ -730,6 +730,100 @@ class TestADirectionalRequestMissesOnlyOnTheSideItReads:
         assert cr.row_misses(row, lift) == (False, False)
 
 
+class TestDenseLevelInvertsTheRule:
+    """``dense_level_tail`` is the least tail the runtime's rule calls dense for a count, read
+    from the rule itself on both sides of it."""
+
+    @pytest.mark.parametrize("smallest", [412, 413, 1_000, 2_140, 6_384, 17_000])
+    def test_the_rule_is_dense_at_the_level_and_not_one_float_below(self, smallest):
+        tail = cr.dense_level_tail(smallest)
+        assert tail is not None
+        assert dense_min_count(tail) <= smallest
+        assert dense_min_count(math.nextafter(tail, 0.0)) > smallest
+
+    def test_below_the_floor_no_tail_is_dense(self):
+        assert cr.dense_level_tail(411) is None
+        assert cr.dense_level_tail(9) is None
+
+    def test_the_floor_count_is_dense_below_the_largest_production_tail(self):
+        tail = cr.dense_level_tail(412)
+        assert tail is not None
+        assert 0.09 < tail < 0.1
+        assert dense_min_count(0.1) == 412
+
+    def test_the_level_does_not_rise_with_the_count(self):
+        tails: list[float] = []
+        for smallest in range(412, 3_000, 7):
+            tail = cr.dense_level_tail(smallest)
+            assert tail is not None
+            tails.append(tail)
+        assert all(b <= a for a, b in zip(tails, tails[1:], strict=False))
+
+
+class TestCompositeNoncoverageDecidesPairsByTheRuntime:
+    """On one count pair, the composite sum rejects as the row's own composite p-value would:
+    a pair dense at the read tail by its delta row there; a pair dense only at the nominal tail
+    by the finite-sample test at the read tail and its delta row at its own dense level; a pair
+    dense at neither by the finite-sample test alone. The pipeline routed at the read tail
+    rejects wherever the composite does."""
+
+    NOMINAL_TAIL = 0.1
+    TAIL = 0.025
+
+    @staticmethod
+    def _cell(n: int, lift: float) -> cr.Cell:
+        return cr.Cell("central", n, n, 0.5, 0.5 * (1.0 + lift), 1.0 + lift, float(n) / 2.0)
+
+    def _composite(self, monkeypatch, counts, lift):
+        x_c, n, x_t, _ = counts
+        _only_the_pair(monkeypatch, x_c, x_t)
+        return cr.composite_noncoverage(
+            self._cell(n, lift), nominal_tail=self.NOMINAL_TAIL, tail=self.TAIL
+        )
+
+    @pytest.mark.parametrize("lift", [0.0, 0.13])
+    def test_a_pair_dense_only_at_the_nominal_tail(self, monkeypatch, lift):
+        counts = (1_500, 3_000, 1_700, 3_000)
+        assert dense_min_count(self.NOMINAL_TAIL) <= 1_300 < dense_min_count(self.TAIL)
+        result = self._composite(monkeypatch, counts, lift)
+        exact = lift_row(counts, alpha=2.0 * self.TAIL, null_lift=lift, mode="finite_sample")
+        assert exact.reference_kind == "binomial"
+        own = cr.dense_level_tail(1_300)
+        assert own is not None
+        delta_at_own = lift_row(counts, alpha=2.0 * own, null_lift=lift)
+        assert delta_at_own.reference_kind == "t"
+        rejected = exact.stat_sig() is True and delta_at_own.stat_sig() is True
+        assert result.nominal_share == 1.0 and result.read_share == 0.0
+        assert result.lower + result.upper == float(rejected)
+        assert result.pipeline_lower + result.pipeline_upper == float(exact.stat_sig() is True)
+        assert result.undominated == 0.0
+        nominal_row = lift_row(counts, alpha=2.0 * self.NOMINAL_TAIL, null_lift=lift)
+        p_value = nominal_row.p_value()
+        assert p_value is not None
+        assert result.escalated == float(p_value < 2.0 * own)
+
+    def test_a_pair_dense_at_neither_tail_is_the_finite_sample_test(self, monkeypatch):
+        counts = (300, 3_000, 400, 3_000)
+        result = self._composite(monkeypatch, counts, 0.0)
+        exact = lift_row(counts, alpha=2.0 * self.TAIL, null_lift=0.0)
+        assert exact.reference_kind == "binomial"
+        assert result.nominal_share == 0.0 and result.escalated == 0.0
+        assert result.lower + result.upper == float(exact.stat_sig() is True)
+        assert result.lower + result.upper == result.pipeline_lower + result.pipeline_upper
+        assert result.lower + result.upper == result.nominal_lower + result.nominal_upper
+
+    def test_a_pair_dense_at_the_read_tail_is_its_delta_row_there(self, monkeypatch):
+        counts = (3_000, 6_000, 3_150, 6_000)
+        assert 2_850 >= dense_min_count(self.TAIL)
+        result = self._composite(monkeypatch, counts, 0.0)
+        delta = lift_row(counts, alpha=2.0 * self.TAIL, null_lift=0.0)
+        assert delta.reference_kind == "t"
+        assert result.read_share == 1.0 and result.escalated == 0.0
+        assert result.lower + result.upper == float(delta.stat_sig() is True)
+        assert (result.lower, result.upper) == (result.pipeline_lower, result.pipeline_upper)
+        assert (result.lower, result.upper) == (result.nominal_lower, result.nominal_upper)
+
+
 class TestEnumerationEnclosesTheExactMass:
     """The pipeline's rejection probability over the lattice, in exact rational arithmetic,
     lies in the interval the enumeration reports; the interval is not vacuous."""
