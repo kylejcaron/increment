@@ -2619,6 +2619,7 @@ class Analysis:
         self._warn_run_advisories(
             selected,
             added,
+            estimands=estimands,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
@@ -2630,6 +2631,7 @@ class Analysis:
         selected: Sequence[Metric],
         added: Sequence[Metric],
         *,
+        estimands: Sequence[str] | None,
         decision_method: Method | _Unset,
         sensitivity_methods: Sequence[Method] | _Unset,
         prior: Prior | None | _Unset,
@@ -2638,6 +2640,13 @@ class Analysis:
 
         state = self._state
         assert not isinstance(state, ContrastAnalysisState)
+        source = state.source
+        if (
+            estimands is not None
+            and not {"itt", "late"}.intersection(estimands)
+            and getattr(source.context.design, "mechanism", None) == "encouragement"
+        ):
+            return
         config_sources: list[tuple[Any, MomentSource]] = []
         if selected:
             config_sources.extend(
