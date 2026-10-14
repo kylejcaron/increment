@@ -1,90 +1,82 @@
 # External validation coverage
 
-Frozen third-party references exist for a small set of estimators. This page states which, at what
-tolerance, through which entry points, and which regimes have none. It is an inventory of evidence,
-not a certification: a row means the named estimand agreed with the named reference at the stated
-tolerance on the stated inputs, never that a whole method is validated. Campaigns that have not
-been executed are listed as unexecuted, and the guarantees themselves are stated on
-[Statistical limitations](limitations.md). [Evidence status](#evidence-status) says how guarantee,
-evidence and software compatibility are kept apart, and the Guarantee column on each table below
-states what each capability is derived to do.
+This page records what frozen references and tests demonstrate about selected estimates.
+Read each result alongside its guarantee, evidence limits, and supported entry points.
 
-Selector references are checked statically for repository paths and directly declared functions or
-class methods. Parameterized, inherited, and otherwise dynamic identities are deferred to one
-collection-only check: `python scripts/check_doc_references.py --check --collect`. That bounded
-check never executes test bodies or campaigns, and resolving a selector does not establish that a
-test passes or certify statistical validity. Static-only `--check` reports pending identities
-without claiming full reference verification. Each generator command in [Reproduce](#reproduce)
-was run once, on the date and platform recorded there; the page does not claim a later re-run.
+## How to read this page
+
+| Question | Where to look |
+|---|---|
+| What is the method derived to guarantee? | Guarantee column and linked [statistical limitations](limitations.md). |
+| What evidence was checked? | Evidence and reference columns; `unknown` means this inventory records none. |
+| Which entry points agree? | Entry points and parity status; `supported` is not itself a guarantee. |
+| What remains untested? | Unvalidated regimes and the limitations linked from each row. |
+
+Selectors are checked for repository paths and directly declared functions or
+methods. Dynamic identities require the collection-only
+`python scripts/check_doc_references.py --check --collect`; it does not run
+tests or campaigns. A resolved selector is not evidence of a passing test.
+Static `--check` reports pending identities. Generator commands in
+[Reproduce](#reproduce) ran once on the date and platform recorded there; no
+later run is claimed.
 
 ## Evidence status
 
-Three questions about a method are answered separately, because answering one says nothing about
-the others.
+Software compatibility, statistical guarantees, and empirical evidence answer
+different questions:
 
-- Software compatibility: whether the interface you call is covered by the pre-1.0 compatibility
-  policy. Every capability reachable from the documented root imports, `increment.results` and
-  `increment.power` is alpha under [Pre-1.0 compatibility](api.md#pre-10-compatibility). That is
-  stated once and is not repeated per method, and this project assigns no maturity tier to
-  individual methods.
-- Statistical guarantee (the Guarantee column): what the interval or decision rule is derived to
-  do, and under which assumptions.
-    - `exact`: finite-sample under a stated model or dependence condition; the derivation is cited
-      in [Statistical limitations](limitations.md).
-    - `asymptotic`: valid in the limit under stated assumptions, including qualified working
-      approximations whose finite-sample behavior is bounded only by the evidence in the same row.
-    - `planning approximation`: a projection used to size or plan, not an inferential guarantee.
-    - `experimental`: typed `status="experimental"` on the persisted inference specification;
-      descriptive sets are available and decision evidence is withheld.
-    - none stated: the source states no guarantee for the item, or says it has none.
-- Evidence: what has actually been checked, in the reference-class vocabulary of the
-  [reference inventory](#reference-inventory), with calibration cells listed where they exist, or
-  `unknown`. Here `unknown` is a statement about this inventory (nothing is recorded), not about
-  the method, and it is not the `unknown` runtime status of the
-  [compatibility reference](guides/compatibility.md).
+- **Compatibility:** documented root imports, `increment.results`, and
+  `increment.power` are alpha under the [pre-1.0 policy](api.md#pre-10-compatibility).
+  Individual methods have no maturity tier.
+- **Guarantee:** `exact` means finite-sample under a stated model or dependence
+  condition; `asymptotic` means valid in the limit under stated assumptions;
+  `planning approximation` is for planning, not inference; `experimental`
+  withholds decision evidence. No stated guarantee means none is documented.
+- **Evidence:** what was checked in the [reference inventory](#reference-inventory),
+  or `unknown` when this inventory records nothing. This differs from the
+  `unknown` status in the [compatibility reference](guides/compatibility.md).
 
-A row whose guarantee is `exact` also lists its open deployed-numerics items by internal tracker id.
-An open item is never described as a demonstrated coverage failure and never as repaired.
+Rows marked `exact` also list open deployed-numerics items by tracker id; an
+open item is not a demonstrated coverage failure or a repair.
 
-Ingress parity is a separate fact: among the five matched-arm entry points (`from_definitions`,
-`from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`, `from_moments`) every supported one
-agrees at the documented tolerance whatever a row says. `from_switchback_panel` targets a different
-estimand and is never row-compared with them: a `supported` switchback cell establishes that the
-request runs and is exercised on its own, not that it agrees with the matched-arm constructors.
-A `source_limited` request can be declared but the entry point cannot supply its input;
-it refuses with a coded error. A `not_expressible` request fails during declaration,
-either with a coded refusal or through signature/schema validation (`TypeError` or
-Pydantic `ValidationError` without a refusal code). The parity matrix records the
-specific outcome for each cell.
-The Entry points and parity column links the [capability matrix](reference/capabilities-by-entry-point.md#what-runs-where)
-and copies the status words of the parity matrix in `helper:tests/parity_harness/matrix.py` (counts and
-unfinished trackers: `helper:tests/parity_harness/COVERAGE.md`) without rewording them:
+Parity is separate. Supported matched-arm entry points
+(`from_definitions`, `from_unit_day_artifact`, `from_unit_summary`,
+`from_unit_panel`, `from_moments`) agree at the documented tolerance.
+`from_switchback_panel` has a different estimand: `supported` means it runs
+and is exercised, not that it matches those constructors. `source_limited`
+means the source cannot supply required input; `not_expressible` means
+declaration fails by coded refusal or signature/schema validation. See the
+[capability matrix](reference/capabilities-by-entry-point.md#what-runs-where)
+and `helper:tests/parity_harness/matrix.py`; counts and unfinished trackers
+are in `helper:tests/parity_harness/COVERAGE.md`.
 
 | Status | Meaning in the parity matrix |
 |---|---|
-| `supported` | runs, and agrees with every other running matched-arm entry point within the runner's `1e-9` relative tolerance; `from_switchback_panel` is not compared with them |
-| `source_limited` | the entry point cannot supply the input and refuses with a code |
-| `construction_limited` | the estimator or readout is not defined for the combination; this is neither `unsound` nor `unfinished` |
-| `not_expressible` | the axis value cannot be declared; a coded declaration refusal or an uncoded signature/schema failure |
-| `unfinished` | supportable or unifiable but not implemented; names its tracker |
-| `unsound` | mathematically invalid; carries a derivation |
+| `supported` | Runs and agrees with other running matched-arm entry points within `1e-9` relative tolerance; switchback is not compared with them. |
+| `source_limited` | The entry point cannot supply the input and refuses with a code. |
+| `construction_limited` | The estimator or readout is undefined for the combination; not `unsound` or `unfinished`. |
+| `not_expressible` | The value cannot be declared; coded refusal or uncoded signature/schema failure. |
+| `unfinished` | Supportable or unifiable, but not implemented; names its tracker. |
+| `unsound` | Mathematically invalid; includes a derivation. |
 
-A cell id such as `mean-run-cuped-utc-error` names metric, view, option, day boundary and missing
-policy; a row with no matrix cell says so.
+A cell id such as `mean-run-cuped-utc-error` names metric, view, option, day
+boundary, and missing-data policy. Guarantees follow derivations and
+assumptions, not evidence; route labels are mechanisms, not guarantee classes.
+Finite evidence grids are not universal, and completing a campaign changes
+evidence, not the guarantee.
 
-Rules for every row:
+??? info "Evidence and declaration details"
+    A guarantee cell is copied from the cited limitations entry. An evidence
+    cell names its cells, seeds and tolerance, or the inventory id that does.
+    A row publishes when each cell cites an existing source or says `unknown`;
+    a campaign finishing changes only the evidence cell.
 
-1. A guarantee class changes only with its derivation or assumptions. Evidence never moves it, and
-   an unexecuted campaign never downgrades a derived guarantee.
-2. A guarantee cell is copied from the cited limitations entry. A route label (`block_t`, `bh`,
-   `e-bh`, `reference_kind`, `binomial`) names a mechanism and is never by itself the guarantee
-   class.
-3. An evidence cell names its cells, seeds and tolerance, or the inventory id that does. A finite
-   grid is never described as universal.
-4. "Supported" in the compatibility reference means the request runs; it is not evidence.
-5. No row carries a maturity label.
-6. A row publishes when each cell cites an existing source or says `unknown`; a campaign finishing
-   changes only the evidence cell.
+    Route labels (`block_t`, `bh`, `e-bh`, `reference_kind`, `binomial`) name a
+    mechanism; they are not guarantee classes.
+
+    A `not_expressible` request fails during declaration, either with a coded
+    refusal or through signature/schema validation (`TypeError` or Pydantic
+    `ValidationError` without a refusal code).
 
 ## Ordinary-user journey contracts and current evidence
 
@@ -148,85 +140,81 @@ no current large-design timing is inferred from the earlier PR45 probes.
 
 ## Reference inventory
 
-### Reference classes
+Frozen comparisons, derivations, and calibration records are listed below.
 
-| Class | Meaning | Independent third-party reference? |
-|---|---|---|
-| `third_party_tool` | Frozen output of an external package at a matched estimand and assumptions | yes |
-| `independent_reimplementation` | An external primitive (for example R `qbinom`) recomputes the same formula | partially: the primitive only |
-| `independent_derivation_in_repo` | Hand arithmetic, quadrature or exact enumeration written in this repository | no: same authorship |
-| `calibration_evidence` | Bounded Monte Carlo grid with preselected cells | no: behavior evidence, not a reference |
-| `none_found` | A matched reference was looked for and not found | not applicable |
+??? info "Reference classes and evidence records"
 
-Ordinary tests read frozen JSON only: no R, no network, no external package at test time. The
-comparisons below are at estimator level unless the ingress columns name an entry point. A
-transitive ingress is claimed only where a parity-matrix cell or parity case exercises the same
-estimator path; cross-ingress equivalence is owned by the parity harness
-(`helper:tests/parity_harness/matrix.py`), not by these oracles.
+    ### Reference classes
 
-A tolerance written as relative below is enforced as `pytest.approx(expected, rel=..., abs=0.0)`.
-`pytest.approx` otherwise keeps a default absolute floor of `1e-12` next to a relative tolerance,
-which would dominate a near-zero value, so the tests pass `abs=0.0` and no absolute allowance exists.
-A tolerance that is absolute is stated as absolute.
+    | Class | Meaning | Independent third-party reference? |
+    |---|---|---|
+    | `third_party_tool` | Frozen output of an external package at a matched estimand and assumptions | yes |
+    | `independent_reimplementation` | An external primitive (for example R `qbinom`) recomputes the same formula | partially: the primitive only |
+    | `independent_derivation_in_repo` | Hand arithmetic, quadrature or exact enumeration written in this repository | no: same authorship |
+    | `calibration_evidence` | Bounded Monte Carlo grid with preselected cells | no: behavior evidence, not a reference |
+    | `none_found` | A matched reference was looked for and not found | not applicable |
 
-### Frozen comparisons against a third-party tool or independent primitive
+    Ordinary tests read frozen JSON only: no R, no network, no external package at test time. The
+    comparisons below are at estimator level unless the ingress columns name an entry point. A
+    transitive ingress is claimed only where a parity-matrix cell or parity case exercises the same
+    estimator path; cross-ingress equivalence is owned by the parity harness
+    (`helper:tests/parity_harness/matrix.py`), not by these oracles.
 
-Column key: **Evidence id**, **Capability and public symbol**, **Guarantee** (see
-[Evidence status](#evidence-status)), **Metric types**, **Estimand and
-assumptions matched**, **Reference class**, **Reference tool and version**, **Ingress exercised
-directly**, **Ingress covered transitively** (parity-matrix cell id or parity case id),
-**Stated tolerance and how it was chosen**, **Fixture / generator** (SHA-256 prefix of the
-committed fixture), **Test selector**, **Regimes not covered**.
+    A tolerance written as relative below is enforced as `pytest.approx(expected, rel=..., abs=0.0)`.
+    `pytest.approx` otherwise keeps a default absolute floor of `1e-12` next to a relative tolerance,
+    which would dominate a near-zero value, so the tests pass `abs=0.0` and no absolute allowance exists.
+    A tolerance that is absolute is stated as absolute.
 
-| Evidence id | Capability and public symbol | Guarantee | Metric types | Estimand and assumptions matched | Reference class | Reference tool and version | Ingress exercised directly | Ingress covered transitively | Stated tolerance and how it was chosen | Fixture / generator | Test selector | Regimes not covered |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `EV-WELCH-T` | Fixed-horizon, prior-free unweighted mean difference, `Analysis.run` without `prior`, absolute-axis fields | `asymptotic`: additive difference of independent unweighted arm means, with `ddof=1` arm variances and their own Welch-Satterthwaite t reference; a working approximation, not a finite-sample guarantee ([limitations](limitations.md#uncertainty-is-estimated-on-every-path)) | mean | Treatment minus control difference of arm means, Welch variance, Welch-Satterthwaite degrees of freedom, two-sided 95% t interval; independent units | `third_party_tool` | R 4.4.2 `stats::t.test(var.equal = FALSE)` | `from_unit_summary` | parity cell `mean-run-none-utc-error` (`supported` on `from_definitions`, `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`, `from_moments`); `from_switchback_panel` is a separate estimand and is not covered by this oracle | relative `1e-12` on difference, SE, df and both endpoints; the largest observed relative difference was `6.7e-15`, so this is floating-point headroom | `helper:tests/oracles/fixtures/welch_t.json` `abf22cc43957`; `helper:tests/oracles/generate/gen_welch_oracle.R` | `tests/oracles/test_welch_oracle.py::test_welch_difference_interval_matches_r_t_test` | Two cases (14 vs 22 units with unequal variance; 5 vs 6 units, near-equal variance). Arms of fewer than 2 units are not compared. Informative-prior runs (`Analysis.run(prior=...)` keeps the unweighted absolute difference but reports its absolute interval on a Normal reference, not a Welch t reference), weighted, clustered, covariate-adjusted, ratio, winsorized and sequential contrasts are not compared. The p-value is not compared |
-| `EV-CP-BINOM-TEST` | `increment.estimation.binomial_rr.clopper_pearson` | `exact` for the single-arm primitive; the risk-ratio route that uses it is the exact-binomial row of [Methods without an independent reference](#methods-without-an-independent-reference), with its numerical qualifications ([limitations](limitations.md#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused)); open numerical items (internal trackers): `1tce`, `fd17`, `9af7`, `rsf0` | conversion, retention (primitive of the exact-binomial route) | Exact two-sided single-arm Clopper-Pearson `1 - beta` interval; production rounds outward by a documented relative slack | `third_party_tool` | R 4.4.2 `stats::binom.test()$conf.int` | none: the primitive is called directly | none claimed; the primitive feeds the exact-binomial risk-ratio set, which this oracle does not compare | enclosure of R's interval within `1e-15`, then an outward gap of at most `1.01 * 1e-6` of the lower bound below and of one minus the upper bound above; the band is the documented slack, and every measured gap equals it to within `5e-6` of itself | `helper:tests/oracles/fixtures/clopper_pearson.json` `7f53220dd69a`; `helper:tests/oracles/generate/gen_clopper_pearson_oracle.R` | `tests/oracles/test_clopper_pearson_oracle.py::test_interval_encloses_and_matches_r_binom_test` | 12 cases: `(x, n)` in `(0,20) (1,20) (7,40) (39,40) (40,40) (500,1000)` at `beta` 0.05 and 0.001. Two-arm risk-ratio sets are not compared. Arms above about 2^26 are an open numerical investigation (internal tracker `1tce`: the SciPy primitive-error assumption behind the certificate margin is falsified at that size; public undercoverage is not demonstrated and nothing here claims it repaired) |
-| `EV-BH-P-ADJUST` | `increment.estimation.family.bh_select` | `exact` for the selection step given finite-sample-valid (super-uniform) input p-values: controls FDR at the stated level under independence or positive dependence (PRDS), a condition that is not checked. The class describes the primitive only; a fixed-horizon family takes the weakest inference route among its members, so a family containing an asymptotic Welch or delta-method p-value has no finite-sample FDR statement ([limitations](limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked)) | any metric (selection over p-values) | Benjamini-Hochberg step-up rejection set at FDR level `q` over a fixed p-value family, ties selected together; index `i` is rejected iff R's BH-adjusted p-value is `<= q` | `third_party_tool` | R 4.4.2 `stats::p.adjust(method = "BH")` | none: the selection function is called directly | none claimed | exact equality of index sets (no numeric tolerance) | `helper:tests/oracles/fixtures/bh_p_adjust.json` `aa3f442ec7eb`; `helper:tests/oracles/generate/gen_bh_oracle.R` | `tests/oracles/test_bh_oracle.py::test_selected_set_matches_r_p_adjust_bh` | 7 families at `q` 0.05, 0.1 and 0.25, chosen away from the `k * q / m` boundary (see [Discrepancy log](#discrepancy-log)). Dependence conditions, family construction, e-BH and sequential selection are not compared |
-| `EV-META-DL-HKSJ-HT` | `increment.estimation.meta.cochran_q`, `hksj_pooled_mean` | `asymptotic`: DerSimonian-Laird heterogeneity estimate with an unmodified Hartung-Knapp-Sidik-Jonkman adjustment on a `t_(K-1)` reference; no finite-sample guarantee is stated, and the plug-in interval is anticonservative at small K ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)) | segment estimates with variances (log relative-lift rows) | DerSimonian-Laird tau^2, Hartung-Knapp-Sidik-Jonkman pooled mean on a `t_(K-1)` reference, Higgins-Thompson test-based I^2 interval | `third_party_tool` | R 4.4.2, metafor 4.8.0 (`rma` with `method = "DL"`, `test = "knha"`; `confint(type = "HT")`) | none: estimator on supplied estimates and variances | none claimed | tau^2 relative `1e-8`, HKSJ and I^2 interval absolute `1e-6`; closed forms, so the headroom covers summation order | `helper:tests/oracles/fixtures/meta_dl_hksj.json` `8eaa14439a24`; `helper:tests/oracles/generate/gen_meta_oracle.R` | `tests/oracles/test_meta_oracle.py::test_dl_tau2_matches_metafor`, `tests/oracles/test_meta_oracle.py::test_hksj_pooled_mean_matches_metafor_knha`, `tests/oracles/test_meta_oracle.py::test_i2_ci_matches_metafor_higgins_thompson` | Two cases (K = 5, K = 8). Smaller K is covered only by calibration (see below). metafor's default Q-profile interval is a different method and is not compared |
-| `EV-QUANTILE-QBINOM` | `increment.estimation.quantile.log_quantile_se` | `asymptotic` for the reported two-arm interval (the standard error comes from an order-statistic bracket and is divided by a normal critical value); the per-arm bracket's coverage is distribution-free, but the two-arm log-ratio interval carries its own qualifications, so no `exact` class is claimed from the primitive ([limitations](limitations.md#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for), [path table](limitations.md#uncertainty-is-estimated-on-every-path)) | quantile | Log-scale half-width of the discrete order-statistic bracket whose ranks come from the exact binomial quantile | `independent_reimplementation` | R 4.4.2 `qbinom` (not a port of SciPy's); sample generated with numpy `default_rng(20260915)` | none: estimator on a sample | parity cell `quantile-run-none-utc-error` (`supported`: four ingresses; `from_moments` refuses `source.moments.unit_grain`) | relative `1e-12` on the standard error; the rank selection is bit-identical, so this is floating-point headroom | `helper:tests/oracles/fixtures/quantile_woodruff.json` `4c7560999fa8`; `helper:tests/oracles/generate/gen_quantile_samples.py`, `helper:tests/oracles/generate/gen_quantile_oracle.R` | `tests/oracles/test_quantile_oracle.py::test_log_scale_half_width_matches_independent_qbinom_bracket` | The independence is of the binomial-quantile primitive, not of the interval method; `survey::oldsvyquantile` was rejected because it is a different estimator. Two samples (n = 40 at q = 0.9; n = 120 at q = 0.5) |
-| `EV-ADJ-DML-AIPW-IPTW` | `increment.estimation.adjust.estimate_ate` with `Method(name="dml" / "aipw" / "iptw")` | `asymptotic`: influence-function sandwich with an asymptotic Normal reference under identification; DML reports a partially-linear slope, not an average treatment effect ([limitations](limitations.md#cluster-references-are-qualified-working-approximations), [DML](limitations.md#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect)) | mean (covariate-adjusted observational ATE) | Aggregation formulas given identical frozen out-of-fold nuisances: partially-linear DML slope, AIPW ATE (`normalize_ipw=True`), Hajek IPTW with an HC0 sandwich | `third_party_tool` | doubleml 0.11.4 (PLR, IRM), statsmodels 0.15.0 (WLS HC0), numpy 2.5.1, scikit-learn 1.9.1 | `from_unit_summary` | parity case `observational_aipw_dml_covariate_adjusted` covers AIPW/DML on `from_definitions`, `from_unit_day_artifact`, `from_unit_summary` and `from_unit_panel` (`from_moments` refuses `source.moments.covariate_unavailable`); no transitive IPTW standard-error comparison claimed: `observational_iptw_covariate_adjusted_ate` uses the different native fitted-logistic covariance; matrix cells `mean-run-observational-utc-error` and `conversion-run-observational-utc-error` are `supported`, `ratio-run-observational-utc-error` is `construction_limited` | `1e-9` relative on estimates and on DML and IPTW standard errors; AIPW standard error `1e-4` relative (measured about `7e-5`) | `helper:tests/oracles/fixtures/dml_aipw_iptw.json` `c426e24f472d`, `helper:tests/oracles/data/dml_synthetic.csv` `99473fdc78f2`; `helper:tests/oracles/generate/gen_dml_oracle.py` | `tests/oracles/test_dml_oracle.py::test_dml_matches_doubleml_external_predictions`, `tests/oracles/test_dml_oracle.py::test_aipw_matches_doubleml_irm_ate_score`, `tests/oracles/test_dml_oracle.py::test_iptw_matches_statsmodels_wls_hajek` | Nuisance fitting and cross-fitting are not validated: the nuisances come from this repository's own fold assignment. One dataset (n = 500, 5 folds). The DML estimand is the partially-linear slope, not an average treatment effect ([limitations](limitations.md#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect)). Clustered and trimmed variants are not compared. Default untrimmed native-logistic IPTW covariance, including propensity-fitting estimating equations, is not compared with the frozen WLS-HC0 reference |
+    ### Frozen comparisons against a third-party tool or independent primitive
 
-### In-repo derivations and calibration evidence
+    Column key: **Evidence id**, **Capability and public symbol**, **Guarantee** (see
+    [Evidence status](#evidence-status)), **Metric types**, **Estimand and
+    assumptions matched**, **Reference class**, **Reference tool and version**, **Ingress exercised
+    directly**, **Ingress covered transitively** (parity-matrix cell id or parity case id),
+    **Stated tolerance and how it was chosen**, **Fixture / generator** (SHA-256 prefix of the
+    committed fixture), **Test selector**, **Regimes not covered**.
 
-These are not independent third-party references. They are listed so a reader can see what
-exists beyond the frozen comparisons above.
+    | Evidence id | Capability and public symbol | Guarantee | Metric types | Estimand and assumptions matched | Reference class | Reference tool and version | Ingress exercised directly | Ingress covered transitively | Stated tolerance and how it was chosen | Fixture / generator | Test selector | Regimes not covered |
+    |---|---|---|---|---|---|---|---|---|---|---|---|---|
+    | `EV-WELCH-T` | Fixed-horizon, prior-free unweighted mean difference, `Analysis.run` without `prior`, absolute-axis fields | `asymptotic`: additive difference of independent unweighted arm means, with `ddof=1` arm variances and their own Welch-Satterthwaite t reference; a working approximation, not a finite-sample guarantee ([limitations](limitations.md#uncertainty-is-estimated-on-every-path)) | mean | Treatment minus control difference of arm means, Welch variance, Welch-Satterthwaite degrees of freedom, two-sided 95% t interval; independent units | `third_party_tool` | R 4.4.2 `stats::t.test(var.equal = FALSE)` | `from_unit_summary` | parity cell `mean-run-none-utc-error` (`supported` on `from_definitions`, `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`, `from_moments`); `from_switchback_panel` is a separate estimand and is not covered by this oracle | relative `1e-12` on difference, SE, df and both endpoints; the largest observed relative difference was `6.7e-15`, so this is floating-point headroom | `helper:tests/oracles/fixtures/welch_t.json` `abf22cc43957`; `helper:tests/oracles/generate/gen_welch_oracle.R` | `tests/oracles/test_welch_oracle.py::test_welch_difference_interval_matches_r_t_test` | Two cases (14 vs 22 units with unequal variance; 5 vs 6 units, near-equal variance). Arms of fewer than 2 units are not compared. Informative-prior runs (`Analysis.run(prior=...)` keeps the unweighted absolute difference but reports its absolute interval on a Normal reference, not a Welch t reference), weighted, clustered, covariate-adjusted, ratio, winsorized and sequential contrasts are not compared. The p-value is not compared |
+    | `EV-CP-BINOM-TEST` | `increment.estimation.binomial_rr.clopper_pearson` | `exact` for the single-arm primitive; the risk-ratio route that uses it is the exact-binomial row of [Methods without an independent reference](#methods-without-an-independent-reference), with its numerical qualifications ([limitations](limitations.md#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused)); open numerical items (internal trackers): `1tce`, `fd17`, `9af7`, `rsf0` | conversion, retention (primitive of the exact-binomial route) | Exact two-sided single-arm Clopper-Pearson `1 - beta` interval; production rounds outward by a documented relative slack | `third_party_tool` | R 4.4.2 `stats::binom.test()$conf.int` | none: the primitive is called directly | none claimed; the primitive feeds the exact-binomial risk-ratio set, which this oracle does not compare | enclosure of R's interval within `1e-15`, then an outward gap of at most `1.01 * 1e-6` of the lower bound below and of one minus the upper bound above; the band is the documented slack, and every measured gap equals it to within `5e-6` of itself | `helper:tests/oracles/fixtures/clopper_pearson.json` `7f53220dd69a`; `helper:tests/oracles/generate/gen_clopper_pearson_oracle.R` | `tests/oracles/test_clopper_pearson_oracle.py::test_interval_encloses_and_matches_r_binom_test` | 12 cases: `(x, n)` in `(0,20) (1,20) (7,40) (39,40) (40,40) (500,1000)` at `beta` 0.05 and 0.001. Two-arm risk-ratio sets are not compared. Arms above about 2^26 are an open numerical investigation (internal tracker `1tce`: the SciPy primitive-error assumption behind the certificate margin is falsified at that size; public undercoverage is not demonstrated and nothing here claims it repaired) |
+    | `EV-BH-P-ADJUST` | `increment.estimation.family.bh_select` | `exact` for the selection step given finite-sample-valid (super-uniform) input p-values: controls FDR at the stated level under independence or positive dependence (PRDS), a condition that is not checked. The class describes the primitive only; a fixed-horizon family takes the weakest inference route among its members, so a family containing an asymptotic Welch or delta-method p-value has no finite-sample FDR statement ([limitations](limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked)) | any metric (selection over p-values) | Benjamini-Hochberg step-up rejection set at FDR level `q` over a fixed p-value family, ties selected together; index `i` is rejected iff R's BH-adjusted p-value is `<= q` | `third_party_tool` | R 4.4.2 `stats::p.adjust(method = "BH")` | none: the selection function is called directly | none claimed | exact equality of index sets (no numeric tolerance) | `helper:tests/oracles/fixtures/bh_p_adjust.json` `aa3f442ec7eb`; `helper:tests/oracles/generate/gen_bh_oracle.R` | `tests/oracles/test_bh_oracle.py::test_selected_set_matches_r_p_adjust_bh` | 7 families at `q` 0.05, 0.1 and 0.25, chosen away from the `k * q / m` boundary (see [Discrepancy log](#discrepancy-log)). Dependence conditions, family construction, e-BH and sequential selection are not compared |
+    | `EV-META-DL-HKSJ-HT` | `increment.estimation.meta.cochran_q`, `hksj_pooled_mean` | `asymptotic`: DerSimonian-Laird heterogeneity estimate with an unmodified Hartung-Knapp-Sidik-Jonkman adjustment on a `t_(K-1)` reference; no finite-sample guarantee is stated, and the plug-in interval is anticonservative at small K ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)) | segment estimates with variances (log relative-lift rows) | DerSimonian-Laird tau^2, Hartung-Knapp-Sidik-Jonkman pooled mean on a `t_(K-1)` reference, Higgins-Thompson test-based I^2 interval | `third_party_tool` | R 4.4.2, metafor 4.8.0 (`rma` with `method = "DL"`, `test = "knha"`; `confint(type = "HT")`) | none: estimator on supplied estimates and variances | none claimed | tau^2 relative `1e-8`, HKSJ and I^2 interval absolute `1e-6`; closed forms, so the headroom covers summation order | `helper:tests/oracles/fixtures/meta_dl_hksj.json` `8eaa14439a24`; `helper:tests/oracles/generate/gen_meta_oracle.R` | `tests/oracles/test_meta_oracle.py::test_dl_tau2_matches_metafor`, `tests/oracles/test_meta_oracle.py::test_hksj_pooled_mean_matches_metafor_knha`, `tests/oracles/test_meta_oracle.py::test_i2_ci_matches_metafor_higgins_thompson` | Two cases (K = 5, K = 8). Smaller K is covered only by calibration (see below). metafor's default Q-profile interval is a different method and is not compared |
+    | `EV-QUANTILE-QBINOM` | `increment.estimation.quantile.log_quantile_se` | `asymptotic` for the reported two-arm interval (the standard error comes from an order-statistic bracket and is divided by a normal critical value); the per-arm bracket's coverage is distribution-free, but the two-arm log-ratio interval carries its own qualifications, so no `exact` class is claimed from the primitive ([limitations](limitations.md#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for), [path table](limitations.md#uncertainty-is-estimated-on-every-path)) | quantile | Log-scale half-width of the discrete order-statistic bracket whose ranks come from the exact binomial quantile | `independent_reimplementation` | R 4.4.2 `qbinom` (not a port of SciPy's); sample generated with numpy `default_rng(20260915)` | none: estimator on a sample | parity cell `quantile-run-none-utc-error` (`supported`: four ingresses; `from_moments` refuses `source.moments.unit_grain`) | relative `1e-12` on the standard error; the rank selection is bit-identical, so this is floating-point headroom | `helper:tests/oracles/fixtures/quantile_woodruff.json` `4c7560999fa8`; `helper:tests/oracles/generate/gen_quantile_samples.py`, `helper:tests/oracles/generate/gen_quantile_oracle.R` | `tests/oracles/test_quantile_oracle.py::test_log_scale_half_width_matches_independent_qbinom_bracket` | The independence is of the binomial-quantile primitive, not of the interval method; `survey::oldsvyquantile` was rejected because it is a different estimator. Two samples (n = 40 at q = 0.9; n = 120 at q = 0.5) |
+    | `EV-ADJ-DML-AIPW-IPTW` | `increment.estimation.adjust.estimate_ate` with `Method(name="dml" / "aipw" / "iptw")` | `asymptotic`: influence-function sandwich with an asymptotic Normal reference under identification; DML reports a partially-linear slope, not an average treatment effect ([limitations](limitations.md#cluster-references-are-qualified-working-approximations), [DML](limitations.md#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect)) | mean (covariate-adjusted observational ATE) | Aggregation formulas given identical frozen out-of-fold nuisances: partially-linear DML slope, AIPW ATE (`normalize_ipw=True`), Hajek IPTW with an HC0 sandwich | `third_party_tool` | doubleml 0.11.4 (PLR, IRM), statsmodels 0.15.0 (WLS HC0), numpy 2.5.1, scikit-learn 1.9.1 | `from_unit_summary` | parity case `observational_aipw_dml_covariate_adjusted` covers AIPW/DML on `from_definitions`, `from_unit_day_artifact`, `from_unit_summary` and `from_unit_panel` (`from_moments` refuses `source.moments.covariate_unavailable`); no transitive IPTW standard-error comparison claimed: `observational_iptw_covariate_adjusted_ate` uses the different native fitted-logistic covariance; matrix cells `mean-run-observational-utc-error` and `conversion-run-observational-utc-error` are `supported`, `ratio-run-observational-utc-error` is `construction_limited` | `1e-9` relative on estimates and on DML and IPTW standard errors; AIPW standard error `1e-4` relative (measured about `7e-5`) | `helper:tests/oracles/fixtures/dml_aipw_iptw.json` `c426e24f472d`, `helper:tests/oracles/data/dml_synthetic.csv` `99473fdc78f2`; `helper:tests/oracles/generate/gen_dml_oracle.py` | `tests/oracles/test_dml_oracle.py::test_dml_matches_doubleml_external_predictions`, `tests/oracles/test_dml_oracle.py::test_aipw_matches_doubleml_irm_ate_score`, `tests/oracles/test_dml_oracle.py::test_iptw_matches_statsmodels_wls_hajek` | Nuisance fitting and cross-fitting are not validated: the nuisances come from this repository's own fold assignment. One dataset (n = 500, 5 folds). The DML estimand is the partially-linear slope, not an average treatment effect ([limitations](limitations.md#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect)). Clustered and trimmed variants are not compared. Default untrimmed native-logistic IPTW covariance, including propensity-fitting estimating equations, is not compared with the frozen WLS-HC0 reference |
 
-| Evidence id | Capability and public symbol | Guarantee | Estimand and assumptions matched | Reference class | Test selector | Regimes not covered |
-|---|---|---|---|---|---|---|
-| `EV-META-POSTERIOR-QUAD` | `marginalized_segment_intervals` | none stated: Wald intervals on posterior means and variances carry no finite-sample frequentist coverage guarantee ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)) | Tau-marginalized segment posterior (REML marginal likelihood times a half-normal prior on tau; Morris 1983) against continuous quadrature written from the model's formulas | `independent_derivation_in_repo` | `tests/oracles/test_meta_oracle.py::test_marginalized_intervals_match_continuous_quadrature` | The recorded escaped-posterior counterexample and budget behavior are pinned, not generalized; Wald intervals on posterior means carry no frequentist coverage guarantee |
-| `EV-WELCH-ARITHMETIC` | `IndependentMeanReference` | `asymptotic`: as `EV-WELCH-T` (additive difference of independent unweighted arm means with `ddof=1` arm variances and their own Welch-Satterthwaite t reference; a working approximation, not a finite-sample guarantee) | Welch component arithmetic and the Welch-Satterthwaite reference against hand arithmetic and normal/chi-square integration | `independent_derivation_in_repo` | `tests/estimation/test_independent_mean_reference.py` | Same authorship as the code under test; `EV-WELCH-T` is the third-party check |
-| `EV-BINOMIAL-RR-ENUM` | Exact binomial risk-ratio sets | `exact`: finite-sample relative-risk confidence set and relative-scale decisions for `reference_kind="binomial"` rows; the additive `abs_lb`/`abs_ub` sidecar is a Normal-Wald approximation and is not exact ([limitations](limitations.md#uncertainty-is-estimated-on-every-path)); open numerical items (internal trackers): `1tce`, `fd17`, `9af7`, `rsf0` | Decimal and `math.comb` joint-binomial enumeration (a valid lower bound on the supremum p-value) and a Bonferroni rectangle of Clopper-Pearson quantiles from `scipy.stats.beta` directly | `independent_derivation_in_repo` | `tests/estimation/test_binomial_rr.py`, `tests/estimation/test_rare_event_calibration.py` | Enumeration is bounded by `MAX_ARM_SIZE`; the grid maximum is a bound, never an equality oracle |
-| `EV-CLUSTER-WITNESSES` | Cluster-randomized AIPW and DML variance | `asymptotic`: qualified working approximation; neither a Bessel multiplier nor a generic t choice establishes finite-sample validity for arbitrary small, unbalanced, or skewed clusters ([limitations](limitations.md#cluster-references-are-qualified-working-approximations)) | Hand-derived cases showing the between-arm superpopulation variation is retained | `independent_derivation_in_repo` | `tests/estimation/test_i13_independent_witnesses.py` | The witnesses identify particular covariance defects; they do not replace small-cluster scientific gates |
-| `EV-JOINT-RELATIVE` | Joint relative (Fieller) inversion | `asymptotic`: relative Fieller set on a fixed t reference for clustered unadjusted arms; preserves bounded, disconnected, one-sided, full-real, empty or unavailable geometry ([limitations](limitations.md#cluster-references-are-qualified-working-approximations)) | Numerical and directional contracts of the inversion | `independent_derivation_in_repo` | `tests/estimation/test_joint_relative_reference.py` | No third-party package compared |
-| `EV-CERTIFIED-ARITH` | Certified outward-rounded arithmetic layer | none stated: an arithmetic layer beneath the `exact` class of the exact-binomial row, not an interval of its own | Mathematical behavior of the freestanding arithmetic | `independent_derivation_in_repo` | `tests/estimation/test_certified.py` | Arithmetic layer only |
-| `EV-HKSJ-SMALL-K` | HKSJ pooled interval at K = 2 to 12 | `asymptotic`: as `EV-META-DL-HKSJ-HT` | Coverage of the random-effects mean over 18 cells of 10000 replications | `calibration_evidence` | `tests/calibration/test_hksj_small_k.py` | One design: unequal variances with log-scale standard errors 0.10 to 0.20; see [limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k) |
-| `EV-RARE-EVENT-GRID` | Exact-binomial relative-lift set | `exact`: as `EV-BINOMIAL-RR-ENUM`; fixed-horizon only, it does not itself prove validity under optional stopping ([limitations](limitations.md#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused)); open numerical items (internal trackers): `1tce`, `fd17`, `9af7`, `rsf0` | Support and geometry checks over all 336 cells of the truth and support manifest; pointwise Monte Carlo coverage over six prespecified cells only | `calibration_evidence` | `tests/estimation/test_rare_event_calibration.py`, `tests/estimation/test_binomial_grid_calibration.py` | Empirical coverage is measured at six preselected cells, not across the 336-cell grid; the Monte Carlo cells are marked `slow` |
-| `EV-CUPED-THETA` | CUPED interval | `asymptotic`: the standard error conditions on a coefficient estimated from the same data it adjusts, and the uncertainty in that estimate is not propagated ([limitations](limitations.md#cuped-treats-its-adjustment-coefficient-as-known)) | 16 cells of 3000 replications against a known-coefficient comparator | `calibration_evidence` | `tests/calibration/test_cuped_theta_uncertainty.py` | Equal allocation and one homogeneous slope; the comparator is a delta-method construction, not exact inference |
-| `EV-CATE-UNCLUSTERED-CAL` | `estimate_cate` and `validate_cate` (the same estimators behind `targeting_rule` and `select_targeting_rule`), unclustered, randomized or doubly-robust scores | none stated: no finite-sample guarantee; for `Observational` scores identification requires conditional ignorability and overlap ([limitations](limitations.md#targeting-validation-depends-on-identification-and-overlap)) | Interval coverage of the ATE and one interaction slope on a Gaussian design (n = 4000, 1000 replications, accepted band 0.93 to 0.97); ATE coverage at a 10/90 allocation with unequal arm variances (n = 4000, 2000 replications, at least 0.93) and for a Bernoulli outcome (1000 replications, band 0.92 to 0.98, also at 10/90); one-sided AUTOC null rejection rate (n = 2000, 2000 replications, band 0.03 to 0.07); doubly-robust AUTOC null rejection rate under confounding (500 replications, within three Monte Carlo standard errors of 0.05, with plain IPW rejecting above 0.15) | `calibration_evidence` | `tests/test_cate_calibration.py::TestIntervalsCoverAtNominal`, `tests/test_cate_calibration.py::TestSandwichSurvivesSkewedAllocation`, `tests/test_cate_calibration.py::TestBernoulliOutcomeCoverage`, `tests/test_cate_calibration.py::TestBernoulliOutcomeCoverageAtSkewedAllocation`, `tests/test_cate_calibration.py::TestAutocNullSize`, `tests/test_cate_calibration.py::TestDrPsiCalibrationUnderConfounding` | Estimator-level draws (`fit_cate`, `validate_cate_arrays`), not a source ingress; a few fixed designs whose bands are regression screens, not coverage guarantees; identification is assumed |
-| `EV-CATE-CLUSTER-SCREEN` | Clustered `validate_cate` statistics (AUTOC, Qini, GATES, CLAN) and clustered `estimate_cate` | `asymptotic`: clustered `estimate_cate` uses a weighted CR1/HC0 score sandwich with `K-1` reference degrees of freedom; the held-out validation statistics carry no distribution-free finite-cluster coverage ([limitations](limitations.md#clustered-cate-uncertainty-is-cluster-asymptotic)) | Null screen of the held-out validation statistics on frozen oracle scores: 72 designs (10, 40 or 200 clusters; equal sizes of 20 or repeating sizes 5/20/100; intracluster correlation 0, 0.2 or 0.5; Gaussian or skewed errors with one high-leverage score per cluster; two cluster weightings), 256 replications and 199 bootstrap draws each, held to family-aware binomial miss bounds. The full grid runs with `python -m calibration.mc_safety c07 --out c07.jsonl` (`campaign-module:calibration.mc_safety c07 --out c07.jsonl`); the pytest selector runs the reduced four-design sentinel set. A separate 288-cell diagnostic of the `estimate_cate` covariance (128 draws per cell) gates variance moments and records, but does not gate, coverage and Wald rejection. A public-path replay of `validate_cate`, `targeting_rule` and `select_targeting_rule` on eight fixed cluster witnesses records behavior | `calibration_evidence` | `tests/test_cate_calibration.py::test_c07_cluster_null_rejection_and_coverage`, `tests/test_cate_calibration.py::test_cluster_fit_covariance_moments_and_coverage_diagnostics`, `tests/test_cate_calibration.py::test_e6v0_original_varying_noise_cluster_public_replay` | A regression screen, not a guarantee: it calls the internal validation function with frozen oracle scores rather than a fitted pipeline, and the replay is not an error-control certificate. Few unequal clusters with skewed errors still undercover |
+    ### In-repo derivations and calibration evidence
 
+    These are not independent third-party references. They are listed so a reader can see what
+    exists beyond the frozen comparisons above.
+
+    | Evidence id | Capability and public symbol | Guarantee | Estimand and assumptions matched | Reference class | Test selector | Regimes not covered |
+    |---|---|---|---|---|---|---|
+    | `EV-META-POSTERIOR-QUAD` | `marginalized_segment_intervals` | none stated: Wald intervals on posterior means and variances carry no finite-sample frequentist coverage guarantee ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)) | Tau-marginalized segment posterior (REML marginal likelihood times a half-normal prior on tau; Morris 1983) against continuous quadrature written from the model's formulas | `independent_derivation_in_repo` | `tests/oracles/test_meta_oracle.py::test_marginalized_intervals_match_continuous_quadrature` | The recorded escaped-posterior counterexample and budget behavior are pinned, not generalized; Wald intervals on posterior means carry no frequentist coverage guarantee |
+    | `EV-WELCH-ARITHMETIC` | `IndependentMeanReference` | `asymptotic`: as `EV-WELCH-T` (additive difference of independent unweighted arm means with `ddof=1` arm variances and their own Welch-Satterthwaite t reference; a working approximation, not a finite-sample guarantee) | Welch component arithmetic and the Welch-Satterthwaite reference against hand arithmetic and normal/chi-square integration | `independent_derivation_in_repo` | `tests/estimation/test_independent_mean_reference.py` | Same authorship as the code under test; `EV-WELCH-T` is the third-party check |
+    | `EV-BINOMIAL-RR-ENUM` | Exact binomial risk-ratio sets | `exact`: finite-sample relative-risk confidence set and relative-scale decisions for `reference_kind="binomial"` rows; the additive `abs_lb`/`abs_ub` sidecar is a Normal-Wald approximation and is not exact ([limitations](limitations.md#uncertainty-is-estimated-on-every-path)); open numerical items (internal trackers): `1tce`, `fd17`, `9af7`, `rsf0` | Decimal and `math.comb` joint-binomial enumeration (a valid lower bound on the supremum p-value) and a Bonferroni rectangle of Clopper-Pearson quantiles from `scipy.stats.beta` directly | `independent_derivation_in_repo` | `tests/estimation/test_binomial_rr.py`, `tests/estimation/test_rare_event_calibration.py` | Enumeration is bounded by `MAX_ARM_SIZE`; the grid maximum is a bound, never an equality oracle |
+    | `EV-CLUSTER-WITNESSES` | Cluster-randomized AIPW and DML variance | `asymptotic`: qualified working approximation; neither a Bessel multiplier nor a generic t choice establishes finite-sample validity for arbitrary small, unbalanced, or skewed clusters ([limitations](limitations.md#cluster-references-are-qualified-working-approximations)) | Hand-derived cases showing the between-arm superpopulation variation is retained | `independent_derivation_in_repo` | `tests/estimation/test_i13_independent_witnesses.py` | The witnesses identify particular covariance defects; they do not replace small-cluster scientific gates |
+    | `EV-JOINT-RELATIVE` | Joint relative (Fieller) inversion | `asymptotic`: relative Fieller set on a fixed t reference for clustered unadjusted arms; preserves bounded, disconnected, one-sided, full-real, empty or unavailable geometry ([limitations](limitations.md#cluster-references-are-qualified-working-approximations)) | Numerical and directional contracts of the inversion | `independent_derivation_in_repo` | `tests/estimation/test_joint_relative_reference.py` | No third-party package compared |
+    | `EV-CERTIFIED-ARITH` | Certified outward-rounded arithmetic layer | none stated: an arithmetic layer beneath the `exact` class of the exact-binomial row, not an interval of its own | Mathematical behavior of the freestanding arithmetic | `independent_derivation_in_repo` | `tests/estimation/test_certified.py` | Arithmetic layer only |
+    | `EV-HKSJ-SMALL-K` | HKSJ pooled interval at K = 2 to 12 | `asymptotic`: as `EV-META-DL-HKSJ-HT` | Coverage of the random-effects mean over 18 cells of 10000 replications | `calibration_evidence` | `tests/calibration/test_hksj_small_k.py` | One design: unequal variances with log-scale standard errors 0.10 to 0.20; see [limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k) |
+    | `EV-RARE-EVENT-GRID` | Exact-binomial relative-lift set | `exact`: as `EV-BINOMIAL-RR-ENUM`; fixed-horizon only, it does not itself prove validity under optional stopping ([limitations](limitations.md#conversion-and-retention-arms-dense-counts-use-the-delta-method-sparse-counts-are-estimated-exactly-not-refused)); open numerical items (internal trackers): `1tce`, `fd17`, `9af7`, `rsf0` | Support and geometry checks over all 336 cells of the truth and support manifest; pointwise Monte Carlo coverage over six prespecified cells only | `calibration_evidence` | `tests/estimation/test_rare_event_calibration.py`, `tests/estimation/test_binomial_grid_calibration.py` | Empirical coverage is measured at six preselected cells, not across the 336-cell grid; the Monte Carlo cells are marked `slow` |
+    | `EV-CUPED-THETA` | CUPED interval | `asymptotic`: the standard error conditions on a coefficient estimated from the same data it adjusts, and the uncertainty in that estimate is not propagated ([limitations](limitations.md#cuped-treats-its-adjustment-coefficient-as-known)) | 16 cells of 3000 replications against a known-coefficient comparator | `calibration_evidence` | `tests/calibration/test_cuped_theta_uncertainty.py` | Equal allocation and one homogeneous slope; the comparator is a delta-method construction, not exact inference |
+    | `EV-CATE-UNCLUSTERED-CAL` | `estimate_cate` and `validate_cate` (the same estimators behind `targeting_rule` and `select_targeting_rule`), unclustered, randomized or doubly-robust scores | none stated: no finite-sample guarantee; for `Observational` scores identification requires conditional ignorability and overlap ([limitations](limitations.md#targeting-validation-depends-on-identification-and-overlap)) | Interval coverage of the ATE and one interaction slope on a Gaussian design (n = 4000, 1000 replications, accepted band 0.93 to 0.97); ATE coverage at a 10/90 allocation with unequal arm variances (n = 4000, 2000 replications, at least 0.93) and for a Bernoulli outcome (1000 replications, band 0.92 to 0.98, also at 10/90); one-sided AUTOC null rejection rate (n = 2000, 2000 replications, band 0.03 to 0.07); doubly-robust AUTOC null rejection rate under confounding (500 replications, within three Monte Carlo standard errors of 0.05, with plain IPW rejecting above 0.15) | `calibration_evidence` | `tests/test_cate_calibration.py::TestIntervalsCoverAtNominal`, `tests/test_cate_calibration.py::TestSandwichSurvivesSkewedAllocation`, `tests/test_cate_calibration.py::TestBernoulliOutcomeCoverage`, `tests/test_cate_calibration.py::TestBernoulliOutcomeCoverageAtSkewedAllocation`, `tests/test_cate_calibration.py::TestAutocNullSize`, `tests/test_cate_calibration.py::TestDrPsiCalibrationUnderConfounding` | Estimator-level draws (`fit_cate`, `validate_cate_arrays`), not a source ingress; a few fixed designs whose bands are regression screens, not coverage guarantees; identification is assumed |
+    | `EV-CATE-CLUSTER-SCREEN` | Clustered `validate_cate` statistics (AUTOC, Qini, GATES, CLAN) and clustered `estimate_cate` | `asymptotic`: clustered `estimate_cate` uses a weighted CR1/HC0 score sandwich with `K-1` reference degrees of freedom; the held-out validation statistics carry no distribution-free finite-cluster coverage ([limitations](limitations.md#clustered-cate-uncertainty-is-cluster-asymptotic)) | Null screen of the held-out validation statistics on frozen oracle scores: 72 designs (10, 40 or 200 clusters; equal sizes of 20 or repeating sizes 5/20/100; intracluster correlation 0, 0.2 or 0.5; Gaussian or skewed errors with one high-leverage score per cluster; two cluster weightings), 256 replications and 199 bootstrap draws each, held to family-aware binomial miss bounds. The full grid runs with `python -m calibration.mc_safety c07 --out c07.jsonl` (`campaign-module:calibration.mc_safety c07 --out c07.jsonl`); the pytest selector runs the reduced four-design sentinel set. A separate 288-cell diagnostic of the `estimate_cate` covariance (128 draws per cell) gates variance moments and records, but does not gate, coverage and Wald rejection. A public-path replay of `validate_cate`, `targeting_rule` and `select_targeting_rule` on eight fixed cluster witnesses records behavior | `calibration_evidence` | `tests/test_cate_calibration.py::test_c07_cluster_null_rejection_and_coverage`, `tests/test_cate_calibration.py::test_cluster_fit_covariance_moments_and_coverage_diagnostics`, `tests/test_cate_calibration.py::test_e6v0_original_varying_noise_cluster_public_replay` | A regression screen, not a guarantee: it calls the internal validation function with frozen oracle scores rather than a fitted pipeline, and the replay is not an error-control certificate. Few unequal clusters with skewed errors still undercover |
 ## Methods without an independent reference
 
-Finite-sample binomial confidence sets distinguish their statistical construction from the
-arithmetic qualification: new rows record `scipy_special_function_error_model_conditional_v1`,
-conditional on the deployed SciPy/Boost error model rather than a uniform cross-build proof.
-Rows saved before that marker existed use `legacy_unrecorded_v1` and make no numerical
-qualification claim. Enumerated binomial planning points publish as points when their
-computed enclosure resolves to absolute error at most `1e-6` conditional on that model;
-`power_basis="lower_bound"` states the enclosure's lower end as `power`, with both ends in
-`power_lower`/`power_upper`, under the same conditional qualification.
+The detailed entries describe guarantees, evidence status, and supported entry points.
 
-In the binomial-planning inventory row, the Normal-tail conditional route describes an
-internal sizing proposal when exact replay geometry exceeds its budget. It is not a
-public result: a public point is returned only when its computed enclosure resolves
-(`power_basis="exact"`) or through the stated asymptotic planning model, and an unresolved
-finite-sample enclosure is published by its lower end (`power_basis="lower_bound"`).
+??? info "Method details and evidence limits"
 
-Status values: `none_found` (a matched reference was not found or does not match the estimand),
-`derivation_only` (in-repo derivation or enumeration, with no Monte Carlo evidence),
-`calibration_only` (bounded Monte Carlo evidence, which may accompany in-repo derivations; no
-third-party comparison), `campaign_pending` (a registered campaign exists and has not been executed).
+    Finite-sample binomial confidence sets distinguish their statistical construction from the
+    arithmetic qualification: new rows record `scipy_special_function_error_model_conditional_v1`,
+    conditional on the deployed SciPy/Boost error model rather than a uniform cross-build proof.
+    Rows saved before that marker existed use `legacy_unrecorded_v1` and make no numerical
+    qualification claim. Enumerated binomial planning points publish as points when their
+    computed enclosure resolves to absolute error at most `1e-6` conditional on that model;
+    `power_basis="lower_bound"` states the enclosure's lower end as `power`, with both ends in
+    `power_lower`/`power_upper`, under the same conditional qualification.
 
 | Method | Guarantee | Status | Basis and where the guarantee is stated | Entry points and parity |
 |---|---|---|---|---|
@@ -308,8 +296,23 @@ limit of the existing same-experiment fixed-horizon estimator.
 
 ## Unvalidated regimes
 
-These restate published gaps; this page adds no new number. Each links to the section that states
-the guarantee.
+!!! warning "Decision-relevant evidence gaps"
+    - Sequential certification has not covered the full registered runtime
+      manifest; clustered and unit-cycle research matrices remain uncertified
+      ([limitations](limitations.md#the-sequential-certification-campaign-has-not-been-executed)).
+    - Winsorization inference is experimental, and 12 alternative rows of its
+      preserved stress grid remain unresolved ([metric types](guides/metric-types.md#winsorization)).
+    - Meta-analysis at small K remains a decision risk: the plug-in
+      random-effects interval is anticonservative; HKSJ is bounded by one
+      calibration design ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)).
+    - Switchback carryover is assumed away, not tested, and the unit-cycle t
+      reference is an approximation ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
+      [t reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
+    - Adaptive logged-policy evaluation is refused; the historical coverage
+      figures predate that gate ([limitations](limitations.md#off-policy-evaluation-of-logged-decisions-is-calibrated-only-under-a-fixed-logger)).
+    - The exact-binomial numerical investigation above about 2^26 trials per arm
+      is open (`1tce`); public undercoverage has not been demonstrated.
+    - Independent causal-feature calibration remains open (`ryyg`).
 
 - Sequential inference: the complete certification campaign over the registered runtime manifest
   has not been executed, and clustered and unit-cycle research matrices remain uncertified
@@ -334,15 +337,40 @@ the guarantee.
 - Causal-feature calibration against independent oracles (internal tracker `ryyg`) is open; this
   page makes no claim about it.
 
-Provenance of the adaptive-logger figures: coverage figures 86.4/89.6/87.2% for batch-refit
-adaptive loggers were measured before the refusal gate; the generating estimator is not retained
-and the figures are not reproducible from this repository; the shipped test
-(`tests/calibration/test_logged_policy_adaptive.py`) asserts only the refusal. The figures first
-appear in the 2026-09-30 import commit `e132d0f` of the `initial-pre-release` history, and
-`git log -S'covered 86.4%' -- docs/limitations.md` finds only the squashed commit `94f4b6b`
-(2026-10-01) on `main`. No earlier commit contains `estimate_policy_contrast`. The simulator
-(`simulate_logged_run`) and a test-local trajectory estimator survive, so a fresh measurement is
-possible, but it would be a new measurement, not a reproduction.
+    These restate published gaps; this page adds no new number. Each links to the section that states
+    the guarantee.
+
+    - Sequential inference: the complete certification campaign over the registered runtime manifest
+      has not been executed, and clustered and unit-cycle research matrices remain uncertified
+      ([limitations](limitations.md#the-sequential-certification-campaign-has-not-been-executed)).
+      Bounded release evidence cannot establish universal calibration.
+    - Winsorization inference is experimental, and 12 alternative rows of its preserved stress grid
+      remain unresolved ([metric types](guides/metric-types.md#winsorization)).
+    - Meta-analysis at small K: the plug-in random-effects interval is anticonservative, and HKSJ is
+      bounded by one calibration design
+      ([limitations](limitations.md#meta-analysis-can-be-anticonservative-at-small-k)).
+    - Switchback carryover is assumed away, not tested, and the unit-cycle t reference is an
+      approximation ([carryover](limitations.md#switchback-carryover-is-assumed-away-not-tested),
+      [t reference](limitations.md#the-switchback-t-reference-is-itself-an-approximation)).
+    - Off-policy evaluation of logged decisions under adaptive logging is refused. The coverage
+      figures for batch-refit adaptive loggers (86.4% epsilon-greedy, 89.6% Thompson, 87.2% contextual
+      Thompson) were measured before the refusal gate existed. Their provenance is recorded below
+      ([limitations](limitations.md#off-policy-evaluation-of-logged-decisions-is-calibrated-only-under-a-fixed-logger)).
+    - Exact-binomial arms above about 2^26 per arm: the certificate margin's SciPy primitive-error
+      assumption is falsified at that size and is tracked as an open numerical investigation
+      (internal tracker `1tce`); public undercoverage is not demonstrated.
+    - Causal-feature calibration against independent oracles (internal tracker `ryyg`) is open; this
+      page makes no claim about it.
+
+    Provenance of the adaptive-logger figures: coverage figures 86.4/89.6/87.2% for batch-refit
+    adaptive loggers were measured before the refusal gate; the generating estimator is not retained
+    and the figures are not reproducible from this repository; the shipped test
+    (`tests/calibration/test_logged_policy_adaptive.py`) asserts only the refusal. The figures first
+    appear in the 2026-09-30 import commit `e132d0f` of the `initial-pre-release` history, and
+    `git log -S'covered 86.4%' -- docs/limitations.md` finds only the squashed commit `94f4b6b`
+    (2026-10-01) on `main`. No earlier commit contains `estimate_policy_contrast`. The simulator
+    (`simulate_logged_run`) and a test-local trajectory estimator survive, so a fresh measurement is
+    possible, but it would be a new measurement, not a reproduction.
 
 ## Reproduce
 
@@ -387,19 +415,28 @@ explained with evidence. It is not closed as dismissed.
 
 ## Case ledger
 
-No independently sourced case has been recorded yet.
+No independently sourced cases have been recorded.
 
-An entry belongs here only when someone who is neither a maintainer nor an automated agent supplies
-a real experiment's edge case (aggregate moments or sanitized rows) or an independent review run of
-a matched comparison, with permission to describe it, enough information to rerun it on a stated
-increment version, and their result. Maintainer-, agent- or synthetic-only comparisons, including
-every row above, do not count as independently sourced.
+??? info "Case-ledger details"
+
+    No independently sourced case has been recorded yet.
+
+    An entry belongs here only when someone who is neither a maintainer nor an automated agent supplies
+    a real experiment's edge case (aggregate moments or sanitized rows) or an independent review run of
+    a matched comparison, with permission to describe it, enough information to rerun it on a stated
+    increment version, and their result. Maintainer-, agent- or synthetic-only comparisons, including
+    every row above, do not count as independently sourced.
 
 ## Discrepancy log
 
-| Date | Comparison | Observation | Status |
-|---|---|---|---|
-| 2026-10-03 | `EV-BH-P-ADJUST` | For the family `[0.01, 0.5, 0.01, 0.01, 0.2]` at `q = 0.25`, R selects four indices and `bh_select` selects three. The fifth p-value, 0.2, equals `k * q / m` for `k = 4, m = 5` in decimal. R computes the adjusted value `5/4 * 0.2` as exactly 0.25 and includes it. The stored double 0.2 is slightly above 0.2, and `_conservative_ratio` rounds the threshold downward by design, so the p-value exceeds the threshold on the stored doubles and `bh_select` excludes it. | explained (measured on this input; the rounding direction is the documented behavior of `_conservative_ratio`). The fixture's vectors avoid exact boundaries. |
-| 2026-10-03 | Regeneration of the three earlier fixtures | No numeric difference. The DML fixture differs only in the trailing newline. | explained (byte comparison) |
+The recorded discrepancies and their dispositions are listed here.
 
-No other discrepancy has been found between increment and the references above.
+??? info "Discrepancy records"
+
+    | Date | Comparison | Observation | Status |
+    |---|---|---|---|
+    | 2026-10-03 | `EV-BH-P-ADJUST` | For the family `[0.01, 0.5, 0.01, 0.01, 0.2]` at `q = 0.25`, R selects four indices and `bh_select` selects three. The fifth p-value, 0.2, equals `k * q / m` for `k = 4, m = 5` in decimal. R computes the adjusted value `5/4 * 0.2` as exactly 0.25 and includes it. The stored double 0.2 is slightly above 0.2, and `_conservative_ratio` rounds the threshold downward by design, so the p-value exceeds the threshold on the stored doubles and `bh_select` excludes it. | explained (measured on this input; the rounding direction is the documented behavior of `_conservative_ratio`). The fixture's vectors avoid exact boundaries. |
+    | 2026-10-03 | Regeneration of the three earlier fixtures | No numeric difference. The DML fixture differs only in the trailing newline. | explained (byte comparison) |
+
+    No other discrepancy has been found between increment and the references above.
+

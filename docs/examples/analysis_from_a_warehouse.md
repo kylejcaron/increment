@@ -1,8 +1,7 @@
 # Warehouse-native A/B testing with YAML and SQL
 
-This notebook defines a checkout experiment, metrics, exposures, and fact
-sources in YAML; it inspects the generated SQL and runs the analysis against
-a DuckDB warehouse.
+Define a checkout experiment, its metrics, exposures, and source tables in
+YAML. Inspect the generated SQL, then run the analysis in DuckDB.
 
 [Open the notebook in a full browser tab](analysis_from_a_warehouse.html)
 
