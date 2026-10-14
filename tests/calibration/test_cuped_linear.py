@@ -6,7 +6,7 @@ import inspect
 import json
 import math
 from collections import Counter
-from dataclasses import replace
+from dataclasses import asdict, replace
 from fractions import Fraction
 
 import numpy as np
@@ -355,18 +355,67 @@ def test_chunk_checkpoint_resume_is_deterministic(tmp_path):
         ("D9-4", "fcp", "fcp_sum"),
     ],
 )
-def test_chunk_resume_rejects_tampered_gate_statistics(tmp_path, identifier, statistic, field):
+def test_chunk_resume_uses_journal_gate_statistics(tmp_path, identifier, statistic, field):
     cell = next(cell for cell in MANIFEST if cell.id == identifier)
     job = (cell, str(tmp_path), 0, 2, 2, {"source": "fixed"})
-    run_chunk(job)
+    original = run_chunk(job)
     checkpoint = tmp_path / cell.id / "chunks" / "000000" / "checkpoint.json"
     record = json.loads(checkpoint.read_text())
     assert cell.statistic == statistic
-    record[field] = record["eligible"] + 1 if field == "hits" else record[field] + 1
+    record[field] = record["eligible"] + 1
     checkpoint.write_text(json.dumps(record))
 
-    with pytest.raises(ValueError, match="incompatible checkpoint"):
-        run_chunk(job)
+    resumed = run_chunk(job)
+    assert resumed[field] == original[field]
+    expected_observed = original[field] / original["eligible"]
+    assert summarize(cell, [resumed], 2, "smoke")["observed"] == expected_observed
+
+
+def test_large_fractional_fcp_checkpoint_resumes_from_journal_tallies(tmp_path):
+    from calibration.journal import DrawJournal, verify
+
+    eligible = 98_303
+    cell = next(cell for cell in MANIFEST if cell.id == "D9-4")
+    chunk_size = (eligible + 99) // 100
+    identity = {"source": "fixed"}
+    directory = tmp_path / cell.id / "chunks" / "000000"
+    accumulated_sum = 0.0
+    with DrawJournal(directory, case_id=f"{cell.id}:0", block_size=eligible) as journal:
+        for index in range(eligible):
+            journal.started(index)
+            journal.completed(index, tally=("eligible", "fcp:1/3"))
+            accumulated_sum += 1 / 3
+        totals = journal.close()
+
+    binding = {
+        "identity": identity,
+        "cell": asdict(cell),
+        "chunk": 0,
+        "target": eligible,
+        "chunk_size": chunk_size,
+    }
+    checkpoint = {
+        "binding": binding,
+        "journal_digest": totals.digest,
+        "attempted": eligible,
+        "eligible": eligible,
+        "refused": 0,
+        "blocked": 0,
+        "fcp_sum": accumulated_sum,
+        "diagnostics": {},
+        "refusal_codes": {},
+        "elapsed_seconds": 0.0,
+        "cpu_seconds": 0.0,
+        "status": "complete",
+    }
+    checkpoint_path = directory / "checkpoint.json"
+    checkpoint_path.write_text(json.dumps(checkpoint))
+
+    resumed = run_chunk((cell, str(tmp_path), 0, eligible, chunk_size, identity))
+    expected = float(Fraction(eligible, 3))
+    assert accumulated_sum != expected
+    assert resumed["fcp_sum"] == expected
+    assert verify(directory, case_id=f"{cell.id}:0").completed == eligible
 
 
 def test_smoke_never_claims_certification(tmp_path):

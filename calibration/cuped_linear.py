@@ -1392,19 +1392,27 @@ def _accumulate(state: dict, result: dict) -> tuple[str, ...]:
     return tuple(tally)
 
 
-def _checkpoint_matches_journal(record: dict, cell: Cell, counters: Mapping[str, int]) -> bool:
+def _checkpoint_journal_statistics(
+    record: dict, cell: Cell, counters: Mapping[str, int]
+) -> dict | None:
     eligible = counters.get("eligible", 0)
+    attempted = eligible + counters.get("refused", 0) + counters.get("blocked", 0)
+    statistics = {
+        "attempted": attempted,
+        "eligible": eligible,
+        "refused": counters.get("refused", 0),
+        "blocked": counters.get("blocked", 0),
+    }
     if (
-        record.get("attempted")
-        != eligible + counters.get("refused", 0) + counters.get("blocked", 0)
+        record.get("attempted") != attempted
         or record.get("eligible") != eligible
-        or record.get("refused") != counters.get("refused", 0)
-        or record.get("blocked") != counters.get("blocked", 0)
+        or record.get("refused") != statistics["refused"]
+        or record.get("blocked") != statistics["blocked"]
     ):
-        return False
+        return None
     if cell.statistic == "coverage":
-        return record.get("hits") == counters.get("covered", 0)
-    if cell.statistic == "fcp":
+        statistics["hits"] = counters.get("covered", 0)
+    elif cell.statistic == "fcp":
         fcp_tallies = [
             (name.removeprefix("fcp:"), count)
             for name, count in counters.items()
@@ -1415,15 +1423,12 @@ def _checkpoint_matches_journal(record: dict, cell: Cell, counters: Mapping[str,
                 (count * Fraction(*map(int, tally.split("/"))) for tally, count in fcp_tallies),
                 Fraction(),
             )
-            cached_sum = float(record["fcp_sum"])
-        except (KeyError, ValueError, ZeroDivisionError, TypeError, OverflowError):
-            return False
-        return (
-            sum(count for _, count in fcp_tallies) == eligible
-            and math.isfinite(cached_sum)
-            and math.isclose(cached_sum, float(exact_sum), rel_tol=1e-12, abs_tol=1e-12)
-        )
-    return True
+        except (ValueError, ZeroDivisionError, TypeError, OverflowError):
+            return None
+        if sum(count for _, count in fcp_tallies) != eligible:
+            return None
+        statistics["fcp_sum"] = float(exact_sum)
+    return statistics
 
 
 def run_chunk(job: tuple) -> dict:
@@ -1441,12 +1446,14 @@ def run_chunk(job: tuple) -> dict:
     if checkpoint.exists():
         record = json.loads(checkpoint.read_text())
         totals = verify(directory, case_id=f"{cell.id}:{chunk}")
+        journal_statistics = _checkpoint_journal_statistics(record, cell, totals.counters)
         if (
             record["binding"] != binding
             or record["journal_digest"] != totals.digest
-            or not _checkpoint_matches_journal(record, cell, totals.counters)
+            or journal_statistics is None
         ):
             raise ValueError(f"incompatible checkpoint: {checkpoint}; use a new output directory")
+        record.update(journal_statistics)
         return record
     started = time.perf_counter()
     cpu_started = time.process_time()
