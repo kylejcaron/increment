@@ -1,100 +1,66 @@
 # Warehouse-native experimentation data model
 
-Use the definitions path when experiment, exposure, dimension, and metric
-logic should be version-controlled and executed in your warehouse; it builds a
-canonical unit-day panel and inspectable Ibis queries. Declare the source and
-data-availability contract before interpreting readouts: missing or late fact
-data can leave outcome windows immature, while a null estimate can have a
-different, result-specific reason. The [warehouse analysis example](../examples/analysis_from_a_warehouse.md)
-walks through a complete source-to-readout flow; the
-[realistic multi-table example](#binding-a-normalized-warehouse) shows the
-dimension-join pattern. The dataframe route accepts a supplied unit-day panel
-through `Analysis.from_unit_panel` rather than executing warehouse definitions.
-See [Reading results](reading-results.md) for estimate availability and
-[Multiplicity](multiplicity.md) for population and status interpretation.
+Use warehouse definitions when you want to version-control experiment and metric
+logic and run it against warehouse data. Increment builds a unit-by-day panel
+and inspectable Ibis queries. A dataframe analysis instead starts from a panel
+you provide with `Analysis.from_unit_panel`.
 
-The panel's zero-filling and censoring rules determine who contributes: an
-absent eligible unit/day is a logical zero, but an unfinished metric window is
-censored rather than scored from partial data. Assignment audit buckets are
-not analysis arms; see the detailed [unit-day model](#one-row-per-unit-per-day).
+!!! warning "Check data maturity before interpreting results"
+    Missing or late-arriving facts can leave a unit's measurement window
+    incomplete. Increment censors unfinished windows instead of treating partial
+    data as final. A missing estimate can also have a different, row-specific
+    reason; see [Reading results](reading-results.md). Assignment audit buckets
+    are not analysis arms. See [Multiplicity](multiplicity.md) for populations
+    and statuses.
+
+The [warehouse example](../examples/analysis_from_a_warehouse.md) walks through
+the full flow; [binding a normalized warehouse](#binding-a-normalized-warehouse)
+shows how to join dimension tables.
 
 ## One row per unit per day
 
-A unit's clock starts at its **first exposure**. Raw exposure events are
-deduplicated to one row per unit (the earliest qualifying event inside the
-experiment window), carrying the unit's single group assignment and
-`first_exposure_ts`. Units that appear in more than one real group (mixed-group
-assignment), or that have a NULL assignment, are dropped.
+Each unit's clock starts at its first qualifying exposure. Increment keeps the
+earliest exposure in the experiment window and its assignment, then builds a
+daily row for that unit.
 
-Assignment integrity is checked before each warehouse readout. A unit seen in
-more than one real arm is counted as `(mixed assignment)`; a unit seen only
-with NULL, or with both a real arm and NULL, is counted as `(unassigned)`.
-These are accounting entries, not arms: NULL never receives an estimate or an
-SRM degree of freedom. The `on_mixed_assignment` policy governs both
-conditions: the default `"error"` refuses, while `"warn"` and `"exclude"`
-remove them and report each count separately in diagnostics.
+An eligible unit with no events on a day contributes zero, not a missing value.
+An unfinished measurement window is censored, not scored from partial data.
+Assignment problems are handled separately: units assigned to multiple real
+arms are `(mixed assignment)`; units with a NULL assignment, alone or alongside
+a real arm, are `(unassigned)`. These are diagnostics, not arms, and never
+receive estimates or SRM degrees of freedom. The default
+`on_mixed_assignment="error"` refuses; `"warn"` and `"exclude"` remove affected
+units and report separate counts.
 
-From each unit's first exposure, the panel lays out one row per day:
+The panel contains:
 
-| column | meaning |
+| Column | Meaning |
 |---|---|
-| `unit_id` | the randomisation unit |
-| `group_id` | the unit's arm |
-| `first_exposure_ts` / `first_exposure_date` | when the unit's clock started |
-| `day_offset` | days since first exposure: 0, 1, 2, ... |
-| `ds` | the calendar date, `first_exposure_date + day_offset` |
+| `unit_id` | Analysis unit |
+| `group_id` | Assigned arm |
+| `first_exposure_ts` / `first_exposure_date` | Start of the unit's clock |
+| `day_offset` | Days since exposure, starting at 0 |
+| `ds` | Local calendar date for that offset |
 
-Two properties of this spine matter:
+Metric windows use unit-relative day offsets, so units enrolled on different
+dates receive the same-length window. Dates follow the experiment's declared
+`day_boundary` (default `"UTC"`); see [day-boundary rules](metric-types.md#how-days-are-counted-day-0-and-the-day-boundary).
 
-- **Day offsets are unit-relative.** Day 3 for a unit enrolled on
-  January 15 is January 18; for a unit enrolled on January 20 it is
-  January 23. Metric windows (`window_days`, `threshold_days`) count in
-  these offsets, so every unit gets the same-length observation window
-  regardless of when it enrolled.
-- **The spine is dense.** Every day from exposure to the panel's end
-  exists as a row, whether or not the unit did anything that day. A day
-  with no events is a zero, not a missing row; absence is data, and it
-  has to participate in means and variances.
-- **Dates are local to the declared day boundary.**
-  `first_exposure_date` is the exposure timestamp's calendar day under
-  the experiment's `day_boundary` — a fixed UTC offset, default
-  `"UTC"` — and every `ds` is date arithmetic on that local day. See
-  [Metric types](metric-types.md#how-days-are-counted-day-0-and-the-day-boundary)
-  for how to choose and declare the boundary.
+The warehouse panel is dense through its observation horizon: `observation_end`,
+or `end`, or the latest observed event date for a running experiment. Each fact
+also has a `data_as_of` date, the latest date actually loaded. A window ending
+after the observable bound is censored; a warning reports material drops.
 
-The spine runs to the experiment's observation horizon: `observation_end` if
-declared, otherwise `end`, or, for a running experiment, the latest observed
-event date. Independently, each metric is bounded by its own fact's
-**`data_as_of`**: the latest date that fact has actually loaded.
-A unit whose window would close beyond the observable bound is censored rather
-than scored on partial data. When the drop is material, a warning reports the
-count.
+The dataframe path (`Analysis.from_unit_panel`, see [Quickstart](quickstart.md))
+accepts sparse input and treats absent eligible unit-days as zero. Small inputs
+may be temporarily densified; larger ones use a sparse day-at-a-time reduction.
+`densified_cells` counts cells needing zero fill, not physical rows.
 
-The dataframe path (`Analysis.from_unit_panel`, see the
-[Quickstart](quickstart.md)) accepts sparse one-row-per-observed-unit-per-day
-input directly. An absent eligible unit/date observation is a **logical zero**,
-not an excluded unit or missing outcome: aggregation includes it in the
-population's means and variances.
-
-For small inputs, zero filling may use a temporary date spine when a scratch
-estimate based on the number of cells, value columns and identity-buffer size
-falls below the 64 MiB selection threshold. This is a route-selection
-heuristic, not a guarantee on peak memory: dataframe backend overhead and
-temporary operations are not fully captured. Larger estimates select a sparse
-day-at-a-time reduction that avoids retaining the full unit-by-date product.
-`densified_cells` counts observed or implicit cells that require zero filling,
-not physical rows written or retained.
-
-This dataframe zero-fill behavior is distinct from the warehouse query path
-above, whose generated dense date spine remains the explanation of the
-warehouse-native one-row-per-unit-per-day relation.
 
 ## The definitions directory
 
-The warehouse path is driven by declarative YAML. A definitions directory
-is any directory of `.yaml`/`.yml` files; the loader reads and merges all of
-them, so how you split content across files is up to you. The
-conventional split:
+Definitions are YAML files; the loader merges all `.yaml` and `.yml` files in
+the directory. The files below are a convention, not a required split:
 
 ```
 definitions/
@@ -105,26 +71,17 @@ definitions/
   experiments.yaml    # experiment schedules and metric lists
 ```
 
-Loading validates everything up front: YAML syntax, model fields (unknown
-fields are rejected at every level), fact-source SQL syntax, duplicate names
-across files, and every cross-reference. An experiment's exposure must be a
-defined exposure, every metric it lists must be a defined metric, and every
-metric's entity must match the experiment's unit. Failures raise a
-`DefinitionError` naming the offending file.
+Loading checks syntax, known fields, duplicate names, SQL, and references
+between experiments, exposures, metrics, and units. Errors identify the
+offending file.
 
-Fact-source and dim-source SQL must not be blank: an empty or whitespace-only
-`sql` refuses at load with `definition.source.sql_empty` (context
-`source_kind`, `source_name`), before any warehouse access. Every SQL value
-must be exactly one read-only `SELECT` query. Plain
-selects, read-only CTEs, and set operations are allowed; statement batches,
-DML, DDL, `SELECT ... INTO`, and locking reads are rejected. The loader parses
-definitions as defense in depth, but definitions remain trusted, reviewed
-code: review every query before deployment and use read-only production
-warehouse credentials. Report population SQL is checked again immediately
-before it reaches the backend.
+Source SQL must be one non-empty, read-only `SELECT` (including read-only CTEs
+and set operations). Batches, DML, DDL, `SELECT ... INTO`, and locking reads
+are rejected. The loader checks syntax, but definitions are trusted code:
+review every query and use read-only warehouse credentials. Report SQL is
+checked again before execution.
 
-The rest of this guide builds a minimal working directory, file by file. Only
-`dim_sources.yaml` is optional; it earns its place once attributes live in
+Only `dim_sources.yaml` is optional; use it when attributes live in separate
 dimension tables ([Declarative dim sources](#declarative-dim-sources)).
 
 ## `fact_sources.yaml`: where events live
@@ -156,46 +113,26 @@ fact_sources:
         description: Country at event time
 ```
 
-- `dialect` identifies the dialect in which the source SQL is written. If the
-  connection uses another dialect, Ibis transpiles the SQL as a best-effort
-  syntax translation, not a semantic guarantee. Some constructs can silently
-  change meaning rather than fail loudly: an epoch-milliseconds function can
-  map to a target function with the inverse meaning, integer floor division
-  can become a differently rounded cast, and a file-reading table function can
-  pass through unchanged to the connected backend. Match `dialect:` to the
-  connection you actually use, and prefer SQL written natively for that
-  backend except for ordinary arithmetic and standard SQL. Leaving `dialect`
-  undeclared is safe for admission because source SQL is validated against the
-  connection's dialect. The same guidance applies when you declare a dialect
-  different from the backend you run against.
-- `timestamp_column` is the event timestamp every window is measured
-  against.
-- `entities` lists the unit-identifier columns the relation carries. An
-  experiment's `unit` must be among them.
-- **Facts** are the events you aggregate into metrics. The relation must
-  carry an `event` column whose value names each row's fact. A fact's
-  `column` is its value column (`revenue` for a purchase); `column: null`
-  declares an occurrence-only event: counting, conversion, and retention
-  work on it, but value aggregations (`sum`, `avg_event`,
-  `avg_calendar_day`, ...) do not.
-At resolution, source SQL must expose `event`, the declared timestamp column,
-and every declared entity column under those aliases.
-- **Properties** are unit attributes you filter and break out on. Each
-  carries an `as_of` annotation declaring *when* the value is measured:
-  `event_time` (the default, free to change during the experiment, and
-  therefore rejected as a breakout dimension), `pre_exposure` (resolved to
-  the latest value strictly before the unit's first exposure), or
-  `static` (asserted constant for the unit's lifetime, e.g. signup
-  country). This is a correctness annotation, not metadata; segmenting
-  on a value measured after exposure biases the result.
+- `dialect` is the SQL dialect. Prefer the warehouse's native dialect:
+  Ibis translation is best-effort and may change meaning silently. If omitted,
+  SQL is checked against the connection's dialect.
+- `timestamp_column` names the event time used for every window.
+- `entities` lists unit identifiers; the experiment's `unit` must be included.
+- **Facts** name event types and their values. Source SQL must expose `event`,
+  the timestamp, and every entity under the declared names. A fact's `column`
+  holds its value; `column: null` marks an occurrence-only fact, usable for
+  counts, conversion, and retention but not value aggregations.
+- **Properties** support filters and breakouts. `as_of` states when each value
+  applies: `event_time` (default), `pre_exposure` (latest value strictly before
+  exposure), or `static` (asserted unchanged). Event-time properties cannot be
+  breakouts; using post-exposure values to segment outcomes can bias results.
 
 ## `exposures.yaml`: what enrolls a unit
 
-An exposure defines what marks a unit as enrolled. It is either
-**fact-based** (the first occurrence of a fact within the experiment
-window, optionally restricted by filters) or **query-based**: explicit
-SQL returning `unit_id`, `ts`, and `group_id` rows (plus an optional
-`experiment_id`), for teams with a dedicated enrollment table. Exactly one of `fact` or `sql` must be set.
+An exposure marks a unit's enrollment. Define exactly one of:
+`fact` (the first matching event in the experiment window, optionally filtered)
+or `sql` (a query returning `unit_id`, `ts`, and `group_id`, plus optional
+`experiment_id`).
 
 ```yaml
 exposures:
@@ -260,43 +197,22 @@ metrics:
     window_days: 14
 ```
 
-For heavy-tailed mean outcomes, add `winsorization` to the mean metric. Its
-typed `inference` specification persists through frame construction, native
-definitions, artifact context, and result JSON. Percentile inference defaults
-to `pooled-size-route-v1`, which runs `influence-normal-v1` on pools of at
-least 20,000 units with an expected `N (1 - q)` of at least 100 above the cutoff
-and `positive-log-kernel-bootstrap-t-v1` otherwise; the executed method is
-recorded on the confidence set and its reference. Explicit
-`joint-rank-projection-v1` retains the uniform rank method. Method choice and
-seed/stream must be set before examining inferential results. Every method's
-typed public status is `experimental`. The bootstrap's persisted qualification
-is `pointwise_asymptotic_model_conditioned_v1`, the influence interval's is
-`pointwise_asymptotic_influence_v1`, and a routed request carries
-`pointwise_asymptotic_size_routed_v1`: pointwise asymptotic candidates under an
-iid nonnegative smooth-positive-density model, not universal finite-sample or
-heterogeneous-effect claims.
-The full historical calibration manifest remains unresolved. It records 12
-known alternative variance failures plus contamination width-failure evidence;
-bounded normal/binomial diagnostics do not turn these into passes. An experimental
-inference specification reports its descriptive confidence set and withholds decision
-evidence (`evidence.experimental_reference`). The rank
-method's qualification is `uniform_support_conditioned_v1` and it requires
-externally justified support. Zero outcomes are accepted by every method; the
-bootstrap and influence constructions require the percentile to sit above the
-pooled zero share and refuse otherwise (`estimation.winsor.cutoff_in_zero_atom`).
-Percentile cutoffs are pooled across all eligible arms before the
-transformed per-unit values are aggregated. Fixed values use the declared cap
-directly. The same cutoff is applied to every arm, and the estimate concerns the
-capped outcome.
+For heavy-tailed mean outcomes, declare `winsorization`; its typed `inference`
+settings persist with the metric through results and artifacts. See
+[Winsorization](metric-types.md#winsorization) for supported settings and limits.
 
-`window_days` counts in day offsets from each unit's own first exposure;
-the panel concept above is what makes a "14-day window" mean the same
-thing for every unit. Metric names are globally unique across the whole
-directory, so an experiment can reference any metric by name.
+!!! warning "Percentile winsorization cannot support a decision"
+    Its current intervals are experimental and withhold decision evidence:
+    `stat_sig` is unavailable, not "not significant."
+
+Metric `window_days` counts from each unit's first exposure. Names are unique
+across the definitions directory, so experiments can reference metrics by name.
+
 
 ## `experiments.yaml`: tying it together
 
-An experiment binds an exposure, a unit, a metric list, and a schedule:
+An experiment connects an exposure, analysis unit, metrics, schedule, and
+decision plan:
 
 ```yaml
 experiments:
@@ -313,30 +229,21 @@ experiments:
     control_group: C
 ```
 
-- `start` / `end` bound **enrollment**, as whole days at the experiment's
-  `day_boundary` (see [Window edges and the day boundary](#window-edges-and-the-day-boundary)).
-  Leave `end` unset for a running experiment.
-- `observation_end` optionally extends data collection past `end`. Set it
-  to `end + <longest metric window>` when the intervention is delivered
-  once at enrollment (a new onboarding flow, a welcome email), so units
-  enrolled near the end still get a complete window instead of being
-  censored. Leave it unset for a continuous intervention that reverts
-  when the experiment stops.
-- `control_group` is required: the engine never guesses which arm is
-  control.
-- `design` declares a non-default identification mechanism
-  (`Encouragement`, `Observational`) alongside `control_group`; see
-  [encouragement.md](encouragement.md#declare-on-from_definitions) and
-  [observational.md](observational.md).
-- The `plan` block declares the decision rule: `primary` (the
-  pre-registered outcome), `secondaries` (reported alongside, sharing one
-  multiplicity family), and `guardrails` (tracked separately, tested
-  one-sided on their adverse side). It also carries `alpha`, `q`, and
+- `start` and `end` set the enrollment window in local days. Omit `end` for a
+  running experiment.
+- `observation_end` can extend follow-up beyond enrollment. For a one-time
+  intervention, set it to `end` plus the longest metric window so late enrollees
+  can mature; omit it when treatment stops with the experiment.
+- `control_group` is required. `design` declares an
+  `Encouragement` or `Observational` design; see the
+  [encouragement](encouragement.md#declare-on-from_definitions) and
+  [observational](observational.md) guides.
+- `plan` sets `primary`, `secondaries` (one multiplicity family), and
+  `guardrails` (tested one-sided on the adverse side), plus `alpha`, `q`, and
   `inference`.
-- An experiment can also declare `n_pre_periods` (a CUPED lookback in
-  days, see [CUPED](cuped.md)) and `breakouts` (per-segment lift
-  breakdowns on a declared property).
-  The CUPED window is `[first exposure date − n_pre_periods days, first exposure timestamp)`, including exposure-day events before exposure.
+- `n_pre_periods` sets the CUPED lookback; `breakouts` requests lift by declared
+  property. The CUPED window ends at first exposure and includes earlier
+  events on the exposure date.
 
 ### Window edges and the day boundary
 
@@ -383,10 +290,8 @@ re-registered.
 
 ### Per-metric method and prior bindings
 
-Every entry in a `plan` role (`primary`/`secondaries`/`guardrails`) is either a bare metric NAME
-(shorthand -- reports under the call's own defaults) or a BINDING that
-overrides `decision_method`/`sensitivity_methods`/`prior` for that one metric
-only:
+Plan entries can name a metric directly or bind `decision_method`,
+`sensitivity_methods`, or `prior` to that metric:
 
 ```yaml
 experiments:
@@ -411,15 +316,12 @@ experiments:
     control_group: C
 ```
 
-A call-wide role-aware `run(decision_method=..., sensitivity_methods=...)`/`run(prior=...)` still wins over a
-declared binding for every metric it names -- the binding only fills in
-when the call leaves that field unset. This precedence is per-metric,
-independently: one `run()` call may dispatch several metrics under
-different adjustment sets and different priors at once. See
-[CUPED](cuped.md#per-metric-method-bindings) for the full precedence
-rules and the dataframe path's
-`MetricSpec(decision_method=..., sensitivity_methods=..., prior=...)`
-counterpart.
+A call-wide `run(...)` setting overrides a plan binding for the fields it
+specifies. Otherwise, each metric uses its own binding. One call can therefore
+use different methods and priors across metrics. See
+[CUPED](cuped.md#per-metric-method-bindings) for precedence rules and the
+dataframe path's `MetricSpec(decision_method=..., sensitivity_methods=...,
+prior=...)` equivalent.
 
 ## Randomization grain vs analysis grain
 
