@@ -30,12 +30,12 @@ from pathlib import Path
 
 import yaml
 
+from calibration._process import run_with_timeout
 from calibration.journal import DrawJournal
 from calibration.journal import verify as verify_journal
 from calibration.profile import PROFILES_PATH
 from calibration.profile import load as load_profile
 from calibration.stopping import FixedDesign, StoppingError, build_rule
-from scripts.run_test_tier import run_with_budget
 from tests.estimation._sequential_acceptance import (
     ACCEPTANCE_GATES,
     CERTIFICATION_DESIGN,
@@ -62,7 +62,7 @@ CHECKPOINT_MEMO_ENTRIES = 4096
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_FILES = (
     "calibration/sequential.py",
-    "scripts/run_test_tier.py",
+    "calibration/_process.py",
     "calibration/journal.py",
     "calibration/profile.py",
     "calibration/profiles.yaml",
@@ -964,7 +964,7 @@ def _controller(output: Path, case_seconds: float, work_seconds: float) -> int:
         directory.mkdir()
         _write(directory / "plan.json", plans[index])
         started = time.monotonic()
-        code = run_with_budget(
+        code = run_with_timeout(
             [
                 sys.executable,
                 "-c",
@@ -973,8 +973,7 @@ def _controller(output: Path, case_seconds: float, work_seconds: float) -> int:
                 "raise SystemExit(_worker_entry(Path(sys.argv[1])))",
                 str(directory),
             ],
-            tier=f"sequential-case-{index}",
-            budget_seconds=min(case_seconds, remaining),
+            min(case_seconds, remaining),
         )
         elapsed = time.monotonic() - started
         spent += elapsed / 3600.0
@@ -1332,7 +1331,7 @@ def main(argv=None):
     remaining = args.budget_seconds - (time.monotonic() - started)
     code = 124
     if remaining > 0:
-        code = run_with_budget(
+        code = run_with_timeout(
             [
                 sys.executable,
                 "-c",
@@ -1344,8 +1343,7 @@ def main(argv=None):
                 str(args.case_seconds),
                 str(remaining),
             ],
-            tier="sequential-certification-campaign",
-            budget_seconds=remaining,
+            remaining,
         )
     return _summary(args.output, manifest, code)
 

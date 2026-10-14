@@ -108,7 +108,7 @@ _PYTEST_ENVIRONMENT_SNAPSHOT = pytest.StashKey[dict[str, str]]()
 
 
 def _pytest_environment_controls() -> dict[str, str]:
-    prefixes = ("COV_CORE_", "COVERAGE_", "INCREMENT_TESTMON_LOCK_")
+    prefixes = ("COV_CORE_", "COVERAGE_")
     controls = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS", "PYTEST_ADDOPTS"}
     return {
         name: value
@@ -169,8 +169,6 @@ def _duration_snapshot(config: pytest.Config) -> dict[str, float]:
 
 
 _CALL_DURATIONS: dict[str, float] = {}
-
-pytest_plugins = ("tests._evidence",)
 
 
 def _setup(namespace: dict) -> None:

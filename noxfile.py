@@ -76,7 +76,16 @@ DUCKDB_FLOORS: dict[str, str] = {
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
 PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup")
-TEST_RUNNER = ("python", "-m", "scripts.run_test_tier")
+TIER_MARKERS = {
+    "fast": "not slow and not parameter_recovery and not numerical_certification",
+    "slow": ("slow and not parameter_recovery and not numerical_certification and not examples"),
+    "parameter-recovery": "parameter_recovery",
+    "numerical-certification": "numerical_certification",
+    "scientific": "(parameter_recovery or numerical_certification)",
+    "examples": "examples",
+    "all": "slow or not slow",
+    "all-except-scientific": "not parameter_recovery and not numerical_certification",
+}
 
 
 def _sync(session: nox.Session, *groups: str, extras: tuple[str, ...] = ()) -> None:
@@ -89,8 +98,10 @@ def _sync(session: nox.Session, *groups: str, extras: tuple[str, ...] = ()) -> N
     session.run_install(*args, env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location})
 
 
-def _run_test_tier(session: nox.Session, tier: str, *pytest_args: str) -> None:
-    session.run(*TEST_RUNNER, tier, *pytest_args)
+def _run_pytest_tier(session: nox.Session, tier: str, *pytest_args: str) -> None:
+    marker = TIER_MARKERS.get(tier)
+    selection = ("-m", marker) if marker is not None else ()
+    session.run("pytest", *selection, *pytest_args)
 
 
 def _run_pytest_at_floor(
@@ -98,12 +109,13 @@ def _run_pytest_at_floor(
     tier: str,
     *pytest_args: str,
     extras: tuple[str, ...] = ("demo",),
+    use_posargs: bool = True,
 ) -> None:
     """Sync the given extras, then run pytest against direct dependency floors.
 
     ``uv run --with`` overlays the floor pins on top of the synced environment
-    for this invocation only, without touching the lockfile. Explicit session
-    arguments replace the default pytest selection.
+    for this invocation only, without touching the lockfile. Session arguments
+    are forwarded to pytest while preserving the selected tier marker.
     """
     python = session.python
     if not isinstance(python, str) or python not in PYTHON_VERSIONS:
@@ -115,17 +127,19 @@ def _run_pytest_at_floor(
     if "dashboard" in extras:
         pins.extend(DASHBOARD_FLOORS[python])
     with_args = [arg for pin in pins for arg in ("--with", pin)]
-    if session.posargs and Path(session.posargs[0].split("::", 1)[0]).is_file():
+    selection = (session.posargs or pytest_args) if use_posargs else pytest_args
+    if use_posargs and session.posargs and Path(session.posargs[0].split("::", 1)[0]).is_file():
         tier = "focused"
+    marker = TIER_MARKERS.get(tier)
+    marker_args = ("-m", marker) if marker is not None else ()
     session.run(
         "uv",
         "run",
         "--no-sync",
         *with_args,
-        *TEST_RUNNER,
-        tier,
-        *(session.posargs or pytest_args),
-        # xdist already parallelizes processes; BLAS and polars must not multiply their threads.
+        "pytest",
+        *marker_args,
+        *selection,
         env={
             "UV_PROJECT_ENVIRONMENT": session.virtualenv.location,
             "OPENBLAS_NUM_THREADS": "1",
@@ -147,7 +161,7 @@ def tests(session: nox.Session) -> None:
     ``importorskip`` guard, so duckdb has to actually be installed.
     """
     _sync(session, "dev", extras=("demo", "dashboard"))
-    _run_test_tier(session, "fast", "-q", *PYTEST_ARGS)
+    _run_pytest_tier(session, "fast", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python=PYTHON_VERSIONS)
@@ -158,29 +172,29 @@ def tests_full(session: nox.Session) -> None:
     covered exact-mass and capacity cases remain in this matrix.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    # Explicit session arguments replace the default selection, as in the floor session.
+    # File selectors opt into a focused run; other options keep the tier marker.
     tier = "all-except-scientific"
     if session.posargs and Path(session.posargs[0].split("::", 1)[0]).is_file():
         tier = "focused"
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         tier,
-        *(session.posargs or ("-q", *PYTEST_ARGS, "--evidence-root", ".test-evidence")),
+        *(session.posargs or ("-q", *PYTEST_ARGS)),
     )
-    if session.posargs:
+    if tier == "focused":
         return
     # Retain the numerical cases previously covered by this matrix.
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"
         "TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass"
     )
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         "numerical-certification",
         "-q",
         *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
+        "--durations=25",
+        "--junitxml=junit-numerical.xml",
         f"{selector}[central]",
         f"{selector}[rare]",
         "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",
@@ -191,13 +205,11 @@ def tests_full(session: nox.Session) -> None:
 def tests_numerical_certification(session: nox.Session) -> None:
     """Run the required deterministic numerical-certification tier."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         "numerical-certification",
         "-q",
         *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
         *session.posargs,
     )
 
@@ -206,13 +218,11 @@ def tests_numerical_certification(session: nox.Session) -> None:
 def tests_scientific(session: nox.Session) -> None:
     """Run a shard of Monte-Carlo and deterministic scientific tiers."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         "scientific",
         "-q",
         *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
         *session.posargs,
     )
 
@@ -323,11 +333,9 @@ def tests_floor_full(session: nox.Session) -> None:
         "all-except-scientific",
         "-q",
         *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
         extras=("demo", "tables", "dashboard"),
     )
-    if session.posargs:
+    if session.posargs and Path(session.posargs[0].split("::", 1)[0]).is_file():
         return
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"
@@ -341,9 +349,10 @@ def tests_floor_full(session: nox.Session) -> None:
         "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",
         "-q",
         *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
+        "--durations=25",
+        "--junitxml=junit-numerical.xml",
         extras=("demo", "tables", "dashboard"),
+        use_posargs=False,
     )
 
 
@@ -356,13 +365,11 @@ def tests_parameter_recovery(session: nox.Session) -> None:
     machine-specific durations file, pytest-split distributes tests evenly.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         "parameter-recovery",
         "-q",
         *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
         *session.posargs,
     )
 
@@ -382,14 +389,14 @@ def examples(session: nox.Session) -> None:
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     session.run("ruff", "check", "examples")
     session.run("ruff", "format", "--check", "examples")
-    _run_test_tier(session, "examples", "-q", *PYTEST_ARGS)
+    _run_pytest_tier(session, "examples", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python="3.12")
 def docs_snippets(session: nox.Session) -> None:
     """Execute shipped README/docs Python snippets concurrently by file."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         "fast",
         "README.md",
@@ -422,14 +429,14 @@ def tests_tables(session: nox.Session) -> None:
     respectively; this file is in neither.
     """
     _sync(session, "dev", extras=("demo", "tables"))
-    _run_test_tier(session, "fast", "tests/test_tables.py", "-q")
+    _run_pytest_tier(session, "fast", "tests/test_tables.py", "-q")
 
 
 @nox.session(python="3.12")
 def tests_slow(session: nox.Session) -> None:
     """Run functional-slow tests, excluding scientific tiers and notebooks."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    _run_test_tier(session, "slow", "-q", *PYTEST_ARGS)
+    _run_pytest_tier(session, "slow", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python="3.12")
@@ -504,7 +511,7 @@ def docs(session: nox.Session) -> None:
             f"docs/examples/{name}.html",
             "-f",
         )
-    _run_test_tier(
+    _run_pytest_tier(
         session,
         "fast",
         "tests/test_composition_matrix.py",

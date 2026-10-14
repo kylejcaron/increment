@@ -364,8 +364,6 @@ def collect_nodeids(root: Path, files: Sequence[Path | str]) -> frozenset[str]:
         "-m",
         "pytest",
         "-p",
-        "no:testmon",
-        "-p",
         "no:tach",
         "--rootdir",
         str(root),

@@ -60,7 +60,7 @@ def _commit_change(repo: Path, path: str) -> None:
         "calibration/model.py",
         "tests/estimation/test_conversion_route_calibration.py",
         "tests/estimation/helper.py",
-        "scripts/run_test_tier.py",
+        "scripts/affected.py",
         "scripts/certification_ci_changes.py",
         "Makefile",
         "noxfile.py",

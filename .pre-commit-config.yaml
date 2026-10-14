@@ -59,3 +59,10 @@ repos:
         entry: uv run python scripts/audit_verbosity.py --gate
         language: system
         types: [python]
+      - id: affected-fast
+        name: affected fast tests
+        entry: bash -c 'make test-affected BASE=$(git merge-base origin/main HEAD) TIER=fast'
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

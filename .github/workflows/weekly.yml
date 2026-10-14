@@ -27,7 +27,7 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
-      - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}"
+      - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
       - name: Record fast-test durations
         id: record-fast-durations
         if: matrix.python-version == '3.12'
@@ -43,14 +43,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
-      - name: Retain full-suite evidence
+      - name: Retain full-suite JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: full-suite-${{ matrix.python-version }}-${{ github.run_attempt }}
-          path: .test-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: full-suite-junit-${{ matrix.python-version }}-${{ github.run_attempt }}
+          path: |
+            junit.xml
+            junit-numerical.xml
+          if-no-files-found: warn
           retention-days: 30
 
   test-all-floor:
@@ -66,15 +67,16 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
-      - run: uv run --with nox nox -s "tests_floor_full-${{ matrix.python-version }}"
-      - name: Retain floor-suite evidence
+      - run: uv run --with nox nox -s "tests_floor_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
+      - name: Retain floor-suite JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: floor-suite-${{ matrix.python-version }}-${{ github.run_attempt }}
-          path: .test-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: floor-suite-junit-${{ matrix.python-version }}-${{ github.run_attempt }}
+          path: |
+            junit.xml
+            junit-numerical.xml
+          if-no-files-found: warn
           retention-days: 30
 
   # One Python/locked-dependency run, split four ways across scientific purposes.
@@ -91,15 +93,14 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
-      - run: uv run --with nox nox -s tests_scientific -- --splits 4 --group ${{ matrix.group }}
-      - name: Retain scientific evidence
+      - run: uv run --with nox nox -s tests_scientific -- --splits 4 --group ${{ matrix.group }} --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
+      - name: Retain scientific JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: scientific-shard-${{ matrix.group }}-${{ github.run_attempt }}
-          path: .test-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: scientific-junit-shard-${{ matrix.group }}-${{ github.run_attempt }}
+          path: junit.xml
+          if-no-files-found: warn
           retention-days: 30
 
   warehouse-backends:

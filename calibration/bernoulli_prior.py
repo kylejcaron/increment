@@ -359,9 +359,9 @@ def main(argv=None) -> int:
     replications = 10 if args.pilot else args.replications
     if args.worker:
         return _worker(args.output, replications, args.processes)
-    from scripts.run_test_tier import run_with_budget
+    from calibration._process import run_with_timeout
 
-    code = run_with_budget(
+    code = run_with_timeout(
         [
             sys.executable,
             "-m",
@@ -374,8 +374,7 @@ def main(argv=None) -> int:
             "--processes",
             str(args.processes),
         ],
-        tier="bernoulli-prior-weight-probe",
-        budget_seconds=args.budget_seconds,
+        args.budget_seconds,
     )
     if code != 0:
         print(

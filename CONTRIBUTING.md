@@ -75,27 +75,13 @@ then rerun `make install`. Hook execution must not depend on a disposable
 checkout's `.venv`. Inspect existing custom/legacy ownership before installation;
 never force-replace shared hooks while active worktrees are unprepared.
 
-The candidate-safe pre-push wrapper validates every non-deletion ref against
-the clean checked-out HEAD, then replays Git's complete input to the existing
-native and legacy hooks. Its Python interpreter and `prek` executable are
-resolved during explicit installation, not bootstrapped during pushes.
-Every active worktree must contain `scripts/check_push_targets.py` before
-installing this shared wrapper; unprepared branches are not eligible.
-
-Test launchers clear inherited Git repository-local environment before starting
-their supervised commands. Temporary fixture repositories must not reuse a
-calling hook's Git directory or index; this isolation does not disable hooks.
-
-The functional-slow CI job is part of `ci-ok`, with run-attempt-specific test
-evidence retained even on failure. The numerical-certification decision and
-result are also enforced by `ci-ok`; this checked-in logic does not establish
-hosted branch-protection activation. Do not relax `make check` or the full
-local fast/slow hooks until hosted success, failure/cancellation blocking,
-retained evidence, required-check configuration, and owner-approved activation
-have been verified. Workflow preparation alone does not establish those conditions.
+The pre-push checks run lint, type-checking and the affected fast tier.
+`make check` is an optional broader local check; CI remains the full-suite
+gate. The numerical-certification decision and result are enforced by `ci-ok`;
+hosted branch-protection activation is an owner gate.
 
 The Python 3.12 fast shards upload optional executed-code coverage artifacts.
-After the required jobs, `ci-ok` combines the matching shard artifacts and
+After the required jobs, `ci-ok` combines matching shard artifacts and
 publishes a combined report when both are complete. This advisory step does not
 affect the required test result; missing, failed, or mismatched shard data means
 no combined report is published. Coverage counts `increment/` source statements
@@ -122,8 +108,7 @@ do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
 | Purpose | Marks | Execution |
 | --- | --- | --- |
 | Unit/small regression | No category mark | Focused/affected feedback and ordinary fast CI |
-| Cooperating components, local query engines, UI or subprocess boundaries | `integration`; add `slow` if expensive | Fast unless slow; relevant task checks and required CI |
-| Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and current functional-slow/pre-push gates |
+| Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and required CI |
 | Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
 | Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Monte Carlo-only target remains available; included in scientific union shards and relevant inference validation |
 | Deterministic inferential certification | `numerical_certification` and `slow` | Dedicated relevant-change CI decision/job; also included in weekly scientific union shards |
@@ -158,25 +143,60 @@ The thresholds are not single-run, hardware-sensitive CI failures. Contended,
 partial or older-source runs identify candidates but cannot establish current
 wall-time improvements or complete acceptance.
 
-CI publishes advisory runtime warnings and bounded job summaries after fast,
-functional-slow and numerical-certification runs; the evidence artifact retains
-the complete JSON report. To inspect a local receipt:
+Test execution uses ordinary pytest options and markers. The configured default
+selection is fast. The Make targets define the supported tiers:
+
+| Target | Marker expression |
+| --- | --- |
+| `make test-fast` | `not slow and not parameter_recovery and not numerical_certification` |
+| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples` |
+| `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery` |
+| `make test-numerical-certification` | `numerical_certification` |
+| `make test-scientific SPLITS=N GROUP=K` | `(parameter_recovery or numerical_certification)` |
+| `make test-examples` | `examples` |
+| `make test-all` | `slow or not slow` |
+
+The parameter-recovery, numerical-certification, scientific and examples tests
+also carry `slow`; the marker expressions keep their purpose-specific gates
+separate. `pytest-timeout` supplies the 300-second per-test hang guard. There
+are no tier-level wall-clock budgets.
+
+Start with the exact regression:
 
 ```bash
-uv run python -m scripts.report_test_runtime .test-evidence/run-<id> \
-  --base <task-base-sha> --json .test-evidence/runtime.json \
-  --markdown .test-evidence/runtime.md
+make test TESTS=tests/file.py::test_name
 ```
 
-A parent evidence directory selects its latest receipt; use an exact run path
-to avoid ambiguity. Optional `--baseline <run-path>` compares matching Python,
-platform, worker count, distribution mode and thread limits (including Polars).
-Timing increases are candidates, not demonstrated regressions. Selected
-baseline receipts do not prove that an unobserved test is newly authored, and
-AST family membership cannot establish parameter-level novelty. Partial,
-malformed or legacy evidence remains explicitly uncertain. Warnings never
-retag source or fail a run because a test exceeded five seconds; inspect shared
-fixture/setup costs and repeat under representative conditions before retagging.
+Then run the affected fast tier against the task's immutable base:
+
+```bash
+make test-affected BASE=<task-base-sha>
+make test-affected BASE=<task-base-sha> TIER=slow
+```
+
+`BASE` is required. Resolve it at dispatch and reuse that commit across later
+commits and resumes; `BASE=HEAD` is only appropriate for a working-tree-only
+comparison. `scripts.affected` compares the merge base and working-tree
+changes. Configuration changes that affect selection or test infrastructure
+run the full requested tier; changed test modules and their importers are
+selected directly; test `conftest.py` changes select tests beneath that
+directory; production Python changes use Tach with the immutable base; changed
+README/docs pages run their snippets. Other changed paths are reported as not
+covered locally because CI is responsible for them. Deleted test paths are not
+selected. A zero-selection result is a successful no-op, not evidence that
+uncovered paths were tested.
+
+Affected checks are local feedback, not a replacement for required slow,
+parity, fixtures, public-smoke, documentation, scientific or full-suite gates.
+CI is the authoritative full-suite gate. The pre-push hook runs lint,
+type-checking and the affected fast tier; `make check` is an optional broader
+local check. Send pytest options through `PYTEST_ARGS` when using Make targets.
+
+For runtime audits, review every recorded test whose summed setup, call and
+teardown exceeds five seconds; prioritize those exceeding ten. Also inspect
+aggregate module/fixture costs, collection/startup and interrupted tests.
+These thresholds trigger investigation, not flaky timing failures. Retag only
+after representative runs and inspect shared fixture/setup costs.
 
 Record each family's contract, current source anchor, expensive workload,
 disposition (keep, optimize, split, reclassify or remove genuinely redundant
@@ -184,7 +204,7 @@ coverage), required execution gate and exact parameter identities. Group
 shared causes without overlooking expensive boundary variants. Keep small
 deterministic witnesses in the routine tier; preserve full campaign
 assertions, seeds, repetitions and tolerances separately. A small smoke does
-not establish empirical coverage. Update selectors, campaign runners,
+not establish empirical coverage. Update marker selection, campaign scripts,
 references and CI consumers together so reclassification cannot lose tests.
 Use the existing `calibration/` directory for full certification campaigns
 when appropriate; it is outside ordinary pytest collection.
@@ -202,110 +222,10 @@ bodies, fixtures, assertions or selection/guard logic change. Batch those
 checks at meaningful milestones rather than after each decorator edit.
 
 
-- Start with the exact regression:
 
-  ```bash
-  make test TESTS=tests/file.py::test_name
-  ```
-
-  For a scoped follow-up, run the affected fast tier against the task's recorded
-  base commit:
-
-  ```bash
-  make test-affected BASE=<task-base-sha>
-  make test-affected BASE=<task-base-sha> TIER=slow
-  ```
-
-  `BASE` is required and resolved to an immutable commit. `HEAD` is valid for
-  a working-tree-only comparison; long-running tasks MUST record their dispatch
-  base SHA and reuse it across later commits and resumes so committed task work
-  is not dropped.
-
-  `PYTEST_ARGS` may contain only typed controls: `-k`/`--keyword`,
-  `-m`/`--markexpr`, `-x`/`--maxfail`, `-q`, `-v`, `--durations`, numeric
-  `-n 1..8`, `--dist loadgroup`, `--evidence-root`, and
-  `--runtime-diagnostics`. Runs are serial by default. `-n auto`/`logical`,
-  maximum-process caps, custom xdist transports, arbitrary pytest arguments,
-  `-c`/`-o`, response files, non-empty inherited `PYTEST_ADDOPTS` or
-  `PYTEST_PLUGINS`, and project pytest addopts/plugins are not accepted in
-  affected mode. The launcher uses a fixed config, sanitized environment,
-  explicit plugin set, and a parser-backed effective-option allowlist.
-
-  The selector uses Testmon only with a complete, matching map for the requested
-  tier and changed function bodies; otherwise it falls back to the conservative
-  local AST import graph. The graph follows transitive source/test-helper
-  imports, resolves public lazy exports, and retains all tests if any graph file
-  is unparseable. Module/class-level or import-executed changes use the graph.
-  Changed tests, dynamic-import helpers and their transitive test consumers,
-  subprocess tests and filesystem guards remain selected. Changes to config,
-  dependencies/plugins, conftest/shared fixtures, data, public lazy exports, or
-  source that dynamically loads arbitrary paths refuse with an explicit broader route.
-
-  Ordinary full-tier validation does not record or update Testmon maps.
-  Record one explicitly with `make test-map TIER=fast` or `TIER=slow`; the
-  underlying `--record-testmon-map` option goes before the tier. Recording
-  requires a complete, unfiltered fast/slow/all run and acquires the database
-  lock. Unsafe or partial requests refuse, and a successful pytest run without
-  a usable published map is not a successful recording. Map generation remains
-  expensive and is optional for ordinary validation and affected feedback,
-  which can use the conservative graph.
-  Completeness markers bind
-  the database, exact Python/dependency environment, source inventory, collected
-  node IDs, import-time coverage from a fresh interpreter, module/class AST
-  fingerprints, resolved selection controls and terminal reports. Fast/slow
-  certify only their own tier; all certifies both. A tier marker remains valid
-  only while its node IDs still exist, including scheduler group suffixes.
-
-  Affected startup pins and validates the worktree map before Testmon mutates
-  it. Missing, unreadable, corrupt, stale or incomplete maps use the graph.
-  Affected runs never certify a tier. On the Testmon route, changed test-helper
-  consumers remain protected from deselection. Collection restores scheduling
-  after plugin hooks without changing final node IDs.
-  Import-graph fallback collects only the conservative retained files; it does
-  not import unrelated tests just to deselect them. The certified Testmon route
-  retains full collection. Collection failures in retained files still fail.
-
-
-  Supervised pytest children carry an explicit owner-child role. Nested normal
-  runners bypass Testmon reads/writes and certification; without a valid owner
-  token they do not acquire its database lock. Reusing a live same-worktree lock
-  requires a verified owner token.
-  Selector collection and affected subprocesses load conftests only from their
-  declared repository root and descendants, including retained temporary repos.
-  Controlled pytest children and certification collection use a private empty
-  bytecode namespace with writes disabled, so rapid same-size edits cannot
-  reuse source-tree or pytest-rewritten bytecode. Shared caches are not deleted.
-  This costs cold Python compilation, not a rebuild of native extensions.
-  It does not refresh already-loaded parent modules, in-memory imports, explicit
-  descendant overrides, or source edited during execution; keep inputs stable.
-
-
-  A successful affected run requires finished owner-matched evidence whose exact
-  terminal node IDs equal its nonempty selected node IDs. Evidence records
-  `testmon` or `import_graph` as the selection route. Zero selection is rejected.
-  Affected-fast is feedback, not a replacement for slow, parity, fixtures, public
-  smokes, documentation, scientific or full-suite acceptance.
-
-  Dispatch/resume notes record the immutable base, exact commands, serial/numeric
-  worker allowance, remaining acceptance and evidence location. Evidence is
-  source/worktree/environment/dirty-input specific; changed inputs require a
-  new affected run, not reuse of an earlier green receipt.
-  A read-only review does not invalidate matching execution evidence. Reuse
-  receipts only while their recorded source, worktree, environment and dirty
-  inputs still match; run broad gates at the required integration point, not
-  simply because another reviewer looked at unchanged code.
-
-
-
-Before pushing, run:
-
-```bash
-make check
-```
-
-This runs formatting and lint checks, architecture validation, dead-code and
-docstring-baseline checks, type checking, fast tests, and functional-slow
-tests. Use `make fmt` to apply formatting and safe lint fixes.
+Before pushing, the pre-push checks run lint, type-checking and the affected
+fast tier. CI is the authoritative full-suite gate; `make check` is an optional
+broader local check. Use `make fmt` to apply formatting and safe lint fixes.
 
 Additional commands:
 
@@ -319,39 +239,27 @@ Additional commands:
   that change estimation or a wire format. It is not a routine contributor
   check.
 
-Pytest applies a 300-second per-test hang guard. Aggregate runner tier budgets
-are disabled locally and in CI; explicit per-test timeouts and scientific
-campaign deadlines remain enforced. Runners still clean up subprocess groups on
-interruption. No private authorization or task environment is required. For
-Monte Carlo-only shards, use
-`make test-parameter-recovery SPLITS=4 GROUP=1`; the certification-only
-target is `make test-numerical-certification`. The weekly scientific union
-uses `make test-scientific SPLITS=4 GROUP=1`; without local timing data,
+Pytest applies a 300-second per-test hang guard. There are no tier-level
+wall-clock budgets. The Nox sessions invoke pytest directly; CI uploads JUnit
+reports and prints the duration summary for test jobs.
+
+Monte Carlo-only shards use
+`make test-parameter-recovery SPLITS=4 GROUP=1`; deterministic certification
+uses `make test-numerical-certification`. Weekly scientific-union shards use
+`make test-scientific SPLITS=4 GROUP=1`; without local timing data,
 pytest-split distributes tests evenly.
 
-`make test-all` retains failure outputs and JUnit reports under
-`.test-evidence/`. Add `--runtime-diagnostics` through `PYTEST_ARGS` when
-investigating slow tests; retained artifacts are not committed.
-Full Nox sessions retain separate receipts for the functional run and the
-exact-mass checks. Explicit `tests_floor_full` arguments replace the default
-selection and run once.
-
-Ordinary tier commands disable Tach's unused impact-analysis plugin at the shared
-runner boundary; direct `uv run pytest --tach ...` remains available for
-impact-selected work.
-Ordinary Make tiers and affected tests default to `max(1, CPU count // 3)`
-workers. Override with `WORKERS=auto` or a specific count. Ordinary tier
-commands accept `PYTEST_ARGS`; affected mode also passes its worker and
-loadgroup defaults and accepts only the typed pytest controls listed above.
+Make targets default to `max(1, CPU count // 3)` workers. Override with
+`WORKERS=auto` or a specific count. CI passes `WORKERS=auto`; ordinary
+commands accept `PYTEST_ARGS` for pytest options. The pre-push checks run
+lint, type-checking and the affected fast tier; the CI matrix is the full-suite
+gate.
 
 The test bootstrap defaults numerical-library thread pools to one per process,
 matching Nox's controls, while preserving explicit environment overrides.
-Subprocess-heavy runner, selection and evidence guard modules share one native
-xdist loadgroup so their child launches do not multiply across outer workers.
-Their nested parallel scenarios still execute; other functional tests remain
-parallel. Notebook checks share one batched Marimo invocation while retaining a
-separate guard for each notebook; export and warehouse-regeneration scenarios
-still execute independently.
+Notebook checks share one batched Marimo invocation while retaining a separate
+guard for each notebook; export and warehouse-regeneration scenarios still
+execute independently.
 
 Unit tests do not use the network or real warehouses. Live PostgreSQL,
 Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
@@ -387,8 +295,8 @@ make test-fast PYTEST_ARGS="-n auto --dist loadgroup --store-durations --duratio
 Functional-slow CI uses four isolated shards with workers inside each shard;
 `ci-ok` requires their aggregate success. Every case remains selected exactly
 once. Until a complete hosted timing baseline is available, the splitter uses
-equal default weights. Each shard retains its own test evidence and
-`slow-test-durations.json`; partial shard timings are not a complete baseline.
+equal default weights. Each shard uploads a JUnit report; partial shard timings
+are not a complete baseline.
 
 The root pytest hook uses the ignored `.test_durations` cache for stable,
 longest-first local scheduling across fast and slow tests. Each run refreshes
@@ -422,8 +330,8 @@ The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch: full slow/examples suites at locked dependencies and
 floors on all three Python versions, four scientific-union shards on Python
-3.12, and all three warehouse backends. Fast, full and scientific jobs retain
-test evidence, including per-test timings, for 30 days. The full-suite jobs
+3.12, and all three warehouse backends. Fast, full and scientific jobs upload
+JUnit reports and print duration summaries. The full-suite jobs
 allow 90 minutes: prior completed jobs needed up to 55 minutes of pytest time,
 with roughly one minute for session startup and dependency setup, so the limit
 leaves about 34 minutes of margin without adding shard/configuration overhead.
@@ -492,9 +400,9 @@ extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
 
 [`docs/validation.md`](docs/validation.md) is the single inventory of independent-reference
 evidence, including methods that have none. Frozen fixtures live under `tests/oracles/` with
-their generator scripts; ordinary tests read the fixtures only, never R or the network. Run an
-oracle with `make test TESTS=tests/oracles/test_welch_oracle.py` (the focused runner takes test
-files, not directories; [Reproduce](docs/validation.md#reproduce) lists each one). To report a
+their generator scripts; ordinary tests read fixtures only, never R or the network. Run an
+oracle with `make test TESTS=tests/oracles/test_welch_oracle.py` (pytest accepts test files
+directly; [Reproduce](docs/validation.md#reproduce) lists each one). To report a
 discrepancy against a reference, open a GitHub issue with the
 increment version or commit, the entry point, the reference tool and version, the two numbers and
 the tolerance, and attach aggregate moments or the reference output, never identifiers,

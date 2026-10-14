@@ -52,20 +52,10 @@ jobs:
           coverage_args=""
           if [ "${{ matrix.python-version }}" = "3.12" ]; then
             export COVERAGE_CORE=sysmon
-            coverage_args="--cov=increment --cov-report=json:.test-evidence/fast-coverage.json"
+            coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
-          make test-fast WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --evidence-root .test-evidence --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
-      - name: Report fast-suite runtime
-        if: always() && hashFiles('.test-evidence/run-*/run.json') != ''
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          args=()
-          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            args+=(--base "$BASE_SHA")
-          fi
-          uv run --no-sync python -m scripts.report_test_runtime .test-evidence "${args[@]}" --json .test-evidence/runtime-fast.json --markdown "$GITHUB_STEP_SUMMARY"
-      - name: Record fast coverage shard receipt
+          make test-fast WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+      - name: Record fast coverage shard metadata
         if: always() && matrix.python-version == '3.12'
         env:
           SHA: ${{ github.sha }}
@@ -75,7 +65,7 @@ jobs:
         run: |
           mkdir -p .fast-coverage
           python -c 'import json, os; from pathlib import Path; Path(".fast-coverage/metadata.json").write_text(json.dumps({"sha": os.environ["SHA"], "attempt": int(os.environ["ATTEMPT"]), "python": "3.12", "shard": int(os.environ["SHARD"]), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
-          if [ -f .test-evidence/fast-coverage.json ]; then cp .test-evidence/fast-coverage.json .fast-coverage/coverage.json; fi
+          if [ -f coverage.json ]; then cp coverage.json .fast-coverage/coverage.json; fi
       - name: Retain fast coverage shard
         if: always() && matrix.python-version == '3.12'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -86,14 +76,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
-      - name: Retain fast-suite evidence
+      - name: Retain fast JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fast-suite-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}
-          path: .test-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: fast-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}
+          path: junit.xml
+          if-no-files-found: warn
           retention-days: 30
 
   slow:
@@ -115,25 +104,14 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-slow WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --evidence-root .test-evidence --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration --store-durations --durations-path .test-evidence/slow-test-durations.json"
-      - name: Report slow-suite runtime
-        if: always() && hashFiles('.test-evidence/run-*/run.json') != ''
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          args=()
-          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            args+=(--base "$BASE_SHA")
-          fi
-          uv run --no-sync python -m scripts.report_test_runtime .test-evidence "${args[@]}" --json .test-evidence/runtime-slow.json --markdown "$GITHUB_STEP_SUMMARY"
-      - name: Retain slow-suite evidence
+      - run: make test-slow WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --junitxml=junit.xml --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration"
+      - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: slow-suite-shard-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .test-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: slow-junit-shard-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: junit.xml
+          if-no-files-found: warn
           retention-days: 30
 
   # Catches packaging breakage on every push/PR rather than at release time,
@@ -223,25 +201,14 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --evidence-root .test-evidence"
-      - name: Report certification runtime
-        if: always() && hashFiles('.test-evidence/run-*/run.json') != ''
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          args=()
-          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            args+=(--base "$BASE_SHA")
-          fi
-          uv run --no-sync python -m scripts.report_test_runtime .test-evidence "${args[@]}" --json .test-evidence/runtime-certification.json --markdown "$GITHUB_STEP_SUMMARY"
-      - name: Retain certification evidence
+      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --junitxml=junit.xml"
+      - name: Retain certification JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: numerical-certification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .test-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
+          name: numerical-certification-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: junit.xml
+          if-no-files-found: warn
           retention-days: 30
 
   docs:
