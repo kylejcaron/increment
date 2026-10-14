@@ -36,6 +36,7 @@ from increment.estimation.results import (
     DECIDABLE_SEQUENTIAL_STATUSES,
     LiftEstimate,
     _selection_qualification,
+    conversion_route_label,
     row_decision_available,
     row_decision_scale,
 )
@@ -136,6 +137,8 @@ def _base_liftestimate_to_row(
         "relative_unavailable_reason": getattr(est, "relative_unavailable_reason", None),
         "confidence_set": region,
         "binomial_set": binomial,
+        "conversion_route": conversion_route_label(est),
+        "delta_evidence": getattr(est, "delta_evidence", None),
         "abs_reference_kind": getattr(est, "abs_reference_kind", None),
         "abs_reference_df": getattr(est, "abs_reference_df", None),
         "abs_alpha": getattr(est, "abs_alpha", None),

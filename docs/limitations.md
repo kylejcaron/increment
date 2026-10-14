@@ -478,8 +478,10 @@ pools keep the bootstrap. Both methods remain `experimental` and withhold decisi
 
 An unadjusted (no CUPED, no declared cluster), unit-grain conversion or retention arm pair
 has two routes, and a rule that reads only the four per-arm success and failure counts and
-the tail allocation (`alpha / 2` per tail two-sided, `alpha` directional) picks one before any
-interval is computed. It never compares an interval or a p-value, and it labels the row:
+the row's own tail allocation (`alpha / 2` per tail two-sided, `alpha` directional) picks one
+before any interval is computed. It never compares an interval or a p-value, it is the same
+whether or not the row belongs to a multiplicity family, and it labels the row
+(`reference_kind`; the repr and readout show it as `route`):
 
 * **Delta-method route** (`reference_kind="t"`, `scale="log"`, no `binomial_set`): the log
   risk ratio against a Welch-Satterthwaite t reference that every unadjusted mean uses,
@@ -502,9 +504,52 @@ not a conversion or retention rate or on a CUPED-adjusted method, with
 `conversion_inference.finite_sample.metric_type` and `conversion_inference.finite_sample.cuped`,
 the one code per hazard whether a definition, a frame metric, a method or a plan carries it).
 There is no forced
-delta-method value and no analysis-wide knob. A multiplicity family that reads p-values at
-levels below the row's own routes each row at the smallest level it can be decided at (for a
-BH family, `q` over the hypotheses it tests), never at a looser one. A stored plan or wire payload
+delta-method value and no analysis-wide knob.
+
+A multiplicity family (a BH secondary family, `run_breakout(correction="bh")`,
+`select_exploratory_family`) reads a member's p-value at levels below the row's own, as low as
+`q / m`, where the delta p-value is not validated. The member is still routed and cut at its own
+level; what changes is its p-value. Every delta-method conversion row persists its four counts
+(`delta_evidence`) with `U`, the smallest level at which those counts are dense
+(`dense_level`, the count rule inverted float by float against itself; `0.0` for counts dense
+at every representable level). A row no family reads -- a sole primary, a guardrail, a
+sensitivity method's row, a breakout cell under `correction="none"` or `"bonferroni"` --
+keeps its delta p-value. A family member's decision row (`delta_evidence.composite`) reports
+the composite `p* = p_delta` when `p_delta >= U`, otherwise `min(p_exact, U)`, where
+`p_exact` is the finite-sample route's p-value against the row's null read at the row's
+nominal tail with its nominal nuisance budget (`escalated_p_value`); `select_exploratory_family`
+reads the same composite on demand from the persisted counts of the uncorrected rows it is
+given, so it and `run_breakout(correction="bh")` select on identical evidence. Read at any
+level `u`, `p* <= u` only where the pipeline routed by counts
+at `u` rejects: by the delta row at `u` on counts dense at `u` (where `{p* <= u}` equals
+`{p_delta <= u}`), by the finite-sample test at `u` elsewhere, up to an exact float tie and the
+certification gap between the nominal reading of the exact p-value and a finer one (both
+measured zero on the lattice; `calibration.conversion_route composite`). The composite is a
+valid p-value at every level `u` with a tail in `(0, 1/2)`, including levels above the row's
+own alpha, and `p* <= alpha` agrees with the row's own interval. A row whose `p_delta` lies
+below `U` carries a note: `conversion p-value escalated to the exact p-value` when `p* =
+p_exact`, or `conversion p-value capped at its dense level` when `p* = U` -- because the exact
+p-value is not below `U`, because `U` is within the nuisance budget (no exact p-value falls
+below it, so none is read), or because the exact route is unavailable (an arm above its
+ceiling, a tail its float margin dominates; the refusal code is persisted as
+`exact_unavailable`). A capped `p*` is not a tail probability but is valid: the row rejects
+nowhere below `U`, and at `U` and above only where its delta p-value does; it can lie below the
+nuisance budget `1e-6` that bounds every exact p-value. A row persisted before the counts
+existed restores as a plain Wald row whose p-value is the delta p-value at every level; a
+family that corrects such a restored row below `U` reads an unvalidated delta p-value there,
+as every family did before the counts were persisted. A restored row's `U` is checked against
+the rule (dense at `U`, not one float below); a row cut under a build whose normal quantile
+differs by one float at its count is refused by code (`estimation.results.delta.dense_level`),
+and re-running the analysis is the remedy.
+
+A selected member is reissued at `min(R q / m, alpha)` by its counts at that level with no
+family floor: the delta interval where they are dense there, the exact binomial set from the
+counts where they are not (its label changes to `binomial` and its p-value is then the exact
+p-value read at that level). Discovery agrees with the reissued interval excluding the null on
+both sides of `U`, with two residuals: an exact float tie `p* = R q / m` (selection compares
+with `<=`, the interval with `<`), and a corrected level below `3.2e-5`, where the reissue's
+nuisance budget is smaller than the nominal one and the two certified bounds are not ordered;
+the nominal-alpha cap (`stat_sig()` False with `discovery=True`) is unchanged. A stored plan or wire payload
 written before the field existed decodes each method to the route it ran under: `"finite_sample"`
 for a prior-free, fixed-horizon method on a conversion or retention metric, whatever its
 `Method.name` label, unless it is CUPED or an observational estimator; `"auto"` for every other method.
