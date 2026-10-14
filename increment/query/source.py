@@ -1337,6 +1337,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             ),
             None,
         )
+        design_bound = design_covariate is not None
         if design_covariate is not None:
             source_name = design_covariate.get("source")
         else:
@@ -1373,13 +1374,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 and extension.covariate_name == property_name
                 and (source_name is None or extension.source_name == source_name)
             )
-        matches.extend(
-            extension
-            for extension in self._manifest.extensions
-            if extension.kind == "cuped_measure_covariate"
-            and extension.metric_name == metric_name
-            and extension.covariate_name == name
-        )
+        if not design_bound:
+            matches.extend(
+                extension
+                for extension in self._manifest.extensions
+                if extension.kind == "cuped_measure_covariate"
+                and extension.metric_name == metric_name
+                and extension.covariate_name == name
+            )
         if len(matches) == 1:
             return matches[0]
         code = "artifact.extension.missing" if not matches else "artifact.extension.invalid"

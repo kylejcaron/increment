@@ -107,6 +107,53 @@ def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_
     assert rows["u0"] == units["u0"]["tenure"]
 
 
+def test_observational_property_wins_over_same_named_measure_binding_on_replay(tmp_path):
+    defs_path, con, tenure, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    n_pre_periods: 30\n"
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: tenure, kind: continuous, measure: "
+            "{fact: exposure, aggregation: count}}]}}",
+        )
+    )
+    analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
+    artifact = _moment_source(analysis)
+    artifact_rows = nw.from_native(
+        artifact.unit_frame(artifact.context.metrics[0], covariates=["tenure"]),
+        eager_only=True,
+    ).to_arrow()
+    native = _moment_source(Analysis.from_definitions("cov_test", defs_path, con))
+    native_rows = nw.from_native(
+        native.unit_frame(native.context.metrics[0], covariates=["tenure"]),
+        eager_only=True,
+    ).to_arrow()
+    expected = tenure
+
+    assert {row["unit_id"]: row["tenure"] for row in native_rows.to_pylist()} == expected
+    assert {row["unit_id"]: row["tenure"] for row in artifact_rows.to_pylist()} == expected
+
+
+def test_reserved_binding_alias_has_same_native_and_artifact_refusal(tmp_path):
+    defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=False)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: metric, kind: continuous, property: tenure, source: events}]}}",
+        )
+    )
+
+    with pytest.raises(CodedError) as native_error:
+        Analysis.from_definitions("cov_test", defs_path, con)
+    with pytest.raises(CodedError) as artifact_error:
+        _publish_and_reopen(defs_path, con, request_covariate=False)
+
+    assert native_error.value.code == artifact_error.value.code
+    assert native_error.value.code == "definition.experiment.covariate_name_reserved"
+
+
 def test_undeclared_covariate_cannot_be_published(tmp_path):
     """The catalog is compiled from declared state: a randomized experiment
     offers no covariate extension, so a request for one is refused."""

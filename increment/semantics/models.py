@@ -1761,7 +1761,18 @@ class CupedCovariateBinding(CupedCovariate):
 
     @model_validator(mode="after")
     def _validate_binding_name_and_source(self) -> "CupedCovariateBinding":
-        if self.name in {"unit_id", "group_id", "y", "y_den", "y_raw", "cluster_id"}:
+        if self.name in {
+            "unit_id",
+            "group_id",
+            "y",
+            "y_den",
+            "y_raw",
+            "cluster_id",
+            "experiment_id",
+            "metric",
+            "x",
+            "d",
+        }:
             _definition_refusal(
                 "definition.experiment.covariate_name_reserved",
                 f"CUPED covariate name {self.name!r} is reserved for unit-frame identity, "
@@ -2545,6 +2556,19 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                     experiment_name=self.name,
                     metric_name=name,
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_covariate_cluster_aliases(self) -> "Experiment":
+        if self.cluster is not None:
+            for binding in self.bindings.values():
+                if any(covariate.name == self.cluster for covariate in binding.covariates):
+                    _definition_refusal(
+                        "definition.experiment.covariate_name_reserved",
+                        f"CUPED covariate name {self.cluster!r} is reserved for the "
+                        "experiment's cluster identity; choose a distinct alias",
+                        name=self.cluster,
+                    )
         return self
 
     @model_validator(mode="after")

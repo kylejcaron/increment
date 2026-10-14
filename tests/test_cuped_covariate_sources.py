@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import narwhals as nw
+import pytest
 
 from increment.analysis import Analysis
 from increment.estimation.results import LiftEstimate
@@ -284,7 +285,22 @@ def test_observational_covariate_name_is_not_shadowed_by_metric_binding(tmp_path
     assert bound_result.value == pytest.approx(baseline_result.value)
 
 
-def test_property_binding_rejects_unit_frame_identity_alias(tmp_path):
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "unit_id",
+        "group_id",
+        "y",
+        "y_den",
+        "y_raw",
+        "cluster_id",
+        "experiment_id",
+        "metric",
+        "x",
+        "d",
+    ],
+)
+def test_property_binding_rejects_unit_frame_identity_alias(tmp_path, alias):
     import pytest
 
     from increment.errors import DefinitionError
@@ -292,7 +308,30 @@ def test_property_binding_rejects_unit_frame_identity_alias(tmp_path):
     defs_path, _con, _units = categorical_defs_and_con(tmp_path)
     _with_metric_covariates(
         defs_path,
-        "{name: unit_id, kind: continuous, property: tenure, source: events}",
+        f"{{name: {alias}, kind: continuous, property: tenure, source: events}}",
+    )
+
+    with pytest.raises(DefinitionError) as raised:
+        load(defs_path)
+
+    assert raised.value.code == "definition.experiment.covariate_name_reserved"
+
+
+def test_property_binding_rejects_experiment_cluster_alias(tmp_path):
+    import pytest
+
+    from increment.errors import DefinitionError
+
+    defs_path, _con, _units = categorical_defs_and_con(tmp_path)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            '    end: "2025-08-07"',
+            '    end: "2025-08-07"\n    cluster: tenure',
+        )
+    )
+    _with_metric_covariates(
+        defs_path,
+        "{name: tenure, kind: continuous, property: tenure, source: events}",
     )
 
     with pytest.raises(DefinitionError) as raised:
