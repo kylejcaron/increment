@@ -1,5 +1,5 @@
 site_name: increment
-site_description: Python library for warehouse-native A/B testing, causal inference, and experiment analysis
+site_description: Open-source Python library for A/B test analysis, from dataframes or SQL warehouses.
 repo_url: https://github.com/kylejcaron/increment
 repo_name: kylejcaron/increment
 exclude_docs: |

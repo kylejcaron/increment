@@ -16,8 +16,9 @@ import numbers
 import os
 import random
 import tempfile
+import warnings
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from functools import partial
@@ -662,6 +663,22 @@ def _covariate_rescaled_event_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _drop_revenue_window(defs_dict: dict[str, Any], *, active: bool) -> None:
+    """Declare ``revenue`` unwindowed so the case can also read it site-wide."""
+    if active:
+        revenue = next(metric for metric in defs_dict["metrics"] if metric["name"] == "revenue")
+        revenue.pop("window_days", None)
+
+
+@contextmanager
+def _ignoring_unwindowed_revenue(active: bool):
+    """Silence the unwindowed-metric notice for the case that declares one."""
+    with warnings.catch_warnings():
+        if active:
+            warnings.filterwarnings("ignore", message=r"metric 'revenue' has window_days=None")
+        yield
+
+
 def _publish_rounded_artifact(con: Any, native: Analysis) -> Analysis:
     from increment.estimation.sitewide import SitewideImpact
 
@@ -869,6 +886,7 @@ def _fixed_horizon_case(
     if unselected_winsorized_sibling:
         definitions_plan = frame_plan = AnalysisPlan(primary="revenue")
     defs_dict = ds.definitions_dict(plan=definitions_plan, breakout=breakout)
+    _drop_revenue_window(defs_dict, active=rounded_events)
     fixture.declare_store_dtype(defs_dict)
     defs_dict["dialect"] = warehouse.dialect
     defs_dict["metrics"].extend(
@@ -892,12 +910,14 @@ def _fixed_horizon_case(
 
     def build_definitions() -> Analysis:
         con = warehouse.connect(rows)
-        analysis = make_analysis(con, route_defs("from_definitions"), experiment="exp")
+        with _ignoring_unwindowed_revenue(rounded_events):
+            analysis = make_analysis(con, route_defs("from_definitions"), experiment="exp")
         return _track_connection(analysis, con)
 
     def build_artifact() -> Analysis:
         con = warehouse.connect(rows)
-        native = make_analysis(con, route_defs("from_unit_day_artifact"), experiment="exp")
+        with _ignoring_unwindowed_revenue(rounded_events):
+            native = make_analysis(con, route_defs("from_unit_day_artifact"), experiment="exp")
         return (_publish_rounded_artifact if rounded_events else _publish_and_adopt)(con, native)
 
     summary_metrics = _fixed_horizon_frame_metrics(
@@ -8905,8 +8925,8 @@ def _winsor_size_routed_case() -> ParityCase:
     )
 
 
-def _triggered_sitewide_assigned_case() -> ParityCase:
-    """Assigned sitewide parity for a trigger-declared definitions/artifact pair."""
+def _triggered_sitewide_population_results_case() -> ParityCase:
+    """Complete assigned and triggered sitewide sum/ratio parity across sources."""
     rows = ds.event_rows()
     for row in tuple(rows):
         if row["event"] == "exposure" and int(str(row["user_id"])[1:]) % 2 == 0:
@@ -8919,19 +8939,23 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
                     experiment_id="exp",
                 )
             )
-    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue", secondaries=["rps"]))
     experiment = payload["experiments"][0]
     experiment["trigger"] = "saw_surface"
     payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
     payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
-    payload["metrics"] = [metric for metric in payload["metrics"] if metric["name"] == "revenue"]
+    payload["metrics"][0]["window_days"] = None
+    payload["metrics"][2]["numerator"]["window_days"] = None
+    payload["metrics"][2]["denominator"]["window_days"] = None
+    payload["metrics"][2]["denominator"]["aggregation"] = "sum"
     definitions = Definitions.model_validate(payload)
     untriggered_payload = copy.deepcopy(payload)
     untriggered_payload["experiments"][0].pop("trigger")
     untriggered = Definitions.model_validate(untriggered_payload)
+    # Certified through the whole experiment end day, as triggered sitewide requires.
     snapshot = SourceSnapshotEvidence(
-        observation_cutoff_ts=dt.datetime(2025, 1, 20, tzinfo=dt.UTC),
-        complete_through_by_feed={"events": dt.datetime(2025, 1, 19, tzinfo=dt.UTC)},
+        observation_cutoff_ts=dt.datetime(2025, 1, 21, tzinfo=dt.UTC),
+        complete_through_by_feed={"events": dt.datetime(2025, 1, 21, tzinfo=dt.UTC)},
     )
 
     def build_definitions() -> Analysis:
@@ -8957,21 +8981,50 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
         if name not in {"from_definitions", "from_unit_day_artifact"}:
             return
         result = analysis.sitewide("revenue")
+        result_triggered = analysis.sitewide("revenue", population="triggered")
+        ratio_triggered = analysis.sitewide("rps", population="triggered")
+        assert result_triggered.analysis_population == "triggered"
+        assert result_triggered.window == result.window
+        assert result_triggered.snapshot_id == result.snapshot_id
+        assert result_triggered.membership_cutoff is not None
         assert result.analysis_population == "assigned"
+        assert ratio_triggered.analysis_population == "triggered"
+        assert ratio_triggered.window == result.window
+        assert ratio_triggered.snapshot_id == result.snapshot_id
+        assert ratio_triggered.membership_cutoff is not None
         con = ds.duckdb_connection(rows)
         reference = make_analysis(
             con, untriggered, experiment="exp", source_snapshot_evidence=snapshot
         )
+        trigger_reference = make_analysis(
+            con, definitions, experiment="exp", source_snapshot_evidence=snapshot
+        )
         try:
             expected = reference.sitewide("revenue")
-            assert result.absolute_impact == pytest.approx(expected.absolute_impact)
-            assert result.relative_impact == pytest.approx(expected.relative_impact)
+            expected_triggered = trigger_reference.sitewide("revenue", population="triggered")
+            expected_triggered_ratio = trigger_reference.sitewide("rps", population="triggered")
+            for actual, reference_result in (
+                (result, expected),
+                (result_triggered, expected_triggered),
+                (ratio_triggered, expected_triggered_ratio),
+            ):
+                assert type(actual) is type(reference_result)
+                for field in type(actual).model_fields:
+                    if field == "snapshot_id":
+                        continue
+                    actual_value = getattr(actual, field)
+                    expected_value = getattr(reference_result, field)
+                    if isinstance(actual_value, float):
+                        assert actual_value == pytest.approx(expected_value)
+                    else:
+                        assert actual_value == expected_value
         finally:
             reference.close()
+            trigger_reference.close()
             con.disconnect()
 
     return ParityCase(
-        id="triggered-sitewide-assigned",
+        id="triggered-sitewide-population-results",
         build={
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
@@ -8988,7 +9041,7 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
 
 
 PARITY_CASES: tuple[ParityCase, ...] = (
-    _triggered_sitewide_assigned_case(),
+    _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),
     _triggered_encouragement_compliance_case(),

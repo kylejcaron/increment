@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from increment import SourceSnapshotEvidence
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import (
     ArtifactContractError,
@@ -1484,6 +1485,7 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
         native.close()
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys(
     tmp_path,
 ) -> None:
@@ -1493,18 +1495,21 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
     from increment import Analysis
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
-    definitions = _definitions(tmp_path, site_volume_only=True)
-    con, native, context, store = _native(definitions=definitions)
+    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
+    con, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
     requests = _extensions(context, "site_volume")
     ref = native.publish_unit_day_artifact(store, extensions=requests)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     try:
-        expected = native.sitewide("purchase_rate")
-        result = adopted.sitewide("purchase_rate")
+        expected = native.sitewide("purchase_count")
+        result = adopted.sitewide("purchase_count")
         assert result.site_total_volume > 0  # ty: ignore[unresolved-attribute]
-        assert result.site_total_volume == pytest.approx(  # ty: ignore[unresolved-attribute]
-            expected.site_total_volume
-        )
+        assert result.site_total_volume == pytest.approx(expected.site_total_volume)  # ty: ignore[unresolved-attribute]
     finally:
         adopted.close()
         native.close()
@@ -1542,6 +1547,7 @@ def test_extension_relation_publishes_and_reopens_under_digest_format_one() -> N
         native.close()
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) -> None:
     """Logical names sharing a recipe publish one physical row set and adopt independently."""
     import yaml
@@ -1550,10 +1556,10 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     from increment.estimation.sitewide import SitewideImpact
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
-    definitions = _definitions(tmp_path, site_volume_only=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
     payload = yaml.safe_load(definitions.read_text())
-    original = next(metric for metric in payload["metrics"] if metric["name"] == "purchase_rate")
-    payload["metrics"].append({**original, "name": "purchase_rate_copy"})
+    original = next(metric for metric in payload["metrics"] if metric["name"] == "purchase_count")
+    payload["metrics"].append({**original, "name": "purchase_count_copy"})
     payload["metrics"].append(
         {
             "type": "mean",
@@ -1563,7 +1569,6 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
             "preferred_direction": "increase",
             "fact": "purchase",
             "aggregation": "sum",
-            "window_days": 7,
         }
     )
     experiment = next(
@@ -1571,21 +1576,26 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     )
     experiment["plan"] = {
         "secondaries": [
-            "purchase_rate",
-            "purchase_rate_copy",
+            "purchase_count",
+            "purchase_count_copy",
             "revenue_per_user_site_volume",
         ]
     }
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    connection, native, context, store = _native(definitions=definitions)
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
     adopted = None
     try:
         expected = {
             name: native.sitewide(name).site_total_volume
             for name in (
-                "purchase_rate",
-                "purchase_rate_copy",
+                "purchase_count",
+                "purchase_count_copy",
                 "revenue_per_user_site_volume",
             )
         }
