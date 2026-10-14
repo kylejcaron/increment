@@ -62,6 +62,11 @@ RETENTION_UNDER_ENCOURAGEMENT = RefusalSpec(
     template="retention metric(s) {names!r} are not supported under an encouragement design; its maturity gate changes the first-stage population by outcome metric",
 )
 
+_EXCLUSION_JUSTIFICATION = RefusalSpec(
+    "design.exclusion_restriction.justification",
+    InvalidRequestError,
+    template="exclusion restriction justification must be at least 10 characters; describe the mechanism that supports it.",
+)
 _REFUSALS = refusals(
     InvalidRequestError,
     {
@@ -74,6 +79,7 @@ _REFUSALS = refusals(
             ),
         ),
         "design.allocation_scheme.incompatible": ALLOCATION_SCHEME_INCOMPATIBLE,
+        "design.exclusion_restriction.justification": _EXCLUSION_JUSTIFICATION,
     },
 )
 _raise = raiser(_REFUSALS)
@@ -92,6 +98,22 @@ def _freeze_allocation(v: Mapping[str, float] | None) -> MappingProxyType[str, f
     so mutating the caller's dict after construction cannot silently
     change a validated SRM expectation."""
     return None if v is None else MappingProxyType(dict(v))
+
+
+def _canonicalize_boolean_allocation_keys(value: object) -> object:
+    if value is None or not isinstance(value, Mapping):
+        return value
+    normalized: dict[object, object] = {}
+    for key, weight in value.items():
+        label = ("true" if key else "false") if isinstance(key, bool) else key
+        if label in normalized:
+            refuse(
+                _ALLOCATION_INVALID,
+                control_group="canonical Boolean allocation",
+                allocation=dict(value),
+            )
+        normalized[label] = weight
+    return normalized
 
 
 def _serialize_allocation(v: Mapping[str, float] | None, _info: object) -> dict[str, float] | None:
@@ -132,6 +154,11 @@ class Randomized(BaseModel):
     allocation_scheme: AllocationScheme | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+
+    @field_validator("allocation", mode="before")
+    @classmethod
+    def _canonicalize_allocation_boolean_keys(cls, value: object) -> object:
+        return _canonicalize_boolean_allocation_keys(value)
 
     @field_validator("allocation")
     @classmethod
@@ -175,7 +202,7 @@ class UptakeSpec(BaseModel):
         return None if v is None else _reject_bool(v)
 
 
-class ExclusionRestriction(BaseModel):
+class ExclusionRestriction(CodedValidationMixin, BaseModel):
     """Explicit acknowledgment that assignment moves the outcome only
     through uptake. Untestable from data, so it must be declared, like
     ``Observational.adjustment``: assumptions stay visible, never implicit.
@@ -184,7 +211,14 @@ class ExclusionRestriction(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     acknowledged: Literal[True]
-    justification: str = Field(min_length=10)
+    justification: str
+
+    @field_validator("justification")
+    @classmethod
+    def _validate_justification(cls, value: str) -> str:
+        if len(value) < 10:
+            _raise("design.exclusion_restriction.justification")
+        return value
 
 
 class Encouragement(BaseModel):
@@ -210,6 +244,11 @@ class Encouragement(BaseModel):
         default=None, exclude_if=lambda value: value is None
     )
     min_first_stage_z: float = Field(default=4.0, gt=0.0, allow_inf_nan=False)
+
+    @field_validator("allocation", mode="before")
+    @classmethod
+    def _canonicalize_allocation_boolean_keys(cls, value: object) -> object:
+        return _canonicalize_boolean_allocation_keys(value)
 
     @field_validator("allocation")
     @classmethod

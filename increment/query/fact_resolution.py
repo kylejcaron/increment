@@ -72,7 +72,7 @@ def _find_fact_source(defs: Definitions, fact_name: str) -> tuple[FactSource, Fa
     )
 
 
-def _require_design(control: str | None, design: object | None, *, constructor: str) -> None:
+def _require_design(control: object | None, design: object | None, *, constructor: str) -> None:
     """Enforce that a seam constructor receives exactly one of control=/design=."""
     if (control is None) == (design is None):
         _raise(

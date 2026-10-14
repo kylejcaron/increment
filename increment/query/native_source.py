@@ -190,6 +190,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             "breakout_sources",
             "day_source",
             "exploratory_source",
+            "unit_counts",
         }
     )
     shape: Literal["unit_summary", "unit_panel"] | None = None
