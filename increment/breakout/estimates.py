@@ -3505,36 +3505,37 @@ def _unavailable_breakout_row(
 ) -> BreakoutEstimate:
     """One identity-preserving unavailable row with its exact reason, and the
     requested posterior's unavailability when the failed estimator row stated it."""
-    return BreakoutEstimate(
-        metric=outcome.metric,
-        group_id=outcome.group_id,
-        method=outcome.method.name,
-        method_role=outcome.method_role,
-        dimension=dimension,
-        dimension_value=dimension_value,
-        source=source,
-        alternative=alternative,
-        lift=None,
-        excluded=outcome.reason,
-        failure_code=None if outcome.failure is None else outcome.failure.code,
-        failure_context=None if outcome.failure is None else outcome.failure.context,
-        sampling_available=False,
-        sampling_reason_code=(
+    fields: dict[str, Any] = {
+        "metric": outcome.metric,
+        "group_id": outcome.group_id,
+        "method": outcome.method.name,
+        "method_role": outcome.method_role,
+        "dimension": dimension,
+        "dimension_value": dimension_value,
+        "source": source,
+        "alternative": alternative,
+        "lift": None,
+        "excluded": outcome.reason,
+        "failure_code": None if outcome.failure is None else outcome.failure.code,
+        "failure_context": None if outcome.failure is None else outcome.failure.context,
+        "sampling_available": False,
+        "sampling_reason_code": (
             f"breakout.{outcome.reason}" if outcome.failure is None else outcome.failure.code
         ),
-        sampling_reason_context=(
+        "sampling_reason_context": (
             {"reason": outcome.reason} if outcome.failure is None else outcome.failure.context
         ),
-        posterior_available=None if outcome.posterior is None else False,
-        posterior_reason_code=(
+        "posterior_available": None if outcome.posterior is None else False,
+        "posterior_reason_code": (
             None if outcome.posterior is None else outcome.posterior.reason_code
         ),
-        posterior_reason_context=(
+        "posterior_reason_context": (
             None if outcome.posterior is None else outcome.posterior.reason_context
         ),
-        role="exploratory",
-        **family,
-    )
+        "role": "exploratory",
+    }
+    fields.update(family)
+    return BreakoutEstimate(**fields)
 
 
 class _BreakoutFamilyContext(NamedTuple):
