@@ -348,6 +348,27 @@ def test_chunk_checkpoint_resume_is_deterministic(tmp_path):
         run_chunk((*job[:-1], {"source": "different"}))
 
 
+@pytest.mark.parametrize(
+    ("identifier", "statistic", "field"),
+    [
+        ("D3-4", "coverage", "hits"),
+        ("D9-4", "fcp", "fcp_sum"),
+    ],
+)
+def test_chunk_resume_rejects_tampered_gate_statistics(tmp_path, identifier, statistic, field):
+    cell = next(cell for cell in MANIFEST if cell.id == identifier)
+    job = (cell, str(tmp_path), 0, 2, 2, {"source": "fixed"})
+    run_chunk(job)
+    checkpoint = tmp_path / cell.id / "chunks" / "000000" / "checkpoint.json"
+    record = json.loads(checkpoint.read_text())
+    assert cell.statistic == statistic
+    record[field] = record["eligible"] + 1 if field == "hits" else record[field] + 1
+    checkpoint.write_text(json.dumps(record))
+
+    with pytest.raises(ValueError, match="incompatible checkpoint"):
+        run_chunk(job)
+
+
 def test_smoke_never_claims_certification(tmp_path):
     cell = next(cell for cell in MANIFEST if cell.id == "D3-4")
     record = run_chunk((cell, str(tmp_path), 0, 2, 2, {}))

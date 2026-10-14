@@ -1392,6 +1392,40 @@ def _accumulate(state: dict, result: dict) -> tuple[str, ...]:
     return tuple(tally)
 
 
+def _checkpoint_matches_journal(record: dict, cell: Cell, counters: Mapping[str, int]) -> bool:
+    eligible = counters.get("eligible", 0)
+    if (
+        record.get("attempted")
+        != eligible + counters.get("refused", 0) + counters.get("blocked", 0)
+        or record.get("eligible") != eligible
+        or record.get("refused") != counters.get("refused", 0)
+        or record.get("blocked") != counters.get("blocked", 0)
+    ):
+        return False
+    if cell.statistic == "coverage":
+        return record.get("hits") == counters.get("covered", 0)
+    if cell.statistic == "fcp":
+        fcp_tallies = [
+            (name.removeprefix("fcp:"), count)
+            for name, count in counters.items()
+            if name.startswith("fcp:")
+        ]
+        try:
+            exact_sum = sum(
+                (count * Fraction(*map(int, tally.split("/"))) for tally, count in fcp_tallies),
+                Fraction(),
+            )
+            cached_sum = float(record["fcp_sum"])
+        except (KeyError, ValueError, ZeroDivisionError, TypeError, OverflowError):
+            return False
+        return (
+            sum(count for _, count in fcp_tallies) == eligible
+            and math.isfinite(cached_sum)
+            and math.isclose(cached_sum, float(exact_sum), rel_tol=1e-12, abs_tol=1e-12)
+        )
+    return True
+
+
 def run_chunk(job: tuple) -> dict:
     cell, directory, chunk, target, chunk_size, identity = job
     directory = Path(directory) / cell.id / "chunks" / f"{chunk:06d}"
@@ -1407,7 +1441,11 @@ def run_chunk(job: tuple) -> dict:
     if checkpoint.exists():
         record = json.loads(checkpoint.read_text())
         totals = verify(directory, case_id=f"{cell.id}:{chunk}")
-        if record["binding"] != binding or record["journal_digest"] != totals.digest:
+        if (
+            record["binding"] != binding
+            or record["journal_digest"] != totals.digest
+            or not _checkpoint_matches_journal(record, cell, totals.counters)
+        ):
             raise ValueError(f"incompatible checkpoint: {checkpoint}; use a new output directory")
         return record
     started = time.perf_counter()
