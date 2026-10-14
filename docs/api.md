@@ -589,11 +589,11 @@ different approximations and limits.
     event counts. Enumerated results include an enclosure (`power_lower`,
     `power_upper`) conditional on the deployed SciPy/Boost special-function
     error model—not a cross-build floating-point proof. `power` is the
-    enumerated point when the enclosure resolves to absolute error at most
-    `1e-6` (`power_basis="exact"`) and the enclosure's lower end otherwise
-    (`power_basis="lower_bound"`); a size or effect reaches a target only when
-    the lower end does. The dense closed-form route gives a model-based point
-    estimate without an enclosure.
+    enumerated point when its maximum absolute distance to either endpoint is
+    at most `1e-6` (`power_basis="exact"`); otherwise it is the enclosure's
+    lower end (`power_basis="lower_bound"`). A size or effect reaches its target
+    only when that lower end does. The dense closed-form route gives a
+    model-based point estimate without an enclosure.
 
     `PowerResult.numerical_qualification` records this scope:
     `scipy_special_function_error_model_conditional_v1` for enumerated results
@@ -705,8 +705,8 @@ analysis.close()
 ## Conditional effects and targeting
 
 `estimate_cate` estimates how treatment effects vary with user characteristics.
-Validation and targeting APIs use the same fitted result and preserve its
-uncertainty and evidence limits.
+Validation and targeting refit through honest or nested splits; their reports
+give evidence for those procedures, not for a separate `estimate_cate` fit.
 
 !!! warning "Prediction is not permission to deploy"
     `TargetingRule.predict` scores a candidate; `recommendation` remains the
