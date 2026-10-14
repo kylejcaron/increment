@@ -41,9 +41,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 # ---------------------------------------------------------------------------
-# Experiment geometry and effect-size constants.
-#
-# These values are shared across partitions so pooled results remain stable.
+# Experiment geometry and effect-size constants, shared across partitions so
+# pooled results remain stable.
 # ---------------------------------------------------------------------------
 
 EXPERIMENT_ID = "checkout_redesign"
@@ -56,7 +55,7 @@ UNIT_TYPE = "user"
 CONTROL_VARIANT = "control"
 TREATMENT_VARIANT = "treatment"
 EXPERIMENT_STATUS = "completed"
-GENERATOR_VERSION = 2
+GENERATOR_VERSION = 3
 
 #: Experiment window. Plan upgrades occur strictly after ``_END``.
 _START = np.datetime64("2025-01-15T00:00:00", "us")
@@ -74,6 +73,13 @@ _SECOND_ORDER_RATE = 0.25
 _SECOND_ORDER_LAG_DAYS = 6.0  # 0..6 days after the first order
 _ORDER_REFUND_RATE = 0.08
 _ORDER_CURRENCY = "USD"
+
+# Order value = user spend level (mean-one lognormal) x per-order Gamma draw.
+# Per-order CV^2 = exp(sigma_user^2) * (1 + 1/shape) - 1, about 1.0 here:
+# right-skewed baskets that vary order to order and between users.
+_ORDER_VALUE_MEAN = 71.25
+_ORDER_VALUE_SHAPE = 1.5
+_USER_SPEND_SIGMA = 0.47
 
 _RETENTION_RATE = 0.65  # arm-independent guardrail
 _RETENTION_WINDOW_LOW_DAYS = 7.0
@@ -259,6 +265,12 @@ def _gen_fact_exposure(
     return columns, t_user_ids, t_variant, base_exposed_at
 
 
+def _order_amounts(rng: np.random.Generator, spend_level: np.ndarray) -> np.ndarray:
+    """One independent, right-skewed order value per entry of ``spend_level``."""
+    scale = spend_level * _ORDER_VALUE_MEAN / _ORDER_VALUE_SHAPE
+    return np.round(rng.gamma(_ORDER_VALUE_SHAPE, scale), 2)
+
+
 def _gen_fact_orders(
     rng: np.random.Generator,
     triggered_user_ids: np.ndarray,
@@ -287,9 +299,10 @@ def _gen_fact_orders(
     ordered_at = np.concatenate([first_at, second_at[second_mask]])
     n_orders = len(order_user_ids)
 
+    spend_level = rng.lognormal(-0.5 * _USER_SPEND_SIGMA**2, _USER_SPEND_SIGMA, size=n_buy)
+    order_spend_level = np.concatenate([spend_level, spend_level[second_mask]])
     item_count = rng.integers(1, 5, size=n_orders).astype(np.int32)
-    unit_price = rng.uniform(12.0, 45.0, size=n_orders)
-    total_amount = np.round(item_count * unit_price, 2)
+    total_amount = _order_amounts(rng, order_spend_level)
     status = np.where(rng.random(n_orders) < _ORDER_REFUND_RATE, "refunded", "completed")
 
     return {
@@ -470,14 +483,14 @@ def _gen_tail(rng: np.random.Generator, partition_user_ids: np.ndarray) -> tuple
     order_jitter = rng.uniform(0.0, 1.0, size=n)
     order_ts = _START + _days_to_td64us(_TAIL_OFFSET_DAYS + order_jitter)
     item_count = rng.integers(1, 5, size=n).astype(np.int32)
-    unit_price = rng.uniform(12.0, 45.0, size=n)
+    total_amount = _order_amounts(rng, np.ones(n))
     orders_tail = {
         "user_id": tail_ids,
         "ordered_at": order_ts,
         "status": np.where(rng.random(n) < _ORDER_REFUND_RATE, "refunded", "completed"),
         "currency": np.full(n, _ORDER_CURRENCY),
         "item_count": item_count,
-        "total_amount": np.round(item_count * unit_price, 2),
+        "total_amount": total_amount,
     }
     return events_tail, orders_tail
 
@@ -778,13 +791,10 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         f"{sorted(exposed_ids - assigned_ids)[:10]!r}"
     )
 
-    # Triggering rate must be close to equal across arms (counterfactual
-    # triggering: the redesign shouldn't change WHO triggers). The tolerance
-    # is a statistical bound, not a fixed constant: at small N the sampling
-    # noise on the arm-vs-arm gap is large (SE ~ 1/sqrt(n_per_arm)), so a
-    # fixed absolute tolerance would fail on perfectly valid small datasets.
-    # A fixed floor at the high-N end guards against an assertion so loose it
-    # stops catching a real arm-dependence bug.
+    # Triggering must be arm-independent (the redesign shouldn't change WHO
+    # triggers). The tolerance scales with the arm-gap SE ~ 1/sqrt(n_per_arm)
+    # so valid small datasets pass, with a floor at high N so the check still
+    # catches a real arm-dependence bug.
     assignment_user_id = _col(fact_assignment, "user_id")
     assignment_variant = _col(fact_assignment, "variant")
     trigger_rates = {}
@@ -885,11 +895,9 @@ def _check_warehouse(out: Path, partitions: int, users_per_partition: int) -> No
         "events.event_id is not globally unique across partitions"
     )
 
-    # No events (or orders) row predates its own user's earliest snap_user_plan
-    # row (i.e. their signup). An event before signup would make a
-    # pre_exposure plan lookup for that timestamp find no row -- the property
-    # resolves to null instead of 'free', which silently breaks every
-    # analysis that breaks out by plan. Regression guard for that class of bug.
+    # No events/orders row may predate the user's signup (earliest
+    # snap_user_plan row): its pre_exposure plan lookup would resolve to null
+    # instead of 'free' and silently break every plan breakout.
     plan_uid = _col(snap_user_plan, "user_id")
     plan_from = _col(snap_user_plan, "valid_from")
     earliest_valid_from: dict[int, np.datetime64] = {}

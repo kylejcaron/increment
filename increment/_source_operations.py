@@ -314,7 +314,13 @@ class BreakoutSourcesOperation(Protocol):
 
 @runtime_checkable
 class SitewideEvidenceOperation(Protocol):
-    def sitewide_evidence(self, metric: Any, *, include_ratio: bool = False) -> Any: ...
+    def sitewide_evidence(
+        self,
+        metric: Any,
+        *,
+        include_ratio: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> Any: ...
 
 
 @runtime_checkable
