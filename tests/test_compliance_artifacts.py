@@ -623,6 +623,103 @@ def test_completed_asof_uptake_certification_uses_elapsed_timestamp_boundary(
         con.disconnect()
 
 
+def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    con, analysis, context, store, _panel = native_fixture(
+        ("full",),
+        timing=ClickTiming(uptake_window=14),
+        outcome=(8, "sum", 7),
+        open_ended=True,
+    )
+    exposure_ns = 1_736_899_200_000_000_999
+    uptake_ns = exposure_ns + 14 * 24 * 60 * 60 * 1_000_000_000 - 1_000
+    con.raw_sql(
+        f"""
+        CREATE OR REPLACE TABLE events AS
+        SELECT * EXCLUDE (ts),
+               CASE
+                   WHEN event = 'exposed' THEN make_timestamp_ns({exposure_ns})
+                   WHEN event = 'clicked' AND user_id = 'treatment0_10'
+                       AND ts >= TIMESTAMP '2025-01-01'
+                   THEN make_timestamp_ns({uptake_ns})
+                   ELSE make_timestamp_ns(epoch_us(ts) * 1000)
+               END AS ts
+        FROM events
+        """
+    )
+    try:
+        reference = analysis.publish_unit_day_artifact(store)
+        with (
+            open_artifact(store, reference, expected_context=context) as artifact,
+            Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted,
+        ):
+            native = _native_source(analysis)
+            for as_of, expected_uptake in (
+                (date(2025, 1, 27), 0),
+                (date(2025, 1, 28), 1),
+                (date(2025, 1, 29), 1),
+            ):
+                native_summary = native.compliance_summary(design(14), as_of=as_of)
+                artifact_summary = artifact.compliance_summary(design(14), as_of=as_of)
+                assert native_summary == artifact_summary
+                treatment = native_summary.arm("treatment")
+                assert treatment is not None
+                assert treatment.uptake_total == expected_uptake
+
+            def lift_fields(rows):
+                return [
+                    (
+                        row.ds,
+                        row.group_id,
+                        row.estimand,
+                        row.lift,
+                        row.unavailable,
+                        row.n_treat,
+                        row.n_control,
+                    )
+                    for row in rows
+                ]
+
+            assert lift_fields(analysis.run_daily_lift(estimands=("compliance",))) == lift_fields(
+                adopted.run_daily_lift(estimands=("compliance",))
+            )
+            assert lift_fields(analysis.run_asof_lift(estimands=("compliance",))) == lift_fields(
+                adopted.run_asof_lift(estimands=("compliance",))
+            )
+
+            with open_artifact(store, reference, expected_context=context) as edge_artifact:
+                snapshot = edge_artifact._snapshot
+                snapshot_type = type(snapshot)
+                verify_relation = snapshot_type.verify_relation
+
+                def verify_boundary_relation(self, *args, **kwargs):
+                    relation = verify_relation(self, *args, **kwargs)
+                    if kwargs.get("expected_role") == "encouragement_uptake":
+                        boundary = ibis.literal(datetime(2025, 1, 29, tzinfo=UTC))
+                        relation = relation.mutate(
+                            first_uptake_ts=ibis.ifelse(
+                                relation.unit_id == "treatment0_10",
+                                boundary,
+                                relation.first_uptake_ts,
+                            )
+                        )
+                    return relation
+
+                monkeypatch.setattr(snapshot_type, "verify_relation", verify_boundary_relation)
+                for as_of, expected_uptake in (
+                    (date(2025, 1, 28), 0),
+                    (date(2025, 1, 29), 1),
+                ):
+                    summary = edge_artifact.compliance_summary(design(14), as_of=as_of)
+                    treatment = summary.arm("treatment")
+                    assert treatment is not None
+                    assert treatment.uptake_total == expected_uptake
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
     cutoff = datetime(2025, 1, 10, 23, 59, tzinfo=UTC)
     con, analysis, context, store, _panel = native_fixture(

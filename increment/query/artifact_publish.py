@@ -1080,17 +1080,6 @@ class ArtifactPublisher:
         first = eligible.group_by(exposures.unit_id).aggregate(first_uptake_ts=events.ts.min())
         joined = exposures.left_join(first, "unit_id")
         first_uptake_ts = first.first_uptake_ts.truncate("us")
-        if window is not None:
-            stored_window_end = exposures.first_exposure_ts.truncate("us") + ibis.interval(
-                days=window
-            )
-            # Preserve source-certified half-open membership when rounding
-            # would place an in-window event on the stored exclusive edge.
-            first_uptake_ts = ibis.ifelse(
-                first.first_uptake_ts.notnull() & (first_uptake_ts >= stored_window_end),
-                stored_window_end - ibis.interval(microseconds=1),
-                first_uptake_ts,
-            )
         query = joined.select(
             exposures.experiment_id,
             exposures.unit_id,
