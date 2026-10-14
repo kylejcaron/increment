@@ -359,6 +359,7 @@ ExclusionReason = Literal[
     "no_control_arm",
     "no_treatment_arm",
     "nonpositive_mean",
+    "missing_metric_observations",
     "zero_variance",
     "extreme_ratio",
     "estimation_failed",
@@ -1876,7 +1877,8 @@ def _partition_nonpositive_mean_rows(
 ) -> _MeanPartition:
     """Split *rows* on a per-row, family-dependent estimability gate.
 
-    Drop rows with ``n < 2`` or a nonpositive outcome/denominator mean when
+    Rows with no usable metric observations are retained as a distinct unavailable reason;
+    other rows with ``n < 2`` or a nonpositive outcome/denominator mean are dropped when
     log-scale variance models require those quantities. Exact binomial rows
     remain eligible at ``n=1`` and with zero means. Mixed adjusted/unadjusted
     requests receive a method-specific partition; this function only identifies
@@ -1890,6 +1892,9 @@ def _partition_nonpositive_mean_rows(
     dropped: list[_DroppedRow] = []
     for row in rows:
         metric_name = str(row["metric"])
+        if int(row["n"]) == 0:
+            dropped.append(_DroppedRow(row, "missing_metric_observations"))
+            continue
         if metric_name in binomial_gate_exempt_metrics and _row_has_independent_binomial_family(
             row
         ):
@@ -1931,6 +1936,8 @@ def _warn_nonpositive_mean_partition(part: _MeanPartition, *, label: str) -> Non
     """
     for dropped in part.dropped:
         row = dropped.row
+        if dropped.reason == "missing_metric_observations":
+            continue
         if dropped.reason == "few_units":
             _warn(
                 "breakout.estimates.row_few_units",
@@ -2655,9 +2662,14 @@ def _breakout_unavailable_computation(
             )
             failures[hypothesis] = DecisionFailure(hypothesis, original.code, failure_context)
         else:
+            code = (
+                "readout.cell.missing_metric_observations"
+                if reason == "missing_metric_observations"
+                else f"breakout.{reason}"
+            )
             failures[hypothesis] = DecisionFailure(
                 hypothesis,
-                f"breakout.{reason}",
+                code,
                 {
                     "metric": metric_name,
                     "group_id": group_id,

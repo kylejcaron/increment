@@ -1010,12 +1010,14 @@ def from_unit_summary(  # noqa: PLR0913
                     remapped_columns[column] = _scratch_name(
                         panel_frame, f"__summary_value_{len(remapped_columns)}__"
                     )
-        if uptake in canonical_columns and uptake not in remapped_columns:
-            remapped_columns[uptake] = _scratch_name(
+        if source._uptake in canonical_columns and source._uptake not in remapped_columns:
+            remapped_columns[source._uptake] = _scratch_name(
                 panel_frame, f"__summary_value_{len(remapped_columns)}__"
             )
         if remapped_columns:
-            panel_frame = panel_frame.rename(remapped_columns)
+            panel_frame = panel_frame.with_columns(
+                [nw.col(column).alias(scratch) for column, scratch in remapped_columns.items()]
+            )
         panel_specs = []
         for spec in source._specs:
             updates: dict[str, str] = {}
@@ -1029,7 +1031,7 @@ def from_unit_summary(  # noqa: PLR0913
                 if value in remapped_columns:
                     updates[column] = remapped_columns[value]
             panel_specs.append(spec.model_copy(update=updates) if updates else spec)
-        panel_uptake = remapped_columns.get(uptake, uptake)
+        panel_uptake = remapped_columns.get(source._uptake, source._uptake)
         synthetic_date = _scratch_name(panel_frame, "__summary_day__")
         panel_frame = panel_frame.with_columns(nw.lit(dt.date(2000, 1, 1)).alias(synthetic_date))
         panel = FramePanelSource.from_frame(
@@ -1065,6 +1067,53 @@ class _RestrictedSummaryBreakoutSource:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._source, name)
+
+
+def _preserve_empty_summary_segments(
+    rows: list[dict[str, Any]], roster: list[dict[str, Any]], *, dimension: str
+) -> None:
+    """Retain fully missing summary segments as unavailable breakout cells."""
+    if not rows or not roster:
+        return
+    present = {row[dimension] for row in rows}
+    missing_groups: dict[Any, list[Any]] = {}
+    for entry in roster:
+        segment = entry[dimension]
+        if segment not in present:
+            missing_groups.setdefault(segment, []).append(entry["group_id"])
+    zero_fields = (
+        "n",
+        "successes",
+        "ref_y",
+        "cy1",
+        "cy2",
+        "cx1",
+        "cx2",
+        "cxy",
+        "cxden",
+        "ref_den",
+        "cden1",
+        "cden2",
+        "cden3",
+        "cyden",
+        "sum_d",
+        "cyd",
+        "cy2d",
+        "cxd",
+        "winsor_n",
+        "winsor_n_lower",
+        "winsor_n_upper",
+    )
+    for segment, groups in missing_groups.items():
+        for group_id in groups:
+            template = next((row for row in rows if row["group_id"] == group_id), rows[0])
+            empty = dict(template)
+            empty[dimension] = str(segment)
+            empty["group_id"] = group_id
+            for column in zero_fields:
+                if column in empty:
+                    empty[column] = 0
+            rows.append(empty)
 
 
 # from_unit_panel: one row per unit per day.
@@ -1367,6 +1416,11 @@ class FramePanelSource(SequentialSourceMixin):
                 specs = [self._spec_for(metric)] if self._summary_reducer else self._specs
                 summary_metrics = [metric] if self._summary_reducer else list(synthesised)
                 total_panel = self._sparse_panel
+                summary_roster = (
+                    total_panel.select(*reducer_by, "group_id").unique().rows(named=True)
+                    if self._summary_reducer and reducer_by and specs[0].missing == "drop"
+                    else []
+                )
                 if self._summary_reducer and specs[0].missing == "drop":
                     missing = nw.col(specs[0].y_column).is_null()
                     if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
@@ -1398,6 +1452,8 @@ class FramePanelSource(SequentialSourceMixin):
                     by=reducer_by,
                     covariates=covariates,
                 )
+                if summary_roster and breakout is not None:
+                    _preserve_empty_summary_segments(rows, summary_roster, dimension=breakout)
                 failures = {
                     spec.name: covariate_failures[spec.covariate]
                     for spec in specs

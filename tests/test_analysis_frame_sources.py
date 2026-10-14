@@ -322,6 +322,88 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
     assert (control_a["n"], control_a["ref_y"]) == (2, 2.5)
 
 
+def test_unit_summary_breakout_preserves_all_missing_segment_as_unavailable():
+    frame = _summary_breakout_frame()
+    frame.loc[frame["segment"] == "A", "value"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="value", type="mean", missing="drop")],
+            breakouts=("segment",),
+        )
+
+    with pytest.warns(IncrementWarning):
+        rows = analysis.run_breakout()
+    segment_a = next(row for row in rows if row.dimension_value == "A")
+    segment_b = next(row for row in rows if row.dimension_value == "B")
+    assert segment_a.excluded == "missing_metric_observations"
+    assert segment_a.lift is None
+    assert segment_b.failure_code is None
+    assert segment_b.lift is not None
+
+
+def test_unit_summary_breakout_remaps_resolved_default_uptake():
+    import pandas as pd
+
+    from increment.frame import from_unit_summary
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(8)],
+            "arm": ["control", "control", "treatment", "treatment"] * 2,
+            "segment": ["A"] * 4 + ["B"] * 4,
+            "y": [2.0, 3.0, 4.0, 5.0, 3.0, 5.0, 6.0, 8.0],
+            "ds": [0, 0, 1, 1] * 2,
+        }
+    )
+    source = from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"y": "mean"},
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="ds"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only moves y through uptake"
+            ),
+        ),
+        breakouts=("segment",),
+    )
+
+    assert readout_functions.breakout(source, "segment")
+
+
+def test_unit_summary_breakout_preserves_unit_column_used_as_covariate():
+    import pandas as pd
+
+    from increment.frame import from_unit_summary
+
+    frame = pd.DataFrame(
+        {
+            "ds": [101, 102, 103, 104, 105, 106, 107, 108],
+            "arm": ["control", "control", "treatment", "treatment"] * 2,
+            "segment": ["A"] * 4 + ["B"] * 4,
+            "y": [2.0, 3.0, 4.0, 5.0, 3.0, 5.0, 6.0, 8.0],
+        }
+    )
+    source = from_unit_summary(
+        frame,
+        unit="ds",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="y", type="mean", covariate="ds")],
+        breakouts=("segment",),
+    )
+
+    assert readout_functions.breakout(source, "segment")
+
+
 def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
     frame = _summary_breakout_frame()
     frame.loc[0, "value"] = None
