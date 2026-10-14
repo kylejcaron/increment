@@ -5,7 +5,6 @@ which one produced it."""
 from __future__ import annotations
 
 import math
-from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -17,17 +16,19 @@ from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.conversion_route import (
+    _DENSE_CEILING,
     PLANNING_ROUTE_CERTAINTY,
+    composite_p_value,
     dense_extent,
+    dense_level,
+    dense_level_tail,
     dense_min_count,
-    family_route_alpha,
     planning_route,
     route_for_counts,
     routed_share,
     unrouted_share,
 )
-from increment.estimation.engine import Method, _estimate_lift, estimate_lift
-from increment.estimation.family import bh_select
+from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.inference import Normal
 from increment.semantics.models import MeanMetric
 from tests.estimation._conversion_counts import (
@@ -548,100 +549,98 @@ class TestPlanningRoute:
         assert 0.0 < PLANNING_ROUTE_CERTAINTY < 1e-3
 
 
-class TestFamilyRouteLevel:
-    """The level a BH family routes its rows at is the smallest threshold selection reads: the
-    greatest float not above ``q / hypotheses``, so a row is never routed at a looser level."""
+class TestDenseLevel:
+    """``dense_level_tail`` is the least tail the runtime's rule calls dense for a count, read
+    from the rule itself on both sides of it; ``dense_level`` states it in the convention of the
+    level a p-value is compared with."""
 
-    @given(
-        st.floats(min_value=1e-12, max_value=1.0),
-        st.integers(min_value=1, max_value=10**6),
+    @pytest.mark.parametrize(
+        "smallest", [412, 413, 1_000, 2_140, 6_384, 17_000, 41_551, 100_000, 10**8]
     )
-    def test_the_level_is_the_greatest_float_not_above_q_over_the_hypotheses(self, q, hypotheses):
-        level = family_route_alpha(q, hypotheses)
-        assert level is not None
-        exact = Fraction(q) / hypotheses
-        assert Fraction(level) <= exact < Fraction(math.nextafter(level, math.inf))
+    def test_the_rule_is_dense_at_the_level_and_not_one_float_below(self, smallest):
+        tail = dense_level_tail(smallest)
+        assert tail is not None
+        assert 0.0 < tail < 0.5
+        assert dense_min_count(tail) <= smallest
+        assert dense_min_count(math.nextafter(tail, 0.0)) > smallest
 
-    def test_the_level_is_the_rank_one_threshold_benjamini_hochberg_reads(self):
-        # 0.1 / 7 is not exactly representable: ordinary division can round above it.
-        _, threshold = bh_select([1.0] * 6 + [0.0], 0.1)
-        assert family_route_alpha(0.1, 7) == threshold
+    def test_below_the_floor_no_tail_is_dense(self):
+        assert dense_level_tail(411) is None
+        assert dense_level_tail(9) is None
+        assert dense_level(100, 1_000, 500, 1_000, alternative="two-sided") is None
 
-    def test_a_family_without_hypotheses_has_no_level(self):
-        assert family_route_alpha(0.1, 0) is None
+    def test_from_the_ceiling_on_every_representable_tail_is_dense(self):
+        """Past ``dense_min_count`` of the smallest positive float the rule has no tail left
+        to be sparse at: the level is zero there, and the counts below it are dense at some
+        positive tail (subnormal near the ceiling, where a closed form would underflow) and at
+        no smaller one."""
+        ceiling = _DENSE_CEILING
+        tiny = math.nextafter(0.0, 1.0)
+        assert dense_min_count(tiny) == ceiling
+        for smallest in (ceiling, ceiling + 1, 10**9, 10**12):
+            assert dense_level_tail(smallest) == 0.0
+        for smallest in (ceiling - 1, 3 * 10**8):
+            tail = dense_level_tail(smallest)
+            assert tail is not None and 0.0 < tail < 1e-300
+            assert dense_min_count(tail) <= smallest
+            assert dense_min_count(math.nextafter(tail, 0.0)) > smallest
 
+    def test_the_floor_count_is_dense_below_the_largest_production_tail(self):
+        tail = dense_level_tail(412)
+        assert tail is not None
+        assert 0.09 < tail < 0.1
+        assert dense_min_count(0.1) == 412
 
-class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
-    """A BH family reads each nominal p-value at a threshold as small as ``q / m``: a row dense
-    at the nominal level but not at that one must not take the delta-method route."""
+    def test_the_level_does_not_rise_with_the_count(self):
+        tails: list[float] = []
+        for smallest in range(412, 3_000, 7):
+            tail = dense_level_tail(smallest)
+            assert tail is not None
+            tails.append(tail)
+        assert all(b <= a for a, b in zip(tails, tails[1:], strict=False))
 
-    def test_route_alpha_routes_at_the_smaller_of_the_two_levels(self):
-        nominal = dense_min_count(0.025)
-        counts = (nominal, 20 * nominal, 3 * nominal, 20 * nominal)
-        assert (
-            estimate_lift(
-                metrics=[CONVERSION_METRIC],
-                summary=count_summary(*counts),
-                control_group="control",
-                alpha=0.05,
+    @given(st.integers(min_value=412, max_value=10**7))
+    @settings(max_examples=60, deadline=None)
+    def test_the_two_sided_level_doubles_the_tail_exactly(self, smallest):
+        """A request at ``alpha`` two-sided routes at ``alpha / 2``: ``alpha >= U`` must be
+        ``alpha / 2 >= dense_level_tail`` float for float, which an exact doubling gives."""
+        n = 4 * smallest
+        tail = dense_level_tail(smallest)
+        assert tail is not None
+        level = dense_level(smallest, n, 2 * smallest, n, alternative="two-sided")
+        assert level is not None and level == 2.0 * tail
+        assert level / 2.0 == tail
+        for alpha in (level, math.nextafter(level, 0.0), math.nextafter(level, 1.0)):
+            dense = route_for_counts(
+                smallest, n, 2 * smallest, n, tail_alpha=alpha / 2.0, mode="auto"
             )
-            .results[0]
-            .reference_kind
-            == "t"
-        )
-        for route_alpha, kind in ((0.05, "t"), (0.05 / 4, "binomial"), (1e-9, "binomial")):
-            row = _estimate_lift(
-                metrics=[CONVERSION_METRIC],
-                summary=count_summary(*counts),
-                control_group="control",
-                alpha=0.05,
-                route_alpha=route_alpha,
-            ).results[0]
-            assert row.reference_kind == kind
+            assert (dense == "asymptotic") == (alpha >= level)
 
-    def test_a_directional_route_alpha_is_read_in_alphas_own_convention(self):
-        low = dense_min_count(0.05)
-        counts = (low, 20 * low, 3 * low, 20 * low)
-        for route_alpha, kind in ((0.05, "t"), (0.0125, "binomial")):
-            row = _estimate_lift(
-                metrics=[CONVERSION_METRIC],
-                summary=count_summary(*counts),
-                control_group="control",
-                alpha=0.05,
-                alternative="greater",
-                route_alpha=route_alpha,
-            ).results[0]
-            assert row.reference_kind == kind
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    def test_a_directional_level_is_the_tail_itself(self, alternative):
+        smallest = 2_140
+        tail = dense_level_tail(smallest)
+        level = dense_level(smallest, 10_000, 3_000, 10_000, alternative=alternative)
+        assert level == tail
 
-    def test_only_the_decision_row_is_routed_at_the_family_level(self):
-        """A sensitivity method's p-value never enters a family's selection, so it keeps its
-        own level: the family level must not move its label or cost it the finite-sample route."""
-        nominal = dense_min_count(0.025)
-        counts = (nominal, 20 * nominal, 3 * nominal, 20 * nominal)
-        computation = _estimate_lift(
-            metrics=[CONVERSION_METRIC],
-            summary=count_summary(*counts),
-            control_group="control",
-            methods=[Method(name="unadjusted"), Method(name="unadjusted_b")],
-            alpha=0.05,
-            route_alpha=0.05 / 4,
-            method_roles={"unadjusted": "decision", "unadjusted_b": "sensitivity"},
-        )
-        assert {row.method_role: row.reference_kind for row in computation.results} == {
-            "decision": "binomial",
-            "sensitivity": "t",
-        }
+    def test_the_smallest_of_the_four_counts_sets_the_level(self):
+        n = 100_000
+        level = dense_level(5_000, n, n - 1_000, n, alternative="two-sided")
+        assert level == dense_level(1_000, n, 1_000, n, alternative="two-sided")
 
-    @pytest.mark.parametrize("route_alpha", [0.0, -0.1, 1.5, float("nan")])
-    def test_a_route_level_outside_zero_to_one_is_refused(self, route_alpha):
-        with pytest.raises(CodedError) as raised:
-            _estimate_lift(
-                metrics=[CONVERSION_METRIC],
-                summary=count_summary(300, 10_000, 330, 10_000),
-                control_group="control",
-                route_alpha=route_alpha,
-            )
-        assert raised.value.code == "estimation.engine.route_alpha"
+
+class TestCompositePValue:
+    def test_a_delta_p_value_at_or_above_the_level_is_reported_as_is(self):
+        assert composite_p_value(0.3, 0.04, None) == 0.3
+        assert composite_p_value(0.04, 0.04, 1e-9) == 0.04
+
+    def test_below_the_level_the_smaller_of_the_exact_p_value_and_the_level_is_reported(self):
+        assert composite_p_value(0.001, 0.04, 0.002) == 0.002
+        assert composite_p_value(0.001, 0.04, 0.3) == 0.04
+
+    def test_without_an_exact_p_value_the_level_itself_is_reported(self):
+        assert composite_p_value(0.001, 0.04, None) == 0.04
+        assert composite_p_value(0.0, 0.0, None) == 0.0
 
 
 # Dense at a 0.1 tail, not at a 0.05 tail: a BH family of two hypotheses at q = 0.2 reads p-values
@@ -700,22 +699,44 @@ def _kinds(rows) -> dict[str, str | None]:
     return {row.metric: row.reference_kind for row in rows if row.estimand in (None, "itt")}
 
 
-class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
-    def test_a_member_of_a_two_hypothesis_bh_family_is_routed_at_q_over_two(self):
+def _evidence(rows) -> dict[str, tuple[int, int, int, int]]:
+    return {
+        row.metric: row.delta_evidence.counts
+        for row in rows
+        if row.estimand in (None, "itt") and row.delta_evidence is not None
+    }
+
+
+class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
+    """A BH family of two hypotheses at ``q = 0.2`` reads p-values at ``q / 2``, a 0.05 tail;
+    its members are still routed and cut at their own 0.1 tail, and the member dense only
+    there carries the counts and dense level its composite p-value is read from."""
+
+    def test_a_member_dense_at_its_own_level_keeps_the_delta_route(self):
         from increment import AnalysisPlan
 
         family = _two_metric_analysis(AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b"))).run()
-        assert _kinds(family) == {"a": "binomial", "b": "t"}
+        assert _kinds(family) == {"a": "t", "b": "t"}
+        counts = _evidence(family)
+        assert set(counts) == {"a", "b"}
+        n = 4 * _CLEAR
+        assert counts["a"] == (_BETWEEN, n, _BETWEEN + 1, n)
+        member = next(row for row in family if row.metric == "a")
+        assert member.delta_evidence is not None
+        assert 0.1 < member.delta_evidence.dense_level <= 0.2
+        assert member.p_value() is not None and member.discovery is False
 
-    def test_the_same_counts_as_a_sole_primary_are_routed_at_their_own_level(self):
+    def test_the_same_counts_as_a_sole_primary_take_the_same_route(self):
         from increment import AnalysisPlan
 
         alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a")).run()
         (row,) = [row for row in alone if row.metric == "a"]
         assert row.reference_kind == "t"
+        assert row.delta_evidence is not None
 
     def test_a_prior_bound_secondary_remains_in_the_sampling_family(self):
-        """The prior-bound conversion contributes to routing and typed sampling evidence."""
+        """The prior-bound conversion contributes typed sampling evidence; every member keeps
+        the route its own level gives it."""
         from increment import AnalysisPlan
         from increment.estimation.inference import Normal
 
@@ -727,15 +748,15 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
             successes={"a": _BETWEEN, "c": _CLEAR, "d": between_levels},
             priors={"c": Normal(mu=0.0, sigma=0.5)},
         ).run()
-        kinds = _kinds(family)
-        assert kinds == {"a": "binomial", "c": "t", "d": "binomial"}
+        assert _kinds(family) == {"a": "t", "c": "t", "d": "t"}
         rows = list(family)
         assert len(rows) == 3
         prior_row = next(row for row in rows if row.metric == "c")
         assert prior_row.sampling_available is True
         assert prior_row.posterior_available is True
+        assert prior_row.delta_evidence is not None
 
-    def test_an_encouragement_family_member_is_routed_at_q_over_its_hypotheses(self):
+    def test_an_encouragement_family_member_takes_its_own_route(self):
         from increment import AnalysisPlan
         from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -751,13 +772,10 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
         family = _two_metric_analysis(
             AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")), design=design
         ).run(estimands=("itt",))
-        assert _kinds(family) == {"a": "binomial", "b": "t"}
-        alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a"), design=design).run(
-            estimands=("itt",)
-        )
-        assert _kinds(alone)["a"] == "t"
+        assert _kinds(family) == {"a": "t", "b": "t"}
+        assert set(_evidence(family)) == {"a", "b"}
 
-    def test_an_observational_family_member_is_routed_at_q_over_its_hypotheses(self):
+    def test_an_observational_family_member_takes_its_own_route(self):
         from increment import AdjustmentSet, AnalysisPlan, IdentificationGate, Method, Observational
 
         design = Observational(
@@ -771,11 +789,8 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
             design=design,
             decision_method=unadjusted,
         ).run()
-        assert _kinds(family) == {"a": "binomial", "b": "t"}
-        alone = _two_metric_analysis(
-            AnalysisPlan(alpha=0.2, primary="a"), design=design, decision_method=unadjusted
-        ).run()
-        assert _kinds(alone)["a"] == "t"
+        assert _kinds(family) == {"a": "t", "b": "t"}
+        assert set(_evidence(family)) == {"a", "b"}
 
 
 class TestUnroutedShare:

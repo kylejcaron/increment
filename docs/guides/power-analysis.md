@@ -389,7 +389,13 @@ conflicting axis raises `CapabilityError` naming the field and the conflict. CUP
 `inference=InferenceSpec(kind='asymptotic_mean')`.
 
 A secondary metric plans at `role='secondary', secondaries=<count>,
-q=<FDR target>` -- sized as a conservative Bonferroni-at-`q/m` bound
+q=<FDR target>` -- sized as a conservative Bonferroni-at-`q/m` bound; for a conversion or
+retention secondary the runtime member is routed at its own level and read at `q/m` through
+its composite p-value, whose rejection set is contained in the count-routed decision at
+`q/m` the planner enumerates, so the planned power of such a member is an upper bound on
+its rejection probability (measured equal on the calibrated designs); a replay-bound
+refusal names both counts, the runtime's `dense_min_count` at the member's own tail and the
+`planned_dense_min_count` the closed form reads from
 (`m` = secondaries x comparisons under fixed-horizon inference, secondaries
 alone under `inference=InferenceSpec(kind='asymptotic_mean')`, which supports
 one treatment arm). A guardrail plans at `role='guardrail',

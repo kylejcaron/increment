@@ -2332,10 +2332,18 @@ class _BinomialPlan:
         return self.geometry.complete(evaluation)
 
     def routing_context(self) -> dict[str, object]:
-        """The route fields a replay-bound refusal carries."""
+        """The route fields a replay-bound refusal carries: the count from which the runtime
+        takes the delta-method route (its own tail, `ArmPlanningProcedure.routing_tail_alpha`)
+        and, for a family member read below that level, the larger count from which the plan
+        reads the delta decision in closed form (the compiled tail; the plan's rejection set
+        contains the runtime's, so its power is an upper bound)."""
         context: dict[str, object] = {"conversion_inference": self.mode}
         if self.mode == "auto":
-            context["dense_min_count"] = dense_min_count(self.tail_alpha)
+            runtime = dense_min_count(self.procedure.routing_tail_alpha)
+            planned = dense_min_count(self.tail_alpha)
+            context["dense_min_count"] = runtime
+            if planned != runtime:
+                context["planned_dense_min_count"] = planned
         return context
 
     def supplied(
@@ -2394,6 +2402,7 @@ def _render_replay_bound(
     max_arm_size: int,
     conversion_inference: str = "finite_sample",
     dense_min_count: int | None = None,
+    planned_dense_min_count: int | None = None,
     p_t: float | None = None,
     power: float | None = None,
     power_reached: float | None = None,
@@ -2407,7 +2416,15 @@ def _render_replay_bound(
         f"The bound is the replay's cost, not a limit of the analysis: the runtime decides "
         f"arms of up to {max_arm_size:,} analyzed units on its finite-sample route"
     )
-    if conversion_inference == "auto":
+    if conversion_inference == "auto" and planned_dense_min_count is not None:
+        route = (
+            f"; counts of at least {dense_min_count:,} successes and failures per arm take "
+            "the runtime's delta-method route at the member's own level, and the plan reads "
+            f"that decision in closed form without a replay from {planned_dense_min_count:,} "
+            "(the family's read level, an upper bound on the member's power), so a larger "
+            "relative_lift or more units that reach them avoid it"
+        )
+    elif conversion_inference == "auto":
         route = (
             f"; counts of at least {dense_min_count:,} successes and failures per arm take "
             "the runtime's delta-method route, which is planned in closed form without a "
@@ -2442,7 +2459,8 @@ def _replay_bound_context(
     """Context of the replay-bound refusal for ``cells`` count cells at analyzed counts
     ``(n_T, n_C)``; ``p_t`` names the alternative rate behind them, a size search adds its
     target ``power`` and the ``power_reached`` at its ceiling, and a plan routed by counts
-    adds its ``conversion_inference`` and ``dense_min_count``."""
+    adds its ``conversion_inference``, ``dense_min_count`` and, for a family member, the
+    ``planned_dense_min_count`` its closed form reads from."""
     return {
         "n_c": n_C,
         "n_t": n_T,

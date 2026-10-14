@@ -468,7 +468,12 @@ class DashboardSnapshot:
 def _csv_human_value(value: Any, *, name: str) -> Any:
     """Encode nested result evidence as portable JSON and neutralize spreadsheet formulas."""
     if isinstance(value, BaseModel):
-        if name in ("confidence_set", "relative_confidence_set", "binomial_set"):
+        if name in (
+            "confidence_set",
+            "relative_confidence_set",
+            "binomial_set",
+            "delta_evidence",
+        ):
             value = value.model_dump(exclude={"raw", "reference"})
         else:
             value = value.model_dump(mode="json")
