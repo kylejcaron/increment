@@ -131,6 +131,19 @@ def test_fixed_fcr_significance_matches_allocated_tail(alternative, reference, t
     assert not parent.stat_sig()
     assert row.require_lift().alpha == alpha
     assert row.require_lift().level == 1 - alpha
+    # The open bound spends the full allocated tail: the displayed decision threshold
+    # is alpha itself, and the closed parent's is the single tail of its doubled alpha.
+    from increment.estimation.results import row_decision_alpha
+
+    row_alpha, parent_alpha = row_decision_alpha(row), row_decision_alpha(parent)
+    row_p, parent_p = row.p_value(), parent.p_value()
+    assert row_alpha is not None and parent_alpha is not None
+    assert row_p is not None and parent_p is not None
+    assert row_alpha == pytest.approx(alpha)
+    assert (row_p <= row_alpha) is row.stat_sig()
+    assert parent_alpha == pytest.approx(alpha / 2)
+    assert (parent_p <= parent_alpha) is parent.stat_sig()
+    assert f"decision_alpha={alpha / 2:.4g}" in repr(parent)
 
 
 @pytest.mark.parametrize("alpha", [1e-20, 1e-300, 2 * math.ulp(0.0)])

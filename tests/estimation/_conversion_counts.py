@@ -156,7 +156,7 @@ def runtime_rejection_rate(
     rejected = asymptotic = 0
     for (c, t), times in zip(pairs.T, multiplicity, strict=True):
         row = lift_row((int(c), n_c, int(t), n_t), alpha=alpha, alternative=alternative, mode=mode)
-        rejected += int(times) * row.stat_sig()
+        rejected += int(times) * (row.stat_sig() is True)
         asymptotic += int(times) * (row.reference_kind == "t")
     rate = rejected / reps
     return rate, math.sqrt(max(rate * (1.0 - rate), 1.0 / reps) / reps), asymptotic / reps

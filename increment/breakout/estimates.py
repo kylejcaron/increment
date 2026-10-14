@@ -96,6 +96,8 @@ from increment.estimation.results import (
     _validate_joint_relative_row,
     _validate_reference_fields,
     open_bound_from_two_sided_at_target,
+    row_p_value,
+    row_stat_sig,
 )
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
@@ -768,6 +770,17 @@ class BreakoutEstimate(_RowIdentity):
             _refuse("breakout.breakout.point_unavailable")
         return self.lift
 
+    def stat_sig(self) -> bool | None:
+        """Whether this cell's own interval excludes its own null; ``None`` for an
+        excluded or failed cell, ``False`` for a ``low_reliability`` cell. The
+        same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
+        return row_stat_sig(self)
+
+    def p_value(self) -> float | None:
+        """This cell's prior-free sampling p-value against its own null, or
+        ``None`` for an excluded or failed cell; see ``LiftEstimate.p_value()``."""
+        return row_p_value(self)
+
     def _family_view(self) -> LiftEstimate | None:
         """The ``LiftEstimate`` this cell was cut from, which exploratory-family evidence and
         FCR reissue read; ``None`` for an excluded cell, which carries no estimate."""
@@ -1404,6 +1417,31 @@ class DailyLiftEstimate(_RowIdentity):
         if self.lift is None:
             _refuse("breakout.daily_lift.point_unavailable")
         return self.lift
+
+    def _require_sampling_marker(self) -> None:
+        """A live fixed-horizon day cell that never recorded whether its sampling
+        reference was persisted is refused rather than guessed."""
+        if (
+            self.failure_code is None
+            and self.sequential_result is None
+            and self.sampling_available is None
+        ):
+            from increment.estimation.readout_types import refuse_legacy_sampling
+
+            refuse_legacy_sampling(self)
+
+    def stat_sig(self) -> bool | None:
+        """Whether this day's own interval excludes its own null; ``None`` for a
+        cell with no usable sampling evidence. The same verdict
+        ``LiftEstimate.stat_sig()`` and the readout frame report."""
+        self._require_sampling_marker()
+        return row_stat_sig(self)
+
+    def p_value(self) -> float | None:
+        """This day's prior-free sampling p-value against its own null, or
+        ``None`` with no usable sampling evidence; see ``LiftEstimate.p_value()``."""
+        self._require_sampling_marker()
+        return row_p_value(self)
 
     def _interval_display_parts(self) -> list[str]:
         from increment._display import format_interval

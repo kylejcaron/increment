@@ -256,3 +256,19 @@ def test_interval_levels_keep_two_decimals_in_every_disclosure(
 
 
 # Adverse warnings
+
+
+@pytest.mark.parametrize(("mean_shift", "verdict"), [(1.0, "reject"), (0.05, "not_reject")])
+def test_additive_zero_decisions_reach_the_dashboard_outcome_and_null(mean_shift, verdict):
+    """A nonpositive-mean cell decided on its additive interval is a real test: its
+    outcome is its verdict, never 'unavailable', and the tested null is the additive zero."""
+    from increment.dashboard._format import null_text, primary_tone
+    from tests.test_tables import _nonpositive_cuped_breakout_segment
+
+    cell = _nonpositive_cuped_breakout_segment(mean_shift=mean_shift)
+    (row,) = estimates_to_readout([cell])
+    outcome = result_outcome(row)
+    assert outcome.verdict == verdict
+    assert outcome.unavailable_reason is None
+    assert null_text(row) == "+0 absolute"
+    assert primary_tone(row) in ("neutral", "inconclusive")

@@ -263,6 +263,190 @@ class TestRunBreakoutSegmentIsolation:
         assert us_lift.value > 0, "US treatment (12) > control (10)"
         assert ca_lift.value < 0, "CA treatment (19) < control (20)"
 
+    def test_single_segment_verdict_matches_the_whole_window_row(self):
+        """A segment holding every unit is the whole-window contrast: the cell's own
+        ``p_value()``/``stat_sig()`` read the same persisted evidence ``estimate_lift``'s
+        row reads, rather than a readout-side reconstruction."""
+        control = _make_arm_row(n=2000, mean=10.0, var=4.0, country="ALL", group_id="control")
+        treatment = _make_arm_row(n=2000, mean=10.3, var=4.0, country="ALL", group_id="treatment")
+        summary = pd.DataFrame([control, treatment])
+        (cell,) = run_breakout(
+            summary=summary, metrics=[_mean_metric()], control_group="control", dimension="country"
+        )
+        (whole,) = estimate_lift(
+            metrics=[_mean_metric()], summary=summary, control_group="control"
+        ).results
+        whole_p = whole.p_value()
+        cell_p = cell.p_value()
+        assert whole_p is not None and cell_p is not None
+        assert cell_p == pytest.approx(whole_p, rel=1e-12, abs=0.0)
+        assert cell.stat_sig() is whole.stat_sig()
+        for null_lift in (0.01, 0.05):
+            shifted_cell = cell.model_copy(update={"null_lift": null_lift})
+            shifted_whole = whole.model_copy(update={"null_lift": null_lift})
+            assert shifted_cell.p_value() == pytest.approx(
+                shifted_whole.p_value(), rel=1e-12, abs=0.0
+            )
+            assert shifted_cell.stat_sig() is shifted_whole.stat_sig()
+
+    def test_set_only_binomial_cell_decides_from_its_counts(self):
+        """A zero-control-count conversion cell has no finite point; its verdict and
+        p-value come from the exact set's persisted counts, as the whole-window row's do."""
+        from tests.test_tables import _binomial_lift_estimate
+
+        whole = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
+        assert whole.lift is None and whole.binomial_set is not None
+        cell = BreakoutEstimate(
+            metric=whole.metric,
+            group_id=whole.group_id,
+            method=whole.method,
+            method_role=whole.method_role,
+            dimension="country",
+            dimension_value="US",
+            reference_kind="binomial",
+            lift=None,
+            binomial_set=whole.binomial_set,
+        )
+        assert cell.stat_sig() is True
+        assert cell.stat_sig() is whole.stat_sig()
+        assert cell.p_value() == whole.p_value()
+        assert cell.p_value() == whole.binomial_set.null_p_value(0.0, "two-sided")
+        thin = _binomial_lift_estimate(x_c=0, n_c=5, x_t=1, n_t=5)
+        thin_cell = cell.model_copy(update={"binomial_set": thin.binomial_set})
+        assert thin_cell.stat_sig() is False
+        assert thin_cell.p_value() == thin.p_value()
+
+    def test_excluded_and_low_reliability_cells(self):
+        """An excluded cell has no evidence to decide on; a low-reliability cell keeps its
+        statistic but its interval verdict is withheld as a non-rejection."""
+        excluded = BreakoutEstimate(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            dimension="country",
+            dimension_value="US",
+            lift=None,
+            excluded="few_units",
+        )
+        assert excluded.stat_sig() is None
+        assert excluded.p_value() is None
+        control = _make_arm_row(n=20, mean=10.0, var=1.0, country="US", group_id="control")
+        treatment = _make_arm_row(n=20, mean=12.0, var=1.0, country="US", group_id="treatment")
+        (thin,) = run_breakout(
+            summary=pd.DataFrame([control, treatment]),
+            metrics=[_mean_metric()],
+            control_group="control",
+            dimension="country",
+            reliability_floor=50,
+        )
+        assert thin.low_reliability is True
+        assert thin.stat_sig() is False
+        thin_p = thin.p_value()
+        assert thin_p is not None and thin_p < 0.05
+
+    def test_daily_cell_with_a_margin_matches_the_whole_window_row(self):
+        from tests.test_tables import _binomial_lift_estimate
+
+        whole = _binomial_lift_estimate(x_c=20, n_c=200, x_t=60, n_t=200, null_abs=0.2)
+        daily = DailyLiftEstimate(
+            metric=whole.metric,
+            group_id=whole.group_id,
+            method=whole.method,
+            method_role=whole.method_role,
+            ds=date(2024, 1, 1),
+            lift=whole.lift,
+            binomial_set=whole.binomial_set,
+            null_abs=whole.null_abs,
+            abs_lb=whole.abs_lb,
+            abs_ub=whole.abs_ub,
+            abs_diff=whole.abs_diff,
+            abs_se=whole.abs_se,
+            alternative=whole.alternative,
+            null_lift=whole.null_lift,
+            reference_kind=whole.reference_kind,
+            sampling_available=True,
+        )
+        assert daily.stat_sig() is whole.stat_sig() is False
+        assert daily.p_value() == whole.p_value()
+        assert daily.model_copy(update={"sampling_available": False}).stat_sig() is None
+
+    def test_daily_nonpositive_cell_with_a_relative_margin_keeps_its_declared_null(self):
+        """A daily CUPED cell whose adjusted means are nonpositive, carrying a declared
+        relative margin and no absolute margin, never substitutes an additive-zero test
+        for the hypothesis it retains."""
+        from increment.estimation.results import row_decision_scale
+
+        base: dict[str, Any] = {
+            "metric": "rev",
+            "group_id": "treatment",
+            "method": "cuped",
+            "method_role": "decision",
+            "ds": date(2024, 1, 1),
+            "lift": None,
+            "relative_unavailable_reason": "nonpositive_arm_mean",
+            "abs_diff": -0.9,
+            "abs_se": 0.05,
+            "abs_lb": -1.0,
+            "abs_ub": -0.8,
+            "abs_reference_kind": "t",
+            "abs_reference_df": 1998.0,
+            "abs_alpha": 0.1,
+            "reference_kind": "normal",
+            "alternative": "less",
+            "sampling_available": True,
+        }
+        margin = DailyLiftEstimate(**base, null_lift=-0.05)
+        assert margin.p_value() == 1.0
+        assert margin.stat_sig() is False
+        assert row_decision_scale(margin) == "relative"
+        unshifted = DailyLiftEstimate(**base, null_lift=0.0)
+        assert unshifted.stat_sig() is True
+        assert row_decision_scale(unshifted) == "absolute"
+
+    def test_absolute_scale_cell_with_a_nonzero_null_matches_the_whole_window_row(self):
+        """An additive cell's Wald statistics are linear, so a shifted null is not
+        log-transformed: the cell's p-value equals the ``LiftEstimate``'s and the
+        hand Normal tail on the additive scale."""
+        from scipy.stats import norm
+
+        from increment.estimation.armstats import ScoreStats
+        from increment.estimation.inference import infer_ate
+
+        whole = infer_ate(
+            metric="m",
+            group_id="t",
+            method="unadjusted",
+            method_role="decision",
+            alpha=0.05,
+            alternative="two-sided",
+            point=2.0,
+            scores=ScoreStats(metric="m", contrast="t", n=100, sum_psi=0.0, sum_psi2=100.0),
+            value_scale="absolute",
+        ).model_copy(update={"null_lift": 1.5})
+        assert whole.scale == "linear" and whole.value_scale == "absolute"
+        cell = BreakoutEstimate(
+            metric=whole.metric,
+            group_id=whole.group_id,
+            method=whole.method,
+            method_role=whole.method_role,
+            dimension="country",
+            dimension_value="US",
+            lift=whole.lift,
+            value_scale="absolute",
+            null_lift=whole.null_lift,
+            reference_kind=cast("Any", whole.reference_kind),
+            reference_df=whole.reference_df,
+        )
+        lift = whole.require_lift()
+        assert lift.log_mean is not None and lift.log_se is not None
+        expected = 2.0 * norm.sf(abs((lift.log_mean - 1.5) / lift.log_se))
+        whole_p, cell_p = whole.p_value(), cell.p_value()
+        assert whole_p is not None and cell_p is not None
+        assert whole_p == pytest.approx(expected, rel=1e-12, abs=0.0)
+        assert cell_p == pytest.approx(expected, rel=1e-12, abs=0.0)
+        assert cell.stat_sig() is whole.stat_sig()
+
     def test_segment_row_order_does_not_change_either_answer(self):
         """Row arrival order (CA-then-US vs US-then-CA) must not change either segment's answer - a
         `{metric: control}` dict collision would make whichever segment is iterated LAST win."""
@@ -718,10 +902,9 @@ def _bh_family_summary() -> pd.DataFrame:
 
 
 def _p_value_from_estimate(lift: Estimate) -> float:
-    """Two-sided p-value from an Estimate's log-scale sufficient
-    statistics -- `BreakoutEstimate` carries no `.p_value()` method (unlike
-    `LiftEstimate`), so this reconstructs the same flat-prior z-test
-    `LiftEstimate.p_value()` computes for a non-cluster-robust row."""
+    """An independent two-sided z-test from an Estimate's log-scale sufficient
+    statistics: the hand oracle the BH selection below is checked against,
+    deliberately not the row's own ``p_value()``."""
     from scipy.stats import norm as _norm_dist
 
     z = cast(float, lift.log_mean) / cast(float, lift.log_se)
@@ -765,9 +948,7 @@ class TestRunBreakoutBHCorrection:
             )
             assert prior_row.lift is not None
             assert plain.lift is not None
-            assert _p_value_from_estimate(prior_row.lift) == pytest.approx(
-                _p_value_from_estimate(plain.lift)
-            )
+            assert prior_row.p_value() == pytest.approx(plain.p_value())
             assert prior_row.posterior_available is True
             family_view = prior_row._family_view()
             assert family_view is not None
