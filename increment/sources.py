@@ -103,6 +103,7 @@ SourceOperation = Literal[
     "triggered_counts",
     "triggered_source",
     "sitewide_evidence",
+    "unit_counts",
     "export_moments",
     "moments_source",
     "panel_sql",
@@ -624,14 +625,38 @@ def _validate_moments_plan_format_pair(plans: set[str], *, sequential_checkpoint
             )
 
 
-def _cube_assignment_counts(rows: Sequence[Mapping[str, object]]) -> dict[str, int] | None:
+def _cube_assignment_counts(
+    rows: Sequence[Mapping[str, object]], *, boolean_group_ids: bool
+) -> dict[str, int] | None:
     candidate = None
     for row in rows:
         decoded = _parse_assignment_counts(row.get(ASSIGNMENT_COUNTS_FIELD))
+        if decoded is not None and boolean_group_ids:
+            normalized: dict[str, int] = {}
+            for group, count in decoded.items():
+                identity = {"True": "true", "False": "false"}.get(group, group)
+                if identity in normalized:
+                    return None
+                normalized[identity] = count
+            decoded = normalized
         if decoded is None or (candidate is not None and decoded != candidate):
             return None
         candidate = decoded
     return candidate
+
+
+def _validated_cube_assignment_counts(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    boolean_group_ids: bool,
+    design_summary: bool,
+) -> dict[str, int] | None:
+    counts = _cube_assignment_counts(rows, boolean_group_ids=boolean_group_ids)
+    if design_summary and counts is None:
+        invalid_compliance_state(
+            "design_summary requires valid assignment counts; re-export the complete source"
+        )
+    return counts
 
 
 def _cube_compliance_state(rows: Sequence[Mapping[str, object]]) -> dict[str, object] | None:
@@ -805,6 +830,22 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
     )
 
 
+def _canonicalize_boolean_moment_group_ids(
+    rows: Sequence[Mapping[str, object]],
+) -> tuple[list[Mapping[str, object]], bool]:
+    raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
+    boolean_group_ids = bool(raw_group_ids) and all(
+        isinstance(group_id, bool) for group_id in raw_group_ids
+    )
+    normalized = [
+        {**row, "group_id": "true" if row.get("group_id") else "false"}
+        if isinstance(row.get("group_id"), bool)
+        else row
+        for row in rows
+    ]
+    return normalized, boolean_group_ids
+
+
 def _check_moments_format(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -821,6 +862,7 @@ def _check_moments_format(
     dict[str, object] | None,
 ]:
     """Validate and strip moments format, plan, count, and source envelopes."""
+    rows, boolean_group_ids = _canonicalize_boolean_moment_group_ids(rows)
     out: list[dict[str, object]] = []
     versions: set[int] = set()
     plans: set[str] = set()
@@ -909,11 +951,11 @@ def _check_moments_format(
         if key in seen_keys:
             _refuse(_MOMENTS_DUPLICATE_ROWS, key=key)
         seen_keys.add(key)
-    assignment_counts = _cube_assignment_counts(rows)
-    if envelope_identity is not None and assignment_counts is None:
-        invalid_compliance_state(
-            "design_summary requires valid assignment counts; re-export the complete source"
-        )
+    assignment_counts = _validated_cube_assignment_counts(
+        rows,
+        boolean_group_ids=boolean_group_ids,
+        design_summary=envelope_identity is not None,
+    )
     if trigger_rows not in {0, len(rows)}:
         _refuse(
             _MOMENTS_FORMAT_INVALID,
@@ -1178,8 +1220,31 @@ class MomentsSource(SequentialSourceMixin):
     mandatory format stamp so an old additive-sum cube cannot be misread.
     """
 
+    @staticmethod
+    def design_summary_design(
+        rows: Sequence[Mapping[str, object]], *, control_group: str
+    ) -> Encouragement | None:
+        """Decode a complete design-summary envelope into its declared design."""
+        if not rows or rows[0].get("record_kind") != "design_summary":
+            return None
+        row = rows[0]
+        study_id = row.get("experiment_id")
+        if not isinstance(study_id, str) or not study_id:
+            invalid_compliance_state("design_summary requires its exported experiment identity")
+        compliance = ComplianceSummary.from_wire(
+            _parse_compliance_payload(row.get(COMPLIANCE_SUMMARY_FIELD)),
+            study_id=study_id,
+        )
+        from increment.semantics.design import Encouragement, UptakeSpec
+
+        return Encouragement(
+            control_group=control_group,
+            uptake=UptakeSpec(fact=compliance.cohort, window_days=compliance.window_days),
+            one_sided=compliance.one_sided,
+        )
+
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset()
+    operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
     breakouts: tuple[str, ...] = ()
 
@@ -1639,7 +1704,7 @@ class BreakoutMomentsSource(SequentialSourceMixin):
     """
 
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset()
+    operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
 
     def __init__(

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import narwhals as nw
 import numpy as np
 
+from increment._labels import canonical_group_label
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics
 from increment.errors import (
     CapabilityError,
@@ -34,7 +37,13 @@ from increment.plan import (
 )
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import AnalysisPlan, Metric
-from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+from increment.sources import (
+    ASSIGNMENT_COUNTS_FIELD,
+    COMPLIANCE_SUMMARY_FIELD,
+    MIXED_ASSIGNMENT_LABEL,
+    SEQUENTIAL_SNAPSHOT_FIELD,
+    UNASSIGNED_LABEL,
+)
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
@@ -313,6 +322,7 @@ _REFUSALS = refusals(
             ),
         ),
         "frame.validation.duplicate_breakout_column": "duplicate breakout column(s): {duplicates!r}",
+        "source.frame.control_invalid": "control must be a scalar group label; received {value!r}.",
         "frame.validation.breakout_reserved_internal": "breakout {name!r} is reserved for internal panel/moment fields",
         "frame.validation.breakout_overlaps_column": "breakout {name!r} overlaps {role} column {name!r}",
         "frame.validation.breakout_overlaps_metric": "breakout {name!r} overlaps metric input column {name!r}",
@@ -320,6 +330,187 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def canonical_control_for_frame(frame: Any, group: str, control: object) -> str:
+    """Canonicalize a control using the declared group column's dtype."""
+    if not np.isscalar(control):
+        _raise("source.frame.control_invalid", value=_safe_error_value(control))
+    try:
+        source = nw.from_native(frame, eager_only=True)
+        boolean = source.schema[group] == nw.Boolean
+    except Exception:
+        boolean = False
+    if boolean and isinstance(control, str):
+        if control in ("True", "true"):
+            return "true"
+        if control in ("False", "false"):
+            return "false"
+    return str(canonical_group_label(control, boolean=boolean))
+
+
+def canonical_design_for_labels(design: Any, *, boolean: bool) -> Any:
+    """Normalize every assignment-arm reference in a design when labels are Boolean."""
+    if design is None or not boolean:
+        return design
+    updates: dict[str, Any] = {
+        "control_group": str(canonical_group_label(design.control_group, boolean=True))
+    }
+    allocation = getattr(design, "allocation", None)
+    if allocation is not None:
+        normalized = {
+            str(canonical_group_label(label, boolean=True)): weight
+            for label, weight in allocation.items()
+        }
+        if len(normalized) != len(allocation):
+            refuse(
+                _GROUP_LABEL_COLLISION,
+                group="assignment allocation",
+                collision="allocation arm labels collapse under Boolean canonicalization",
+                route="supply unique canonical arm labels",
+            )
+        updates["allocation"] = MappingProxyType(normalized)
+    return design.model_copy(update=updates)
+
+
+def canonical_design_for_frame(frame: Any, group: str, design: Any) -> Any:
+    """Normalize a design only when the source assignment column is Boolean."""
+    try:
+        source = nw.from_native(frame, eager_only=True)
+        boolean = source.schema[group] == nw.Boolean
+    except Exception:
+        boolean = False
+    return canonical_design_for_labels(design, boolean=boolean)
+
+
+def canonical_design_for_moments(design: Any) -> Any:
+    """Canonicalize only actual Boolean arm references in an explicit design."""
+    if design is None:
+        return None
+    updates: dict[str, Any] = {}
+    control = getattr(design, "control_group", None)
+    if isinstance(control, bool):
+        updates["control_group"] = "true" if control else "false"
+    allocation = getattr(design, "allocation", None)
+    if allocation is not None:
+        normalized = {
+            ("true" if label else "false") if isinstance(label, bool) else label: weight
+            for label, weight in allocation.items()
+        }
+        if len(normalized) != len(allocation):
+            refuse(
+                _GROUP_LABEL_COLLISION,
+                group="assignment allocation",
+                collision="Boolean allocation keys collide with canonical arm labels",
+                route="supply unique arm labels",
+            )
+        updates["allocation"] = MappingProxyType(normalized)
+    return design.model_copy(update=updates) if updates else design
+
+
+def canonical_control_for_moments(control: object) -> str:
+    """Coerce moments controls without inferring type from exported labels."""
+    if not np.isscalar(control):
+        _raise("source.frame.control_invalid", value=_safe_error_value(control))
+    if isinstance(control, bool):
+        return "true" if control else "false"
+    return str(control)
+
+
+def _moment_group_label(value: object) -> str | None:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return None
+    label = str(value)
+    return label or None
+
+
+def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
+    """Read exact arm identities from ordinary rows or typed moments envelopes."""
+    raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
+    boolean_group_ids = bool(raw_group_ids) and all(
+        isinstance(group_id, bool) for group_id in raw_group_ids
+    )
+    labels = {
+        label for row in rows if (label := _moment_group_label(row.get("group_id"))) is not None
+    }
+    for row in rows:
+        counts = row.get(ASSIGNMENT_COUNTS_FIELD)
+        if isinstance(counts, str):
+            try:
+                counts = json.loads(counts)
+            except (json.JSONDecodeError, TypeError):
+                counts = None
+        if isinstance(counts, Mapping):
+            labels.update(
+                (
+                    "true"
+                    if boolean_group_ids and label == "True"
+                    else "false"
+                    if boolean_group_ids and label == "False"
+                    else label
+                )
+                for label in counts
+                if isinstance(label, str) and label
+            )
+        compliance = row.get(COMPLIANCE_SUMMARY_FIELD)
+        if isinstance(compliance, str):
+            try:
+                compliance = json.loads(compliance)
+            except (json.JSONDecodeError, TypeError):
+                compliance = None
+        if isinstance(compliance, Mapping):
+            arms = compliance.get("arms", ())
+            if isinstance(arms, Sequence) and not isinstance(arms, str):
+                labels.update(
+                    str(arm.get("group_id"))
+                    for arm in arms
+                    if isinstance(arm, Mapping)
+                    and isinstance(arm.get("group_id"), str)
+                    and arm.get("group_id")
+                )
+        snapshot = row.get(SEQUENTIAL_SNAPSHOT_FIELD)
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except (json.JSONDecodeError, TypeError):
+                snapshot = None
+        if isinstance(snapshot, Mapping):
+            registration = snapshot.get("registration")
+            if isinstance(registration, Mapping):
+                control = registration.get("control_group")
+                if isinstance(control, str) and control:
+                    labels.add(control)
+                roster = registration.get("roster", ())
+                if isinstance(roster, Sequence) and not isinstance(roster, str):
+                    labels.update(
+                        str(cell.get("group_id"))
+                        for cell in roster
+                        if isinstance(cell, Mapping)
+                        and isinstance(cell.get("group_id"), str)
+                        and cell.get("group_id")
+                    )
+    return tuple(sorted(labels))
+
+
+def validate_moments_control(rows: Sequence[Mapping[str, object]], control: str) -> None:
+    """Refuse a moments control that is not one of its exact exported labels."""
+    observed = moments_group_labels(rows)
+    if not observed or control in observed:
+        return
+    route = "declare a control present in the moments cube"
+    if set(observed) == {"true", "false"}:
+        route = "use control=True (Python bool) or the exact canonical label 'true'"
+    refuse(
+        _CONTROL_MISSING,
+        control=control,
+        group="group_id",
+        observed=observed,
+        route=route,
+    )
+
+
 COVARIATE_IMPUTE_ALL_NULL = _REFUSALS["frame.validation.metric_covariate_impute_all_null"]
 
 
@@ -490,6 +681,7 @@ def _reject_reserved_labels(labels: Sequence[str], *, group: str) -> None:
 
 def _canonicalize_group_identity(frame: nw.DataFrame[Any], group: str) -> nw.DataFrame[Any]:
     """Validate wire identities and preserve missing groups before reduction."""
+    boolean = frame.schema[group] == nw.Boolean
     if frame.schema[group] == nw.String and not frame.implementation.is_pandas_like():
         # A typed string column is already its canonical form, so distinct values
         # cannot collide. pandas reports a sniffed object column as String too,
@@ -498,7 +690,10 @@ def _canonicalize_group_identity(frame: nw.DataFrame[Any], group: str) -> nw.Dat
         return frame
     # No ``otherwise``: a when-without-else yields a true null on every backend,
     # whereas pandas 2.x casts a ``lit(None)`` branch to the string "None".
-    canonical = nw.when(~_is_missing(frame, group)).then(nw.col(group).cast(nw.String)).alias(group)
+    rendered = nw.col(group).cast(nw.String)
+    if boolean:
+        rendered = rendered.str.to_lowercase()
+    canonical = nw.when(~_is_missing(frame, group)).then(rendered).alias(group)
     # Pair before deduplication: raw equality can hide differently cast labels.
     identities = (
         frame.select(
