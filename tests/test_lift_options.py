@@ -45,7 +45,7 @@ def test_call_time_prior_is_applied_to_the_estimate():
     assert default.lift is not None and shrunk.lift is not None
     assert default.lift.value == shrunk.lift.value
     # Call-time priors update the separate posterior, not prior-free `lift`
-    # (docs/guides/priors-and-decisions.md:7-9).
+    # (docs/guides/priors-and-decisions.md:3).
     assert default.posterior_available is None
     assert shrunk.posterior_available is True
     posterior_estimate = shrunk.posterior_estimate

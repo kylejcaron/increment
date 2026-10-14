@@ -1584,7 +1584,7 @@ class TestSegmentHeterogeneity:
 
 class TestSegmentHeterogeneityRawShrunkenPriorContract:
     """The relative-scale `raw` row reuses `BreakoutEstimate.lift` verbatim as
-    prior-free sampling evidence (`docs/guides/priors-and-decisions.md:7-9`).
+    prior-free sampling evidence (`docs/guides/priors-and-decisions.md:3`).
     Its posterior is stored separately; Q/tau^2/pooled/shrunken machinery is
     also built from raw log-scale moments.
     Verbatim sampling reuse holds when `lift.level == 1 - alpha`; other
