@@ -237,7 +237,7 @@ def test_aggregate_lift_estimator_requires_per_unit_cuped_evidence():
 
 def test_definition_covariate_requires_exactly_one_binding():
     with pytest.raises(DefinitionError) as raised:
-        CupedCovariateBinding(name="x", kind="continuous")
+        CupedCovariateBinding(name="pre_x", kind="continuous")
 
     assert raised.value.code == "definition.experiment.covariate_binding_exactly_one"
 
@@ -245,7 +245,7 @@ def test_definition_covariate_requires_exactly_one_binding():
 def test_property_covariate_cannot_also_declare_measure_or_measure_source():
     with pytest.raises(DefinitionError) as raised:
         CupedCovariateBinding(
-            name="x",
+            name="pre_x",
             kind="continuous",
             property="tenure",
             measure=Measure(fact="purchase"),
@@ -257,14 +257,14 @@ def test_property_covariate_cannot_also_declare_measure_or_measure_source():
 def test_measure_source_qualifier_is_rejected():
     with pytest.raises(DefinitionError) as raised:
         CupedCovariateBinding(
-            name="x", kind="continuous", source="events", measure=Measure(fact="purchase")
+            name="pre_x", kind="continuous", source="events", measure=Measure(fact="purchase")
         )
 
     assert raised.value.code == "definition.experiment.covariate_source_requires_property"
 
 
 def test_definition_metric_rejects_duplicate_covariate_names():
-    x = CupedCovariateBinding(name="x", kind="continuous", property="tenure")
+    x = CupedCovariateBinding(name="pre_x", kind="continuous", property="tenure")
     with pytest.raises(DefinitionError) as raised:
         ExperimentMetric(metric="revenue", covariates=(x, x))
 
@@ -273,7 +273,7 @@ def test_definition_metric_rejects_duplicate_covariate_names():
 
 def test_definition_covariate_refusal_roundtrips_through_copy_and_pickle():
     with pytest.raises(DefinitionError) as raised:
-        CupedCovariateBinding(name="x", kind="continuous")
+        CupedCovariateBinding(name="pre_x", kind="continuous")
     error = raised.value
 
     for restored in (copy.deepcopy(error), pickle.loads(pickle.dumps(error))):
