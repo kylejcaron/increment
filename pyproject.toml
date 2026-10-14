@@ -154,6 +154,7 @@ markers = [
     "warehouse_bigquery: executes real query builders against a live BigQuery connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_bigquery nox session, never collected from testpaths",
 ]
 timeout = 300
+junit_family = "legacy"
 addopts = "-m 'not slow and not parameter_recovery and not numerical_certification'"
 filterwarnings = [
     "error",

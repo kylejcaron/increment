@@ -9,7 +9,6 @@ and append one JSON result record per declared cell.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -138,15 +137,6 @@ def _conversion(out: Path, *, smoke: bool) -> int:
     return 0
 
 
-class _Diagnostics:
-    @contextlib.contextmanager
-    def stage(self, _name):
-        yield
-
-    def progress(self, **_kwargs):
-        pass
-
-
 def _switchback(out: Path, *, smoke: bool) -> int:
     from tests._switchback_planning_design import CELLS
     from tests.power.test_switchback_planning_calibration import (
@@ -176,9 +166,7 @@ def _switchback(out: Path, *, smoke: bool) -> int:
         return 0
     for index, cell in enumerate(CELLS):
         properties = {}
-        test_source_estimator_and_planning_variance_calibration(
-            index, cell, properties.__setitem__, _Diagnostics()
-        )
+        test_source_estimator_and_planning_variance_calibration(index, cell, properties.__setitem__)
         _record(
             out,
             {

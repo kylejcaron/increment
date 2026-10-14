@@ -18,12 +18,14 @@ def test_explicit_slow_test_target() -> None:
 
 def test_make_test_runs_explicit_slow_selector() -> None:
     environment = os.environ.copy()
-    environment.pop("PYTEST_ADDOPTS", None)
+    for name in ("MAKEFLAGS", "MAKELEVEL", "MFLAGS", "PYTEST_ARGS", "PYTEST_ADDOPTS"):
+        environment.pop(name, None)
     result = subprocess.run(
         [
             "make",
             "test",
             f"TESTS={Path(__file__).relative_to(ROOT)}::test_explicit_slow_test_target",
+            "PYTEST_ARGS=",
         ],
         cwd=ROOT,
         env=environment,
