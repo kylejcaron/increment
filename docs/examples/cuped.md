@@ -1,7 +1,7 @@
 # CUPED
 
-Runs one experiment's estimates twice -- unadjusted and with CUPED variance
-reduction -- and compares the interval widths side by side.
+Compare an experiment's estimates and interval widths before and after CUPED
+variance reduction.
 
 [Open the notebook in a full browser tab](cuped.html)
 

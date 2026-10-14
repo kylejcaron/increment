@@ -13,11 +13,10 @@
 
 **A/B testing that shows its work.**
 
-Increment is an open-source Python library for A/B test analysis. It helps teams
-measure the impact of product changes using dataframes or SQL warehouses, with
-reusable metric definitions, effect estimates, uncertainty intervals, and
-shareable reports. Increment does not assign traffic, ship feature flags, or
-maintain a separate event store.
+Increment is an open-source Python library for A/B test analysis. Analyze
+experiments from dataframes or SQL warehouses with reusable metrics, effect
+estimates, uncertainty intervals, and reports. Increment does not assign traffic,
+ship feature flags, or maintain a separate event store.
 
 [Website](https://getincrement.io/) · [Documentation](https://getincrement.io/docs/) ·
 [Quickstart](#quickstart) · [Warehouse analysis](#connect-your-warehouse) ·
@@ -28,33 +27,33 @@ maintain a separate event store.
 - **Analyze experiments** — estimate effects, reduce variance with CUPED, apply
   multiple-comparison corrections, and check sample-ratio mismatch after
   declaring `allocation_scheme="independent"` or explicitly requesting a
-  one-look `srm(inference="fixed")` diagnostic. Use `health_check()` to see
-  when assignment-law admission leaves SRM unavailable.
-- **Bayesian inference** — combine prior beliefs with experiment data to estimate effects and
-  probabilities of benefit.
-- **Plan and monitor** — solve for sample size, power, and minimum detectable
-  effect; use sequential methods for repeated looks under their stated assumptions.
-- **Estimate causal effects** — use IPTW, DML, or AIPW for observational treatments
-  from dataframes or warehouse definitions, or analyze encouragement designs and
-  switchback contrasts.
-- **Explore and report** — inspect breakouts, trends, and heterogeneous treatment
-  effects; produce readout tables, dashboards, and sitewide-impact estimates.
+  one-look `srm(inference="fixed")` diagnostic. `health_check()` reports when
+  assignment checks make SRM unavailable.
+- **Use Bayesian inference** — combine prior beliefs with experiment data to
+  estimate effects and probabilities of benefit.
+- **Plan and monitor** — calculate sample size, power, and minimum detectable
+  effect; use a sequential method for repeated looks when its assumptions fit.
+- **Estimate causal effects** — use IPTW, DML, or AIPW for observational
+  treatments, or analyze encouragement and switchback designs.
+- **Explore and report** — inspect breakouts, trends, and treatment-effect
+  differences; create readout tables, dashboards, and sitewide-impact estimates.
 
-Not every method works with every metric or design. The
-[method guide](https://getincrement.io/docs/guides/choose-a-method/) helps you choose; the
-[compatibility matrix](https://getincrement.io/docs/guides/compatibility/) shows supported combinations.
+Methods support different metrics and designs. Use the
+[method guide](https://getincrement.io/docs/guides/choose-a-method/) to choose;
+the [compatibility matrix](https://getincrement.io/docs/guides/compatibility/)
+lists supported combinations.
 
 ## Quickstart
 
-Requires **Python 3.12–3.14**. Install the pre-release package and Polars for this
-example:
+Requires **Python 3.12–3.14**. Install Increment's pre-release package and
+Polars for this example:
 
 ```bash
 pip install --pre increment polars
 ```
 
-Start with one row per randomization unit. This example generates a small
-control/treatment dataset and estimates the relative change in mean revenue:
+Use one row per randomization unit. This example creates control and treatment
+data, then estimates the relative change in average revenue:
 
 ```python
 from random import Random
@@ -90,21 +89,21 @@ for result in results:
 ```text
 revenue: lift=+7.5%
 ```
-**Read the result as a decision, not just a lift.** Check whether required
-metrics and guardrails are present, whether assignment integrity was assessed,
-and which multiplicity status applies before acting. The
-[result-reading guide](https://github.com/kylejcaron/increment/blob/main/docs/guides/reading-results.md) explains failed or
-unavailable cells, posterior availability, and triggered-population readouts.
-For a coded refusal, follow its code and context with the
-[refusal navigation guide](https://github.com/kylejcaron/increment/blob/main/docs/guides/refusals.md).
+**Use the result to support a decision.** Check that required metrics and
+guardrails are present, assignment integrity was assessed, and the right
+multiplicity status applies. The
+[result-reading guide](https://github.com/kylejcaron/increment/blob/main/docs/guides/reading-results.md)
+covers unavailable cells, posterior availability, and triggered-population
+readouts. For a refusal, follow its code and context in the
+[refusal guide](https://github.com/kylejcaron/increment/blob/main/docs/guides/refusals.md).
 
 
-Replace the generated data with your own unit-level dataframe. No YAML, warehouse
-connection, or DuckDB is required. Other Narwhals-supported eager dataframes work
-as well. For unit-by-day data, use `Analysis.from_unit_panel`.
+Replace the generated data with your unit-level dataframe. No YAML, warehouse
+connection, or DuckDB is needed. Other eager dataframes supported by Narwhals
+also work. For daily data, use `Analysis.from_unit_panel`.
 
-The [dataframe quickstart](https://getincrement.io/docs/guides/quickstart/) covers metric declarations,
-missing values, analysis plans, uncertainty intervals, and monitoring.
+The [dataframe quickstart](https://getincrement.io/docs/guides/quickstart/)
+covers metrics, missing values, analysis plans, uncertainty, and monitoring.
 
 Next: [add CUPED](https://getincrement.io/docs/guides/cuped/#on-the-dataframe-path) ·
 monitor sequentially ([mean or ratio](https://getincrement.io/docs/guides/sequential-inference/#ordinary-continuous-monitoring),
@@ -115,8 +114,8 @@ monitor sequentially ([mean or ratio](https://getincrement.io/docs/guides/sequen
 
 ## Connect your warehouse
 
-Declare sources, exposures, metrics, and experiments in YAML. Bind the definitions
-to an Ibis connection to inspect the generated SQL and run an analysis:
+Define sources, exposures, metrics, and experiments in YAML. Connect the
+definitions to an Ibis backend to inspect generated SQL and run the analysis:
 
 <!-- skip: next "requires a configured warehouse and project definitions" -->
 
@@ -131,14 +130,14 @@ print(analysis.summary_sql()["revenue"])
 results = analysis.run()
 ```
 
-Install your warehouse's Ibis backend separately—for example,
-`pip install 'ibis-framework[snowflake]'`. The core package bundles no database
+Install the Ibis backend for your warehouse separately, such as
+`pip install 'ibis-framework[snowflake]'`. The core package includes no database
 driver. DuckDB, PostgreSQL, Snowflake, and BigQuery have execution test suites;
-coverage is not a promise that every method works on every backend.
+that does not mean every method works on every backend.
 
-See the [runnable warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py) and
-[data-model guide](https://getincrement.io/docs/guides/data-model/) for YAML setup, query inspection,
-portable unit-day artifacts, and moments exports.
+See the [runnable warehouse example](https://github.com/kylejcaron/increment/blob/main/examples/analysis_from_a_warehouse.py)
+and [data-model guide](https://getincrement.io/docs/guides/data-model/) for YAML,
+query inspection, portable unit-day artifacts, and moments exports.
 
 ## Optional extras
 
@@ -167,37 +166,41 @@ portable unit-day artifacts, and moments exports.
 | Build an experiment dashboard | [Dashboard](https://getincrement.io/docs/guides/dashboard/) |
 | Look up public APIs | [API reference](https://getincrement.io/docs/api/) |
 
-The [`examples/`](https://github.com/kylejcaron/increment/tree/main/examples) directory contains runnable marimo notebooks for
-warehouse and dataframe analyses, power, CUPED, causal inference, and reporting.
-See the [examples guide](https://github.com/kylejcaron/increment/blob/main/examples/README.md) to choose one.
+The [`examples/`](https://github.com/kylejcaron/increment/tree/main/examples)
+directory has runnable marimo notebooks for warehouse and dataframe analyses,
+power, CUPED, causal inference, and reporting. Use the
+[examples guide](https://github.com/kylejcaron/increment/blob/main/examples/README.md)
+to choose one.
 
 ## Scope and statistical assumptions
 
-Increment analyzes randomized experiments from dataframes or SQL warehouses;
-observational treatments are supported from dataframes or warehouse definitions. It estimates effects—it
-does not make an observational comparison causal without identification assumptions.
+Increment analyzes randomized experiments from dataframes or SQL warehouses.
+It also supports observational treatments from dataframes and warehouse
+definitions, but causal conclusions require identification assumptions.
 
-Exact and asymptotic methods have different guarantees. Repeated looks require a
-compatible sequential procedure to claim frequentist error control; Bayesian
-posterior probabilities do not automatically provide that guarantee. Unsupported
-combinations surface coded errors or warnings; partial results may be returned
-when only some requested cells are unsupported.
+Exact and approximate methods have different guarantees. Repeated looks need a
+compatible sequential procedure for frequentist error control; Bayesian
+probabilities do not provide that guarantee by themselves. Unsupported
+combinations produce coded errors or warnings. A result may include supported
+cells when others are unavailable.
 
-Read the [statistical limitations](https://getincrement.io/docs/limitations/),
+Before production use, read the
+[statistical limitations](https://getincrement.io/docs/limitations/),
 [compatibility matrix](https://getincrement.io/docs/guides/compatibility/), and
-[backend verification notes](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md#backend-verification) before choosing
-an analysis for production use.
+[backend verification notes](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md#backend-verification).
 
-The [validation coverage inventory](https://github.com/kylejcaron/increment/blob/main/docs/validation.md#reference-inventory) lists which
-estimators have frozen third-party references and which regimes have none.
-How guarantee, evidence and software compatibility differ for each capability is stated in
-[Evidence status](https://github.com/kylejcaron/increment/blob/main/docs/validation.md#evidence-status).
+The [validation inventory](https://github.com/kylejcaron/increment/blob/main/docs/validation.md#reference-inventory)
+lists methods with frozen third-party references and regimes without one.
+[Evidence status](https://github.com/kylejcaron/increment/blob/main/docs/validation.md#evidence-status)
+explains each capability's guarantee and evidence, separately from software
+compatibility.
 
 ## Contributing and license
 
-See [CONTRIBUTING.md](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md) for development setup and contribution
-requirements. Contributions require a signed
+See [CONTRIBUTING.md](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md)
+for setup and contribution requirements. Contributions require a signed
 [Contributor License Agreement](https://github.com/kylejcaron/increment/blob/main/.github/CLA.md).
 
-Apache License 2.0. See [LICENSE](https://github.com/kylejcaron/increment/blob/main/LICENSE) and [NOTICE](https://github.com/kylejcaron/increment/blob/main/NOTICE).
+Apache License 2.0. See [LICENSE](https://github.com/kylejcaron/increment/blob/main/LICENSE)
+and [NOTICE](https://github.com/kylejcaron/increment/blob/main/NOTICE).
 Copyright 2026 Kyle Caron.
