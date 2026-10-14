@@ -3474,6 +3474,19 @@ def _append_breakout_slice_rows(
             if failure_code is not None
             else None
         )
+        family = (
+            {
+                "excluded": outcome.reason,
+                "role": "exploratory",
+                "failure_code": failure_code,
+                "failure_context": failure_context,
+                "sampling_available": False,
+                "sampling_reason_code": failure_code,
+                "sampling_reason_context": failure_context,
+            }
+            if outcome.reason == "missing_metric_observations"
+            else {}
+        )
         rows.append(
             _unavailable_breakout_row(
                 outcome,
@@ -3482,13 +3495,7 @@ def _append_breakout_slice_rows(
                 source=context.source,
                 alternative=context.alternative,
                 lift=None,
-                excluded=outcome.reason,
-                role="exploratory",
-                failure_code=failure_code,
-                failure_context=failure_context,
-                sampling_available=False if failure_code is not None else None,
-                sampling_reason_code=failure_code,
-                sampling_reason_context=failure_context,
+                **family,
             )
         )
     return _BreakoutRowsPass(rows, family_entries)
