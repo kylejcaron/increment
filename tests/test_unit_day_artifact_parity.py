@@ -2956,8 +2956,8 @@ def _published_boundary_artifact_rows(
             """
         )
     ).to_pylist()
-    expected_floor = {
-        row["user_id"]: row["first_exposure_ns"] // 1000 * 1000 for row in raw_exposures
+    expected_wire = {
+        row["user_id"]: (row["first_exposure_ns"] + 999) // 1000 * 1000 for row in raw_exposures
     }
     with store.open_snapshot(reference) as snapshot:
         manifest = snapshot.read_manifest(
@@ -2974,11 +2974,11 @@ def _published_boundary_artifact_rows(
             uptake_ref.relation, expected_role="encouragement_uptake"
         )
         uptake_rows = connection.to_pyarrow(uptake_relation).to_pylist()
-    return raw_exposures, expected_floor, manifest, stored, stats_rows, uptake_rows
+    return raw_exposures, expected_wire, manifest, stored, stats_rows, uptake_rows
 
 
 @pytest.mark.integration
-def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
+def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path) -> None:
     import yaml
 
     definitions = _definitions(tmp_path)
@@ -3054,7 +3054,7 @@ def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
                     assert actual_value == expected_value
         (
             raw_exposures,
-            expected_floor,
+            expected_wire,
             manifest,
             stored,
             stats_rows,
@@ -3067,7 +3067,7 @@ def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
             stored_ns = (
                 (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
             ) * 1000
-            assert stored_ns == expected_floor[row["unit_id"]]
+            assert stored_ns == expected_wire[row["unit_id"]]
         binding = next(
             item for item in manifest.metric_measures if item.metric_name == "purchase_rate"
         )
@@ -3088,7 +3088,7 @@ def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
             if should_uptake:
                 end_us = unit["exposure_ns"] // 1000 * 1000 + elapsed_window_ns
                 expected_last_inside = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
-                    microseconds=(end_us - 1000) // 1000
+                    microseconds=end_us // 1000
                 )
                 assert uptake["first_uptake_ts"] == expected_last_inside
             else:

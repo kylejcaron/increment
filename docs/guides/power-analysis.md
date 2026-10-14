@@ -36,8 +36,8 @@ accept/reject decisions over plausible control and treatment counts. Adding
 up the rejecting counts' probabilities gives a narrow range, `power_lower`
 to `power_upper`, rather than just a single number:
 
-- When the range is narrower than one part in a million, `power` is that
-  point and `power_basis="exact"`.
+- When the computed point is within `1e-6` of both enclosure endpoints,
+  `power` is that point and `power_basis="exact"`.
 - When the computation budget leaves it wider, as in the plan above (about
   `3e-4`), `power` is the bottom of the range and `power_basis="lower_bound"`.
   The runtime's rejection probability is at least `power`, under the planner's
@@ -238,8 +238,8 @@ other supported binary plans retain the model-based calculation.
 
 | `power_basis` | `power` is | Reported range |
 |---|---|---|
-| `exact` | The enumerated rejection mass, resolved to absolute error at most `1e-6`. | `power_lower`, `power_upper` |
-| `lower_bound` | `power_lower`, the bottom of a range wider than `1e-6`. Nothing inside the range is claimed: no midpoint, no substitute approximation. | `power_lower`, `power_upper` |
+| `exact` | The enumerated rejection mass, with the computed point within `1e-6` of each endpoint. | `power_lower`, `power_upper` |
+| `lower_bound` | `power_lower`, the bottom of a range where the computed point is farther than `1e-6` from an endpoint. Nothing inside the range is claimed: no midpoint, no substitute approximation. | `power_lower`, `power_upper` |
 | `asymptotic` | The closed-form model's own probability, used where counts route to the delta method with near certainty (unrouted mass at most `1e-6`) and the lattice has more than 100,000 cells. | `None` |
 
 For an enumerated plan, `required_sample_size` returns the smallest size of
@@ -324,12 +324,15 @@ definitions and sufficiently published artifact routes.
     IEEE-representable effect. The result's `power` is evaluated at the
     reported effect, not copied from the target. A band whose evaluated ends
     fall short with resolved enclosures refuses with `numerical_resolution`.
-    A band the evaluation budgets leave straddling the target (both evaluated
-    ends at any width, or either end once the band is at tolerance width) is
-    passed over, so `mde_relative` certifies its target but may lie above an
-    effect a fuller evaluation would certify. A target excluded over every
-    admissible effect is `unattainable`. If the search cannot distinguish
-    detectability or exclude an earlier region at its numerical resolution,
+    A band whose evaluated ends both have unresolved enclosures straddling the
+    target is passed over without interior probes; at tolerance width, either
+    straddling end suffices.
+    Thus `mde_relative` certifies its own target but may lie above an unprobed
+    effect that would already certify it under the same evaluation budgets.
+    This is a conservative bounded search, not a global minimum certificate.
+    A target excluded over every admissible effect is `unattainable`. If no
+    evaluated effect certifies the target and any skipped band remains
+    unexcluded, or an earlier region remains unresolved at numerical tolerance,
     or the far end's enclosure straddles the target, a companion MDE is
     unavailable with `numerical_resolution`; a standalone call refuses with
     `power.minimum_detectable_effect.numerical_resolution`. A supplied

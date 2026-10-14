@@ -427,9 +427,12 @@ def _read_with_advisories(analysis: Any, name: str, case: ParityCase) -> tuple[A
                 case.readout_probe(results)
             if case.source_probe is not None:
                 case.source_probe(name, analysis)
-    actual = warning_codes(caught)
-    assert set(expected) <= set(actual)
-    advisory_count = actual.count("analysis.cuped.covariate_unused")
+    warnings_seen = warning_codes(caught)
+    advisory_count = warnings_seen.count("analysis.cuped.covariate_unused")
+    actual = tuple(code for code in warnings_seen if code != "analysis.cuped.covariate_unused")
+    assert set(expected) == set(actual), (
+        f"{case.id}: {name} warning codes {set(actual)} did not match expected {set(expected)}"
+    )
     assert advisory_count <= 1, f"{case.id}: {name} emitted the CUPED advisory more than once"
     return results, advisory_count
 

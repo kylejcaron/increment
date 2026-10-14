@@ -285,6 +285,33 @@ def composite_p_value(p_delta: float, dense_level: float, escalated_p_value: flo
     return min(escalated_p_value, dense_level)
 
 
+def composite_exact_reading(
+    counts: tuple[int, int, int, int],
+    *,
+    dense_level: float,
+    alpha: float,
+    null_lift: float,
+    alternative: str,
+) -> tuple[float | None, str | None]:
+    """Read exact count evidence below its dense level, retaining any route refusal."""
+    from increment.estimation import binomial_rr
+
+    beta = binomial_rr.nuisance_beta(alpha)
+    if dense_level <= beta:
+        return None, None
+    x_c, n_c, x_t, n_t = counts
+    if max(n_c, n_t) > binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE:
+        return None, "estimation.binomial.finite_sample_arm_ceiling_exceeded"
+    tail = alpha / 2.0 if alternative == "two-sided" else alpha
+    try:
+        exact = binomial_rr.null_p_value(
+            1.0 + null_lift, x_c, n_c, x_t, n_t, beta, alternative=alternative, tail=tail
+        )
+    except binomial_rr.BinomialDataError as exc:
+        return None, exc.code
+    return exact, None
+
+
 def _outside_mass(n: int, p: float, m: int) -> float:
     """``P(X < m or X > n - m)`` for ``X ~ Bin(n, p)``, summed from the two tails so that
     it keeps its relative precision when small. An arm too small to hold ``m`` successes

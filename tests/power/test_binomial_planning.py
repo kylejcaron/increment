@@ -409,6 +409,23 @@ def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(m
     assert upper == interior
 
 
+def test_resolved_size_ceiling_that_holds_the_target_is_numerically_unresolved(monkeypatch):
+    from increment.power import core
+    from increment.power._binomial import BinomialPower
+
+    baseline, procedure = Baseline.from_proportion(0.3), _conversion()
+    enclosure = BinomialPower(plus=0.9, minus=0.0, omitted=0.0, inflation=1.0, ambiguous=1e-7)
+    target = enclosure.power
+    assert enclosure.resolved and enclosure.lower < target <= enclosure.upper
+    monkeypatch.setattr(core, "_binomial_arm_ceiling", lambda design, floor, baseline: 2)
+    monkeypatch.setattr(core._BinomialPlan, "supplied", lambda self, *args, **kwargs: enclosure)
+    with pytest.raises(InvalidRequestError) as raised:
+        required_sample_size(1.0, baseline, procedure, PowerDesign(power=target))
+    assert raised.value.code == "power.binomial_probability_unresolved"
+    assert raised.value.context["lower"] == enclosure.lower
+    assert raised.value.context["upper"] == enclosure.upper
+
+
 def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
     """At a (constructed) arm ceiling of 150 treatment units the approximate
     replay stays below target while the exact decision reaches it: the
@@ -1188,6 +1205,14 @@ class TestPlanningNumericalEnclosure:
 
         below = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 - 1e-9))
         assert below.power >= 11 / 32 - 1e-9
+
+    def test_a_resolved_mde_endpoint_holding_the_target_does_not_exclude_it(self):
+        baseline = Baseline.from_proportion(0.5)
+        endpoint = planned_enclosure(6, 1.0, baseline, _FAR_END)
+        assert endpoint.resolved and endpoint.lower < endpoint.power <= endpoint.upper
+        with pytest.raises(InvalidRequestError) as raised:
+            minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=endpoint.power))
+        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
 
     @pytest.mark.slow
     def test_large_arm_point_admission_does_not_require_a_certified_mde(self):

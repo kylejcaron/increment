@@ -795,8 +795,9 @@ class BreakoutEstimate(_RowIdentity):
 
     def stat_sig(self) -> bool | None:
         """Whether this cell's own interval excludes its own null; ``None`` for an
-        excluded or failed cell, ``False`` for a ``low_reliability`` cell. The
-        same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
+        excluded or failed cell. Fixed-horizon ``low_reliability`` cells report
+        ``False``; sequential cells use their retained confidence-sequence verdict.
+        The same verdict ``LiftEstimate.stat_sig()`` and the readout frame report."""
         return row_stat_sig(self)
 
     def p_value(self) -> float | None:
@@ -1751,6 +1752,10 @@ class LiftEstimates(EstimateList[LiftEstimate]):
         "lift",
         "lb",
         "ub",
+        "set_lower",
+        "set_upper",
+        "set_level",
+        "set_numerical_qualification",
         "discovery",
         "failure_code",
         "estimand",
@@ -1778,6 +1783,10 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
         "lift",
         "lb",
         "ub",
+        "set_lower",
+        "set_upper",
+        "set_level",
+        "set_numerical_qualification",
         "discovery",
         "estimand",
         "value_scale",
@@ -1813,6 +1822,10 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
         "lift",
         "lb",
         "ub",
+        "set_lower",
+        "set_upper",
+        "set_level",
+        "set_numerical_qualification",
         "discovery",
         "dimension",
         "dimension_value",

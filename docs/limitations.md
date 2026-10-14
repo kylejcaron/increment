@@ -66,7 +66,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [DML reports a partially-linear slope, not an average treatment effect](#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect) | narrower estimand | Reading DML as an average effect when effects differ across units and treatment-assignment weights vary. |
 | [Only untrimmed native-logistic IPTW accounts for fitting its propensity](#only-untrimmed-native-logistic-iptw-accounts-for-fitting-its-propensity) | approximation | Using a trimmed or custom propensity fit; its standard error omits fitting uncertainty. |
 | [Trimming changes which population you estimated](#trimming-changes-which-population-you-estimated) | narrower estimand | Overlap trimming removed units; the result describes who is left. |
-| [The positivity gate is a fixed threshold with no weight diagnostics](#the-positivity-gate-is-a-fixed-threshold-with-no-weight-diagnostics) | scope of guarantee | Relying on weighting; passing the gate is not evidence of overlap. See [Unvalidated regimes](validation.md#unvalidated-regimes). |
+| [The positivity gate is a fixed threshold, not an overlap assessment](#the-positivity-gate-is-a-fixed-threshold-not-an-overlap-assessment) | scope of guarantee | Relying on weighting; passing the gate is not evidence of good overlap. ESS and maximum weight share are diagnostics, not a sensitivity analysis. |
 | [Fixed-horizon FDR control assumes a dependence condition that is not checked](#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked) | assumption | Selecting among correlated metrics that share a control arm. |
 | [Sequential selected intervals use the same stopped likelihood](#sequential-selected-intervals-use-the-same-stopped-likelihood) | scope of guarantee | Reading a selected interval as coverage for one metric picked afterwards. |
 | [Stopping-date guarantees require the registered reveal contract](#stopping-date-guarantees-require-the-registered-reveal-contract) | assumption | Monitoring departs from the registered reveal contract, or you tally flags across dates. |
@@ -438,9 +438,11 @@ assigned-population result when those assumptions are not defensible.
     positive (`relative_unavailable_reason="nonpositive_arm_mean"`) has no relative
     scale at all; with no declared absolute margin its decision is the additive
     difference tested against zero under the reference its additive interval was cut
-    from, so `p_value()`, `stat_sig()` and family selection read that scale. Only a
-    row with no additive interval remains a conservative non-rejection. A directional
-    row decided this way and selected by its family has that interval reissued
+    from, so `p_value()`, `stat_sig()` and family selection read that scale. A
+    declared relative margin also prevents this zero-reference fallback; in that
+    case the row remains a conservative non-rejection. Without an additive interval,
+    it likewise remains a conservative non-rejection. A directional row decided this way
+    and selected by its family has that interval reissued
     centrally (each tail at half the family level), so it can show `discovery=True`
     beside `stat_sig()` False when its p-value lies between half the family level and
     the family level.
@@ -804,10 +806,11 @@ that needs an absolute-scale estimand)
 
     Both routes are fixed-horizon: neither proves validity under optional
     stopping or repeated peeking (see the sequential-inference limitations elsewhere on this
-    page for that separate guarantee). A conversion/retention request with an informative
-    prior uses the established Normal approximation on every count. A registered sequential specification
-    instead uses its declared raw-observation likelihood and matching sequential inversion,
-    subject to the registered sampling and finalized-window contract.
+    page for that separate guarantee). Under `conversion_inference="auto"`, an informative
+    prior leaves sparse counts on the exact binomial sampling route; dense counts use the
+    Normal approximation. A registered sequential specification instead uses its declared
+    raw-observation likelihood and matching sequential inversion, subject to the registered
+    sampling and finalized-window contract.
 
 ??? info "Statistical details: the three finite-sample boundaries (arm size, latency, extreme alpha)"
     The finite-sample route also has three boundaries, each a refusal rather than silent degradation (dense counts under `auto` meet none of them):
@@ -953,17 +956,19 @@ that needs an absolute-scale estimand)
       which takes the delta-method route at counts dense for the tail and has neither floor.
 
 ??? info "Statistical details: planning on the binomial routes"
-    For these fixed-horizon binomial plans, public power is a model-based point
-    probability, not a conservative numerical lower bound. Enumeration publishes
-    computed rejection mass only when its internal enclosure establishes maximum
-    absolute error at most `1e-6` conditional on the deployed SciPy/Boost
-    special-function error model; this is not a cross-build floating-point proof.
+    For these fixed-horizon binomial plans, public power is the computed
+    rejection mass when the enclosure resolves to maximum absolute error at most
+    `1e-6`; otherwise it is the enclosure's conservative lower endpoint. Both
+    statements are conditional on the deployed SciPy/Boost special-function
+    error model; this is not a cross-build floating-point proof.
     The dense closed-form route instead reports its model's point probability; its validation
     tolerance remains `0.005`, not a universal bound or finite-sample calibration guarantee.
-    Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
-    `1e-8` relative tolerance on the relative-effect scale. It does not promise the
-    first IEEE-representable effect. A band whose resolved ends fall short refuses; a band the
-    budgets leave straddling the target is passed over (see the planning guide).
+    Binomial MDE searches detectable regions to `1e-8` absolute plus `1e-8`
+    relative tolerance on the relative-effect scale, not the first IEEE-representable
+    effect or a global minimum. A band whose resolved ends fall short refuses;
+    a band whose ends straddle the target may be passed over without interior probes.
+    Its interior can already certify the target under the same budgets, so a returned
+    effect certifies only its own target, not exclusion of all earlier effects.
     Unresolved MDE searches refuse with
     `power.minimum_detectable_effect.numerical_resolution`, or leave a companion
     MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
@@ -1442,8 +1447,8 @@ no such bound.
     The internal numerical enclosure accounts for the runtime's SciPy allowance,
     summation error, omitted support and unresolved decisions, conditional on the
     stated SciPy/Boost special-function error model. It is not a uniform proof
-    across builds. Public solvers compare the admitted computed point power with
-    the target, not an enclosure endpoint. The closed-form route reports its own
+    across builds. Public solvers compare the enclosure's lower endpoint with
+    the target, not the computed point power. The closed-form route reports its own
     model probability; its dense agreement criterion remains `0.005`, not a
     universal runtime error bound.
 
@@ -1708,14 +1713,15 @@ variability of the trim boundary itself.
     DML reports `plr_slope` whether or not trimming occurred, so a DML result alone does not
     tell you that the population changed. Check the recorded population.
 
-### The positivity gate is a fixed threshold with no weight diagnostics
+### The positivity gate is a fixed threshold, not an overlap assessment
 
 The default identification gate requires propensities within `[0.01, 0.99]`, which caps a
-raw inverse weight at 100. Passing it is not evidence of good overlap: the result reports
-no effective sample size, leverage, weight-tail concentration or sensitivity across
-thresholds.
+raw inverse weight at 100. Passing it is not evidence of good overlap: inspect the reported
+per-arm effective sample size and maximum weight share as diagnostics, alongside the
+propensity distribution. These summaries do not replace sensitivity analysis across
+plausible overlap thresholds.
 
-!!! warning "Compute weight diagnostics yourself"
+!!! warning "Weight concentration can destabilize estimates"
     A handful of near-boundary units can dominate an IPTW or AIPW estimate while the gate
     still passes, producing an estimate that looks precise and is not stable.
 

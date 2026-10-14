@@ -399,15 +399,17 @@ disconnected set and a `DailyLiftEstimate`'s unavailable reason.
 ## Significance, p-values and selection
 
 `r.p_value()` is the row's **unadjusted** sampling p-value; it is never
-divided by a multiplicity factor. `r.stat_sig()` compares it with
-`decision_alpha`, the level the row's own construction decides at, which a
-Bonferroni-split primary or a family reissue sets below the plan's nominal
-alpha. `r.discovery` is different: it is the raw family selection result,
-not another significance verdict, and can differ from `r.stat_sig()`.
+divided by a multiplicity factor. For fixed-horizon rows, `r.stat_sig()` compares
+that p-value with `decision_alpha`, the level the row's own construction decides
+at, which a Bonferroni-split primary or a family reissue sets below the plan's nominal
+alpha. Registered sequential rows have no p-value (`p_value()` refuses); their
+`stat_sig()` verdict reads the sequential result directly. `r.discovery` is different:
+it is the raw family selection result, not another significance verdict, and can
+differ from `r.stat_sig()`.
 
 ??? info "Statistical details: decision level and disclosures"
-    The row's decision compares it with the level its construction decides
-    at, shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a
+    For fixed-horizon rows, the decision compares the p-value with the level
+    shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a
     two-sided or open-sided interval, half of it for a closed one-sided interval
     (the display alpha is central-equivalent), `r.binomial_set.decision_alpha` for an
     exact conversion row, and the additive interval's central-equivalent `r.abs_alpha`
@@ -415,8 +417,16 @@ not another significance verdict, and can differ from `r.stat_sig()`.
     `r.abs_alpha / 2` for a one-sided alternative.
     A Bonferroni-split primary or a family reissue sets it below the plan's nominal
     alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
-    binomial row decides with a strict `<`; a `low_reliability` breakout cell reports
-    its p-value but withholds the verdict).
+    binomial row decides with a strict `<`; a fixed-horizon `low_reliability`
+    breakout cell reports its p-value but withholds its Wald verdict).
+    Sequential rows instead decide from their retained confidence sequence:
+    a small segment's unit-count flag does not invalidate that construction.
+
+    A conversion family member carrying `delta_evidence.composite` reports
+    its count-based composite p-value. Its exact reading retains its nominal
+    level and tested null. Retesting a copied row with a changed `null_lift`
+    reads the same counts against that new null at the retained nominal level;
+    it does not reuse the original null's exact p-value.
 
     `r.family_procedure` preserves the canonical correction name (`"e_bh"`,
     `"bh"`, or `"bonferroni"`) alongside the family scope and selection. Rows

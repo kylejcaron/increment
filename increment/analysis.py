@@ -2696,12 +2696,9 @@ class Analysis:
                     sensitivity_methods=sensitivity_methods,
                 )
             )
-        warehouse_covariate = (
-            isinstance(state, DefinitionsArmAnalysisState) and state.experiment.n_pre_periods > 0
-        )
         unused: list[str] = []
         for config, source in config_sources:
-            covariate_available = config.covariate_available or warehouse_covariate
+            covariate_available = config.covariate_available
             design = source.context.design
             if (
                 not covariate_available

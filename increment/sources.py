@@ -626,15 +626,15 @@ def _validate_moments_plan_format_pair(plans: set[str], *, sequential_checkpoint
 
 
 def _cube_assignment_counts(
-    rows: Sequence[Mapping[str, object]], *, boolean_group_ids: bool
+    rows: Sequence[Mapping[str, object]], *, boolean_count_aliases: Mapping[str, str]
 ) -> dict[str, int] | None:
     candidate = None
     for row in rows:
         decoded = _parse_assignment_counts(row.get(ASSIGNMENT_COUNTS_FIELD))
-        if decoded is not None and boolean_group_ids:
+        if decoded is not None and boolean_count_aliases:
             normalized: dict[str, int] = {}
             for group, count in decoded.items():
-                identity = {"True": "true", "False": "false"}.get(group, group)
+                identity = boolean_count_aliases.get(group, group)
                 if identity in normalized:
                     return None
                 normalized[identity] = count
@@ -648,10 +648,10 @@ def _cube_assignment_counts(
 def _validated_cube_assignment_counts(
     rows: Sequence[Mapping[str, object]],
     *,
-    boolean_group_ids: bool,
+    boolean_count_aliases: Mapping[str, str],
     design_summary: bool,
 ) -> dict[str, int] | None:
-    counts = _cube_assignment_counts(rows, boolean_group_ids=boolean_group_ids)
+    counts = _cube_assignment_counts(rows, boolean_count_aliases=boolean_count_aliases)
     if design_summary and counts is None:
         invalid_compliance_state(
             "design_summary requires valid assignment counts; re-export the complete source"
@@ -832,18 +832,21 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
 
 def _canonicalize_boolean_moment_group_ids(
     rows: Sequence[Mapping[str, object]],
-) -> tuple[list[Mapping[str, object]], bool]:
+) -> tuple[list[Mapping[str, object]], dict[str, str]]:
     raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
-    boolean_group_ids = bool(raw_group_ids) and all(
-        isinstance(group_id, bool) for group_id in raw_group_ids
-    )
+    literal_labels = {group_id for group_id in raw_group_ids if isinstance(group_id, str)}
+    boolean_count_aliases = {
+        str(group_id): "true" if group_id else "false"
+        for group_id in raw_group_ids
+        if isinstance(group_id, bool) and str(group_id) not in literal_labels
+    }
     normalized = [
         {**row, "group_id": "true" if row.get("group_id") else "false"}
         if isinstance(row.get("group_id"), bool)
         else row
         for row in rows
     ]
-    return normalized, boolean_group_ids
+    return normalized, boolean_count_aliases
 
 
 def _check_moments_format(
@@ -862,7 +865,7 @@ def _check_moments_format(
     dict[str, object] | None,
 ]:
     """Validate and strip moments format, plan, count, and source envelopes."""
-    rows, boolean_group_ids = _canonicalize_boolean_moment_group_ids(rows)
+    rows, boolean_count_aliases = _canonicalize_boolean_moment_group_ids(rows)
     out: list[dict[str, object]] = []
     versions: set[int] = set()
     plans: set[str] = set()
@@ -953,7 +956,7 @@ def _check_moments_format(
         seen_keys.add(key)
     assignment_counts = _validated_cube_assignment_counts(
         rows,
-        boolean_group_ids=boolean_group_ids,
+        boolean_count_aliases=boolean_count_aliases,
         design_summary=envelope_identity is not None,
     )
     if trigger_rows not in {0, len(rows)}:

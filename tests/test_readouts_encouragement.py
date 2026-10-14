@@ -1182,6 +1182,108 @@ def test_breakout_rows_carry_absolute_axis_and_arm_counts():
         assert (os_.n_treat, os_.n_control, os_.low_reliability) == (30.0, 30.0, True)
 
 
+def test_missing_encouragement_segment_matches_emitted_relative_compliance_identity():
+
+    design = _design(one_sided=False)
+    rows = []
+    for cohort, seed in (("a", 21), ("b", 22)):
+        for row in _rows(n=4000, compliance=0.5, one_sided=False, seed=seed):
+            row["cohort"] = cohort
+            rows.append(row)
+    for group_id in ("control", "treat"):
+        rows.append(
+            {
+                "experiment_id": "s",
+                "metric": "rev",
+                "group_id": group_id,
+                "n": 0,
+                "cohort": "empty",
+            }
+        )
+    src = FakeMomentSource(
+        rows,
+        metrics=[METRIC],
+        capabilities={"total"},
+        design=design,
+        breakouts=("cohort",),
+    )
+
+    result = readouts.breakout(src, "cohort", correction="none")
+
+    identities = {
+        (row.estimand, row.value_scale, row.method, row.dimension_value) for row in result
+    }
+    assert ("compliance", "relative", "unadjusted", "empty") in identities
+
+    from increment.breakout.heterogeneity import segment_heterogeneity
+
+    compliance = [
+        summary
+        for summary in segment_heterogeneity(result).summary
+        if summary.estimand == "compliance" and summary.scale == "relative"
+    ]
+    assert len(compliance) == 1
+    assert compliance[0].n_excluded_outcome == 1
+
+    empty_only = FakeMomentSource(
+        [row for row in rows if row["cohort"] == "empty"],
+        metrics=[METRIC],
+        capabilities={"total"},
+        design=design,
+        breakouts=("cohort",),
+    )
+    empty_compliance = [
+        row
+        for row in readouts.breakout(empty_only, "cohort", correction="none")
+        if row.estimand == "compliance"
+    ]
+    assert empty_compliance
+    assert {row.value_scale for row in empty_compliance} == {"absolute"}
+    assert all(
+        row.failure_code == "readout.cell.missing_metric_observations" for row in empty_compliance
+    )
+
+
+@pytest.mark.parametrize("estimands", [("itt",), ("compliance",), ("late",)])
+def test_missing_encouragement_segment_keeps_requested_estimand_identities(estimands):
+    design = _design(one_sided=False)
+    rows = []
+    for cohort, seed in (("a", 21), ("b", 22)):
+        for row in _rows(n=4000, compliance=0.5, one_sided=False, seed=seed):
+            row["cohort"] = cohort
+            rows.append(row)
+    for group_id in ("control", "treat"):
+        rows.append(
+            {"experiment_id": "s", "metric": "rev", "group_id": group_id, "n": 0, "cohort": "empty"}
+        )
+    src = FakeMomentSource(
+        rows,
+        metrics=[METRIC],
+        capabilities={"total"},
+        design=design,
+        breakouts=("cohort",),
+    )
+
+    result = readouts.breakout(src, "cohort", correction="none", estimands=estimands)
+
+    def identities(cohort):
+        return {
+            (row.estimand, row.value_scale, row.method)
+            for row in result
+            if row.dimension_value == cohort
+        }
+
+    # Unadjusted relative LATE needs observed uptake, so it is not part of the roster.
+    data_gated = {("late", "relative", "unadjusted")}
+    assert identities("empty") == identities("a") - data_gated
+    assert {row.estimand for row in result} == set(estimands)
+    assert all(
+        row.failure_code == "readout.cell.missing_metric_observations"
+        for row in result
+        if row.dimension_value == "empty"
+    )
+
+
 def test_segment_heterogeneity_reads_encouragement_absolute_axis():
     """abs_diff/abs_se on the rows unlock the absolute-scale pass: an
     encouragement breakout yields BOTH heterogeneity scales, like a

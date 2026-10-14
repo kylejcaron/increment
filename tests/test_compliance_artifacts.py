@@ -623,6 +623,79 @@ def test_completed_asof_uptake_certification_uses_elapsed_timestamp_boundary(
         con.disconnect()
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("exposure_ns", "certified_day", "completed"),
+    [
+        (0, 8, True),
+        (999, 8, False),
+        (1_000, 8, False),
+        (999, 9, True),
+        (86_400_000_000_000 - 1, 8, False),
+        (86_400_000_000_000 - 1, 9, True),
+    ],
+)
+def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
+    exposure_ns, certified_day, completed
+):
+    def connect(events):
+        connection = ibis.duckdb.connect()
+        connection.create_table("events", obj=pa.Table.from_pylist(events))
+        connection.raw_sql(
+            "CREATE OR REPLACE TABLE events AS "
+            "SELECT make_timestamp_ns(CASE WHEN event = 'exposed' "
+            f"THEN epoch_us(TIMESTAMP '2025-01-01') * 1000 + {exposure_ns} "
+            "ELSE epoch_us(ts) * 1000 END) AS ts, * EXCLUDE (ts) FROM events"
+        )
+        return connection
+
+    con, analysis, context, store, _panel = native_fixture(
+        ("full",),
+        separate_uptake=True,
+        staggered=True,
+        timing=ClickTiming(uptake_window=7),
+        outcome=(6, "sum", 7),
+        open_ended=True,
+        warehouse_connection=connect,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2025, 1, 31, tzinfo=UTC),
+            {
+                "events": datetime(2025, 1, 31, tzinfo=UTC),
+                "uptake_events": datetime(2025, 1, certified_day, tzinfo=UTC),
+            },
+        ),
+    )
+    try:
+        ref = analysis.publish_unit_day_artifact(store)
+        with open_artifact(store, ref, expected_context=context) as artifact:
+            native = _native_source(analysis)
+            metric = native.context.metrics[0]
+            for source in (native, artifact):
+                summary = source.compliance_summary(
+                    design(7), as_of=date(2025, 1, 9), completed_windows_only=True
+                )
+                assert sum(arm.n_units for arm in summary.arms) == (40 if completed else 0)
+                rows = source.moments(metric, grain="asof", completed_windows_only=True)
+                assert bool(rows) is completed
+            assert native.moments(
+                metric, grain="asof", completed_windows_only=True
+            ) == artifact.moments(metric, grain="asof", completed_windows_only=True)
+        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
+            expected = analysis.run_asof_lift(estimands=["late"], completed_windows_only=True)
+            actual = adopted.run_asof_lift(estimands=["late"], completed_windows_only=True)
+            assert [
+                (row.ds, row.group_id, row.sampling_available, row.failure_code, row.lift)
+                for row in actual
+            ] == [
+                (row.ds, row.group_id, row.sampling_available, row.failure_code, row.lift)
+                for row in expected
+            ]
+            assert any(row.sampling_available for row in actual) is completed
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

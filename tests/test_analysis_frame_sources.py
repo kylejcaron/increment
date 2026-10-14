@@ -360,10 +360,16 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
         [
             {
                 "unit": f"{segment}-{group}-{index}",
-                "arm": group,
+                "arm": (
+                    "control"
+                    if group == "control"
+                    else "treatment_2"
+                    if segment in {"A", "C"}
+                    else "treatment_1"
+                ),
                 "segment": segment,
-                "y": None if segment in {"A", "C"} else 10.0 + (group == "treatment") + index,
-                "clicked": float(group == "treatment" and index < 2),
+                "y": None if segment in {"A", "C"} else 10.0 + (group != "control") + index,
+                "clicked": float(group != "control" and index < 2),
             }
             for segment in ("A", "B", "C", "D")
             for group in ("control", "treatment")
@@ -398,8 +404,10 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
             assert unavailable.posterior_reason_context["reason"] == (
                 "no usable metric observations"
             )
-            assert unavailable.posterior_model is None
-            assert unavailable.posterior_scale is None
+            assert unavailable.n_treat == 0.0
+            assert unavailable.n_control == 0.0
+            assert unavailable.low_reliability is False
+            assert unavailable.delta_evidence is None
             assert (
                 type(unavailable).model_validate_json(unavailable.model_dump_json()) == unavailable
             )
@@ -410,13 +418,189 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
     assert len(identities) == len(set(identities))
     for value in ("A", "C"):
         segment_rows = [row for row in rows if row.dimension_value == value]
-        assert segment_rows
+        assert any(row.group_id == "treatment_2" for row in segment_rows)
         assert all(row.excluded == "missing_metric_observations" for row in segment_rows)
         assert all(
             row.failure_code == "readout.cell.missing_metric_observations" for row in segment_rows
         )
     for value in ("B", "D"):
         assert any(row.dimension_value == value and row.excluded is None for row in rows)
+
+
+@pytest.fixture
+def encouragement_summary_breakout_frame():
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "unit": f"{segment}-{group}-{index}",
+                "arm": group,
+                "segment": segment,
+                "y": 10.0 + (group != "control") + index,
+                "x": float(index % 2),
+                "clicked": float(group != "control" and index < 2),
+            }
+            for segment in ("A", "B")
+            for group in ("control", "treatment_1", "treatment_2")
+            for index in range(4)
+        ]
+    )
+
+
+def _encouragement_summary_breakout_analysis(frame, metrics):
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    return Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=metrics,
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            one_sided=True,
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment affects y through uptake"
+            ),
+            min_first_stage_z=0.001,
+        ),
+        breakouts=("segment",),
+    )
+
+
+def _encouragement_breakout_identity(row):
+    return row.estimand, row.value_scale, row.method, row.method_role
+
+
+@pytest.mark.parametrize("empty_arm", ["control", "treatment_2"])
+def test_encouragement_summary_breakout_partitions_empty_arms(
+    encouragement_summary_breakout_frame, empty_arm
+):
+    frame = encouragement_summary_breakout_frame
+    frame.loc[(frame["segment"] == "A") & (frame["arm"] == empty_arm), "y"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = _encouragement_summary_breakout_analysis(
+            frame, [MetricSpec(name="y", missing="drop")]
+        )
+    rows = analysis.run_breakout()
+    for group in ("treatment_1", "treatment_2"):
+        actual = [row for row in rows if row.dimension_value == "A" and row.group_id == group]
+        valid = [row for row in rows if row.dimension_value == "B" and row.group_id == group]
+        assert actual and valid
+        assert set(map(_encouragement_breakout_identity, actual)) == set(
+            map(_encouragement_breakout_identity, valid)
+        )
+        assert all(row.lift is not None and row.failure_code is None for row in valid)
+        if empty_arm in ("control", group):
+            assert all(row.excluded == "missing_metric_observations" for row in actual)
+            assert all(
+                row.failure_code == "readout.cell.missing_metric_observations" for row in actual
+            )
+            assert all(row.lift is None and row.sampling_available is False for row in actual)
+            if empty_arm == "control":
+                assert all(row.n_treat == 4 and row.n_control == 0 for row in actual)
+            else:
+                assert all(row.n_treat == 0 and row.n_control == 4 for row in actual)
+        else:
+            assert all(row.lift is not None and row.failure_code is None for row in actual)
+            assert all(row.n_treat == row.n_control == 4 for row in actual)
+
+
+@pytest.mark.parametrize("include_valid_metric", [False, True])
+def test_encouragement_summary_breakout_keeps_metric_empty_in_every_segment(
+    encouragement_summary_breakout_frame, include_valid_metric
+):
+    frame = encouragement_summary_breakout_frame
+    frame["z"] = frame["y"] + 1.0
+    metrics = [MetricSpec(name="y", missing="drop")]
+    if include_valid_metric:
+        metrics.append(MetricSpec(name="z"))
+    baseline = _encouragement_summary_breakout_analysis(frame, metrics).run_breakout()
+    frame["y"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = _encouragement_summary_breakout_analysis(frame, metrics)
+    rows = analysis.run_breakout()
+
+    def identity(row):
+        return (
+            row.metric,
+            row.dimension_value,
+            row.group_id,
+            *_encouragement_breakout_identity(row),
+        )
+
+    # Absolute compliance stays in the roster; relative compliance needs observed
+    # control uptake, so an entirely unavailable metric does not invent that scale.
+    expected = {
+        key
+        for key in map(identity, baseline)
+        if not (key[0] == "y" and key[3] == "compliance" and key[4] != "absolute")
+    }
+    assert set(map(identity, rows)) == expected
+    missing = [row for row in rows if row.metric == "y"]
+    assert missing
+    assert all(row.failure_code == "readout.cell.missing_metric_observations" for row in missing)
+    assert all(row.excluded == "missing_metric_observations" for row in missing)
+    assert all(row.n_treat == row.n_control == 0 for row in missing)
+    assert all(row.low_reliability is False and row.delta_evidence is None for row in missing)
+    if include_valid_metric:
+        assert all(row.lift is not None for row in rows if row.metric == "z")
+
+
+def test_encouragement_summary_breakout_empty_identities_match_requested_methods(
+    encouragement_summary_breakout_frame,
+):
+    frame = encouragement_summary_breakout_frame
+    frame.loc[frame["segment"] == "A", "y"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = _encouragement_summary_breakout_analysis(
+            frame, [MetricSpec(name="y", missing="drop", covariate="x")]
+        )
+    sensitivity = [Method(name="cuped", variance_reduction="cuped")]
+    rows = analysis.run_breakout(sensitivity_methods=sensitivity)
+    for group in ("treatment_1", "treatment_2"):
+        missing = [row for row in rows if row.dimension_value == "A" and row.group_id == group]
+        valid = [row for row in rows if row.dimension_value == "B" and row.group_id == group]
+        assert missing and valid
+        identities = set(map(_encouragement_breakout_identity, missing))
+        assert len(missing) == len(identities)
+        assert identities == set(map(_encouragement_breakout_identity, valid))
+        assert all(
+            row.failure_code == "readout.cell.missing_metric_observations" for row in missing
+        )
+        assert all(row.lift is not None and row.failure_code is None for row in valid)
+        assert all(row.value_scale == "absolute" for row in valid if row.estimand == "late")
+    assert {row.estimand for row in rows} == {"itt", "compliance", "late"}
+
+
+def test_unit_summary_breakout_keeps_metric_missing_in_every_segment():
+
+    from increment import MetricSpec
+
+    frame = _summary_breakout_frame()
+    frame["missing_metric"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[
+                MetricSpec(name="value", type="mean"),
+                MetricSpec(
+                    name="missing", type="mean", value_column="missing_metric", missing="drop"
+                ),
+            ],
+            breakouts=("segment",),
+        )
+    with pytest.warns(IncrementWarning):
+        rows = analysis.run_breakout()
+    missing_rows = [row for row in rows if row.metric == "missing"]
+    assert {(row.dimension_value, row.group_id) for row in missing_rows} == {
+        (segment, "treatment") for segment in ("A", "B")
+    }
+    assert all(row.excluded == "missing_metric_observations" for row in missing_rows)
 
 
 def test_unit_summary_breakout_remaps_resolved_default_uptake():

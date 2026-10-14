@@ -78,6 +78,7 @@ from increment._frame_validation import (  # noqa: F401
     _validate_single_group_per_unit,
     _validate_uptake_binary,
     canonical_control_for_frame,
+    canonical_design_for_frame,
     refuse_observational_quantile,
 )
 from increment._metric_specs import (
@@ -755,6 +756,7 @@ class FrameTotalsSource(SequentialSourceMixin):
 
         uptake, uptake_role = _resolve_uptake_column(design, uptake)
         control = canonical_control_for_frame(frame, group, control)
+        design = canonical_design_for_frame(frame, group, design)
         design, compiled_plan = _resolve_design_and_plan(
             design,
             control,
@@ -1075,17 +1077,17 @@ class _RestrictedSummaryBreakoutSource:
 
 
 def _preserve_empty_summary_segments(
-    rows: list[dict[str, Any]], roster: list[dict[str, Any]], *, dimension: str
+    rows: list[dict[str, Any]],
+    roster: list[dict[str, Any]],
+    *,
+    dimension: str,
+    metric: str,
+    experiment_id: str,
 ) -> None:
-    """Retain fully missing summary segments as unavailable breakout cells."""
-    if not rows or not roster:
+    """Retain missing summary segment/arm cells as zero-count moment rows."""
+    if not roster:
         return
-    present = {row[dimension] for row in rows}
-    missing_groups: dict[Any, list[Any]] = {}
-    for entry in roster:
-        segment = entry[dimension]
-        if segment not in present:
-            missing_groups.setdefault(segment, []).append(entry["group_id"])
+    present = {(row[dimension], row["group_id"]) for row in rows}
     zero_fields = (
         "n",
         "successes",
@@ -1109,16 +1111,22 @@ def _preserve_empty_summary_segments(
         "winsor_n_lower",
         "winsor_n_upper",
     )
-    for segment, groups in missing_groups.items():
-        for group_id in groups:
-            template = next((row for row in rows if row["group_id"] == group_id), rows[0])
-            empty = dict(template)
-            empty[dimension] = str(segment)
-            empty["group_id"] = group_id
-            for column in zero_fields:
-                if column in empty:
-                    empty[column] = 0
-            rows.append(empty)
+    for entry in roster:
+        segment, group_id = entry[dimension], entry["group_id"]
+        if (segment, group_id) in present:
+            continue
+        empty = dict(rows[0]) if rows else {}
+        empty.update(
+            {
+                "experiment_id": experiment_id,
+                "metric": metric,
+                dimension: str(segment),
+                "group_id": group_id,
+            }
+        )
+        for column in zero_fields:
+            empty[column] = 0
+        rows.append(empty)
 
 
 # from_unit_panel: one row per unit per day.
@@ -1458,7 +1466,13 @@ class FramePanelSource(SequentialSourceMixin):
                     covariates=covariates,
                 )
                 if summary_roster and breakout is not None:
-                    _preserve_empty_summary_segments(rows, summary_roster, dimension=breakout)
+                    _preserve_empty_summary_segments(
+                        rows,
+                        summary_roster,
+                        dimension=breakout,
+                        metric=specs[0].name,
+                        experiment_id=self._experiment_id,
+                    )
                 failures = {
                     spec.name: covariate_failures[spec.covariate]
                     for spec in specs
@@ -1781,7 +1795,7 @@ class FramePanelSource(SequentialSourceMixin):
         )
 
         control = canonical_control_for_frame(frame, group, control)
-
+        design = canonical_design_for_frame(frame, group, design)
         uptake, uptake_role = _resolve_uptake_column(design, uptake)
         sequential_mapping = frame_observation_mapping(
             unit=unit, group=group, uptake=uptake, date=date, exposure_date=exposure_date

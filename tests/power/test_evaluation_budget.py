@@ -531,6 +531,9 @@ def test_weight_bucket_changes_publish_a_bound_not_a_point(monkeypatch):
     target = 0.99 * (2 * reference_rate - reference_rate**2) + 0.01 * (1 - reference_rate**2)
     diagnostics = [geometry.evaluate(0.01, rate) for rate in rates]
     assert [value.power >= target for value in diagnostics] == [False, True, False]
+    assert diagnostics[0].lower < target <= diagnostics[0].upper
+    assert diagnostics[1].lower >= target
+    assert diagnostics[2].lower < target <= diagnostics[2].upper
     true_power = [0.01 + 0.99 * (2 * rate - rate**2) for rate in rates]
     assert true_power == sorted(true_power)
     for diagnostic, truth in zip(diagnostics, true_power, strict=True):

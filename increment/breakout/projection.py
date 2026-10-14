@@ -143,6 +143,7 @@ def _append_frame_value(
     value: Any,
     estimate_field: str | None,
     binomial_set_field: str | None,
+    binomial_set: BinomialConfidenceSet | None,
 ) -> None:
     if name == "posterior_components":
         from increment._canonical import canonical_json_bytes
@@ -152,8 +153,16 @@ def _append_frame_value(
         )
     elif name == estimate_field:
         data[name].append(None if value is None else value.value)
-        data["lb"].append(None if value is None else value.lb)
-        data["ub"].append(None if value is None else value.ub)
+        data["lb"].append(
+            value.lb
+            if value is not None
+            else (None if binomial_set is None else binomial_set.lower)
+        )
+        data["ub"].append(
+            value.ub
+            if value is not None
+            else (None if binomial_set is None else binomial_set.upper)
+        )
         data["open_side"].append(None if value is None else value.open_side)
     elif name == "sequential_result":
         from increment.estimation.sequential_runtime import _outward
@@ -218,10 +227,9 @@ def to_frame[M: BaseModel](
     a ``binomial_set`` field (see :class:`~increment.estimation.results.
     BinomialConfidenceSet`) flattens into ``set_lower``/``set_upper``/
     ``set_level`` and ``set_numerical_qualification`` -- always the row's
-    confidence-set bounds/level and arithmetic scope, even for a set-only row
-    with no finite point (``<estimate field>`` and ``lb``/``ub`` stay ``None``
-    there; these set columns are the row's ONLY confidence-set representation
-    in that case; see :class:`BinomialConfidenceSet`); every other field
+    confidence-set bounds/level and arithmetic scope; set-only rows may expose
+    their binomial bounds in ``lb``/``ub`` despite having no point estimate.
+    These are also recorded in the ``set_*`` columns; every other field
     passes through as a scalar column in declaration order. Most callers
     should use ``results.to_frame()`` on a pipeline's own result rather
     than calling this function directly.
@@ -249,11 +257,9 @@ def to_frame[M: BaseModel](
         ``<field name>``/``lb``/``ub``/``open_side`` and a
         ``binomial_set`` field expanded to ``set_lower``/``set_upper``/
         ``set_level``/``set_numerical_qualification``. ``open_side`` is
-        ``"lower"``/``"upper"`` for a genuinely unbounded one-sided endpoint,
-        and ``None`` both for a closed interval (``lb``/``ub`` both set) and for
-        one (``lb``/``ub``/``value`` all ``None``) -- distinguish the
-        two by whether ``<field name>`` (the point estimate) is
-        ``None``.
+        ``"lower"``/``"upper"`` only for a point-backed genuinely unbounded
+        endpoint; ``None`` for a closed interval and whenever there is no
+        point estimate, including set-only rows (whose bounds are in ``lb``/``ub``).
     """
     if estimates:
         inferred = type(estimates[0])
@@ -306,6 +312,7 @@ def to_frame[M: BaseModel](
                 getattr(est, name),
                 estimate_field,
                 binomial_set_field,
+                getattr(est, binomial_set_field) if binomial_set_field is not None else None,
             )
 
     schema = {

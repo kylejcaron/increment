@@ -202,6 +202,47 @@ def _case(build, *, waive=None, codes=None, absence=None, refusal_only=False):
     )
 
 
+def test_read_with_advisories_rejects_unexpected_warning_codes(monkeypatch):
+    import warnings
+
+    from increment.errors import IncrementWarning
+    from tests.parity_harness import runner
+    from tests.parity_harness.cases import ParityCase
+
+    case = ParityCase(
+        id="warning-contract",
+        build={},
+        expected_warning_codes={
+            "from_unit_summary": (
+                "analysis.cuped.covariate_unused",
+                "frame.censoring.dropped_units",
+            )
+        },
+    )
+
+    def read_with_extra_warning(_analysis, _case):
+        warnings.warn(
+            IncrementWarning(
+                "CUPED covariate unused",
+                code="analysis.cuped.covariate_unused",
+            ),
+            stacklevel=2,
+        )
+        warnings.warn(
+            IncrementWarning("censoring", code="frame.censoring.dropped_units"),
+            stacklevel=2,
+        )
+        warnings.warn(
+            IncrementWarning("unexpected", code="test.unexpected"),
+            stacklevel=2,
+        )
+        return []
+
+    monkeypatch.setattr(runner, "_read", read_with_extra_warning)
+    with pytest.raises(AssertionError, match="test.unexpected"):
+        runner._read_with_advisories(object(), "from_unit_summary", case)
+
+
 _RETENTION_REFUSAL = {"from_unit_summary": "SOURCE: the summary seam carries no dates"}
 
 

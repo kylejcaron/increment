@@ -963,8 +963,8 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
     ),
     _case_row(
         "conversion-breakout-route",
-        "Conversion/retention breakout with dense, sparse and threshold-straddling segments "
-        "in one metric: each segment row is routed by its own counts",
+        "Conversion breakout with dense, sparse and threshold-straddling segments in one "
+        "metric: each segment row is routed by its own counts",
         "conversion_route_breakout_segments",
         from_moments=(_matrix("conversion-breakout-none-utc-error", M),),
     ),

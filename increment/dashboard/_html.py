@@ -1998,8 +1998,12 @@ def _lift_trajectory_table(
                 column = _with_bound_lines(column, native_theme)
         columns.append(column)
     table.columns = tuple(columns)
-    return _TABLE_WRAP.format(native_html(table, metrics)) + _geometry_disclosure(
-        snapshot, latest_rows, label=INTERVALS_DISCLOSURE
+    return (
+        _TABLE_WRAP.format(native_html(table, metrics))
+        + _geometry_disclosure(snapshot, latest_rows, label=INTERVALS_DISCLOSURE)
+        + _selection_qualification_notes(
+            latest_rows, name=lambda row: f"{row.get('metric')} · {row.get('group_id')}"
+        )
     )
 
 
