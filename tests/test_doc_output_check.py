@@ -62,6 +62,48 @@ anything
     _evaluate(markdown, tmp_path)
 
 
+def test_false_conditional_next_still_checks_output(tmp_path):
+    markdown = """<!-- skip: next if (False) -->
+```python
+print(1.5)
+```
+<!-- output -->
+```text
+1.6
+```
+"""
+    with pytest.raises(AssertionError, match="1.5"):
+        _evaluate(markdown, tmp_path)
+
+
+def test_false_conditional_skip_range_still_checks_output(tmp_path):
+    markdown = """<!-- skip: start if (False) -->
+```python
+print(1.5)
+```
+<!-- output -->
+```text
+1.6
+```
+<!-- skip: end -->
+"""
+    with pytest.raises(AssertionError, match="1.5"):
+        _evaluate(markdown, tmp_path)
+
+
+def test_true_conditional_skip_exempts_output(tmp_path):
+    markdown = """<!-- skip: next if (True) -->
+```python
+print('not executed')
+```
+<!-- output -->
+```text
+anything
+```
+"""
+    _evaluate(markdown, tmp_path)
+
+
 def test_output_block_after_skipped_python_is_exempt(tmp_path):
     markdown = """<!-- skip: next -->
 ```python
