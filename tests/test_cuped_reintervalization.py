@@ -93,11 +93,41 @@ def test_student_t_absolute_margin_p_value_uses_retained_degrees_of_freedom():
 
 
 @pytest.mark.parametrize("alpha", [1e-100, 1e-200])
-def test_log_t_reintervalization_refuses_unrepresentable_endpoints(alpha: float) -> None:
+def test_log_t_reintervalization_keeps_additive_inference_when_relative_is_unrepresentable(
+    alpha: float,
+) -> None:
     from increment.estimation.results import LiftEstimate
     from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
 
     (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+
+    projected = row.reintervalize(alpha)
+
+    assert projected.failure_code is None
+    assert projected.lift is None
+    assert projected.relative_unavailable_reason == "relative_unrepresentable"
+    assert projected.relative_error_code == "estimation.tails.unresolvable"
+    assert projected.abs_diff == row.abs_diff
+    assert projected.abs_lb is not None and row.abs_lb is not None
+    assert projected.abs_lb < row.abs_lb
+    assert projected.abs_alpha == pytest.approx(alpha)
+
+
+@pytest.mark.parametrize("alpha", [1e-100, 1e-200])
+def test_log_t_reintervalization_refuses_unrepresentable_endpoints_without_additive(
+    alpha: float,
+) -> None:
+    row = _t_row().model_copy(
+        update={
+            "abs_diff": None,
+            "abs_se": None,
+            "abs_lb": None,
+            "abs_ub": None,
+            "abs_reference_kind": None,
+            "abs_reference_df": None,
+            "abs_alpha": None,
+        }
+    )
 
     with pytest.raises(CodedError) as raised:
         row.reintervalize(alpha)

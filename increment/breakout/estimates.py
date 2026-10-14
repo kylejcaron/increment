@@ -66,11 +66,14 @@ from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
+    CELL_ESTIMATION_GUARD_CODES,
     UNBOUNDED_RETENTION_DAILY_REMEDY,
     Method,
+    _cuped_linear_unavailable_row,
     _estimate_lift,
     _validate_methods,
     estimate_lift,
+    reintervalize_cuped_decision,
     reject_unbounded_retention,
 )
 from increment.estimation.engine import (
@@ -1113,6 +1116,14 @@ class EstimateList[M: BaseModel](list[M]):
             )
             for row in self
         ]
+        if self.metadata is None:
+            # Without scope metadata the row's own stored availability is the
+            # authority: an unknown value on a prior-bound row stays unknown
+            # rather than being inferred from the presence of a point.
+            for row, columns in zip(self, evidence, strict=True):
+                stored = getattr(row, "sampling_available", None)
+                if stored is not None or getattr(row, "prior_shrunk", False):
+                    columns["sampling_available"] = stored
         if evidence:
             evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
         elif interpretation.groups and interpretation.groups[0].source_cells:
@@ -2094,12 +2105,13 @@ def _estimate_lift_computation_or_reason(
     unit_frame: Any | None = None,
     covariates: Sequence[Any] = (),
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
+    from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
+    from increment.errors import CodedError
+
     linear_methods = [
         method for method in methods or () if method.variance_reduction == "cuped_linear"
     ]
     if linear_methods:
-        from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
-        from increment.errors import CodedError
         from increment.estimation.engine import estimate_cuped_linear
 
         if unit_frame is None:
@@ -2181,19 +2193,25 @@ def _estimate_lift_computation_or_reason(
                     .to_list()
                     if str(value) != control_group
                 }
-                for group_id in groups:
+                for group_id in sorted(groups):
                     results.append(
-                        LiftEstimate(
-                            metric=metric.name,
-                            group_id=group_id,
-                            method=method.name,
-                            method_role=role,
+                        _cuped_linear_unavailable_row(
+                            metric,
+                            group_id,
+                            method,
+                            role,
                             alternative=alternative,
-                            failure_code=exc.code,
-                            failure_context=exc.context,
-                            sampling_available=False,
-                            sampling_reason_code=exc.code,
-                            sampling_reason_context=exc.context,
+                            null_lift=0.0,
+                            null_abs=None,
+                            prior=prior,
+                            code=exc.code,
+                            context=exc.context,
+                        ).model_copy(
+                            update={
+                                "sampling_available": False,
+                                "sampling_reason_code": exc.code,
+                                "sampling_reason_context": exc.context,
+                            }
                         )
                     )
         return DecisionComputation[LiftEstimate](
@@ -2215,26 +2233,12 @@ def _estimate_lift_computation_or_reason(
             method_roles=method_roles,
             route_alpha=route_alpha,
         )
-        from increment.decision import DecisionComputation
-
-        rows = tuple(
-            result.model_copy(update={"preferred_direction": metric.declared_preferred_direction})
-            for result in computation.results
-        )
-        return DecisionComputation(
-            results=rows,
-            evidence=computation.evidence,
-            failures=computation.failures,
-            advisories=computation.advisories,
-        ), None
     except LiftGuardError as exc:
-        from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
-
-        failures: dict[Any, Any] = {}
+        guard_failures: dict[Any, Any] = {}
         groups = {str(row["group_id"]) for row in summary if str(row["group_id"]) != control_group}
         for group_id in groups:
             hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
-            failures[hypothesis] = DecisionFailure(
+            guard_failures[hypothesis] = DecisionFailure(
                 hypothesis,
                 "estimation.engine.lift_guard",
                 {
@@ -2244,7 +2248,65 @@ def _estimate_lift_computation_or_reason(
                     "display": str(exc),
                 },
             )
-        return DecisionComputation(results=(), evidence={}, failures=failures), str(exc)
+        return DecisionComputation(results=(), evidence={}, failures=guard_failures), str(exc)
+    except CodedError as exc:
+        if exc.code not in CELL_ESTIMATION_GUARD_CODES:
+            raise
+        if methods is not None and len(methods) > 1:
+            # The refusal is local to one method's construction: estimate each
+            # method on its own so its siblings keep their cells.
+            parts = []
+            for method in methods:
+                part, reason = _estimate_lift_computation_or_reason(
+                    metric=metric,
+                    summary=summary,
+                    control_group=control_group,
+                    methods=[method],
+                    prior=prior,
+                    alpha=alpha,
+                    alternative=alternative,
+                    inference=inference,
+                    method_roles=method_roles,
+                    route_alpha=route_alpha,
+                )
+                if reason is not None:
+                    return part, reason
+                assert part is not None
+                parts.append(part)
+            return _merge_decision_computations(parts), None
+        method = methods[0] if methods else Method(name="unadjusted")
+        role = (method_roles or {}).get(method.name, "decision")
+        groups = {str(row["group_id"]) for row in summary if str(row["group_id"]) != control_group}
+        rows = tuple(
+            LiftEstimate(
+                metric=metric.name,
+                group_id=group_id,
+                method=method.name,
+                method_role=role,
+                estimand="itt",
+                alternative=alternative,
+                preferred_direction=metric.declared_preferred_direction,
+                failure_code=exc.code,
+                failure_context={
+                    **exc.context,
+                    "metric": metric.name,
+                    "group_id": group_id,
+                    "method": method.name,
+                },
+            )
+            for group_id in sorted(groups)
+        )
+        return DecisionComputation(results=rows, evidence={}, failures={}), None
+    rows = tuple(
+        result.model_copy(update={"preferred_direction": metric.declared_preferred_direction})
+        for result in computation.results
+    )
+    return DecisionComputation(
+        results=rows,
+        evidence=computation.evidence,
+        failures=computation.failures,
+        advisories=computation.advisories,
+    ), None
 
 
 def _estimate_encouragement_or_reason(
@@ -2536,6 +2598,13 @@ class _EstimatedCell(NamedTuple):
     estimate: LiftEstimate
 
 
+class _PosteriorUnavailable(NamedTuple):
+    """A declared prior's exact unavailability, carried off a failed estimator row."""
+
+    reason_code: str | None
+    reason_context: Mapping[str, object] | None
+
+
 class _UnavailableCell(NamedTuple):
     metric: str
     group_id: str
@@ -2543,6 +2612,7 @@ class _UnavailableCell(NamedTuple):
     method_role: Literal["decision", "sensitivity"]
     reason: ExclusionReason
     failure: Any | None = None
+    posterior: _PosteriorUnavailable | None = None
 
 
 _BreakoutCellOutcome = _EstimatedCell | _UnavailableCell
@@ -2798,6 +2868,7 @@ def _breakout_cell_outcomes(
     context: _BreakoutContext,
     method_failures: Mapping[tuple[str, str, str], Any],
     original_failures: Mapping[tuple[str, str], Any],
+    method_posteriors: Mapping[tuple[str, str, str], _PosteriorUnavailable],
 ) -> tuple[_BreakoutCellOutcome, ...]:
     """Create one immutable result-or-reason outcome for every requested cell."""
     successful = {(estimate.metric, estimate.group_id, estimate.method) for estimate in estimates}
@@ -2822,6 +2893,7 @@ def _breakout_cell_outcomes(
                     role_map.get(method_name, "decision"),
                     reason,
                     method_failures.get((metric_name, group_id, method_name)),
+                    method_posteriors.get((metric_name, group_id, method_name)),
                 )
             )
     for (metric_name, group_id), reason in sorted(unestimable.items()):
@@ -2871,12 +2943,70 @@ def _warn_breakout_route2_pairs(
         )
 
 
+def _record_failed_method_rows(
+    projected_results: Sequence[LiftEstimate],
+    *,
+    metric_name: str,
+    method_group: Sequence[Method],
+    resolved_roles: Mapping[str, Literal["decision", "sensitivity"]],
+    method_unestimable: dict[tuple[str, str, str], ExclusionReason],
+    method_failures: dict[tuple[str, str, str], Any],
+    method_posteriors: dict[tuple[str, str, str], _PosteriorUnavailable],
+    decision_failures: dict[Any, Any],
+) -> set[tuple[str, str]]:
+    """Record every pointless row as its method's own cell failure.
+
+    A coded refusal on any method, or a withheld relative projection on a
+    linear one (breakouts decide relatively), fails that ``(arm, method)``
+    cell with the row's exact reason and the requested posterior's
+    unavailability; a decision row's failure also enters the family.
+    """
+    from increment.decision import ArmHypothesisKey, DecisionFailure
+
+    linear_names = {
+        method.name for method in method_group if method.variance_reduction == "cuped_linear"
+    }
+    failed = {
+        (result.group_id, result.method)
+        for result in projected_results
+        if result.lift is None
+        and (
+            result.failure_code is not None
+            or (result.method in linear_names and result.relative_unavailable_reason is not None)
+        )
+    }
+    for group_id, method_name in failed:
+        method_unestimable[(metric_name, group_id, method_name)] = "estimation_failed"
+        failed_row = next(
+            result
+            for result in projected_results
+            if result.group_id == group_id and result.method == method_name
+        )
+        failure_code, failure_context = (
+            (failed_row.failure_code, failed_row.failure_context)
+            if failed_row.failure_code is not None
+            else (failed_row.relative_error_code, failed_row.relative_error_context)
+        )
+        assert failure_code is not None and failure_context is not None
+        failure = DecisionFailure(
+            ArmHypothesisKey(metric_name, group_id, "itt"), failure_code, failure_context
+        )
+        method_failures[(metric_name, group_id, method_name)] = failure
+        if failed_row.posterior_available is False:
+            method_posteriors[(metric_name, group_id, method_name)] = _PosteriorUnavailable(
+                failed_row.posterior_reason_code, failed_row.posterior_reason_context
+            )
+        if resolved_roles.get(method_name, "decision") == "decision":
+            decision_failures[failure.hypothesis] = failure
+    return failed
+
+
 def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     prepared: _PreparedLiftSlice,
     context: _BreakoutContext,
 ) -> _BreakoutMetricPass:
     """Estimate each live breakout metric and retain immutable cell outcomes."""
-    from increment.decision import ArmHypothesisKey, DecisionFailure
+    from increment.decision import ArmHypothesisKey
 
     declared_names = {m.name for m in context.metrics}
     unknown_metrics = {str(r["metric"]) for r in prepared.live_rows} - declared_names
@@ -2891,6 +3021,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     estimates: list[LiftEstimate] = []
     method_unestimable: dict[tuple[str, str, str], ExclusionReason] = {}
     method_failures: dict[tuple[str, str, str], Any] = {}
+    method_posteriors: dict[tuple[str, str, str], _PosteriorUnavailable] = {}
     computations: dict[tuple[str, str], DecisionComputation] = {}
     metric_rows: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     skip_reason_by_metric: dict[str, str] = {}
@@ -3009,49 +3140,20 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                             ] = "estimation_failed"
                         else:
                             decision_failures[hypothesis] = failure
-                    linear_names = {
-                        method.name
-                        for method in method_group
-                        if method.variance_reduction == "cuped_linear"
-                    }
-                    failed_linear_results = {
-                        (result.group_id, result.method)
-                        for result in projected_results
-                        if result.lift is None
-                        and result.method in linear_names
-                        and (
-                            result.failure_code is not None
-                            or result.relative_unavailable_reason is not None
-                        )
-                    }
-                    for group_id, method_name in failed_linear_results:
-                        method_unestimable[(metric.name, group_id, method_name)] = (
-                            "estimation_failed"
-                        )
-                        failed_row = next(
-                            result
-                            for result in projected_results
-                            if result.group_id == group_id and result.method == method_name
-                        )
-                        failure_code, failure_context = (
-                            (failed_row.failure_code, failed_row.failure_context)
-                            if failed_row.failure_code is not None
-                            else (failed_row.relative_error_code, failed_row.relative_error_context)
-                        )
-                        assert failure_code is not None and failure_context is not None
-                        method_failures[(metric.name, group_id, method_name)] = failure = (
-                            DecisionFailure(
-                                ArmHypothesisKey(metric.name, group_id, "itt"),
-                                failure_code,
-                                failure_context,
-                            )
-                        )
-                        if resolved_roles.get(method_name, "decision") == "decision":
-                            decision_failures[failure.hypothesis] = failure
+                    failed_method_results = _record_failed_method_rows(
+                        projected_results,
+                        metric_name=metric.name,
+                        method_group=method_group,
+                        resolved_roles=resolved_roles,
+                        method_unestimable=method_unestimable,
+                        method_failures=method_failures,
+                        method_posteriors=method_posteriors,
+                        decision_failures=decision_failures,
+                    )
                     if (
                         projected_results != list(computation.results)
                         or len(decision_failures) != len(computation.failures)
-                        or failed_linear_results
+                        or failed_method_results
                     ):
                         from increment.decision import DecisionComputation
 
@@ -3060,7 +3162,11 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                             for hypothesis, failure in computation.failures.items()
                             if failure.context.get("projection") != "absolute"
                         }
-                        failed_groups = {group_id for group_id, _method in failed_linear_results}
+                        failed_groups = {
+                            group_id
+                            for group_id, method_name in failed_method_results
+                            if resolved_roles.get(method_name, "decision") == "decision"
+                        }
                         failed_hypotheses.update(
                             key
                             for key in computation.evidence
@@ -3072,7 +3178,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                                 result
                                 for result in projected_results
                                 if result.lift is not None
-                                or (result.group_id, result.method) not in failed_linear_results
+                                or (result.group_id, result.method) not in failed_method_results
                             ),
                             evidence={
                                 key: value
@@ -3137,6 +3243,7 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
             context,
             method_failures,
             original_failures,
+            method_posteriors,
         ),
         computations,
         metric_rows,
@@ -3184,34 +3291,58 @@ def _append_breakout_slice_rows(
                 )
             continue
         rows.append(
-            BreakoutEstimate(
-                metric=outcome.metric,
-                group_id=outcome.group_id,
-                method=outcome.method.name,
-                method_role=outcome.method_role,
+            _unavailable_breakout_row(
+                outcome,
                 dimension=context.dimension,
                 dimension_value=context.segment_value,
                 source=context.source,
                 alternative=context.alternative,
-                lift=None,
-                excluded=outcome.reason,
-                failure_code=None if outcome.failure is None else outcome.failure.code,
-                failure_context=None if outcome.failure is None else outcome.failure.context,
-                sampling_available=False,
-                sampling_reason_code=(
-                    f"breakout.{outcome.reason}"
-                    if outcome.failure is None
-                    else outcome.failure.code
-                ),
-                sampling_reason_context=(
-                    {"reason": outcome.reason}
-                    if outcome.failure is None
-                    else outcome.failure.context
-                ),
-                role="exploratory",
             )
         )
     return _BreakoutRowsPass(rows, family_entries)
+
+
+def _unavailable_breakout_row(
+    outcome: _UnavailableCell,
+    *,
+    dimension: str,
+    dimension_value: str,
+    source: str | None,
+    alternative: str,
+    **family: Any,
+) -> BreakoutEstimate:
+    """One identity-preserving unavailable row with its exact reason, and the
+    requested posterior's unavailability when the failed estimator row stated it."""
+    return BreakoutEstimate(
+        metric=outcome.metric,
+        group_id=outcome.group_id,
+        method=outcome.method.name,
+        method_role=outcome.method_role,
+        dimension=dimension,
+        dimension_value=dimension_value,
+        source=source,
+        alternative=alternative,
+        lift=None,
+        excluded=outcome.reason,
+        failure_code=None if outcome.failure is None else outcome.failure.code,
+        failure_context=None if outcome.failure is None else outcome.failure.context,
+        sampling_available=False,
+        sampling_reason_code=(
+            f"breakout.{outcome.reason}" if outcome.failure is None else outcome.failure.code
+        ),
+        sampling_reason_context=(
+            {"reason": outcome.reason} if outcome.failure is None else outcome.failure.context
+        ),
+        posterior_available=None if outcome.posterior is None else False,
+        posterior_reason_code=(
+            None if outcome.posterior is None else outcome.posterior.reason_code
+        ),
+        posterior_reason_context=(
+            None if outcome.posterior is None else outcome.posterior.reason_context
+        ),
+        role="exploratory",
+        **family,
+    )
 
 
 class _BreakoutFamilyContext(NamedTuple):
@@ -3273,7 +3404,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
     method_roles = context.method_roles
     alternative = context.alternative
     method_roles_by_metric = context.method_roles_by_metric
-    from increment.decision import SegmentHypothesisKey
+    from increment.decision import DecisionFailure, SegmentHypothesisKey
 
     family_keys = [
         SegmentHypothesisKey(metric_name, group_id, "itt", dimension, segment_value)
@@ -3332,6 +3463,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
     metrics_by_name = {metric.name: metric for metric in metrics}
     selected_segment_metrics = {(key.dimension_value, key.metric) for key in selected_keys}
     reestimated: dict[tuple[str, str], list[LiftEstimate]] = {}
+    decision_method_by_metric: dict[str, Method] = {}
     for segment_value, metric_name in selected_segment_metrics:
         metric_rows = metric_rows_by_segment_metric[(segment_value, metric_name)]
         metric_methods = (methods_by_metric or {}).get(metric_name, methods) or [
@@ -3344,22 +3476,27 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             (method for method in metric_methods if method.name == decision_name),
             metric_methods[0] if metric_methods else Method(name="unadjusted"),
         )
+        decision_method_by_metric[metric_name] = decision_method
         if decision_method.variance_reduction == "cuped_linear":
+            # Only a selected cell is rebuilt at the FCR level; an unselected
+            # sibling keeps its nominal row, so its wider interval is never built.
             selected_alpha = _fcr_alpha_for(alternative, outcome.fcr_alpha)
-
-            def reissue_cuped_row(
-                row: LiftEstimate,
-                *,
-                selected_alpha: float = selected_alpha,
-                alternative: str = alternative,
-            ) -> LiftEstimate:
-                projected = row.reintervalize(selected_alpha, interval_alternative=alternative)
-                return open_bound_from_two_sided_at_target(projected)
-
             reestimated[(segment_value, metric_name)] = [
-                reissue_cuped_row(row)
-                for (cell_segment, cell_metric, _group), row in canonical_rows.items()
-                if cell_segment == segment_value and cell_metric == metric_name
+                open_bound_from_two_sided_at_target(
+                    reintervalize_cuped_decision(
+                        row,
+                        selected_alpha,
+                        alternative=alternative,
+                        metric=metrics_by_name[metric_name],
+                        method=decision_method,
+                        prior=(prior_by_metric or {}).get(metric_name, prior),
+                    )
+                )
+                for (cell_segment, cell_metric, group_id), row in canonical_rows.items()
+                if cell_segment == segment_value
+                and cell_metric == metric_name
+                and SegmentHypothesisKey(cell_metric, group_id, "itt", dimension, cell_segment)
+                in selected_keys
             ]
             continue
         re_estimates, _reason, _failures = _estimate_lift_or_reason(
@@ -3431,6 +3568,42 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
                 "pass-1 for the same retained moments"
             )
         original = results[idx]
+        family_fields = {
+            "discovery": family_discovery(outcome, key),
+            "family_axes": ("metric", "arm", "segment"),
+            "family_q": outcome.q,
+            "family_threshold": outcome.realized_threshold,
+        }
+        if match.failure_code is not None:
+            # The selected linear cell could not be rebuilt at the FCR level;
+            # it stays an identity-preserving unavailable row with the refusal.
+            results[idx] = _unavailable_breakout_row(
+                _UnavailableCell(
+                    match.metric,
+                    match.group_id,
+                    decision_method_by_metric[match.metric],
+                    "decision",
+                    "estimation_failed",
+                    DecisionFailure(key, match.failure_code, match.failure_context or {}),
+                    (
+                        _PosteriorUnavailable(
+                            match.posterior_reason_code, match.posterior_reason_context
+                        )
+                        if match.posterior_available is False
+                        else None
+                    ),
+                ),
+                dimension=dimension,
+                dimension_value=segment_value,
+                source=original.source,
+                alternative=match.alternative,
+                n_treat=original.n_treat,
+                n_control=original.n_control,
+                low_reliability=original.low_reliability,
+                family_procedure="bh",
+                **family_fields,
+            )
+            continue
         results[idx] = _breakout_estimate_row(
             match,
             dimension=dimension,
@@ -3440,10 +3613,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             n_control=original.n_control,
             low_reliability=original.low_reliability,
             role="exploratory",
-            discovery=family_discovery(outcome, key),
-            family_axes=("metric", "arm", "segment"),
-            family_q=outcome.q,
-            family_threshold=outcome.realized_threshold,
+            **family_fields,
         ).model_copy(update={"family_procedure": "bh"})
     return results
 

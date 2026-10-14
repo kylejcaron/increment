@@ -417,6 +417,12 @@ def _request_snapshot(value: Any, *, field: str = "request") -> Any:
 
 
 def _config_snapshot(config, design):
+    """The canonical request identity of one metric's resolved configuration.
+
+    The ordered covariate declarations are part of it: the same evidence
+    under a different kind, order, or missing policy is a different request
+    with a different result.
+    """
     from increment._analysis_config import effective_methods
     from increment.estimation.readout_types import refuse_readout
 
@@ -433,6 +439,12 @@ def _config_snapshot(config, design):
                     ),
                 )
                 for index, method in enumerate(effective_methods(config, design=design))
+            ],
+            "covariates": [
+                _request_snapshot(
+                    covariate.model_dump(mode="json"), field=f"configs.covariates[{index}]"
+                )
+                for index, covariate in enumerate(config.covariates)
             ],
             "prior": None if config.prior is None else config.prior.model_dump(mode="json"),
             "prior_is_global": config.prior_is_global,

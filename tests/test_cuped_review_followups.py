@@ -1,0 +1,418 @@
+from __future__ import annotations
+
+from typing import Any, Literal, cast
+
+import pyarrow as pa
+import pytest
+
+from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
+from increment.breakout.estimates import BreakoutEstimates
+from increment.errors import IncrementWarning
+from increment.estimation.decision_types import PValueEvidence
+from increment.estimation.inference import Normal
+from increment.estimation.readout_types import ReadoutResults
+from increment.estimation.results import LiftEstimate
+from increment.frame import CupedCovariate
+from increment.semantics.models import ExperimentMetric
+
+LINEAR = Method(name="linear", variance_reduction="cuped_linear")
+
+
+def _unit_rows(*, panel: bool) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for group in ("control", "treatment"):
+        for index in range(16):
+            row: dict[str, Any] = {
+                "unit": f"{group}-{index}",
+                "group": group,
+                "pre": float(index % 5),
+                "revenue": float(index + (group == "treatment") * 3),
+            }
+            if panel:
+                row["day"] = 1
+            rows.append(row)
+    return rows
+
+
+def _run_with_covariate_name(name: str, *, panel: bool) -> LiftEstimate:
+    rows = [{**row, name: row["pre"]} for row in _unit_rows(panel=panel)]
+    if name != "pre":
+        rows = [{key: value for key, value in row.items() if key != "pre"} for row in rows]
+    metric = MetricSpec(
+        name="revenue",
+        decision_method=LINEAR,
+        covariates=(CupedCovariate(name=name, kind="continuous"),),
+    )
+    table = pa.Table.from_pylist(rows)
+    if panel:
+        analysis = Analysis.from_unit_panel(
+            table, unit="unit", group="group", date="day", control="control", metrics=[metric]
+        )
+    else:
+        analysis = Analysis.from_unit_summary(
+            table, unit="unit", group="group", control="control", metrics=[metric]
+        )
+    (row,) = cast(list[LiftEstimate], list(analysis.run()))
+    return row
+
+
+@pytest.mark.parametrize("panel", [False, True], ids=["from_unit_summary", "from_unit_panel"])
+@pytest.mark.parametrize("name", ["y", "y_den", "unit_id", "group_id"])
+def test_covariate_named_like_a_unit_frame_column_keeps_its_own_values(name, panel):
+    baseline = _run_with_covariate_name("pre", panel=panel)
+    renamed = _run_with_covariate_name(name, panel=panel)
+
+    assert renamed.require_lift().value == pytest.approx(baseline.require_lift().value)
+    assert renamed.require_lift().lb == pytest.approx(baseline.require_lift().lb)
+    assert renamed.abs_diff == pytest.approx(baseline.abs_diff)
+    assert renamed.abs_se == pytest.approx(baseline.abs_se)
+
+
+def test_non_colliding_covariate_columns_are_served_under_their_own_names():
+    from increment._source_types import unit_frame_covariate_columns
+
+    assert unit_frame_covariate_columns(("pre", "region")) == {"pre": "pre", "region": "region"}
+    mapped = unit_frame_covariate_columns(("y", "pre"))
+    assert mapped["pre"] == "pre"
+    assert mapped["y"] not in {"y", "pre", "unit_id", "group_id", "y_den"}
+
+
+def _margin_rows(control_mean: float, treatment_mean: float) -> pa.Table:
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "pre": 1.0,
+            "revenue": mean + (1.0 if index % 2 == 0 else -1.0),
+        }
+        for group, mean in (("control", control_mean), ("treatment", treatment_mean))
+        for index in range(20)
+    ]
+    return pa.Table.from_pylist(rows)
+
+
+def _margin_analysis(table: pa.Table, **methods: Any) -> Analysis:
+    metric = MetricSpec(
+        name="revenue",
+        preferred_direction="increase",
+        covariates=(CupedCovariate(name="pre", kind="continuous"),),
+        **(methods or {"decision_method": LINEAR}),
+    )
+    return Analysis.from_unit_summary(
+        table,
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[metric],
+        plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin_abs=0.5)]),
+    )
+
+
+def test_unrepresentable_relative_bound_keeps_absolute_margin_inference():
+    results = _margin_analysis(_margin_rows(0.01, 0.02)).run(prior=Normal(mu=0.0, sigma=0.1))
+    (row,) = cast(list[LiftEstimate], list(results))
+
+    assert row.failure_code is None
+    assert row.lift is None
+    assert row.relative_unavailable_reason == "relative_unrepresentable"
+    assert row.relative_error_code == "estimation.tails.unresolvable"
+    assert row.abs_diff == pytest.approx(0.01)
+    assert row.abs_se is not None and row.abs_se > 0.0
+    assert row.abs_lb is not None and row.abs_ub is not None
+    assert row.abs_reference_kind == "t" and row.abs_reference_df is not None
+    p_value = row.p_value()
+    assert p_value is not None and 0.0 < p_value < 1.0
+    assert row.posterior_available is False
+    assert row.posterior_reason_code == "estimation.results.lift.t_posterior_sufficient_statistics"
+    assert results.metadata is not None
+    (record,) = results.metadata.cells
+    assert record.failure is None
+    assert record.sampling is not None and record.sampling.available is True
+    assert isinstance(record.sampling.evidence, PValueEvidence)
+    assert record.sampling.evidence.p_value == pytest.approx(p_value)
+    assert record.posterior is not None and record.posterior.available is False
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored.metadata == results.metadata
+    restored_row = restored[0]
+    assert isinstance(restored_row, LiftEstimate)
+    assert restored_row.p_value() == pytest.approx(p_value)
+
+
+def test_projection_failure_row_states_posterior_unavailability():
+    """A linear row that fails its relative projection with no absolute
+    projection to keep still reports the declared prior's unavailability."""
+    frame = pa.table(
+        {
+            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(12)],
+            "arm": ["c"] * 12 + ["t"] * 12,
+            "num": [float(2 + i % 3) for i in range(12)] + [float(-2 - i % 3) for i in range(12)],
+            "den": [1.0] * 24,
+            "pre": [float(i % 4) for _ in ("c", "t") for i in range(12)],
+        }
+    )
+    metric = MetricSpec(
+        name="ratio",
+        type="ratio",
+        numerator="num",
+        denominator="den",
+        decision_method=LINEAR,
+        covariates=(CupedCovariate(name="pre", kind="continuous"),),
+    )
+    results = Analysis.from_unit_summary(
+        frame, unit="unit", group="arm", control="c", metrics=[metric]
+    ).run(prior=Normal(mu=0.0, sigma=0.1))
+    (row,) = cast(list[LiftEstimate], list(results))
+    assert row.lift is None
+    assert row.posterior_available is False
+    assert row.posterior_reason_code == "estimation.results.lift.t_posterior_sufficient_statistics"
+    assert row.posterior_reason_context is not None
+    assert row.posterior_reason_context["group_id"] == "t"
+
+
+def test_zero_se_sensitivity_row_with_absolute_margin_does_not_abort_the_readout():
+    rows = [
+        {"unit": f"{group}-{index}", "group": group, "pre": float(index % 3), "revenue": mean}
+        for group, mean in (("control", 1.0), ("treatment", 2.0))
+        for index in range(10)
+    ]
+    analysis = _margin_analysis(
+        pa.Table.from_pylist(rows),
+        decision_method=Method(name="plain"),
+        sensitivity_methods=[LINEAR],
+    )
+    with pytest.warns(IncrementWarning):
+        results = cast(list[LiftEstimate], list(analysis.run()))
+
+    linear = next(row for row in results if row.method == "linear")
+    assert linear.abs_diff == pytest.approx(1.0)
+    assert linear.abs_se is None
+    with pytest.raises(Exception) as raised:
+        linear.p_value()
+    assert getattr(raised.value, "code", None) == (
+        "estimation.results.lift.p_value_null_abs_missing_abs_se"
+    )
+
+
+def _fcr_rows(*, segment: bool) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    specs = (("control", 5.0, 0.1), ("strong", 10.0, 0.1), ("weak", 0.02, 1.0))
+    for seg in ("north", "south") if segment else (None,):
+        for group, mean, noise in specs:
+            for index in range(20):
+                row: dict[str, Any] = {
+                    "unit": f"{seg}-{group}-{index}",
+                    "group": group,
+                    "pre": float(index % 4),
+                    "revenue": mean + (noise if index % 2 == 0 else -noise),
+                    "primary": 5.0 + (group == "strong") + float(index % 3),
+                }
+                if segment:
+                    row["segment"] = seg
+                    row["day"] = 1
+                rows.append(row)
+    return rows
+
+
+def test_fcr_reinversion_rebuilds_selected_cuped_arms_only_in_run():
+    cov = (CupedCovariate(name="pre", kind="continuous"),)
+    metrics = [
+        MetricSpec(name="primary", decision_method=LINEAR, covariates=cov),
+        MetricSpec(name="revenue", decision_method=LINEAR, covariates=cov),
+    ]
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(_fcr_rows(segment=False)),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=metrics,
+        plan=AnalysisPlan(q=1e-5, primary="primary", secondaries=["revenue"]),
+    )
+    rows = {
+        row.group_id: row
+        for row in cast(list[LiftEstimate], list(analysis.run()))
+        if row.metric == "revenue"
+    }
+
+    assert rows["strong"].discovery is True
+    strong_alpha = rows["strong"].require_lift().alpha
+    assert strong_alpha is not None and strong_alpha < 0.05
+    assert rows["weak"].discovery is False
+    assert rows["weak"].require_lift().alpha == pytest.approx(0.05)
+    assert rows["weak"].failure_code is None
+
+
+def test_fcr_reinversion_rebuilds_selected_cuped_cells_only_in_breakout():
+    metric = MetricSpec(
+        name="revenue",
+        decision_method=LINEAR,
+        covariates=(CupedCovariate(name="pre", kind="continuous"),),
+    )
+    analysis = Analysis.from_unit_panel(
+        pa.Table.from_pylist(_fcr_rows(segment=True)),
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[metric],
+        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="bh", q=1e-5)),
+        breakouts=["segment"],
+    )
+    rows = {(row.dimension_value, row.group_id): row for row in analysis.run_breakout()}
+
+    assert all(rows[(seg, "strong")].discovery is True for seg in ("north", "south"))
+    assert all(rows[(seg, "weak")].discovery is False for seg in ("north", "south"))
+    assert all(rows[(seg, "weak")].lift is not None for seg in ("north", "south"))
+
+
+def test_scalar_cuped_constant_covariate_is_localized_to_its_breakout_cell():
+    rows = [
+        {
+            "unit": f"{seg}-{group}-{index}",
+            "group": group,
+            "day": 1,
+            "segment": seg,
+            "pre": float(index % 3),
+            "scalar_pre": 1.0 if seg == "north" else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for seg in ("north", "south")
+        for group in ("control", "treatment")
+        for index in range(18)
+    ]
+    metric = MetricSpec(
+        name="revenue",
+        covariate="scalar_pre",
+        decision_method=LINEAR,
+        sensitivity_methods=[Method(name="scalar", variance_reduction="cuped")],
+        covariates=(
+            CupedCovariate(name="pre", kind="continuous"),
+            CupedCovariate(name="scalar_pre", kind="continuous"),
+        ),
+    )
+    analysis = Analysis.from_unit_panel(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[metric],
+        breakouts=["segment"],
+    )
+    result = {(row.dimension_value, row.method): row for row in analysis.run_breakout()}
+
+    assert result[("north", "scalar")].lift is None
+    assert result[("north", "scalar")].failure_code == "estimation.cuped.covariate_zero_variance"
+    assert result[("north", "linear")].lift is not None
+    assert result[("south", "scalar")].lift is not None
+    assert result[("south", "linear")].lift is not None
+
+
+def test_failed_breakout_cell_reports_requested_posterior_unavailability():
+    from tests.test_cuped_breakout_review import _breakout_analysis
+
+    with pytest.warns(IncrementWarning):
+        result = _breakout_analysis(unsupported=True).run_breakout(prior=Normal(mu=0.0, sigma=0.1))
+    failed = next(row for row in result if row.dimension_value == "unsupported")
+    assert failed.failure_code == "estimation.cuped_linear.level_support"
+    assert failed.posterior_available is False
+    assert (
+        failed.posterior_reason_code == "estimation.results.lift.t_posterior_sufficient_statistics"
+    )
+    assert result.metadata is not None
+    record = next(c for c in result.metadata.cells if c.cell.dimension_value == "unsupported")
+    assert record.posterior is not None and record.posterior.available is False
+    assert record.posterior.reason_code == failed.posterior_reason_code
+    restored = ReadoutResults.model_validate_json(result.model_dump_json())
+    assert restored.metadata == result.metadata
+    restored_failed = next(row for row in restored if row.dimension_value == "unsupported")
+    assert restored_failed.posterior_available is False
+    assert restored_failed.posterior_reason_code == failed.posterior_reason_code
+
+
+def _declaration_analysis(missing: Literal["refuse", "impute-indicator"]) -> Analysis:
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "history": None if index % 4 == 0 else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for group in ("control", "treatment")
+        for index in range(20)
+    ]
+    metric = MetricSpec(
+        name="revenue",
+        decision_method=LINEAR,
+        covariates=(CupedCovariate(name="history", kind="continuous", missing=missing),),
+    )
+    return Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows), unit="unit", group="group", control="control", metrics=[metric]
+    )
+
+
+def test_covariate_declaration_changes_the_readout_identity():
+    imputed = _declaration_analysis("impute-indicator").run()
+    refused = _declaration_analysis("refuse").run()
+
+    imputed_row, refused_row = imputed[0], refused[0]
+    assert isinstance(imputed_row, LiftEstimate) and isinstance(refused_row, LiftEstimate)
+    assert imputed_row.lift is not None
+    assert refused_row.lift is None
+    assert imputed.metadata is not None and refused.metadata is not None
+    assert imputed.metadata.scope.snapshot_id != refused.metadata.scope.snapshot_id
+
+
+def test_breakout_unit_covariate_values_enter_the_source_identity():
+    from tests.test_cuped_breakout_review import _breakout_analysis
+
+    def with_scaled_pre(scale: float) -> BreakoutEstimates:
+        rows = [
+            {
+                "unit": f"{seg}-{group}-{index}",
+                "group": group,
+                "day": 1,
+                "segment": seg,
+                "pre": scale * float(index % 4),
+                "revenue": float(index + (group == "treatment") * 3),
+            }
+            for seg in ("north", "south")
+            for group in ("control", "treatment")
+            for index in range(18)
+        ]
+        metric = MetricSpec(
+            name="revenue",
+            decision_method=LINEAR,
+            covariates=(CupedCovariate(name="pre", kind="continuous"),),
+        )
+        return Analysis.from_unit_panel(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="group",
+            date="day",
+            control="control",
+            metrics=[metric],
+            breakouts=["segment"],
+        ).run_breakout()
+
+    first, second = with_scaled_pre(1.0), with_scaled_pre(1.0)
+    assert first.metadata is not None and second.metadata is not None
+    assert first.metadata.scope.snapshot_id == second.metadata.scope.snapshot_id
+    assert _breakout_analysis().run_breakout().metadata is not None
+    changed = with_scaled_pre(2.0)
+    assert changed.metadata is not None
+    assert changed.metadata.scope.snapshot_id != first.metadata.scope.snapshot_id
+
+
+def test_unscoped_export_preserves_unknown_legacy_sampling_availability():
+    from tests.test_tables import _breakout_estimate
+
+    estimate = _breakout_estimate(
+        "revenue", "T", "unadjusted", "country", "US", 0.2, lb=0.1, ub=0.3
+    ).model_copy(update={"sampling_available": None, "prior_shrunk": True})
+    frame = cast(Any, BreakoutEstimates([estimate]).to_frame())
+    assert frame["sampling_available"].isna().all()
+    assert frame["sampling_available"].dtype == "boolean"
+
+    known = estimate.model_copy(update={"sampling_available": False})
+    exported = cast(Any, BreakoutEstimates([known]).to_frame())
+    assert exported["sampling_available"].tolist() == [False]

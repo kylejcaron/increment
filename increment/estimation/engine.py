@@ -28,6 +28,7 @@ from increment._finite_sample_refusals import (
 )
 from increment._literals import Alternative, ConversionInference, PreferredDirection
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
+from increment._source_types import unit_frame_covariate_columns
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -111,6 +112,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment._readout_request import ReadoutRequest
     from increment.decision import DecisionComputation, DecisionFailure, PValueEvidence
+    from increment.estimation.results import RelativeUnavailableReason
     from increment.winsor import BootstrapReference, InfluenceReference, WinsorRawState
 # 40 (sandwich variance itself noisy, so borderline significance is fragile).
 _WARN_TOTAL_CLUSTERS = 40
@@ -3180,6 +3182,51 @@ def _ratio_denominator_refusals(frame: Any, metric_name: str) -> dict[str, Coded
     return refused
 
 
+# Numeric refusals proven local to one (arm, method) cell: a readout keeps the
+# cell as an unavailable row while its siblings stay usable. Capability,
+# request, source, and wire refusals abort the readout instead.
+CELL_ESTIMATION_GUARD_CODES = frozenset(
+    {
+        "estimation.cuped.covariate_zero_variance",
+        "estimation.variance.ratio_moments_nonpositive_denominator_mean",
+        "estimation.cuped_linear.arm_counts",
+        "estimation.cuped_linear.invalid_arms",
+        "estimation.cuped_linear.nonfinite",
+        "estimation.cuped_linear.missing_refused",
+        "estimation.cuped_linear.level_support",
+        "estimation.cuped_linear.rank_deficiency",
+        "estimation.cuped_linear.leverage",
+        "estimation.cuped_linear.support_region",
+        "estimation.cuped_linear.residual_df",
+        "estimation.cuped_linear.nonpositive_component",
+        "estimation.cuped_linear.nonfinite_projection",
+    }
+)
+
+
+def _cuped_linear_posterior_fields(
+    metric: Metric, arm: str, prior: Prior | None, *, reference_df: float | None
+) -> dict[str, Any]:
+    """A declared prior is unavailable on every linear row, with its exact reason:
+    there are no HC2/BM score statistics to compose it from."""
+    if prior is None:
+        return {
+            "posterior_available": None,
+            "posterior_reason_code": None,
+            "posterior_reason_context": None,
+        }
+    return {
+        "posterior_available": False,
+        "posterior_reason_code": "estimation.results.lift.t_posterior_sufficient_statistics",
+        "posterior_reason_context": {
+            "metric": metric.name,
+            "group_id": arm,
+            "reference_df": reference_df,
+            "missing": "HC2/BM score statistics needed to compose the declared prior",
+        },
+    }
+
+
 def _cuped_linear_unavailable_row(
     metric: Metric,
     arm: str,
@@ -3193,12 +3240,7 @@ def _cuped_linear_unavailable_row(
     code: str,
     context: Mapping[str, object],
 ) -> LiftEstimate:
-    """One unavailable linear row carrying its exact refusal.
-
-    A declared prior is explicitly unavailable on such a row: there are no
-    HC2/BM statistics to compose it from, which is the same reason every
-    other unavailable linear row reports.
-    """
+    """One unavailable linear row carrying its exact refusal."""
     return LiftEstimate(
         metric=metric.name,
         group_id=arm,
@@ -3211,22 +3253,57 @@ def _cuped_linear_unavailable_row(
         null_abs=null_abs,
         failure_code=code,
         failure_context=context,
-        posterior_available=False if prior is not None else None,
-        posterior_reason_code=(
-            "estimation.results.lift.t_posterior_sufficient_statistics"
-            if prior is not None
-            else None
-        ),
-        posterior_reason_context=(
-            {
-                "metric": metric.name,
-                "group_id": arm,
-                "reference_df": None,
-                "missing": "HC2/BM score statistics needed to compose the declared prior",
-            }
-            if prior is not None
-            else None
-        ),
+        **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=None),
+    )
+
+
+def _cuped_linear_withheld_relative_row(  # noqa: PLR0913
+    metric: Metric,
+    arm: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    *,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    prior: Prior | None,
+    absolute: Any,
+    alpha_eff: float,
+    reason: RelativeUnavailableReason,
+    code: str,
+    context: Mapping[str, object],
+) -> LiftEstimate:
+    """The additive projection of an arm whose relative projection is refused.
+
+    The absolute contrast, its HC2/BM ``t`` interval and any absolute-margin
+    decision stay usable; the relative refusal is recorded beside them rather
+    than failing the cell, mirroring the clustered ``lift=None`` row shape.
+    """
+    return LiftEstimate(
+        metric=metric.name,
+        group_id=arm,
+        method=method.name,
+        method_role=method_role,
+        estimand="itt",
+        alternative=alternative,
+        preferred_direction=metric.declared_preferred_direction,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        abs_diff=absolute.estimate,
+        abs_se=absolute.se if absolute.se > 0.0 else None,
+        abs_lb=absolute.lower,
+        abs_ub=absolute.upper,
+        abs_reference_kind="t",
+        abs_reference_df=absolute.dof,
+        abs_alpha=alpha_eff,
+        reference_kind="t",
+        reference_df=absolute.dof,
+        dof=absolute.dof,
+        scale="linear",
+        relative_unavailable_reason=reason,
+        relative_error_code=code,
+        relative_error_context=context,
+        **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=absolute.dof),
     )
 
 
@@ -3277,6 +3354,9 @@ def _fit_cuped_linear_frame(
     from increment.estimation.cuped_linear import fit_cuped_linear
 
     declarations = tuple(covariates)
+    # The frame carries a covariate named like one of its own columns under
+    # a scratch column; the declared name still identifies it in the fit.
+    columns = unit_frame_covariate_columns([item.name for item in declarations])
     y = np.asarray(frame.get_column("y").to_list(), dtype=float)
     try:
         return fit_cuped_linear(
@@ -3285,7 +3365,7 @@ def _fit_cuped_linear_frame(
             control=control_group,
             arm_order=arm_order,
             covariates={
-                item.name: np.asarray(frame.get_column(item.name).to_list(), dtype=object)
+                item.name: np.asarray(frame.get_column(columns[item.name]).to_list(), dtype=object)
                 for item in declarations
             },
             kinds={item.name: item.kind for item in declarations},
@@ -3320,7 +3400,8 @@ def estimate_cuped_linear(
     failure, so its siblings keep their adjusted evidence. A control arm in
     that state fails every contrast the same way. A fit that then fails on
     the remaining arms is reported on those arms only; each withheld arm
-    keeps its own refusal.
+    keeps its own refusal. An arm whose absolute projection is usable keeps
+    it when only the relative projection is refused.
     """
     frame = nw.from_native(unit_frame, eager_only=True)
     ratio = getattr(metric, "type", None) == "ratio"
@@ -3387,6 +3468,36 @@ def estimate_cuped_linear(
             f"maximum leverage {fit.max_leverage:.3g}, reference df {fit.dof:.3g}."
         ),
     )
+
+    def withhold_relative(arm: str, absolute: Any, exc: CodedError) -> None:
+        """Record a relative-projection refusal for one arm, keeping its
+        additive projection when there is one; otherwise the cell fails."""
+        if absolute is None:
+            failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
+            refuse_arm(arm, exc.code, failure_context)
+            return
+        results.append(
+            _cuped_linear_withheld_relative_row(
+                metric,
+                arm,
+                method,
+                method_role,
+                alternative=alternative,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                prior=prior,
+                absolute=absolute,
+                alpha_eff=alpha_eff,
+                reason=(
+                    "nonpositive_arm_mean"
+                    if exc.code == "estimation.cuped_linear.nonpositive_component"
+                    else "relative_unrepresentable"
+                ),
+                code=exc.code,
+                context=exc.context,
+            )
+        )
+
     for arm in arm_order:
         if arm == control_group:
             continue
@@ -3407,70 +3518,7 @@ def estimate_cuped_linear(
                 else fit.relative(arm, alpha=alpha_eff)
             )
         except CodedError as exc:
-            failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
-            if absolute is not None and exc.code == "estimation.cuped_linear.nonpositive_component":
-                posterior_context = (
-                    {
-                        "metric": metric.name,
-                        "group_id": arm,
-                        "reference_df": absolute.dof,
-                        "missing": "HC2/BM score statistics needed to compose the declared prior",
-                    }
-                    if prior is not None
-                    else None
-                )
-                results.append(
-                    LiftEstimate(
-                        metric=metric.name,
-                        group_id=arm,
-                        method=method.name,
-                        method_role=method_role,
-                        estimand="itt",
-                        alternative=alternative,
-                        preferred_direction=metric.declared_preferred_direction,
-                        null_lift=null_lift,
-                        null_abs=null_abs,
-                        abs_diff=absolute.estimate,
-                        abs_se=absolute.se,
-                        abs_lb=absolute.lower,
-                        abs_ub=absolute.upper,
-                        abs_reference_kind="t",
-                        abs_reference_df=absolute.dof,
-                        abs_alpha=alpha_eff,
-                        reference_kind="t",
-                        reference_df=absolute.dof,
-                        dof=absolute.dof,
-                        scale="linear",
-                        posterior_available=False if prior is not None else None,
-                        relative_unavailable_reason="nonpositive_arm_mean",
-                        relative_error_code=exc.code,
-                        relative_error_context=exc.context,
-                        posterior_reason_code=(
-                            "estimation.results.lift.t_posterior_sufficient_statistics"
-                            if prior is not None
-                            else None
-                        ),
-                        posterior_reason_context=posterior_context,
-                    )
-                )
-            else:
-                results.append(
-                    LiftEstimate(
-                        metric=metric.name,
-                        group_id=arm,
-                        method=method.name,
-                        method_role=method_role,
-                        estimand="itt",
-                        alternative=alternative,
-                        preferred_direction=metric.declared_preferred_direction,
-                        null_lift=null_lift,
-                        null_abs=null_abs,
-                        failure_code=exc.code,
-                        failure_context=failure_context,
-                    )
-                )
-                if method_role == "decision":
-                    cuped_failures.append((metric.name, arm, "itt", exc.code, failure_context))
+            withhold_relative(arm, absolute, exc)
             continue
         if absolute_error is not None and null_abs is not None and method_role == "decision":
             failure_context = {
@@ -3491,35 +3539,8 @@ def estimate_cuped_linear(
                 log_se=relative.se,
             )
         except CodedError as exc:
-            failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
-            results.append(
-                LiftEstimate(
-                    metric=metric.name,
-                    group_id=arm,
-                    method=method.name,
-                    method_role=method_role,
-                    estimand="itt",
-                    alternative=alternative,
-                    preferred_direction=metric.declared_preferred_direction,
-                    null_lift=null_lift,
-                    null_abs=null_abs,
-                    failure_code=exc.code,
-                    failure_context=failure_context,
-                )
-            )
-            if method_role == "decision":
-                cuped_failures.append((metric.name, arm, "itt", exc.code, failure_context))
+            withhold_relative(arm, absolute, exc)
             continue
-        posterior_context = (
-            {
-                "metric": metric.name,
-                "group_id": arm,
-                "reference_df": relative.dof,
-                "missing": "HC2/BM score statistics needed to compose the declared prior",
-            }
-            if prior is not None
-            else None
-        )
         results.append(
             LiftEstimate(
                 metric=metric.name,
@@ -3533,7 +3554,7 @@ def estimate_cuped_linear(
                 null_lift=null_lift,
                 null_abs=null_abs,
                 abs_diff=None if absolute is None else absolute.estimate,
-                abs_se=None if absolute is None else absolute.se,
+                abs_se=None if absolute is None or not absolute.se > 0.0 else absolute.se,
                 abs_lb=None if absolute is None else absolute.lower,
                 abs_ub=None if absolute is None else absolute.upper,
                 abs_reference_kind="t" if absolute is not None else None,
@@ -3545,13 +3566,7 @@ def estimate_cuped_linear(
                 scale="log",
                 absolute_error_code=None if absolute_error is None else absolute_error.code,
                 absolute_error_context=None if absolute_error is None else absolute_error.context,
-                posterior_available=False if prior is not None else None,
-                posterior_reason_code=(
-                    "estimation.results.lift.t_posterior_sufficient_statistics"
-                    if prior is not None
-                    else None
-                ),
-                posterior_reason_context=posterior_context,
+                **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=relative.dof),
             )
         )
     return _lift_decision_bundle(
@@ -3560,6 +3575,40 @@ def estimate_cuped_linear(
         cuped_advisory=advisory,
         cuped_failures=cuped_failures,
     )
+
+
+def reintervalize_cuped_decision(
+    row: LiftEstimate,
+    alpha: float,
+    *,
+    alternative: str,
+    metric: Metric,
+    method: Method,
+    prior: Prior | None,
+) -> LiftEstimate:
+    """Rebuild one selected linear decision row at its family's FCR level.
+
+    Only a selected cell is rebuilt, from its retained HC2/BM statistics
+    without refitting. A relative interval the level cannot represent keeps
+    the additive projection (``LiftEstimate.reintervalize``); a row with no
+    additive projection to keep becomes an unavailable cell carrying the
+    refusal, so its siblings' rows survive.
+    """
+    try:
+        return row.reintervalize(alpha, interval_alternative=alternative)
+    except CodedError as exc:
+        return _cuped_linear_unavailable_row(
+            metric,
+            row.group_id,
+            method,
+            "decision",
+            alternative=alternative,
+            null_lift=row.null_lift,
+            null_abs=row.null_abs,
+            prior=prior,
+            code=exc.code,
+            context={**exc.context, "metric": metric.name, "group_id": row.group_id},
+        )
 
 
 def estimate_lift(  # noqa: PLR0913

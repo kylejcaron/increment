@@ -40,6 +40,7 @@ from increment._literals import (
     ValueScale,
 )
 from increment.errors import (
+    CodedError,
     CodedModel,
     InvalidRequestError,
     RefusalSpec,
@@ -90,6 +91,10 @@ RelativeUnavailableReason = Literal[
     "joint_covariance_indefinite",
     "joint_covariance_unrepresentable",
     "nonpositive_arm_mean",
+    # A finite log-scale projection whose relative point or endpoint lies
+    # outside float64 (``expm1`` underflows to the excluded -1 floor or
+    # overflows); the additive projection stays usable.
+    "relative_unrepresentable",
     "zero_relative_variance",
 ]
 
@@ -1487,80 +1492,32 @@ class LiftEstimate(_RowIdentity):
     def reintervalize(
         self, alpha: float, *, interval_alternative: str | None = None
     ) -> LiftEstimate:
-        """Rebuild central persisted inference; bootstrap roots are never regenerated."""
-        if (
-            self.reference_kind == "t"
-            and self.lift is not None
-            and self.lift.log_mean is not None
-            and self.lift.log_se is not None
-            and self.reference_df is not None
-        ):
-            alternative = interval_alternative or self.alternative
-            alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
-            critical = tail_isf(
-                student_t_isf, alpha_eff / 2.0, self.reference_df, what="t reintervalization"
+        """Rebuild central persisted inference; bootstrap roots are never regenerated.
+
+        A ``t`` row rebuilds its log-scale relative interval and, when it carries
+        them, its additive statistics. A relative endpoint the new level pushes
+        outside float64 withholds the relative projection the way the estimator
+        does at its nominal level: the additive interval is kept, the refusal is
+        recorded, and only a row with no additive statistics refuses. A row whose
+        relative projection was already withheld rebuilds its additive interval only.
+        """
+        if self.reference_kind == "t" and self.reference_df is not None:
+            relative = (
+                self.lift is not None
+                and self.lift.log_mean is not None
+                and self.lift.log_se is not None
             )
-            location = self.lift.log_mean
-            scale = self.lift.log_se
-            lower, upper = wald_bounds(
-                location, critical, scale, what="t reintervalization endpoint"
-            )
-            lift = self.lift.model_copy(
-                update={
-                    "lb": (
-                        resolvable_expm1(lower, what="t reintervalization endpoint")
-                        if self.scale == "log"
-                        else lower
-                    ),
-                    "ub": (
-                        resolvable_expm1(upper, what="t reintervalization endpoint")
-                        if self.scale == "log"
-                        else upper
-                    ),
-                    "alpha": alpha_eff,
-                    "level": 1.0 - alpha_eff,
-                    "open_side": None,
-                }
-            )
-            abs_lb = self.abs_lb
-            abs_ub = self.abs_ub
-            if (
+            additive = (
                 self.abs_diff is not None
                 and self.abs_se is not None
                 and self.abs_reference_df is not None
-            ):
-                abs_critical = tail_isf(
-                    student_t_isf,
-                    alpha_eff / 2.0,
-                    self.abs_reference_df,
-                    what="absolute t reintervalization",
-                )
-                abs_lb, abs_ub = wald_bounds(
-                    self.abs_diff,
-                    abs_critical,
-                    self.abs_se,
-                    what="absolute t reintervalization endpoint",
-                )
-            return self.model_copy(
-                update={
-                    "lift": lift,
-                    "abs_lb": abs_lb,
-                    "abs_ub": abs_ub,
-                    "abs_alpha": alpha_eff if abs_lb is not None else None,
-                    "alternative": alternative,
-                    "independent_mean_reference": (
-                        self.independent_mean_reference.model_copy(
-                            update={
-                                "alpha": alpha,
-                                "alternative": alternative,
-                                "interval": "central",
-                            }
-                        )
-                        if self.independent_mean_reference is not None
-                        else None
-                    ),
-                }
             )
+            if relative or (
+                additive and self.lift is None and self.relative_unavailable_reason is not None
+            ):
+                return self._reintervalize_t(
+                    alpha, interval_alternative, relative=relative, additive=additive
+                )
         if self.confidence_set is None:
             winsor_refuse(
                 "reinversion_required", "This operation requires a persisted winsor confidence set."
@@ -1591,6 +1548,86 @@ class LiftEstimate(_RowIdentity):
                 "abs_alpha": result.abs_alpha,
             }
         )
+
+    def _reintervalize_t(
+        self,
+        alpha: float,
+        interval_alternative: str | None,
+        *,
+        relative: bool,
+        additive: bool,
+    ) -> LiftEstimate:
+        alternative = interval_alternative or self.alternative
+        alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+        update: dict[str, Any] = {
+            "alternative": alternative,
+            "independent_mean_reference": (
+                self.independent_mean_reference.model_copy(
+                    update={"alpha": alpha, "alternative": alternative, "interval": "central"}
+                )
+                if self.independent_mean_reference is not None
+                else None
+            ),
+        }
+        if additive:
+            assert (
+                self.abs_diff is not None
+                and self.abs_se is not None
+                and self.abs_reference_df is not None
+            )
+            abs_critical = tail_isf(
+                student_t_isf,
+                alpha_eff / 2.0,
+                self.abs_reference_df,
+                what="absolute t reintervalization",
+            )
+            abs_lb, abs_ub = wald_bounds(
+                self.abs_diff,
+                abs_critical,
+                self.abs_se,
+                what="absolute t reintervalization endpoint",
+            )
+            update.update({"abs_lb": abs_lb, "abs_ub": abs_ub, "abs_alpha": alpha_eff})
+        if not relative:
+            return self.model_copy(update=update)
+        lift = self.lift
+        assert lift is not None and lift.log_mean is not None and lift.log_se is not None
+        assert self.reference_df is not None
+        critical = tail_isf(
+            student_t_isf, alpha_eff / 2.0, self.reference_df, what="t reintervalization"
+        )
+        try:
+            lower, upper = wald_bounds(
+                lift.log_mean, critical, lift.log_se, what="t reintervalization endpoint"
+            )
+            if self.scale == "log":
+                lower = resolvable_expm1(lower, what="t reintervalization endpoint")
+                upper = resolvable_expm1(upper, what="t reintervalization endpoint")
+        except CodedError as exc:
+            if not additive:
+                raise
+            update.update(
+                {
+                    "lift": None,
+                    "scale": "linear",
+                    "reference_df": self.abs_reference_df,
+                    "dof": self.abs_reference_df,
+                    "relative_unavailable_reason": "relative_unrepresentable",
+                    "relative_error_code": exc.code,
+                    "relative_error_context": exc.context,
+                }
+            )
+            return self.model_copy(update=update)
+        update["lift"] = lift.model_copy(
+            update={
+                "lb": lower,
+                "ub": upper,
+                "alpha": alpha_eff,
+                "level": 1.0 - alpha_eff,
+                "open_side": None,
+            }
+        )
+        return self.model_copy(update=update)
 
     def __repr__(self) -> str:
         """Compact interactive representation of the published estimate."""
@@ -1940,7 +1977,7 @@ class LiftEstimate(_RowIdentity):
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        if self.abs_se is None or self.abs_diff is None:
+        if self.abs_se is None or self.abs_diff is None or not self.abs_se > 0.0:
             _raise(
                 "estimation.results.lift.p_value_null_abs_missing_abs_se",
                 group_id=self.group_id,
