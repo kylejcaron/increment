@@ -564,7 +564,9 @@ def _cluster_table() -> pa.Table:
     return pa.Table.from_pylist(rows)
 
 
-def _native_cluster_analysis(*, n_pre_periods: int = 0, ratio: bool = False, design=DESIGN):
+def _native_cluster_analysis(
+    *, n_pre_periods: int = 0, ratio: bool = False, design=DESIGN, exploratory_metric: bool = False
+):
     """Small definitions-backed source for public native guard coverage."""
     rows = []
     for arm, store_prefix in (("control", "c"), ("treatment", "t")):
@@ -637,6 +639,9 @@ def _native_cluster_analysis(*, n_pre_periods: int = 0, ratio: bool = False, des
             "aggregation": "sum",
         }
     )
+    metric_definitions = [metric]
+    if exploratory_metric:
+        metric_definitions.append({**metric, "name": f"{metric['name']}_exploratory"})
     defs = Definitions.model_validate(
         {
             "dialect": "duckdb",
@@ -655,7 +660,7 @@ def _native_cluster_analysis(*, n_pre_periods: int = 0, ratio: bool = False, des
                 }
             ],
             "exposures": [{"name": "assignment", "fact": "exposure"}],
-            "metrics": [metric],
+            "metrics": metric_definitions,
             "experiments": [
                 {
                     "name": "native_late",
@@ -685,6 +690,24 @@ def test_clustered_preperiod_does_not_recommend_refused_cuped() -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         analysis.run()
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+
+
+def test_clustered_exploratory_only_run_does_not_recommend_refused_cuped() -> None:
+    import warnings
+
+    from increment.semantics.design import Randomized
+
+    analysis = _native_cluster_analysis(
+        n_pre_periods=14,
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        exploratory_metric=True,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = analysis.run(metrics=[], exploratory_metrics=["revenue_exploratory"])
+
+    assert rows
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 

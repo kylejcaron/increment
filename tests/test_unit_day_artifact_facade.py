@@ -837,6 +837,13 @@ def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     assert selected
     ref = native.publish_unit_day_artifact(store, extensions=selected)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        adopted.run(metrics=["d7_retention"], sensitivity_methods=[])
+    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
+    assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
+        "d7_retention",
+    )
     retention = next(metric for metric in adopted.metrics if metric.name == "d7_retention")
     with open_artifact(store, ref, expected_context=context) as source:
         daily_rows = source.moments(retention, grain="daily", include_covariate=True)
