@@ -53,133 +53,141 @@ Underscore modules and private research kernels are not public APIs.
 
 ### Persisted formats
 
-**Moments cubes.** `Analysis.export` stamps each row with `moments_format`;
-`Analysis.from_moments` reads it. Formats vary by writer:
+Persisted files use versioned formats; they are not upgraded silently. Re-export
+legacy artifacts from trusted definitions. The details below document supported
+moments, artifact, and checkpoint formats.
 
-| Format | Written by | Read by `from_moments` |
-|---|---|---|
-| 12 | Fixed-horizon `export`; source identity, exact counts, ratio denominator third moment `cden3` | Yes |
-| 11 | Prior fixed-horizon export; source identity and exact counts | Yes; ratio denominator-skew coverage is unavailable |
-| 10 | Earlier fixed-horizon export or current sequential checkpoint export | Yes; fixed-horizon ratio denominator-skew coverage is unavailable |
-| 9 | Prior sequential checkpoint export | Yes |
-| Below 9 | No longer written | Refused: `moments.format.unsupported_legacy` |
-| Above 12 | Not written by this release | Refused: `moments.format.unsupported_future` |
+??? info "Statistical and wire-format details"
+    **Moments cubes.** `Analysis.export` stamps each row with `moments_format`;
+    `Analysis.from_moments` reads it. Formats vary by writer:
 
-A cube must use one format (`moments.format.mixed`) and have no duplicate
-`(metric, group_id)` rows (`moments.rows.duplicate`). Fixed and sequential
-records use typed envelopes. Formats 10 and 11 fixed-horizon cubes and format 9
-sequential cubes remain readable. Every row below format 9 is refused before a
-plan is read, including sequential format 8. A sequential checkpoint stamped
-older than the supported format is refused with
-`sequential.continuation.legacy`. Re-export from trusted definitions or use the
-release that wrote the file; formats are never silently upgraded.
+    | Format | Written by | Read by `from_moments` |
+    |---|---|---|
+    | 12 | Fixed-horizon `export`; source identity, exact counts, ratio denominator third moment `cden3` | Yes |
+    | 11 | Prior fixed-horizon export; source identity and exact counts | Yes; ratio denominator-skew coverage is unavailable |
+    | 10 | Earlier fixed-horizon export or current sequential checkpoint export | Yes; fixed-horizon ratio denominator-skew coverage is unavailable |
+    | 9 | Prior sequential checkpoint export | Yes |
+    | Below 9 | No longer written | Refused: `moments.format.unsupported_legacy` |
+    | Above 12 | Not written by this release | Refused: `moments.format.unsupported_future` |
 
-Fixed-horizon format 10 cannot supply `assignment_counts`; operations that need
-them refuse with `source.moments.assignment_counts`. Its rows remain distinct
-from typed sequential format-10 checkpoints.
-A format-12 ratio row without `cden3` is refused with
-`moments.denominator_third_moment_missing`. Formats 10 and 11 have no `cden3`;
-their lift rows mark denominator-skew coverage unavailable, not passed.
+    A cube must use one format (`moments.format.mixed`) and have no duplicate
+    `(metric, group_id)` rows (`moments.rows.duplicate`). Fixed and sequential
+    records use typed envelopes. Formats 10 and 11 fixed-horizon cubes and
+    format 9 sequential cubes remain readable. Every row below format 9 is
+    refused before a plan is read, including sequential format 8. A sequential
+    checkpoint stamped older than the supported format is refused with
+    `sequential.continuation.legacy`. Re-export from trusted definitions or use
+    the release that wrote the file; formats are never silently upgraded.
 
-Fixed formats 11 and 12 and sequential format 10 carry the source identity.
-`from_moments` restores it instead of using the replay object's default study
-name. Snapshot identity also binds the canonical request, pinned evidence, and
-integer sufficient statistics—not floating aggregates. Formats 10 fixed and 9
-sequential lack source identity; format 11 may omit it. Replay identity for
-those cubes is namespaced by legacy format and study ID because provenance is
-unrecoverable. `source_identity` is self-asserted, not authenticated.
+    Fixed-horizon format 10 cannot supply `assignment_counts`; operations that
+    need them refuse with `source.moments.assignment_counts`. Its rows remain
+    distinct from typed sequential format-10 checkpoints. A format-12 ratio
+    row without `cden3` is refused with
+    `moments.denominator_third_moment_missing`. Formats 10 and 11 have no
+    `cden3`; their lift rows mark denominator-skew coverage unavailable, not
+    passed.
 
-Every ordinary row needs integer `n >= 1` and, if present, integer
-`0 <= successes <= n`. Import and export refuse invalid values, including
-unselected rows, with `moments.count_out_of_range`. Counts remain integers;
-floating centered moments only check count agreement and cannot recover counts.
-Keep count columns integer when storing or merging partitions.
+    Fixed formats 11 and 12 and sequential format 10 carry source identity.
+    `from_moments` restores it rather than using the replay object's default
+    study name. Snapshot identity also binds the canonical request, pinned
+    evidence, and integer sufficient statistics—not floating aggregates.
+    Fixed format 10 and sequential format 9 lack source identity; format 11
+    may omit it. Replay identity for these cubes is namespaced by legacy format
+    and study ID because provenance is unrecoverable. `source_identity` is
+    self-asserted, not authenticated.
 
-For per-arm summaries, call
-`moments_from_summaries(rows, metrics=..., control=..., study_id=..., assignment_counts=...)`
-and pass its rows to `Analysis.from_moments`. It accepts strict mean rows
-(`group_id`, `metric`, `n >= 2`, `mean`, ddof=1 `var`) and conversion rows
-(`group_id`, `metric`, `n`, exact integer `successes`). Extra fields are refused
-with `moments.summaries.invalid`. Without optional `assignment_counts`,
-`unit_counts()`, `srm()`, and health allocation checks refuse with
-`source.moments.assignment_counts`. For ratios and richer summaries, use
-`from_unit_summary`.
+    Every ordinary row needs integer `n >= 1` and, if present, integer
+    `0 <= successes <= n`. Import and export refuse invalid values, including
+    unselected rows, with `moments.count_out_of_range`. Counts remain integers;
+    floating centered moments only check count agreement and cannot recover
+    counts. Keep count columns integer when storing or merging partitions.
 
-**Unit-day artifacts.** Artifact context format 2 is the only supported format.
-It contains no source SQL; source recipes use domain-tagged SHA-256 digests.
-Opening or publishing a format-1 context is refused with
-`artifact.format.unsupported`, naming the received and supported versions.
-Republish from trusted definitions; existing format-1 manifests still contain
-their original SQL. See [Canonical unit-day artifacts](guides/data-model.md#canonical-unit-day-artifacts).
+    For per-arm summaries, call
+    `moments_from_summaries(rows, metrics=..., control=..., study_id=..., assignment_counts=...)`
+    and pass its rows to `Analysis.from_moments`. It accepts strict mean rows
+    (`group_id`, `metric`, `n >= 2`, `mean`, ddof=1 `var`) and conversion rows
+    (`group_id`, `metric`, `n`, exact integer `successes`). Extra fields are
+    refused with `moments.summaries.invalid`. Without `assignment_counts`,
+    `unit_counts()`, `srm()`, and health allocation checks refuse with
+    `source.moments.assignment_counts`. For ratios and richer summaries, use
+    `from_unit_summary`.
 
-**Republish and re-register after window-day and label fixes.** Artifact context
-binds `window_days`, the boundary-local day of each declared window edge.
-Contexts missing it are refused with `artifact.context.mismatch` before any
-manifest, relation, or pin is used; republish from trusted definitions. Native
-sequential registrations from before the change bind a different source recipe
-and are refused with `sequential.source.invalid`; register again. Frame
-registrations are unaffected. Older artifacts label Boolean breakouts and
-factors `True`/`False`; republishing uses `true`/`false`/`__null__`.
+    **Unit-day artifacts.** Artifact context format 2 is the only supported
+    format. It contains no source SQL; source recipes use domain-tagged SHA-256
+    digests. Opening or publishing format 1 is refused with
+    `artifact.format.unsupported`, naming the received and supported versions.
+    Republish from trusted definitions; existing format-1 manifests still
+    contain their original SQL. See [Canonical unit-day artifacts](guides/data-model.md#canonical-unit-day-artifacts).
 
-**Names added in this release.** `increment.semantics.models.local_day` and
-`window_days`; `Experiment.start_day`, `Experiment.end_day` and
-`Experiment.observation_horizon_day`;
-`increment.query.artifact_contract.open_trusted_manifest_snapshot`;
-`WarehouseArtifactStore.abandon_generation(artifact_id, generation_id)`, which
-durably hides a generation that may or may not have a manifest row yet (safe to
-repeat); the `roles=` argument of `increment.impute.pooled_mean`. A
-`pooled_mean` call without `roles=` still fills but now emits the
-`impute.pooled_mean_role_undeclared` warning.
+    **Republish and re-register after window-day and label fixes.** Artifact
+    context binds `window_days`, the boundary-local day of each declared window
+    edge. Contexts missing it are refused with `artifact.context.mismatch`
+    before any manifest, relation, or pin is used; republish from trusted
+    definitions. Older native sequential registrations bind a different source
+    recipe and are refused with `sequential.source.invalid`; register again.
+    Frame registrations are unaffected. Older artifacts label Boolean
+    breakouts and factors `True`/`False`; republishing uses
+    `true`/`false`/`__null__`.
 
-`LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` expose read-only
-`reason` from persisted coded-cell failure fields: the persisted context reason,
-or otherwise the failure code. It does not combine other sampling or interval
-reasons.
+    **Names added in this release.** `increment.semantics.models.local_day`,
+    `window_days`, `Experiment.start_day`, `Experiment.end_day`,
+    `Experiment.observation_horizon_day`,
+    `increment.query.artifact_contract.open_trusted_manifest_snapshot`,
+    `WarehouseArtifactStore.abandon_generation(artifact_id, generation_id)`,
+    and the `roles=` argument of `increment.impute.pooled_mean`. The abandon
+    call durably hides a generation even if no manifest row exists and is safe
+    to repeat. `pooled_mean` without `roles=` still fills but warns with
+    `impute.pooled_mean_role_undeclared`.
 
-**Site-volume coverage ends at `end`.** If `observation_end` is later than
-`end`, site-volume coverage now ends at `end`, matching the rows and estimand.
-This changes context and extension digests; republish affected artifacts.
-Experiments whose observation end falls on or before `end`'s local day remain
-byte-identical.
+    `LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` expose read-only
+    `reason` from persisted coded-cell failure fields: the context reason, or
+    otherwise the failure code. It does not combine other sampling or interval
+    reasons.
 
-**New refusal codes.** The codes
-`query.session.warehouse_artifact.publication_cleanup_incomplete` (relations
-could not be dropped before manifest insertion) and
-`query.session.warehouse_artifact.publication_state_unknown` (cleanup failed
-after it began) apply when publication exits normally without a manifest and
-cleanup cannot finish. Propagating errors are re-raised unchanged with a note.
-Both codes include qualified relation names and recovery steps.
+    **Site-volume coverage ends at `end`.** If `observation_end` is later than
+    `end`, coverage now ends at `end`, matching the rows and estimand. This
+    changes context and extension digests; republish affected artifacts.
+    Experiments whose observation end is on or before `end`'s local day remain
+    byte-identical.
 
-**Sequential checkpoints and segment labels.** A checkpoint belongs to one
-monitoring process; never relabel or rehash it. Frame segment labels use
-`true`/`false` for Boolean values and `__null__` for missing values. Older
-checkpoints still replay, but continuing them with canonical source labels is
-refused with `sequential.continuation.rewrite`. Do not restart monitoring and
-spend alpha again: retain the old checkpoint or register a defensible new
-protocol. See [Sequential inference](guides/sequential-inference.md).
+    **New refusal codes.** `query.session.warehouse_artifact.publication_cleanup_incomplete`
+    means relations could not be dropped before manifest insertion;
+    `query.session.warehouse_artifact.publication_state_unknown` means cleanup
+    failed after it began. These apply when publication exits normally without
+    a manifest and cleanup cannot finish. Propagating errors are re-raised
+    unchanged with a note. Both codes include qualified relation names and
+    recovery steps.
 
-**Triggered chains in sequential checkpoints.** A checkpoint captured with a
-declared trigger contains a nested triggered `SequentialSnapshot`, with its own
-registration, records, states, and `prefix_id`. Optional
-`SequentialRegistration.population`, `SequentialCheckpoint.population`,
-`InferenceSpec.triggered_registration`, and compiled-plan
-`triggered_registration` fields are omitted when unused. The derived
-registration is not added to the hashed artifact context. Existing assigned
-record, prefix, and checkpoint identities do not change; older checkpoints,
-registrations, exports, and artifact contexts replay as before. Older artifacts
-derive the same registration when opened. A checkpoint without a triggered
-chain remains assigned-only; backfilling one is refused with
-`sequential.continuation.legacy`.
+    **Sequential checkpoints and segment labels.** A checkpoint belongs to one
+    monitoring process; never relabel or rehash it. Frame segment labels use
+    `true`/`false` for Booleans and `__null__` for missing values. Older
+    checkpoints still replay, but continuing them with canonical source labels
+    is refused with `sequential.continuation.rewrite`. Do not restart monitoring
+    and spend alpha again: retain the old checkpoint or register a defensible
+    new protocol. See [Sequential inference](guides/sequential-inference.md).
 
-**Frame labels and shared schedules.** Noncanonical segment labels in frame
-registrations now use canonical labels instead of producing `missing_arm`.
-Implausibly lopsided shared schedules declared as unit-cycle orders are refused
-before statistics are built, with `source.frame.switchback.schedule` and reason
-`implausible_realized_split`.
+    **Triggered chains in sequential checkpoints.** A checkpoint captured with
+    a declared trigger contains a nested triggered `SequentialSnapshot`, with
+    its own registration, records, states, and `prefix_id`. Optional
+    `SequentialRegistration.population`, `SequentialCheckpoint.population`,
+    `InferenceSpec.triggered_registration`, and compiled-plan
+    `triggered_registration` fields are omitted when unused. The derived
+    registration is not added to the hashed artifact context. Existing assigned
+    record, prefix, and checkpoint identities do not change; older checkpoints,
+    registrations, exports, and artifact contexts replay as before. Older
+    artifacts derive the same registration when opened. A checkpoint without
+    a triggered chain remains assigned-only; backfilling one is refused with
+    `sequential.continuation.legacy`.
 
-**Encodings are format-specific.** Each format defines its aliases, tuple
-encoding, collection order, duplicate handling, and runtime-only values. There
-is no general guarantee that a value is "JSON compatible."
+    **Frame labels and shared schedules.** Noncanonical segment labels in
+    frame registrations now use canonical labels instead of producing
+    `missing_arm`. Implausibly lopsided shared schedules declared as unit-cycle
+    orders are refused before statistics are built, with
+    `source.frame.switchback.schedule` and reason `implausible_realized_split`.
+
+    **Encodings are format-specific.** Each format defines its aliases, tuple
+    encoding, collection order, duplicate handling, and runtime-only values.
+    There is no general guarantee that a value is "JSON compatible."
 
 ### Hashes and pickle
 
@@ -557,42 +565,47 @@ for assumptions, finalization, and the qualified asymptotic guarantee.
 
 ## Power planning
 
-Fixed-horizon binomial planning estimates the runtime decision's rejection
-probability over possible event counts. Enumerated results include an enclosure
-(`power_lower`, `power_upper`) conditional on the deployed SciPy/Boost special
-function error model—not a cross-build floating-point proof. When enclosure
-width is at most `1e-6`, `power` is its point estimate and
-`power_basis="exact"`; otherwise, `power` is the lower bound and
-`power_basis="lower_bound"`. A target is reached only if the lower bound reaches
-it. The dense closed-form route gives a model-based point estimate without an
-enclosure.
+Plan fixed-horizon sample size, power, or minimum detectable effect (MDE) with
+the runtime's deployed decision method. Binomial and switchback planning have
+different approximations and limits.
 
-`PowerResult.numerical_qualification` records this scope:
-`scipy_special_function_error_model_conditional_v1` for enumerated results and
-`closed_form_model_only_v1` for the asymptotic model. Requesting an unresolved
-point or reaching the sample-size ceiling with an enclosure covering the target
-refuses with `power.binomial_probability_unresolved`; the latter includes
-`n_per_arm`. There is no accuracy-tuning option.
+??? info "Statistical details"
+    Fixed-horizon binomial planning estimates rejection probability over possible
+    event counts. Enumerated results include an enclosure (`power_lower`,
+    `power_upper`) conditional on the deployed SciPy/Boost special-function
+    error model—not a cross-build floating-point proof. When enclosure width is
+    at most `1e-6`, `power` is its point estimate and
+    `power_basis="exact"`; otherwise, `power` is the lower bound and
+    `power_basis="lower_bound"`. A target is reached only if the lower bound
+    reaches it. The dense closed-form route gives a model-based point estimate
+    without an enclosure.
 
-Binomial MDE search finds the earliest detectable region to `1e-8` absolute and
-`1e-8` relative tolerance on the relative-effect scale, not the first
-representable float. It reports power at the returned effect. A resolved
-supplied-effect result may return `mde_relative=None` and
-`mde_unavailable_reason="numerical_resolution"`; an unresolved standalone MDE
-refuses with `power.minimum_detectable_effect.numerical_resolution`.
-The planning identity is `hybrid_finite_plus_delta_v3`; recompute persisted v1
-and v2 plans. See the [planning guide](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
-for route assumptions and a statsmodels comparison.
+    `PowerResult.numerical_qualification` records this scope:
+    `scipy_special_function_error_model_conditional_v1` for enumerated results
+    and `closed_form_model_only_v1` for the asymptotic model. Requesting an
+    unresolved point or reaching the sample-size ceiling with an enclosure
+    covering the target refuses with `power.binomial_probability_unresolved`;
+    the latter includes `n_per_arm`. There is no accuracy-tuning option.
 
-Switchback users can fit a baseline with `source.planning_baseline(metric)` and
-pass it to the three `switchback_*` solvers. No manually supplied reference
-effect, covariance, or population certificate is needed. The result remains a
-model-conditioned moment-t approximation; see
-[switchback planning](guides/power-analysis.md#switchback-contrasts).
+    Binomial MDE search finds the earliest detectable region to `1e-8` absolute
+    and `1e-8` relative tolerance on the relative-effect scale, not the first
+    representable float. It reports power at the returned effect. A resolved
+    supplied-effect result may return `mde_relative=None` and
+    `mde_unavailable_reason="numerical_resolution"`; an unresolved standalone
+    MDE refuses with `power.minimum_detectable_effect.numerical_resolution`.
+    The planning identity is `hybrid_finite_plus_delta_v3`; recompute persisted
+    v1 and v2 plans. See the [planning guide](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
+    for route assumptions and a statsmodels comparison.
 
-Complete-law simulation declarations and oracle solvers are in
-`increment.semantics.unit_cycle` and `increment.power.unit_cycle`, outside the
-package-root and ordinary power-planning exports.
+    Switchback users can fit a baseline with `source.planning_baseline(metric)`
+    and pass it to the three `switchback_*` solvers. No manually supplied
+    reference effect, covariance, or population certificate is needed. The
+    result remains a model-conditioned moment-t approximation; see
+    [switchback planning](guides/power-analysis.md#switchback-contrasts).
+
+    Complete-law simulation declarations and oracle solvers are in
+    `increment.semantics.unit_cycle` and `increment.power.unit_cycle`, outside
+    the package-root and ordinary power-planning exports.
 
 ::: increment.estimation.arm_contract.ArmPlanningProcedure
 
@@ -676,77 +689,79 @@ analysis.close()
 
 ## Conditional effects and targeting
 
-`estimate_cate(..., cluster_weight="member_count")` uses every member equally.
-Choose `cluster_weight="equal"` explicitly to give each observed cluster
-unit total weight; this requires a declared cluster column. Intervention grain
-never changes the default weighting. Centering, regression, covariance and ARD
-all use the selected weights.
+`estimate_cate` estimates how treatment effects vary with user characteristics.
+Validation and targeting APIs use the same fitted result and preserve its
+uncertainty and evidence limits.
 
-Clustered fits use the grouped score sandwich with scale `K/(K-1)`, counting
-**all** observed cluster IDs, including singleton and constant-residual clusters.
-There are no row HC2 divisors or additional row-count corrections. Scalar intervals
-use `t(K-1)`; the interaction Wald quadratic divided by its dimension `q` uses
-`F(q, K-1)`. Without clusters, the existing HC2 and ARD calculations are unchanged.
+??? info "Statistical and deployment details"
+    `estimate_cate(..., cluster_weight="member_count")` gives every member equal
+    weight. Set `cluster_weight="equal"` to give each observed cluster equal
+    total weight; this requires a cluster column. Intervention grain does not
+    change the default. Centering, regression, covariance, and ARD use the
+    selected weights.
 
-`CateResult.dimension`, `n_clusters`, `reference_df`, and immutable `vcov` hold
-fit-level inference metadata; CATE and contrast projections reuse that state.
-`se_unadjusted` uses a separate fit on `[1, d]` with the same cluster weights and
-sandwich, stored as immutable `unadjusted_vcov`. Covariances remain live-object
-state excluded from the report-only dump; the counts, dimension, reference df
-and selected weighting are included in reports.
+    Clustered fits use a grouped-score sandwich scaled by `K/(K-1)`, counting
+    all observed cluster IDs, including singleton and constant-residual
+    clusters. They use no row HC2 divisors or extra row-count corrections.
+    Scalar intervals use `t(K-1)`; the interaction Wald quadratic divided by
+    dimension `q` uses `F(q, K-1)`. Without clusters, HC2 and ARD are unchanged.
 
-Clustered fits raise `InvalidRequestError` with stable `estimation.cate.*` codes
-for fewer than two clusters (`insufficient_clusters`), rank deficiency
-(`rank_deficient`), invalid covariance (`invalid_covariance`), directions identified
-only by one cluster (`single_cluster_direction`), singular interaction Wald
-covariance (`singular_wald`), or unavailable required uncertainty
-(`uncertainty_unavailable`). Singular full covariance alone does not invalidate
-an otherwise supported scalar query. Because the interaction Wald result is
-required, an unavailable joint test refuses the fit.
+    `CateResult.dimension`, `n_clusters`, `reference_df`, and immutable `vcov`
+    hold fit-level inference metadata reused by CATE and contrast projections.
+    `se_unadjusted` fits `[1, d]` separately with the same cluster weights and
+    sandwich, stored as immutable `unadjusted_vcov`. Covariances stay in the
+    live result, not report-only dumps; reports include counts, dimension,
+    reference degrees of freedom, and selected weighting.
 
-Public validation and both policy APIs retain the same `cluster_weight` and
-cluster IDs through the honest split and nested selection. Validation reports
-member counts separately from independent heldout clusters. Numeric nulls and
-`unavailable_reason` survive policy JSON round trips; unavailable AUTOC evidence
-keeps the gate closed. A clustered constant score reports
-`estimation.targeting.degenerate_rank_distribution`, rather than manufacturing
-evidence from repeated members. A supplied randomized training mask that splits
-a cluster raises `estimation.crossfit.cluster_split`, as does a split holdout mask.
+    Clustered fits raise `InvalidRequestError` with `estimation.cate.*` codes:
+    `insufficient_clusters` (fewer than two clusters), `rank_deficient`,
+    `invalid_covariance`, `single_cluster_direction`, `singular_wald`, and
+    `uncertainty_unavailable`. Singular full covariance alone does not block a
+    supported scalar query. An unavailable required interaction Wald test does
+    refuse the fit.
 
-`targeting_rule` and `select_targeting_rule` accept
-`deploy_grain: Literal["unit", "cluster"] | None = None`. Only a declared
-`intervention_grain="cluster"` defaults to cluster deployment. Dependence clusters
-alone retain unit policies, including mixed-treatment observational clusters.
-An explicit unit policy for a cluster intervention refuses before reading data
-with `estimation.targeting.unsupported_unit_deployment`.
+    Validation and policy APIs keep `cluster_weight` and cluster IDs through
+    the honest split and nested selection. Validation reports member counts
+    separately from independent held-out clusters. JSON preserves numeric
+    nulls and `unavailable_reason`; unavailable AUTOC evidence keeps the gate
+    closed. Constant clustered scores refuse with
+    `estimation.targeting.degenerate_rank_distribution`. Training or holdout
+    masks that split clusters refuse with `estimation.crossfit.cluster_split`.
 
-Cluster deployment averages member scores, orders clusters by descending score
-and canonical ID, and takes the longest prefix fitting the requested budget.
-`cluster_weight="member_count"` budgets members; `"equal"` budgets clusters. The
-same weights govern fitting, selection and policy evaluation. The next cluster
-is never split or skipped to backfill unused capacity. Fractions `0` and `1`
-select nobody and everybody; an oversized first cluster selects nobody.
-`fraction` records the requested share, `achieved_fraction` the realized share;
-inner `FractionScore` rows also retain achieved shares.
+    `targeting_rule` and `select_targeting_rule` accept
+    `deploy_grain: Literal["unit", "cluster"] | None`. Only a declared
+    `intervention_grain="cluster"` defaults to cluster deployment. Dependence
+    clusters alone keep unit policies, including mixed-treatment observational
+    clusters. A unit policy for a cluster intervention refuses before reading
+    data with `estimation.targeting.unsupported_unit_deployment`.
 
-`CateResult.score(cols, *, cluster_ids=None, deploy_grain=None)` returns an aligned
-unit array in unit mode, or an immutable tuple of `ClusterScore(cluster_id, score,
-member_count)` records in canonical ID order in cluster mode. IDs are separate
-metadata. `TargetingRule.predict` returns aligned Boolean actions from its saved
-`CateScoreState`: unit policies use their frozen cutoff, cluster policies pool
-and budget the supplied batch and broadcast cluster actions. Supply the complete
-member roster for each deployment cluster. `predict` evaluates the candidate;
-`recommendation` remains the evidence gate for deploying it. An empty candidate
-has no conditional policy effect, with reason `estimation.targeting.empty_group`.
-A cluster policy's reported `threshold` is descriptive; it does not replace its
-ID tie break and prefix budget.
+    Cluster deployment averages member scores, orders clusters by descending
+    score and canonical ID, then takes the longest prefix that fits the budget.
+    `cluster_weight="member_count"` budgets members; `"equal"` budgets clusters.
+    The same weights apply to fitting, selection, and policy evaluation. A
+    cluster is never split or skipped to fill unused capacity. Fractions `0`
+    and `1` select nobody and everybody; an oversized first cluster selects
+    nobody. `fraction` is requested share; `achieved_fraction` is realized
+    share, also retained by inner `FractionScore` rows.
 
-Policy JSON includes the fitted basis, knots, category levels, centering and
-coefficients, so `TargetingRule.model_validate_json(rule.model_dump_json())`
-predicts without fitting again. CATE report dumps remain report-only; their
-separately serializable `score_state` supplies portable point prediction.
-`Analysis.estimate_cate`, `validate_cate`, `targeting_rule` and
-`select_targeting_rule` delegate to the same source APIs.
+    `CateResult.score(cols, *, cluster_ids=None, deploy_grain=None)` returns an
+    aligned unit array or an immutable tuple of `ClusterScore(cluster_id, score,
+    member_count)` records in canonical cluster-ID order. IDs are separate
+    metadata. `TargetingRule.predict` returns aligned Boolean actions from its
+    saved `CateScoreState`: unit rules use a frozen cutoff; cluster rules pool
+    the supplied batch, apply the budget, and broadcast each cluster's action.
+    Supply the full member roster for each cluster. `predict` scores a
+    candidate; `recommendation` remains the deployment evidence gate. Empty
+    candidates have no conditional policy effect and return
+    `estimation.targeting.empty_group`. A cluster rule's `threshold` is
+    descriptive; its ID tie-break and prefix budget determine selection.
+
+    Policy JSON includes fitted basis, knots, category levels, centering, and
+    coefficients, so loading it restores point prediction without refitting.
+    CATE report dumps are report-only; serialize `score_state` for portable
+    point prediction. `Analysis.estimate_cate`, `validate_cate`,
+    `targeting_rule`, and `select_targeting_rule` delegate to the same source
+    APIs.
 
 ::: increment.Covariate
 
@@ -767,53 +782,57 @@ separately serializable `score_state` supplies portable point prediction.
 ::: increment.segment_contrast
 
 
-Every value below is unweighted: each usable segment contributes equally,
-regardless of the exposure it carries. An exposure-weighted policy value was
-measured before this shipped and deliberately left out -- under weighting the
-winner's-curse correction could not meet the accuracy bar the unweighted
-correction is adopted against, and a weighted headline whose selection bias
-cannot be removed honestly is worse than none.
+Rollout recommendations give each usable segment equal weight. Exposure-
+weighted recommendations are not supported.
+
+??? info "Why rollout recommendations are unweighted"
+    An exposure-weighted policy value was evaluated and left out. Under
+    weighting, the winner's-curse correction did not meet the accuracy bar of
+    the adopted unweighted correction. A weighted headline without an honest
+    correction for selection bias would be misleading.
 
 ::: increment.segment_rollout_recommendation
 
 ## Exploratory multiplicity
 
-`select_exploratory_family` corrects whole-window `LiftEstimate` rows and segment
-`BreakoutEstimate` rows as one Benjamini-Hochberg family at FDR level `q`. Every
-returned row records `discovery`, `family_axes`, `family_q`, `family_threshold` and
-`family_size`, so a row read alone states which family corrected it. A selected
-row's interval is reissued at the Benjamini-Yekutieli level `1 - R*q/m`, capped at
-the row's own nominal level, and equals the interval `run_breakout(correction="bh")`
-returns for the same cell; unselected rows keep their nominal interval.
-The rows also preserve the canonical `family_procedure` value (`"bh"`,
-`"e_bh"`, or `"bonferroni"`). Older serialized rows with no recorded procedure
-remain `None`; presentation reports the procedure as unrecorded instead of
-guessing from interval or guarantee fields.
+Use `select_exploratory_family` to correct eligible whole-window and segment
+results together. It accepts only uncorrected fixed-horizon decision rows.
 
-Rows must be uncorrected fixed-horizon decision rows. Each refusal names every
-offending row in its `rows` context:
+??? info "Family membership and interval details"
+    `select_exploratory_family` corrects whole-window `LiftEstimate` rows and
+    segment `BreakoutEstimate` rows as one Benjamini-Hochberg family at FDR
+    level `q`. Each returned row records `discovery`, `family_axes`, `family_q`,
+    `family_threshold`, and `family_size`. A selected row's interval is
+    reissued at Benjamini-Yekutieli level `1 - R*q/m`, capped at its nominal
+    level, and matches `run_breakout(correction="bh")` for the same cell.
+    Unselected rows keep nominal intervals.
 
-| Combination | Classification |
-|---|---|
-| Mean, ratio and CUPED rows (Wald log-scale interval) | Supported: reissued from the persisted raw statistics and reference. |
-| Conversion and retention rows (exact binomial) | Supported: reinverted from the persisted counts, one-sided geometry kept. |
-| Clustered ratio rows (Fieller set) | Supported: reinverted from the persisted joint reference. |
-| Rows with no relative interval (non-positive arm mean), selected by an absolute margin or by their additive evidence against zero | Supported: the additive interval is reissued from the persisted `abs_diff`, `abs_se`, reference and `abs_alpha`, never narrower than the nominal interval. A row serialized before `abs_alpha` existed has no recorded level to cap at, so it is refused, `estimation.family.exploratory_construction`. |
-| Breakout segments, and whole-window rows beside them | Supported: one family over metric, arm and segment. |
-| Cells excluded by design (too few units, no control arm) | Not hypotheses: returned unchanged, outside the family. Outcome-based exclusions stay in `m` as non-rejections. |
-| Informative prior | A supported prior changes posterior fields only; family selection uses the persisted sampling evidence. A prior-bound row without a proven sampling-availability marker is refused for recomputation, `readout.legacy.sampling_unreconstructible`. |
-| Sequential inference | Unfinished: refused, `estimation.family.exploratory_sequential`. |
-| Quantile, percentile-winsorized and additive-scale rows | Unfinished: their interval cannot be reissued from persisted state without approximation, so they are refused, `estimation.family.exploratory_construction`. |
-| Rows already corrected, sensitivity rows, day-axis rows | Refused: `estimation.family.exploratory_pre_corrected`, `estimation.family.exploratory_non_decision`, `estimation.family.exploratory_row`. |
+    Rows retain canonical `family_procedure` (`"bh"`, `"e_bh"`, or
+    `"bonferroni"`). Older serialized rows without this field remain `None`;
+    presentation reports it as unrecorded rather than inferring it.
+
+    Every refusal names offending rows in its `rows` context:
+
+    | Combination | Classification |
+    |---|---|
+    | Mean, ratio, and CUPED rows (Wald log interval) | Supported: reissued from persisted statistics and reference. |
+    | Conversion and retention (exact binomial) | Supported: reinverted from persisted counts; one-sided geometry is kept. |
+    | Clustered ratio (Fieller set) | Supported: reinverted from persisted joint reference. |
+    | No relative interval, selected by an absolute margin or additive evidence against zero | Supported: additive interval uses persisted `abs_diff`, `abs_se`, reference, and `abs_alpha`, never narrower than nominal. Rows serialized before `abs_alpha` are refused with `estimation.family.exploratory_construction`. |
+    | Breakout segments and whole-window rows | Supported: one family across metric, arm, and segment. |
+    | Design-excluded cells (too few units or no control) | Not hypotheses; returned unchanged outside the family. Outcome-based exclusions remain in `m` as non-rejections. |
+    | Informative prior | Posterior fields may change; selection uses persisted sampling evidence. Prior-bound rows without a proven sampling-availability marker refuse with `readout.legacy.sampling_unreconstructible`. |
+    | Sequential inference | Unfinished; refused with `estimation.family.exploratory_sequential`. |
+    | Quantile, percentile-winsorized, and additive-scale rows | Unfinished; refused with `estimation.family.exploratory_construction` because intervals cannot be reissued without approximation. |
+    | Already-corrected, sensitivity, or day-axis rows | Refused with `estimation.family.exploratory_pre_corrected`, `estimation.family.exploratory_non_decision`, or `estimation.family.exploratory_row`. |
 
 ::: increment.estimation.family.select_exploratory_family
 
-`exploratory_family_exclusion` applies the same admissibility test to one row and
-returns the reason it cannot join the family, or `None`. Leave excluded rows out of
-the family and report the reason, instead of letting one cell refuse the call; the
-refusals carry the same strings in their `reasons` (or `constructions`) context.
-One-sided (`greater`/`less`) Wald, exact binomial and Fieller rows are reissued
-exactly, with their one-sided geometry, and are not excluded.
+`exploratory_family_exclusion` checks one row against the same rules. Exclude
+ineligible rows and report the returned reason instead of refusing the whole
+family; refusal context uses the same values in `reasons` or `constructions`.
+One-sided Wald, exact-binomial, and Fieller intervals are reissued with their
+one-sided geometry and remain eligible.
 
 ::: increment.estimation.family.exploratory_family_exclusion
 
