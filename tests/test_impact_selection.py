@@ -1987,10 +1987,11 @@ def test_affected_runner_accepts_auto_workers_and_arbitrary_positive_counts(
     assert "dist=loadgroup" in workers.stdout
 
     monkeypatch.setenv("INCREMENT_AFFECTED_EVIDENCE", "{}")
-    monkeypatch.setenv("INCREMENT_AFFECTED_WORKER_ALLOWANCE", "auto")
     specs = [type("Worker", (), {"popen": True, "env": {}})() for _ in range(9)]
-    pytest_xdist_setupnodes(cast(pytest.Config, None), specs)
-    assert os.environ["INCREMENT_AFFECTED_RESOLVED_WORKER_COUNT"] == "9"
+    for allowance in ("auto", "9"):
+        monkeypatch.setenv("INCREMENT_AFFECTED_WORKER_ALLOWANCE", allowance)
+        pytest_xdist_setupnodes(cast(pytest.Config, None), specs)
+        assert os.environ["INCREMENT_AFFECTED_RESOLVED_WORKER_COUNT"] == "9"
 
 
 def test_environment_identity_includes_dependency_set(monkeypatch: pytest.MonkeyPatch) -> None:
