@@ -38,6 +38,9 @@ from increment.errors import (
     CodedError as _CodedError,
 )
 from increment.errors import (
+    InvalidRequestError as _InvalidRequestError,
+)
+from increment.errors import (
     RefusalSpec as _RefusalSpec,
 )
 from increment.errors import (
@@ -188,6 +191,11 @@ _MOMENTS_COUNTS = _RefusalSpec(
     "source.moments.assignment_counts",
     _CapabilityError,
     template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
+)
+_MOMENTS_ASSIGNMENT_COUNTS_IDENTITY_MISMATCH = _RefusalSpec(
+    "moments.assignment_counts.identity_mismatch",
+    _InvalidRequestError,
+    template="assignment_counts include arm labels not present in moments rows: {mismatched!r}",
 )
 _MOMENTS_CLUSTER_GRAIN = _RefusalSpec(
     "source.moments.cluster_grain",
@@ -624,14 +632,61 @@ def _validate_moments_plan_format_pair(plans: set[str], *, sequential_checkpoint
             )
 
 
-def _cube_assignment_counts(rows: Sequence[Mapping[str, object]]) -> dict[str, int] | None:
+def _cube_assignment_counts(
+    rows: Sequence[Mapping[str, object]], *, boolean_group_ids: bool
+) -> dict[str, int] | None:
     candidate = None
     for row in rows:
         decoded = _parse_assignment_counts(row.get(ASSIGNMENT_COUNTS_FIELD))
+        if decoded is not None and boolean_group_ids:
+            normalized: dict[str, int] = {}
+            for group, count in decoded.items():
+                identity = {"True": "true", "False": "false"}.get(group, group)
+                if identity in normalized:
+                    _refuse(
+                        _MOMENTS_ASSIGNMENT_COUNTS_IDENTITY_MISMATCH,
+                        mismatched=tuple(sorted((group, identity))),
+                    )
+                normalized[identity] = count
+            decoded = normalized
         if decoded is None or (candidate is not None and decoded != candidate):
             return None
         candidate = decoded
     return candidate
+
+
+def _validate_assignment_count_identities(
+    counts: Mapping[str, int] | None,
+    rows: Sequence[Mapping[str, object]],
+) -> None:
+    if counts is None:
+        return
+    row_identities = {str(row["group_id"]) for row in rows if row.get("group_id") is not None}
+    if not row_identities:
+        return
+    excluded = {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
+    mismatched = tuple(sorted(set(counts) - row_identities - excluded))
+    if mismatched:
+        _refuse(
+            _MOMENTS_ASSIGNMENT_COUNTS_IDENTITY_MISMATCH,
+            mismatched=mismatched,
+        )
+
+
+def _validated_cube_assignment_counts(
+    rows: Sequence[Mapping[str, object]],
+    group_rows: Sequence[Mapping[str, object]],
+    *,
+    boolean_group_ids: bool,
+    design_summary: bool,
+) -> dict[str, int] | None:
+    counts = _cube_assignment_counts(rows, boolean_group_ids=boolean_group_ids)
+    _validate_assignment_count_identities(counts, group_rows)
+    if design_summary and counts is None:
+        invalid_compliance_state(
+            "design_summary requires valid assignment counts; re-export the complete source"
+        )
+    return counts
 
 
 def _cube_compliance_state(rows: Sequence[Mapping[str, object]]) -> dict[str, object] | None:
@@ -807,13 +862,18 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
 
 def _canonicalize_boolean_moment_group_ids(
     rows: Sequence[Mapping[str, object]],
-) -> list[Mapping[str, object]]:
-    return [
+) -> tuple[list[Mapping[str, object]], bool]:
+    raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
+    boolean_group_ids = bool(raw_group_ids) and all(
+        isinstance(group_id, bool) for group_id in raw_group_ids
+    )
+    normalized = [
         {**row, "group_id": "true" if row.get("group_id") else "false"}
         if isinstance(row.get("group_id"), bool)
         else row
         for row in rows
     ]
+    return normalized, boolean_group_ids
 
 
 def _check_moments_format(
@@ -832,6 +892,7 @@ def _check_moments_format(
     dict[str, object] | None,
 ]:
     """Validate and strip moments format, plan, count, and source envelopes."""
+    rows, boolean_group_ids = _canonicalize_boolean_moment_group_ids(rows)
     out: list[dict[str, object]] = []
     versions: set[int] = set()
     plans: set[str] = set()
@@ -920,11 +981,12 @@ def _check_moments_format(
         if key in seen_keys:
             _refuse(_MOMENTS_DUPLICATE_ROWS, key=key)
         seen_keys.add(key)
-    assignment_counts = _cube_assignment_counts(rows)
-    if envelope_identity is not None and assignment_counts is None:
-        invalid_compliance_state(
-            "design_summary requires valid assignment counts; re-export the complete source"
-        )
+    assignment_counts = _validated_cube_assignment_counts(
+        rows,
+        out,
+        boolean_group_ids=boolean_group_ids,
+        design_summary=envelope_identity is not None,
+    )
     if trigger_rows not in {0, len(rows)}:
         _refuse(
             _MOMENTS_FORMAT_INVALID,
@@ -1244,7 +1306,7 @@ class MomentsSource(SequentialSourceMixin):
             embedded_trigger_name,
             source_identity_record,
         ) = _check_moments_format(
-            _canonicalize_boolean_moment_group_ids(rows),
+            rows,
             require_plan=plan is None,
             require_source_identity=_source_identity_record is None,
         )

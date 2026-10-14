@@ -435,6 +435,10 @@ def _moment_group_label(value: object) -> str | None:
 
 def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
     """Read exact arm identities from ordinary rows or typed moments envelopes."""
+    raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
+    boolean_group_ids = bool(raw_group_ids) and all(
+        isinstance(group_id, bool) for group_id in raw_group_ids
+    )
     labels = {
         label for row in rows if (label := _moment_group_label(row.get("group_id"))) is not None
     }
@@ -446,7 +450,17 @@ def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...
             except (json.JSONDecodeError, TypeError):
                 counts = None
         if isinstance(counts, Mapping):
-            labels.update(str(label) for label in counts if isinstance(label, str) and label)
+            labels.update(
+                (
+                    "true"
+                    if boolean_group_ids and label == "True"
+                    else "false"
+                    if boolean_group_ids and label == "False"
+                    else label
+                )
+                for label in counts
+                if isinstance(label, str) and label
+            )
         compliance = row.get(COMPLIANCE_SUMMARY_FIELD)
         if isinstance(compliance, str):
             try:
