@@ -1586,7 +1586,7 @@ class TestPersistedSamplingReference:
         assert p_value_exc.value.context["reference_df"] == row.reference_df
 
         # Posterior access follows posterior_available; see
-        # docs/guides/priors-and-decisions.md:142-145.
+        # docs/guides/priors-and-decisions.md:73-75.
         assert row.prob_favorable() is None
 
         round_tripped = LiftEstimate.model_validate_json(row.model_dump_json())
