@@ -1207,6 +1207,7 @@ def _dashboard_breakout_reads_case() -> ParityCase:
         return sorted(row.model_dump_json() for row in rows)
 
     def probe(path: str, analysis: Analysis) -> None:
+        # Summary breakouts work; the dashboard-scoped facade remains definitions-only.
         if path != "from_definitions":
             with pytest.raises(CodedError) as caught:
                 analysis.dashboard_breakout_reads(Breakout(property="store"))
@@ -6501,6 +6502,7 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
             design=_ENCOURAGEMENT_ITT_DESIGN,
             uptake="uptake",
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7350,6 +7352,7 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
             design=design,
             uptake="clicked",
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:
@@ -7886,6 +7889,7 @@ def _conversion_route_breakout_case() -> ParityCase:
             control="control",
             metrics=specs,
             plan=plan,
+            breakouts=["store"],
         )
 
     def panel() -> Analysis:

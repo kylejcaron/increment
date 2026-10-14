@@ -238,7 +238,152 @@ def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_p
     assert reopened._src.context.study_id == "moments"
 
 
-def test_unit_summary_breakouts_refuse_cluster_at_panel_code():
+def test_unit_summary_breakout_uses_exposure_excluded_population():
+    frame = _summary_breakout_frame()
+    frame.loc[len(frame)] = {
+        "user_id": "A-control-extra",
+        "variant": "control",
+        "segment": "A",
+        "value": 3.0,
+    }
+    frame["exposure"] = [date(2026, 1, 1)] * len(frame)
+    frame.loc[0, "exposure"] = None
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        exposure_date="exposure",
+        on_unassigned="exclude",
+        breakouts=("segment",),
+    )
+    results = analysis.run_breakout()
+    expected = Analysis.from_unit_summary(
+        frame.dropna(subset=["exposure"]),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        exposure_date="exposure",
+        breakouts=("segment",),
+    ).run_breakout()
+
+    by_segment = {row.dimension_value: row for row in results}
+    expected_by_segment = {row.dimension_value: row for row in expected}
+    assert set(by_segment) == set(expected_by_segment)
+    for segment, row in by_segment.items():
+        actual_lift = row.require_lift()
+        expected_lift = expected_by_segment[segment].require_lift()
+        assert actual_lift.value == pytest.approx(expected_lift.value, abs=1e-12)
+        assert actual_lift.lb == pytest.approx(expected_lift.lb, abs=1e-12)
+        assert actual_lift.ub == pytest.approx(expected_lift.ub, abs=1e-12)
+
+
+def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
+
+    frame = _summary_breakout_frame()
+    frame.loc[len(frame)] = {
+        "user_id": "A-control-extra",
+        "variant": "control",
+        "segment": "A",
+        "value": 3.0,
+        "covariate": 1.0,
+    }
+    frame["covariate"] = [1.0] * len(frame)
+    frame.loc[0, "value"] = None
+    frame.loc[1, "covariate"] = None
+    with pytest.warns(IncrementWarning) as recorded:
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="value",
+                    type="mean",
+                    missing="drop",
+                    covariate="covariate",
+                    covariate_missing="impute",
+                )
+            ],
+            breakouts=("segment",),
+        )
+        results = analysis.run_breakout()
+
+    codes = warning_codes(recorded)
+    assert codes.count("frame.validation.metric_missing_drop") == 1
+    assert codes.count("frame.validation.metric_covariate_missing_imputed") == 1
+    assert results
+    metric = next(metric for metric in analysis._src.context.metrics if metric.name == "value")
+    rows = analysis._src._summary_breakout_source.moments(metric, by=["segment"])
+    control_a = next(row for row in rows if row["segment"] == "A" and row["group_id"] == "control")
+    assert (control_a["n"], control_a["ref_y"]) == (2, 2.5)
+
+
+def test_unit_summary_breakouts_apply_drop_and_zero_per_metric():
+    frame = _summary_breakout_frame()
+    frame.loc[0, "value"] = None
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[
+                MetricSpec(name="drop", type="mean", value_column="value", missing="drop"),
+                MetricSpec(name="zero", type="mean", value_column="value", missing="zero"),
+            ],
+            breakouts=("segment",),
+        )
+
+    for metric_name, expected_n, expected_mean in (
+        ("drop", 1, 2.0),
+        ("zero", 2, 1.0),
+    ):
+        metric = next(m for m in analysis._src.context.metrics if m.name == metric_name)
+        rows = analysis._src.moments(metric, by=["segment"])
+        control_a = next(
+            row for row in rows if row["segment"] == "A" and row["group_id"] == "control"
+        )
+        assert (control_a["n"], control_a["ref_y"]) == (expected_n, expected_mean)
+
+
+def test_unit_summary_breakout_is_available_through_readout_api():
+    analysis = Analysis.from_unit_summary(
+        _summary_breakout_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"value": "mean"},
+        breakouts=("segment",),
+    )
+
+    direct = readout_functions.breakout(analysis._src, "segment")
+
+    assert {(row.metric, row.dimension_value) for row in direct} == {
+        ("value", "A"),
+        ("value", "B"),
+    }
+    assert direct == analysis.run_breakout()
+
+
+def test_unit_summary_breakouts_allow_metric_named_ds():
+    frame = _summary_breakout_frame().rename(columns={"value": "ds"})
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[MetricSpec(name="ds", type="mean")],
+        breakouts=("segment",),
+    )
+
+    assert analysis.run_breakout()
+
+
+def test_unit_summary_breakouts_refuse_cluster_with_summary_capability_code():
     frame = _summary_breakout_frame()
     frame["cluster"] = [f"cluster-{i // 2}" for i in range(len(frame))]
     with pytest.raises(CapabilityError) as raised:

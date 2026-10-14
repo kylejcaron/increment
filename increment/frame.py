@@ -455,6 +455,14 @@ class FrameTotalsSource(SequentialSourceMixin):
                 route="use readouts.run, which routes quantiles automatically",
             )
         if by:
+            if self._summary_breakout_source is not None:
+                return self._summary_breakout_source.moments(
+                    metric,
+                    grain=grain,
+                    by=by,
+                    completed_windows_only=completed_windows_only,
+                    include_covariate=include_covariate,
+                )
             refuse(
                 _FRAME_BREAKOUTS_UNSUPPORTED,
                 dimensions=tuple(by),
@@ -993,7 +1001,35 @@ def from_unit_summary(  # noqa: PLR0913
                 "route.unsupported",
                 "unit-summary breakouts do not expose registered sequential segment paths",
             )
-        panel_frame = nw.from_native(frame, eager_only=True)
+        panel_frame = source._frame
+        canonical_columns = {"unit_id", "group_id", "ds"}
+        remapped_columns: dict[str, str] = {}
+        for spec in source._specs:
+            for column in spec.source_columns:
+                if column in canonical_columns and column not in remapped_columns:
+                    remapped_columns[column] = _scratch_name(
+                        panel_frame, f"__summary_value_{len(remapped_columns)}__"
+                    )
+        if uptake in canonical_columns and uptake not in remapped_columns:
+            remapped_columns[uptake] = _scratch_name(
+                panel_frame, f"__summary_value_{len(remapped_columns)}__"
+            )
+        if remapped_columns:
+            panel_frame = panel_frame.rename(remapped_columns)
+        panel_specs = []
+        for spec in source._specs:
+            updates: dict[str, str] = {}
+            if spec.type == "ratio":
+                if spec.numerator in remapped_columns:
+                    updates["numerator"] = remapped_columns[spec.numerator]
+            elif spec.y_column in remapped_columns:
+                updates["value_column"] = remapped_columns[spec.y_column]
+            for column in ("denominator", "covariate"):
+                value = getattr(spec, column)
+                if value in remapped_columns:
+                    updates[column] = remapped_columns[value]
+            panel_specs.append(spec.model_copy(update=updates) if updates else spec)
+        panel_uptake = remapped_columns.get(uptake, uptake)
         synthetic_date = _scratch_name(panel_frame, "__summary_day__")
         panel_frame = panel_frame.with_columns(nw.lit(dt.date(2000, 1, 1)).alias(synthetic_date))
         panel = FramePanelSource.from_frame(
@@ -1002,13 +1038,14 @@ def from_unit_summary(  # noqa: PLR0913
             group=group,
             date=synthetic_date,
             control=control,
-            metrics=metrics,
+            metrics=panel_specs,
             experiment_id=experiment_id,
-            uptake=uptake,
+            uptake=panel_uptake,
             design=source.design,
             plan=plan,
             breakouts=breakouts,
             on_unassigned=on_unassigned,
+            _summary_reducer=True,
         )
         source.breakouts = panel.breakouts
         source._summary_breakout_source = _RestrictedSummaryBreakoutSource(panel)
@@ -1121,9 +1158,12 @@ class FramePanelSource(SequentialSourceMixin):
             dict(fact_max_ds) if fact_max_ds else {}
         )
         self._unassigned = unassigned
-        self._moment_rows_cache: dict[tuple[Grain, str | None, bool], list[dict[str, Any]]] = {}
+        self._summary_reducer = False
+        self._moment_rows_cache: dict[
+            tuple[Grain, str | None, bool, str | None], list[dict[str, Any]]
+        ] = {}
         self._moment_failures_cache: dict[
-            tuple[Grain, str | None, bool], dict[str, _DeferredRefusal]
+            tuple[Grain, str | None, bool, str | None], dict[str, _DeferredRefusal]
         ] = {}
         metric_catalog = tuple(
             synthesised_metrics
@@ -1278,7 +1318,12 @@ class FramePanelSource(SequentialSourceMixin):
             _raise("frame.frame_panel.asof_moments_completed", band=metric.band, name=metric.name)
         # memoize per grain and breakout, so an M-metric readout does one pass,
         # while independent dimensions retain independent cached rows.
-        cache_key = (grain, breakout, completed_windows_only if grain == "asof" else False)
+        cache_key = (
+            grain,
+            breakout,
+            completed_windows_only if grain == "asof" else False,
+            metric.name if self._summary_reducer else None,
+        )
         rows = self._moment_rows_cache.get(cache_key)
         if rows is None:
             synthesised = cast("Sequence[Metric]", self._context.metrics)
@@ -1319,36 +1364,28 @@ class FramePanelSource(SequentialSourceMixin):
                     ),
                 )
             else:
-                covariate_names = {
-                    spec.covariate
-                    for spec in self._specs
-                    if spec.covariate is not None
-                    and spec.window_days is None
-                    and spec.type != "retention"
-                }
-                covariates: dict[str, nw.DataFrame[Any]] = {}
-                covariate_failures: dict[str, _DeferredRefusal] = {}
-                for name in covariate_names:
-                    try:
-                        covariates[name] = self._resolve_panel_covariate(name)
-                    except InvalidRequestError as exc:
-                        if exc.code != "frame.frame_panel.unit_covariate_varies":
-                            raise
-                        covariate_failures[name] = (_REFUSALS[exc.code], exc.context)
-                # A covariate that varies within a unit is this metric's own
-                # hazard, not every sibling metric's: defer it the same way
-                # a collapsed-percentile-bound refusal defers above, so a
-                # metric with no covariate (or a sound one) still reads.
-                usable_specs = [
-                    spec for spec in self._specs if spec.covariate not in covariate_failures
-                ]
+                specs = [self._spec_for(metric)] if self._summary_reducer else self._specs
+                summary_metrics = [metric] if self._summary_reducer else list(synthesised)
+                total_panel = self._sparse_panel
+                if self._summary_reducer and specs[0].missing == "drop":
+                    missing = nw.col(specs[0].y_column).is_null()
+                    if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
+                        missing = missing | nw.col(specs[0].y_column).is_nan()
+                    if specs[0].denominator is not None:
+                        denominator = specs[0].denominator
+                        missing = missing | nw.col(denominator).is_null()
+                        if total_panel.schema[denominator] in (nw.Float32, nw.Float64):
+                            missing = missing | nw.col(denominator).is_nan()
+                    total_panel = total_panel.filter(~missing)
+                covariates, covariate_failures = self._total_covariates(specs)
+                usable_specs = [spec for spec in specs if spec.covariate not in covariate_failures]
                 usable_synthesised = [
                     metric
-                    for spec, metric in zip(self._specs, synthesised, strict=True)
+                    for spec, metric in zip(specs, summary_metrics, strict=True)
                     if spec.covariate not in covariate_failures
                 ]
                 rows, total_failures = _total_moment_rows(
-                    self._sparse_panel,
+                    total_panel,
                     usable_specs,
                     synthesised=usable_synthesised,
                     experiment_id=self._experiment_id,
@@ -1363,7 +1400,7 @@ class FramePanelSource(SequentialSourceMixin):
                 )
                 failures = {
                     spec.name: covariate_failures[spec.covariate]
-                    for spec in self._specs
+                    for spec in specs
                     if spec.covariate in covariate_failures
                 }
                 failures.update(total_failures)
@@ -1378,6 +1415,44 @@ class FramePanelSource(SequentialSourceMixin):
             failure_spec, context = failure
             refuse(failure_spec, **context)
         return [dict(r) for r in rows if r["metric"] == metric.name]
+
+    def _total_covariates(
+        self, specs: Sequence[MetricSpec]
+    ) -> tuple[dict[str, nw.DataFrame[Any]], dict[str, _DeferredRefusal]]:
+        covariate_names = {
+            spec.covariate
+            for spec in specs
+            if spec.covariate is not None and spec.window_days is None and spec.type != "retention"
+        }
+        covariates: dict[str, nw.DataFrame[Any]] = {}
+        failures: dict[str, _DeferredRefusal] = {}
+        for name in covariate_names:
+            try:
+                covariates[name] = self._resolve_panel_covariate(name)
+            except InvalidRequestError as exc:
+                if exc.code != "frame.frame_panel.unit_covariate_varies":
+                    raise
+                failures[name] = (_REFUSALS[exc.code], exc.context)
+        if self._summary_reducer:
+            for spec in specs:
+                name = spec.covariate
+                if name is None or name not in covariates:
+                    continue
+                per_unit = covariates[name]
+                missing_covariate = nw.col(name).is_null()
+                if per_unit.schema[name] in (nw.Float32, nw.Float64):
+                    per_unit = per_unit.with_columns(nw.col(name).fill_nan(None).alias(name))
+                missing_count = int(per_unit.select(missing_covariate.cast(nw.Int64).sum()).item())
+                if missing_count:
+                    fill = (
+                        0.0
+                        if spec.covariate_missing == "zero"
+                        else float(per_unit.select(nw.col(name).mean()).item())
+                    )
+                    covariates[name] = per_unit.with_columns(
+                        nw.col(name).fill_null(fill).alias(name)
+                    )
+        return covariates, failures
 
     def _spec_for(self, metric: Metric) -> MetricSpec:
         spec = self._specs_by_name.get(metric.name)
@@ -1615,6 +1690,7 @@ class FramePanelSource(SequentialSourceMixin):
         observation_end: dt.date | dt.datetime | str | int | float | None = None,
         breakouts: Sequence[str] = (),
         on_unassigned: Literal["error", "exclude"] = "error",
+        _summary_reducer: bool = False,
     ) -> FramePanelSource:
         """Build a source from a one-row-per-unit-per-day dataframe. See :func:`from_unit_panel`."""
         specs = _coerce_source_metrics(metrics, design=design)
@@ -1688,15 +1764,16 @@ class FramePanelSource(SequentialSourceMixin):
             roles.append(("exposure_date", exposure_date))
         roles.extend((f"breakout {name!r}", name) for name in breakouts)
         _validate_columns(nwf, roles=roles, metrics=specs)
-        declarations = [("metric value", spec.y_column) for spec in specs]
-        declarations.extend(
-            ("metric denominator", spec.denominator)
-            for spec in specs
-            if spec.denominator is not None
-        )
-        if uptake is not None:
-            declarations.append(("uptake", uptake))
-        _validate_panel_declarations(declarations)
+        if not _summary_reducer:
+            declarations = [("metric value", spec.y_column) for spec in specs]
+            declarations.extend(
+                ("metric denominator", spec.denominator)
+                for spec in specs
+                if spec.denominator is not None
+            )
+            if uptake is not None:
+                declarations.append(("uptake", uptake))
+            _validate_panel_declarations(declarations)
         nwf = _canonicalize_group_identity(nwf, group)
         metric_columns = sorted(
             {c for s in specs for c in (s.y_column, s.denominator, s.covariate) if c}
@@ -1739,7 +1816,8 @@ class FramePanelSource(SequentialSourceMixin):
                 _validate_control(nwf, group, control)
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
-        nwf = _enforce_missing_policy(nwf, specs, shape="panel")
+        if not _summary_reducer:
+            nwf = _enforce_missing_policy(nwf, specs, shape="panel")
         _validate_conversion_binary(nwf, specs)
         identity = _unit_identity(nwf, unit=unit, group=group, breakouts=breakouts)
 
@@ -1799,6 +1877,7 @@ class FramePanelSource(SequentialSourceMixin):
             unit=unit,
             date=date,
             value_columns=value_columns,
+            zero_fill=not _summary_reducer,
         )
 
         window_days = design.uptake.window_days if isinstance(design, Encouragement) else None
@@ -1826,6 +1905,7 @@ class FramePanelSource(SequentialSourceMixin):
             synthesised_metrics=synthesised_metrics,
         )
         source._identity = identity.with_row_index(source._identity_ordinal)
+        source._summary_reducer = _summary_reducer
         return source
 
 
