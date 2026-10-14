@@ -178,6 +178,8 @@ fact_sources:
   declares an occurrence-only event: counting, conversion, and retention
   work on it, but value aggregations (`sum`, `avg_event`,
   `avg_calendar_day`, ...) do not.
+At resolution, source SQL must expose `event`, the declared timestamp column,
+and every declared entity column under those aliases.
 - **Properties** are unit attributes you filter and break out on. Each
   carries an `as_of` annotation declaring *when* the value is measured:
   `event_time` (the default, free to change during the experiment, and

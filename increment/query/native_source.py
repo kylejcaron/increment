@@ -94,6 +94,7 @@ from increment.query.fact_resolution import (
     _rename_to_builder_cols,
     _resolve_breakout_fact_source,
     _resolve_value_column,
+    validate_fact_source_schema,
 )
 from increment.query.integrity import (
     arm_counts,
@@ -534,6 +535,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
+        for source in sources.values():
+            validate_fact_source_schema(self._session.source_sql(source.sql), source)
         enrolled = self._scope_enrolled_units()
         # The generous lower margin limits only the snapshot copy, not builder
         # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
@@ -932,7 +935,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # fact table, _get_fact_table synthesizes an all-NULL one, so a post-rename check
         # would always pass and silently drop every row.
         fs, _fact = _find_fact_source(self._defs, exposure_def.fact)
-        raw_has_experiment_id = "experiment_id" in self._session.source_sql(fs.sql).columns
+        source_table = self._session.source_sql(fs.sql)
+        validate_fact_source_schema(source_table, fs)
+        raw_has_experiment_id = "experiment_id" in source_table.columns
         # Scoping before pinning (`dim_joined=False`) skips the dim join when the
         # source declares no dims: scoping reads no joined property, and
         # `_assemble_publication` rebuilds the joined table from the snapshot.
@@ -940,9 +945,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if dim_joined or fs.dims:
             tbl = self._get_fact_table(fs)
         else:
-            tbl = _rename_to_builder_cols(
-                self._session.source_sql(fs.sql), fs, self._experiment.unit
-            )
+            tbl = _rename_to_builder_cols(source_table, fs, self._experiment.unit)
         tbl = tbl.filter(tbl.event == exposure_def.fact)
         if raw_has_experiment_id:
             # NULL experiment_id can mark unrelated rows sharing this fact, such as

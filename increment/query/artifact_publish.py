@@ -68,8 +68,6 @@ def _utc_now() -> dt.datetime:
 
 
 def _relation_table(rows: list[dict[str, object]], role: str) -> ir.Table:
-    if rows:
-        return ibis.memtable(rows)
     type_names = {
         "STRING": "string",
         "INT64": "int64",
@@ -84,6 +82,8 @@ def _relation_table(rows: list[dict[str, object]], role: str) -> ir.Table:
             for field, type_tag, _nullable in ARTIFACT_RELATION_SCHEMAS[role]
         }
     )
+    if rows:
+        return ibis.memtable(rows, schema=schema)
     # ibis<=10.x drops every declared column when a memtable is built from
     # an empty Python list -- `schema` is accepted at expression build time
     # but ignored once materialised (ibis-project/ibis#10940, fixed in
@@ -601,7 +601,11 @@ class ArtifactPublisher:
                 ),
                 "first_exposure_date": row["first_exposure_date"],
             }
-            for row in self._con.to_pyarrow(exposures).to_pylist()
+            # Timestamp artifact columns have a UTC-microsecond wire scale;
+            # keep the source-precision exposure expression for SQL stats.
+            for row in self._con.to_pyarrow(
+                exposures.mutate(first_exposure_ts=exposures.first_exposure_ts.truncate("us"))
+            ).to_pylist()
         ]
         measure_specs: dict[str, tuple[Any, Metric, str | None, str, tuple[Any, ...]]] = {}
         physical_specs: dict[tuple[Any, ...], tuple[Any, Metric, str | None, str]] = {}
@@ -923,6 +927,7 @@ class ArtifactPublisher:
     def _trigger_extension_spec(self, entry: Any, request: Any) -> _PublicationExtensionSpec:
         rows: list[dict[str, object]] = []
         population = self._get_trigger_population()
+        population = population.mutate(first_trigger_ts=population.first_trigger_ts.truncate("us"))
         for row in self._con.to_pyarrow(population).to_pylist():
             timestamp = row["first_trigger_ts"]
             timestamp = (
@@ -1074,11 +1079,12 @@ class ArtifactPublisher:
             )
         first = eligible.group_by(exposures.unit_id).aggregate(first_uptake_ts=events.ts.min())
         joined = exposures.left_join(first, "unit_id")
+        first_uptake_ts = first.first_uptake_ts.truncate("us")
         query = joined.select(
             exposures.experiment_id,
             exposures.unit_id,
             uptake=first.first_uptake_ts.notnull(),
-            first_uptake_ts=first.first_uptake_ts.cast("timestamp('UTC')"),
+            first_uptake_ts=first_uptake_ts.cast("timestamp('UTC')"),
         )
         edge = compliance_event_horizon(exposures, events, self._experiment)
         coverage = ibis.literal(1).name("_one").as_table().select(edge=edge)
