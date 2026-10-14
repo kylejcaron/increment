@@ -36,6 +36,14 @@ def test_make_test_runs_explicit_slow_selector() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+    leaked_arguments = (
+        "-k test_make_test_runs_explicit_slow_selector",
+        "--splits",
+        "--durations-path",
+        "--junitxml=/tmp/task5-outer-junit.xml",
+        "--cov=increment",
+    )
+    assert not any(argument in result.stdout for argument in leaked_arguments), result.stdout
 
 
 def test_test_affected_forwards_user_pytest_args() -> None:
