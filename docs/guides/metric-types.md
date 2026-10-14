@@ -1,23 +1,23 @@
 # Metric types
 
-Choose a metric type that matches what one unit contributes: a numeric outcome
-(`mean`), an event indicator (`conversion`), a return window (`retention`), or
-a ratio of totals (`ratio`). Define metrics in warehouse YAML or with dataframe
-`MetricSpec` objects. See [Reading results](reading-results.md) and the
-[population/status table](multiplicity.md) when interpreting results.
+Choose the metric type that matches what one unit contributes: a numeric
+outcome (`mean`), an event indicator (`conversion`), a return window
+(`retention`), or a ratio of totals (`ratio`). Define metrics in warehouse YAML
+or with dataframe `MetricSpec` objects; see [Reading results](reading-results.md)
+and the [population/status table](multiplicity.md) when interpreting them.
 
 Warehouse definitions reduce events to unit outcomes; dataframe inputs already
-contain per-unit values. Support differs by metric and source. See
+hold per-unit values. Support differs by metric and source; see
 [method compatibility](compatibility.md) for the full limits.
 
 ## Mean
 
-Aggregate a numeric fact per unit, then average across units. The
-`aggregation` field selects the per-unit reduction: `sum`, `count`,
-`count_distinct`, `avg_event`, `avg_calendar_day`, `min`, or `max`.
-`avg_event` divides the qualifying event-value sum by the qualifying event
-count. `avg_calendar_day` divides the sum by the inclusive admitted calendar-
-day count, treating eventless days as zero. Bare `avg` is rejected.
+Aggregate a numeric fact per unit, then average across units. `aggregation`
+selects the per-unit reduction: `sum`, `count`, `count_distinct`, `avg_event`,
+`avg_calendar_day`, `min`, or `max`. `avg_event` divides the qualifying
+event-value sum by the qualifying event count; `avg_calendar_day` divides the
+sum by the inclusive admitted calendar-day count, treating eventless days as
+zero. Bare `avg` is rejected.
 
 ```yaml
 - type: mean
@@ -37,16 +37,22 @@ day count, treating eventless days as zero. Bare `avg` is rejected.
 `filters` restrict which events qualify and reference properties declared on
 the fact source. `preferred_direction` (`increase`, `decrease`, or `neutral`)
 declares which direction is favorable (a latency metric prefers `decrease`)
-and drives downstream favorability readouts.
+and drives favorability readouts.
+
+??? info "Inference reference for ordinary means"
+    For ordinary independent iid means,
+    `increment.estimation.infer_independent_mean` accepts centered `ArmStats`,
+    uses within-arm `ddof=1` and a Welch-Satterthwaite reference, and stores
+    its degrees of freedom and components. It does not apply to adjusted
+    scores, clusters, or estimated-cutoff moments.
 
 ### Winsorization
 
-Definitions-backed sources can winsorize any mean aggregation. Dataframe
-`MetricSpec` treats each supplied row as the unit outcome and sums it before
-winsorization.
+Use winsorization when a few extreme values would dominate a mean, and report
+the capped outcome it estimates. Definitions-backed sources can winsorize any
+mean aggregation; a dataframe `MetricSpec` treats each supplied row as the
+unit outcome and sums it before winsorizing.
 
-Use winsorization when extreme values would dominate a mean, and report the
-transformed outcome it estimates:
 ```yaml
 - type: mean
   name: revenue_per_user
@@ -187,11 +193,6 @@ treatment-driven change in the tail; it is diagnostic, not an adjustment.
     power; that uniform-coverage limit does not imply bootstrap calibration on
     specified distributions is impossible.
 
-For ordinary independent iid means, `increment.estimation.infer_independent_mean`
-accepts centered `ArmStats`, uses within-arm `ddof=1` and a Welch-Satterthwaite
-reference, and stores its degrees of freedom and components. It does not apply
-to adjusted scores, clusters, or estimated-cutoff moments.
-
 ## Conversion
 
 Binary outcome: did the event occur at least once within the window? Each unit
@@ -212,19 +213,18 @@ fact source); it needs the event to exist, not to carry a value.
 
 ## Retention
 
-A survival outcome: did the unit return on or after day `threshold_days`?
-This single field supports both band shapes. A bare integer `N` declares the
-**unbounded** band `[N, inf)`: "returned on or after day N, ever." A
-two-element `[a, b]` declares the **bounded**, half-open band `[a, b)`:
-"returned during days a..b-1." The band is day-0-indexed: an event counts
-when
+Did the unit return on or after day `threshold_days`? One field declares
+either band shape. A bare integer `N` is the **unbounded** band `[N, inf)`:
+returned on or after day N, ever. A two-element `[a, b]` is the **bounded**,
+half-open band `[a, b)`: returned during days a..b-1. Day 0 is the exposure
+day, so a bounded return counts when
 
 $$
 \text{first exposure date} + a \le ds <
 \text{first exposure date} + b
 $$
 
-for the bounded case; the unbounded case drops the upper bound.
+and the unbounded case drops the upper bound.
 
 ```yaml
 - type: retention
@@ -248,180 +248,177 @@ An unbounded band is the same field with a bare integer:
   threshold_days: 7  # unbounded band [7, inf)
 ```
 
-Because a bounded band closes on the right, a unit's outcome is
-**final** at `first_exposure_date + b` (its *maturity*). An unbounded
-outcome has no completion date; it can only ratchet 0 → 1 as more data
-arrives, so it is not reportable on the cohort (exposure-indexed) day
-axis; only on the calendar axis, below. `window_days` is not a
-retention field: declaring it on a `RetentionMetric` raises at
-construction rather than being silently ignored; both band edges live
-in `threshold_days`.
+A bounded band closes on the right, so a unit's outcome is **final** at
+`first_exposure_date + b` (its *maturity*). An unbounded outcome has no
+completion date; it can only ratchet 0 → 1 as more data arrives, so it is
+reportable only on the calendar axis (below), not on the cohort
+(exposure-indexed) day axis. `window_days` is not a retention field: declaring
+it on a `RetentionMetric` raises at construction; both band edges live in
+`threshold_days`.
 
 ### How days are counted: day 0 and the day boundary
 
 Two conventions decide which day an event lands on, and both are common
-sources of "your number doesn't match mine" when comparing against a
-warehouse query or a product-analytics tool.
+sources of "your number doesn't match mine" against a warehouse query or a
+product-analytics tool.
 
 **The exposure day is day 0.** The band test is
-`ds >= first_exposure_date + threshold_days`, so "d7 retention" means
-the unit returned on or after the 7th calendar day *after* the exposure
-day — the exposure day itself is day 0, not day 1. A warehouse query
-that counts the exposure day as day 1 is measuring a band shifted by
-one day and will produce a genuinely different number, not a rounding
-difference. When reconciling, check the indexing convention first.
+`ds >= first_exposure_date + threshold_days`, so "d7 retention" means the unit
+returned on or after the 7th calendar day *after* the exposure day. A
+warehouse query that counts the exposure day as day 1 measures a band shifted
+by one day and produces a genuinely different number. When reconciling, check
+the indexing convention first.
 
-**Day boundaries are calendar days at the declared `day_boundary`
-(default UTC).** The exposure timestamp is cast to a calendar date at
-the experiment's declared day boundary -- plain `"UTC"` by default, or
-a fixed UTC offset -- and the band is date-interval arithmetic on that
-date. Declare it on the experiment, or once as a definitions-level
-default:
+**Days are calendar days at the declared `day_boundary` (default UTC).** The
+exposure timestamp is cast to a calendar date at the boundary (plain `"UTC"`
+by default, or a fixed UTC offset), and the band is date arithmetic on that
+date. Declare it on the experiment, or once as a definitions-level default:
 
 ```yaml
 day_boundary: "UTC-05:00"
 ```
 
-The declared experiment window follows the same rule: `start`, `end` and
+The experiment window follows the same rule: `start`, `end` and
 `observation_end` name days at the boundary. A value without a UTC offset is
-wall-clock time at the boundary, so its written date is the day; a value with an
-offset is converted to the boundary first, so two spellings of one instant open
-the same window (worked example in
+wall-clock time at the boundary, so its written date is the day; a value with
+an offset is converted to the boundary first, so two spellings of one instant
+open the same window (worked example in
 [Data model](data-model.md#window-edges-and-the-day-boundary)).
 
 Only fixed offsets are accepted. Named IANA zones (DST-aware) are not
-supported yet: a fixed offset has a portable translation on every
-warehouse backend, a DST-aware zone does not. Two consequences worth
-knowing under any boundary: a unit exposed ten minutes before the
-boundary (23:50 UTC under the default) gets a ten-minute "day 0" — its
-first full day of observation is day 1 — and day buckets shift
-relative to any analytics tooling that buckets events at a different
-boundary.
+supported yet: a fixed offset translates portably to every warehouse backend;
+a DST-aware zone does not.
 
-**The boundary is part of the estimand — declare it before launch and
-treat it as frozen.** Changing `day_boundary` mid-flight reshuffles
-every day bucket: exposure days move, window and band edges move with
-them, the daily series is discontinuous at the change, and any
-pre/post comparison across it is invalid. It is an experiment-design
-declaration, not a display preference.
+!!! warning "The boundary is part of the estimand: declare it before launch and freeze it"
+    Changing `day_boundary` mid-flight reshuffles every day bucket: exposure
+    days move, window and band edges move with them, the daily series is
+    discontinuous at the change, and any pre/post comparison across it is
+    invalid. It is an experiment-design declaration, not a display preference.
 
-**Anchor the boundary in the activity trough.** Choose the offset that
-rolls the day where the product is quietest — an EST-centred org might
-declare `UTC-09:00`, cutting days at roughly 4 AM local — so as
-little event mass as possible sits at the bucket edge. A fixed offset
-drifts ±1 hour against the wall clock across DST transitions, but it
-does so deterministically; the buckets themselves stay stable.
+!!! tip "Anchor the boundary in the activity trough"
+    Choose the offset that rolls the day where the product is quietest (an
+    EST-centred org might declare `UTC-09:00`, cutting days at roughly 4 AM
+    local) so as little event mass as possible sits at the bucket edge. A
+    fixed offset drifts ±1 hour against the wall clock across DST transitions,
+    but deterministically; the buckets themselves stay stable.
 
-**Short thresholds stay heterogeneous.** Calendar-day bucketing leaves
-each unit's effective observation window heterogeneous by up to a day
-(the short-day-0 artifact above), and no choice of boundary — no
-calendar convention at all — removes that. For d1-class retention the
-heterogeneity is the same order as the window itself, so the estimand
-is not uniform across units; the remedy is a per-metric elapsed-24h
-window (a tracked follow-up), not a different `day_boundary`.
+??? info "Short day 0, short thresholds, and cross-segment reads"
+    Under any boundary, a unit exposed ten minutes before it (23:50 UTC under
+    the default) gets a ten-minute "day 0"; its first full day of observation
+    is day 1. Day buckets also shift relative to any analytics tooling that
+    buckets events at a different boundary.
 
-**Cross-segment reads.** Each segment's own lift is internally valid
-under any arm-symmetric convention. What a boundary that is not
-aligned with a segment's local day degrades is comparing effect sizes
-*across* timezone-correlated segments (a US vs. EU breakout, say),
-whose traffic gets sliced into days differently. With a
-trough-anchored boundary this is second-order at d7 and beyond.
+    Calendar-day bucketing therefore leaves each unit's effective observation
+    window heterogeneous by up to a day, and no choice of boundary removes
+    that. For d1-class retention the heterogeneity is the same order as the
+    window itself, so the estimand is not uniform across units; the remedy is
+    a per-metric elapsed-24h window (a tracked follow-up), not a different
+    `day_boundary`.
+
+    Each segment's own lift is internally valid under any arm-symmetric
+    convention. What a boundary not aligned with a segment's local day
+    degrades is comparing effect sizes *across* timezone-correlated segments
+    (a US vs. EU breakout, say), whose traffic is sliced into days
+    differently. With a trough-anchored boundary this is second-order at d7
+    and beyond.
 
 ### Two series, one metric
 
 Retention has two readouts, and they answer different questions:
 
 - `run()` / `run_breakout` compare each unit's **mature, whole-window**
-  outcome, arm to arm: the windowed decision estimand. Unbiased, and
-  the number a ship/no-ship call should be made on.
-- `run_asof` / `run_asof_lift` return a **cumulative monitoring
-  series** indexed by calendar date: each date's value blends whatever
-  It starts earlier (as soon as a unit clears `threshold_days`, rather
-  than once its whole band closes) and carries much less sampling noise
-  per point, which
-  is what makes it useful for watching a running experiment. It is not,
-  however, a stable reading of one parameter: the tenure mix changes
-  every day, so consecutive points are not comparable to one another as
-  a time series, and the series can diverge from `run()`'s decision
-  estimate whenever the arms return at different *times* rather than
-  different *rates*; even a true whole-window lift of zero can show up
-  as a large early divergence. Pass `completed_windows_only=True` to
-  gate on full maturity instead, which restores the old behaviour: a
-  maturing decision estimate that only ever counts units whose band has
-  fully closed.
+  outcome, arm to arm: the windowed decision estimand. Unbiased, and the
+  number a ship/no-ship call should be made on.
+- `run_asof` / `run_asof_lift` return a **cumulative monitoring series**
+  indexed by calendar date: each date's value blends whatever tenure every
+  unit has reached by that date. It starts earlier (as soon as a unit clears
+  `threshold_days`, rather than once its whole band closes) and carries much
+  less sampling noise per point, which is what makes it useful for watching a
+  running experiment.
+
+!!! warning "The monitoring series is not a decision estimate"
+    The tenure mix changes every day, so consecutive points are not comparable
+    as a time series, and the series can diverge from `run()`'s decision
+    estimate whenever the arms return at different *times* rather than
+    different *rates*; even a true whole-window lift of zero can show up as a
+    large early divergence. Pass `completed_windows_only=True` to gate on full
+    maturity instead: a maturing decision estimate that only counts units
+    whose band has fully closed.
 
 ### Peeking at the monitoring series
 
-Repeated inspection requires a registered raw-likelihood process. Declare the
-sampling law, proper predictive priors, metric × arm × segment roster and common
-joint-unit reveal assumptions before supplying data. See [Sequential
-inference](sequential-inference.md) for the complete construction and replay API.
+Looking at the series repeatedly and acting on it requires a registered
+sequential process declared before any data is read; see
+[Sequential inference](sequential-inference.md) for the construction and
+replay API.
 
-Bernoulli outcomes use Beta prediction and are the only sampling law admitted
-by the public sequential replay/readout views. Scalar Gaussian outcomes use NIG
-prediction, and ratios require actual joint numerator/denominator observations
-under a declared bivariate Gaussian law and positive population denominator
-means; those Gaussian and ratio paths remain private raw diagnostic kernels and
-cannot produce public sequential significance or readouts. These assumptions
-do not follow from a metric type, positive observed mean, or finite standard
-error.
+??? info "What sequential retention requires"
+    Declare the sampling law, proper predictive priors, the metric × arm ×
+    segment roster, and the common joint-unit reveal assumptions before
+    supplying data. Bernoulli outcomes use Beta prediction and are the only
+    sampling law admitted by the public sequential replay/readout views.
+    Scalar Gaussian outcomes use NIG prediction, and ratios require actual
+    joint numerator/denominator observations under a declared bivariate
+    Gaussian law and positive population denominator means; those Gaussian
+    and ratio paths remain private raw diagnostic kernels and cannot produce
+    public sequential significance or readouts. These assumptions do not
+    follow from a metric type, a positive observed mean, or a finite standard
+    error.
 
-Every relevant outcome for a unit must be revealed together after the longest
-required window, in an outcome-independent order. Bounded windows and
-`completed_windows_only=True` alone do not prove finalization. Native and panel
-sources require `capture_sequential(as_of=..., finalized=True)`; continuation
-checks prior unit identities, assignments, values and definitions.
+    Every relevant outcome for a unit must be revealed together after the
+    longest required window, in an outcome-independent order. Bounded windows
+    and `completed_windows_only=True` alone do not prove finalization. Native
+    and panel sources require `capture_sequential(as_of=..., finalized=True)`;
+    continuation checks prior unit identities, assignments, values and
+    definitions.
 
-Raw encouragement ITT and registered relative Bernoulli uptake compliance are
-supported. Binary-uptake LATE, refitted CUPED, generic adjusted scores and
-quantiles have no matching likelihood proof and refuse sequential requests.
-Their fixed-horizon analyses remain available. Fixed-horizon as-of LATE is a
-descriptive series and does not carry an optional-stopping guarantee.
+    Raw encouragement ITT and registered relative Bernoulli uptake compliance
+    are supported. Binary-uptake LATE, refitted CUPED, generic adjusted scores
+    and quantiles have no matching likelihood proof and refuse sequential
+    requests; their fixed-horizon analyses remain available. Fixed-horizon
+    as-of LATE is a descriptive series and does not carry an
+    optional-stopping guarantee.
 
 ### The dead zone
 
-Neither series has any data before
-`first_exposure_date + threshold_days`: a unit has no tenure to score
-before then, on any view. This floor cannot be removed: the as-of gate
-moved the *start* of the cumulative series from `window_days` days
-after enrollment to `threshold_days` days (roughly halving the gap for
-a `[7, 14)` band), but `threshold_days` itself is the irreducible
-remainder.
+Neither series has any data before `first_exposure_date + threshold_days`: a
+unit has no tenure to score before then, on any view. The as-of gate moved the
+*start* of the cumulative series from `window_days` days after enrollment to
+`threshold_days` days (roughly halving the gap for a `[7, 14)` band), but
+`threshold_days` itself is the irreducible remainder.
 
 ### Units whose band never closes
 
-`run_asof`/`run_asof_lift`'s cumulative gate admits a unit as soon as
-it clears `threshold_days`, before its band has closed. If the
-experiment has no declared `observation_end`, a unit enrolled near the
-end can have its band close after data collection stops; the engine
-can no longer tell whether it would have returned, so that unit sits at
-a hard 0 that never resolves. Declaring
-`observation_end = end + b` (see
-[The data model](data-model.md)), where `b` is the band's right edge:
-for a `[7, 14)` band, `observation_end = end + 14`, not `end + 7`.
-This removes the problem: every enrolled unit's band then closes
-inside the observation horizon, so no unit is ever left stuck as a
-permanent, unresolved zero.
+The cumulative gate admits a unit as soon as it clears `threshold_days`,
+before its band has closed. Without a declared `observation_end`, a unit
+enrolled near the end can have its band close after data collection stops;
+the engine can no longer tell whether it would have returned, so that unit
+sits at a hard 0 that never resolves.
+
+!!! tip "Declare `observation_end = end + b`"
+    `b` is the band's right edge (see [The data model](data-model.md)): for a
+    `[7, 14)` band, `observation_end = end + 14`, not `end + 7`. Every
+    enrolled unit's band then closes inside the observation horizon, so no
+    unit is left as a permanent, unresolved zero.
 
 ### Unbounded retention doesn't keep getting more precise
 
-Watching an unbounded metric longer does not monotonically sharpen it.
-Under a constant per-tenure effect the z-statistic peaks early and then
-declines as later, weakly-informative tenures dilute the running
-estimate: measured on a constant +30% return-hazard effect, it peaks
-around day 14 and has collapsed by day 120, so a real, constant effect
-can become statistically undetectable purely by observing longer. If
-you need an estimate that keeps improving the longer you watch, prefer
-a bounded band (or `completed_windows_only=True` on the unbounded one)
-over leaving the band open indefinitely.
+Watching an unbounded metric longer does not monotonically sharpen it. Under a
+constant per-tenure effect the z-statistic peaks early and then declines as
+later, weakly-informative tenures dilute the running estimate: measured on a
+constant +30% return-hazard effect, it peaks around day 14 and has collapsed
+by day 120, so a real, constant effect can become statistically undetectable
+purely by observing longer. If you need an estimate that keeps improving the
+longer you watch, prefer a bounded band (or `completed_windows_only=True` on
+the unbounded one) over leaving the band open indefinitely.
 
 ## Ratio
 
-Numerator and denominator are both random quantities, each finer-grained
-than the randomisation unit: revenue per session when the unit is a
-user, clicks per impression when the unit is a visitor. Because both
-parts vary per unit, the arm-level ratio is analysed via the delta
-method rather than as a simple mean of per-unit ratios.
+Numerator and denominator are both random quantities, each finer-grained than
+the randomisation unit: revenue per session when the unit is a user, clicks
+per impression when the unit is a visitor. Because both parts vary per unit,
+the arm-level ratio is analysed with the delta method rather than as a mean of
+per-unit ratios.
 
 ```yaml
 - type: ratio
@@ -439,80 +436,58 @@ method rather than as a simple mean of per-unit ratios.
     window_days: 7
 ```
 
-Each part is a full measure: its own `fact`, `aggregation`,
-`window_days`, and optional `filters`.
+Each part is a full measure: its own `fact`, `aggregation`, `window_days`, and
+optional `filters`.
 
 ### Heavy-tailed denominators at small samples
 
 The delta-method interval assumes the denominator mean is close to normally
 distributed. A heavily right-skewed denominator (a few units with very many
-sessions) breaks that at small samples: measured at nominal 95%, a
-lognormal(1.5) denominator covers 90.2% at 50 units per arm and 93.7% at 400,
-and a lognormal(2.0) denominator 85.1% and 91.7%, while a lognormal(0.5)
-denominator is nominal at every size. The moments carry the denominator's
-third moment, so each arm's sample skewness is known when the interval is
-built. When either arm's skewness divided by `sqrt(n)` exceeds 0.30, the
-readout raises the `estimation.engine.ratio_denominator_skew` warning naming
-the metric, arm, `n`, skewness and threshold, and the result row's `note`
-records it so tables and the dashboard show it. The estimate and interval are
-reported unchanged; treat the interval as optimistic, add units or examine the
-denominator's tail before deciding. A row estimated from a moments cube written
-before the third moment existed says the check was unavailable rather than
-passing silently. See [limitations](../limitations.md#uncertainty-is-estimated-on-every-path)
-for the measured table and the cases (clustered, sequential) the check does
-not claim.
+sessions) breaks that at small samples.
+
+!!! warning "`estimation.engine.ratio_denominator_skew`"
+    When either arm's sample skewness divided by `sqrt(n)` exceeds 0.30, the
+    readout raises this warning naming the metric, arm, `n`, skewness and
+    threshold, and the result row's `note` records it so tables and the
+    dashboard show it. The estimate and interval are reported unchanged: treat
+    the interval as optimistic, and add units or examine the denominator's
+    tail before deciding.
+
+??? info "Measured coverage"
+    At nominal 95%, a lognormal(1.5) denominator covers 90.2% at 50 units per
+    arm and 93.7% at 400, and a lognormal(2.0) denominator 85.1% and 91.7%,
+    while a lognormal(0.5) denominator is nominal at every size. The moments
+    carry the denominator's third moment, so each arm's sample skewness is
+    known when the interval is built. A row estimated from a moments cube
+    written before the third moment existed says the check was unavailable
+    rather than passing silently. See
+    [limitations](../limitations.md#uncertainty-is-estimated-on-every-path)
+    for the measured table and the cases (clustered, sequential) the check
+    does not claim.
 
 ### Conditional effects (CATE)
 
-Conditional effects currently support mean and conversion metrics only.
-`estimate_cate`, `validate_cate`, `targeting_rule`, and
-`select_targeting_rule` refuse ratio metrics before reading unit-grain data:
-conditional ratio effects require modeling denominator variation, which is
-outside the initial-release contract. To study conditional ratio effects,
-model the numerator and denominator as separate mean metrics.
-
-The arm-level ratio lift remains supported: `readouts.run()` computes the
-ratio of summed numerators to summed denominators for each arm and reports
-their difference on the ratio's own scale.
+Conditional effects support mean and conversion metrics only. `estimate_cate`,
+`validate_cate`, `targeting_rule`, and `select_targeting_rule` refuse ratio
+metrics before reading unit-grain data: conditional ratio effects require
+modeling denominator variation, which is outside the initial-release contract.
+To study conditional ratio effects, model the numerator and denominator as
+separate mean metrics. The arm-level ratio lift remains supported:
+`readouts.run()` computes the ratio of summed numerators to summed
+denominators for each arm and reports their difference on the ratio's own
+scale.
 
 #### Cluster identities and intervention grain
 
-Declare `cluster="store_id"` on dataframe sources, or `cluster: store_id` in an
-experiment definition, to retain cluster identities through CATE and targeting.
-These identities are metadata, not numeric predictors; they cannot also be
-requested through `interact` or `adjust`.
+Declare `cluster="store_id"` on dataframe sources, or `cluster: store_id` in
+an experiment definition, to retain cluster identities through CATE and
+targeting. These identities are metadata, not numeric predictors; they cannot
+also be requested through `interact` or `adjust`.
 
 Declare `intervention_grain="cluster"` when treatment is deployed by cluster.
-The default remains `"unit"`: dependence clusters alone do not imply cluster-level
-deployment. Randomized clusters must belong to one arm; observational dependence
-clusters may contain both arms. Fitted CATE results report `n_clusters`, while
-targeting policies retain the intervention grain and required scoring columns.
-
-All four entry points also work through `Analysis`. `n_train` and `n_holdout`
-count members; validation's `n_clusters` counts independent heldout clusters.
-Selection's count describes the inner population, while `selection.rule.n_clusters`
-describes the untouched outer holdout. Repeating members under the same cluster
-IDs adds no independent randomizations.
-
-Covariates must be available from the source's `unit_frame`. The definitions
-source serves any numeric `pre_exposure` or `static` property by name, resolved
-like a breakout; a unit-day artifact serves only the covariates its experiment
-declares under an observational `design.covariates` (see
-[observational.md](observational.md#from-definitions-the-warehouse-path)).
-Intercept-only calls (`interact=[]`) can use native and adopted artifact sources.
-They have constant rankings, so clustered AUTOC/Qini uncertainty is unavailable
-with `estimation.targeting.degenerate_rank_distribution`, and the targeting gate
-stays closed. An available holdout-average interval remains useful independently
-of that ranking result.
-
-`deploy_grain=None` resolves from that declaration. Requesting `"unit"` for a
-cluster intervention raises `estimation.targeting.unsupported_unit_deployment`.
-For cluster policies, member scores are averaged and clusters ordered by score,
-with canonical IDs breaking ties. The policy takes the longest whole-cluster
-prefix within the requested fraction, without splitting or skipping clusters.
-Member-count weighting budgets members; equal-cluster weighting budgets clusters
-and uses the same target for fitting and evaluation. An oversized leading cluster
-leaves the policy empty. Fractions zero and one select nobody and everybody.
+The default remains `"unit"`: dependence clusters alone do not imply
+cluster-level deployment. Randomized clusters must belong to one arm;
+observational dependence clusters may contain both arms.
 
 <!-- skip: next "requires a clustered source with a spend covariate" -->
 
@@ -538,30 +513,63 @@ if restored.recommendation == "target":
 
 `rule.fraction` and `rule.achieved_fraction` record the requested and realized
 holdout budget shares. The frozen fitted scoring state survives JSON reload;
-prediction does not fit on the new data. `fit.score(..., cluster_ids=...)` defaults
-to keyed `ClusterScore` records for cluster interventions and aligned unit scores
-otherwise. Mixed-treatment dependence clusters keep individual actions and
-cluster-aware uncertainty under their default unit intervention declaration.
+prediction does not fit on the new data. Covariates come from the source's
+`unit_frame`: native and adopted warehouse unit frames carry the metric
+outcome and identifiers, not model covariates, so use a dataframe unit-summary
+source for covariate-adjusted fits.
 
-Adopted unit-day artifacts preserve this provenance when published with the
-`cluster_identity` extension. Native and adopted warehouse unit frames contain
-the metric outcome and identifiers, not requested model covariates; use a
-dataframe unit-summary source for covariate-adjusted fits.
+??? info "Counts, covariates, and cluster policies"
+    Fitted CATE results report `n_clusters`, while targeting policies retain
+    the intervention grain and required scoring columns. All four entry points
+    also work through `Analysis`. `n_train` and `n_holdout` count members;
+    validation's `n_clusters` counts independent heldout clusters. Selection's
+    count describes the inner population, while `selection.rule.n_clusters`
+    describes the untouched outer holdout. Repeating members under the same
+    cluster IDs adds no independent randomizations.
+
+    Covariates must be available from the source's `unit_frame`. The
+    definitions source serves any numeric `pre_exposure` or `static` property
+    by name, resolved like a breakout; a unit-day artifact serves only the
+    covariates its experiment declares under an observational
+    `design.covariates` (see
+    [observational.md](observational.md#from-definitions-the-warehouse-path)).
+    Intercept-only calls (`interact=[]`) can use native and adopted artifact
+    sources. They have constant rankings, so clustered AUTOC/Qini uncertainty
+    is unavailable with `estimation.targeting.degenerate_rank_distribution`,
+    and the targeting gate stays closed. An available holdout-average interval
+    remains useful independently of that ranking result.
+
+    `deploy_grain=None` resolves from the intervention-grain declaration.
+    Requesting `"unit"` for a cluster intervention raises
+    `estimation.targeting.unsupported_unit_deployment`. For cluster policies,
+    member scores are averaged and clusters ordered by score, with canonical
+    IDs breaking ties. The policy takes the longest whole-cluster prefix
+    within the requested fraction, without splitting or skipping clusters.
+    Member-count weighting budgets members; equal-cluster weighting budgets
+    clusters and uses the same target for fitting and evaluation. An oversized
+    leading cluster leaves the policy empty. Fractions zero and one select
+    nobody and everybody.
+
+    `fit.score(..., cluster_ids=...)` defaults to keyed `ClusterScore` records
+    for cluster interventions and aligned unit scores otherwise.
+    Mixed-treatment dependence clusters keep individual actions and
+    cluster-aware uncertainty under their default unit intervention
+    declaration. Adopted unit-day artifacts preserve this provenance when
+    published with the `cluster_identity` extension. Native and adopted
+    warehouse unit frames contain the metric outcome and identifiers, not
+    requested model covariates; use a dataframe unit-summary source for
+    covariate-adjusted fits.
 
 ## Margins: non-inferiority guardrails
 
 Any metric can declare a guardrail margin: a tolerated adverse move that
-shifts the null boundary from "no change" to "no worse than this."
-There are two forms, and a metric carries at most one -- one guardrail,
-one scale:
+shifts the null boundary from "no change" to "no worse than this." A metric
+carries at most one of two forms:
 
-- **`margin`** (relative): the tolerance is a fraction of the control
-  mean. `margin: 0.01` with `preferred_direction: increase` reads
-  "confident we did not lose more than 1% *of the current value*."
-- **`margin_abs`** (absolute): the tolerance is in the metric's own
-  units. `margin_abs: 0.01` on a conversion metric reads "confident we
-  did not lose more than 1 *percentage point*"; `margin_abs: 0.10` on a
-  revenue-per-unit mean reads "no more than $0.10 of revenue per unit."
+| Form | Tolerance | Reads as |
+|---|---|---|
+| `margin` (relative) | A fraction of the control mean. | `margin: 0.01` with `preferred_direction: increase`: "we did not lose more than 1% *of the current value*." |
+| `margin_abs` (absolute) | The metric's own units. | `margin_abs: 0.01` on a conversion metric: "no more than 1 *percentage point*"; `margin_abs: 0.10` on revenue per unit: "no more than $0.10 per unit." |
 
 ```yaml
 - type: conversion
@@ -574,37 +582,34 @@ one scale:
   margin_abs: 0.01  # tolerate at most a 1-percentage-point drop
 ```
 
-Declaring both on one metric is a validation error. Both forms require
-`preferred_direction` to be explicitly declared and non-neutral: the
-direction picks which side of the boundary is adverse, and a defaulted
-direction must never silently pick a guardrail's adverse side. A plan's
-guardrail-binding `margin`/`margin_abs` (declared per experiment, in the
-plan's `guardrails` entry) overrides the metric's own catalog-declared
-value; there is no call-time override on `run()`.
+State the margin the way the requirement is stated: if the tolerance scales
+with the baseline ("we can afford to lose 1% of conversion, whatever it
+currently is"), use `margin`; if it is fixed in the metric's units, use
+`margin_abs`. An absolute margin is tested as a genuine additive-scale interval
+(`abs_diff` against the absolute boundary), not by dividing the absolute margin
+by the observed control mean, which would make the null hypothesis
+data-dependent.
 
-Which form to reach for: state the margin the way the requirement is
-stated. If the tolerance scales with the baseline ("we can afford to
-lose 1% of conversion, whatever conversion currently is"), that is
-`margin`. If it is fixed in the metric's units ("no more than 1
-percentage point", "no more than $0.10 per unit"), that is
-`margin_abs` -- and it is tested as a genuine additive-scale interval
-(`abs_diff` against the absolute boundary), not by dividing the
-absolute margin by the observed control mean, which would make the
-null hypothesis data-dependent.
+Declaring both on one metric is a validation error. Both forms require an
+explicit, non-neutral `preferred_direction`: the direction picks which side of
+the boundary is adverse, and a defaulted direction must never silently pick a
+guardrail's adverse side. A plan's guardrail-binding `margin`/`margin_abs`
+(declared per experiment, in the plan's `guardrails` entry) overrides the
+metric's own catalog-declared value; there is no call-time override on
+`run()`.
 
 !!! warning "When the absolute interval is unavailable"
-    The additive test needs the absolute standard error (`abs_se`). In
-    the rare case it cannot be computed (numerical underflow), the
-    absolute-margin decision is unavailable *loudly*: `stat_sig` is
-    `False`, and there is no silent fallback to the relative interval.
+    The additive test needs the absolute standard error (`abs_se`). In the
+    rare case it cannot be computed (numerical underflow), the absolute-margin
+    decision is unavailable *loudly*: `stat_sig` is `False`, and there is no
+    silent fallback to the relative interval.
 
 ## The dataframe path: `MetricSpec`
 
-On the dataframe path (`Analysis.from_unit_summary` /
-`from_unit_panel`), your columns already hold per-unit values, so a
-metric is just a column plus a type. The terse mapping form
-`{"revenue": "mean", "converted": "conversion"}` covers the simple
-cases; explicit `MetricSpec` objects unlock the rest:
+On the dataframe path (`Analysis.from_unit_summary` / `from_unit_panel`), your
+columns already hold per-unit values, so a metric is a column plus a type. The
+mapping form `{"revenue": "mean", "converted": "conversion"}` covers the
+simple cases; explicit `MetricSpec` objects unlock the rest:
 
 ```python
 import random
@@ -648,55 +653,53 @@ for r in results:
     print(f"{r.metric}: lift={r.lift.value:+.2%}")
 ```
 
-How the types map:
+| Type | The column holds |
+|---|---|
+| `mean` | Each unit's already-aggregated value. |
+| `conversion` | A pre-computed 0/1 indicator, not raw events. |
+| `ratio` | Two per-unit total columns, named by `numerator` and `denominator`. |
+| `quantile` | Values whose distributional quantile (p50/p90/p99, set by `quantile=`) is compared. |
 
-- **mean**: the column holds each unit's already-aggregated value.
-- **conversion**: the column must be a pre-computed 0/1 indicator, not
-  raw events.
-- **ratio**: `numerator` and `denominator` name two per-unit total
-  columns.
-- `value_column` reads values from a different column than the metric's
-  display name; `covariate` attaches a pre-experiment column for CUPED
-  (see [CUPED](cuped.md)); `type="quantile"` with `quantile=` estimates
-  the lift of a distributional quantile (p50/p90/p99).
+`value_column` reads values from a different column than the metric's display
+name; `covariate` attaches a pre-experiment column for CUPED (see
+[CUPED](cuped.md)).
 
-!!! note "Quantile intervals on coarsely recorded outcomes"
-    A quantile's interval stays valid on tied or coarsely recorded outcomes (whole
-    milliseconds or seconds, cents, counts, prices ending in both .99 and .00, or a grid
-    with some values recorded off it) instead of refusing on tied order statistics. While
-    the order-statistic bracket holds a tie and does not yet span a dozen repeated
-    values, the interval is widened just enough to contain that bracket, whose own
-    coverage holds for any distribution; otherwise it is the classical order-statistic
-    interval. The cost is nil on continuous data and well-resolved grids and about 1.1 to
-    3 times the classical width on coarse grids at large sample sizes and on counts. It has
-    no fixed upper bound (a bracket collapsed onto one value has zero classical width), so
-    every widened row states its own ratio in its `note`. The row's p-value is dual to its
-    interval: `p_value() <= alpha` exactly when the interval at `alpha` excludes zero.
+!!! warning "Conversion columns are binary"
+    A `type="conversion"` column must contain only `0`/`1` or boolean values.
+    Conversion metrics estimate the share of units converting; they do not
+    interpret arbitrary nonzero magnitudes as occurrences. If the source
+    contains magnitudes, declare a `mean` metric or pre-compute a 0/1
+    indicator at the input analysis grain. Retention still dispatches on "any
+    occurrence" for pre-collapsed per-day values, so a legitimate `0.0`
+    remains indistinguishable from no event on that day.
 
 !!! info "Windows and retention on the panel path"
     `MetricSpec` accepts `window_days` (mean/conversion/ratio) and
-    `threshold_days`/`type="retention"` directly -- construction no longer
-    rejects them. On the panel path these are computed for real, given an
-    explicit `exposure_date=` column naming each unit's own day-0 (a
-    derived anchor would silently define the window). `observation_end=`
-    bounds late-enrollee censoring; omitted, it falls back to each
-    metric's own observed extent. Both parameters are accepted by
+    `threshold_days`/`type="retention"` directly. On the panel path these are
+    computed for real, given an explicit `exposure_date=` column naming each
+    unit's own day 0 (a derived anchor would silently define the window).
+    `observation_end=` bounds late-enrollee censoring; omitted, it falls back
+    to each metric's own observed extent. Both parameters are accepted by
     `Analysis.from_unit_panel` and forwarded to
-    `increment.frame.from_unit_panel`, the lower-level factory it
-    wraps. `from_unit_summary` still refuses
-    `window_days`/`threshold_days` outright -- a one-row-per-unit summary
-    carries no dates to window or band against -- and `window_days` on
-    `type="quantile"` is refused on either constructor. See
-    [the dataframe analysis example](../examples/analysis_from_a_dataframe.md) for a
-    worked windowed-mean and bounded-retention example, and
+    `increment.frame.from_unit_panel`, the lower-level factory it wraps.
+    `from_unit_summary` refuses `window_days`/`threshold_days` outright (a
+    one-row-per-unit summary carries no dates to window or band against), and
+    `window_days` on `type="quantile"` is refused on either constructor. See
+    [the dataframe analysis example](../examples/analysis_from_a_dataframe.md)
+    for a worked windowed-mean and bounded-retention example, and
     [The data model](data-model.md) for `exposure_date`/`observation_end`.
 
-!!! note "Panel conversion columns are binary"
-    A `type="conversion"` column must contain only `0`/`1` or boolean
-    values. Conversion metrics estimate the share of units converting;
-    they do not interpret arbitrary nonzero magnitudes as occurrences.
-    If the source contains magnitudes, declare a `mean` metric or
-    pre-compute a 0/1 indicator at the input analysis grain. Retention
-    still dispatches on "any occurrence" for pre-collapsed per-day values,
-    so a legitimate `0.0` remains indistinguishable from no event on that
-    day.
+??? info "Quantile intervals on coarsely recorded outcomes"
+    A quantile's interval stays valid on tied or coarsely recorded outcomes
+    (whole milliseconds or seconds, cents, counts, prices ending in both .99
+    and .00, or a grid with some values recorded off it) instead of refusing
+    on tied order statistics. While the order-statistic bracket holds a tie
+    and does not yet span a dozen repeated values, the interval is widened
+    just enough to contain that bracket, whose own coverage holds for any
+    distribution; otherwise it is the classical order-statistic interval. The
+    cost is nil on continuous data and well-resolved grids and about 1.1 to 3
+    times the classical width on coarse grids at large sample sizes and on
+    counts. It has no fixed upper bound (a bracket collapsed onto one value
+    has zero classical width), so every widened row states its own ratio in
+    its `note`. The row's p-value is dual to its interval:
+    `p_value() <= alpha` exactly when the interval at `alpha` excludes zero.
