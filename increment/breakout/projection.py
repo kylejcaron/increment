@@ -24,6 +24,11 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="to_frame(): unknown column(s) {unknown!r}; available columns are {available!r}",
         ),
+        "results.frame.empty_columns": RefusalSpec(
+            "results.frame.empty_columns",
+            InvalidRequestError,
+            template="to_frame(columns=...) requires at least one projection column",
+        ),
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -287,6 +292,8 @@ def to_frame[M: BaseModel](
                 unknown=unknown,
                 available=tuple(projection_columns),
             )
+        if not requested:
+            _refuse("results.frame.empty_columns")
         requested_set = frozenset(requested)
         selected = tuple(name for name in projection_columns if name in requested_set)
     columns = list(projection_columns)

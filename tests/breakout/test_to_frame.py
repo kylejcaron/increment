@@ -196,6 +196,29 @@ def test_to_frame_columns_validates_and_returns_canonical_order():
     assert raised.value.context["unknown"] == ("not_a_column",)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_to_frame_refuses_empty_columns_without_dropping_rows(backend):
+    pytest.importorskip(backend)
+    from increment.breakout.estimates import LiftEstimates
+    from increment.errors import InvalidRequestError
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    results = LiftEstimates(
+        [
+            LiftEstimate(
+                metric="rev",
+                group_id="treatment",
+                method="unadjusted",
+                method_role="decision",
+                lift=Estimate(value=0.1),
+            )
+        ]
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        results.to_frame(backend=backend, columns=[])
+    assert raised.value.code == "results.frame.empty_columns"
+
+
 def test_to_frame_summary_presets_match_full_frame_subsets():
     from datetime import date
 
