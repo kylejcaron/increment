@@ -87,3 +87,110 @@ def test_unknown_consumer_metadata_reference_fails_validation() -> None:
     )
     with pytest.raises((KeyError, ValueError)):
         validate_catalog((row,))
+
+
+def test_linear_cuped_interactions_are_explicitly_classified():
+    from tests.capability_contracts import CUPED_LINEAR_INTERACTIONS
+
+    assert {
+        interaction.name: (interaction.status, interaction.code)
+        for interaction in CUPED_LINEAR_INTERACTIONS
+    } == {
+        "scalar_cuped": ("supported", None),
+        "ratio": ("supported", None),
+        "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
+        "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
+        "winsorization_fixed_value": ("supported", None),
+        "winsorization_percentile": (
+            "unfinished",
+            "estimation.engine.cuped_linear_winsorization",
+        ),
+        "breakouts": ("supported", None),
+        "multiplicity_roles": ("supported", None),
+        "triggered_population": ("supported", None),
+    }
+    routes = {
+        interaction.name: interaction.route_forward for interaction in CUPED_LINEAR_INTERACTIONS
+    }
+    assert routes["scalar_cuped"]
+    assert routes["clustering"]
+    assert "6rhs" in routes["sequential"]
+    assert routes["winsorization_fixed_value"]
+    assert routes["winsorization_percentile"]
+
+
+def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
+    from tests.capability_contracts import CUPED_LINEAR_INTERACTIONS
+    from tests.capability_entry_point_catalog import ENTRY_ROWS, resolve_cell
+
+    rows = {row.id: row for row in ENTRY_ROWS}
+    for interaction in CUPED_LINEAR_INTERACTIONS:
+        row = rows[f"cuped-linear-interaction-{interaction.name}"]
+        assert set(row.bindings) == set(INGRESSES)
+        for ingress in (
+            "from_unit_summary",
+            "from_unit_panel",
+            "from_definitions",
+            "from_unit_day_artifact",
+        ):
+            display = resolve_cell(row.bindings[ingress])[0][1]
+            disposition = interaction.for_ingress(ingress)
+            assert display.status == disposition.status
+            assert display.codes == ((disposition.code,) if disposition.code else ())
+        for ingress, code in (
+            ("from_moments", "facade.analysis_config.cuped_linear_moments"),
+            ("from_switchback_panel", "source.frame.switchback.metric"),
+        ):
+            display = resolve_cell(row.bindings[ingress])[0][1]
+            assert display.status == "source_limited"
+            assert display.codes == (code,)
+
+    summary_breakout = resolve_cell(
+        rows["cuped-linear-interaction-breakouts"].bindings["from_unit_summary"]
+    )[0][1]
+    assert (summary_breakout.status, summary_breakout.codes) == (
+        "source_limited",
+        ("facade.analysis.operation",),
+    )
+    for ingress in ("from_unit_summary", "from_unit_panel"):
+        triggered = resolve_cell(
+            rows["cuped-linear-interaction-triggered_population"].bindings[ingress]
+        )[0][1]
+        assert (triggered.status, triggered.codes) == (
+            "source_limited",
+            ("facade.analysis.trigger_unsupported",),
+        )
+    panel_cluster = resolve_cell(
+        rows["cuped-linear-interaction-clustering"].bindings["from_unit_panel"]
+    )[0][1]
+    assert (panel_cluster.status, panel_cluster.codes) == (
+        "source_limited",
+        ("source.frame_panel.cluster_grain",),
+    )
+
+
+def test_scalar_cuped_nonmember_declaration_has_a_separate_refusal_row():
+    from tests.capability_entry_point_catalog import ENTRY_ROWS, resolve_cell
+
+    row = next(
+        entry for entry in ENTRY_ROWS if entry.id == "cuped-linear-scalar-nonmember-conflict"
+    )
+    for ingress in ("from_unit_summary", "from_unit_panel"):
+        display = resolve_cell(row.bindings[ingress])[0][1]
+        assert display.status == "refused"
+        assert display.codes == ("frame.metric.scalar_and_set_covariates",)
+
+
+def test_linear_cuped_matrix_dispositions_cover_six_ingresses():
+    from tests.parity_harness.matrix import (
+        LINEAR_CUPED_DISPOSITIONS,
+        LINEAR_CUPED_SOURCE_REFUSALS,
+    )
+
+    assert set(LINEAR_CUPED_DISPOSITIONS) == set(INGRESSES)
+    assert {
+        ingress for ingress, status in LINEAR_CUPED_DISPOSITIONS.items() if status == "supported"
+    } == {"from_unit_summary", "from_unit_panel", "from_definitions", "from_unit_day_artifact"}
+    assert {
+        ingress: LINEAR_CUPED_DISPOSITIONS[ingress] for ingress in LINEAR_CUPED_SOURCE_REFUSALS
+    } == {"from_moments": "source_limited", "from_switchback_panel": "source_limited"}

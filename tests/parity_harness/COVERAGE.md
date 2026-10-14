@@ -135,3 +135,27 @@ The mixed-catalog checkpoint scenario compares the modeled conversion's rows and
 - AIPW/DML adjustment, absolute margins and one-sided alternatives other than the margin are not enumerated.
 - Float tolerance is 1e-9 relative with a 1e-9 absolute floor; the matrix runs on DuckDB in memory. A divergence found only on PostgreSQL, Snowflake or BigQuery is outside this ticket (CONTRIBUTING, Backend verification).
 - Refusal before data load is not asserted per cell; the gate order is pinned by `tests/test_refusal_uniqueness.py` and `tests/test_source_capabilities.py`.
+
+## Mixed-covariate CUPED slice
+
+The `mixed-cuped-linear-fixed-horizon` case is separate from the 3,584-cell scalar method matrix. The fixed-horizon parity fixture uses the same 120 per-unit rows (60 per arm): revenue mean as primary, revenue/orders ratio as guardrail, and signups conversion as secondary. The supported row-comparison ingresses are `from_unit_summary`, `from_unit_panel`, `from_definitions`, and published-then-adopted `from_unit_day_artifact`. Those routes compare emitted results and retained evidence/scope through shared identity validation and normalization; the fixture includes numeric and categorical covariates plus missing pre-period history with impute-indicator.
+
+The same four ingresses compare exact `estimation.cuped_linear.support_region` (M1) and `estimation.cuped_linear.level_support` failures. `from_moments` and `from_switchback_panel` are attempted and assert, before acquisition, `facade.analysis_config.cuped_linear_moments` and `source.frame.switchback.metric`, respectively.
+
+`test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses` measures scalar CUPED with mixed CUPED on each supported route. Frames use `MetricSpec.covariate` with the same name included in `MetricSpec.covariates`; definitions additionally require `n_pre_periods > 0`, and artifacts need the `cuped_preperiod` extension. The distinct nonmember frame declaration refuses with `frame.metric.scalar_and_set_covariates`.
+
+`test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses` exercises fixed lower and upper bounds on all four supported routes and compares rows and retained scope. Percentile winsorization remains unfinished with `estimation.engine.cuped_linear_winsorization`.
+
+The generated capability table records the complete ingress-by-interaction dispositions:
+
+| Interaction | Summary | Panel | Definitions | Unit-day artifact | Other constructors |
+|---|---|---|---|---|---|
+| Scalar CUPED | Supported; same covariate name in scalar and mixed declarations | Supported; same covariate name in scalar and mixed declarations | Supported with positive `n_pre_periods` and mixed bindings | Supported when the published artifact includes `cuped_preperiod` | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Ratio | Supported | Supported | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Clustering | Unfinished (`estimation.engine.cuped_linear_cluster`) | Source-limited (`source.frame_panel.cluster_grain`) | Unfinished (`estimation.engine.cuped_linear_cluster`) | Unfinished (`estimation.engine.cuped_linear_cluster`) | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Sequential | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Fixed-value winsorization | Supported with lower and upper bounds | Supported with lower and upper bounds | Supported with lower and upper bounds | Supported with lower and upper bounds | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Percentile winsorization | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Breakouts | Source-limited (`facade.analysis.operation`) | Supported | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Multiplicity roles | Supported | Supported | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+| Triggered population | Source-limited (`facade.analysis.trigger_unsupported`) | Source-limited (`facade.analysis.trigger_unsupported`) | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |

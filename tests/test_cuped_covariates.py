@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from increment.analysis import Analysis
-from increment.errors import DefinitionError
+from increment.errors import DefinitionError, InvalidRequestError
 from increment.estimation.cuped_linear import fit_cuped_linear
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
@@ -284,3 +284,51 @@ def test_definition_covariate_refusal_roundtrips_through_copy_and_pickle():
 def test_unsupported_kind_is_rejected_by_the_declaration_schema():
     with pytest.raises(ValidationError):
         CupedCovariate.model_validate({"name": "x", "kind": "ordinal"})
+
+
+def test_scalar_and_set_cuped_reject_a_nonmember_scalar_covariate():
+    with pytest.raises(InvalidRequestError) as raised:
+        MetricSpec(
+            name="revenue",
+            covariate="prior",
+            covariates=(CupedCovariate(name="country", kind="categorical"),),
+        )
+    assert raised.value.code == "frame.metric.scalar_and_set_covariates"
+
+
+def test_scalar_cuped_can_share_a_declared_covariate_with_cuped_linear():
+    import pandas as pd
+
+    rows = pd.DataFrame(
+        [
+            {
+                "unit_id": f"{arm[0]}{index}",
+                "group_id": arm,
+                "revenue": 10.0 + index + 1.5 * (arm == "treatment") + 0.4 * index,
+                "pre_revenue": float(index),
+            }
+            for arm in ("control", "treatment")
+            for index in range(60)
+        ]
+    )
+    metric = MetricSpec(
+        name="revenue",
+        covariate="pre_revenue",
+        covariates=(CupedCovariate(name="pre_revenue", kind="continuous"),),
+        decision_method=Method(name="cuped", variance_reduction="cuped"),
+        sensitivity_methods=(Method(name="linear", variance_reduction="cuped_linear"),),
+    )
+    analysis = Analysis.from_unit_summary(
+        rows,
+        unit="unit_id",
+        group="group_id",
+        control="control",
+        metrics=(metric,),
+    )
+    try:
+        result = analysis.run()
+        estimates = [row for row in result if isinstance(row, LiftEstimate)]
+        assert {row.method for row in estimates} == {"cuped", "linear"}
+        assert all(row.lift is not None and row.sampling_available for row in estimates)
+    finally:
+        analysis.close()

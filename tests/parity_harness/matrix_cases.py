@@ -659,3 +659,76 @@ def build_switchback_case(cell: Cell, method: str, outcomes: Mapping[str, Outcom
         **_expectations(outcomes, ("from_switchback_panel",)),
         **_case_fields(cell, method),
     )
+
+
+def linear_cuped_frame_case(
+    rows: list[dict[str, Any]],
+    *,
+    panel: bool,
+    corrupt: bool = False,
+    breakout: bool = False,
+    scalar_cuped: bool = False,
+    fixed_winsorization: bool = False,
+):
+    """Build mixed-CUPED dataframe roles with optional scalar, clipping, breakout, or mutation axes."""
+    from increment.frame import CupedCovariate
+
+    if corrupt:
+        rows = copy.deepcopy(rows)
+        rows[0]["pre_revenue"] = 999_999.0
+    covariates = (
+        CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+        CupedCovariate(name="country", kind="categorical"),
+        CupedCovariate(name="device", kind="categorical"),
+        CupedCovariate(name="new_user", kind="categorical"),
+    )
+    method = Method(name="linear", variance_reduction="cuped_linear")
+    scalar_method = Method(name="cuped", variance_reduction="cuped")
+    metrics = (
+        MetricSpec(
+            name="revenue",
+            covariate="pre_revenue" if scalar_cuped else None,
+            covariates=covariates,
+            decision_method=method,
+            sensitivity_methods=(scalar_method,) if scalar_cuped else (),
+            winsorization=(
+                {"lower_value": 7.0, "upper_value": 11.0} if fixed_winsorization else None
+            ),
+        ),
+        MetricSpec(
+            name="rpo",
+            type="ratio",
+            numerator="revenue",
+            denominator="orders",
+            preferred_direction="increase",
+            covariates=covariates,
+            decision_method=method,
+        ),
+        MetricSpec(
+            name="signups",
+            type="conversion",
+            value_column="signup_conversion",
+            covariates=covariates,
+            decision_method=method,
+        ),
+    )
+    plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
+    if panel:
+        return Analysis.from_unit_panel(
+            md.frame(rows),
+            unit="user_id",
+            group="variant",
+            date="date",
+            metrics=metrics,
+            plan=plan,
+            design=Randomized(control_group="control", allocation=_ALLOCATION),
+            breakouts=("region",) if breakout else (),
+        )
+    return Analysis.from_unit_summary(
+        md.frame(rows),
+        unit="user_id",
+        group="variant",
+        metrics=metrics,
+        plan=plan,
+        design=Randomized(control_group="control", allocation=_ALLOCATION),
+    )

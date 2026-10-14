@@ -261,6 +261,8 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 
 `increment.__version__` reports the installed package version.
 
+
+
 ## Analysis and reporting
 
 `Analysis.artifact_context` returns the trusted context bound to a definitions-backed
@@ -274,6 +276,33 @@ dates cohorts at first assignment; `population="triggered"` dates eligible
 cohorts at their first trigger. Both are available on native definitions-backed
 analyses; non-native, artifact, and clustered sources refuse with a coded
 `CapabilityError`.
+
+### Mixed-covariate fixed-horizon CUPED
+
+On per-unit fixed-horizon inputs such as `Analysis.from_unit_summary`,
+`MetricSpec.covariates` declares multiple typed covariates for the
+`Method(name="linear", variance_reduction="cuped_linear")` estimator. Each
+declaration has a `name`, `kind="continuous"` or `"categorical"`, and a
+`missing` policy (`"refuse"` or `"impute-indicator"`). Categorical values
+must be strings. `cuped_linear` supports mean, conversion, and ratio metrics;
+ratio metrics use the same declared covariates for numerator and denominator.
+Scalar `cuped` remains available alongside `cuped_linear` when its scalar
+`covariate` name is also a member of `MetricSpec.covariates`. See the runnable
+[mixed-covariate CUPED recipe](guides/cuped.md#a-mixed-covariate-dataframe-recipe).
+
+This estimator uses HC2 uncertainty and a Bell–McCaffrey Student-t
+approximation, unlike scalar `cuped`, which retains its separate
+Welch–Satterthwaite method. It is fixed-horizon only. It requires per-unit
+covariate evidence, so `from_moments` cannot use it; clustered assignment and
+sequential inference are unsupported. Fits outside M1 are returned as
+unavailable with `estimation.cuped_linear.support_region`, not silently
+replaced by an unadjusted result. Ratio fits also enforce the M1 raw
+denominator-precision bound. See [M1 and statistical limits](guides/cuped.md#mixed-numeric-and-categorical-covariates).
+
+The preregistered coverage campaign in `calibration/cuped_linear.py` has not
+been run; its coverage is not established. External-prediction training
+(tracker #72) and longitudinal dependence (tracker #80) are not implemented.
+See [campaign status and commands](validation.md#mixed-covariate-linear-cuped).
 
 The day-axis collections returned by `run_daily`, `run_daily_lift`, `run_asof`, and
 `run_asof_lift` are ordered chronologically by day, then by requested metric and a stable row

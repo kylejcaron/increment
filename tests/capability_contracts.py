@@ -98,3 +98,148 @@ CONSTRUCTORS = (
     "from_switchback_panel",
     "from_moments",
 )
+
+InteractionStatus = Literal["supported", "source_limited", "unfinished", "mathematically_unsound"]
+
+
+@dataclass(frozen=True)
+class InteractionDisposition:
+    status: InteractionStatus
+    code: str | None = None
+    route_forward: str = ""
+    stage: Literal["read", "construction"] = "construction"
+    evidence: str | None = None
+
+
+@dataclass(frozen=True)
+class MethodInteraction:
+    """Measured compatibility of mixed-covariate CUPED with another method axis."""
+
+    name: str
+    status: InteractionStatus
+    code: str | None
+    evidence: str
+    route_forward: str = ""
+    ingress_dispositions: tuple[tuple[str, InteractionDisposition], ...] = ()
+
+    def for_ingress(self, ingress: str) -> InteractionDisposition:
+        override = next(
+            (disposition for name, disposition in self.ingress_dispositions if name == ingress),
+            None,
+        )
+        if override is not None:
+            return override
+        return InteractionDisposition(
+            self.status,
+            self.code,
+            self.route_forward,
+            "read" if self.status == "supported" else "construction",
+            self.evidence,
+        )
+
+
+CUPED_LINEAR_INTERACTIONS = (
+    MethodInteraction(
+        "scalar_cuped",
+        "supported",
+        None,
+        "tests/test_warehouse_cuped_parity.py::test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses",
+        "Frames declare the same MetricSpec.covariate and member of MetricSpec.covariates; definitions declare n_pre_periods > 0 for scalar CUPED and bind the mixed covariates separately. Publish the cuped_preperiod artifact extension.",
+    ),
+    MethodInteraction(
+        "ratio",
+        "supported",
+        None,
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+    ),
+    MethodInteraction(
+        "clustering",
+        "unfinished",
+        "estimation.engine.cuped_linear_cluster",
+        "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+        "Implement cluster-robust HC2/Bell-McCaffrey inference for the WLS fit.",
+        (
+            (
+                "from_unit_panel",
+                InteractionDisposition(
+                    "source_limited",
+                    "source.frame_panel.cluster_grain",
+                    "The panel is collapsed to one row per unit before clustering could apply.",
+                    "construction",
+                    "tests/test_cuped_linear_acceptance.py::test_cuped_linear_interactions_preserve_ingress_specific_refusals",
+                ),
+            ),
+        ),
+    ),
+    MethodInteraction(
+        "sequential",
+        "unfinished",
+        "estimation.engine.cuped_linear_sequential",
+        "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+        "Implement predictable multivariate sequential construction; tracked by kata 6rhs.",
+    ),
+    MethodInteraction(
+        "winsorization_fixed_value",
+        "supported",
+        None,
+        "tests/test_warehouse_cuped_parity.py::test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses",
+        "Fixed lower and upper value bounds are exercised on each supported unit ingress and compared with shared row and retained-scope normalization.",
+    ),
+    MethodInteraction(
+        "winsorization_percentile",
+        "unfinished",
+        "estimation.engine.cuped_linear_winsorization",
+        "tests/test_cuped_linear_acceptance.py::test_composition_gates_refuse_before_source_acquisition",
+        "Implement winsorized CUPED fitting and interval construction for percentile bounds.",
+    ),
+    MethodInteraction(
+        "breakouts",
+        "supported",
+        None,
+        "tests/test_cuped_breakout_review.py::test_triggered_native_breakout_linear_matches_triggered_unit_oracle",
+        ingress_dispositions=(
+            (
+                "from_unit_summary",
+                InteractionDisposition(
+                    "source_limited",
+                    "facade.analysis.operation",
+                    "A unit-summary frame has no breakout dimension.",
+                    "read",
+                    "tests/test_cuped_linear_acceptance.py::test_cuped_linear_interactions_preserve_ingress_specific_refusals",
+                ),
+            ),
+            (
+                "from_unit_panel",
+                InteractionDisposition(
+                    "supported",
+                    evidence="tests/test_cuped_linear_acceptance.py::test_cuped_linear_breakout_emits_complete_per_cell_family_evidence",
+                ),
+            ),
+        ),
+    ),
+    MethodInteraction(
+        "multiplicity_roles",
+        "supported",
+        None,
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+    ),
+    MethodInteraction(
+        "triggered_population",
+        "supported",
+        None,
+        "tests/test_cuped_breakout_review.py::test_triggered_cuped_definition_and_artifact_runs_match",
+        ingress_dispositions=tuple(
+            (
+                ingress,
+                InteractionDisposition(
+                    "source_limited",
+                    "facade.analysis.trigger_unsupported",
+                    "Dataframe ingresses do not retain the source trigger chain.",
+                    "read",
+                    "tests/test_cuped_linear_acceptance.py::test_cuped_linear_interactions_preserve_ingress_specific_refusals",
+                ),
+            )
+            for ingress in ("from_unit_summary", "from_unit_panel")
+        ),
+    ),
+)
