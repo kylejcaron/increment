@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
@@ -346,6 +346,51 @@ def canonical_control_for_frame(frame: Any, group: str, control: object) -> str:
         if control in ("False", "false"):
             return "false"
     return str(canonical_group_label(control, boolean=boolean))
+
+
+def canonical_design_for_labels(design: Any, *, boolean: bool) -> Any:
+    """Normalize every assignment-arm reference in a design when labels are Boolean."""
+    if design is None or not boolean:
+        return design
+    updates: dict[str, Any] = {
+        "control_group": str(canonical_group_label(design.control_group, boolean=True))
+    }
+    allocation = getattr(design, "allocation", None)
+    if allocation is not None:
+        normalized = {
+            str(canonical_group_label(label, boolean=True)): weight
+            for label, weight in allocation.items()
+        }
+        if len(normalized) != len(allocation):
+            _raise(
+                "frame.validation.group_label_collision",
+                group="assignment allocation",
+                collision="allocation arm labels collapse under Boolean canonicalization",
+                route="supply unique canonical arm labels",
+            )
+        updates["allocation"] = normalized
+    return design.model_copy(update=updates)
+
+
+def canonical_design_for_frame(frame: Any, group: str, design: Any) -> Any:
+    """Normalize a design only when the source assignment column is Boolean."""
+    try:
+        source = nw.from_native(frame, eager_only=True)
+        boolean = source.schema[group] == nw.Boolean
+    except Exception:
+        boolean = False
+    return canonical_design_for_labels(design, boolean=boolean)
+
+
+def canonical_control_for_moments(rows: Sequence[Mapping[str, object]], control: object) -> str:
+    """Coerce a moments control and recognize canonical Boolean cube labels."""
+    if not np.isscalar(control):
+        _raise_control("source.frame.control_invalid", value=_safe_error_value(control))
+    label = str(control)
+    group_ids = {str(row.get("group_id")) for row in rows}
+    if group_ids == {"true", "false"}:
+        return str(canonical_group_label(control, boolean=True))
+    return label
 
 
 COVARIATE_IMPUTE_ALL_NULL = _REFUSALS["frame.validation.metric_covariate_impute_all_null"]

@@ -1136,7 +1136,8 @@ def validate_frame_registration(
         sequential_refuse(
             "source.invalid",
             "pandas Boolean group labels changed from 'True'/'False' to canonical "
-            "'true'/'false'; a saved sequential registration cannot be relabelled",
+            "'true'/'false'; retain the saved record for replay with its original "
+            "protocol, or create a new sequential registration for canonical labels",
         )
     require_public_laws(registration.models, "frame registration")
     expected = sequential_definition_id(

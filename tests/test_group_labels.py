@@ -49,6 +49,125 @@ def test_boolean_groups_use_canonical_labels_for_every_control_spelling(backend)
     assert results[0][0] == {"true": 2, "false": 2}
 
 
+@pytest.mark.parametrize("constructor", ["summary", "panel"])
+def test_boolean_labels_normalize_explicit_design_and_allocation(constructor):
+    frame = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": [True, True, False, False],
+            "date": ["2025-01-01"] * 4,
+            "y": [1, 2, 3, 4],
+        }
+    )
+    factory = Analysis.from_unit_summary if constructor == "summary" else Analysis.from_unit_panel
+    kwargs = {"date": "date"} if constructor == "panel" else {}
+    analysis = factory(
+        frame,
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="True",
+            allocation={"True": 1, "False": 1},
+            allocation_scheme="independent",
+        ),
+        metrics={"y": "mean"},
+        **kwargs,
+    )
+    assert analysis.unit_counts() == {"true": 2, "false": 2}
+    assert analysis.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
+
+
+def test_boolean_moments_control_coerces_only_for_boolean_labels(tmp_path):
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": [True, True, False, False],
+                "y": [1, 2, 3, 4],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control=True,
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "moments.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    replayed = [
+        Analysis.from_moments(rows, metrics={"y": "mean"}, control=value).run()
+        for value in (True, "True", "true")
+    ]
+    assert replayed[0] == replayed[1] == replayed[2] == original.run()
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_moments(rows, metrics={"y": "mean"}, control=["true"])
+    assert raised.value.code == "source.frame.control_invalid"
+
+
+def test_string_boolean_looking_moments_labels_stay_case_sensitive(tmp_path):
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["True", "True", "False", "False"],
+                "y": [1, 2, 3, 4],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="True",
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "string-moments.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    assert (
+        Analysis.from_moments(rows, metrics={"y": "mean"}, control="True").run() == original.run()
+    )
+
+
+def test_public_constructor_refuses_old_boolean_registration_with_replay_route():
+    from increment import SequentialRegistration
+    from increment.frame import MetricSpec, synthesise_metric
+    from increment.semantics.models import AnalysisPlan, InferenceSpec
+    from increment.sequential_source import frame_observation_mapping, sequential_definition_id
+
+    design = Randomized(control_group="True")
+    spec = MetricSpec(name="outcome")
+    base = registration("bernoulli")
+    legacy = SequentialRegistration.model_validate(
+        {
+            **base.model_dump(),
+            "control_group": "True",
+            "definitions_id": sequential_definition_id(
+                [synthesise_metric(spec)],
+                design,
+                transformations=[spec],
+                source_mapping=frame_observation_mapping(unit="unit", group="arm"),
+            ),
+        }
+    )
+    plan = AnalysisPlan(
+        primary="outcome",
+        inference=InferenceSpec(kind="always_valid", registration=legacy),
+    )
+    with pytest.raises(CapabilityError) as raised:
+        Analysis.from_unit_summary(
+            pd.DataFrame({"unit": ["c1", "c2"], "arm": [True, False], "outcome": [0, 1]}),
+            unit="unit",
+            group="arm",
+            design=design,
+            metrics=[spec],
+            plan=plan,
+        )
+    assert raised.value.code == "sequential.source.invalid"
+    assert "replay" in str(raised.value).lower()
+
+
 def test_string_boolean_looking_group_values_are_unchanged():
     analysis = Analysis.from_unit_summary(
         pd.DataFrame(
