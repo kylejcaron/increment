@@ -2865,7 +2865,25 @@ def test_a_naive_utc_minus_five_experiment_publishes_and_adopts_like_from_defini
 
 @pytest.mark.integration
 def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
-    connection, native, context, store = _native()
+    import yaml
+
+    definitions = _definitions(tmp_path)
+    payload = yaml.safe_load(definitions.read_text())
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["plan"] = {"secondaries": ["purchase_rate"]}
+    experiment["design"] = {
+        "mechanism": "encouragement",
+        "one_sided": False,
+        "uptake": {"fact": "purchase", "window_days": 14},
+        "exclusion_restriction": {
+            "acknowledged": True,
+            "justification": "synthetic test data",
+        },
+    }
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    connection, native, context, store = _native(definitions=definitions)
     connection.raw_sql(
         """
         CREATE OR REPLACE TABLE analytics.event_log AS
@@ -2874,20 +2892,128 @@ def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
         FROM analytics.event_log
         """
     )
-    reference = native.publish_unit_day_artifact(store)
+    connection.raw_sql(
+        """
+        INSERT INTO analytics.event_log
+        WITH anchor AS (
+            SELECT user_id, session_id, epoch_ns(event_at) AS exposure_ns
+            FROM analytics.event_log
+            WHERE experiment_id = 'new_onboarding_v2'
+              AND event = 'page_view' AND group_id = 'treatment'
+            ORDER BY event_at LIMIT 1
+        ),
+        offsets(delta_ns) AS (
+            VALUES (-1), (0), (1), (500), (999), (12096000000000)
+        )
+        SELECT make_timestamp_ns(anchor.exposure_ns + offsets.delta_ns),
+               anchor.user_id, anchor.session_id || '_boundary_' || offsets.delta_ns,
+               'purchase', 1.0, NULL, 'US', 'desktop', 'free', NULL, NULL
+        FROM anchor CROSS JOIN offsets
+        """
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "encouragement_uptake")
+    )
     adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
     try:
-        expected = native.run(metrics=["purchase_rate"])
-        actual = adopted.run(metrics=["purchase_rate"])
+        expected = native.run(estimands=["itt", "compliance"])
+        actual = adopted.run(estimands=["itt", "compliance"])
         assert len(actual) == len(expected)
+        for expected_row, actual_row in zip(expected, actual, strict=True):
+            expected_fields = _flatten_readout_row(expected_row)
+            actual_fields = _flatten_readout_row(actual_row)
+            assert actual_fields.keys() == expected_fields.keys()
+            for field, expected_value in expected_fields.items():
+                actual_value = actual_fields[field]
+                if isinstance(expected_value, float):
+                    assert actual_value == pytest.approx(expected_value, rel=1e-12, abs=1e-12), (
+                        expected_fields,
+                        actual_fields,
+                        field,
+                    )
+                else:
+                    assert actual_value == expected_value
+        raw_exposures = connection.to_pyarrow(
+            connection.sql(
+                """
+                SELECT user_id, group_id, min(epoch_ns(event_at)) AS first_exposure_ns
+                FROM analytics.event_log
+                WHERE experiment_id = 'new_onboarding_v2' AND event = 'page_view'
+                GROUP BY user_id, group_id
+                """
+            )
+        ).to_pylist()
+        raw_ns_by_unit = {row["user_id"]: row["first_exposure_ns"] for row in raw_exposures}
+        expected_floor = {
+            unit_id: timestamp_ns // 1000 * 1000 for unit_id, timestamp_ns in raw_ns_by_unit.items()
+        }
         with store.open_snapshot(reference) as snapshot:
             manifest = snapshot.read_manifest(
                 reference.manifest, expected_sha256=reference.manifest_sha256
             )
             exposures = snapshot.verify_relation(manifest.base.exposures, expected_role="exposures")
             stored = connection.to_pyarrow(exposures).to_pylist()
+            stats = snapshot.verify_relation(
+                manifest.base.measure_stats, expected_role="measure_stats"
+            )
+            stats_rows = connection.to_pyarrow(stats).to_pylist()
+            uptake_ref = next(
+                item for item in manifest.extensions if item.kind == "encouragement_uptake"
+            )
+            uptake_relation = snapshot.verify_relation(
+                uptake_ref.relation, expected_role="encouragement_uptake"
+            )
+            uptake_rows = connection.to_pyarrow(uptake_relation).to_pylist()
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
         assert stored
-        assert all(isinstance(row["first_exposure_ts"], datetime) for row in stored)
+        for row in stored:
+            delta = row["first_exposure_ts"] - epoch
+            stored_ns = (
+                (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+            ) * 1000
+            assert stored_ns == expected_floor[row["unit_id"]]
+        binding = next(
+            item for item in manifest.metric_measures if item.metric_name == "purchase_rate"
+        )
+        target_unit = next(
+            row["user_id"]
+            for row in raw_exposures
+            if row["group_id"] == "treatment" and row["first_exposure_ns"] % 1000 == 999
+        )
+        target_uptake = next(row for row in uptake_rows if row["unit_id"] == target_unit)
+        assert target_uptake["uptake"] is True
+        assert target_uptake["first_uptake_ts"] == next(
+            row["first_exposure_ts"] for row in stored if row["unit_id"] == target_unit
+        )
+        lower = raw_ns_by_unit[target_unit]
+        upper = lower + 14 * 24 * 60 * 60 * 1_000_000_000
+        strict_count = connection.to_pyarrow(
+            connection.sql(
+                f"""
+                SELECT count(*) AS n
+                FROM analytics.event_log
+                WHERE user_id = '{target_unit}' AND event = 'purchase'
+                  AND epoch_ns(event_at) > {lower} AND epoch_ns(event_at) < {upper}
+                """
+            )
+        ).to_pylist()[0]["n"]
+        weak_count = connection.to_pyarrow(
+            connection.sql(
+                f"""
+                SELECT count(*) AS n
+                FROM analytics.event_log
+                WHERE user_id = '{target_unit}' AND event = 'purchase'
+                  AND epoch_ns(event_at) >= {lower} AND epoch_ns(event_at) < {upper}
+                """
+            )
+        ).to_pylist()[0]["n"]
+        assert weak_count == strict_count + 1
+        stored_count = sum(
+            row["n_events"]
+            for row in stats_rows
+            if row["unit_id"] == target_unit and row["measure_key"] == binding.measure_key
+        )
+        assert stored_count == strict_count
     finally:
         adopted.close()
         native.close()

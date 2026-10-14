@@ -601,6 +601,8 @@ class ArtifactPublisher:
                 ),
                 "first_exposure_date": row["first_exposure_date"],
             }
+            # Timestamp artifact columns have a UTC-microsecond wire scale;
+            # keep the source-precision exposure expression for SQL stats.
             for row in self._con.to_pyarrow(
                 exposures.mutate(first_exposure_ts=exposures.first_exposure_ts.truncate("us"))
             ).to_pylist()
