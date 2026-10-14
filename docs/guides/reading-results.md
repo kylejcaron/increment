@@ -1,79 +1,58 @@
 # Reading results
 
-`Analysis.run()` returns one of two result families. The family fixes the row
-type, but the scale of a value is a property of each row, so check every row
-before comparing or combining rows. First establish population, estimand and
-inference regime; then read the point with its interval or confidence set,
-availability reason and selection qualification. The canonical
-[Multiplicity](multiplicity.md) table explains the existing status literals
-and guarantees; this guide explains how to interpret those disclosures on
-result objects and tables.
+`Analysis.run()` returns lift estimates for arm comparisons or additive
+contrasts for switchbacks. Read each row on its own scale and in its own
+population; then check its estimate, uncertainty, availability, and selection
+status. The [Multiplicity](multiplicity.md) guide defines the status labels.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|
-| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
+| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Check each row's `value_scale`. |
 | Switchback: `from_switchback_panel` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
 
-A `LiftEstimate` can be absolute. An encouragement design's additive LATE row
-and an observational metric reported with `run(value_scale={metric: "absolute"})`
-carry `r.value_scale == "absolute"`, and then `r.lift.value` and its interval are
-in the metric's own units. An encouragement design can also emit a relative LATE
-sibling with the same estimand, so a LATE does not imply a scale. Check
-`r.value_scale` (and `r.estimand`) on every row, and never compare a relative lift
-with an additive value numerically.
-`LiftEstimates.to_frame` and the readout rows have a `value_scale` column.
-`ContrastResults.to_frame` does not, because every contrast is additive; only
-the readout adapter below adds `value_scale="absolute"` to contrast rows.
+A `LiftEstimate` can also be absolute. Encouragement designs can return
+additive or relative LATE rows; observational rows can be made absolute with
+`run(value_scale={metric: "absolute"})`. Check `r.value_scale` and
+`r.estimand` before comparing values. `LiftEstimates.to_frame` and readout
+rows include `value_scale`; `ContrastResults.to_frame` does not because all
+contrasts are additive.
 
-The `readout_table` coeftable keeps per-row estimate evidence compact:
-decision-scope completeness, partial-view state, and multiplicity provenance
-appear once as header notes only when informative. They remain on result
-objects and in `to_frame()`; failure rows keep a concise `Failure` column
-with their full structured context on the result object.
+The row's own `r.p_value()` is an **unadjusted** sampling p-value. It is not
+divided by a family correction. `r.stat_sig()` is the row's sampling decision:
+`True` means the row's evidence meets its construction's decision level,
+`False` means it does not, and `None` means no usable sampling verdict is
+available. In particular, `None` is not a non-rejection.
 
-An affirmative `r.discovery` is the raw selection result, not another
-significance verdict: it can differ from `r.stat_sig()`. `r.p_value()` is the
-row's own unadjusted sampling p-value; it is never divided by a multiplicity
-factor. The row's decision compares it with the level its construction decides
-at, shown as `decision_alpha` in the row's representation: `r.lift.alpha` for a
-two-sided or open-sided interval, half of it for a closed one-sided interval
-(the display alpha is central-equivalent), `r.binomial_set.decision_alpha` for an
-exact conversion row, and the single-tail `r.abs_alpha` for an additive decision.
-A Bonferroni-split primary or a family reissue sets it below the plan's nominal
-alpha, so `p_value() <= decision_alpha` holds exactly when `stat_sig()` (an exact
-binomial row decides with a strict `<`; a `low_reliability` breakout cell reports
-its p-value but withholds the verdict). The family verdict is `r.discovery`. The ordinary
-representation and `readout_table` place a selection qualification next to
-that result, including its procedure, exploratory/confirmatory role, retained
-family, and applicable guarantee or assumption. These disclosures do not
-change the stored selection or interval.
-`r.family_procedure` preserves the canonical correction name (`"e_bh"`,
-`"bh"`, or `"bonferroni"`) alongside the family scope and selection. Rows
-restored from payloads predating this field keep it as `None`; their display
-reports that the procedure was not recorded rather than inferring it from
-the interval or guarantee.
+`decision_alpha` is the row's decision level, which may be lower than the
+plan's nominal alpha after a correction or family reissue. A p-value at or
+below this row-specific level means a positive verdict for most tests; exact
+conversion tests use a strict comparison. Low-reliability breakout cells can
+report a p-value while withholding `stat_sig()`.
+`r.discovery` is different: it records whether the row was selected by the
+family procedure. It is not another name for statistical significance.
+Inspect the row or `readout_table` for the selection procedure, role, retained
+family, and guarantee or assumption; these disclosures do not alter the
+stored selection or interval.
 
-Ordinary `str(row)` and `repr(row)` use the same compact semantic display for
-arm, breakout, daily, and additive contrast rows. A missing point is not
-necessarily a failed cell: a point-unavailable result can retain an unbounded
-or disconnected confidence set, whose geometry remains visible in the display.
-For a coded cell failure only, `row.reason` returns the persisted
-`failure_context["reason"]` when present, or the failure code otherwise. It is
-derived from the failure fields and is not persisted; other unavailable
-sampling, posterior, point, and interval reasons remain on their own fields.
+`readout_table` keeps estimate evidence compact. It shows decision-scope
+completeness, partial-view state, and multiplicity provenance as header notes
+when informative. These fields remain available on result objects and in
+`to_frame()`; failure rows retain their structured context on the result.
 
-When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
-assigned and triggered results as separate rows. Pass `population="assigned"` or
-`population="triggered"` to select one population; a selected result never pools the two.
-Under a registered sequential plan each population reads its own retained chain of the
-captured checkpoint; a triggered row never borrows an assigned checkpoint, and a process
-committed without a triggered chain keeps an unavailable row with its refusal code and reason.
+Ordinary `str(row)` and `repr(row)` use the same compact display for arm,
+breakout, daily, and additive contrast rows. A missing point can still have
+an unbounded or disconnected confidence set. For coded cell failures,
+`row.reason` returns the persisted failure reason, or the code when no reason
+was saved; other unavailable reasons remain on their specific fields.
 
-Daily and as-of `DailyLiftEstimate` rows have a compact representation for
-ordinary printing: identity/date, estimate and interval geometry, scale,
-inference/status, and any unavailable reason. Sequential bounds are labeled
-as ratios; exact checkpoint and certificate state remains available through
-`row.sequential_result` when explicitly inspected.
+For triggered experiments, `Analysis.run()` returns assigned and triggered
+rows separately by default. Select with `population="assigned"` or
+`population="triggered"`; results never pool populations. With registered
+sequential inference, each population uses its own retained checkpoint chain.
+
+Daily and as-of `DailyLiftEstimate` rows print their identity, estimate,
+interval, scale, inference/status, and any unavailable reason. Inspect
+`row.sequential_result` for exact sequential checkpoint and certificate state.
 
 ## What to read
 
@@ -84,7 +63,7 @@ For a `LiftEstimate` row `r`:
 | How big is the effect? | `r.lift.value` | `r.lift` is `None` when no finite point exists. |
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
 | Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see below. |
-| Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. `None` when the row has no usable sampling evidence (a failed cell, or `r.sampling_available` False, as for a percentile-winsorized primary), matching the readout frame's `stat_sig`; never read `None` as a non-rejection. `BreakoutEstimate` and `DailyLiftEstimate` rows carry the same `stat_sig()` and `p_value()`. |
+| Is it significant? | `r.stat_sig()` | Tri-state: `True` means the row meets its decision rule, `False` means it does not, and `None` means no usable sampling verdict is available. `None` is not a non-rejection. Honors direction and the row's inference; breakout and daily rows also provide it. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
@@ -203,15 +182,14 @@ custom_table = results.to_frame(
 )
 ```
 
-`columns=None` remains the full projection. Each `"summary"` preset contains
-existing projection fields only, including row identity (`estimand` and
-`value_scale`), `decision_scope_complete`, and `multiplicity_status`; breakout
-and daily summaries also retain segment identity, and daily summaries retain
-unavailability reasons. Models without a summary preset refuse. Every view
-appends `view_partial`, including custom column sequences, so a sliced
-collection remains visibly partial. A custom sequence is checked against the
-projection's column names and returned in canonical projection order before
-`view_partial`; unknown names raise `results.frame.unknown_columns`.
+The default `columns=None` returns the full projection. Use
+`to_frame(columns="summary")` for a compact, per-model preset of existing
+fields. It keeps row identity (`estimand`, `value_scale`), decision-scope
+completeness, and multiplicity status; breakout and daily summaries retain
+segment identity, and daily summaries keep unavailable reasons. Models without
+a summary preset refuse. Every view appends `view_partial`, so slicing never
+looks complete. Custom column lists are validated and returned in canonical
+projection order; unknown names raise `results.frame.unknown_columns`.
 
 
 <!-- output -->

@@ -1,49 +1,39 @@
 # Sitewide impact
 
-`Analysis.sitewide()` converts a supported per-unit lift into whole-site
-impact for the experiment's actual enrollment window: the change if that lift
-had shipped to every enrolled unit. Native `Analysis.from_definitions` sources
-can compute site volume from the raw event stream. An adopted
-`Analysis.from_unit_day_artifact` can also provide it when the artifact was
-published with a `site_volume` extension for the requested metric; see the
-[artifact operation and extension matrix](data-model.md#operation-and-extension-matrix).
-Pre-melted summaries and moments do not retain the required whole-site evidence.
-The [worked example](#worked-example) shows mean and ratio metrics.
-Read the output as window-specific absolute and relative impact, not as a new
-per-unit estimate; see [Reading results](reading-results.md) and
-[Multiplicity](multiplicity.md) for row context.
+`Analysis.sitewide()` estimates the absolute and relative change if the
+per-unit effect had applied to every enrolled unit during the experiment
+window. Use it for a whole-site rollout estimate—not as another per-unit
+effect. The example below shows assigned and triggered readings. Native
+`Analysis.from_definitions` sources provide site volume; an adopted
+`Analysis.from_unit_day_artifact` needs the requested metric's `site_volume`
+extension. Pre-melted summaries and moments lack this evidence; see the
+[artifact extension matrix](data-model.md#operation-and-extension-matrix).
 
-The calculation assumes the observed per-unit effect applies to all enrolled
-units, and it reports only the window actually run—no annualized or longer
-horizon projection. Check [what refuses](#what-refuses) before selecting a
-metric or source.
+!!! warning "Read only the window observed"
+    Sitewide assumes the observed per-unit effect applies to all enrolled
+    units. It reports only the experiment's enrollment window—never an
+    annualized or longer-horizon projection. Check [what refuses](#what-refuses)
+    before choosing a source or metric.
 
+For triggered experiments, `population="assigned"` (the default) estimates
+assignment-based intent-to-treat impact. `population="triggered"` scales the
+effect among units in finalized trigger membership by the triggered enrolled
+count. Both use the experiment calendar window (`start .. end`), not
+`run()`'s trigger-anchored windows; later outcomes are excluded even when
+`observation_end` extends beyond the experiment. Late triggers can count as
+members, but their outcomes still come from the experiment window. Site volume
+always includes the full site, not only triggered units.
 
-When an experiment declares `trigger:`, the default `population="assigned"`
-still reports the assignment-based intent-to-treat whole-site impact. You
-can also request `population="triggered"`: this scales the lift among units
-in finalized trigger membership by the number of triggered enrolled units.
-Both readings use the experiment's calendar window (`start .. end`) for
-outcomes. In particular, sitewide does **not** use `run()`'s trigger-anchored
-observation windows or include outcomes after the experiment end, even when
-`observation_end` is later. Late triggers can belong to triggered membership
-while their outcome contribution still comes from the fixed experiment
-window. Site volume remains the full-site total, not a trigger-filtered total.
-
-Both assigned and triggered sitewide require a randomized identification
-design. Observational and encouragement designs refuse before loading
-sitewide evidence; use `Analysis.run()` for their estimands.
-Outcomes must reach the experiment end. The triggered reading needs every
-outcome feed certified complete through the end day by a watermark in
-`SourceSnapshotEvidence` (or published with the artifact). The assigned
-reading refuses when the snapshot cutoff or a declared watermark stops before
-the end day, and otherwise proceeds as before; a native analysis without
-snapshot evidence has no edge to check. Either refusal names
-`facade.analysis.sitewide_outcomes_incomplete`; re-run once the outcome feeds
-reach the experiment end.
-The assigned/triggered `snapshot_id` equality is content-bound only for
-artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
-table contents.
+Both populations require randomized identification; observational and
+encouragement designs refuse before sitewide evidence loads. Outcomes must be
+complete through the experiment end. Triggered results require a feed
+watermark in `SourceSnapshotEvidence` (or the artifact) proving completeness
+through the end day. Assigned results refuse if a snapshot cutoff or declared
+watermark is earlier; a native analysis without snapshot evidence has no
+cutoff to check. Either refusal uses
+`facade.analysis.sitewide_outcomes_incomplete`; rerun after the feeds reach
+the end day. `snapshot_id` equality is content-bound for artifacts only;
+native identity reflects declared `SourceSnapshotEvidence`, not table contents.
 
 The two readings can be computed from one immutable artifact that includes
 the required trigger and site-volume evidence:
@@ -359,55 +349,30 @@ Its uncertainty uses covariance-aware delta-method gradients for the
 numerator and denominator lifts, including their covariance; the reported
 intervals use the resulting relative-impact standard error.
 
-## Window only -- no projection beyond it
-
-`sitewide()` reports the impact over exactly the experiment's declared
-enrollment window (`experiment.start .. experiment.end`) and refuses to
-extrapolate it into a longer or different horizon: no "annualized"
-number, no per-day rate multiplied out to a quarter or a year.
-
-That refusal is not conservatism for its own sake. As
-[Metric types](metric-types.md#unbounded-retention-doesnt-keep-getting-more-precise)
-shows for retention, a real, *constant* per-unit effect does not read the
-same at every observation horizon: watched longer, later and
-weakly-informative observations dilute the running estimate, to the
-point that a genuinely constant effect can look statistically
-undetectable purely from observing further out. If an effect's own
-statistical signature is not stable across horizons, assuming its
-*size* stays flat past the window you actually measured is exactly the
-same unearned assumption. `sitewide()` reports what happened in the
-window that was run, not a projection of what might happen in a window
-that wasn't.
+`sitewide()` reports only the experiment window (`experiment.start ..
+experiment.end`); it will not annualize or extrapolate to another horizon.
+For retention, even a constant per-unit effect can become less detectable as
+the observation window grows ([why](metric-types.md#unbounded-retention-doesnt-keep-getting-more-precise)).
+An effect measured in one window does not establish its size or statistical
+signature in a later one.
 
 ## Multi-arm experiments
 
-With a second treatment arm enrolled, $V$ carries *both* arms' lifts:
-$V = V_0 + \delta_A n_A + \delta_B n_B$. Netting out only the arm being
-scored would leave the other arm's lift counted as baseline, so every
-enrolled non-control arm is subtracted:
+Each enrolled treatment arm contributes to site volume, so the counterfactual
+baseline must subtract every arm's lift:
 
 $$
 V_0 = V - \sum_i \delta_i\,n_i
 $$
 
-and $N_{\text{exp}}$ counts every enrolled unit, not just two arms' worth.
-The reported number therefore answers: if this arm had shipped to every
-enrolled unit, and no other treatment arm had ever been exposed, how much
-higher would the site-window total be than under no treatment at all? Both
-worlds it compares are worlds a ship decision can actually choose -- a unit
-sits in exactly one arm, so "this arm ships *and* the other keeps running"
-is not a realizable alternative for one shared population.
+$N_{\text{exp}}$ counts all enrolled units. `sitewide()` scores one arm at a time:
+pass `arm=` when multiple treatment arms are enrolled. This asks what would
+happen if the selected arm alone shipped to everyone, compared with no
+treatment; it does not combine arms into an unshippable scenario.
 
-`sitewide()` scores one arm per call: pass `arm="treatment_b"` to say
-which. It is optional only when a single non-control arm is enrolled, and
-the co-enrolled arms are netted out of the baseline either way.
-
-The arms' lifts are not independent -- every $\delta_i$ subtracts the same
-control mean, so $\mathrm{Cov}(\delta_i, \delta_j) = \mathrm{Var}(\bar
-y_C) = \mathrm{Var}(y_C)/n_C$, which is *positive*. Absolute impact is
-unaffected (it stays linear in the scored arm's $\delta$ alone), but the
-relative impact's interval carries that covariance through the shared
-baseline.
+The lift estimates share the control mean, so their covariance is positive.
+Absolute impact depends only on the selected arm's lift; relative impact also
+carries the shared-baseline covariance into its interval.
 
 ## Cluster-randomized experiments
 

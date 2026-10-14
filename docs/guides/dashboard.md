@@ -1,24 +1,21 @@
 # A/B Testing Dashboard
 
-`increment.dashboard` is an optional presentation layer over one bound
-experiment. The supported path is a two-arm randomized `Analysis.from_definitions`;
-see [Supported experiments](#supported-experiments) for inference and design
-requirements. The bundled [A/B testing dashboard example](../examples/ab_testing_dashboard.md)
-shows preparation and rendering. The
-Readout, Explore, Health and Report views present the same captured evidence;
-they do not replace the analysis plan or turn diagnostics into a validity
-verdict. Read result populations and selection qualifications in
-[Reading results](reading-results.md) and the canonical
-[Multiplicity](multiplicity.md) status table.
+`increment.dashboard` presents captured evidence for a bound experiment.
+Install the optional dashboard extra, prepare a supported two-arm randomized
+`Analysis.from_definitions`, then render the snapshot. The
+[example notebook](../examples/ab_testing_dashboard.md) shows the full flow.
+Readout, Explore, Health, and Report share the same evidence; they do not
+replace the analysis plan or turn diagnostics into a validity verdict. For
+population and selection status, see [Reading results](reading-results.md)
+and [Multiplicity](multiplicity.md).
 
-For triggered analyses, assigned allocation checks remain distinct from
-triggered-cohort balance. Treatment-independent trigger membership and timing
-must be defensible; balanced rates cannot prove that counterfactual condition.
-Use the existing [`Analysis.health_check()`](../api.md#diagnostics-and-robustness)
-workflow as a sanity check, not a causal-validity badge. A late or unavailable
-feed and an immature outcome window are not interchangeable with a null
-estimate; the population controls and refusal reasons remain visible in the
-[triggered population guide](#population-selection).
+For triggered experiments, assigned allocation checks and triggered-cohort
+balance answer different questions. Treatment-independent trigger membership
+and timing must be defensible; balanced rates cannot prove this. Use
+[`Analysis.health_check()`](../api.md#diagnostics-and-robustness) as a sanity
+check, not a causal-validity badge. An incomplete feed or immature window is
+not a null estimate; see [population selection](#population-selection) for
+controls and refusal reasons.
 
 ## Install
 
@@ -65,80 +62,59 @@ snapshot = prepare_dashboard(analysis, config=config)
 render_dashboard(analysis, snapshot=snapshot)
 ```
 
-Put preparation and rendering in separate notebook cells.
-Install your warehouse's Ibis backend separately.
+Keep preparation and rendering in separate notebook cells; install the
+warehouse's Ibis backend separately. The default theme pairs **Midnight ·
+Daylight** (light) with **Midnight** (dark). The dashboard embeds its theme,
+stylesheet, table adapter, and controls, so it needs no extra browser package
+or Studio server. Keep the example's host stylesheet beside the notebook.
 
-The default preset pairs **Midnight · Daylight** with **Midnight**. The
-complete dashboard embeds its theme, shared section stylesheet, native-table
-adapter, and browser controls; no external browser packages or Studio server
-are required. The example's host stylesheet stays beside the notebook.
-
-`prepare_dashboard` is the computation boundary. It validates the experiment and
-config, then invokes one source-owned snapshot operation. Allocation, enrollment
-history, headline estimates, observed group data, and every supported Explore
-choice share its pinned inputs, including declared breakout property sources.
-The caller's `Analysis` is not rebound. Captured sequential decisions retain
-each displayed metric's checkpoint, including earlier frozen secondaries.
-These results form an immutable `DashboardSnapshot`. Preparation computes the
-temporal and breakout views as well as the headline.
+`prepare_dashboard` validates the experiment and config, then captures
+allocation, enrollment, headline estimates, group data, and supported Explore
+views from one pinned source snapshot. Declared breakout property sources
+share those inputs. It does not rebind the caller's `Analysis`. The immutable
+`DashboardSnapshot` also retains each displayed sequential metric's checkpoint,
+including earlier frozen secondaries, and computes temporal and breakout views.
 
 ## Population selection
 
-When an experiment declares a trigger, preparation captures assigned and triggered
-whole-window estimates, group evidence, allocation diagnostics, and supported
-Explore views together. The dashboard defaults to **Triggered** and its
-**Population** control switches every readout, breakout, group-data panel,
-allocation history, daily/as-of series, inspector, report, and CSV to the same
-population; populations are never pooled. Without a declared trigger, the
-dashboard remains assigned-only.
+With a declared trigger, preparation captures both populations' whole-window
+estimates, group evidence, allocation diagnostics, and supported Explore
+views. The dashboard defaults to **Triggered**; **Population** switches every
+readout, breakout, group-data panel, allocation history, daily/as-of series,
+inspector, report, and CSV together. It never pools populations. Without a
+trigger, the dashboard is assigned-only. Selections persist across populations
+when available in both.
 
-Switching populations retains the selected Readout metric and Explore scope,
-metric, and series controls when those selections exist in both views.
-
-The Health tab keeps the allocation summary and available, warning, and
-unavailable checks visible. Checks that do not apply because no trigger is
-declared collapse into one summary line; diagnostic codes and context are in
-the **Technical details** disclosure.
+Health shows available, warning, and unavailable checks. Inapplicable checks
+collapse into one line when no trigger is declared; their codes and context
+remain in **Technical details**.
 
 
-Assigned allocation checks describe assignment integrity. Triggered allocation
-checks describe balance in the triggered cohort and are not assignment-integrity
-checks. Triggered-cohort inference is appropriate only if triggering is
-unaffected by treatment; filtering to the triggered population does not establish
-that condition. A triggered view that the source cannot provide stays unavailable
-with its refusal code and reason. For a triggered daily/as-of refusal, choose
-**Assigned** to view the assignment-level trajectory; this does not replace or
-reinterpret the unavailable triggered series. Under a registered sequential plan
-each population's group evidence is decoded from its own retained chain of the
-captured checkpoint, so a triggered row carries the triggered chain's prefix and
-never borrows the assigned one; a process committed without a triggered chain
-shows its triggered cells as unavailable (`triggered_chain_uncommitted`).
+Assigned allocation checks evaluate assignment integrity; triggered checks
+describe triggered-cohort balance and cannot validate randomization. Triggered
+inference is appropriate only when treatment does not affect trigger membership.
+A source-unavailable triggered view retains its refusal code and reason. For an
+unavailable triggered daily/as-of series, **Assigned** can show the
+assignment-level trajectory but does not replace the missing triggered series.
+Registered sequential results use each population's own retained checkpoint
+chain. Without a committed triggered chain, its cells remain unavailable as
+`triggered_chain_uncommitted`.
 
-`render_dashboard` embeds the captured evidence without querying the warehouse.
+Rendering uses captured evidence only. Browser controls—including **Added
+metrics**—select prepared data; they neither query the warehouse nor change
+the plan or recompute confirmatory results. Re-preparing intentionally creates
+a new snapshot. You own `analysis` and its connection; close the old connection
+when rebinding to a different experiment.
 
-Its browser controls select prepared evidence; they never alter the analysis
-plan or recompute confirmatory results. That includes **Added metrics** in
-Explore: every offered metric is read with the headline, so changing which
-ones are shown re-renders the same snapshot. Section-level
-renderers also accept already-prepared data. Re-executing preparation
-intentionally creates a new snapshot that reflects subsequent source changes.
-You retain ownership of `analysis` and its connection; the package does not
-close or replace them. When deliberately rebinding to a different experiment,
-the caller must close the old connection.
+Standalone `render_header` and `render_metric_details` use the selected
+population by default and accept `population="assigned"` or
+`population="triggered"`. Group evidence is population-scoped; assignment
+counts remain separate. Readout keeps metric and arm identity, lift, and plot,
+plus available failure, family-discovery, and prior-advisory columns.
+Numerical qualifications appear in the inspector's interval disclosure.
 
-The standalone `render_header` and `render_metric_details` sections use the same
-selected-population default and accept `population="assigned"` or
-`population="triggered"` for an explicit view. Metric group evidence is scoped to
-that population; assignment counts remain separately labeled.
-
-Readout tables keep the core metric and arm identity, lift, and lift plot, with
-failure, family-discovery, or prior-advisory columns when those values exist.
-Numerical qualification appears in the metric inspector's interval-reading
-disclosure rather than the headline interval.
-
-Explore requests must match the snapshot's experiment and metric
-configuration, including arms, windows, breakouts, and policy. Matching only
-the name is insufficient.
+Explore requests must match the snapshot's experiment and metric configuration,
+including arms, windows, breakouts, and policy—not only its name.
 
 ## Supported experiments
 
