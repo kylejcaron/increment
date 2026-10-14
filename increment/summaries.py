@@ -26,15 +26,20 @@ _INVALID = RefusalSpec(
 def _wire_metadata(
     metric_types: Mapping[str, Literal["mean", "conversion"]],
     control: str,
-    study_id: str | None,
-) -> tuple[str, dict[str, object]]:
+    study_id: str,
+    assignment_counts: Mapping[str, int] | None,
+) -> dict[str, object]:
     from increment._analysis_config import resolve_configs
     from increment._source_identity import source_identity
     from increment.decision_wire import compiled_plan_to_json
     from increment.frame import MetricSpec, synthesise_metric
     from increment.plan import compile_decision_plan
     from increment.semantics.design import Randomized
-    from increment.sources import MOMENTS_FORMAT, WINSORIZATION_MOMENT_FIELDS
+    from increment.sources import (
+        ASSIGNMENT_COUNTS_FIELD,
+        MOMENTS_FORMAT,
+        WINSORIZATION_MOMENT_FIELDS,
+    )
 
     specs = {
         name: MetricSpec(name=name, type=metric_type) for name, metric_type in metric_types.items()
@@ -48,32 +53,29 @@ def _wire_metadata(
         design=Randomized(control_group=control),
         configs=configs,
     )
-    plan_payload = compiled_plan_to_json(plan)
-    resolved_study_id = "summaries" if study_id is None else study_id
-    if not isinstance(resolved_study_id, str) or not resolved_study_id:
-        refuse(
-            _INVALID,
-            field="study_id",
-            metric="<none>",
-            group_id="<none>",
-            value=study_id,
-        )
-    identity_payload = json.dumps(
-        source_identity(SimpleNamespace(context=SimpleNamespace(study_id=resolved_study_id))),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return resolved_study_id, {
+    metadata: dict[str, object] = {
         **dict.fromkeys(WINSORIZATION_MOMENT_FIELDS),
         "moments_format": MOMENTS_FORMAT,
-        "decision_plan": plan_payload,
-        "source_identity": identity_payload,
+        "decision_plan": compiled_plan_to_json(plan),
+        "source_identity": json.dumps(
+            source_identity(SimpleNamespace(context=SimpleNamespace(study_id=study_id))),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     }
+    if assignment_counts is not None:
+        metadata[ASSIGNMENT_COUNTS_FIELD] = json.dumps(
+            dict(assignment_counts), sort_keys=True, separators=(",", ":")
+        )
+    return metadata
 
 
 def _centered_summary(
-    row: Mapping[str, Any], metric: str, group_id: str, metric_type: Literal["mean", "conversion"]
-) -> tuple[int, int | None, float, float]:
+    row: Mapping[str, Any],
+    metric: str,
+    group_id: str,
+    metric_type: Literal["mean", "conversion"],
+) -> tuple[int, int | None, float, float, float]:
     n = row.get("n")
     if isinstance(n, bool) or not isinstance(n, Integral) or n < 1:
         refuse(_INVALID, field="n", metric=metric, group_id=group_id, value=n)
@@ -93,10 +95,14 @@ def _centered_summary(
                 group_id=group_id,
                 value=raw_successes,
             )
-        successes = int(raw_successes)
-        mean = successes / count
-        return count, successes, mean, mean * (count - successes)
+        from increment._bernoulli_moments import canonical_bernoulli_family
 
+        successes = int(raw_successes)
+        mean, cy1, cy2 = canonical_bernoulli_family(count, successes)
+        return count, successes, mean, cy1, cy2
+
+    if count == 1:
+        refuse(_INVALID, field="n", metric=metric, group_id=group_id, value=count)
     mean = row.get("mean")
     variance = row.get("var")
     if isinstance(mean, bool) or not isinstance(mean, Real) or not math.isfinite(float(mean)):
@@ -108,41 +114,80 @@ def _centered_summary(
         or variance < 0
     ):
         refuse(_INVALID, field="var", metric=metric, group_id=group_id, value=variance)
-    return count, None, float(mean), (count - 1) * float(variance)
+    return count, None, float(mean), 0.0, (count - 1) * float(variance)
 
 
-def moments_from_summaries(
-    rows: Iterable[Mapping[str, Any]],
-    *,
+def _metric_types(
     metrics: Mapping[str, str],
-    control: str,
-    study_id: str | None = None,
-) -> list[dict[str, object]]:
-    """Build format-12 moments rows from per-arm ``n``, mean/variance, or counts.
-
-    Mean rows require ``n``, ``mean``, and an unbiased ``var`` (ddof=1).
-    Conversion rows require ``n`` and exact integer ``successes``. Unsupported
-    summary shapes should use :func:`increment.frame.from_unit_summary`.
-    """
-
-    if not metrics:
-        refuse(_INVALID, field="metrics", metric="<none>", group_id="<none>", value=metrics)
-    if not isinstance(control, str) or not control:
-        refuse(_INVALID, field="control", metric="<none>", group_id="<none>", value=control)
-
+) -> dict[str, Literal["mean", "conversion"]]:
     metric_types: dict[str, Literal["mean", "conversion"]] = {}
+    unsupported_types = {"ratio", "covariate", "cluster", "sequential"}
     for name, metric_type in metrics.items():
         if not isinstance(name, str) or not name:
             refuse(_INVALID, field="metric", metric=name, group_id="<none>", value=name)
-        if not isinstance(metric_type, str) or metric_type not in {"mean", "conversion"}:
-            refuse(_UNSUPPORTED, feature=str(metric_type), route="from_unit_summary")
+        if not isinstance(metric_type, str):
+            refuse(
+                _INVALID,
+                field="metric type",
+                metric=name,
+                group_id="<none>",
+                value=metric_type,
+            )
+        if metric_type not in {"mean", "conversion"}:
+            if metric_type in unsupported_types:
+                refuse(_UNSUPPORTED, feature=metric_type, route="from_unit_summary")
+            refuse(
+                _INVALID,
+                field="metric type",
+                metric=name,
+                group_id="<none>",
+                value=metric_type,
+            )
         metric_types[name] = metric_type
-    from increment._moment_plan import SLOTS
+    return metric_types
 
-    resolved_study_id, wire_metadata = _wire_metadata(metric_types, control, study_id)
 
+def _validated_assignment_counts(
+    assignment_counts: Mapping[str, int] | None,
+) -> dict[str, int] | None:
+    if assignment_counts is None:
+        return None
+    if not isinstance(assignment_counts, Mapping):
+        refuse(
+            _INVALID,
+            field="assignment_counts",
+            metric="<none>",
+            group_id="<none>",
+            value=assignment_counts,
+        )
+    validated: dict[str, int] = {}
+    for group_id, count in assignment_counts.items():
+        if (
+            not isinstance(group_id, str)
+            or not group_id
+            or isinstance(count, bool)
+            or not isinstance(count, Integral)
+            or count < 0
+        ):
+            refuse(
+                _INVALID,
+                field="assignment_counts",
+                metric="<none>",
+                group_id=group_id,
+                value=count,
+            )
+        validated[group_id] = int(count)
+    return validated
+
+
+def _summary_rows(
+    rows: Iterable[Mapping[str, Any]],
+    metric_types: Mapping[str, Literal["mean", "conversion"]],
+) -> dict[tuple[str, str], Mapping[str, Any]]:
     summaries: dict[tuple[str, str], Mapping[str, Any]] = {}
     for row in rows:
+        if not isinstance(row, Mapping):
+            refuse(_INVALID, field="row", metric="<none>", group_id="<none>", value=row)
         metric = row.get("metric")
         group_id = row.get("group_id")
         if (
@@ -158,23 +203,110 @@ def moments_from_summaries(
                 group_id=group_id,
                 value=(metric, group_id),
             )
-        for unsupported_field in ("cluster", "cluster_id", "covariate", "inference", "sequential"):
-            if row.get(unsupported_field) is not None:
-                refuse(
-                    _UNSUPPORTED,
-                    feature=unsupported_field,
-                    route="from_unit_summary",
-                )
+        expected_fields = {"metric", "group_id", "n"}
+        expected_fields.update({"mean", "var"} if metric_types[metric] == "mean" else {"successes"})
+        unexpected = set(row) - expected_fields
+        if unexpected:
+            refuse(
+                _INVALID,
+                field="row fields",
+                metric=metric,
+                group_id=group_id,
+                value=tuple(sorted(map(str, unexpected))),
+            )
         key = (metric, group_id)
         if key in summaries:
             refuse(_INVALID, field="duplicate row", metric=metric, group_id=group_id, value=key)
         summaries[key] = row
+    return summaries
 
+
+def _validate_summary_roster(
+    metric_types: Mapping[str, Literal["mean", "conversion"]],
+    summaries: Mapping[tuple[str, str], Mapping[str, Any]],
+    control: str,
+    assignment_counts: Mapping[str, int] | None,
+) -> None:
+    groups_by_metric: dict[str, set[str]] = {metric: set() for metric in metric_types}
+    for metric, group_id in summaries:
+        groups_by_metric[metric].add(group_id)
+    for metric, groups in groups_by_metric.items():
+        if not groups:
+            refuse(
+                _INVALID,
+                field="metric rows",
+                metric=metric,
+                group_id="<none>",
+                value=None,
+            )
+        if control not in groups:
+            refuse(
+                _INVALID,
+                field="control arm",
+                metric=metric,
+                group_id=control,
+                value=tuple(sorted(groups)),
+            )
+    if assignment_counts is not None:
+        row_groups = {group_id for _, group_id in summaries}
+        missing_groups = row_groups - assignment_counts.keys()
+        if missing_groups:
+            refuse(
+                _INVALID,
+                field="assignment_counts arms",
+                metric="<none>",
+                group_id="<none>",
+                value=tuple(sorted(missing_groups)),
+            )
+
+
+def moments_from_summaries(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    metrics: Mapping[str, str],
+    control: str,
+    study_id: str | None = None,
+    assignment_counts: Mapping[str, int] | None = None,
+) -> list[dict[str, object]]:
+    """Build format-12 rows from per-arm mean/variance or conversion summaries.
+
+    Mean rows require ``n >= 2``, ``mean``, and unbiased ``var`` (ddof=1).
+    Conversion rows require ``n`` and exact integer ``successes``. Optional
+    source-level ``assignment_counts`` enable ``unit_counts()`` and allocation
+    health checks; without them those operations refuse with
+    ``source.moments.assignment_counts``. Ratio and other richer summary
+    shapes should use :func:`increment.frame.from_unit_summary`.
+    """
+
+    if not isinstance(metrics, Mapping) or not metrics:
+        refuse(_INVALID, field="metrics", metric="<none>", group_id="<none>", value=metrics)
+    if not isinstance(control, str) or not control:
+        refuse(_INVALID, field="control", metric="<none>", group_id="<none>", value=control)
+    resolved_study_id = "summaries" if study_id is None else study_id
+    if not isinstance(resolved_study_id, str) or not resolved_study_id:
+        refuse(
+            _INVALID,
+            field="study_id",
+            metric="<none>",
+            group_id="<none>",
+            value=study_id,
+        )
+
+    metric_types = _metric_types(metrics)
+    validated_counts = _validated_assignment_counts(assignment_counts)
+    summaries = _summary_rows(rows, metric_types)
+    _validate_summary_roster(metric_types, summaries, control, validated_counts)
+
+    from increment._moment_plan import SLOTS
+
+    wire_metadata = _wire_metadata(metric_types, control, resolved_study_id, validated_counts)
     output: list[dict[str, object]] = []
     for (metric, group_id), row in sorted(summaries.items()):
-        count, successes, mean, cy2 = _centered_summary(row, metric, group_id, metric_types[metric])
+        count, successes, mean, cy1, cy2 = _centered_summary(
+            row, metric, group_id, metric_types[metric]
+        )
         moment_fields = dict.fromkeys(SLOTS, None)
-        moment_fields.update({"ref_y": mean, "cy1": 0.0, "cy2": cy2})
+        moment_fields.update({"ref_y": mean, "cy1": cy1, "cy2": cy2})
         output.append(
             {
                 "experiment_id": resolved_study_id,

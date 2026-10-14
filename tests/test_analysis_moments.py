@@ -910,21 +910,222 @@ def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
         assert row["source_identity"] == source_row["source_identity"]
 
 
-def test_moments_from_summaries_accepts_n_one_with_variance():
+def test_moments_from_summaries_refuses_n_one_mean_summary():
     from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(
+            [
+                {"metric": "value", "group_id": "control", "n": 1, "mean": 2.0, "var": 9.0},
+                {"metric": "value", "group_id": "treatment", "n": 2, "mean": 3.0, "var": 7.0},
+            ],
+            metrics={"value": "mean"},
+            control="control",
+        )
+    assert raised.value.code == "moments.summaries.invalid"
+
+
+def test_moments_from_summaries_preserves_optional_assignment_counts():
+    import json
+
+    from increment import Analysis, moments_from_summaries
+    from increment.sources import ASSIGNMENT_COUNTS_FIELD
 
     rows = moments_from_summaries(
         [
-            {"metric": "value", "group_id": "control", "n": 1, "mean": 2.0, "var": 9.0},
-            {"metric": "value", "group_id": "treatment", "n": 1, "mean": 3.0, "var": 7.0},
+            {"metric": "value", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5},
+            {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5},
+        ],
+        metrics={"value": "mean"},
+        control="control",
+        assignment_counts={"control": 5, "treatment": 7},
+    )
+    for row in rows:
+        payload = row[ASSIGNMENT_COUNTS_FIELD]
+        assert isinstance(payload, str)
+        assert json.loads(payload) == {"control": 5, "treatment": 7}
+    analysis = Analysis.from_moments(rows, metrics={"value": "mean"}, control="control")
+    assert analysis.unit_counts() == {"control": 5, "treatment": 7}
+    from increment.estimation.diagnostics import SRMResult
+
+    result = analysis.srm(
+        expected={"control": 5 / 12, "treatment": 7 / 12},
+        inference="fixed",
+    )
+    assert isinstance(result, SRMResult)
+    assert result.observed == {"control": 5, "treatment": 7}
+
+
+@pytest.mark.parametrize(
+    "assignment_counts",
+    [
+        {"control": -1, "treatment": 1},
+        {"control": True, "treatment": 1},
+        {"control": 1},
+    ],
+)
+def test_moments_from_summaries_rejects_invalid_assignment_counts(assignment_counts):
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(
+            [
+                {"metric": "value", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5},
+                {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5},
+            ],
+            metrics={"value": "mean"},
+            control="control",
+            assignment_counts=assignment_counts,
+        )
+    assert raised.value.code == "moments.summaries.invalid"
+
+
+def test_moments_from_summaries_without_assignment_counts_refuses_count_operations():
+    from increment import Analysis, moments_from_summaries
+    from increment.errors import CodedError
+    from increment.semantics.design import Randomized
+
+    rows = moments_from_summaries(
+        [
+            {"metric": "value", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5},
+            {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5},
         ],
         metrics={"value": "mean"},
         control="control",
     )
-    assert len(rows) == 2
-    assert all(row["moments_format"] == 12 for row in rows)
-    assert all(row["ref_y"] in {2.0, 3.0} for row in rows)
-    assert all(row["cy1"] == 0.0 and row["cy2"] == 0.0 for row in rows)
+    analysis = Analysis.from_moments(
+        rows,
+        metrics={"value": "mean"},
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+    )
+    with pytest.raises(CodedError) as counts:
+        analysis.unit_counts()
+    assert counts.value.code == "source.moments.assignment_counts"
+    with pytest.raises(CodedError) as srm:
+        analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert srm.value.code == "source.moments.assignment_counts"
+    allocation = next(
+        check
+        for check in analysis.health_check(
+            expected_allocation={"control": 0.5, "treatment": 0.5}
+        ).checks
+        if check.check == "assigned_allocation"
+    )
+    assert allocation.availability == "unavailable"
+    assert allocation.code == "source.moments.assignment_counts"
+
+
+@pytest.mark.parametrize(
+    "row, metric_type",
+    [
+        (
+            {"metric": "value", "group_id": "control", "n": 2, "successes": 1, "mean": 0.9},
+            "conversion",
+        ),
+        (
+            {"metric": "value", "group_id": "control", "n": 2, "successes": 1, "cluster": "store"},
+            "conversion",
+        ),
+    ],
+)
+def test_moments_from_summaries_rejects_unexpected_row_fields(row, metric_type):
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(
+            [row],
+            metrics={"value": metric_type},
+            control="control",
+        )
+    assert raised.value.code == "moments.summaries.invalid"
+
+
+def test_moments_from_summaries_refuses_metrics_without_control_or_rows():
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    for rows in (
+        [{"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5}],
+        [{"metric": "other", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5}],
+    ):
+        with pytest.raises(CodedError) as raised:
+            moments_from_summaries(
+                rows,
+                metrics={"value": "mean"},
+                control="control",
+            )
+        assert raised.value.code == "moments.summaries.invalid"
+
+
+def test_moments_from_summaries_conversion_family_matches_export():
+    import pandas as pd
+
+    from increment import Analysis, moments_from_summaries
+
+    source = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(14)],
+                "arm": ["control"] * 7 + ["treatment"] * 7,
+                "converted": [1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"converted": "conversion"},
+    )
+    exported = source._src.moments(source._src.context.metrics[0])
+    summarized = moments_from_summaries(
+        [
+            {"metric": "converted", "group_id": "control", "n": 7, "successes": 5},
+            {"metric": "converted", "group_id": "treatment", "n": 7, "successes": 5},
+        ],
+        metrics={"converted": "conversion"},
+        control="control",
+    )
+    for actual, expected in zip(summarized, exported, strict=True):
+        assert tuple(actual[key] for key in ("ref_y", "cy1", "cy2")) == tuple(
+            expected[key] for key in ("ref_y", "cy1", "cy2")
+        )
+
+
+def test_moments_from_summaries_rejects_invalid_study_id_before_plan_compile(monkeypatch):
+    import increment.summaries as summaries
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    def unexpected_compile(*_args, **_kwargs):
+        raise AssertionError("invalid study ID must be rejected before plan compilation")
+
+    monkeypatch.setattr(summaries, "_wire_metadata", unexpected_compile)
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(
+            [
+                {"metric": "value", "group_id": "control", "n": 2, "mean": 1.0, "var": 0.5},
+                {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 0.5},
+            ],
+            metrics={"value": "mean"},
+            control="control",
+            study_id="",
+        )
+    assert raised.value.code == "moments.summaries.invalid"
+
+
+def test_moments_from_summaries_rejects_unknown_metric_type():
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries([], metrics={"value": "maen"}, control="control")
+    assert raised.value.code == "moments.summaries.invalid"
 
 
 def test_moments_from_summaries_runs_two_arm_example():

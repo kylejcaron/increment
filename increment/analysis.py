@@ -1160,10 +1160,13 @@ class Analysis:
         does not synthesize ratio, covariate, clustered, or sequential state;
         use :meth:`from_unit_summary` when those inputs are required.
 
-        Enters at moment grain: ``run()``/``srm()`` work; the unit-frame
-        method (needed for IPTW/DML) raises :class:`CapabilityError`, as do
-        ``sql()`` and every method the other seam constructors already refuse
-        (day axis, ``panel_sql``, ``run_breakout``, ``materialize``).
+        At moment grain, ``run()`` works. ``unit_counts()``, ``srm()``, and
+        health allocation checks require source-level ``assignment_counts``;
+        without that field they are unavailable with
+        ``source.moments.assignment_counts``. The unit-frame method (needed
+        for IPTW/DML) raises :class:`CapabilityError`, as do ``sql()`` and
+        every method the other seam constructors already refuse (day axis,
+        ``panel_sql``, ``run_breakout``, ``materialize``).
 
         *rows* must carry centered ``group_summary`` columns, a fixed-horizon
         ``moments_format=12`` stamp, integer ``n``, nullable integer
