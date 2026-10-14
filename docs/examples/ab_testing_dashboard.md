@@ -1,21 +1,24 @@
 # A/B testing dashboard
 
-This notebook binds a synthetic `checkout_redesign` experiment to four
-dashboard tabs: **Readout**, **Explore**, **Health**, and a printable
-**Report**. Explore shows relative-lift or per-arm trajectories across declared
-breakouts. Report includes every captured metric result and interval, plus a
-full-readout CSV and **Print / Save PDF**. Browser controls and CSV downloads
-also work in the static export.
+This notebook binds the synthetic `checkout_redesign` experiment to a shared
+summary and four tabs: **Readout**, **Explore**, **Health**, and a printable
+**Report** with every captured metric result and interval. Explore compares
+native CoefTable relative-lift or per-arm absolute trajectories across declared
+breakouts. Report provides the full-readout CSV and **Print / Save PDF**;
+browser controls and CSV downloads also work in the static export.
 
 The masthead switches between **Midnight · Daylight** and **Midnight** and
 remembers your choice without changing captured evidence. PDFs always use the
-light palette. Small reports fit one A4 page; longer reports paginate with
-repeated headers and readable text. `DashboardConfig.theme` exposes palette,
-typography, layout, chart size, and print settings.
+light palette. Small reports fit one A4 page; larger families paginate with
+repeated headers rather than shrinking their textual evidence below the
+configured font floor. Presets expose independently adjustable palettes,
+typography, layout, native-chart dimensions, and print readability in
+`DashboardConfig.theme`.
 
-Health shows allocation and applicable checks. Not-applicable trigger checks
-appear with their codes and context in collapsed technical details. For an
-experiment with a population selector, see the
+The Health tab keeps the allocation summary and applicable checks in view;
+not-applicable trigger checks are summarized, with codes and context in a
+collapsed technical-details section. For an experiment with a population
+selector, see the
 [triggered dashboard notebook](triggered_population_dashboard.md).
 
 [Open the notebook in a full browser tab](ab_testing_dashboard.html)

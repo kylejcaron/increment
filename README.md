@@ -24,11 +24,11 @@ ship feature flags, or maintain a separate event store.
 
 ## What you can do
 
-- **Analyze experiments** — estimate effects, use CUPED to reduce variance, correct
-  for multiple comparisons, and check sample-ratio mismatch (SRM) when an
-  independent allocation scheme is declared or you request a one-look
-  `srm(inference="fixed")` diagnostic. `health_check()` reports when assignment
-  checks make SRM unavailable.
+- **Analyze experiments** — estimate effects, reduce variance with CUPED, apply
+  multiple-comparison corrections, and check sample-ratio mismatch after
+  declaring `allocation_scheme="independent"` or explicitly requesting a
+  one-look `srm(inference="fixed")` diagnostic. `health_check()` reports when
+  assignment checks make SRM unavailable.
 - **Use Bayesian inference** — combine prior beliefs with experiment data to
   estimate effects and probabilities of benefit.
 - **Plan and monitor** — calculate sample size, power, and minimum detectable

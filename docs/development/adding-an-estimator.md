@@ -47,7 +47,7 @@ make test TESTS=tests/estimation/test_engine.py
 make test TESTS=tests/test_parity_harness.py
 ```
 
-`test_binomial_rr.py` checks the numerical route against an independent reference; the named `test_engine.py` case checks result round-tripping; the parity harness checks source support. Use `make test-affected BASE=0f272c4^` when changes span more owners. Numerical changes may need calibration; a documentation edit does not.
+`test_binomial_rr.py` checks the numerical route against an independent reference; the named `test_engine.py` case checks result round-tripping; the parity harness checks source support. Use `make test-affected BASE=0f272c4^` when changes span more owners. Do not start a calibration campaign for a documentation edit; calibration obligations for a numerical change remain those recorded by the owners.
 
 ## Walkthrough 2: add experiment-health evidence
 
@@ -55,7 +55,12 @@ make test TESTS=tests/test_parity_harness.py
 
 ### Contract, assumptions and source requirements
 
-`Analysis.health_check()` returns a frozen `ExperimentHealth` report (`increment/estimation/health.py`) with ordered `HealthCheck` entries. Availability is not a conclusion: missing trigger membership or feed-completeness evidence remains unavailable with its exact code and context, not a failure or pass. Assigned allocation integrity and triggered-population balance are separate. Balanced trigger rates do not prove treatment-independent membership, stationarity, sound randomization, or causal validity.
+`Analysis.health_check()` returns a frozen `ExperimentHealth` report (`increment/estimation/health.py`) with ordered `HealthCheck` entries. Availability is not a conclusion: missing trigger membership or feed-completeness evidence remains unavailable with its exact code and context, not a failure or pass. Assigned allocation integrity and triggered-population balance are separate.
+
+!!! warning "Balanced triggers do not establish causal validity"
+    Balanced trigger rates do not establish treatment-independent membership,
+    stationarity, randomization integrity or causal validity; report the
+    assumption risk rather than converting the diagnostic into a guarantee.
 
 The report is available from all public analysis factories, but trigger diagnostics need specific evidence:
 
@@ -71,7 +76,7 @@ This evidence is not a moment: aggregates cannot restore unit membership or feed
 
 1. Trace `Analysis.health_check()` to `_collect_health()` in `increment/analysis.py`. It pins one source snapshot, combines existing diagnostics, retains source identity, and builds the report. Dashboards use this method rather than duplicate its policy.
 2. `tests/test_experiment_health.py::test_balanced_trigger_rates_do_not_clear_assumption_risk` independently counts triggers from fixture user IDs and confirms balanced rates leave assumption risks marked as assumed. `test_health_missing_certificates_are_unknown` checks the refusal and missing watermark.
-3. Sentinel tests cover unavailable and not-applicable paths: `test_untriggered_summary_has_explicit_unavailable_triggered_rows`, `test_health_unit_panel_reports_only_supported_population`, `test_health_switchback_does_not_substitute_unit_arm_srm`, `test_health_moments_replay_does_not_reconstruct_trigger_population`, `test_health_artifact_without_trigger_extensions_is_unavailable`, and `test_health_artifact_trigger_extensions_are_optional_but_explicit`.
+3. Sentinel tests cover unavailable and not-applicable paths: `test_untriggered_summary_has_explicit_unavailable_triggered_rows`, `test_health_unit_panel_reports_only_supported_population`, `test_health_switchback_does_not_substitute_unit_arm_srm`, `test_health_moments_replay_does_not_reconstruct_trigger_population`, and `test_health_artifact_without_trigger_extensions_is_unavailable`. `test_health_artifact_trigger_extensions_are_optional_but_explicit` compares retained native/artifact evidence.
 4. Preserve identity and provenance through frozen models, JSON/pickle/deepcopy round trips, and dashboard projection. `test_health_json_replay_preserves_checks_and_risks` and `test_health_models_round_trip_pickle_deepcopy_and_nested_immutability` check restoration; dashboard tests check rendering. Serialization restores a report; it cannot make an unavailable check available.
 5. Check the capability row and [entry-point reference](../reference/capabilities-by-entry-point.md) before changing support. Pair each newly supported ingress with evidence tests; a constructor alone is not parity evidence.
 

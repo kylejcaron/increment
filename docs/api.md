@@ -24,14 +24,16 @@ The policy covers:
 - stable refusal codes and named context fields;
 - each versioned portable or artifact format listed below.
 
-Underscore modules and private research kernels are not public APIs.
+Underscore modules and private research kernels are not public APIs and may
+change without notice.
 
 ### Alpha semantics
 
 - Pin the exact prerelease and dependency versions (Narwhals, Ibis, Arrow,
   DuckDB, and any pandas/Polars versions) when you need to reproduce a result.
-- Breaking changes may occur between 0.x prereleases. Release notes list them
-  under `Breaking changes`, with affected paths and migration steps. There is no
+- Breaking changes may occur between 0.x prereleases. Each is listed in the
+  release notes (the `Breaking changes` section, from pull requests labelled
+  `breaking`) with the affected paths and a migration route. There is no
   1.0 stability promise or deprecation window.
 - A bug fix may change a previously incorrect numerical answer. Release notes
   describe the correction; compatibility does not preserve wrong values.
@@ -57,6 +59,10 @@ Persisted files use versioned formats; they are not upgraded silently. Re-export
 legacy artifacts from trusted definitions. The details below document supported
 moments, artifact, and checkpoint formats.
 
+!!! warning "A checkpoint belongs to one monitoring process"
+    Do not restart monitoring and spend alpha again: retain the old checkpoint
+    or register a defensible new protocol.
+
 ??? info "Statistical and wire-format details"
     **Moments cubes.** `Analysis.export` stamps each row with `moments_format`;
     `Analysis.from_moments` reads it. Formats vary by writer:
@@ -79,9 +85,10 @@ moments, artifact, and checkpoint formats.
     `sequential.continuation.legacy`. Re-export from trusted definitions or use
     the release that wrote the file; formats are never silently upgraded.
 
-    Fixed-horizon format 10 cannot supply `assignment_counts`; operations that
-    need them refuse with `source.moments.assignment_counts`. Its rows remain
-    distinct from typed sequential format-10 checkpoints. A format-12 ratio
+    Historical fixed-horizon format 10 does not synthesize missing
+    `assignment_counts`; operations that require those counts refuse with
+    `source.moments.assignment_counts`. Its rows remain distinct from typed
+    sequential format-10 checkpoints. A format-12 ratio
     row without `cden3` is refused with
     `moments.denominator_third_moment_missing`. Formats 10 and 11 have no
     `cden3`; their lift rows mark denominator-skew coverage unavailable, not
@@ -151,12 +158,13 @@ moments, artifact, and checkpoint formats.
     byte-identical.
 
     **New refusal codes.** `query.session.warehouse_artifact.publication_cleanup_incomplete`
-    means relations could not be dropped before manifest insertion;
-    `query.session.warehouse_artifact.publication_state_unknown` means cleanup
-    failed after it began. These apply when publication exits normally without
-    a manifest and cleanup cannot finish. Propagating errors are re-raised
-    unchanged with a note. Both codes include qualified relation names and
-    recovery steps.
+    (relations could not be dropped before the manifest insert began) and
+    `query.session.warehouse_artifact.publication_state_unknown` (cleanup was
+    incomplete after it began: the tombstone could not be written, or relation
+    erasure failed after it was) are raised when a publication block exits normally
+    without a manifest and cleanup could not finish. Propagating errors are
+    re-raised unchanged with a note. Both codes include qualified relation names
+    and recovery steps.
 
     **Sequential checkpoints and segment labels.** A checkpoint belongs to one
     monitoring process; never relabel or rehash it. Frame segment labels use
@@ -569,16 +577,20 @@ Plan fixed-horizon sample size, power, or minimum detectable effect (MDE) with
 the runtime's deployed decision method. Binomial and switchback planning have
 different approximations and limits.
 
+!!! warning "Use the lower bound to judge a power target"
+    A sample size or effect reaches a target only when `power_lower` reaches
+    it, even when `power` reports an enumerated point.
+
 ??? info "Statistical details"
     Fixed-horizon binomial planning estimates rejection probability over possible
     event counts. Enumerated results include an enclosure (`power_lower`,
     `power_upper`) conditional on the deployed SciPy/Boost special-function
-    error model—not a cross-build floating-point proof. When enclosure width is
-    at most `1e-6`, `power` is its point estimate and
-    `power_basis="exact"`; otherwise, `power` is the lower bound and
-    `power_basis="lower_bound"`. A target is reached only if the lower bound
-    reaches it. The dense closed-form route gives a model-based point estimate
-    without an enclosure.
+    error model—not a cross-build floating-point proof. `power` is the
+    enumerated point when the enclosure resolves to absolute error at most
+    `1e-6` (`power_basis="exact"`) and the enclosure's lower end otherwise
+    (`power_basis="lower_bound"`); a size or effect reaches a target only when
+    the lower end does. The dense closed-form route gives a model-based point
+    estimate without an enclosure.
 
     `PowerResult.numerical_qualification` records this scope:
     `scipy_special_function_error_model_conditional_v1` for enumerated results
@@ -693,6 +705,11 @@ analysis.close()
 Validation and targeting APIs use the same fitted result and preserve its
 uncertainty and evidence limits.
 
+!!! warning "Prediction is not permission to deploy"
+    `TargetingRule.predict` scores a candidate; `recommendation` remains the
+    deployment evidence gate. Supply the full member roster for each cluster
+    when predicting with a cluster rule.
+
 ??? info "Statistical and deployment details"
     `estimate_cate(..., cluster_weight="member_count")` gives every member equal
     weight. Set `cluster_weight="equal"` to give each observed cluster equal
@@ -724,12 +741,14 @@ uncertainty and evidence limits.
     the honest split and nested selection. Validation reports member counts
     separately from independent held-out clusters. JSON preserves numeric
     nulls and `unavailable_reason`; unavailable AUTOC evidence keeps the gate
-    closed. Constant clustered scores refuse with
-    `estimation.targeting.degenerate_rank_distribution`. Training or holdout
-    masks that split clusters refuse with `estimation.crossfit.cluster_split`.
+    closed. A clustered constant score reports
+    `estimation.targeting.degenerate_rank_distribution`, rather than
+    manufacturing evidence from repeated members. Its rank evidence is
+    unavailable, not an exception. Training or holdout masks that split
+    clusters refuse with `estimation.crossfit.cluster_split`.
 
     `targeting_rule` and `select_targeting_rule` accept
-    `deploy_grain: Literal["unit", "cluster"] | None`. Only a declared
+    `deploy_grain: Literal["unit", "cluster"] | None = None`. Only a declared
     `intervention_grain="cluster"` defaults to cluster deployment. Dependence
     clusters alone keep unit policies, including mixed-treatment observational
     clusters. A unit policy for a cluster intervention refuses before reading
@@ -756,8 +775,9 @@ uncertainty and evidence limits.
     `estimation.targeting.empty_group`. A cluster rule's `threshold` is
     descriptive; its ID tie-break and prefix budget determine selection.
 
-    Policy JSON includes fitted basis, knots, category levels, centering, and
-    coefficients, so loading it restores point prediction without refitting.
+    Policy JSON includes the fitted basis, knots, category levels, centering and
+    coefficients, so `TargetingRule.model_validate_json(rule.model_dump_json())`
+    predicts without fitting again.
     CATE report dumps are report-only; serialize `score_state` for portable
     point prediction. `Analysis.estimate_cate`, `validate_cate`,
     `targeting_rule`, and `select_targeting_rule` delegate to the same source
@@ -818,7 +838,7 @@ results together. It accepts only uncorrected fixed-horizon decision rows.
     | Mean, ratio, and CUPED rows (Wald log interval) | Supported: reissued from persisted statistics and reference. |
     | Conversion and retention (exact binomial) | Supported: reinverted from persisted counts; one-sided geometry is kept. |
     | Clustered ratio (Fieller set) | Supported: reinverted from persisted joint reference. |
-    | No relative interval, selected by an absolute margin or additive evidence against zero | Supported: additive interval uses persisted `abs_diff`, `abs_se`, reference, and `abs_alpha`, never narrower than nominal. Rows serialized before `abs_alpha` are refused with `estimation.family.exploratory_construction`. |
+    | No relative interval (non-positive arm mean), selected by an absolute margin or additive evidence against zero | Supported: additive interval uses persisted `abs_diff`, `abs_se`, reference, and `abs_alpha`, never narrower than nominal. Rows serialized before `abs_alpha` are refused with `estimation.family.exploratory_construction`. |
     | Breakout segments and whole-window rows | Supported: one family across metric, arm, and segment. |
     | Design-excluded cells (too few units or no control) | Not hypotheses; returned unchanged outside the family. Outcome-based exclusions remain in `m` as non-rejections. |
     | Informative prior | Posterior fields may change; selection uses persisted sampling evidence. Prior-bound rows without a proven sampling-availability marker refuse with `readout.legacy.sampling_unreconstructible`. |
@@ -828,11 +848,12 @@ results together. It accepts only uncorrected fixed-horizon decision rows.
 
 ::: increment.estimation.family.select_exploratory_family
 
-`exploratory_family_exclusion` checks one row against the same rules. Exclude
-ineligible rows and report the returned reason instead of refusing the whole
-family; refusal context uses the same values in `reasons` or `constructions`.
-One-sided Wald, exact-binomial, and Fieller intervals are reissued with their
-one-sided geometry and remain eligible.
+`exploratory_family_exclusion` applies the same admissibility test to one row and
+returns the reason it cannot join the family, or `None`. Exclude ineligible rows
+and report the returned reason instead of refusing the whole family; refusal
+context uses the same values in `reasons` or `constructions`.
+One-sided (`greater`/`less`) Wald, exact binomial and Fieller rows are reissued
+exactly, with their one-sided geometry, and are not excluded.
 
 ::: increment.estimation.family.exploratory_family_exclusion
 

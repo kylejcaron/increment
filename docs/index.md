@@ -2,7 +2,7 @@
 
 Analyze A/B tests in Python from dataframes or SQL warehouses. Increment provides reusable metric definitions, effect estimates, uncertainty intervals, and shareable reports.
 
-Methods include exact procedures, approximations, and empirically checked approaches. Results may include diagnostics instead of refusing; see [Statistical limitations](limitations.md) for guarantees and known calibration gaps.
+Methods include exact constructions (such as Bernoulli e-processes), asymptotic approximations (such as `asymptotic_mean` confidence sequences), and empirically qualified procedures. Results may include diagnostics instead of refusing; see [Statistical limitations](limitations.md) for guarantees and known calibration gaps.
 
 Requires Python 3.12, 3.13, or 3.14.
 

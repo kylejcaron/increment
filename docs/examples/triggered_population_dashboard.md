@@ -1,8 +1,8 @@
 # Triggered population dashboard
 
-This notebook creates a two-arm experiment with assignment, trigger, and
-outcome events. The dashboard defaults to the triggered cohort and switches
-all readouts together between **Assigned** and **Triggered**.
+This notebook builds a deterministic two-arm experiment with assignment events,
+trigger events, and outcomes. The dashboard defaults to the triggered cohort
+and switches all readouts together between **Assigned** and **Triggered**.
 
 !!! warning "Triggered results need a treatment-independent trigger"
     Triggered-cohort inference is appropriate only when treatment does not
