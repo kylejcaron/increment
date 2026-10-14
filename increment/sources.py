@@ -805,6 +805,17 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
     )
 
 
+def _canonicalize_boolean_moment_group_ids(
+    rows: Sequence[Mapping[str, object]],
+) -> list[Mapping[str, object]]:
+    return [
+        {**row, "group_id": "true" if row.get("group_id") else "false"}
+        if isinstance(row.get("group_id"), bool)
+        else row
+        for row in rows
+    ]
+
+
 def _check_moments_format(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -1233,7 +1244,7 @@ class MomentsSource(SequentialSourceMixin):
             embedded_trigger_name,
             source_identity_record,
         ) = _check_moments_format(
-            rows,
+            _canonicalize_boolean_moment_group_ids(rows),
             require_plan=plan is None,
             require_source_identity=_source_identity_record is None,
         )

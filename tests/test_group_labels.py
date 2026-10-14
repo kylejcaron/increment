@@ -126,6 +126,39 @@ def test_boolean_moments_control_coerces_only_for_boolean_labels(tmp_path):
     assert raised.value.code == "source.frame.control_invalid"
 
 
+def test_boolean_moments_group_ids_are_canonicalized_at_ingress(tmp_path):
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": [True, True, False, False],
+                "y": [1, 2, 3, 4],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control=True,
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "boolean-group-id-ingress.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    boolean_rows = copy.deepcopy(rows)
+    string_rows = copy.deepcopy(rows)
+    for boolean_row, string_row in zip(boolean_rows, string_rows, strict=True):
+        boolean_row.pop("assignment_counts", None)
+        string_row.pop("assignment_counts", None)
+        boolean_row["group_id"] = boolean_row["group_id"] == "true"
+    expected = Analysis.from_moments(string_rows, metrics={"y": "mean"}, control="true").run()
+    actual = Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control=True).run()
+    assert actual == expected
+    with pytest.raises(InvalidRequestError) as wrong_case:
+        Analysis.from_moments(boolean_rows, metrics={"y": "mean"}, control="True")
+    assert wrong_case.value.code == "source.frame.control_missing"
+
+
 def test_string_boolean_looking_moments_labels_stay_case_sensitive(tmp_path):
     original = Analysis.from_unit_summary(
         pd.DataFrame(
