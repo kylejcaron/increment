@@ -1969,6 +1969,28 @@ def test_summary_notes_preserve_disconnected_bounds_without_a_point(
                 assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
 
 
+def test_report_notes_keep_binomial_qualification_out_of_readout(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.dashboard._app import _report_notes
+    from increment.dashboard._format import headline_interval
+    from increment.dashboard._html import results_table
+    from increment.tables import _binomial_qualification_disclosure
+
+    row = next(row for row in storefront.readout_rows if row.get("binomial_set") is not None)
+    qualification = _binomial_qualification_disclosure(row["binomial_set"])
+    assert qualification is not None
+
+    notes = "\n".join(_report_notes(storefront))
+    headline = headline_interval(row)
+    table = results_table(storefront)
+    assert notes.count(qualification) == 1
+    assert str(row["metric"]) in notes
+    assert qualification not in headline
+    assert qualification not in table
+    assert "Numerical qualification" not in table
+
+
 def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
     storefront: DashboardSnapshot,
 ) -> None:
