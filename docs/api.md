@@ -577,9 +577,12 @@ Plan fixed-horizon sample size, power, or minimum detectable effect (MDE) with
 the runtime's deployed decision method. Binomial and switchback planning have
 different approximations and limits.
 
-!!! warning "Use the lower bound to judge a power target"
-    A sample size or effect reaches a target only when `power_lower` reaches
-    it, even when `power` reports an enumerated point.
+!!! warning "Judge enumerated binomial targets by their lower bound"
+    For enumerated binomial results, a sample size or effect reaches a target
+    only when `power_lower` reaches it, even when `power` reports an enumerated
+    point. Closed-form and asymptotic planning routes have no enclosure
+    (`power_lower` and `power_upper` are `None`); assess their targets using the
+    reported model `power`.
 
 ??? info "Statistical details"
     Fixed-horizon binomial planning estimates rejection probability over possible
