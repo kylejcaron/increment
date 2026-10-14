@@ -1105,8 +1105,6 @@ class EstimateList[M: BaseModel](list[M]):
             to_frame(self, model=self._model, backend=backend, columns=selected_columns),
             eager_only=True,
         )
-        if columns is not None:
-            return frame.to_native()
         return frame.with_columns(
             nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
         ).to_native()
@@ -1604,6 +1602,11 @@ class LiftEstimates(EstimateList[LiftEstimate]):
         "ub",
         "discovery",
         "failure_code",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
     )
 
 
@@ -1625,6 +1628,12 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
         "lb",
         "ub",
         "discovery",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+        "excluded",
         "failure_code",
     )
 
@@ -1654,6 +1663,14 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
         "lb",
         "ub",
         "discovery",
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "unavailable",
+        "relative_unavailable_reason",
         "failure_code",
     )
 

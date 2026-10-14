@@ -189,6 +189,7 @@ def test_to_frame_columns_validates_and_returns_canonical_order():
         "metric",
         "lift",
         "ub",
+        "view_partial",
     ]
     with pytest.raises(InvalidRequestError) as raised:
         results.to_frame(columns=["metric", "not_a_column"])
@@ -256,6 +257,12 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
                 "ub",
                 "discovery",
                 "failure_code",
+                "estimand",
+                "value_scale",
+                "decision_scope_complete",
+                "multiplicity_status",
+                "relative_unavailable_reason",
+                "view_partial",
             ),
         ),
         (
@@ -285,6 +292,13 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
                 "ub",
                 "discovery",
                 "failure_code",
+                "estimand",
+                "value_scale",
+                "decision_scope_complete",
+                "multiplicity_status",
+                "relative_unavailable_reason",
+                "excluded",
+                "view_partial",
             ),
         ),
         (
@@ -312,6 +326,15 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
                 "ub",
                 "discovery",
                 "failure_code",
+                "dimension",
+                "dimension_value",
+                "estimand",
+                "value_scale",
+                "decision_scope_complete",
+                "multiplicity_status",
+                "unavailable",
+                "relative_unavailable_reason",
+                "view_partial",
             ),
         ),
     ]
@@ -321,3 +344,135 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
         summary = cast(pd.DataFrame, results.to_frame(columns="summary"))
         assert set(summary.columns) == set(expected_columns)
         pd.testing.assert_frame_equal(summary, full.loc[:, summary.columns])
+
+
+def test_encouragement_summary_retains_estimand_and_scale_identity():
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.breakout.estimates import LiftEstimates
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    df = pd.DataFrame(
+        [
+            ("u01", "control", 10.0, 0),
+            ("u02", "control", 12.0, 0),
+            ("u03", "control", 9.0, 0),
+            ("u04", "control", 20.0, 1),
+            ("u05", "treatment", 25.0, 1),
+            ("u06", "treatment", 30.0, 1),
+            ("u07", "treatment", 28.0, 1),
+            ("u08", "treatment", 15.0, 0),
+        ],
+        columns=["user_id", "variant", "revenue", "clicked"],
+    )
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked"),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="assignment only moves revenue via uptake"
+        ),
+        min_first_stage_z=0.5,
+    )
+    results = cast(
+        LiftEstimates,
+        Analysis.from_unit_summary(
+            df,
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=design,
+            uptake="clicked",
+        ).run(),
+    )
+
+    frame = cast(pd.DataFrame, results.to_frame(columns="summary"))
+    assert {"estimand", "value_scale"} <= set(frame.columns)
+    assert set(frame["estimand"]) == {"itt", "compliance", "late"}
+    identity = [
+        "metric",
+        "group_id",
+        "method",
+        "analysis_population",
+        "estimand",
+        "value_scale",
+    ]
+    assert frame.duplicated(identity).sum() == 0
+
+
+def test_dimensioned_daily_summary_retains_segment_identity_and_unavailability():
+    from datetime import date
+
+    from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates, run_daily_lift
+    from tests.breakout.test_daily import _make_daily_row, _mean_metric
+
+    day = date(2025, 1, 1)
+    rows = [
+        _make_daily_row(200, 10.0, 4.0, ds=day, group_id="control"),
+        _make_daily_row(200, 12.0, 4.0, ds=day, group_id="treatment"),
+        _make_daily_row(200, 20.0, 4.0, ds=day, group_id="control"),
+        _make_daily_row(200, 19.0, 4.0, ds=day, group_id="treatment"),
+    ]
+    for row in rows[:2]:
+        row["country"] = "US"
+    for row in rows[2:]:
+        row["country"] = "CA"
+    results = run_daily_lift(rows, [_mean_metric()], control_group="control", dimension="country")
+
+    frame = cast(pd.DataFrame, results.to_frame(columns="summary"))
+    assert {
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+        "unavailable",
+    } <= set(frame.columns)
+    assert set(frame["dimension_value"]) == {"US", "CA"}
+    identity = [
+        "metric",
+        "group_id",
+        "method",
+        "analysis_population",
+        "ds",
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+    ]
+    assert frame.duplicated(identity).sum() == 0
+
+    unavailable = DailyLiftEstimate(
+        metric="rev",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        ds=day,
+        lift=None,
+        unavailable="few_units",
+        dimension="country",
+        dimension_value="MX",
+    )
+    unavailable_frame = cast(
+        pd.DataFrame, DailyLiftEstimates([unavailable]).to_frame(columns="summary")
+    )
+    assert unavailable_frame.loc[0, "unavailable"] == "few_units"
+
+
+def test_selected_views_preserve_partial_and_scope_disclosures():
+    import warnings
+
+    from tests.test_readout_public_scope import _analysis, _frame
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        filtered = _analysis(_frame()).run().filter(lambda row: row.metric != "guard")
+
+    summary = cast(pd.DataFrame, filtered.to_frame(columns="summary"))
+    custom = cast(
+        pd.DataFrame,
+        filtered.to_frame(columns=["metric", "decision_scope_complete", "multiplicity_status"]),
+    )
+    for frame in (summary, custom):
+        assert frame["view_partial"].all()
+        assert not frame["decision_scope_complete"].any()
+        assert set(frame["multiplicity_status"]) == {"declared_plan"}

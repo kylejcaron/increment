@@ -203,13 +203,15 @@ custom_table = results.to_frame(
 )
 ```
 
-`columns=None` remains the full projection. The `"summary"` preset keeps
-existing fields only: arm results include metric, group, method, role,
-analysis population, lift and interval, discovery, and failure code; breakout
-summaries also identify the segment, and daily summaries identify the day.
-Models without a summary preset refuse. A custom sequence is checked against
-the projection's column names and returned in canonical projection order;
-unknown names raise `results.frame.unknown_columns`.
+`columns=None` remains the full projection. Each `"summary"` preset contains
+existing projection fields only, including row identity (`estimand` and
+`value_scale`), `decision_scope_complete`, and `multiplicity_status`; breakout
+and daily summaries also retain segment identity, and daily summaries retain
+unavailability reasons. Models without a summary preset refuse. Every view
+appends `view_partial`, including custom column sequences, so a sliced
+collection remains visibly partial. A custom sequence is checked against the
+projection's column names and returned in canonical projection order before
+`view_partial`; unknown names raise `results.frame.unknown_columns`.
 
 
 ```text
