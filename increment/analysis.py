@@ -1142,23 +1142,52 @@ class Analysis:
         Without an override, the payload's complete roles, methods,
         priors, inference, and view policies are used as exported.
         """
+        import json
+
         from increment._frame_validation import (
             _coerce_source_metrics,
             canonical_control_for_moments,
-            canonical_design_for_labels,
+            canonical_design_for_moments,
+            validate_moments_control,
         )
         from increment.frame import synthesise_metric
-        from increment.semantics.design import Encouragement, Randomized
-        from increment.sources import MomentsSource
+        from increment.semantics.design import Encouragement, Randomized, UptakeSpec
+        from increment.sources import COMPLIANCE_SUMMARY_FIELD, MomentsSource
 
-        boolean_cube = {str(row.get("group_id")) for row in rows} == {"true", "false"}
-        design = canonical_design_for_labels(design, boolean=boolean_cube)
+        design = canonical_design_for_moments(design)
         _require_design(control, design, constructor="Analysis.from_moments")
         if control is None:
             assert design is not None
-            control = str(design.control_group)
+            control = canonical_control_for_moments(design.control_group)
         else:
-            control = canonical_control_for_moments(rows, control)
+            control = canonical_control_for_moments(control)
+        validate_moments_control(rows, control)
+        if design is None and rows and rows[0].get("record_kind") == "design_summary":
+            payload = rows[0].get(COMPLIANCE_SUMMARY_FIELD)
+            if isinstance(payload, str):
+                try:
+                    compliance = json.loads(payload)
+                except json.JSONDecodeError:
+                    compliance = None
+                if isinstance(compliance, Mapping):
+                    cohort = compliance.get("cohort")
+                    window = compliance.get("window_days")
+                    one_sided = compliance.get("one_sided")
+                    if (
+                        isinstance(cohort, str)
+                        and isinstance(one_sided, bool)
+                        and (
+                            window is None
+                            or isinstance(window, int)
+                            and not isinstance(window, bool)
+                            and window >= 1
+                        )
+                    ):
+                        design = Encouragement(
+                            control_group=control,
+                            uptake=UptakeSpec(fact=cohort, window_days=window),
+                            one_sided=one_sided,
+                        )
         design = design or Randomized(control_group=control)
         specs = _coerce_source_metrics(metrics, design=design)
         metric_catalog = [synthesise_metric(spec) for spec in specs]

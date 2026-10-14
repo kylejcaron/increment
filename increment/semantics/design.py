@@ -100,6 +100,22 @@ def _freeze_allocation(v: Mapping[str, float] | None) -> MappingProxyType[str, f
     return None if v is None else MappingProxyType(dict(v))
 
 
+def _canonicalize_boolean_allocation_keys(value: object) -> object:
+    if value is None or not isinstance(value, Mapping):
+        return value
+    normalized: dict[object, object] = {}
+    for key, weight in value.items():
+        label = ("true" if key else "false") if isinstance(key, bool) else key
+        if label in normalized:
+            refuse(
+                _ALLOCATION_INVALID,
+                control_group="canonical Boolean allocation",
+                allocation=dict(value),
+            )
+        normalized[label] = weight
+    return normalized
+
+
 def _serialize_allocation(v: Mapping[str, float] | None, _info: object) -> dict[str, float] | None:
     return None if v is None else dict(v)
 
@@ -138,6 +154,11 @@ class Randomized(BaseModel):
     allocation_scheme: AllocationScheme | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+
+    @field_validator("allocation", mode="before")
+    @classmethod
+    def _canonicalize_allocation_boolean_keys(cls, value: object) -> object:
+        return _canonicalize_boolean_allocation_keys(value)
 
     @field_validator("allocation")
     @classmethod
@@ -223,6 +244,11 @@ class Encouragement(BaseModel):
         default=None, exclude_if=lambda value: value is None
     )
     min_first_stage_z: float = Field(default=4.0, gt=0.0, allow_inf_nan=False)
+
+    @field_validator("allocation", mode="before")
+    @classmethod
+    def _canonicalize_allocation_boolean_keys(cls, value: object) -> object:
+        return _canonicalize_boolean_allocation_keys(value)
 
     @field_validator("allocation")
     @classmethod

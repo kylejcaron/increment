@@ -98,9 +98,29 @@ def test_boolean_moments_control_coerces_only_for_boolean_labels(tmp_path):
     rows = pq.read_table(path).to_pylist()
     replayed = [
         Analysis.from_moments(rows, metrics={"y": "mean"}, control=value).run()
-        for value in (True, "True", "true")
+        for value in (True, "true")
     ]
-    assert replayed[0] == replayed[1] == replayed[2] == original.run()
+    assert replayed[0] == replayed[1] == original.run()
+    with pytest.raises(InvalidRequestError) as noncanonical:
+        Analysis.from_moments(rows, metrics={"y": "mean"}, control="True")
+    explicit = Analysis.from_moments(
+        rows,
+        metrics={"y": "mean"},
+        design=Randomized(
+            control_group="true",
+            allocation={True: 1, False: 1},
+            allocation_scheme="independent",
+        ),
+    )
+    assert explicit.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
+    assert noncanonical.value.code == "source.frame.control_missing"
+    with pytest.raises(InvalidRequestError) as explicit_design:
+        Analysis.from_moments(
+            rows,
+            metrics={"y": "mean"},
+            design=Randomized(control_group="True"),
+        )
+    assert explicit_design.value.code == "source.frame.control_missing"
     with pytest.raises(InvalidRequestError) as raised:
         Analysis.from_moments(rows, metrics={"y": "mean"}, control=["true"])
     assert raised.value.code == "source.frame.control_invalid"
@@ -128,6 +148,99 @@ def test_string_boolean_looking_moments_labels_stay_case_sensitive(tmp_path):
     assert (
         Analysis.from_moments(rows, metrics={"y": "mean"}, control="True").run() == original.run()
     )
+
+
+def test_lowercase_string_moments_labels_do_not_infer_boolean_provenance(tmp_path):
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["true", "true", "false", "false"],
+                "y": [1, 2, 3, 4],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="true",
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "lowercase-string-moments.parquet"
+    original.export(path)
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(path).to_pylist()
+    assert (
+        Analysis.from_moments(rows, metrics={"y": "mean"}, control="true").run() == original.run()
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_moments(rows, metrics={"y": "mean"}, control="True")
+    assert raised.value.code == "source.frame.control_missing"
+
+
+def test_design_summary_boolean_controls_use_only_python_bool_alias(tmp_path):
+    from increment import Encouragement, UptakeSpec
+
+    frame = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": [True, True, False, False],
+            "clicked": [0, 1, 0, 1],
+        }
+    )
+    design = Encouragement(control_group="true", uptake=UptakeSpec(fact="clicked"))
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=[],
+        design=design,
+        uptake="clicked",
+    )
+    path = tmp_path / "boolean-design-summary.parquet"
+    analysis.export(path)
+    import pyarrow.parquet as pq
+
+    payload = pq.read_table(path).to_pylist()
+    assert payload[0]["record_kind"] == "design_summary"
+    with pytest.raises(InvalidRequestError) as wrong_case:
+        Analysis.from_moments(
+            payload,
+            metrics=[],
+            design=Encouragement(control_group="True", uptake=UptakeSpec(fact="clicked")),
+        )
+    assert "control=True" in str(wrong_case.value)
+    assert wrong_case.value.code == "source.frame.control_missing"
+    assert "'true'" in str(wrong_case.value) and "'false'" in str(wrong_case.value)
+    replay = Analysis.from_moments(payload, metrics=[], control=True)
+    assert replay.unit_counts() == {"true": 2, "false": 2}
+
+
+def test_boolean_design_allocation_is_frozen_and_collisions_are_coded():
+    data = pd.DataFrame(
+        {"unit": ["c1", "c2", "t1", "t2"], "arm": [True, True, False, False], "y": [1, 2, 3, 4]}
+    )
+    design = Randomized(
+        control_group="True",
+        allocation={"True": 1, "False": 1},
+        allocation_scheme="independent",
+    )
+    analysis = Analysis.from_unit_summary(
+        data, unit="unit", group="arm", design=design, metrics={"y": "mean"}
+    )
+    allocation = analysis._src.context.design.allocation
+    with pytest.raises(TypeError):
+        allocation["true"] = 3
+    assert analysis.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
+
+    colliding = Randomized(
+        control_group="True",
+        allocation={"True": 1, "true": 1},
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_unit_summary(
+            data, unit="unit", group="arm", design=colliding, metrics={"y": "mean"}
+        )
+    assert raised.value.code == "frame.validation.group_label_collision"
 
 
 def test_public_constructor_refuses_old_boolean_registration_with_replay_route():

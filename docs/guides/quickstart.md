@@ -133,6 +133,11 @@ column types keep their string labels, so a string column containing
 integer group column containing `0` and `1` accepts `control=0` or
 `control="0"`.
 
+For `from_moments` reloads of a Boolean-group export, use a Python Boolean
+control (`True` or `False`) or the exact canonical string label (`"true"` or
+`"false"`). Moment-cube string controls remain case-sensitive; `"True"` does
+not alias the exported `"true"` group.
+
 Labels must remain distinct after conversion. Values such as `1` and
 `"1"` in a pandas object column raise `frame.validation.group_label_collision`
 rather than merge groups. Rename them to distinct strings before analysis.
