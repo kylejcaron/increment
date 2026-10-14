@@ -399,6 +399,32 @@ def test_unit_summary_breakouts_refuse_cluster_with_summary_capability_code():
     assert raised.value.code == "source.frame.cluster_capability"
 
 
+@pytest.mark.parametrize("control", [True, "True", "true"])
+def test_unit_summary_boolean_control_breakouts_keep_canonical_arm(control):
+    import pandas as pd
+
+    from increment.frame import from_unit_summary
+
+    source = from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": [f"u{i}" for i in range(8)],
+                "arm": [True, True, False, False] * 2,
+                "segment": ["A"] * 4 + ["B"] * 4,
+                "y": [10.0, 11.0, 13.0, 14.0] * 2,
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control=control,
+        metrics={"y": "mean"},
+        breakouts=["segment"],
+    )
+
+    rows = readout_functions.breakout(source, "segment")
+    assert {row.dimension_value for row in rows} == {"A", "B"}
+
+
 def test_from_unit_panel_run_daily_returns_daily_metric_values():
     import pandas as pd
 

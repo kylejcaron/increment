@@ -1037,7 +1037,7 @@ def from_unit_summary(  # noqa: PLR0913
             unit=unit,
             group=group,
             date=synthetic_date,
-            control=control,
+            control=source._control,
             metrics=panel_specs,
             experiment_id=experiment_id,
             uptake=panel_uptake,
