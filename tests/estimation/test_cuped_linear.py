@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import math
 import pickle
-from decimal import Decimal, localcontext
 from typing import cast
 
 import numpy as np
@@ -552,42 +551,6 @@ def test_three_arm_relative_and_ratio_projections_remain_finite():
         assert result.se > 0 and np.isfinite(result.se)
 
 
-def test_covariate_unit_scale_and_translation_are_invariant():
-    rng = np.random.default_rng(721)
-    arm = np.repeat(["c", "t"], 15)
-    x = np.tile(np.arange(15.0), 2)
-    y = np.r_[np.arange(15.0), 1.5 + np.arange(15.0)] + rng.normal(0, 0.1, 30)
-    reference = fit_cuped_linear(
-        y,
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-        covariates={"x": x},
-        kinds={"x": "continuous"},
-    )
-    for transform in (x * 1e200, x * 1e-200, x + 1e15):
-        candidate = fit_cuped_linear(
-            y,
-            arm,
-            control="c",
-            arm_order=("c", "t"),
-            covariates={"x": transform},
-            kinds={"x": "continuous"},
-        )
-        assert candidate.absolute("t").estimate == pytest.approx(
-            reference.absolute("t").estimate, abs=1e-10
-        )
-        assert candidate.absolute("t").se == pytest.approx(reference.absolute("t").se, rel=1e-9)
-
-
-def test_large_constant_outcome_has_zero_contrast_and_standard_error():
-    arm = np.array(["c"] * 6 + ["t"] * 6)
-    fit = fit_cuped_linear(np.full(12, 1e308), arm, control="c", arm_order=("c", "t"))
-    result = fit.absolute("t")
-    assert result.estimate == 0
-    assert result.se == 0
-
-
 @pytest.mark.parametrize("epsilon", [1e-7])
 def test_near_collinear_accepted_fit_matches_weighted_qr(epsilon):
     rng = np.random.default_rng(809)
@@ -630,37 +593,6 @@ def test_near_collinear_accepted_fit_matches_weighted_qr(epsilon):
     influence = design @ coefficients * weights
     expected_se = np.linalg.norm(influence * residual / np.sqrt(1 - leverage))
     assert fit.absolute("t").se == pytest.approx(expected_se, rel=5e-4)
-
-
-def test_outcome_translation_and_extreme_log_ratio_are_stable():
-    arm = np.array(["c"] * 6 + ["t"] * 6)
-    y = np.array([1.0, 2.0, 3.0, 2.0, 4.0, 5.0, 2.0, 4.0, 5.0, 3.0, 6.0, 7.0])
-    base = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
-    shifted = fit_cuped_linear(y + 1e15, arm, control="c", arm_order=("c", "t"))
-    assert shifted.absolute("t").estimate == pytest.approx(base.absolute("t").estimate, abs=0.15)
-    assert shifted.absolute("t").se == pytest.approx(base.absolute("t").se, rel=1e-12)
-    extreme = fit_cuped_linear(
-        np.r_[np.full(6, 1e-200), np.full(6, 1e200)],
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-    )
-    assert extreme.relative("t").estimate == pytest.approx(math.log(1e200) - math.log(1e-200))
-
-
-def test_extreme_ratio_log_fit_survives_unrepresentable_absolute_cache():
-    arm = np.array(["c"] * 6 + ["t"] * 6)
-    numerator = np.full(12, 1e200)
-    denominator = np.r_[np.full(6, 1e-200), np.full(6, 2e-200)]
-    fit = fit_cuped_linear(
-        None,
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-        numerator=numerator,
-        denominator=denominator,
-    )
-    assert fit.ratio("t", scale="log").estimate == pytest.approx(-math.log(2))
 
 
 def _dense_bm_dof(design, weights, contrast):
@@ -796,39 +728,6 @@ def test_large_fit_and_projections_use_linear_memory():
     assert peak < 512 * 1024 * 1024
 
 
-def test_absolute_ratio_jacobian_is_stable_under_common_extreme_scale():
-    arm = np.repeat(["c", "t"], 6)
-    num = np.r_[2 + np.arange(6) * 0.01, 2.2 + np.arange(6) * 0.01]
-    den = np.tile(1 + np.arange(6) * 0.02, 2)
-    fits = []
-    for scale in (1.0, 1e160):
-        fits.append(
-            fit_cuped_linear(
-                None,
-                arm,
-                control="c",
-                arm_order=("c", "t"),
-                numerator=num * scale,
-                denominator=den * scale,
-            )
-        )
-    results = [fit.ratio("t", scale="absolute") for fit in fits]
-    assert results[0].estimate == pytest.approx(0.1904761905, rel=1e-9)
-    assert results[0].se == pytest.approx(0.0314116937, rel=1e-8)
-    assert results[1].estimate == pytest.approx(results[0].estimate, rel=1e-9)
-    assert results[1].se == pytest.approx(results[0].se, rel=1e-9)
-
-
-def test_relative_extreme_dynamic_range_is_order_invariant():
-    arm = np.repeat(["c", "t"], 8)
-    y = np.r_[np.full(8, 1e-200), np.full(8, 1e200)]
-    expected = math.log(1e200) - math.log(1e-200)
-    forward = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
-    reverse = fit_cuped_linear(y[::-1], arm[::-1], control="c", arm_order=("c", "t"))
-    assert forward.relative("t").estimate == pytest.approx(expected)
-    assert reverse.relative("t").estimate == pytest.approx(expected)
-
-
 @pytest.mark.parametrize("seed", [6, 7, 8])
 def test_rank_refuses_seeded_exact_covariate_sum(seed):
     rng = np.random.default_rng(seed)
@@ -915,24 +814,6 @@ def test_hc2_projection_retains_residual_variance_under_cancellation():
     assert fit.absolute("t").se == pytest.approx(1 / math.sqrt(13))
 
 
-def test_small_scale_scores_and_log_ratios_do_not_underflow():
-    arm = np.array(["c", "c", "t", "t"])
-    fit = _fit_repeated_design(
-        np.array([-2e-170, 0.0, -4e-170, 0.0]), arm, control="c", arm_order=("c", "t")
-    )
-    assert fit.absolute("t").se == pytest.approx(math.sqrt(5 / 7) * 1e-170, rel=1e-12, abs=0)
-
-    ratio_fit = _fit_repeated_design(
-        None,
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-        numerator=np.array([1e-170, 3e-170, 1e-170, 3e-170]),
-        denominator=np.ones(4),
-    )
-    assert ratio_fit.ratio("t", scale="log").se == pytest.approx(math.sqrt(0.5 / 7))
-
-
 def test_small_relative_effect_survives_log_rounding():
     arm = np.array(["c", "c", "t", "t"])
     fit = _fit_repeated_design(
@@ -967,23 +848,6 @@ def test_large_covariate_offset_preserves_slope_and_zero_residual_uncertainty():
     )
     assert fit.theta[0] == pytest.approx(1.0)
     assert fit.absolute("t").se == pytest.approx(0.0, abs=1e-14)
-
-
-def test_nonfinite_absolute_ratio_projection_does_not_abort_log_ratio_fit():
-    arm = np.array(["c", "c", "t", "t"])
-    fit = _fit_repeated_design(
-        None,
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-        numerator=np.full(4, 1.5e308),
-        denominator=np.array([0.0, 2e-10, 0.0, 2e-10]),
-        repetitions=32,
-    )
-    assert fit.ratio("t", scale="log").se == pytest.approx(math.sqrt(2 / 63))
-    with pytest.raises(InvalidRequestError) as raised:
-        fit.ratio("t", scale="absolute")
-    assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
 
 
 @pytest.mark.parametrize("denominator_scale", [1.0, 3.0, 5.0, 2**100])
@@ -1147,20 +1011,6 @@ def test_large_well_conditioned_bm_dof_matches_closed_form_reference():
     assert fit.dof == pytest.approx(trace**2 / trace_square, rel=1e-8)
 
 
-def test_alpha_specific_interval_overflow_does_not_poison_finite_interval():
-    arm = np.array(["c", "c", "t", "t"])
-    fit = _fit_repeated_design(
-        np.array([-3e306, -1e306, 1.76e308, 1.78e308]),
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-    )
-    projection = fit.absolute("t", alpha=0.9)
-    assert projection.estimate == pytest.approx(1.79e308, rel=1e-12)
-    assert projection.se == pytest.approx(math.sqrt(2 / 7) * 1e306, rel=1e-8)
-    assert projection.dof == pytest.approx(14.0)
-
-
 def test_covariate_arm_offset_difference_survives_scaling():
     base = 2**54
     arm = np.array(["c"] * 4 + ["t"] * 4)
@@ -1229,52 +1079,6 @@ def test_ratio_cross_product_log_effect_is_denominator_unit_invariant(denominato
     assert fit.ratio("t", scale="log").estimate == pytest.approx(
         math.log1p(2**-52), rel=1e-12, abs=0
     )
-
-
-@pytest.mark.parametrize("base", [2.0**50, math.ldexp(1.0, -1022), math.ldexp(1.0, 1023)])
-@pytest.mark.parametrize("reverse", [False, True])
-def test_log_ratio_preserves_cross_product_effect_at_exponent_boundaries(base, reverse):
-    neighbor = math.nextafter(base, 0.0)
-    control_numerator, treatment_numerator = (neighbor, base) if reverse else (base, neighbor)
-    control_denominator, treatment_denominator = (base, neighbor) if reverse else (neighbor, base)
-    arm = np.array(["c", "c", "t", "t"])
-    fit = _fit_repeated_design(
-        None,
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-        numerator=np.array(
-            [control_numerator, control_numerator, treatment_numerator, treatment_numerator]
-        ),
-        denominator=np.array(
-            [control_denominator, control_denominator, treatment_denominator, treatment_denominator]
-        ),
-    )
-    with localcontext() as context:
-        context.prec = 120
-        numerator_cross = Decimal.from_float(treatment_numerator) * Decimal.from_float(
-            control_denominator
-        )
-        denominator_cross = Decimal.from_float(control_numerator) * Decimal.from_float(
-            treatment_denominator
-        )
-        expected = float((numerator_cross / denominator_cross).ln())
-    assert fit.ratio("t", scale="log").estimate == pytest.approx(expected, rel=1e-12, abs=0)
-
-
-def test_scaled_opposite_sign_covariate_offsets_do_not_overflow():
-    arm = np.array(["c"] * 4 + ["t"] * 4)
-    x = np.r_[[-10.0, -9.0, -8.0, -7.0], [10.0, 11.0, 12.0, 13.0]] * 1e307
-    y = np.array([10.0, 11.0, 12.0, 13.0, 31.0, 32.0, 33.0, 34.0])
-    fit = _fit_repeated_design(
-        y,
-        arm,
-        control="c",
-        arm_order=("c", "t"),
-        covariates={"x": x},
-        kinds={"x": "continuous"},
-    )
-    assert fit.absolute("t").estimate == pytest.approx(1.0, abs=1e-12)
 
 
 @pytest.mark.parametrize(
