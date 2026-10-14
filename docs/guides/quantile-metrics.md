@@ -1,10 +1,8 @@
 # Quantile metrics
 
-A mean summarizes a distribution's center; some questions need a tail,
-such as p90 latency or p99 payload size. A quantile is not additive
-across units, unlike a sum or mean. Increment therefore estimates it with
-a distribution-free order-statistic method instead of the moments cube
-used by other metric types, and only `run()` can serve it.
+A mean describes the center; use a quantile for a tail measure such as p90
+latency or p99 payload size. Quantiles need per-unit values, so they are
+available through `run()` rather than additive moments.
 
 ## Declaring a quantile metric
 
@@ -38,81 +36,67 @@ for r in results:
 p90 relative lift: -7.94% [-13.63%, -1.87%]
 ```
 
-`MetricSpec(type="quantile", quantile=q)` requires `0 < q < 1` and
-refuses `window_days` (quantiles have no windowed decomposition) and
-`covariate` (a quantile has no mean to CUPED-adjust). On the definitions
-(YAML) path the equivalent declaration is a `QuantileMetric` with the
-same `quantile` field.
+Set `0 < q < 1`. Quantiles do not support `window_days` or `covariate`;
+the YAML equivalent is `QuantileMetric` with the same `quantile` field.
 
 ## The Woodruff order-statistic bracket, and tied values
 
-The reported standard error comes from a distribution-free bracket
-`[Y_(a), Y_(b)]` around the sample quantile, evaluated at the request's
-own `alpha`, not from a plug-in delta-method SE (Woodruff 1952). The
-bracket covers the population quantile at the nominal rate for every
-distribution, continuous or not. The classical Woodruff SE (a symmetric
-width around the sample quantile) inherits that coverage only when the
-quantile sits at the bracket's log midpoint. Continuous data guarantee
-that condition; tied recorded values do not. Prices, counts, and rounded
-latencies can pin the bracket to one recorded value on one side and place
-it a full recording cell away on the other.
+The interval uses a distribution-free order-statistic bracket
+`[Y_(a), Y_(b)]` at the requested `alpha`, not a plug-in delta-method
+standard error (Woodruff 1952). The bracket covers the population quantile
+at the nominal rate for continuous and discrete distributions.
 
-The bracket's ranks are checked against independently enclosed binomial tails,
-not a fixed accuracy allowance for SciPy's CDF. Certified logarithms enclose the
-mass at a candidate rank; bounded summation and a remainder bound enclose its
-tail. If a numerical comparison cannot be resolved, the bracket rounds outward.
-No additional configuration is required, and the sampling assumptions are
-unchanged.
+??? info "Statistical details"
+    The classical Woodruff standard error (a symmetric width around the sample
+    quantile) has that coverage only when the quantile lies at the bracket's
+    log midpoint. Continuous data guarantee this; ties do not. Prices, counts,
+    and rounded latencies can put the bracket on different recorded values.
 
-Increment does not refuse a tie. When a bracket contains a tie and the
-arm is not "resolved" (its 95% bracket spans at least
-`RESOLVED_REPEATED_VALUES` = 12 distinct repeated values), the reported
-half-width expands to the smallest symmetric interval around the sample
-quantile that contains the whole bracket. This preserves the bracket's
-coverage on a recording grid. A resolved arm, or any untied bracket,
-keeps the classical Woodruff half-width bit-identically.
+    Ranks are checked against independently enclosed binomial tails, not a
+    fixed SciPy CDF accuracy allowance. Certified logarithms enclose mass at a
+    candidate rank; bounded summation and a remainder bound enclose its tail.
+    Unresolved comparisons round the bracket outward. No configuration or
+    sampling-assumption change is needed.
 
-Under coincidental ties, the widened SE is never worse than about
-1.00–1.05x the classical one. Coarse rounding or count data can produce
-1.1–3x widths when the bracket spans only two or three recorded values;
-there is no upper bound. A bracket collapsed onto one recorded value has
-zero classical width, but the reported width remains positive. If values
-collapse so far that the widened bracket cannot resolve a strictly
-positive spread, Increment raises `estimation.quantile.degenerate_spread_order`.
-That is a numerical backstop, not an ordinary tie response.
+Ties do not cause a refusal. If an arm is not "resolved" (its 95% bracket
+spans at least `RESOLVED_REPEATED_VALUES` = 12 distinct repeated values),
+the reported half-width expands to the smallest symmetric interval around the
+sample quantile that contains the full bracket. Resolved arms and untied
+brackets keep the classical Woodruff half-width bit-identically.
+
+!!! warning "Ties can widen uncertainty"
+    Coincidental ties widen the standard error by at most about 1.00–1.05x.
+    Coarse rounding or count data can produce 1.1–3x widths for brackets
+    spanning two or three recorded values; there is no upper bound. If the
+    widened bracket cannot establish positive spread, Increment raises
+    `estimation.quantile.degenerate_spread_order`. That is a numerical
+    backstop, not an ordinary response to ties.
 
 ## Feasibility floor per (q, alpha)
 
-The order-statistic bracket needs a minimum per-arm sample size for its
-requested coverage. That floor grows as `q` approaches 0 or 1 and as
-`alpha` shrinks. Too few units for a `(quantile, alpha)` pair raises an
-error naming both values:
-`n=<n> is too small to bound the q=<q> quantile at level <level> -- ...
-needs n >= <n_min> per arm; collect more units or target a less extreme
-quantile`.
+Each `(q, alpha)` pair has a minimum per-arm sample size. The floor rises as
+`q` approaches 0 or 1 and as `alpha` shrinks. If the sample is too small,
+Increment reports `n`, `q`, `level`, and the required `n_min`; collect more
+units or choose a less extreme quantile.
 
 ## Alpha-dependent interval, alpha-independent p-value
 
-The bracket uses the caller's `alpha`, so the SAME quantile metric's
-reported standard error and interval change with its multiplicity budget,
-even before BH selection. A fixed-reference-alpha SE rescaled to other
-alphas was measured to fail coverage. The p-value differs: Increment
-computes it once by inverting the same construction (the smallest alpha
-whose interval excludes the null), so it depends only on the data.
-Do not compare quantile standard errors or intervals across analyses with
-different alpha budgets. Read
-[A quantile's reported interval depends on the alpha you asked for](../limitations.md#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for)
-before comparing plans; the p-value remains comparable.
+The bracket uses the caller's `alpha`, so the same quantile's standard error
+and interval change with its multiplicity budget, even before BH selection.
+A fixed-reference-alpha standard error rescaled to other alphas failed
+coverage. The p-value is different: it inverts the same construction (the
+smallest alpha whose interval excludes the null) and depends only on the data.
+Do not compare intervals or standard errors across analyses with different
+alpha budgets. See [the alpha-dependent interval limitation](../limitations.md#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for).
 
 ## Sequential inference is refused
 
-A quantile metric cannot use sequential inference. The Woodruff bracket is
-fixed-horizon, and no sequential (time-uniform) boundary exists for a
-per-arm order statistic. `AnalysisPlan(inference=InferenceSpec(
-kind="always_valid"|"asymptotic_mean"))` refuses before reading outcomes
-with `sequential.route.unsupported`. A metric that reaches estimation under
-an explicit sequential registration refuses again with
-`arm.metric.quantile_sequential`. Use fixed-horizon quantile inference (valid for one planned analysis, not repeated looks).
+Quantiles use fixed-horizon Woodruff brackets; no time-uniform boundary exists
+for a per-arm order statistic. `AnalysisPlan(inference=InferenceSpec(
+kind="always_valid"|"asymptotic_mean"))` refuses before reading outcomes with
+`sequential.route.unsupported`. A metric reaching estimation under an explicit
+sequential registration refuses with `arm.metric.quantile_sequential`. Use
+fixed-horizon inference for one planned analysis, not repeated looks.
 
 ## Unsupported combinations
 

@@ -1,15 +1,15 @@
 # When a request is refused
 
-Increment refuses requests it cannot interpret or support honestly. A refusal is
-not a result, and changing the request until the error disappears is not a
-substitute for checking the design and estimand.
+Increment refuses a request when it cannot interpret or support it honestly.
+A refusal is not a result; do not change the request just to make the error
+disappear. Check the design and estimand first.
 
 ## Start with the code and context
 
-Catch `CodedError` and use its stable `code` to choose handling; use `context`
-for the relevant field names and values. The message is for people, not a stable
-branching interface. Do not parse its wording. The [API error reference](../api.md#errors-and-refusals)
-describes typed refusals and gives examples.
+Catch `CodedError` and branch on its stable `code`; use `context` to inspect
+the relevant fields. The human-readable message can change, so do not parse
+it. See the [API error reference](../api.md#errors-and-refusals) for typed
+refusals and examples.
 
 ```python
 from increment.errors import CodedError
@@ -21,9 +21,9 @@ def refusal_record(exc: CodedError) -> tuple[str, dict[str, object]]:
 
 ## Find the next step by code family
 
-The first code segment is a navigation hint, not a new public enum. Follow the
-specific refusal's message/context and the linked contract; similar-looking
-codes can describe different limitations.
+The first code segment helps you find a family; it is not a separate public
+enum. Check the specific refusal's message, context, and linked contract:
+similar codes can mean different things.
 
 | Code family | What to check next |
 | --- | --- |
@@ -34,8 +34,7 @@ codes can describe different limitations.
 | `results.*`, `dashboard.*`, `report.*`, `reporting.*`, `tables.*` | Check result-frame projection columns and the dashboard's documented input/view requirements in the [dashboard guide](dashboard.md); use the underlying readout directly if that view is unavailable. |
 | `simulate.*` | Check the simulated design and requested operating characteristic in the [power analysis guide](power-analysis.md); simulated behavior is not a guarantee for a different design. |
 
-A missing treatment arm, for example, means an arm-level contrast cannot be
-estimated; it does not prevent reading arm counts or a separate allocation
-diagnostic. A triggered readout refusal does not license interpreting the
-assigned-population result as a triggered-population estimate. See
-[reading results](reading-results.md) for interpretation and next actions.
+A missing treatment arm prevents an arm contrast, but arm counts and a separate
+allocation diagnostic may still be available. A refusal for a triggered
+readout does not turn an assigned-population result into a triggered estimate.
+See [reading results](reading-results.md) for interpretation and next steps.

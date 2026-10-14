@@ -1,90 +1,72 @@
 # External validation coverage
 
-Frozen third-party references exist for a small set of estimators. This page states which, at what
-tolerance, through which entry points, and which regimes have none. It is an inventory of evidence,
-not a certification: a row means the named estimand agreed with the named reference at the stated
-tolerance on the stated inputs, never that a whole method is validated. Campaigns that have not
-been executed are listed as unexecuted, and the guarantees themselves are stated on
-[Statistical limitations](limitations.md). [Evidence status](#evidence-status) says how guarantee,
-evidence and software compatibility are kept apart, and the Guarantee column on each table below
-states what each capability is derived to do.
+Frozen references compare selected estimates with named external oracles.
+This inventory records the estimand, tolerance, entry points, and uncovered
+regimes; it is evidence, not a certification. Agreement on one input does not
+validate an entire method. Unrun campaigns are marked unexecuted. See
+[Statistical limitations](limitations.md) for guarantees, and the Guarantee
+columns below for what each capability is derived to do.
 
-Selector references are checked statically for repository paths and directly declared functions or
-class methods. Parameterized, inherited, and otherwise dynamic identities are deferred to one
-collection-only check: `python scripts/check_doc_references.py --check --collect`. That bounded
-check never executes test bodies or campaigns, and resolving a selector does not establish that a
-test passes or certify statistical validity. Static-only `--check` reports pending identities
-without claiming full reference verification. Each generator command in [Reproduce](#reproduce)
-was run once, on the date and platform recorded there; the page does not claim a later re-run.
+Reference selectors are checked for repository paths and directly declared
+functions or methods. Dynamic identities need the collection-only
+`python scripts/check_doc_references.py --check --collect` check, which does
+not run tests or campaigns. Finding a selector does not show that it passes or
+certify statistical validity. Static `--check` reports pending identities.
+Generator commands in [Reproduce](#reproduce) were run once on the recorded
+date and platform; no later run is claimed.
 
 ## Evidence status
 
-Three questions about a method are answered separately, because answering one says nothing about
-the others.
+Keep these three questions separate:
 
-- Software compatibility: whether the interface you call is covered by the pre-1.0 compatibility
-  policy. Every capability reachable from the documented root imports, `increment.results` and
-  `increment.power` is alpha under [Pre-1.0 compatibility](api.md#pre-10-compatibility). That is
-  stated once and is not repeated per method, and this project assigns no maturity tier to
-  individual methods.
-- Statistical guarantee (the Guarantee column): what the interval or decision rule is derived to
-  do, and under which assumptions.
-    - `exact`: finite-sample under a stated model or dependence condition; the derivation is cited
-      in [Statistical limitations](limitations.md).
-    - `asymptotic`: valid in the limit under stated assumptions, including qualified working
-      approximations whose finite-sample behavior is bounded only by the evidence in the same row.
-    - `planning approximation`: a projection used to size or plan, not an inferential guarantee.
-    - `experimental`: typed `status="experimental"` on the persisted inference specification;
-      descriptive sets are available and decision evidence is withheld.
-    - none stated: the source states no guarantee for the item, or says it has none.
-- Evidence: what has actually been checked, in the reference-class vocabulary of the
-  [reference inventory](#reference-inventory), with calibration cells listed where they exist, or
-  `unknown`. Here `unknown` is a statement about this inventory (nothing is recorded), not about
-  the method, and it is not the `unknown` runtime status of the
-  [compatibility reference](guides/compatibility.md).
+- **Software compatibility:** documented root imports, `increment.results`,
+  and `increment.power` are alpha under the [pre-1.0 policy](api.md#pre-10-compatibility).
+  Methods have no individual maturity tier.
+- **Statistical guarantee:** what a rule is derived to do, under which
+  assumptions. `exact` means finite-sample under a stated model or dependence
+  condition; `asymptotic` means valid in the limit under stated assumptions;
+  `planning approximation` is for planning, not inference; `experimental`
+  withholds decision evidence. A blank guarantee means none is stated.
+- **Evidence:** what has been checked, in the [reference inventory](#reference-inventory),
+  or `unknown` when this inventory records nothing. This is not the
+  `unknown` status in the [compatibility reference](guides/compatibility.md).
 
-A row whose guarantee is `exact` also lists its open deployed-numerics items by internal tracker id.
-An open item is never described as a demonstrated coverage failure and never as repaired.
+Rows marked `exact` also list open deployed-numerics items by tracker id.
+An open item is not a demonstrated coverage failure or a repair.
 
-Ingress parity is a separate fact: among the five matched-arm entry points (`from_definitions`,
-`from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`, `from_moments`) every supported one
-agrees at the documented tolerance whatever a row says. `from_switchback_panel` targets a different
-estimand and is never row-compared with them: a `supported` switchback cell establishes that the
-request runs and is exercised on its own, not that it agrees with the matched-arm constructors.
-A `source_limited` request can be declared but the entry point cannot supply its input;
-it refuses with a coded error. A `not_expressible` request fails during declaration,
-either with a coded refusal or through signature/schema validation (`TypeError` or
-Pydantic `ValidationError` without a refusal code). The parity matrix records the
-specific outcome for each cell.
-The Entry points and parity column links the [capability matrix](reference/capabilities-by-entry-point.md#what-runs-where)
-and copies the status words of the parity matrix in `helper:tests/parity_harness/matrix.py` (counts and
-unfinished trackers: `helper:tests/parity_harness/COVERAGE.md`) without rewording them:
+Ingress parity is separate: supported matched-arm entry points
+(`from_definitions`, `from_unit_day_artifact`, `from_unit_summary`,
+`from_unit_panel`, `from_moments`) agree at the documented tolerance.
+`from_switchback_panel` has a different estimand; a supported cell means it
+runs and is exercised, not that it matches those constructors. `source_limited`
+means the source cannot provide required input and refuses. `not_expressible`
+means declaration fails by coded refusal or signature/schema validation.
+The parity matrix records each cell.
+
+The Entry points and parity column links the
+[capability matrix](reference/capabilities-by-entry-point.md#what-runs-where)
+and copies parity status labels from `helper:tests/parity_harness/matrix.py`;
+counts and unfinished trackers are in `helper:tests/parity_harness/COVERAGE.md`.
 
 | Status | Meaning in the parity matrix |
 |---|---|
-| `supported` | runs, and agrees with every other running matched-arm entry point within the runner's `1e-9` relative tolerance; `from_switchback_panel` is not compared with them |
-| `source_limited` | the entry point cannot supply the input and refuses with a code |
-| `construction_limited` | the estimator or readout is not defined for the combination; this is neither `unsound` nor `unfinished` |
-| `not_expressible` | the axis value cannot be declared; a coded declaration refusal or an uncoded signature/schema failure |
-| `unfinished` | supportable or unifiable but not implemented; names its tracker |
-| `unsound` | mathematically invalid; carries a derivation |
+| `supported` | Runs and agrees with other running matched-arm entry points within `1e-9` relative tolerance; switchback is not compared with them. |
+| `source_limited` | The entry point cannot supply the input and refuses with a code. |
+| `construction_limited` | The estimator or readout is undefined for the combination; not `unsound` or `unfinished`. |
+| `not_expressible` | The value cannot be declared; coded refusal or uncoded signature/schema failure. |
+| `unfinished` | Supportable or unifiable, but not implemented; names its tracker. |
+| `unsound` | Mathematically invalid; includes a derivation. |
 
-A cell id such as `mean-run-cuped-utc-error` names metric, view, option, day boundary and missing
-policy; a row with no matrix cell says so.
+A cell id such as `mean-run-cuped-utc-error` names metric, view, option, day
+boundary, and missing-data policy; a row without a cell says so.
 
-Rules for every row:
+Row rules: guarantees follow derivations and assumptions, not evidence;
+guarantees are copied from the cited limitations entry; route labels are not
+guarantee classes; evidence names cells, seeds, and tolerance (or an inventory
+id); finite grids are not universal; compatibility support means only that a
+request runs; and no row carries a maturity label. A row may say `unknown`
+when no source exists; completing a campaign changes evidence only.
 
-1. A guarantee class changes only with its derivation or assumptions. Evidence never moves it, and
-   an unexecuted campaign never downgrades a derived guarantee.
-2. A guarantee cell is copied from the cited limitations entry. A route label (`block_t`, `bh`,
-   `e-bh`, `reference_kind`, `binomial`) names a mechanism and is never by itself the guarantee
-   class.
-3. An evidence cell names its cells, seeds and tolerance, or the inventory id that does. A finite
-   grid is never described as universal.
-4. "Supported" in the compatibility reference means the request runs; it is not evidence.
-5. No row carries a maturity label.
-6. A row publishes when each cell cites an existing source or says `unknown`; a campaign finishing
-   changes only the evidence cell.
 
 ## Ordinary-user journey contracts and current evidence
 
