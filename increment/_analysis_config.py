@@ -283,6 +283,7 @@ def resolve_configs(
     decision_method: Method | _Unset = UNSET,
     sensitivity_methods: Sequence[Method] | _Unset = UNSET,
     prior_override: Prior | None | _Unset = UNSET,
+    covariate_available_metrics: Collection[str] = (),
 ) -> tuple[ResolvedMetricConfig, ...]:
     """Resolve each selected metric's effective method roles and prior."""
     global_roles = _roles_from_methods(methods) if methods is not None else None
@@ -363,7 +364,10 @@ def resolve_configs(
                 prior_is_global=prior_is_global,
                 methods_explicitly_empty=methods_explicitly_empty,
                 decision_defaulted=decision_defaulted,
-                covariate_available=spec is not None and spec.covariate is not None,
+                covariate_available=(
+                    (spec is not None and spec.covariate is not None)
+                    or metric.name in covariate_available_metrics
+                ),
             )
         )
     return tuple(out)

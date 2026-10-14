@@ -450,7 +450,7 @@ def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricC
         Supported,
         arm_cuped_advisory_support,
     )
-    from increment.estimation.engine import _is_open_ended
+    from increment.estimation.engine import is_open_ended
     from increment.sequential_source import adjustment_kind
 
     context = source.context
@@ -468,7 +468,7 @@ def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricC
             if getattr(metric, "winsorization", None) is not None
             else "none"
         ),
-        outcome_window="unbounded" if _is_open_ended(metric) else "bounded",
+        outcome_window="unbounded" if is_open_ended(metric) else "bounded",
         uptake_window="not_applicable",
     )
     support = arm_cuped_advisory_support(
@@ -2670,22 +2670,9 @@ class Analysis:
         warehouse_covariate = (
             isinstance(state, DefinitionsArmAnalysisState) and state.experiment.n_pre_periods > 0
         )
-        artifact_experiment = getattr(state.source, "artifact_experiment", None)
-        artifact_extensions = getattr(getattr(state.source, "_manifest", None), "extensions", ())
-        artifact_covariates = (
-            {
-                extension.metric_name
-                for extension in artifact_extensions
-                if extension.kind == "cuped_preperiod"
-            }
-            if artifact_experiment is not None and artifact_experiment.n_pre_periods > 0
-            else set()
-        )
         unused: list[str] = []
         for config, source in config_sources:
-            covariate_available = config.covariate_available or (
-                warehouse_covariate or config.metric.name in artifact_covariates
-            )
+            covariate_available = config.covariate_available or warehouse_covariate
             design = source.context.design
             if (
                 not covariate_available

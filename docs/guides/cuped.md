@@ -200,10 +200,11 @@ history may contribute less precision.
 
 `n_pre_periods` makes pre-period data available for eligible metrics;
 requesting CUPED makes Increment query it. A positive lookback alone does not
-add a covariate query or adjust the decision method. If the decision method
-defaults to unadjusted and no CUPED sensitivity method is selected, `run()`
-emits `analysis.cuped.covariate_unused`. For each metric, call-wide method
-overrides take precedence over the experiment's per-metric bindings.
+add a covariate query or adjust the decision method. When a metric's covariate
+is available and the effective design, metric, and inference admit CUPED, a
+defaulted unadjusted decision with no CUPED sensitivity method emits
+`analysis.cuped.covariate_unused`. For each metric, call-wide method overrides
+take precedence over the experiment's per-metric bindings.
 
 Requesting `variance_reduction="cuped"` with `n_pre_periods == 0`
 raises a `ValueError`. Set a positive lookback to supply the covariate.

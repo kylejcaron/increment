@@ -18,6 +18,7 @@ import datetime as dt
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
@@ -690,6 +691,28 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             metrics=metrics,
         )
         experiment, source_context = _artifact_source_context(expected_context)
+        covariate_metrics = (
+            {
+                extension.metric_name
+                for extension in manifest.extensions
+                if extension.kind == "cuped_preperiod"
+            }
+            if experiment.n_pre_periods > 0
+            else set()
+        )
+        if covariate_metrics:
+            source_context = replace(
+                source_context,
+                configs=tuple(
+                    replace(
+                        config,
+                        covariate_available=(
+                            config.covariate_available or config.metric.name in covariate_metrics
+                        ),
+                    )
+                    for config in source_context.configs
+                ),
+            )
         declared = {metric.name for metric in source_context.metrics}
         if any(binding.metric_name not in declared for binding in manifest.metric_measures):
             raise ArtifactContractError(
