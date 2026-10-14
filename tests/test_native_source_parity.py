@@ -97,6 +97,25 @@ def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path)
     assert native.unit_counts() == summary.unit_counts() == panel.unit_counts()
     assert native.unit_counts()["(unassigned)"] == 1
 
+    from increment import AssignmentCountsRequest
+    from increment.query.session import WarehouseArtifactStore
+
+    store = WarehouseArtifactStore(con, schema_name="unit_count_artifacts")
+    from increment.errors import CapabilityError
+
+    without_counts = native.publish_unit_day_artifact(store)
+    incomplete = Analysis.from_unit_day_artifact(
+        store, without_counts, expected_context=native.artifact_context
+    )
+    with pytest.raises(CapabilityError) as refused:
+        incomplete.unit_counts()
+    assert refused.value.code == "facade.analysis.operation"
+    reference = native.publish_unit_day_artifact(store, extensions=[AssignmentCountsRequest()])
+    artifact = Analysis.from_unit_day_artifact(
+        store, reference, expected_context=native.artifact_context
+    )
+    assert artifact.unit_counts() == native.unit_counts()
+
 
 def _quantile_defs_and_con(
     tmp_path, *, preferred_direction: str | None = None, include_unassigned: bool = False
