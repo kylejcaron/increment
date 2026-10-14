@@ -379,6 +379,10 @@ def test_design_summary_control_only_reload_accepts_mapping_compliance(tmp_path)
 
 
 def test_boolean_design_allocation_is_frozen_and_collisions_are_coded():
+    from collections.abc import MutableMapping
+    from operator import setitem
+    from typing import cast
+
     data = pd.DataFrame(
         {"unit": ["c1", "c2", "t1", "t2"], "arm": [True, True, False, False], "y": [1, 2, 3, 4]}
     )
@@ -390,9 +394,10 @@ def test_boolean_design_allocation_is_frozen_and_collisions_are_coded():
     analysis = Analysis.from_unit_summary(
         data, unit="unit", group="arm", design=design, metrics={"y": "mean"}
     )
-    allocation = analysis._src.context.design.allocation
+    allocation = design.allocation
+    assert allocation is not None
     with pytest.raises(TypeError):
-        allocation["true"] = 3
+        setitem(cast(MutableMapping[str, int | float], allocation), "true", 3)
     assert analysis.srm().model_dump().get("expected") == {"true": 0.5, "false": 0.5}
 
     colliding = Randomized(
