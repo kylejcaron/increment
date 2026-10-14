@@ -10,7 +10,7 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel
 
-from increment.errors import InvalidRequestError, raiser, refusals
+from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.results import BinomialConfidenceSet, Estimate
 from increment.estimation.sequential_result import SequentialInferenceResult
 
@@ -19,6 +19,11 @@ _REFUSALS = refusals(
     {
         "breakout.to_frame_model": "to_frame(): model={model} does not match estimates[0]'s actual type {inferred}",
         "breakout.to_frame_infer": "to_frame(): cannot infer the schema from an empty sequence -- pass model=<the result model class> explicitly, or call <Model>Estimates(estimates).to_frame() instead, which always knows its own model even when empty.",
+        "results.frame.unknown_columns": RefusalSpec(
+            "results.frame.unknown_columns",
+            InvalidRequestError,
+            template="to_frame(): unknown column(s) {unknown!r}; available columns are {available!r}",
+        ),
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -197,6 +202,7 @@ def to_frame[M: BaseModel](
     estimates: Sequence[M],
     model: type[M] | None = None,
     backend: Backend = "pandas",
+    columns: Sequence[str] | None = None,
 ) -> IntoDataFrame:
     """Convert a sequence of result models (:class:`LiftEstimate`,
     :class:`BreakoutEstimate`, :class:`DailyMetricValue`,
@@ -225,6 +231,10 @@ def to_frame[M: BaseModel](
     backend : Backend
         Native dataframe backend to build: ``"pandas"``, ``"polars"``, or
         ``"pyarrow"``.
+
+    columns : Sequence[str] | None
+        Select known projection columns in canonical order. ``None`` keeps
+        every projection column.
 
     Returns
     -------
@@ -265,8 +275,22 @@ def to_frame[M: BaseModel](
         ),
         None,
     )
-    columns = _frame_columns(model, estimate_field, binomial_set_field)
-    data: dict[str, list[Any]] = {c: [] for c in columns}
+    projection_columns = _frame_columns(model, estimate_field, binomial_set_field)
+    if columns is None:
+        selected = tuple(projection_columns)
+    else:
+        requested = tuple(columns)
+        unknown = tuple(name for name in requested if name not in projection_columns)
+        if unknown:
+            _refuse(
+                "results.frame.unknown_columns",
+                unknown=unknown,
+                available=tuple(projection_columns),
+            )
+        requested_set = frozenset(requested)
+        selected = tuple(name for name in projection_columns if name in requested_set)
+    columns = list(projection_columns)
+    data: dict[str, list[Any]] = {name: [] for name in columns}
     for est in estimates:
         for name in model.model_fields:
             _append_frame_value(
@@ -386,4 +410,4 @@ def to_frame[M: BaseModel](
         for name in nullable_floats:
             frame[name] = pd.array(data[name], dtype="Float64")
 
-    return frame
+    return nw.from_native(frame, eager_only=True).select(selected).to_native()

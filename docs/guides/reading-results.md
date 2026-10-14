@@ -194,22 +194,22 @@ for r in results:
         f"significant={r.stat_sig()}"
     )
 
-# The full frame retains evidence and decision metadata. Select a concise
-# display view without dropping those fields from the underlying readout.
-decision_table = results.to_frame(backend="polars")[
-    [
-        "metric",
-        "group_id",
-        "method",
-        "lift",
-        "lb",
-        "ub",
-        "sampling_available",
-        "decision_scope_complete",
-        "multiplicity_status",
-    ]
-]
+# The default frame retains all projection columns. Use the per-model summary
+# preset for a compact table, or name a validated subset of existing columns.
+decision_table = results.to_frame(backend="polars", columns="summary")
+custom_table = results.to_frame(
+    backend="polars",
+    columns=["metric", "group_id", "method", "lift", "lb", "ub"],
+)
 ```
+
+`columns=None` remains the full projection. The `"summary"` preset keeps
+existing fields only: arm results include metric, group, method, role,
+analysis population, lift and interval, discovery, and failure code; breakout
+summaries also identify the segment, and daily summaries identify the day.
+Models without a summary preset refuse. A custom sequence is checked against
+the projection's column names and returned in canonical projection order;
+unknown names raise `results.frame.unknown_columns`.
 
 
 ```text
