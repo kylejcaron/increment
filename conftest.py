@@ -19,7 +19,10 @@ import pytest
 from sybil import Document, Example, Region, Sybil
 from sybil.evaluators.python import PythonEvaluator
 from sybil.parsers.markdown import PythonCodeBlockParser, SkipParser
-from sybil.parsers.markdown.lexers import FencedCodeBlockLexer
+from sybil.parsers.markdown.lexers import (
+    DirectiveInHTMLCommentLexer,
+    FencedCodeBlockLexer,
+)
 
 
 class _CapturingPythonEvaluator:
@@ -47,13 +50,34 @@ class OutputBlockParser:
     )
     _python_fences = FencedCodeBlockLexer(language=r"python")
     _output_marker = re.compile(r"<!--\s*output\s*-->[ \t\r\n]*$")
-    _skip_marker = re.compile(r"<!--\s*skip:\s*next\s*-->")
+    _skip_directives = DirectiveInHTMLCommentLexer(directive=r"skip", arguments=r".+")
+    _skip_action = re.compile(r"^\s*(next|start|end)\b")
     _checker = doctest.OutputChecker()
     _flags = doctest.ELLIPSIS | doctest.NORMALIZE_WHITESPACE
+
+    @classmethod
+    def _python_is_skipped(cls, python, previous_end: int, directives) -> bool:
+        active = False
+        skip_next = False
+        for directive in directives:
+            if directive.start >= python.start:
+                break
+            match = cls._skip_action.match(directive.lexemes["arguments"])
+            if match is None:
+                continue
+            action = match.group(1)
+            if action == "start":
+                active = True
+            elif action == "end":
+                active = False
+            elif directive.start >= previous_end:
+                skip_next = True
+        return active or skip_next
 
     def __call__(self, document: Document):
         text = document.text
         python_blocks = list(self._python_fences(document))
+        skip_directives = list(self._skip_directives(document))
         for block in self._text_fences(document):
             prefix = text[: block.start]
             marker = self._output_marker.search(prefix)
@@ -67,8 +91,8 @@ class OutputBlockParser:
             earlier = next(
                 (code for code in reversed(python_blocks) if code.end <= python.start), None
             )
-            between = text[earlier.end if earlier is not None else 0 : python.start]
-            if self._skip_marker.search(between):
+            previous_end = earlier.end if earlier is not None else 0
+            if self._python_is_skipped(python, previous_end, skip_directives):
                 continue
             yield Region(
                 block.start,

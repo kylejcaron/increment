@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest import SkipTest
 
 import pytest
 from sybil import Document
@@ -14,7 +15,10 @@ def _evaluate(markdown: str, tmp_path: Path) -> None:
         str(path), PythonOutputBlockParser(), OutputBlockParser(), SkipParser()
     )
     for example in document:
-        example.evaluate()
+        try:
+            example.evaluate()
+        except SkipTest:
+            pass
 
 
 def test_output_block_must_match_captured_python_output(tmp_path):
@@ -40,6 +44,19 @@ not checked
 <!-- output -->
 ```text
 1.5 units
+```
+"""
+    _evaluate(markdown, tmp_path)
+
+
+def test_output_block_after_reason_bearing_skip_is_exempt(tmp_path):
+    markdown = """<!-- skip: next "requires a prepared frame" -->
+```python
+print('not executed')
+```
+<!-- output -->
+```text
+anything
 ```
 """
     _evaluate(markdown, tmp_path)
