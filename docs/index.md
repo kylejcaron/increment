@@ -1,6 +1,6 @@
 # Increment
 
-Increment is a Python library for warehouse-native A/B testing, causal inference, and experiment analysis. Analyze an experiment from a dataframe with no backend, or define experiments, metrics, and fact sources in YAML and run the same estimation engine against DuckDB, Snowflake, BigQuery, Postgres, or another Ibis backend.
+Increment is an open-source Python library for A/B test analysis. It helps teams measure the impact of product changes using dataframes or SQL warehouses, with reusable metric definitions, effect estimates, uncertainty intervals, and shareable reports.
 
 Methods include exact constructions (such as Bernoulli e-processes), asymptotic
 approximations (such as `asymptotic_mean` confidence sequences), and empirically

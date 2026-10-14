@@ -954,8 +954,18 @@ def _prepare_assignment_evidence(raw_evidence: Any) -> tuple[Any, tuple[int, int
     )
 
 
+def _assignment_populations_cover(
+    rows: Sequence[Mapping[str, Any]], populations: Iterable[str]
+) -> bool:
+    # A trigger that no enrolled unit reached leaves the triggered population
+    # without rows; the assigned population is never legitimately empty.
+    declared = set(populations)
+    present = {row["population"] for row in rows}
+    return present <= declared and ("assigned" not in declared or "assigned" in present)
+
+
 def _validate_assignment_coverage(evidence: Sequence[Mapping[str, Any]], request: Any) -> None:
-    if {row["population"] for row in evidence} != set(request.populations):
+    if not _assignment_populations_cover(evidence, request.populations):
         _reject("artifact.extension.invalid", "assignment population coverage mismatch")
 
 
@@ -1160,9 +1170,7 @@ def _validate_assignment_audit(extension: Any) -> None:
 
 
 def _validate_assignment_result(extension: Any, result: Sequence[Mapping[str, Any]]) -> None:
-    expected_populations = set(extension.populations)
-    actual_populations = {row["population"] for row in result}
-    if actual_populations != expected_populations:
+    if not _assignment_populations_cover(result, extension.populations):
         _reject("artifact.extension.invalid", "assignment population coverage mismatch")
     fingerprint_payload = {
         "rows": _canonical_assignment_rows(result),
