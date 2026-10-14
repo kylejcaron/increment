@@ -241,13 +241,18 @@ path = "increment.estimation._score_design"
 depends_on = []
 
 [[modules]]
+path = "increment._bernoulli_moments"
+depends_on = []
+
+
+[[modules]]
 path = "increment.estimation"
 depends_on = [
   "increment._finite_sample_refusals",
   "increment._literals", "increment._multiplicity",
   "increment._identity",
   "increment._display", "increment._canonical", "increment._immutable",
-  "increment._moment_plan",
+  "increment._moment_plan", "increment._bernoulli_moments",
   "increment._source_types", "increment._winsor_rank", "increment.winsor", "increment._labels", "increment._window", "increment.compatibility",
   "increment.errors", "increment.estimation._certified", "increment.estimation.decision_types",
   "increment.estimation._sequential_likelihood",
@@ -293,6 +298,14 @@ depends_on = [
   "increment.sources", "increment.switchback",
 ]
 
+
+[[modules]]
+path = "increment.summaries"
+depends_on = [
+  "increment._analysis_config", "increment._moment_plan", "increment._source_identity",
+  "increment._bernoulli_moments", "increment.decision_wire", "increment.errors",
+  "increment.frame", "increment.plan", "increment.semantics", "increment.sources",
+]
 [[modules]]
 path = "increment.switchback"
 depends_on = [

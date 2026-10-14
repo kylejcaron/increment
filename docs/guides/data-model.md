@@ -858,6 +858,18 @@ includes a legacy-format namespace and study ID; the original provenance
 cannot be reconstructed. A `source_identity` embedded in a moments cube is
 self-asserted, not authenticated provenance.
 
+For hand-authored per-arm summaries, `moments_from_summaries(...)` builds
+format-12 rows for fixed-horizon mean and conversion metrics. Mean rows require
+`n >= 2`, `mean`, and unbiased `var` (ddof=1), then use `ref_y=mean`, `cy1=0`,
+and `cy2=(n-1)·var`; conversion rows require exact integer `successes` and
+retain that count. Rows have a strict schema; extra fields are refused with
+`moments.summaries.invalid`. Optional `assignment_counts` records source-level
+enrollment counts independently of metric counts. When omitted, `unit_counts()`,
+`srm()`, and the health allocation check are unavailable with
+`source.moments.assignment_counts`. The helper does not infer ratio
+denominators, covariates, cluster structure, or sequential registration; use
+`from_unit_summary` for those richer summaries.
+
 Each ordinary row carries integer `n >= 1` and nullable integer `successes`
 between zero and `n`. Eligible unit-grain conversion and retention outcomes
 retain their original 0/1 success counts; cluster-aggregate rows and other

@@ -305,13 +305,14 @@ def _unique_family_keys[K: Hashable](cells: Sequence[tuple[K, object]]) -> list[
 #: Codes for outcome-based cell degeneracy (zero variance, unusable SE, non-positive mean), not
 #: invalid requests: a key failing only with these stays in a fixed-horizon family as a sure
 #: non-rejection. Breakout keys the same hazards so run() and run_breakout() agree; design-based
-#: few_units/no_control_arm are absent, and estimate_lift's non-positive means get additive rows.
+#: Missing-observation breakout cells are retained conservatively as p=1.
 _CONSERVATIVE_NONREJECTION_CODES = frozenset(
     {
         "estimation.engine.lift_guard",
         "breakout.nonpositive_mean",
         "breakout.zero_variance",
         "breakout.extreme_ratio",
+        "readout.cell.missing_metric_observations",
     }
 )
 

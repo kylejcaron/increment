@@ -115,6 +115,17 @@ with them and are not a source from which to recover one. Preserve count
 columns as integers through storage and partition merges; do not cast them
 through floating point.
 
+For per-arm aggregate statistics rather than an exported cube, use
+`moments_from_summaries(rows, metrics=..., control=..., study_id=...,
+assignment_counts=...)` and pass its rows to `Analysis.from_moments`. It
+supports strict mean rows (`group_id`, `metric`, `n >= 2`, `mean`, ddof=1
+`var`) and conversion rows (`group_id`, `metric`, `n`, exact integer
+`successes`). Extra row fields are refused with
+`moments.summaries.invalid`. Optional `assignment_counts` supplies trustworthy
+source-level enrollment counts; without it, `unit_counts()`, `srm()`, and the
+health allocation check are unavailable with `source.moments.assignment_counts`.
+Ratio and other richer summary shapes should use `from_unit_summary`.
+
 **Unit-day artifacts.** Artifact context format 2 is the only supported
 context. It carries no fact, dimension or exposure SQL; source recipes are
 represented by domain-tagged SHA-256 digests. Opening or publishing with a

@@ -17,7 +17,6 @@ that is the intended question.
 ## `segment_heterogeneity`: Q, tau², I², HKSJ, and shrinkage
 
 ```python
-import datetime as dt
 import numpy as np
 import polars as pl
 from increment import Analysis, MetricSpec, segment_heterogeneity, segment_rollout_recommendation
@@ -39,19 +38,18 @@ df = pl.DataFrame(
         "variant": variant,
         "segment": segment,
         "revenue": revenue,
-        "ds": [dt.date(2025, 1, 1)] * n,
     }
 )
 
-analysis = Analysis.from_unit_panel(
+analysis = Analysis.from_unit_summary(
     df,
     unit="user_id",
     group="variant",
-    date="ds",
     control="control",
     metrics=[MetricSpec(name="revenue", type="mean")],
     breakouts=["segment"],
 )
+
 breakout_estimates = analysis.run_breakout()
 summary, segments = segment_heterogeneity(breakout_estimates)
 for row in summary:

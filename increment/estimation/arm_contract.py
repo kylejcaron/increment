@@ -655,6 +655,28 @@ def arm_runtime_support(request: ArmCompatibilityRequest) -> Support:
     )
 
 
+def arm_cuped_advisory_support(
+    *,
+    dependence: str,
+    metric: MetricCapabilities,
+    inference: RuntimeInference,
+    adjustment: Literal["predeclared", "retained"] | None,
+    prior_present: bool,
+) -> Support:
+    """Return shared admission for a proposed CUPED adjustment."""
+    asymptotic = isinstance(inference, ASYMPTOTIC_PROCEDURE_POLICIES)
+    flavour = f"{adjustment}_cuped" if adjustment is not None else "cuped"
+    cuped, admissible = _cuped_axes((_PlanningMethodFlavour(flavour),), asymptotic=asymptotic)
+    return _arm_support(
+        dependence=dependence,
+        metric=metric,
+        sequential=not isinstance(inference, FixedInference),
+        cuped=cuped,
+        coefficient_admissible=admissible,
+        prior_present=prior_present,
+    )
+
+
 def _baseline_support(request: ArmPlanningProcedure, baseline: object) -> Support | None:
     def value(name: str, default: float) -> float:
         return getattr(baseline, name, default)
@@ -834,6 +856,7 @@ __all__ = [
     "AbsoluteDecisionPolicy",
     "AnalysisAxes",
     "ARM_COMPATIBILITY_REFUSALS",
+    "arm_cuped_advisory_support",
     "ARM_EVIDENCE_CONTRACT",
     "ArmCompatibilityRequest",
     "ArmEvidenceContract",

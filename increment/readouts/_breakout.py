@@ -37,7 +37,156 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment.estimation.inference import Prior
+    from increment.semantics.design import Encouragement
     from increment.semantics.models import Metric
+
+
+def _missing_encouragement_observation(
+    template: BreakoutEstimate,
+    *,
+    dimension: str,
+    value: str,
+) -> BreakoutEstimate:
+    context = {
+        "metric": template.metric,
+        "group_id": template.group_id,
+        "dimension": dimension,
+        "dimension_value": value,
+        "reason": "no usable metric observations",
+    }
+    failure_code = "readout.cell.missing_metric_observations"
+    failure_context = context
+    data = template.model_dump()
+    data.update(
+        {
+            "dimension_value": value,
+            "lift": None,
+            "relative_confidence_set": None,
+            "relative_unavailable_reason": None,
+            "binomial_set": None,
+            "excluded": "missing_metric_observations",
+            "failure_code": failure_code,
+            "failure_context": failure_context,
+            "sampling_available": False,
+            "sampling_reason_code": failure_code,
+            "sampling_reason_context": failure_context,
+            "posterior_available": False,
+            "posterior_reason_code": "readout.cell.missing_metric_observations",
+            "posterior_reason_context": context,
+            "posterior_model": None,
+            "posterior_scale": None,
+            "posterior_estimate": None,
+            "posterior_lb": None,
+            "posterior_ub": None,
+            "posterior_level": None,
+            "posterior_alpha": None,
+            "posterior_latent_mean": None,
+            "posterior_latent_sd": None,
+            "posterior_prob_favorable": None,
+            "posterior_components": None,
+            "abs_diff": None,
+            "abs_se": None,
+            "abs_lb": None,
+            "abs_ub": None,
+            "abs_reference_kind": None,
+            "abs_reference_df": None,
+            "abs_alpha": None,
+        }
+    )
+    return BreakoutEstimate.model_validate(data)
+
+
+def _encouragement_breakout_rows(
+    src: MomentSource,
+    selected: Sequence[Metric],
+    *,
+    dimension: str,
+    source_name: str | None,
+    design: Encouragement,
+    configs: Mapping[str, Any],
+    methods_by_metric: Mapping[str, Any],
+    roles_by_metric: Mapping[str, Any],
+    estimands: Sequence[str],
+    alpha: float,
+) -> list[BreakoutEstimate]:
+    for metric_methods in methods_by_metric.values():
+        _validate_methods(metric_methods)
+    results: list[BreakoutEstimate] = []
+    empty_segments: list[tuple[str, str, frozenset[str]]] = []
+    for metric in selected:
+        metric_methods = methods_by_metric[metric.name]
+        rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=[dimension]))
+        segments: dict[str, list[Mapping[str, Any]]] = {}
+        for row in rows:
+            segments.setdefault(str(row[dimension]), []).append(row)
+        empty_segments.extend(
+            (metric.name, value, frozenset(str(row["group_id"]) for row in segment_rows))
+            for value, segment_rows in segments.items()
+            if all(row.get("n") is not None and float(row["n"]) == 0 for row in segment_rows)
+        )
+        for value in sorted(segments):
+            if all(row.get("n") is not None and float(row["n"]) == 0 for row in segments[value]):
+                continue
+            if not any(row.get("group_id") == design.control_group for row in segments[value]):
+                _warn(
+                    "readouts.breakout.segment_no_control_arm",
+                    dimension=dimension,
+                    value=value,
+                    control_group=design.control_group,
+                    stacklevel=2,
+                )
+                continue
+            n_by_group = {
+                str(row.get("group_id")): float(row["n"])
+                for row in segments[value]
+                if row.get("n") is not None
+            }
+            n_control_arm = n_by_group.get(design.control_group)
+            for lift_estimate in estimate_encouragement(
+                [metric],
+                segments[value],
+                design,
+                estimands=estimands,
+                methods=metric_methods,
+                prior=configs[metric.name].prior,
+                alpha=alpha,
+                method_roles=roles_by_metric[metric.name],
+            ).results:
+                if lift_estimate.metric != metric.name:
+                    lift_estimate = lift_estimate.model_copy(update={"metric": metric.name})
+                n_treat = n_by_group.get(str(lift_estimate.group_id))
+                results.append(
+                    _breakout_estimate_row(
+                        lift_estimate,
+                        dimension=dimension,
+                        dimension_value=value,
+                        source=source_name,
+                        n_treat=n_treat,
+                        n_control=n_control_arm,
+                        low_reliability=(
+                            (n_treat is not None and n_treat < DEFAULT_RELIABILITY_FLOOR)
+                            or (
+                                n_control_arm is not None
+                                and n_control_arm < DEFAULT_RELIABILITY_FLOOR
+                            )
+                        ),
+                    )
+                )
+    roster: dict[tuple[Any, ...], BreakoutEstimate] = {}
+    for row in results:
+        identity = (row.metric, row.group_id, row.estimand, row.value_scale, row.method)
+        roster.setdefault(identity, row)
+    for metric_name, value, groups in empty_segments:
+        templates = tuple(
+            row
+            for (metric, group_id, *_), row in roster.items()
+            if metric == metric_name and group_id in groups
+        )
+        results.extend(
+            _missing_encouragement_observation(template, dimension=dimension, value=value)
+            for template in templates
+        )
+    return [row.model_copy(update={"policy_name": "compiled_plan"}) for row in results]
 
 
 def _scoped_breakout_results(
@@ -268,68 +417,19 @@ def breakout(
                 estimands=ESTIMANDS,
                 unknown=sorted(unknown),
             )
-        for metric_methods in methods_by_metric.values():
-            _validate_methods(metric_methods)
-        enc_results: list[BreakoutEstimate] = []
-        for metric in selected:
-            metric_methods = methods_by_metric[metric.name]
-            rows = cast(
-                "list[Mapping[str, Any]]", src.moments(metric, grain="total", by=[dimension])
-            )
-            segments: dict[str, list[Mapping[str, Any]]] = {}
-            for row in rows:
-                segments.setdefault(str(row[dimension]), []).append(row)
-            for value in sorted(segments):
-                if not any(row.get("group_id") == design.control_group for row in segments[value]):
-                    _warn(
-                        "readouts.breakout.segment_no_control_arm",
-                        dimension=dimension,
-                        value=value,
-                        control_group=design.control_group,
-                        stacklevel=2,
-                    )
-                    continue
-                n_by_group = {
-                    str(row.get("group_id")): float(row["n"])
-                    for row in segments[value]
-                    if row.get("n") is not None
-                }
-                n_control_arm = n_by_group.get(design.control_group)
-                for lift_estimate in estimate_encouragement(
-                    [metric],
-                    segments[value],
-                    design,
-                    estimands=requested_estimands,
-                    methods=metric_methods,
-                    prior=configs[metric.name].prior,
-                    alpha=alpha,
-                    method_roles=roles_by_metric[metric.name],
-                ).results:
-                    if lift_estimate.metric != metric.name:
-                        lift_estimate = lift_estimate.model_copy(update={"metric": metric.name})
-                    n_treat = n_by_group.get(str(lift_estimate.group_id))
-                    enc_results.append(
-                        _breakout_estimate_row(
-                            lift_estimate,
-                            dimension=dimension,
-                            dimension_value=value,
-                            source=source_name,
-                            n_treat=n_treat,
-                            n_control=n_control_arm,
-                            low_reliability=(
-                                (n_treat is not None and n_treat < DEFAULT_RELIABILITY_FLOOR)
-                                or (
-                                    n_control_arm is not None
-                                    and n_control_arm < DEFAULT_RELIABILITY_FLOOR
-                                )
-                            ),
-                        )
-                    )
-        return scoped(
-            stamp_multiplicity_status(
-                [row.model_copy(update={"policy_name": "compiled_plan"}) for row in enc_results]
-            )
+        encouragement_rows = _encouragement_breakout_rows(
+            src,
+            selected,
+            dimension=dimension,
+            source_name=source_name,
+            design=design,
+            configs=configs,
+            methods_by_metric=methods_by_metric,
+            roles_by_metric=roles_by_metric,
+            estimands=requested_estimands,
+            alpha=alpha,
         )
+        return scoped(stamp_multiplicity_status(encouragement_rows))
     results: list[BreakoutEstimate] = []
     if correction == "bh":
         # One flat family across every (metric, arm, segment) cell this

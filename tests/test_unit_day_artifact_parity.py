@@ -370,11 +370,18 @@ def covariate_pair(covariate_publication):
 def test_adopted_reduction_does_no_upstream_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from increment.estimation.engine import Method
     from increment.query import session as session_module
 
     _connection, native, context, store = _native()
     reference = native.publish_unit_day_artifact(store)
-    baseline = lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value
+    baseline = (
+        lift_rows(native.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted")))[
+            0
+        ]
+        .require_lift()
+        .value
+    )
 
     def upstream_work(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("adopted reduction attempted upstream work")
@@ -1954,6 +1961,9 @@ def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
     adopted = Analysis.from_unit_day_artifact(
         cast(ArtifactStore, RacingStore()), reference, expected_context=context
     )
+    from increment.estimation.engine import Method
+
+    unadjusted = Method(name="unadjusted")
     try:
         rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
         assert state["rebound"]
@@ -1961,7 +1971,9 @@ def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
         assert state["warehouse_rows"]
         assert state["warehouse_rows"][0]["sum_value"] == 999999.0
         assert rows[0].require_lift().value == pytest.approx(
-            lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value
+            lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))[0]
+            .require_lift()
+            .value
         )
         assert rows[0].require_lift().value != 999999.0
     finally:
@@ -2761,6 +2773,9 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
         native_source = _native_source(native)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
+        from increment.estimation.engine import Method
+
+        unadjusted = Method(name="unadjusted")
         return {
             "native_rows": native_source.day_source(metrics=(native_metric,)).moments(
                 native_metric, grain="daily"
@@ -2768,8 +2783,14 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
             "adopted_rows": adopted_source.day_source(metrics=(adopted_metric,)).moments(
                 adopted_metric, grain="daily"
             ),
-            "native_lift": lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value,
-            "adopted_lift": lift_rows(adopted.run(metrics=["purchase_rate"]))[0]
+            "native_lift": lift_rows(
+                native.run(metrics=["purchase_rate"], decision_method=unadjusted)
+            )[0]
+            .require_lift()
+            .value,
+            "adopted_lift": lift_rows(
+                adopted.run(metrics=["purchase_rate"], decision_method=unadjusted)
+            )[0]
             .require_lift()
             .value,
         }
@@ -3003,9 +3024,12 @@ def test_publish_floors_nanosecond_exposure_timestamps(tmp_path: Path) -> None:
         store, extensions=_extensions(context, "encouragement_uptake")
     )
     adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    from increment import Method
+
+    unadjusted = Method(name="unadjusted")
     try:
-        expected = native.run(estimands=["itt", "compliance"])
-        actual = adopted.run(estimands=["itt", "compliance"])
+        expected = native.run(estimands=["itt", "compliance"], decision_method=unadjusted)
+        actual = adopted.run(estimands=["itt", "compliance"], decision_method=unadjusted)
         assert len(actual) == len(expected)
         for expected_row, actual_row in zip(expected, actual, strict=True):
             expected_fields = _flatten_readout_row(expected_row)

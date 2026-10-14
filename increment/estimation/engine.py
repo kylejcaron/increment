@@ -809,7 +809,7 @@ def _validate_typed_direct_compatibility(
                     if getattr(metric, "winsorization", None) is not None
                     else "none"
                 ),
-                outcome_window="unbounded" if _is_open_ended(metric) else "bounded",
+                outcome_window="unbounded" if is_open_ended(metric) else "bounded",
                 uptake_window="not_applicable",
             ),
             decision=decision,
@@ -1043,12 +1043,11 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
         )
 
 
-def _is_open_ended(metric: Metric) -> bool:
-    """A metric whose per-unit value can still change between analyses."""
+def is_open_ended(metric: Metric) -> bool:
+    """Whether a metric's per-unit value can still change between analyses."""
     if metric.type == "ratio":
         return metric.numerator.window_days is None or metric.denominator.window_days is None
     if metric.type == "retention":
-        # The band's right edge, not window_days - vacated on retention.
         return metric.band[1] is None
     return metric.window_days is None
 
@@ -1062,7 +1061,7 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
     and the estimand drifts with the enrollment mix.
     """
     for m in metrics:
-        if not _is_open_ended(m):
+        if not is_open_ended(m):
             continue
         if m.type == "ratio":
             windows = "one or both windows unset"

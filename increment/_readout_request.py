@@ -43,7 +43,7 @@ def _validate_typed_arm_compatibility(request: ReadoutRequest) -> None:  # noqa:
         RelativeDecisionPolicy,
         cuped_capability,
     )
-    from increment.estimation.engine import _is_open_ended
+    from increment.estimation.engine import is_open_ended
     from increment.estimation.sequential import (
         ASYMPTOTIC_PROCEDURE_POLICIES,
         SEQUENTIAL_POLICIES,
@@ -154,7 +154,7 @@ def _validate_typed_arm_compatibility(request: ReadoutRequest) -> None:  # noqa:
                 if getattr(metric, "winsorization", None) is not None
                 else "none"
             ),
-            outcome_window="unbounded" if _is_open_ended(metric) else "bounded",
+            outcome_window="unbounded" if is_open_ended(metric) else "bounded",
             uptake_window=uptake_window,
         )
         decision = (

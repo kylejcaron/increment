@@ -1286,11 +1286,16 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
     )
     cuped_method = [Method(name="cuped", variance_reduction="cuped")]
 
-    unadjusted = _lift_rows(analysis.run())[0]
-    cuped = _lift_rows(analysis.run(decision_method=cuped_method[0]))[0]
-    shrunk = _lift_rows(
-        analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
-    )[0]
+    with pytest.warns(IncrementWarning) as caught:
+        unadjusted = _lift_rows(analysis.run())[0]
+    assert warning_codes(caught) == ["analysis.cuped.covariate_unused"]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cuped = _lift_rows(analysis.run(decision_method=cuped_method[0]))[0]
+        shrunk = _lift_rows(
+            analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
+        )[0]
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
     assert cuped.require_lift().value < unadjusted.require_lift().value
     assert shrunk.require_lift() == cuped.require_lift()
