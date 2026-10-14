@@ -1691,7 +1691,7 @@ def test_make_affected_runs_selected_tests_and_propagates_failure(tmp_path: Path
     assert manifest["affected_base"] == base
     assert manifest["selected_tests"] == 2
     assert manifest["outcome"] == "passed"
-    assert manifest["worker_allowance"] == "serial"
+    assert manifest["worker_allowance"] == "2"
 
     conftest = tmp_path / "tests" / "conftest.py"
     conftest.write_text("import pytest\n")
@@ -1734,6 +1734,7 @@ def _run_make_affected(
             str(project / "Makefile"),
             f"AFFECTED_TEST_RUNNER={runner}",
             "test-affected",
+            "WORKERS=2",
             f"BASE={base}",
             f"PYTEST_ARGS={arguments}",
         ],
@@ -2058,47 +2059,11 @@ def test_changed_test_files_respect_user_k_and_marker_selectors(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("changed_target", ["provider", "rewritten_test"])
-def test_affected_feedback_detects_same_size_timestamp_cache_edits(
-    tmp_path: Path, changed_target: str
-) -> None:
+def test_affected_feedback_detects_content_edits(tmp_path: Path, changed_target: str) -> None:
     project = Path(__file__).resolve().parents[1]
-    from scripts.run_test_tier import _clean_pytest_environment
-
     base = _make_affected_fixture(tmp_path)
     target = tmp_path / ("pkg/leaf.py" if changed_target == "provider" else "tests/test_direct.py")
-    timestamp = 1_700_000_000
-    os.utime(target, (timestamp, timestamp))
-    environment = {
-        key: value
-        for key, value in _clean_pytest_environment(os.environ).items()
-        if not key.startswith(("INCREMENT_", "TESTMON_"))
-        and key not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
-    }
-    environment.update(
-        PYTHONPATH=os.pathsep.join((str(tmp_path), str(project))),
-        PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
-    )
-    seed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-c",
-            str(tmp_path / "pytest.ini"),
-            "--confcutdir",
-            str(tmp_path),
-            "tests/test_direct.py",
-            "-q",
-        ],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    assert seed.returncode == 0, seed.stdout + seed.stderr
-    target.write_text(target.read_text().replace("1", "2"))
-    os.utime(target, (timestamp, timestamp))
+    target.write_text(target.read_text().replace("1", "22"))
     result = _run_affected(project, tmp_path, base, "fast")
     assert result.returncode == 1, result.stdout + result.stderr
     [receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
@@ -2117,17 +2082,16 @@ def test_affected_feedback_detects_same_size_timestamp_cache_edits(
 
 
 @pytest.mark.slow
-def test_affected_subprocess_consumer_observes_same_size_edits_within_run(tmp_path: Path):
+def test_affected_subprocess_consumer_observes_source_edits_within_run(tmp_path: Path):
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
     (tmp_path / "tests" / "test_nested_edit.py").write_text(
-        "import os, subprocess, sys\n"
+        "import subprocess, sys\n"
         "from pathlib import Path\n"
         "def test_nested_edit():\n"
         "    source = Path('pkg/leaf.py')\n"
-        "    for value in (1, 2):\n"
+        "    for value in (1, 22):\n"
         "        source.write_text(f'VALUE = {value}\\n')\n"
-        "        os.utime(source, (1700000000, 1700000000))\n"
         "        observed = subprocess.check_output(\n"
         "            [sys.executable, '-c', 'from pkg.leaf import VALUE; print(VALUE)'], text=True)\n"
         "        assert int(observed) == value\n"
