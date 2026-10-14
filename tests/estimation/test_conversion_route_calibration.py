@@ -625,7 +625,7 @@ class TestHybridNoncoverageDecidesRoutedPairsByTheRuntimesRow:
                 )
                 assert row.reference_kind == "t"
                 interval = row.require_lift()
-                rejected = row.stat_sig()
+                rejected = row.stat_sig() is True
                 mass += weight
                 lower += weight * (rejected and interval.lb is not None and interval.lb > cell.lift)
                 upper += weight * (rejected and interval.ub is not None and interval.ub < cell.lift)
