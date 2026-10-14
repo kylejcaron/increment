@@ -151,11 +151,19 @@ estimated. A partial result is not a complete decision.
 
 ### Interpret status and scope
 
-- **`NotApplicable` assignment integrity is not a passing check.** It means
-  assignment integrity could not be evaluated for that source, design, or
-  population. Read the status and reason, and use the assigned population at
-  its stated assignment grain for assignment-law checks. Triggered counts
-  describe an outcome subset; they do not validate randomization.
+| Integrity status | Meaning |
+|---|---|
+| `failed` | A mismatch was detected; do not let a favorable effect hide it. |
+| `not_rejected` | No mismatch was detected; this does not prove valid randomization. |
+| `not_checked_missing_declaration` | The assignment law was not declared, so it could not be checked. |
+| `not_checked_missing_counts` | Required assignment counts were unavailable. |
+| `unsupported_assignment` | This source or design cannot evaluate the declared assignment law. |
+| `not_applicable` | The check does not apply to this source/design/population; it is not a pass. |
+
+Use assignment evidence from the assigned population at its declared
+randomization grain. Triggered counts describe an outcome subset, not
+assignment-law evidence.
+
 - **`exploratory_unadjusted` means no family adjustment.** Treat that result
   as exploratory rather than as a confirmatory discovery. If the question is
   decision-critical, define the appropriate family and role before using
@@ -184,46 +192,43 @@ population or inference method.
 
 ## Fixed horizon: guard the missing point
 
-Most rows carry `r.lift`. A few reachable rows do not. The loop below guards for
-them and runs on data where one occurs: no control user converts, so the
-relative lift has no finite point.
+The collection summary keeps required cells, integrity and retained family
+visible before effects. This example includes an exact conversion row with
+zero control conversions, so its relative point is unavailable even though
+the confidence set remains informative.
 
 ```python
+from random import Random
+
 import polars as pl
 
-from increment import Analysis
+from increment import Analysis, Randomized
 
-n = 100
+rng = Random(13)
+n = 200
+arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
 df = pl.DataFrame(
     {
-        "user_id": [f"u{i:03d}" for i in range(2 * n)],
-        "variant": ["control"] * n + ["treatment"] * n,
-        "revenue": [10.0 + (i * 7) % 11 for i in range(n)]
-        + [11.0 + (i * 7) % 11 for i in range(n)],
-        "converted": [0] * n + [1] * 40 + [0] * 60,
+        "user_id": [f"u{i:03d}" for i in range(n)],
+        "variant": arms,
+        "revenue": [10.0 + (i * 7) % 11 + (arm == "treatment") for i, arm in enumerate(arms)],
+        "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
     }
 )
 results = Analysis.from_unit_summary(
     df,
     unit="user_id",
     group="variant",
-    control="control",
+    design=Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    ),
     metrics={"revenue": "mean", "converted": "conversion"},
 ).run()
+print(results)
 
-for r in results:
-    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
-        # no point, or a withheld or open bound; str shows the row's set or reason
-        print(str(r))
-        continue
-    print(
-        f"{r.metric} / {r.group_id}: "
-        f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
-        f"significant={r.stat_sig()}"
-    )
-
-# The full frame retains evidence and decision metadata. Select a concise
-# display view without dropping those fields from the underlying readout.
+# The full frame retains qualifications; this selection is only a compact view.
 decision_table = results.to_frame(backend="polars")[
     [
         "metric",
@@ -239,10 +244,23 @@ decision_table = results.to_frame(backend="polars")[
 ]
 ```
 
-
 ```text
-revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), discovery=None)
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: complete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 2; available: 2.
+Multiplicity (outcome): undeclared_plan; family retained scope.
+converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+converted additive effect: 0.36036, set [0.270641, 0.45008].
+converted binomial set central: [1.61559, +∞] at 0.95 confidence.
+converted test alternative: two-sided; null (relative lift): 0.
+converted result identity: method unadjusted; method role decision; estimand itt.
+revenue (outcome, relative lift): 0.0946974, set [0.0327365, 0.160376] at 0.95 confidence.
+revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+revenue additive effect: 1.39812, set [0.504942, 2.29129].
+revenue test alternative: two-sided; null (relative lift): 0.
+revenue result identity: method unadjusted; method role decision; estimand itt.
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where
@@ -421,6 +439,7 @@ unbounded end, and that bound is `None`:
 ```python
 from increment import AnalysisPlan, MetricSpec
 
+n = 100
 purchases = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(2 * n)],

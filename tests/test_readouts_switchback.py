@@ -868,8 +868,8 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     results = analysis.run()
     result = results[0]
     rendered = repr(results)
-    assert "Interpretation:" in rendered
-    assert "Interpretation: unavailable" not in rendered
+    assert f"{result.metric} interpretation:" in rendered
+    assert "interpretation: unavailable" not in rendered
     context = source.context
     restored_context = type(context).model_validate_json(context.model_dump_json())
     assert restored_context == context

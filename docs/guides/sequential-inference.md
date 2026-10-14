@@ -22,12 +22,92 @@ are substantive assumptions, not consequences of balanced rates. Call
 check, not proof of causal validity; the [triggered-population workflow](#triggered-populations)
 keeps that risk beside its examples.
 
-The hand-written registration below is the low-level route for declarations
-not covered by plan-derived registration. A posterior effect prior, an
-estimated log standard error, or a freshness timestamp cannot replace this
-registration.
-The exact public anytime-valid observation model is Bernoulli with a proper Beta
-prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
+## Sequential monitoring of a conversion metric
+
+Declare the sampling law, metric role, inference regime and reveal order
+before analysis. This plan-derived route is the ordinary starting point; the
+library constructs the registration from the plan and frame metadata.
+Unit-summary frames contain finalized unit outcomes, and `exposure_date`
+defines their reveal order.
+
+```python
+from random import Random
+
+import polars as pl
+
+from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
+
+rng = Random(21)
+n = 2000
+arms = ["treatment" if rng.random() < 0.5 else "control" for _ in range(n)]
+design = Randomized(
+    control_group="control",
+    allocation={"control": 0.5, "treatment": 0.5},
+    allocation_scheme="independent",
+)
+finalized_frame = pl.DataFrame(
+    {
+        "user_id": [f"u{i:04d}" for i in range(n)],
+        "variant": arms,
+        "enrolled_on": list(range(n)),
+        "purchase": [int(rng.random() < (0.045 if arm == "treatment" else 0.03)) for arm in arms],
+    }
+)
+plan = AnalysisPlan(
+    primary="purchase",
+    inference=InferenceSpec(kind="always_valid", baseline_rate=0.03),
+)
+analysis = Analysis.from_unit_summary(
+    finalized_frame,
+    unit="user_id",
+    group="variant",
+    design=design,
+    metrics=[MetricSpec(name="purchase", type="conversion")],
+    experiment_id="checkout-experiment",
+    plan=plan,
+    exposure_date="enrolled_on",
+)
+results = analysis.run()
+print(results)
+```
+
+```text
+assigned — treatment vs control
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: complete.
+Population roster completeness: complete (declared_allocation).
+Required cells: 1; available: 1.
+Multiplicity (primary): declared_plan; family primary.
+purchase (primary, relative lift): 0.646342, set [-0.318461, 3.28175] at 0.95 confidence.
+purchase interpretation: does not reject; inconclusive, not evidence of no effect.
+purchase sequential ratio confidence set interval: [0.681539, 4.28175].
+purchase test alternative: two-sided; null (relative lift): 0.
+purchase result identity: method unadjusted; method role decision; estimand itt.
+```
+
+The displayed point is a relative lift; the sequential confidence set is shown
+both as lift and as a ratio (ratio = lift + 1). The result says this look does
+not reject the null; it does not establish no effect. Assignment integrity
+was not rejected, not proven. For a finite-sample anytime-valid claim, the
+Bernoulli outcomes, independent fixed-probability assignment, finalized
+outcomes and outcome-independent reveal order must match the declared model.
+The proper Beta prior uses the stated 3% control baseline; omit
+`baseline_rate` when it is not justified by pre-experiment information.
+
+If data are still arriving, do not analyze an incomplete look as finalized.
+On panel, native, and artifact sources, capture only after the declared
+outcome window has closed; see the source capture workflow below.
+
+## Manual registration for low-level integrations
+
+Use hand-written registration only when your declaration is not covered by
+plan-derived registration. A posterior effect prior, estimated log standard
+error, or freshness timestamp cannot replace this sampling declaration.
+The exact public anytime-valid observation model is Bernoulli with a proper
+Beta prior. The Gaussian kernels mentioned below are research diagnostics only,
+not public sequential decisions.
+
+Scalar Gaussian normal–inverse-gamma and paired Gaussian
 normal–inverse-Wishart kernels remain available only through the private
 research-diagnostic route; they do not produce certified `EValueEvidence` or
 public sequential decisions. Gaussian arms may have different unknown
@@ -99,6 +179,7 @@ snapshot = capture_sequential_snapshot(
 )
 decision = estimate_sequential(snapshot, policy)
 ```
+
 
 Each record supplies canonical string `unit_id` and `group_id`, a `values`
 mapping with every registered metric, and any registered `segments`. The
@@ -465,33 +546,10 @@ not calibration evidence for an alternative method. The asymptotic route
 (`kind="asymptotic_mean"`) is available, but rare-conversion calibration at
 base rates `0.10` or below is unverified by this grid and the bounded release audit.
 
-## Sequential monitoring of a conversion metric
+## Exact conversion route details
 
-A conversion or retention metric needs no hand-written registration. Declare the
-inference kind and, if you know it, the control arm's usual conversion rate:
-
-<!-- skip: next "requires a finalized unit summary frame" -->
-
-```python
-from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
-
-plan = AnalysisPlan(
-    primary="purchase",
-    inference=InferenceSpec(kind="always_valid", baseline_rate=0.03),
-)
-analysis = Analysis.from_unit_summary(
-    finalized_frame,
-    unit="user_id",
-    group="variant",
-    design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
-    metrics=[MetricSpec(name="purchase", type="conversion")],
-    experiment_id="checkout-experiment",
-    plan=plan,
-    exposure_date="enrolled_on",
-)
-row = analysis.run()[0]
-row.stat_sig()
-```
+The plan-derived example at the start of this guide uses this automatic
+registration route; no manual registration is needed for the declared frame.
 
 `baseline_rate` is the conversion rate you expect in the control arm: read it off the
 same metric over the weeks before the experiment (the number the power analysis used).
@@ -577,30 +635,22 @@ segmentation does not preserve this assignment model.
 
 Declare the plan and assignment before reading outcomes:
 
-<!-- skip: next "requires a finalized unit summary frame" -->
-
 ```python
-from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
-
-specs = [MetricSpec(name="revenue", type="mean")]
-design = Randomized(
-    control_group="control",
-    allocation={"control": 0.5, "treatment": 0.5},
-)
+specs = [MetricSpec(name="purchase", type="conversion")]
 plan = AnalysisPlan(
-    primary="revenue",
+    primary="purchase",
     inference=InferenceSpec(
         kind="asymptotic_mean",
-        expected_decision_sample_size=5000,  # Optional pre-outcome planning target.
+        expected_decision_sample_size=5000,
     ),
 )
 analysis = Analysis.from_unit_summary(
     finalized_frame,
-    unit="unit",
-    group="arm",
+    unit="user_id",
+    group="variant",
     design=design,
     metrics=specs,
-    experiment_id="revenue-experiment",
+    experiment_id="checkout-asymptotic-experiment",
     plan=plan,
     exposure_date="enrolled_on",
 )

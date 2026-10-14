@@ -70,14 +70,11 @@ def _unscoped_cell(row) -> InterpretedCell:
     failure_message = render_readout_failure(
         failure_code,
         failure_context,
-        identity={
-            "metric": getattr(row, "metric", None),
-            "group_id": getattr(row, "group_id", None),
-        },
+        identity={"metric": getattr(row, "metric", None)},
     )
     if failure_code is not None and failure_message is None:
         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
-    elif getattr(row, "unavailable", None) is not None:
+    elif failure_message is None and getattr(row, "unavailable", None) is not None:
         failure_message = f"Unavailable: {row.unavailable}"
     return InterpretedCell(
         key=CellKey.from_row(row),
@@ -227,11 +224,15 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                     failure_message = render_readout_failure(
                         failure_code,
                         failure_context,
-                        identity={"metric": cell.metric, "group_id": cell.group_id},
+                        identity={"metric": cell.metric},
                     )
                     if failure_code is not None and failure_message is None:
                         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
-                    elif row is not None and getattr(row, "unavailable", None) is not None:
+                    elif (
+                        failure_message is None
+                        and row is not None
+                        and getattr(row, "unavailable", None) is not None
+                    ):
                         failure_message = f"Unavailable: {row.unavailable}"
                     sampling_available = (
                         sampling.available if sampling is not None else _has_sampling_result(row)
@@ -641,18 +642,18 @@ def _render_group_rows(group, visible_rows) -> list[str]:
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
-                f"Posterior unavailable {cell.posterior_reason_code}: "
+                f"{row.metric} posterior unavailable {cell.posterior_reason_code}: "
                 f"{_reason(cell.posterior_reason_context)}"
             )
         if getattr(row, "note", None) and not any(code in row.note for code in advisory_codes):
-            lines.append(f"Qualification: {row.note}")
+            lines.append(f"{row.metric} qualification: {row.note}")
         selection_qualification = _selection_qualification(row)
         if selection_qualification is not None:
-            lines.append(f"Selection qualification: {selection_qualification}.")
+            lines.append(f"{row.metric} selection qualification: {selection_qualification}.")
         lines.extend(_render_effect(row))
         identity = _row_identity(row)
         if identity:
-            lines.append(f"Result identity: {'; '.join(identity)}.")
+            lines.append(f"{row.metric} result identity: {'; '.join(identity)}.")
         if getattr(row, "role", None) == "secondary":
             discovery = getattr(row, "discovery", None)
             selection = (
@@ -662,7 +663,7 @@ def _render_group_rows(group, visible_rows) -> list[str]:
                 if discovery is False
                 else "not recorded"
             )
-            lines.append(f"Selection: {selection}; separate from interval evidence.")
+            lines.append(f"{row.metric} selection: {selection}; separate from interval evidence.")
     return lines
 
 
@@ -1074,7 +1075,7 @@ def _render_effect(row):
         lines.append(effect + ".")
     interpretation = render_effect_interpretation(row)
     if interpretation is not None:
-        lines.append(interpretation)
+        lines.append(f"{row.metric} {interpretation[0].lower()}{interpretation[1:]}")
     if getattr(row, "abs_diff", None) is not None:
         low = getattr(row, "abs_lb", None)
         high = getattr(row, "abs_ub", None)
@@ -1163,4 +1164,4 @@ def _render_test_null(row, *, contrast: bool, scale: str) -> list[str]:
         if null_abs is not None or contrast or scale == "absolute"
         else "relative lift"
     )
-    return [f"Test alternative: {row.alternative}; null ({unit}): {null:.6g}."]
+    return [f"{row.metric} test alternative: {row.alternative}; null ({unit}): {null:.6g}."]

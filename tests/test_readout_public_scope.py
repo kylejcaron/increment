@@ -109,7 +109,7 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
     assert "does not reject; inconclusive" in rendered
     assert "direction supported" in rendered
     assert "not evidence of no effect" in rendered
-    assert "Selection:" in rendered
+    assert any(line.startswith("secondary selection:") for line in rendered.splitlines())
 
 
 def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_row():
@@ -125,6 +125,18 @@ def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_r
     assert 'th[id="Interval-interpretation"]{width:18em' in html
     assert "Excludes zero — increase established" in html
     assert results[0].source_snapshot_id not in subtitle
+
+
+def test_row_only_table_discloses_unknown_scope_and_integrity():
+    from increment.tables import estimates_to_readout
+
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    # A received row carries no collection evidence; the table must not look vouched for.
+    html = readout_table(estimates_to_readout([results[0]])).gt().as_raw_html()
+    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
+    assert "Scope and integrity unknown." in subtitle
+    scoped = readout_table(results).gt().as_raw_html()
+    assert "Scope and integrity unknown." not in scoped
 
 
 def test_readout_table_escapes_user_text_in_qualification_list():
@@ -199,7 +211,8 @@ def test_absolute_margin_repr_matches_exported_additive_interpretation():
 
     assert "effect direction not established" in latency["effect_interpretation"]
     assert "effect direction supported" not in latency["effect_interpretation"]
-    assert latency["effect_interpretation"] in rendered
+    exported = latency["effect_interpretation"].removeprefix("Interpretation: ")
+    assert f"latency interpretation: {exported}" in rendered.splitlines()
 
 
 def test_absolute_margin_uses_additive_interval_not_relative_interval():
