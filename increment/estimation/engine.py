@@ -3529,8 +3529,14 @@ def estimate_cuped_linear(
             }
             cuped_failures.append((metric.name, arm, "itt", absolute_error.code, failure_context))
         try:
+            point = resolvable_expm1(relative.estimate, what="CUPED relative point estimate")
+        except CodedError as exc:
+            withhold_relative(arm, absolute, exc)
+            continue
+        relative_error = None
+        try:
             lift = Estimate(
-                value=resolvable_expm1(relative.estimate, what="CUPED relative point estimate"),
+                value=point,
                 lb=resolvable_expm1(relative.lower, what="CUPED relative lower bound"),
                 ub=resolvable_expm1(relative.upper, what="CUPED relative upper bound"),
                 level=1.0 - alpha_eff,
@@ -3539,8 +3545,11 @@ def estimate_cuped_linear(
                 log_se=relative.se,
             )
         except CodedError as exc:
-            withhold_relative(arm, absolute, exc)
-            continue
+            # Only the interval is unrepresentable at this level: keep the point
+            # and the log-scale statistics its sampling test uses, withhold the
+            # bounds, and record the refusal beside them.
+            relative_error = exc
+            lift = Estimate(value=point, log_mean=relative.estimate, log_se=relative.se)
         results.append(
             LiftEstimate(
                 metric=metric.name,
@@ -3566,6 +3575,8 @@ def estimate_cuped_linear(
                 scale="log",
                 absolute_error_code=None if absolute_error is None else absolute_error.code,
                 absolute_error_context=None if absolute_error is None else absolute_error.context,
+                relative_error_code=None if relative_error is None else relative_error.code,
+                relative_error_context=None if relative_error is None else relative_error.context,
                 **_cuped_linear_posterior_fields(metric, arm, prior, reference_df=relative.dof),
             )
         )
@@ -3589,10 +3600,10 @@ def reintervalize_cuped_decision(
     """Rebuild one selected linear decision row at its family's FCR level.
 
     Only a selected cell is rebuilt, from its retained HC2/BM statistics
-    without refitting. A relative interval the level cannot represent keeps
-    the additive projection (``LiftEstimate.reintervalize``); a row with no
-    additive projection to keep becomes an unavailable cell carrying the
-    refusal, so its siblings' rows survive.
+    without refitting (``LiftEstimate.reintervalize``: a level whose relative
+    bounds are unrepresentable withholds the interval and keeps the point and
+    sampling statistics). A row the level cannot rebuild at all becomes an
+    unavailable cell carrying the refusal, so its siblings' rows survive.
     """
     try:
         return row.reintervalize(alpha, interval_alternative=alternative)

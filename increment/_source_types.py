@@ -557,7 +557,11 @@ class MomentSource(Protocol):
         A declared `context.cluster` adds `cluster_id` metadata automatically,
         independently of `covariates`; callers must not request its source name.
         Each covariate is carried under `unit_frame_covariate_columns(covariates)`:
-        its own name unless that is one of the frame's own columns.
+        its own name unless that is one of the frame's own columns. Only frame
+        producers remap (their covariate names are the caller's own columns);
+        native and artifact producers emit each binding under its declared alias
+        and refuse a reserved alias before acquisition
+        (`definition.experiment.covariate_name_reserved`).
         """
         ...
 

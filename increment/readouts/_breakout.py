@@ -52,6 +52,7 @@ def _scoped_breakout_results(
     dimension: str,
     source_name: str | None,
     sequential_snapshot: Any = None,
+    source_components: Sequence[Mapping[str, Any]] = (),
 ) -> BreakoutEstimates:
     route = classify_source(src)
     if route == "panel":
@@ -73,6 +74,7 @@ def _scoped_breakout_results(
         dimension=dimension,
         source=source_name,
         sequential_snapshot=sequential_snapshot,
+        source_components=source_components,
     )
 
 
@@ -314,9 +316,6 @@ def breakout(
         "q": q,
         "source_name": source_name,
         "analysis_population": analysis_population,
-        # Mixed-CUPED cells are fitted on per-unit evidence whose float values
-        # the row digest excludes; its own digest keeps those readouts distinct.
-        "unit_evidence": unit_evidence,
     }
 
     def scoped(rows, *, sequential_snapshot=None):
@@ -331,6 +330,9 @@ def breakout(
             dimension=dimension,
             source_name=source_name,
             sequential_snapshot=sequential_snapshot,
+            # Mixed-CUPED cells are fitted on per-unit evidence whose float
+            # values the row digest excludes; its own digest is source provenance.
+            source_components=unit_evidence,
         )
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):

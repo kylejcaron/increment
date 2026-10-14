@@ -2277,25 +2277,32 @@ def _estimate_lift_computation_or_reason(
         method = methods[0] if methods else Method(name="unadjusted")
         role = (method_roles or {}).get(method.name, "decision")
         groups = {str(row["group_id"]) for row in summary if str(row["group_id"]) != control_group}
-        rows = tuple(
-            LiftEstimate(
-                metric=metric.name,
-                group_id=group_id,
-                method=method.name,
-                method_role=role,
-                estimand="itt",
-                alternative=alternative,
-                preferred_direction=metric.declared_preferred_direction,
-                failure_code=exc.code,
-                failure_context={
-                    **exc.context,
-                    "metric": metric.name,
-                    "group_id": group_id,
-                    "method": method.name,
-                },
+        rows = []
+        for group_id in sorted(groups):
+            failure_context = {
+                **exc.context,
+                "metric": metric.name,
+                "group_id": group_id,
+                "method": method.name,
+            }
+            rows.append(
+                LiftEstimate(
+                    metric=metric.name,
+                    group_id=group_id,
+                    method=method.name,
+                    method_role=role,
+                    estimand="itt",
+                    alternative=alternative,
+                    preferred_direction=metric.declared_preferred_direction,
+                    failure_code=exc.code,
+                    failure_context=failure_context,
+                    # A declared prior has no sampling statistics to compose from
+                    # on a refused cell: the cell's own refusal is its reason.
+                    posterior_available=False if prior is not None else None,
+                    posterior_reason_code=exc.code if prior is not None else None,
+                    posterior_reason_context=failure_context if prior is not None else None,
+                )
             )
-            for group_id in sorted(groups)
-        )
         return DecisionComputation(results=rows, evidence={}, failures={}), None
     rows = tuple(
         result.model_copy(update={"preferred_direction": metric.declared_preferred_direction})

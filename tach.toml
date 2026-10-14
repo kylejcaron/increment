@@ -504,7 +504,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.cate"
-depends_on = ["increment._identity", "increment.errors", "increment.estimation", "increment.sources"]
+depends_on = ["increment._identity", "increment._source_types", "increment.errors", "increment.estimation", "increment.sources"]
 
 [[modules]]
 path = "increment.absorption"

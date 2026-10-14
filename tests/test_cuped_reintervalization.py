@@ -6,7 +6,6 @@ from typing import Literal, cast
 import pytest
 from scipy.stats import t
 
-from increment.errors import CodedError
 from increment.estimation.armstats import IndependentMeanComponent, IndependentMeanReference
 from increment.estimation.inference import infer_ate
 from increment.estimation.results import Estimate, LiftEstimate
@@ -93,7 +92,7 @@ def test_student_t_absolute_margin_p_value_uses_retained_degrees_of_freedom():
 
 
 @pytest.mark.parametrize("alpha", [1e-100, 1e-200])
-def test_log_t_reintervalization_keeps_additive_inference_when_relative_is_unrepresentable(
+def test_log_t_reintervalization_withholds_only_the_unrepresentable_interval(
     alpha: float,
 ) -> None:
     from increment.estimation.results import LiftEstimate
@@ -104,9 +103,15 @@ def test_log_t_reintervalization_keeps_additive_inference_when_relative_is_unrep
     projected = row.reintervalize(alpha)
 
     assert projected.failure_code is None
-    assert projected.lift is None
-    assert projected.relative_unavailable_reason == "relative_unrepresentable"
+    assert projected.relative_unavailable_reason is None
     assert projected.relative_error_code == "estimation.tails.unresolvable"
+    lift = projected.require_lift()
+    assert lift.value == pytest.approx(row.require_lift().value)
+    assert lift.lb is None and lift.ub is None and lift.level is None
+    assert lift.log_mean == row.require_lift().log_mean
+    assert lift.log_se == row.require_lift().log_se
+    assert projected.p_value() == pytest.approx(row.p_value())
+    assert projected.stat_sig() is False
     assert projected.abs_diff == row.abs_diff
     assert projected.abs_lb is not None and row.abs_lb is not None
     assert projected.abs_lb < row.abs_lb
@@ -114,9 +119,7 @@ def test_log_t_reintervalization_keeps_additive_inference_when_relative_is_unrep
 
 
 @pytest.mark.parametrize("alpha", [1e-100, 1e-200])
-def test_log_t_reintervalization_refuses_unrepresentable_endpoints_without_additive(
-    alpha: float,
-) -> None:
+def test_log_t_reintervalization_keeps_sampling_evidence_without_additive(alpha: float) -> None:
     row = _t_row().model_copy(
         update={
             "abs_diff": None,
@@ -129,10 +132,11 @@ def test_log_t_reintervalization_refuses_unrepresentable_endpoints_without_addit
         }
     )
 
-    with pytest.raises(CodedError) as raised:
-        row.reintervalize(alpha)
+    projected = row.reintervalize(alpha)
 
-    assert raised.value.code == "estimation.tails.unresolvable"
+    assert projected.relative_error_code == "estimation.tails.unresolvable"
+    assert projected.require_lift().lb is None
+    assert projected.p_value() == pytest.approx(row.p_value())
 
 
 def test_independent_mean_t_reintervalization_updates_reference_for_json_replay() -> None:

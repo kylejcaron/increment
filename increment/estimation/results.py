@@ -91,9 +91,8 @@ RelativeUnavailableReason = Literal[
     "joint_covariance_indefinite",
     "joint_covariance_unrepresentable",
     "nonpositive_arm_mean",
-    # A finite log-scale projection whose relative point or endpoint lies
-    # outside float64 (``expm1`` underflows to the excluded -1 floor or
-    # overflows); the additive projection stays usable.
+    # Relative projection refused for representability or finiteness
+    # (``relative_error_code`` names it); the additive projection stays usable.
     "relative_unrepresentable",
     "zero_relative_variance",
 ]
@@ -1496,10 +1495,11 @@ class LiftEstimate(_RowIdentity):
 
         A ``t`` row rebuilds its log-scale relative interval and, when it carries
         them, its additive statistics. A relative endpoint the new level pushes
-        outside float64 withholds the relative projection the way the estimator
-        does at its nominal level: the additive interval is kept, the refusal is
-        recorded, and only a row with no additive statistics refuses. A row whose
-        relative projection was already withheld rebuilds its additive interval only.
+        outside float64 withholds only that interval: the point and the log-scale
+        statistics the row was selected on are kept, so its sampling p-value is
+        unchanged, and the refusal is recorded in ``relative_error_code``. A row
+        whose relative projection was already withheld rebuilds its additive
+        interval only.
         """
         if self.reference_kind == "t" and self.reference_df is not None:
             relative = (
@@ -1593,10 +1593,10 @@ class LiftEstimate(_RowIdentity):
         lift = self.lift
         assert lift is not None and lift.log_mean is not None and lift.log_se is not None
         assert self.reference_df is not None
-        critical = tail_isf(
-            student_t_isf, alpha_eff / 2.0, self.reference_df, what="t reintervalization"
-        )
         try:
+            critical = tail_isf(
+                student_t_isf, alpha_eff / 2.0, self.reference_df, what="t reintervalization"
+            )
             lower, upper = wald_bounds(
                 lift.log_mean, critical, lift.log_se, what="t reintervalization endpoint"
             )
@@ -1604,15 +1604,21 @@ class LiftEstimate(_RowIdentity):
                 lower = resolvable_expm1(lower, what="t reintervalization endpoint")
                 upper = resolvable_expm1(upper, what="t reintervalization endpoint")
         except CodedError as exc:
-            if not additive:
-                raise
+            # The level, not the evidence, is what cannot be represented: keep
+            # the point and the log-scale statistics the selection was decided
+            # on (p_value() still answers from them) and withhold only the
+            # interval, recording the exact refusal beside it.
             update.update(
                 {
-                    "lift": None,
-                    "scale": "linear",
-                    "reference_df": self.abs_reference_df,
-                    "dof": self.abs_reference_df,
-                    "relative_unavailable_reason": "relative_unrepresentable",
+                    "lift": lift.model_copy(
+                        update={
+                            "lb": None,
+                            "ub": None,
+                            "alpha": None,
+                            "level": None,
+                            "open_side": None,
+                        }
+                    ),
                     "relative_error_code": exc.code,
                     "relative_error_context": exc.context,
                 }
