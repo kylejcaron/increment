@@ -102,20 +102,16 @@ Two rules hold on every path: an eligible unit with no events on a day
 contributes zero, not a missing value, and a unit whose window has not finished
 is censored, not scored from partial data.
 
-=== "Warehouse"
+**Warehouse.** The panel is dense through the observation horizon: `observation_end`,
+else `end`, else the latest observed event date for a running experiment.
+Each fact also carries `data_as_of`, the latest date actually loaded. A
+window ending after that bound is censored; a warning reports material
+drops.
 
-    The panel is dense through the observation horizon: `observation_end`,
-    else `end`, else the latest observed event date for a running experiment.
-    Each fact also carries `data_as_of`, the latest date actually loaded. A
-    window ending after that bound is censored; a warning reports material
-    drops.
-
-=== "Dataframe"
-
-    `Analysis.from_unit_panel` accepts sparse input and treats absent eligible
-    unit-days as zero. Small inputs may be densified temporarily; larger ones
-    use a sparse day-at-a-time reduction. `densified_cells` counts cells that
-    needed zero fill, not physical rows.
+**Dataframe.** `Analysis.from_unit_panel` accepts sparse input and treats absent eligible
+unit-days as zero. Small inputs may be densified temporarily; larger ones
+use a sparse day-at-a-time reduction. `densified_cells` counts cells that
+needed zero fill, not physical rows.
 
 ??? info "Dataframe zero-fill route and memory limits"
     For small inputs, zero filling may use a temporary date spine when a scratch
@@ -527,20 +523,17 @@ experiments:
     control_group: control
 ```
 
-=== "Warehouse"
+**Warehouse.** `cluster` names a column on the exposure source. Uncertainty is then
+computed from independent clusters, and `srm()` tests the distinct cluster
+count per arm (`SRMResult.grain == "cluster"`). Per-arm unit counts ride
+along on `SRMResult.unit_counts` as context: unequal cluster sizes make
+unit counts drift for reasons the randomizer never controlled, so that
+imbalance is reported, never tested.
 
-    `cluster` names a column on the exposure source. Uncertainty is then
-    computed from independent clusters, and `srm()` tests the distinct cluster
-    count per arm (`SRMResult.grain == "cluster"`). Per-arm unit counts ride
-    along on `SRMResult.unit_counts` as context: unequal cluster sizes make
-    unit counts drift for reasons the randomizer never controlled, so that
-    imbalance is reported, never tested.
-
-=== "Dataframe"
-
-    Pass `cluster="store_id"` to `Analysis.from_unit_summary` or
-    `from_unit_panel`. Uncertainty is computed from independent clusters, and
-    `srm()` reports the same two grains.
+**Dataframe.** Pass `cluster="store_id"` to `Analysis.from_unit_summary`.
+First aggregate panel data to one row per unit, keeping its cluster label.
+Uncertainty is computed from independent clusters, and `srm()` reports the
+same two grains.
 
 What a clustered experiment supports:
 

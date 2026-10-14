@@ -596,10 +596,10 @@ if restored.recommendation == "target":
 
 `rule.fraction` and `rule.achieved_fraction` record the requested and realized
 holdout budget shares. The frozen fitted scoring state survives JSON reload;
-prediction does not fit on the new data. Covariates come from the source's
-`unit_frame`: native and adopted warehouse unit frames carry the metric
-outcome and identifiers, not model covariates, so use a dataframe unit-summary
-source for covariate-adjusted fits.
+Covariates come from the source's `unit_frame`. Native warehouse definitions can
+resolve requested `pre_exposure` or `static` properties, and adopted unit-day
+artifacts can use covariates declared in their observational design. Dataframe
+unit-summary sources can carry covariate columns directly.
 
 ??? info "Counts, covariates, and cluster policies"
     Fitted CATE results report `n_clusters`, while targeting policies retain
