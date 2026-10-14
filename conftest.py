@@ -19,7 +19,10 @@ import pytest
 from sybil import Document, Example, Region, Sybil
 from sybil.evaluators.python import PythonEvaluator
 from sybil.parsers.markdown import PythonCodeBlockParser, SkipParser
-from sybil.parsers.markdown.lexers import FencedCodeBlockLexer
+from sybil.parsers.markdown.lexers import (
+    DirectiveInHTMLCommentLexer,
+    FencedCodeBlockLexer,
+)
 
 
 class _CapturingPythonEvaluator:
@@ -47,13 +50,22 @@ class OutputBlockParser:
         language=r"text", mapping={"language": "arguments", "source": "source"}
     )
     _python_fences = FencedCodeBlockLexer(language=r"python")
+    _invisible_python_blocks = DirectiveInHTMLCommentLexer(
+        directive=r"invisible-code-block", arguments=r"python"
+    )
     _output_marker = re.compile(r"<!--\s*output\s*-->[ \t\r\n]*$")
     _checker = doctest.OutputChecker()
     _flags = doctest.ELLIPSIS | doctest.NORMALIZE_WHITESPACE
 
     def __call__(self, document: Document):
         text = document.text
-        python_blocks = list(self._python_fences(document))
+        python_blocks = sorted(
+            (
+                *self._python_fences(document),
+                *self._invisible_python_blocks(document),
+            ),
+            key=lambda code: code.end,
+        )
         for block in self._text_fences(document):
             prefix = text[: block.start]
             marker = self._output_marker.search(prefix)

@@ -431,25 +431,38 @@ units within a cluster are not independent draws.
 Inference also moves from a Normal reference to a $t$ reference. The
 applicable degrees of freedom depend on what is reported:
 
-- **Absolute impact for a plain (non-ratio) metric** depends only on the
-  control and target arm -- no other enrolled arm ever enters its
-  variance -- so its interval uses the plain pairwise $t$ reference
-  between those two arms' cluster counts, the same as a two-arm
-  experiment would.
-- **Relative impact, and a ratio metric's absolute impact,** both mix
+- **Absolute impact for a plain (non-ratio) metric** combines the target
+  and control arm mean variances. Its $t$ reference uses a two-component
+  Welch–Satterthwaite correction, pairing each variance component with
+  its own arm's cluster degrees of freedom ($K_i - 1$). It does not
+  pool the cluster count or automatically use the pairwise sum.
+- **Relative impact, and a ratio metric's absolute impact,** mix
   contributions from every enrolled arm. A co-enrolled arm's lift enters the
   shared baseline used by either quantity, so more arms add sampling variance
   to the standard error, not necessarily a more conservative reference
-  distribution. The combined estimate uses a Satterthwaite correction across
-  every contributing arm's cluster count (each arm's own $K_i - 1$,
+  distribution. The combined estimate uses a Welch–Satterthwaite correction
+  across every contributing arm's cluster count (each arm's own $K_i - 1$,
   including control), weighted by that arm's variance contribution. It is not
-  the plain pairwise reference or a simple average of the arms' individual
-  degrees of freedom. The result falls between the smallest contributing
-  arm's $K_i - 1$ and the sum of all contributing arms' $K_i - 1$. It can
-  fall below the target-control pairwise degrees of freedom. In the guide's
-  balanced single-arm example, control and target each have 24 degrees of
-  freedom, so the pairwise reference is 48 and the Satterthwaite combination
-  is about 42; a co-enrolled arm with fewer clusters can lower it further.
+  a simple average of the arms' individual degrees of freedom. The result
+  falls between the smallest contributing arm's $K_i - 1$ and the sum of all
+  contributing arms' $K_i - 1$, and can fall below the target-control
+  pairwise degrees of freedom. In the guide's balanced single-arm example,
+  each arm contributes 24 degrees of freedom. The two-component reference
+  would be 48 only with equal variance contributions; here it is about 42
+  because those contributions differ. A co-enrolled arm with fewer clusters
+  can lower an every-arm reference further.
+`revenue_per_user`'s plain-metric absolute impact uses the two-component
+Welch–Satterthwaite reference, pairing the control and target mean variances
+with their own 24 cluster degrees of freedom. Its `absolute_dof` is 42.0245
+here; 48 is the special case of equal variance contributions, not an
+automatic `target.n + control.n - 2` result. Relative impact and
+`revenue_per_session`'s absolute and relative impacts use the every-arm
+Welch–Satterthwaite reference instead (see "Degrees of freedom" in
+`increment.estimation.sitewide`'s module docstring): each variance term is
+paired with its own arm's cluster degrees of freedom. With only control and
+one target, those are 24 each, and the unequal variance weights yield
+42.0245. Co-enrolled arms add their own variance terms and cluster degrees
+of freedom to that reduction.
 
 !!! note
     Declaring a cluster never moves the point estimate. It changes the
@@ -737,6 +750,7 @@ print(
 )
 ```
 
+<!-- output -->
 ```text
 observed site volume:   2,095.10
 counterfactual (V0):    1,502.88
@@ -895,14 +909,15 @@ print(
 )
 ```
 
+<!-- output -->
 ```text
 n_clusters:              50
-absolute_dof:            48
+absolute_dof:            42.0245
 relative_dof:            42.0245
 observed site volume:    4,125.25
 counterfactual (V0):     2,912.12
 per-unit lift (delta):   +6.07
-ship-to-all impact:      +2,426.26 [+1,132.68, +3,719.84]
+ship-to-all impact:      +2,426.26 [+1,127.91, +3,724.61]
 relative to baseline:    +83.32% [+20.16%, +146.47%]
 ratio n_clusters:        50
 ratio absolute_dof:      42.0245
@@ -916,20 +931,18 @@ ship-to-all impact:      +5.8464 [+2.7179, +8.9750]
 cleanly, so no `RuntimeWarning` fires here. `n_clusters` is echoed as
 contrast-level metadata; `absolute_dof`/`relative_dof` echo the dof
 each interval above was actually cut at, not a single pooled figure.
-`revenue_per_user`'s absolute impact uses the plain pairwise reference
-(`target.n + control.n - 2`) described above -- with a single
-non-control arm enrolled, `absolute_dof` lands at 48 exactly, since
-there is no other arm to separate it from. Relative impact and
-`revenue_per_session`'s absolute impact use the every-arm-aware
-Satterthwaite reference instead (see "Degrees of freedom" in
-`increment.estimation.sitewide`'s module docstring for the exact
-reduction): each variance term is paired with its own arm's cluster
-count minus 1 -- 24 for control and 24 for target here -- so
-`relative_dof`/`ratio absolute_dof` land between 24 and their sum of 48,
-and below the pairwise 48 whenever the two terms carry unequal variance
-weight, as they visibly do at about 42. That holds even with a single
-non-control arm enrolled; a co-enrolled arm only adds its own
-$K_i - 1$ to the mix.
+`revenue_per_user`'s plain-metric absolute impact uses the two-component
+Welch–Satterthwaite reference, pairing the control and target mean variances
+with their own 24 cluster degrees of freedom. Its `absolute_dof` is 42.0245
+here; 48 is the special case of equal variance contributions, not an
+automatic `target.n + control.n - 2` result. Relative impact and
+`revenue_per_session`'s absolute and relative impacts use the every-arm
+Welch–Satterthwaite reference instead (see "Degrees of freedom" in
+`increment.estimation.sitewide`'s module docstring): each variance term is
+paired with its own arm's cluster degrees of freedom. With only control and
+one target, those are 24 each, and the unequal variance weights yield
+42.0245. Co-enrolled arms add their own variance terms and cluster degrees
+of freedom to that reduction.
 
 See the [API reference](../api.md) for `SitewideImpact` and
 `SitewideRatioImpact`'s full field lists, and

@@ -106,6 +106,7 @@ results = analysis.run()
 print(results)
 ```
 
+<!-- output -->
 ```text
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
