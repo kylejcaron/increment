@@ -196,7 +196,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "breakouts",
         "supported",
         None,
-        "tests/test_cuped_breakout_review.py::test_triggered_native_breakout_linear_matches_triggered_unit_oracle",
+        "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact",
         ingress_dispositions=(
             (
                 "from_unit_summary",
