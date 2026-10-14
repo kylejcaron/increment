@@ -10,6 +10,9 @@ Use the randomized design and compare treatment arms against the declared contro
 
 Use [SRM diagnostics](srm-diagnostics.md) to check for a sample-ratio mismatch. Compare counts in the full assigned population with the population used by your metric: a mismatch that appears only downstream points to selection or telemetry, not necessarily broken assignment.
 
+!!! warning "SRM cannot identify the cause"
+    It detects an observed-count imbalance only; it cannot determine whether a broken assignment mechanism or an asymmetric downstream selection or telemetry gap caused it.
+
 ## I have pre-treatment data correlated with the outcome
 
 Use [CUPED variance reduction](cuped.md). CUPED uses pre-experiment information to reduce outcome variance; it does not change the treatment assignment or estimand.
@@ -21,6 +24,9 @@ Use [Power analysis](power-analysis.md). Solve for required sample size, achieve
 ## I need a percentile, not a mean
 
 Use [Quantile metrics](quantile-metrics.md). Quantiles are not additive across units and use a different interval method; only `run()` supports them.
+
+??? info "Quantile interval construction"
+    A quantile is not additive across units, so it needs a distribution-free order-statistic interval instead of the moments-based method every other metric type shares, and only `run()` serves it.
 
 ## I will inspect the experiment repeatedly
 
@@ -40,7 +46,7 @@ Use an encouragement design when random assignment changes treatment uptake but 
 
 ## Treatment alternates within units or a shared roster over time
 
-Use a [fixed-horizon switchback contrast](switchback.md) when treatment order is randomized within unit-cycles or across two-period blocks for a fixed roster. Declare the two-period `SwitchbackAssignment` and washout (and optional `carryover_order`, 0–2, when enough observation steps remain). The estimate is the mean-unit additive difference over retained windows; it assumes no residual carryover after washout. Unit-cycle inference uses a prospective variance envelope or the default approximate `UnitCycleTApproximation()`; shared schedules use a block-level Student-t interval. This route does not support sequential inference, CUPED, multiplicity adjustment, or arm-method overrides.
+Use a [fixed-horizon switchback contrast](switchback.md) when treatment order is randomized independently within each unit-cycle, or a shared schedule when one order is drawn per two-period block for a fixed roster. Declare the two-period `SwitchbackAssignment` and washout (and optional `carryover_order`, 0–2, when enough observation steps remain). The estimate is the mean-unit additive difference over retained windows; it assumes no residual carryover after washout. Unit-cycle inference uses a prospective variance envelope or the default approximate `UnitCycleTApproximation()`; shared schedules use a block-level Student-t interval. This route does not support sequential inference, CUPED, multiplicity adjustment, or arm-method overrides.
 
 ## Choosing decision and sensitivity methods
 For parallel-arm evidence, choose one `decision_method` and optional reporting-only `sensitivity_methods` per metric. Declare them in the plan (or `MetricSpec` for dataframe input), or pass them to `run(...)`. Sensitivity rows are not additional decision evidence.
@@ -49,12 +55,20 @@ Without an explicit choice, observational designs use IPTW; randomized and encou
 
 An omitted sensitivity override inherits the declaration; `sensitivity_methods=[]` clears it. The legacy method-list keyword is not part of the public `run()` API.
 
+??? info "Decision defaults and sensitivity overrides"
+    When the decision method is omitted, observational designs use IPTW; randomized and encouragement designs retain their unadjusted default. Adding a sensitivity method does not change that decision: for example, `run(sensitivity_methods=[Method(name="unadjusted")])` on an observational analysis reports an IPTW decision and an unadjusted sensitivity. An explicitly chosen unadjusted decision stays unadjusted.
+
+
 For observational designs, `run_daily_lift()` and `run_asof_lift()` refuse with
 `facade.analysis.observational_day_axis`; these views do not provide adjusted
 day-axis contrasts. Use `run_daily()` or `run_asof()` for descriptive values,
 or `run()` for adjusted whole-experiment comparisons.
 
 For metric selection, always-valid inference, secondary family roles, and interactions between methods, see the [method compatibility reference](compatibility.md) and [Multiplicity](multiplicity.md).
+
+??? info "Allocation across metrics and arms"
+    For metric selection plus always-valid inference, secondary family role, enabled multiplicity, and evidence interactions, use the [method compatibility reference](compatibility.md) and [Multiplicity](multiplicity.md) for how a primary's alpha share divides again across its own arms, a guardrail tests unsplit at the full alpha, and a secondaries family is controlled by false-discovery rate at its own q instead of an alpha split.
+
 ## I need effects for different user segments
 
 Use heterogeneous-treatment-effect tools after estimating the overall effect. See the [Heterogeneous effects example](../examples/hte.md) and [Heterogeneity and rollout](heterogeneity-and-rollout.md). Validate targeting separately from estimating effects.

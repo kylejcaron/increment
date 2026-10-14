@@ -445,7 +445,7 @@ def test_confidence_set_wire_unbounded_undefined_and_no_posterior():
         <= 0.05
     )
     # A confidence set is sampling evidence, not a posterior; see
-    # docs/guides/priors-and-decisions.md:73-75.
+    # docs/guides/priors-and-decisions.md:81-83.
     assert restored.chance_to_beat() is None
     reinverted = restored.reintervalize(0.01)
     assert reinverted.reference_kind == "confidence_set"
