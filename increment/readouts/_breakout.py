@@ -54,6 +54,8 @@ def _missing_encouragement_observation(
         "dimension_value": value,
         "reason": "no usable metric observations",
     }
+    failure_code = "readout.cell.missing_metric_observations"
+    failure_context = context
     data = template.model_dump()
     data.update(
         {
@@ -63,11 +65,11 @@ def _missing_encouragement_observation(
             "relative_unavailable_reason": None,
             "binomial_set": None,
             "excluded": "missing_metric_observations",
-            "failure_code": "readout.cell.missing_metric_observations",
-            "failure_context": context,
+            "failure_code": failure_code,
+            "failure_context": failure_context,
             "sampling_available": False,
-            "sampling_reason_code": "readout.cell.missing_metric_observations",
-            "sampling_reason_context": context,
+            "sampling_reason_code": failure_code,
+            "sampling_reason_context": failure_context,
             "posterior_available": False,
             "posterior_reason_code": "readout.cell.missing_metric_observations",
             "posterior_reason_context": context,
@@ -168,9 +170,15 @@ def _encouragement_breakout_rows(
                         ),
                     )
                 )
+    roster: dict[tuple[Any, ...], BreakoutEstimate] = {}
+    for row in results:
+        identity = (row.metric, row.group_id, row.estimand, row.value_scale, row.method)
+        roster.setdefault(identity, row)
     for metric_name, value, groups in empty_segments:
         templates = tuple(
-            row for row in results if row.metric == metric_name and row.group_id in groups
+            row
+            for (metric, group_id, *_), row in roster.items()
+            if metric == metric_name and group_id in groups
         )
         results.extend(
             _missing_encouragement_observation(template, dimension=dimension, value=value)

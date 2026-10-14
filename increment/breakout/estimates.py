@@ -2930,6 +2930,22 @@ def _append_breakout_slice_rows(
                     (context.segment_value, estimate, result_start + len(rows) - 1)
                 )
             continue
+        failure_code = (
+            "readout.cell.missing_metric_observations"
+            if outcome.reason == "missing_metric_observations"
+            else None
+        )
+        failure_context = (
+            {
+                "metric": outcome.metric,
+                "group_id": outcome.group_id,
+                "dimension": context.dimension,
+                "dimension_value": context.segment_value,
+                "reason": outcome.reason,
+            }
+            if failure_code is not None
+            else None
+        )
         rows.append(
             BreakoutEstimate(
                 metric=outcome.metric,
@@ -2943,6 +2959,11 @@ def _append_breakout_slice_rows(
                 lift=None,
                 excluded=outcome.reason,
                 role="exploratory",
+                failure_code=failure_code,
+                failure_context=failure_context,
+                sampling_available=False if failure_code is not None else None,
+                sampling_reason_code=failure_code,
+                sampling_reason_context=failure_context,
             )
         )
     return _BreakoutRowsPass(rows, family_entries)

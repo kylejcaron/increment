@@ -322,9 +322,18 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
     assert (control_a["n"], control_a["ref_y"]) == (2, 2.5)
 
 
-def test_unit_summary_breakout_preserves_all_missing_segment_as_unavailable():
+def test_unit_summary_breakout_preserves_multiple_empty_segments_as_unavailable():
+    import pandas as pd
+
     frame = _summary_breakout_frame()
-    frame.loc[frame["segment"] == "A", "value"] = None
+    empty = frame[frame["segment"] == "A"].copy()
+    empty["user_id"] = "empty-" + empty["user_id"]
+    empty["segment"] = "C"
+    valid = frame[frame["segment"] == "B"].copy()
+    valid["user_id"] = "valid-" + valid["user_id"]
+    valid["segment"] = "D"
+    frame = pd.concat([frame, empty, valid], ignore_index=True)
+    frame.loc[frame["segment"].isin(("A", "C")), "value"] = None
     with pytest.warns(IncrementWarning):
         analysis = Analysis.from_unit_summary(
             frame,
@@ -337,15 +346,21 @@ def test_unit_summary_breakout_preserves_all_missing_segment_as_unavailable():
 
     with pytest.warns(IncrementWarning):
         rows = analysis.run_breakout()
-    segment_a = next(row for row in rows if row.dimension_value == "A")
-    segment_b = next(row for row in rows if row.dimension_value == "B")
-    assert segment_a.excluded == "missing_metric_observations"
-    assert segment_a.lift is None
-    assert segment_b.failure_code is None
-    assert segment_b.lift is not None
+    identities = [
+        (row.dimension_value, row.metric, row.group_id, row.method, row.estimand, row.value_scale)
+        for row in rows
+    ]
+    assert len(identities) == len(set(identities))
+    for value in ("A", "C"):
+        (unavailable,) = [row for row in rows if row.dimension_value == value]
+        assert unavailable.excluded == "missing_metric_observations"
+        assert unavailable.failure_code == "readout.cell.missing_metric_observations"
+        assert unavailable.sampling_available is False
+        assert unavailable.sampling_reason_code == "readout.cell.missing_metric_observations"
+    assert {row.dimension_value for row in rows if row.excluded is None} == {"B", "D"}
 
 
-def test_encouragement_breakout_preserves_all_missing_segment():
+def test_encouragement_breakout_deduplicates_multiple_empty_segments():
     import pandas as pd
 
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
@@ -356,10 +371,10 @@ def test_encouragement_breakout_preserves_all_missing_segment():
                 "unit": f"{segment}-{group}-{index}",
                 "arm": group,
                 "segment": segment,
-                "y": None if segment == "A" else 10.0 + (group == "treatment") + index,
+                "y": None if segment in {"A", "C"} else 10.0 + (group == "treatment") + index,
                 "clicked": float(group == "treatment" and index < 2),
             }
-            for segment in ("A", "B")
+            for segment in ("A", "B", "C", "D")
             for group in ("control", "treatment")
             for index in range(4)
         ]
@@ -382,15 +397,20 @@ def test_encouragement_breakout_preserves_all_missing_segment():
         )
 
     rows = analysis.run_breakout()
-    segment_a_rows = [row for row in rows if row.dimension_value == "A"]
-    segment_b_rows = [row for row in rows if row.dimension_value == "B"]
-    assert segment_a_rows
-    assert all(row.excluded == "missing_metric_observations" for row in segment_a_rows)
-    assert all(
-        row.failure_code == "readout.cell.missing_metric_observations" for row in segment_a_rows
-    )
-    assert {row.estimand for row in segment_a_rows} == {"itt", "compliance", "late"}
-    assert segment_b_rows and all(row.excluded is None for row in segment_b_rows)
+    identities = [
+        (row.dimension_value, row.metric, row.group_id, row.estimand, row.value_scale, row.method)
+        for row in rows
+    ]
+    assert len(identities) == len(set(identities))
+    for value in ("A", "C"):
+        segment_rows = [row for row in rows if row.dimension_value == value]
+        assert segment_rows
+        assert all(row.excluded == "missing_metric_observations" for row in segment_rows)
+        assert all(
+            row.failure_code == "readout.cell.missing_metric_observations" for row in segment_rows
+        )
+    for value in ("B", "D"):
+        assert any(row.dimension_value == value and row.excluded is None for row in rows)
 
 
 def test_unit_summary_breakout_remaps_resolved_default_uptake():
