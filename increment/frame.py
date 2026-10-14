@@ -85,6 +85,7 @@ from increment._metric_specs import (
     coerce_metrics,
     synthesise_metric,
 )
+from increment._source_types import unit_frame_covariate_columns
 from increment._window import (
     maturity_days as _maturity_days,  # noqa: F401 - retained as the private parity alias
 )
@@ -558,7 +559,8 @@ class FrameTotalsSource(SequentialSourceMixin):
             # see int `1` and str `"1"` as distinct native identities, and a string
             # cast here would merge them before the collision check.
             exprs.append(nw.col(self._context.cluster).alias("cluster_id"))
-        exprs += [nw.col(c) for c in dict.fromkeys(covariates) if c != "cluster_id"]
+        columns = unit_frame_covariate_columns(tuple(dict.fromkeys(covariates)))
+        exprs += [nw.col(c).alias(column) for c, column in columns.items() if c != "cluster_id"]
         out = self._frame.select(*exprs)
         value_cols = ["y"] + (["y_den"] if spec.denominator is not None else [])
         if spec.missing == "zero":
@@ -1388,13 +1390,18 @@ class FramePanelSource(SequentialSourceMixin):
         out, _winsor_metadata = _apply_winsorization(out, spec, key_cols=("group_id",))
         if "y_raw" in out.columns:
             out = out.drop("y_raw")
-        for name in covariates:
-            out = self._attach_panel_covariate(out, name)
+        for name, column in unit_frame_covariate_columns(tuple(dict.fromkeys(covariates))).items():
+            out = out.join(
+                self._resolve_panel_covariate(name, column=column), on="unit_id", how="left"
+            )
         return out.to_native()
 
-    def _resolve_panel_covariate(self, name: str) -> nw.DataFrame[Any]:
-        """The panel's per-unit value for covariate column *name*: constant
-        across a unit's own rows, refused by name when it genuinely varies.
+    def _resolve_panel_covariate(
+        self, name: str, *, column: str | None = None
+    ) -> nw.DataFrame[Any]:
+        """The panel's per-unit value for covariate column *name*, returned
+        under *column* (default *name*): constant across a unit's own rows,
+        refused by name when it genuinely varies.
 
         Shared by `unit_frame()`'s ad hoc covariate reads and by
         `moments(grain="total")`'s CUPED wiring, which joins this same
@@ -1420,8 +1427,9 @@ class FramePanelSource(SequentialSourceMixin):
         if source.schema[name] in (nw.Float32, nw.Float64):
             source = source.with_columns(nw.col(name).fill_nan(None).alias(name))
         count_name = _scratch_name(source, "__n_values__")
+        value_name = _scratch_name(source, "__value__")
         per_unit = source.group_by(nw.col(unit_column).alias("unit_id")).agg(
-            nw.col(name).first().alias(name),
+            nw.col(name).first().alias(value_name),
             nw.col(name).n_unique().alias(count_name),
         )
         # Null counts as a value: all-null units are constant, mixed units vary.
@@ -1432,10 +1440,7 @@ class FramePanelSource(SequentialSourceMixin):
                 covariate=name,
                 units=sorted(varying.get_column("unit_id").to_list(), key=repr)[:5],
             )
-        return per_unit.select("unit_id", name)
-
-    def _attach_panel_covariate(self, out: nw.DataFrame[Any], name: str) -> nw.DataFrame[Any]:
-        return out.join(self._resolve_panel_covariate(name), on="unit_id", how="left")
+        return per_unit.select(nw.col("unit_id"), nw.col(value_name).alias(column or name))
 
     def unit_counts(self) -> dict[str, int]:
         """Enrolled per-group unit counts.

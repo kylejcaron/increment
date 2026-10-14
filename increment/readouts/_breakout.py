@@ -52,6 +52,7 @@ def _scoped_breakout_results(
     dimension: str,
     source_name: str | None,
     sequential_snapshot: Any = None,
+    source_components: Sequence[Mapping[str, Any]] = (),
 ) -> BreakoutEstimates:
     route = classify_source(src)
     if route == "panel":
@@ -73,6 +74,7 @@ def _scoped_breakout_results(
         dimension=dimension,
         source=source_name,
         sequential_snapshot=sequential_snapshot,
+        source_components=source_components,
     )
 
 
@@ -102,12 +104,26 @@ def _load_cuped_breakout_frames(
     configs: Sequence[Any],
     methods_by_metric: Mapping[str, list[Method]],
     dimension: str,
+    *,
+    population: str,
+    source_name: str | None,
 ) -> tuple[
     dict[str, Mapping[str, Any]],
     dict[str, Sequence[Any]],
     dict[str, dict[str, Literal["decision", "sensitivity"]]],
+    list[dict[str, Any]],
 ]:
+    """Per-unit evidence for every mixed-CUPED metric, split by segment.
+
+    Also returns one provenance component per acquired frame (its canonical
+    digest and row count), so the readout's source identity covers the
+    per-unit outcomes, covariate values and segment labels the cells were
+    fitted on, as the headline route does.
+    """
+    from increment.readouts._source_digest import component
+
     frames: dict[str, Mapping[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
     covariates = {config.metric.name: config.covariates for config in configs}
     roles = {
         config.metric.name: _runtime_method_roles(methods_by_metric[config.metric.name])
@@ -115,7 +131,8 @@ def _load_cuped_breakout_frames(
     }
     import narwhals as nw
 
-    from increment._source_types import breakout_dimension_column
+    from increment._source_types import breakout_dimension_column, unit_frame_covariate_columns
+    from increment.readouts._metric_rows import _frame_digest_and_arms
     from increment.sources import BreakoutMomentsSource
 
     for config in configs:
@@ -126,18 +143,33 @@ def _load_cuped_breakout_frames(
             if isinstance(src, BreakoutMomentsSource):
                 frame = src.unit_frame(config.metric, covariates=names)
             else:
+                requested = tuple(dict.fromkeys((dimension, *names)))
                 frame = (
                     nw.from_native(
-                        src.unit_frame(
-                            config.metric, covariates=tuple(dict.fromkeys((dimension, *names)))
-                        ),
+                        src.unit_frame(config.metric, covariates=requested),
                         eager_only=True,
                     )
-                    .with_columns(nw.col(dimension).alias(column))
+                    .with_columns(
+                        nw.col(unit_frame_covariate_columns(requested)[dimension]).alias(column)
+                    )
                     .to_native()
                 )
+            _arms, sha256, count = _frame_digest_and_arms(nw.from_native(frame, eager_only=True))
+            evidence.append(
+                {
+                    **component(
+                        kind="unit_evidence_rows",
+                        metric=name,
+                        population=population,
+                        sha256=sha256,
+                        source=source_name,
+                        dimension=dimension,
+                    ),
+                    "count": count,
+                }
+            )
             frames[name] = _segment_unit_frames(frame, column)
-    return frames, covariates, roles
+    return frames, covariates, roles, evidence
 
 
 def breakout(
@@ -256,6 +288,19 @@ def breakout(
     from increment._source_identity import source_identity
     from increment.readouts._design_scope import _config_snapshot
 
+    methods_by_metric = {
+        config.metric.name: _runtime_methods(config, design) for config in resolved_configs
+    }
+    unit_frames_by_metric, covariates_by_metric, roles_by_metric, unit_evidence = (
+        _load_cuped_breakout_frames(
+            src,
+            resolved_configs,
+            methods_by_metric,
+            dimension,
+            population=analysis_population,
+            source_name=source_name,
+        )
+    )
     scope_request = {
         "source_identity": source_identity(src),
         "metrics": [
@@ -285,6 +330,9 @@ def breakout(
             dimension=dimension,
             source_name=source_name,
             sequential_snapshot=sequential_snapshot,
+            # Mixed-CUPED cells are fitted on per-unit evidence whose float
+            # values the row digest excludes; its own digest is source provenance.
+            source_components=unit_evidence,
         )
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
@@ -317,12 +365,6 @@ def breakout(
             )
         return scoped(stamp_multiplicity_status(output), sequential_snapshot=source_snapshot(src))
 
-    methods_by_metric = {
-        config.metric.name: _runtime_methods(config, design) for config in resolved_configs
-    }
-    unit_frames_by_metric, covariates_by_metric, roles_by_metric = _load_cuped_breakout_frames(
-        src, resolved_configs, methods_by_metric, dimension
-    )
     if design.mechanism == "encouragement":
         requested_estimands = estimands if estimands is not None else ESTIMANDS
         unknown = set(requested_estimands) - set(ESTIMANDS)

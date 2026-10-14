@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from increment._literals import PreferredDirection, Role
 from increment.errors import CodedError
+from increment.estimation.engine import (
+    CELL_ESTIMATION_GUARD_CODES as _CELL_ESTIMATION_GUARD_CODES,
+)
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.inference import LiftGuardError
@@ -14,26 +17,6 @@ from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFa
 from increment.readouts._common import _raise, _runtime_method_roles, _warn
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
-
-# Only numeric refusals proven local to a method cell are softened;
-# capability, request, source, and wire refusals abort the readout.
-_CELL_ESTIMATION_GUARD_CODES = frozenset(
-    {
-        "estimation.cuped.covariate_zero_variance",
-        "estimation.variance.ratio_moments_nonpositive_denominator_mean",
-        "estimation.cuped_linear.arm_counts",
-        "estimation.cuped_linear.invalid_arms",
-        "estimation.cuped_linear.nonfinite",
-        "estimation.cuped_linear.missing_refused",
-        "estimation.cuped_linear.level_support",
-        "estimation.cuped_linear.rank_deficiency",
-        "estimation.cuped_linear.leverage",
-        "estimation.cuped_linear.support_region",
-        "estimation.cuped_linear.residual_df",
-        "estimation.cuped_linear.nonpositive_component",
-        "estimation.cuped_linear.nonfinite_projection",
-    }
-)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -453,7 +436,10 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
     if hasattr(evidence, "unit_frame") and any(
         method.variance_reduction == "cuped_linear" for method in methods
     ):
-        from increment.estimation.engine import estimate_cuped_linear
+        from increment.estimation.engine import (
+            _cuped_linear_unavailable_row,
+            estimate_cuped_linear,
+        )
 
         linear_methods = [
             method for method in methods if method.variance_reduction == "cuped_linear"
@@ -549,35 +535,18 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
                             hypothesis, exc.code, failure_context
                         )
                     else:
-                        posterior_context = (
-                            {
-                                "metric": metric.name,
-                                "group_id": group_id,
-                                "reference_df": None,
-                                "missing": "HC2/BM score statistics needed to compose the declared prior",
-                            }
-                            if config.prior is not None
-                            else None
-                        )
                         rows_est.append(
-                            LiftEstimate(
-                                metric=metric.name,
-                                group_id=group_id,
-                                method=method.name,
-                                method_role="sensitivity",
+                            _cuped_linear_unavailable_row(
+                                metric,
+                                group_id,
+                                method,
+                                "sensitivity",
                                 alternative=test.alternative,
-                                preferred_direction=metric.declared_preferred_direction,
                                 null_lift=getattr(test, "null_lift", 0.0),
                                 null_abs=getattr(test, "null_abs", None),
-                                failure_code=exc.code,
-                                failure_context=failure_context,
-                                posterior_available=False if config.prior is not None else None,
-                                posterior_reason_code=(
-                                    "estimation.results.lift.t_posterior_sufficient_statistics"
-                                    if config.prior is not None
-                                    else None
-                                ),
-                                posterior_reason_context=posterior_context,
+                                prior=config.prior,
+                                code=exc.code,
+                                context=failure_context,
                             )
                         )
                     refused.append((metric.name, group_id, method.name, str(exc)))

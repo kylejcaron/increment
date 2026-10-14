@@ -3738,33 +3738,38 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if metric_binding is not None
             else {}
         )
+        design = self._experiment.design
+        adjustment_covariates = {
+            covariate.property: covariate for covariate in getattr(design, "covariates", ())
+        }
         covariate_sources: dict[str, tuple[Any, str, bool]] = {}
-        covariate_measures = {}
+        covariate_measures: dict[str, Measure] = {}
         for name in dict.fromkeys(covariates):
             if name == "cluster_id":
                 continue
-            declared = declared_covariates.get(name)
-            if declared is not None and declared.measure is not None:
-                covariate_measures[name] = declared.measure
-            else:
-                property_name = (
-                    declared.property
-                    if declared is not None and declared.property is not None
-                    else name
-                )
-                fact_source = self._resolve_unit_covariate_source(
-                    property_name,
-                    declared_source=declared.source if declared is not None else None,
-                    kind=declared.kind if declared is not None else None,
-                )
-                prop = next(
-                    p for p in self._defs.properties_of(fact_source) if p.name == property_name
-                )
-                covariate_sources[name] = (
-                    fact_source,
-                    property_name,
-                    prop.dtype == "string",
-                )
+            adjustment_declared = adjustment_covariates.get(name)
+            metric_declared = declared_covariates.get(name)
+            if adjustment_declared is None and metric_declared is not None:
+                if metric_declared.measure is not None:
+                    covariate_measures[name] = metric_declared.measure
+                    continue
+            declared = adjustment_declared or metric_declared
+            property_name = (
+                declared.property
+                if declared is not None and declared.property is not None
+                else name
+            )
+            fact_source = self._resolve_unit_covariate_source(
+                property_name,
+                declared_source=declared.source if declared is not None else None,
+                kind=getattr(declared, "kind", None) if declared is not None else None,
+            )
+            prop = next(p for p in self._defs.properties_of(fact_source) if p.name == property_name)
+            covariate_sources[name] = (
+                fact_source,
+                property_name,
+                prop.dtype == "string",
+            )
         if outcome_stage == "raw" and self._session._source_tables is None:
             measure_sources = tuple(
                 _find_fact_source(self._defs, covariate.measure.fact)[0].name

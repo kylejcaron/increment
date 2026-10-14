@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
 from increment.decision import MultiplicityFamily
@@ -367,7 +367,7 @@ def _attach_family_scope(
     )
 
 
-def scoped_collection(
+def scoped_collection(  # noqa: PLR0913
     rows: Sequence[Any],
     collection_type: Any,
     plan: Any,
@@ -381,8 +381,15 @@ def scoped_collection(
     source: str | None = None,
     family_populations: set[str] | None = None,
     sequential_snapshot: Any = None,
+    source_components: Sequence[Mapping[str, Any]] = (),
 ):
-    """Return rows with a source snapshot and source-local readout metadata."""
+    """Return rows with a source snapshot and source-local readout metadata.
+
+    ``source_components`` are provenance components of evidence the rows were
+    computed from but do not carry themselves (per-unit evidence digests);
+    they enter the source half of the snapshot identity, as the headline
+    route's evidence components do.
+    """
     from hashlib import sha256
 
     from increment._canonical import canonical_json_bytes
@@ -400,7 +407,7 @@ def scoped_collection(
     from increment.readouts._design_scope import _request_snapshot
 
     identity_request = _identity_request(rows, request)
-    payload = {
+    payload: dict[str, Any] = {
         "kind": "increment.readout.snapshot",
         "version": 2,
         "collection": collection_type.__name__,
@@ -438,6 +445,11 @@ def scoped_collection(
             ).hexdigest(),
         },
     }
+    if source_components:
+        payload["source"] = {
+            **payload["source"],
+            "components": [dict(item) for item in source_components],
+        }
     snapshot_id = "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
     stamped = []
     for row in rows:

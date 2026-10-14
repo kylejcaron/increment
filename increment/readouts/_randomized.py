@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from increment._policy_alpha import resolve_cell_alpha
 from increment.estimation.conversion_route import family_route_alpha
-from increment.estimation.engine import Method
+from increment.estimation.engine import Method, reintervalize_cuped_decision
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.results import (
@@ -238,14 +238,36 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     advisory_seen,
     computations,
     is_quantile,
+    selected_cells,
 ):
-    cuped_names = {method.name for method in methods if method.variance_reduction == "cuped_linear"}
+    """Rebuild the metric's selected cells at the family's FCR level.
+
+    Linear decision rows are reinverted from their retained statistics; only
+    a selected cell is rebuilt, so an unselected sibling's wider interval is
+    never constructed. Ordinary decision methods re-estimate as before.
+    """
+    from increment.decision import ArmHypothesisKey
+
+    cuped_by_name = {
+        method.name: method for method in methods if method.variance_reduction == "cuped_linear"
+    }
     rows = [
-        row.reintervalize(selected_alpha, interval_alternative=selected_alternative)
-        if row.method in cuped_names and row.method_role == "decision" and row.lift is not None
+        reintervalize_cuped_decision(
+            row,
+            selected_alpha,
+            alternative=selected_alternative,
+            metric=metric,
+            method=cuped_by_name[row.method],
+            prior=config.prior,
+        )
+        if row.method in cuped_by_name
+        and row.method_role == "decision"
+        and row.failure_code is None
+        and ArmHypothesisKey(row.metric, row.group_id, "itt") in selected_cells
         else row
         for row in nominal_rows
     ]
+    cuped_names = set(cuped_by_name)
     decision_names = {row.method for row in nominal_rows if row.method_role == "decision"}
     ordinary_decision_methods = [
         method
@@ -407,6 +429,7 @@ def _estimate_randomized_secondary_family(
                 advisory_seen,
                 computations,
                 is_quantile,
+                selected_cells,
             )
         else:
             reestimated[metric.name], refused, computation = _estimate_pass(

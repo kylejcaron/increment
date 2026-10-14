@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import narwhals as nw
+import pytest
 
 from increment.analysis import Analysis
 from increment.estimation.results import LiftEstimate
@@ -237,6 +238,129 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
     assert {row["unit_id"]: row["pre_region"] for row in rows} == {
         unit: truth["region"] for unit, truth in units.items()
     }
+
+
+def test_observational_covariate_name_is_not_shadowed_by_metric_binding(tmp_path):
+    import warnings
+
+    import pytest
+
+    from increment.errors import IncrementWarning
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    text = defs_path.read_text().replace(
+        "    plan: {primary: revenue}",
+        "    plan: {primary: {metric: revenue, covariates: "
+        "[{name: tenure, kind: categorical, property: region, source: events}]}}",
+    )
+    defs_path.write_text(text)
+
+    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    metric = source.context.metrics[0]
+    rows = nw.from_native(source.unit_frame(metric, covariates=["tenure"]), eager_only=True)
+    values = {row["unit_id"]: row["tenure"] for row in rows.to_arrow().to_pylist()}
+    assert values["u0"] == units["u0"]["tenure"]
+
+    from tests.analysis_factory import lift_rows
+
+    baseline_path = tmp_path / "without_metric_binding.yaml"
+    baseline_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: tenure, kind: categorical, property: region, source: events}]}}",
+            "    plan: {primary: revenue}",
+        )
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        with pytest.warns(IncrementWarning):
+            baseline_result = lift_rows(
+                Analysis.from_definitions("cat_test", baseline_path, con).run()
+            )[0].require_lift()
+        with pytest.warns(IncrementWarning):
+            bound_result = lift_rows(Analysis.from_definitions("cat_test", defs_path, con).run())[
+                0
+            ].require_lift()
+
+    assert bound_result.value == pytest.approx(baseline_result.value)
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "unit_id",
+        "group_id",
+        "y",
+        "y_den",
+        "y_raw",
+        "cluster_id",
+        "experiment_id",
+        "metric",
+        "x",
+        "d",
+    ],
+)
+def test_property_binding_rejects_unit_frame_identity_alias(tmp_path, alias):
+    import pytest
+
+    from increment.errors import DefinitionError
+
+    defs_path, _con, _units = categorical_defs_and_con(tmp_path)
+    _with_metric_covariates(
+        defs_path,
+        f"{{name: {alias}, kind: continuous, property: tenure, source: events}}",
+    )
+
+    with pytest.raises(DefinitionError) as raised:
+        load(defs_path)
+
+    assert raised.value.code == "definition.experiment.covariate_name_reserved"
+
+
+def test_property_binding_rejects_experiment_cluster_alias(tmp_path):
+    import pytest
+
+    from increment.errors import DefinitionError
+
+    defs_path, _con, _units = categorical_defs_and_con(tmp_path)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            '    end: "2025-08-07"',
+            '    end: "2025-08-07"\n    cluster: tenure',
+        )
+    )
+    _with_metric_covariates(
+        defs_path,
+        "{name: tenure, kind: continuous, property: tenure, source: events}",
+    )
+
+    with pytest.raises(DefinitionError) as raised:
+        load(defs_path)
+
+    assert raised.value.code == "definition.experiment.covariate_name_reserved"
+
+
+def test_measure_covariate_filter_is_validated_when_definitions_load(tmp_path):
+    import pytest
+
+    from increment.errors import DefinitionError
+
+    defs_path, _con, _units = categorical_defs_and_con(tmp_path)
+    _with_metric_covariates(
+        defs_path,
+        "{name: prior_purchase, kind: continuous, measure: {fact: purchase, "
+        "aggregation: sum, filters: [{property: absent, op: equals, values: [1]}]}}",
+        n_pre_periods=30,
+    )
+
+    with pytest.raises(DefinitionError) as raised:
+        load(defs_path)
+
+    assert raised.value.code == "definition.invalid"
+    assert any(
+        code == "definition.validate_filters.filter_references_unknown"
+        for code, *_rest in cast(Any, raised.value.context["errors"])
+    ), raised.value.context["errors"]
 
 
 def test_multiple_primary_artifact_binding_resolves_property_alias(tmp_path):

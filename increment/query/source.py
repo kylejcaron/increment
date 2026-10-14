@@ -1328,24 +1328,36 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         measure_bound = False
         context = json.loads(self._manifest.context.canonical_json)
         experiment_context = context.get("experiment", {})
-        plan = experiment_context.get("plan", {})
-        primary = plan.get("primary")
-        entries = list(primary) if isinstance(primary, list) else [primary]
-        entries.extend(plan.get("secondaries") or ())
-        entries.extend(plan.get("guardrails") or ())
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("metric") != metric_name:
-                continue
-            for covariate in cast(Sequence[Any], entry.get("covariates", ())):
-                if covariate.get("name") != name:
+        design = experiment_context.get("design") or {}
+        design_covariate = next(
+            (
+                covariate
+                for covariate in design.get("covariates", ())
+                if covariate.get("property") == name
+            ),
+            None,
+        )
+        design_bound = design_covariate is not None
+        if design_covariate is not None:
+            source_name = design_covariate.get("source")
+        else:
+            plan = experiment_context.get("plan", {})
+            primary = plan.get("primary")
+            entries = list(primary) if isinstance(primary, list) else [primary]
+            entries.extend(plan.get("secondaries") or ())
+            entries.extend(plan.get("guardrails") or ())
+            for entry in entries:
+                if not isinstance(entry, dict) or entry.get("metric") != metric_name:
                     continue
-                if covariate.get("property") is not None:
-                    property_name = covariate["property"]
-                    source_name = covariate.get("source")
-                elif covariate.get("measure") is not None:
-                    measure_bound = True
-                break
-
+                for covariate in cast(Sequence[Any], entry.get("covariates", ())):
+                    if covariate.get("name") != name:
+                        continue
+                    if covariate.get("property") is not None:
+                        property_name = covariate["property"]
+                        source_name = covariate.get("source")
+                    elif covariate.get("measure") is not None:
+                        measure_bound = True
+                    break
         if not measure_bound and source_name is None:
             design = experiment_context.get("design") or {}
             for covariate in design.get("covariates", ()):
@@ -1362,13 +1374,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 and extension.covariate_name == property_name
                 and (source_name is None or extension.source_name == source_name)
             )
-        matches.extend(
-            extension
-            for extension in self._manifest.extensions
-            if extension.kind == "cuped_measure_covariate"
-            and extension.metric_name == metric_name
-            and extension.covariate_name == name
-        )
+        if not design_bound:
+            matches.extend(
+                extension
+                for extension in self._manifest.extensions
+                if extension.kind == "cuped_measure_covariate"
+                and extension.metric_name == metric_name
+                and extension.covariate_name == name
+            )
         if len(matches) == 1:
             return matches[0]
         code = "artifact.extension.missing" if not matches else "artifact.extension.invalid"

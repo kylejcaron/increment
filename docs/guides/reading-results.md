@@ -277,6 +277,17 @@ each row keeps its remaining evidence, are:
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
   including when both arms are constant. Check the bounds before use.
+- A mixed-CUPED (`cuped_linear`) row whose relative projection cannot be
+  represented: `r.relative_unavailable_reason == "relative_unrepresentable"`,
+  with the exact refusal in `r.relative_error_code`. The relative point lies
+  outside what a float can hold (the log-scale lift underflows to a total loss
+  or overflows) or the projection is not finite; the additive difference and its
+  `t` interval survive in `r.abs_diff`, `r.abs_lb` and `r.abs_ub`, and an
+  absolute-margin guardrail still decides from them. When only the relative
+  *interval* is unrepresentable (at the nominal level or after FCR widening),
+  the row keeps its point and sampling statistics, `r.lift.lb`/`r.lift.ub` are
+  `None`, `r.relative_unavailable_reason` stays `None` and
+  `r.relative_error_code` names the refusal; `r.p_value()` still answers.
 - A row whose joint relative covariance is unusable: it cannot be represented as
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).
@@ -428,8 +439,8 @@ assert flat.abs_diff == 1.0  # the additive difference is still reported
 Check `lb` and `ub` against `None`, or read `r.relative_unavailable_reason`
 first, before formatting them. A row with `relative_unavailable_reason` set to
 `"joint_covariance_unrepresentable"` or `"joint_covariance_indefinite"` and a
-finite point is the same case: its bounds are `None`, so the loop above prints
-its `repr`.
+finite point is the same case: its bounds are `None`. The row's `repr` retains
+the reason that its relative interval is unavailable.
 
 ## One-sided tests
 

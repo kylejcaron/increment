@@ -93,16 +93,51 @@ def test_student_t_absolute_margin_p_value_uses_retained_degrees_of_freedom():
 
 
 @pytest.mark.parametrize("alpha", [1e-100, 1e-200])
-def test_log_t_reintervalization_refuses_unrepresentable_endpoints(alpha: float) -> None:
+def test_log_t_reintervalization_withholds_only_the_unrepresentable_interval(
+    alpha: float,
+) -> None:
     from increment.estimation.results import LiftEstimate
     from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
 
     (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
 
-    with pytest.raises(CodedError) as raised:
-        row.reintervalize(alpha)
+    projected = row.reintervalize(alpha)
 
-    assert raised.value.code == "estimation.tails.unresolvable"
+    assert projected.failure_code is None
+    assert projected.relative_unavailable_reason is None
+    assert projected.relative_error_code == "estimation.tails.unresolvable"
+    lift = projected.require_lift()
+    assert lift.value == pytest.approx(row.require_lift().value)
+    assert lift.lb is None and lift.ub is None and lift.level is None
+    assert lift.log_mean == row.require_lift().log_mean
+    assert lift.log_se == row.require_lift().log_se
+    assert projected.p_value() == pytest.approx(row.p_value())
+    assert projected.stat_sig() is False
+    assert projected.abs_diff == row.abs_diff
+    assert projected.abs_lb is not None and row.abs_lb is not None
+    assert projected.abs_lb < row.abs_lb
+    assert projected.abs_alpha == pytest.approx(alpha)
+
+
+@pytest.mark.parametrize("alpha", [1e-100, 1e-200])
+def test_log_t_reintervalization_keeps_sampling_evidence_without_additive(alpha: float) -> None:
+    row = _t_row().model_copy(
+        update={
+            "abs_diff": None,
+            "abs_se": None,
+            "abs_lb": None,
+            "abs_ub": None,
+            "abs_reference_kind": None,
+            "abs_reference_df": None,
+            "abs_alpha": None,
+        }
+    )
+
+    projected = row.reintervalize(alpha)
+
+    assert projected.relative_error_code == "estimation.tails.unresolvable"
+    assert projected.require_lift().lb is None
+    assert projected.p_value() == pytest.approx(row.p_value())
 
 
 def test_independent_mean_t_reintervalization_updates_reference_for_json_replay() -> None:
@@ -134,3 +169,85 @@ def test_opened_independent_mean_reintervalization_rebuilds_central_state(altern
     restored = LiftEstimate.model_validate_json(projected.model_dump_json())
     assert restored == projected
     assert restored.p_value() == pytest.approx(projected.p_value())
+
+
+def _welch_df_one_row() -> LiftEstimate:
+    reference = IndependentMeanReference(
+        components=(
+            IndependentMeanComponent.from_values("control", [1.0, 1.0], coefficient=-1),
+            IndependentMeanComponent.from_values("treatment", [1.0, 2.0], coefficient=1),
+        )
+    )
+    return infer_ate(
+        "m",
+        "treatment",
+        "independent_mean",
+        reference.point,
+        reference,
+        method_role="decision",
+        value_scale="absolute",
+    )
+
+
+def test_withheld_independent_mean_interval_survives_json_replay() -> None:
+    row = _welch_df_one_row()
+
+    projected = row.reintervalize(1e-310)
+
+    assert projected.relative_error_code == "estimation.tails.unresolvable"
+    assert projected.require_lift().lb is None and projected.require_lift().ub is None
+    assert projected.independent_mean_reference is not None
+    assert projected.independent_mean_reference.alpha == 1e-310
+    restored = LiftEstimate.model_validate_json(projected.model_dump_json())
+    assert restored == projected
+    assert restored.p_value() == pytest.approx(row.p_value())
+
+
+def test_later_reintervalization_clears_a_stale_relative_refusal() -> None:
+    from increment.estimation.results import LiftEstimate
+    from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
+
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+
+    withheld = row.reintervalize(1e-100)
+    assert withheld.relative_error_code is not None
+    restored = withheld.reintervalize(0.05)
+
+    assert restored.relative_error_code is None
+    assert restored.relative_error_context is None
+    assert restored.require_lift().lb == pytest.approx(row.reintervalize(0.05).require_lift().lb)
+    assert restored.require_lift().alpha == pytest.approx(0.05)
+    assert LiftEstimate.model_validate_json(restored.model_dump_json()) == restored
+    welch = _welch_df_one_row().reintervalize(1e-310).reintervalize(0.05)
+    assert welch.relative_error_code is None
+    assert welch.require_lift().lb is not None
+    assert LiftEstimate.model_validate_json(welch.model_dump_json()) == welch
+
+
+def test_withheld_interval_rows_survive_pickle_and_deepcopy() -> None:
+    import copy
+    import pickle
+
+    from increment.estimation.results import LiftEstimate
+    from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
+
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+    for withheld in (row.reintervalize(1e-100), _welch_df_one_row().reintervalize(1e-310)):
+        assert withheld.relative_error_code is not None
+        assert pickle.loads(pickle.dumps(withheld)) == withheld
+        assert copy.deepcopy(withheld) == withheld
+        assert LiftEstimate.model_validate_json(withheld.model_dump_json()) == withheld
+
+
+def test_forged_withheld_interval_at_a_representable_level_is_refused() -> None:
+    import json
+
+    row = _independent_mean_row()
+    assert row.independent_mean_reference is not None
+    payload = json.loads(row.model_dump_json())
+    payload["lift"].update({"lb": None, "ub": None, "alpha": None, "level": None})
+    payload["relative_error_code"] = "estimation.tails.unresolvable"
+    payload["relative_error_context"] = {"what": "forged"}
+
+    with pytest.raises(CodedError):
+        LiftEstimate.model_validate_json(json.dumps(payload))

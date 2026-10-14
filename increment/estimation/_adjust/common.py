@@ -22,6 +22,7 @@ import narwhals as nw
 import numpy as np
 
 from increment._literals import PreferredDirection, ValueScale
+from increment._source_types import unit_frame_covariate_columns
 from increment.errors import (
     PACKAGE_FRAMES,
     IncrementWarning,
@@ -503,15 +504,19 @@ def _adjustment_columns(
     name: it has no adjustment meaning a learner could use."""
     columns: list[np.ndarray] = []
     levels: list[tuple[str, ...] | None] = []
+    # A covariate named like one of the frame's own columns is served under a
+    # scratch column; the layout keeps the declared name.
+    served = unit_frame_covariate_columns(covariates)
     for name in covariates:
-        dtype = rows.schema[name]
+        column_name = served[name]
+        dtype = rows.schema[column_name]
         values: list[object] | None = None
         if dtype.is_numeric() or dtype == nw.Boolean:
             kind = "numeric"
         elif dtype in (nw.String, nw.Categorical, nw.Enum):
             kind = "categorical"
         elif dtype == nw.Object:
-            values = rows[name].to_list()
+            values = rows[column_name].to_list()
             kind = classify_objects(values)
         else:
             kind = None
@@ -526,7 +531,7 @@ def _adjustment_columns(
             )
         if kind == "numeric":
             if values is None:
-                column = np.asarray(rows[name].cast(nw.Float64).to_numpy(), dtype=float)
+                column = np.asarray(rows[column_name].cast(nw.Float64).to_numpy(), dtype=float)
             else:
                 column = np.fromiter(
                     (math.nan if is_null(v) else float(cast(Any, v)) for v in values),
@@ -538,7 +543,7 @@ def _adjustment_columns(
             continue
         # `to_list()` keeps a null level null on every backend; a dictionary
         # array's `to_numpy()` does not.
-        codes, labels = level_codes(values if values is not None else rows[name].to_list())
+        codes, labels = level_codes(values if values is not None else rows[column_name].to_list())
         columns.append(codes)
         levels.append(labels)
     layout = CovariateLayout(tuple(covariates), tuple(levels))

@@ -1355,7 +1355,9 @@ def render_metric_details(
             f'<p class="inc-dashboard-note">{missing_html("no decision result for this metric")}</p>'
             + group_body
         )
-        return _section("metric-details", f"Metric: {metric}", body)
+        return _section(
+            "metric-details", f"Metric: {metric}", body, subtitle=model.description or ""
+        )
     return _section(
         "metric-details",
         f"Metric: {model.name}",
@@ -1372,6 +1374,7 @@ def render_metric_details(
         + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + group_body
         + _qualification_block(snapshot),
+        subtitle=model.description or "",
     )
 
 
@@ -1421,7 +1424,12 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
             else f"{refused} ({refused.code})"
         )
         body = f'<p class="inc-dashboard-note">{missing_html(reason)}</p>' + note
-        return _section("metric-details", f"Metric: {model.name}", body)
+        return _section(
+            "metric-details",
+            f"Metric: {model.name}",
+            body,
+            subtitle=model.description or "",
+        )
     state = (
         f'<p class="inc-dashboard-note">{esc(_added_family_state(snapshot, model.name, row))}</p>'
     )
@@ -1442,6 +1450,7 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
         + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + note
         + _added_qualification_block(snapshot, model.name),
+        subtitle=model.description or "",
     )
 
 

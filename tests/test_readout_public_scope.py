@@ -1146,6 +1146,19 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
         assert "date 2025-01-01" in collection_text
 
 
+def test_scoped_repr_keeps_relative_unavailability_reason():
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    row = results[0].model_copy(
+        update={"lift": None, "relative_unavailable_reason": "zero_relative_variance"}
+    )
+    collection = LiftEstimates([row], metadata=results.metadata)
+
+    rendered = str(collection)
+
+    assert "relative unavailable" in rendered.lower()
+    assert "zero_relative_variance" in rendered
+
+
 def test_cell_reason_preserves_persisted_failure():
     row = LiftEstimate.model_construct(
         metric="guard",

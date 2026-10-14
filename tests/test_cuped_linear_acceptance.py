@@ -369,7 +369,7 @@ def test_cuped_linear_absolute_ratio_projection_failure_preserves_log_ratio() ->
             "unit": f"{group}-{index}",
             "group": group,
             "revenue": 1e150 * (1.0 + index / 1000.0 + (group == "treatment") / 100.0),
-            "orders": 1e-150,
+            "orders": 1e-200,
             "pre": ("a", "b", "c")[index % 3],
         }
         for group in ("control", "treatment")

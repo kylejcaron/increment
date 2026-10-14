@@ -1392,6 +1392,45 @@ def _accumulate(state: dict, result: dict) -> tuple[str, ...]:
     return tuple(tally)
 
 
+def _checkpoint_journal_statistics(
+    record: dict, cell: Cell, counters: Mapping[str, int]
+) -> dict | None:
+    eligible = counters.get("eligible", 0)
+    attempted = eligible + counters.get("refused", 0) + counters.get("blocked", 0)
+    statistics = {
+        "attempted": attempted,
+        "eligible": eligible,
+        "refused": counters.get("refused", 0),
+        "blocked": counters.get("blocked", 0),
+    }
+    if (
+        record.get("attempted") != attempted
+        or record.get("eligible") != eligible
+        or record.get("refused") != statistics["refused"]
+        or record.get("blocked") != statistics["blocked"]
+    ):
+        return None
+    if cell.statistic == "coverage":
+        statistics["hits"] = counters.get("covered", 0)
+    elif cell.statistic == "fcp":
+        fcp_tallies = [
+            (name.removeprefix("fcp:"), count)
+            for name, count in counters.items()
+            if name.startswith("fcp:")
+        ]
+        try:
+            exact_sum = sum(
+                (count * Fraction(*map(int, tally.split("/"))) for tally, count in fcp_tallies),
+                Fraction(),
+            )
+        except (ValueError, ZeroDivisionError, TypeError, OverflowError):
+            return None
+        if sum(count for _, count in fcp_tallies) != eligible:
+            return None
+        statistics["fcp_sum"] = float(exact_sum)
+    return statistics
+
+
 def run_chunk(job: tuple) -> dict:
     cell, directory, chunk, target, chunk_size, identity = job
     directory = Path(directory) / cell.id / "chunks" / f"{chunk:06d}"
@@ -1407,8 +1446,14 @@ def run_chunk(job: tuple) -> dict:
     if checkpoint.exists():
         record = json.loads(checkpoint.read_text())
         totals = verify(directory, case_id=f"{cell.id}:{chunk}")
-        if record["binding"] != binding or record["journal_digest"] != totals.digest:
+        journal_statistics = _checkpoint_journal_statistics(record, cell, totals.counters)
+        if (
+            record["binding"] != binding
+            or record["journal_digest"] != totals.digest
+            or journal_statistics is None
+        ):
             raise ValueError(f"incompatible checkpoint: {checkpoint}; use a new output directory")
+        record.update(journal_statistics)
         return record
     started = time.perf_counter()
     cpu_started = time.process_time()

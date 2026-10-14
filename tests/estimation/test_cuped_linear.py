@@ -1191,3 +1191,34 @@ def test_nonpositive_raw_denominator_arm_is_refused_under_the_fit_code():
         )
     assert raised.value.code == "estimation.cuped_linear.nonpositive_component"
     assert raised.value.context == {"family": "denominator", "arm": "z", "value": 0.0}
+
+
+@pytest.mark.parametrize("denominator", [1.0, 3.0, 2.0**100])
+def test_constant_denominator_ratio_contrasts_match_mean_contrasts(denominator):
+    base = 2**54
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    numerator = np.r_[base + np.array([0.0, 0.0, 0.0, 4.0]), base + np.array([0.0, 0.0, 4.0, 4.0])]
+    ratio_fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=numerator,
+        denominator=np.full(8, denominator),
+    )
+    mean_fit = fit_cuped_linear(numerator, arm, control="c", arm_order=("c", "t"))
+    absolute, log = ratio_fit.ratio("t", scale="absolute"), ratio_fit.ratio("t", scale="log")
+    expected_absolute, expected_log = mean_fit.absolute("t"), mean_fit.relative("t")
+    assert expected_absolute.estimate == pytest.approx(1.0)
+    assert absolute.estimate == pytest.approx(1.0 / denominator, rel=1e-12, abs=0)
+    assert absolute.se == pytest.approx(expected_absolute.se / denominator, rel=1e-12)
+    assert absolute.dof == pytest.approx(expected_absolute.dof, rel=1e-9)
+    assert log.estimate == pytest.approx(math.log1p(1 / (base + 1)), rel=1e-12, abs=0)
+    assert log.estimate == pytest.approx(expected_log.estimate, rel=1e-12, abs=0)
+    assert log.se == pytest.approx(expected_log.se, rel=1e-12)
+    assert log.dof == pytest.approx(expected_log.dof, rel=1e-9)
+
+
+# Subnormal outcomes carry at most 44 significant bits at 1e-310 and lose
+# further bits in each arm-mean subtraction, so a relative tolerance near
+# 1e-10 is the representability bound, not an estimator slack.
