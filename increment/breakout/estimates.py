@@ -174,6 +174,11 @@ _REFUSALS = refusals(
         "breakout.run_daily_lift_dimension_found": "run_daily_lift: dimension column {dimension!r} not found in summary. Available columns: {columns}",
         "breakout.run_daily_lift_metric_declared": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {declared}",
         "breakout.run_daily_lift_plan_missing_procedures": "run_daily_lift: compiled plan is missing procedure(s) for {missing_procedures!r}",
+        "results.frame.summary_unavailable": RefusalSpec(
+            "results.frame.summary_unavailable",
+            InvalidRequestError,
+            template="to_frame(columns='summary') is not available for {model}",
+        ),
     },
 )
 
@@ -1025,6 +1030,7 @@ class EstimateList[M: BaseModel](list[M]):
     """
 
     _model: ClassVar[type[BaseModel]]
+    _summary_columns: ClassVar[tuple[str, ...] | None] = None
 
     def __init__(
         self,
@@ -1098,12 +1104,24 @@ class EstimateList[M: BaseModel](list[M]):
 
     __str__ = __repr__
 
-    def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
+    def to_frame(
+        self,
+        backend: Backend = "pandas",
+        columns: Sequence[str] | Literal["summary"] | None = None,
+    ) -> IntoDataFrame:
         """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
 
         from increment.breakout.projection import to_frame
 
-        native = to_frame(self, model=self._model, backend=backend)
+        selected_columns: Sequence[str] | None
+        if columns == "summary":
+            selected_columns = self._summary_columns
+            if selected_columns is None:
+                _refuse("results.frame.summary_unavailable", model=self._model.__name__)
+        else:
+            selected_columns = columns
+
+        native = to_frame(self, model=self._model, backend=backend, columns=selected_columns)
         if not self._has_readout_cells():
             frame = nw.from_native(native, eager_only=True).with_columns(
                 nw.lit(None if self.metadata is None else self.metadata.partial).alias(
@@ -1133,10 +1151,10 @@ class EstimateList[M: BaseModel](list[M]):
             # Without scope metadata the row's own stored availability is the
             # authority: an unknown value on a prior-bound row stays unknown
             # rather than being inferred from the presence of a point.
-            for row, columns in zip(self, evidence, strict=True):
+            for row, row_evidence in zip(self, evidence, strict=True):
                 stored = getattr(row, "sampling_available", None)
                 if stored is not None or getattr(row, "prior_shrunk", False):
-                    columns["sampling_available"] = stored
+                    row_evidence["sampling_available"] = stored
         if evidence:
             evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
         elif interpretation.groups and interpretation.groups[0].source_cells:
@@ -1693,6 +1711,23 @@ class LiftEstimates(EstimateList[LiftEstimate]):
     analysis.Analysis.run`'s return type."""
 
     _model = LiftEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "failure_code",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+    )
 
 
 class BreakoutEstimates(EstimateList[BreakoutEstimate]):
@@ -1701,6 +1736,26 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
     return type."""
 
     _model = BreakoutEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "dimension",
+        "dimension_value",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "relative_unavailable_reason",
+        "excluded",
+        "failure_code",
+    )
 
 
 class DailyMetricValues(EstimateList[DailyMetricValue]):
@@ -1717,6 +1772,27 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     ``run_asof_lift``'s) return type."""
 
     _model = DailyLiftEstimate
+    _summary_columns = (
+        "metric",
+        "group_id",
+        "method",
+        "role",
+        "analysis_population",
+        "ds",
+        "lift",
+        "lb",
+        "ub",
+        "discovery",
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+        "decision_scope_complete",
+        "multiplicity_status",
+        "unavailable",
+        "relative_unavailable_reason",
+        "failure_code",
+    )
 
 
 def daily_sequential_projection(
