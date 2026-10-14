@@ -1141,44 +1141,64 @@ class LiftEstimate(_RowIdentity):
             from increment.estimation.inference import _resolve_fixed_horizon
 
             ref = self.independent_mean_reference
-            resolved = _resolve_fixed_horizon(
-                ref.alpha,
-                ref.alternative,
-                dof=None,
-                arm_ns=None,
-                prior=None,
-                independent_means=ref,
+            lift = self.lift
+            # A withheld interval (the reference's level cannot be represented;
+            # ``relative_error_code`` names the refusal) keeps the point and
+            # statistics only, so the level's critical value is not recomputed.
+            withheld = (
+                lift is not None
+                and lift.lb is None
+                and lift.ub is None
+                and self.relative_error_code is not None
             )
-            assert resolved.crit is not None
-            expected_bounds: tuple[float | None, float | None] = (
-                ref.point - resolved.crit * ref.se(),
-                ref.point + resolved.crit * ref.se(),
-            )
-            expected_open = None
-            if ref.interval == "directional-fcr":
-                if ref.alternative == "two-sided":
-                    winsor_refuse("invalid_state", "Directional mean interval needs a direction.")
-                critical = tail_isf(
-                    student_t_isf, resolved.alpha_eff, ref.df, what="fixed FCR endpoint"
+            if withheld:
+                expected_bounds: tuple[float | None, float | None] = (None, None)
+                expected_alpha: float | None = None
+                expected_level: float | None = None
+                expected_open = None
+            else:
+                resolved = _resolve_fixed_horizon(
+                    ref.alpha,
+                    ref.alternative,
+                    dof=None,
+                    arm_ns=None,
+                    prior=None,
+                    independent_means=ref,
                 )
-                bounds = wald_bounds(ref.point, critical, ref.se(), what="fixed FCR endpoint")
+                assert resolved.crit is not None
                 expected_bounds = (
-                    (bounds[0], None) if ref.alternative == "greater" else (None, bounds[1])
+                    ref.point - resolved.crit * ref.se(),
+                    ref.point + resolved.crit * ref.se(),
                 )
-                expected_open = "upper" if ref.alternative == "greater" else "lower"
+                expected_alpha = resolved.alpha_eff
+                expected_level = math.fsum((1.0, -resolved.alpha_eff))
+                expected_open = None
+                if ref.interval == "directional-fcr":
+                    if ref.alternative == "two-sided":
+                        winsor_refuse(
+                            "invalid_state", "Directional mean interval needs a direction."
+                        )
+                    critical = tail_isf(
+                        student_t_isf, resolved.alpha_eff, ref.df, what="fixed FCR endpoint"
+                    )
+                    bounds = wald_bounds(ref.point, critical, ref.se(), what="fixed FCR endpoint")
+                    expected_bounds = (
+                        (bounds[0], None) if ref.alternative == "greater" else (None, bounds[1])
+                    )
+                    expected_open = "upper" if ref.alternative == "greater" else "lower"
             if (
                 self.reference_kind != "t"
                 or self.reference_df != ref.df
                 or self.value_scale != "absolute"
                 or self.scale != "linear"
-                or self.lift is None
-                or self.lift.value != ref.point
-                or self.lift.log_se != ref.se()
-                or self.lift.log_mean != ref.point
-                or (self.lift.lb, self.lift.ub) != expected_bounds
-                or self.lift.alpha != resolved.alpha_eff
-                or self.lift.level != math.fsum((1.0, -resolved.alpha_eff))
-                or self.lift.open_side != expected_open
+                or lift is None
+                or lift.value != ref.point
+                or lift.log_se != ref.se()
+                or lift.log_mean != ref.point
+                or (lift.lb, lift.ub) != expected_bounds
+                or lift.alpha != expected_alpha
+                or lift.level != expected_level
+                or lift.open_side != expected_open
                 or self.alternative != ref.alternative
                 or self.null_lift != 0
                 or self.null_abs is not None
@@ -1633,6 +1653,9 @@ class LiftEstimate(_RowIdentity):
                 "open_side": None,
             }
         )
+        # The interval is representable at this level: an earlier level's
+        # withholding no longer describes the row.
+        update.update({"relative_error_code": None, "relative_error_context": None})
         return self.model_copy(update=update)
 
     def __repr__(self) -> str:

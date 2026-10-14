@@ -168,3 +168,56 @@ def test_opened_independent_mean_reintervalization_rebuilds_central_state(altern
     restored = LiftEstimate.model_validate_json(projected.model_dump_json())
     assert restored == projected
     assert restored.p_value() == pytest.approx(projected.p_value())
+
+
+def _welch_df_one_row() -> LiftEstimate:
+    reference = IndependentMeanReference(
+        components=(
+            IndependentMeanComponent.from_values("control", [1.0, 1.0], coefficient=-1),
+            IndependentMeanComponent.from_values("treatment", [1.0, 2.0], coefficient=1),
+        )
+    )
+    return infer_ate(
+        "m",
+        "treatment",
+        "independent_mean",
+        reference.point,
+        reference,
+        method_role="decision",
+        value_scale="absolute",
+    )
+
+
+def test_withheld_independent_mean_interval_survives_json_replay() -> None:
+    row = _welch_df_one_row()
+
+    projected = row.reintervalize(1e-310)
+
+    assert projected.relative_error_code == "estimation.tails.unresolvable"
+    assert projected.require_lift().lb is None and projected.require_lift().ub is None
+    assert projected.independent_mean_reference is not None
+    assert projected.independent_mean_reference.alpha == 1e-310
+    restored = LiftEstimate.model_validate_json(projected.model_dump_json())
+    assert restored == projected
+    assert restored.p_value() == pytest.approx(row.p_value())
+
+
+def test_later_reintervalization_clears_a_stale_relative_refusal() -> None:
+    from increment.estimation.results import LiftEstimate
+    from tests.test_cuped_linear_acceptance import _linear_breakout_analysis
+
+    (row,) = cast(tuple[LiftEstimate, ...], tuple(_linear_breakout_analysis().run()))
+
+    withheld = row.reintervalize(1e-100)
+    assert withheld.relative_error_code is not None
+    restored = withheld.reintervalize(0.05)
+
+    assert restored.relative_error_code is None
+    assert restored.relative_error_context is None
+    assert restored.require_lift().lb == pytest.approx(row.reintervalize(0.05).require_lift().lb)
+    assert restored.require_lift().alpha == pytest.approx(0.05)
+    assert LiftEstimate.model_validate_json(restored.model_dump_json()) == restored
+    welch = _welch_df_one_row().reintervalize(1e-310).reintervalize(0.05)
+    assert welch.relative_error_code is None
+    assert welch.require_lift().lb is not None
+    assert LiftEstimate.model_validate_json(welch.model_dump_json()) == welch
