@@ -1064,25 +1064,10 @@ def test_moments_from_summaries_refuses_metrics_without_control_or_rows():
         assert raised.value.code == "moments.summaries.invalid"
 
 
-def test_moments_from_summaries_conversion_family_matches_export():
-    import pandas as pd
+def test_moments_from_summaries_conversion_family_matches_canonicalizer():
+    from increment import moments_from_summaries
+    from increment._bernoulli_moments import canonical_bernoulli_family
 
-    from increment import Analysis, moments_from_summaries
-
-    source = Analysis.from_unit_summary(
-        pd.DataFrame(
-            {
-                "unit": [f"u{i}" for i in range(14)],
-                "arm": ["control"] * 7 + ["treatment"] * 7,
-                "converted": [1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0],
-            }
-        ),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"converted": "conversion"},
-    )
-    exported = source._src.moments(source._src.context.metrics[0])
     summarized = moments_from_summaries(
         [
             {"metric": "converted", "group_id": "control", "n": 7, "successes": 5},
@@ -1091,10 +1076,25 @@ def test_moments_from_summaries_conversion_family_matches_export():
         metrics={"converted": "conversion"},
         control="control",
     )
-    for actual, expected in zip(summarized, exported, strict=True):
-        assert tuple(actual[key] for key in ("ref_y", "cy1", "cy2")) == tuple(
-            expected[key] for key in ("ref_y", "cy1", "cy2")
+    expected = canonical_bernoulli_family(7, 5)
+    for row in summarized:
+        assert tuple(row[key] for key in ("ref_y", "cy1", "cy2")) == expected
+
+
+def test_moments_from_summaries_refuses_nonfinite_derived_mean_moments():
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(
+            [
+                {"metric": "value", "group_id": "control", "n": 100, "mean": 0.0, "var": 1e307},
+                {"metric": "value", "group_id": "treatment", "n": 100, "mean": 1.0, "var": 1.0},
+            ],
+            metrics={"value": "mean"},
+            control="control",
         )
+    assert raised.value.code == "moments.summaries.invalid"
 
 
 def test_moments_from_summaries_rejects_invalid_study_id_before_plan_compile(monkeypatch):
@@ -1148,6 +1148,32 @@ def test_moments_from_summaries_runs_two_arm_example():
         (
             [
                 {"metric": "value", "group_id": "control", "n": 2, "mean": 1.0, "var": -1.0},
+                {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 1.0},
+            ],
+            {"value": "mean"},
+        ),
+        (
+            [
+                {
+                    "metric": "value",
+                    "group_id": "control",
+                    "n": 2,
+                    "mean": float("nan"),
+                    "var": 1.0,
+                },
+                {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 1.0},
+            ],
+            {"value": "mean"},
+        ),
+        (
+            [
+                {
+                    "metric": "value",
+                    "group_id": "control",
+                    "n": 2,
+                    "mean": 1.0,
+                    "var": float("inf"),
+                },
                 {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 1.0},
             ],
             {"value": "mean"},

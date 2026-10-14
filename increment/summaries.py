@@ -70,6 +70,18 @@ def _wire_metadata(
     return metadata
 
 
+def _finite_summary_value(value: Any, field: str, metric: str, group_id: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        refuse(_INVALID, field=field, metric=metric, group_id=group_id, value=value)
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError):
+        refuse(_INVALID, field=field, metric=metric, group_id=group_id, value=value)
+    if not math.isfinite(converted):
+        refuse(_INVALID, field=field, metric=metric, group_id=group_id, value=value)
+    return converted
+
+
 def _centered_summary(
     row: Mapping[str, Any],
     metric: str,
@@ -103,18 +115,14 @@ def _centered_summary(
 
     if count == 1:
         refuse(_INVALID, field="n", metric=metric, group_id=group_id, value=count)
-    mean = row.get("mean")
-    variance = row.get("var")
-    if isinstance(mean, bool) or not isinstance(mean, Real) or not math.isfinite(float(mean)):
-        refuse(_INVALID, field="mean", metric=metric, group_id=group_id, value=mean)
-    if (
-        isinstance(variance, bool)
-        or not isinstance(variance, Real)
-        or not math.isfinite(float(variance))
-        or variance < 0
-    ):
+    mean = _finite_summary_value(row.get("mean"), "mean", metric, group_id)
+    variance = _finite_summary_value(row.get("var"), "var", metric, group_id)
+    if variance < 0:
         refuse(_INVALID, field="var", metric=metric, group_id=group_id, value=variance)
-    return count, None, float(mean), 0.0, (count - 1) * float(variance)
+    cy2 = (count - 1) * variance
+    if not math.isfinite(cy2):
+        refuse(_INVALID, field="cy2", metric=metric, group_id=group_id, value=cy2)
+    return count, None, mean, 0.0, cy2
 
 
 def _metric_types(
