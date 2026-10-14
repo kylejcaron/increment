@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -139,6 +140,76 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
             "tests/test_explicit.py",
         ],
     ]
+
+
+def test_changed_test_module_selects_its_test_importers(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "tests/test_helpers.py": "VALUE = 1\n",
+            "tests/test_sources.py": "def _plain_format_row(): pass\n",
+            "tests/test_cate.py": (
+                "from tests.test_sources import _plain_format_row\n"
+                "def test_cate(): _plain_format_row()\n"
+            ),
+            "tests/test_other.py": "def test_other(): pass\n",
+        },
+    )
+    (root / "tests/test_helpers.py").write_text("VALUE = 2\n")
+    (root / "tests/test_sources.py").write_text("def _plain_format_row(): return None\n")
+    selection = select(base, root)
+
+    assert selection.test_files == (
+        "tests/test_cate.py",
+        "tests/test_helpers.py",
+        "tests/test_sources.py",
+    )
+
+
+@pytest.mark.parametrize(
+    ("pytest_statuses", "expected_stdout"),
+    [
+        ((0, 5), ""),
+        ((5, 5), "affected: no affected tests selected\n"),
+    ],
+)
+def test_empty_subrun_is_ignored_when_combining_mixed_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pytest_statuses: tuple[int, int],
+    expected_stdout: str,
+) -> None:
+    from scripts.affected import main
+
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/frame.py": "VALUE = 1\n",
+            "docs/guides/cuped.md": "# CUPED\n",
+        },
+    )
+    (root / "increment/frame.py").write_text("VALUE = 2\n")
+    (root / "docs/guides/cuped.md").write_text("# CUPED\nchanged\n")
+    real_run = subprocess.run
+    remaining_statuses = iter(pytest_statuses)
+    pytest_commands: list[list[str]] = []
+
+    def fake_run(command: list[str], *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[:3] == [sys.executable, "-m", "pytest"]:
+            pytest_commands.append(command)
+            return subprocess.CompletedProcess(command, next(remaining_statuses))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.chdir(root)
+
+    assert main(["--base", base]) == 0
+
+    assert len(pytest_commands) == 2
+    assert "--tach-base" in pytest_commands[0]
+    assert pytest_commands[1][-1] == "docs/guides/cuped.md"
+    assert capsys.readouterr().out == expected_stdout
 
 
 def test_config_change_runs_full_tier(tmp_path: Path) -> None:

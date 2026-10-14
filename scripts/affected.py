@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -57,6 +58,44 @@ def _test_files_under(root: Path, directory: str) -> set[str]:
     }
 
 
+def _test_module_importers(root: Path, module_names: set[str]) -> set[str]:
+    test_root = root / "tests"
+    if not test_root.is_dir():
+        return set()
+    importers: set[str] = set()
+    targets = sorted(module_names)
+    for path in test_root.rglob("test_*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported = tuple(alias.name for alias in node.names)
+                if any(
+                    name == target or name.startswith(target + ".")
+                    for name in imported
+                    for target in targets
+                ):
+                    importers.add(path.relative_to(root).as_posix())
+                    break
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_module = node.module
+                if any(
+                    imported_module == target
+                    or imported_module.startswith(target + ".")
+                    or (
+                        target.startswith(imported_module + ".")
+                        and target[len(imported_module) + 1 :].split(".", 1)[0]
+                        in {alias.name for alias in node.names}
+                    )
+                    for target in targets
+                ):
+                    importers.add(path.relative_to(root).as_posix())
+                    break
+    return importers
+
+
 def select(base: str, root: Path) -> Selection:
     """Classify changed paths into locally runnable checks."""
     changed = _changed_paths(base, root)
@@ -64,6 +103,7 @@ def select(base: str, root: Path) -> Selection:
     test_files: set[str] = set()
     doc_pages: set[str] = set()
     use_tach = False
+    changed_test_modules: set[str] = set()
     uncovered: set[str] = set()
 
     for path in changed:
@@ -75,6 +115,7 @@ def select(base: str, root: Path) -> Selection:
         elif _test_file(path):
             if (root / path).is_file():
                 test_files.add(path)
+                changed_test_modules.add(Path(path).with_suffix("").as_posix().replace("/", "."))
         elif path.startswith("tests/") and path.endswith("/conftest.py"):
             test_files.update(_test_files_under(root, str(Path(path).parent)))
         elif path.startswith("tests/"):
@@ -83,6 +124,8 @@ def select(base: str, root: Path) -> Selection:
             use_tach = True
         else:
             uncovered.add(path)
+    if changed_test_modules:
+        test_files.update(_test_module_importers(root, changed_test_modules))
 
     return Selection(
         () if full_tier else tuple(sorted(test_files)),
@@ -124,6 +167,13 @@ def _pytest_arguments(
     return _pytest_invocations(selection, base, tier, extra_args)[0]
 
 
+def _combined_pytest_status(statuses: Sequence[int]) -> int | None:
+    meaningful = [status for status in statuses if status != 5]
+    if not meaningful:
+        return None
+    return next((status for status in meaningful if status != 0), 0)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
@@ -152,12 +202,14 @@ def main(argv: list[str]) -> int:
     if selection.full_tier:
         print(f"affected: running full {arguments.tier} tier")
 
-    status = 0
+    statuses = []
     for pytest_args in _pytest_invocations(selection, arguments.base, arguments.tier, extra_args):
         command = [sys.executable, "-m", "pytest", *pytest_args]
-        result = subprocess.run(command, cwd=root, check=False).returncode
-        if status == 0 and result != 0:
-            status = result
+        statuses.append(subprocess.run(command, cwd=root, check=False).returncode)
+    status = _combined_pytest_status(statuses)
+    if status is None:
+        print("affected: no affected tests selected")
+        return 0
     return status
 
 
