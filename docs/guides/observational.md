@@ -739,8 +739,8 @@ geo_df = pl.DataFrame(
 print(f"K={geo_result.n_clusters}, reference={geo_result.reference_kind}, dof={geo_result.dof}")
 ```
 
-```text
 <!-- output -->
+```text
 K=80, reference=normal, dof=None
 ```
 
