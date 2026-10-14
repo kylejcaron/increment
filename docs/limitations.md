@@ -1,17 +1,8 @@
 # Statistical limitations
 
-Every number this library reports rests on assumptions. This page puts them in
-one place, so you can see what a result assumes without reading the source.
-
-Most entries mark deliberate limits: a method that is standard but
-approximate, an estimand that is narrower than it looks, or a guarantee that
-holds under a condition the library cannot check for you. A few identify gaps:
-a safeguard or diagnostic that one entry point provides and a neighboring one
-does not. Where the package offers a better route, this page names it.
-
-Read the section that matches the decision you are making. Each entry says what
-the library does, what it assumes, and when the assumption matters.
-For how evidence is labelled see [Evidence status](validation.md#evidence-status).
+Every result rests on assumptions. Use this page to check the limits that matter for your
+metric, method, or decision. See [Evidence status](validation.md#evidence-status) for how
+the library labels its evidence.
 
 ## How to read a refusal
 
@@ -457,6 +448,27 @@ pools keep the bootstrap. Both methods remain `experimental` and withhold decisi
 ## Metric types with no supported estimand
 
 ### Conversion and retention arms: dense counts use the delta method, sparse counts are estimated exactly, not refused
+
+For an unadjusted conversion or retention interval, the route depends on its four event
+counts. The exact route covers every count, but its interval is wider than the log-scale
+Wald interval at moderate counts.
+
+!!! warning "Finite-sample intervals can be wider than the usual approximation"
+    Expect a wider interval when counts are moderate; choose a method based on the guarantee
+    your decision needs, not interval width alone.
+
+??? info "Finite-sample conversion interval width"
+    The finite-sample method keeps the same `r = 1` difference ordering for every candidate.
+    Its log-scale interval is about 1.07–1.45× as wide as Katz's at the tested moderate
+    counts. A tighter candidate-ordered construction is being evaluated; its coverage was
+    measured, but its nuisance-supremum certification is too costly for adoption now.
+
+    In the task-20 comparison, the measured ratios were 1.07× at 20,000 units per arm
+    (10%), 1.14× at 5,000 per arm (10%, `r = 1`), 1.24× at 5,000 per arm
+    (10%, `r = 1.2`), and 1.36× at 2,000 per arm (5%). The current null p-value was
+    1.7–4× the pivotal score-ordered exact p-value in the tested cases. The tighter
+    score-ordered construction is not adopted because certifying its nuisance supremum
+    is too costly.
 
 An unadjusted (no CUPED, no declared cluster), unit-grain conversion or retention arm pair
 has two routes, and a rule that reads only the four per-arm success and failure counts and
