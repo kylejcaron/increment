@@ -59,6 +59,7 @@ from increment._source_operations import (
     TriggeredCountsOperation,
     TriggeredHealthEvidenceOperation,
     TriggeredPopulationOperation,
+    UnitCountsOperation,
 )
 from increment._source_types import classify_source
 from increment._study import ParallelStudyEnvelope
@@ -256,6 +257,29 @@ SOURCE_CONTEXT_DESIGN_DISAGREES_ARM = _REFUSALS[
 ]
 
 _raise = raiser(_REFUSALS)
+
+
+def _refuse_legacy_boolean_registration(
+    frame: Any, group: str, control: object | None, design: Any, plan: Any
+) -> None:
+    registration = getattr(
+        getattr(getattr(plan, "inference", None), "registration", None), "control_group", None
+    )
+    candidate = control if control is not None else getattr(design, "control_group", None)
+    if registration not in {"True", "False"} or candidate is None:
+        return
+    from increment._frame_validation import canonical_control_for_frame
+    from increment.sequential_state import sequential_refuse
+
+    canonical = canonical_control_for_frame(frame, group, candidate)
+    if (registration, canonical) in {("True", "true"), ("False", "false")}:
+        sequential_refuse(
+            "source.invalid",
+            "pandas Boolean group labels changed from 'True'/'False' to canonical "
+            "'true'/'false'; retain the saved record for replay with its original "
+            "protocol, or create a new sequential registration for canonical labels",
+        )
+
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -888,7 +912,7 @@ class Analysis:
         *,
         unit: str,
         group: str,
-        control: str | None = None,
+        control: object | None = None,
         metrics: MetricsArg,
         experiment_id: str = "frame",
         design: Randomized | Encouragement | Observational | None = None,
@@ -937,11 +961,23 @@ class Analysis:
         never in row order. With an ``on_unassigned="exclude"`` policy a
         null exposure drops the unit, as on :meth:`from_unit_panel`.
         """
+        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
+        from increment._frame_validation import (
+            canonical_control_for_frame,
+            canonical_design_for_frame,
+        )
+
+        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_summary")
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_summary as _make_source
         from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
@@ -968,7 +1004,7 @@ class Analysis:
         unit: str,
         group: str,
         date: str,
-        control: str | None = None,
+        control: object | None = None,
         metrics: MetricsArg,
         experiment_id: str = "frame",
         design: Randomized | Encouragement | Observational | None = None,
@@ -1021,11 +1057,23 @@ class Analysis:
         refuses; ``"exclude"`` drops those units, with the count
         surfaced in ``unit_counts()`` and :meth:`srm`.
         """
+        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
+        from increment._frame_validation import (
+            canonical_control_for_frame,
+            canonical_design_for_frame,
+        )
+
+        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_panel")
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_panel as _make_source
         from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
@@ -1051,7 +1099,7 @@ class Analysis:
         rows: Sequence[Mapping[str, object]],
         *,
         metrics: MetricsArg,
-        control: str | None = None,
+        control: object | None = None,
         experiment_id: str | None = None,
         design: Randomized | Encouragement | Observational | None = None,
         plan: AnalysisPlan | None = None,
@@ -1094,13 +1142,28 @@ class Analysis:
         Without an override, the payload's complete roles, methods,
         priors, inference, and view policies are used as exported.
         """
-        _require_design(control, design, constructor="Analysis.from_moments")
-        from increment._frame_validation import _coerce_source_metrics
+
+        from increment._frame_validation import (
+            _coerce_source_metrics,
+            canonical_control_for_moments,
+            canonical_design_for_moments,
+            validate_moments_control,
+        )
         from increment.frame import synthesise_metric
         from increment.semantics.design import Encouragement, Randomized
         from increment.sources import MomentsSource
 
-        design = design or Randomized(control_group=cast("str", control))
+        design = canonical_design_for_moments(design)
+        _require_design(control, design, constructor="Analysis.from_moments")
+        if control is None:
+            assert design is not None
+            control = canonical_control_for_moments(design.control_group)
+        else:
+            control = canonical_control_for_moments(control)
+        validate_moments_control(rows, control)
+        if design is None:
+            design = MomentsSource.design_summary_design(rows, control_group=control)
+        design = design or Randomized(control_group=control)
         specs = _coerce_source_metrics(metrics, design=design)
         from increment._analysis_config import refuse_cuped_linear_moments
 
@@ -1775,6 +1838,20 @@ class Analysis:
             return None if cutoff is None else cutoff.isoformat()
         evidence = self._session.source_snapshot_evidence if self._session is not None else None
         return None if evidence is None else evidence.observation_cutoff_ts.isoformat()
+
+    def unit_counts(self) -> dict[str, int]:
+        """Return enrolled unit counts by canonical group label.
+
+        Excluded unassigned units appear under ``"(unassigned)"``. Sources
+        without total-grain count evidence refuse with a coded capability error.
+        """
+        source = _require_analysis_operation(
+            self._src,
+            "unit_counts",
+            UnitCountsOperation,
+            message="unit_counts() requires a source with enrolled total-grain counts.",
+        )
+        return source.unit_counts()
 
     def srm(
         self,

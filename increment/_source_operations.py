@@ -295,6 +295,11 @@ class TriggeredCountsOperation(Protocol):
 
 
 @runtime_checkable
+class UnitCountsOperation(Protocol):
+    def unit_counts(self) -> dict[str, int]: ...
+
+
+@runtime_checkable
 class SummarySqlOperation(Protocol):
     """Public summary SQL operation shared by SQL-backed sources."""
 
@@ -425,5 +430,6 @@ __all__ = [
     "TriggeredHealthEvidenceOperation",
     "TriggeredHealthFeed",
     "TriggeredCountsOperation",
+    "UnitCountsOperation",
     "TriggeredPopulationOperation",
 ]
