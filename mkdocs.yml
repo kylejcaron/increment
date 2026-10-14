@@ -78,6 +78,7 @@ nav:
       - Extending Estimators and Evidence: development/adding-an-estimator.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
+      - CUPAC: guides/cupac.md
       - Switchback Contrasts: guides/switchback.md
       - Observational Comparisons: guides/observational.md
       - Encouragement Designs: guides/encouragement.md
@@ -95,6 +96,7 @@ nav:
       - DataFrame Analysis Tutorial: examples/analysis_from_a_dataframe.md
       - Warehouse Analysis: examples/analysis_from_a_warehouse.md
       - CUPED: examples/cuped.md
+      - CUPAC: examples/cupac.md
       - Breakouts: examples/breakout.md
       - Observational: examples/observational.md
       - Power Analysis: examples/power.md

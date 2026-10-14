@@ -1030,6 +1030,135 @@ def _fixed_horizon_case(
     )
 
 
+def _cupac_external_prediction_case() -> ParityCase:
+    """External per-unit predictions through the supported frame and moments paths."""
+    cuped_method = {"name": "cuped", "variance_reduction": "cuped"}
+
+    def frame(*, panel: bool = False) -> pd.DataFrame:
+        rows = []
+        for arm, treatment in (("control", 0), ("treatment", 1)):
+            for i in range(40):
+                prediction = 2.0 + (i % 9) + i / 50
+                revenue = 20.0 + 0.8 * prediction + treatment + (i % 5) / 10
+                sessions = 1 + (i % 3)
+                for day, fraction in enumerate((0.4, 0.6)):
+                    rows.append(
+                        {
+                            "user_id": f"{arm}-{i}",
+                            "variant": arm,
+                            "date": dt.date(2026, 1, day + 1),
+                            "revenue": revenue * fraction,
+                            "prediction": prediction,
+                            "sessions": sessions if day == 1 else 0,
+                        }
+                    )
+        data = pd.DataFrame(rows)
+        if panel:
+            return data
+        return data.groupby(["user_id", "variant"], as_index=False).agg(
+            revenue=("revenue", "sum"),
+            prediction=("prediction", "first"),
+            sessions=("sessions", "sum"),
+        )
+
+    def metric(*, replay: bool = False) -> MetricSpec:
+        return MetricSpec(
+            name="revenue",
+            type="mean",
+            value_column="revenue",
+            covariate=None if replay else "prediction",
+            sensitivity_methods=() if replay else (cuped_method,),
+        )
+
+    def build_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            frame(),
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[metric()],
+        )
+
+    def build_panel() -> Analysis:
+        return Analysis.from_unit_panel(
+            frame(panel=True),
+            unit="user_id",
+            group="variant",
+            date="date",
+            control="control",
+            metrics=[metric()],
+        )
+
+    def build_moments() -> Analysis:
+        return _export_and_replay(build_summary(), [metric(replay=True)])
+
+    def build_switchback() -> Analysis:
+        from increment.semantics.assignment import (
+            IndependentBernoulliOrder,
+            SwitchbackAssignment,
+            SwitchbackWindow,
+        )
+
+        rows = pd.DataFrame(
+            [
+                {
+                    "unit": unit,
+                    "cycle": 0,
+                    "period": period,
+                    "step": 0,
+                    "arm": "control" if period == 0 else "treatment",
+                    "revenue": 10.0 + period,
+                }
+                for unit in ("a", "b")
+                for period in (0, 1)
+            ]
+        )
+        return Analysis.from_switchback_panel(
+            rows,
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="arm",
+            metrics=[metric()],
+            identification=Randomized(
+                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+
+    def probe(results: Any) -> None:
+        assert any(row.method == "cuped" for row in results), (
+            "every ingress, including from_moments, must emit a CUPED result"
+        )
+
+    return ParityCase(
+        id="cupac_external_prediction_fixed_horizon",
+        build={
+            "from_unit_summary": build_summary,
+            "from_unit_panel": build_panel,
+            "from_moments": build_moments,
+            "from_switchback_panel": build_switchback,
+        },
+        waive={
+            "from_definitions": (
+                "external prediction column cannot be bound; CUPED binds the metric's "
+                "own pre-period window (GitHub #67)"
+            ),
+            "from_unit_day_artifact": (
+                "external prediction column cannot be bound; CUPED binds the metric's "
+                "own pre-period window (GitHub #67)"
+            ),
+            "from_switchback_panel": "switchback procedures refuse CUPED",
+        },
+        waived_refusal_codes={"from_switchback_panel": "source.frame.switchback.metric"},
+        readout_probe=probe,
+    )
+
+
 def _mean_ratio_conversion_cuped_case() -> ParityCase:
     return _fixed_horizon_case(
         id="mean_ratio_conversion_cuped_fixed_horizon",
@@ -9052,6 +9181,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_multi_metric_breakout_case(),
     _inferred_null_metric_case(),
     _switchback_neighboring_integer_case(),
+    _cupac_external_prediction_case(),
     _mean_ratio_conversion_cuped_case(),
     _artifact_context_format_two_case(),
     _artifact_context_format_one_refusal_case(),

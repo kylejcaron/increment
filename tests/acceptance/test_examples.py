@@ -17,11 +17,13 @@ run via `make test-examples`.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, cast
 
@@ -283,6 +285,66 @@ def test_cuped_export_renders_expected_figures(tmp_path):
     assert "avg_session_duration" in html
     assert "purchase_rate" in html
     assert "d7_retention" in html
+
+
+def _marimo_rendered_outputs(html: str) -> list[dict[str, Any]]:
+    """Return only marimo's serialized cell outputs, excluding notebook code."""
+    match = re.search(
+        r'"session":\s*(\{.*?\})\s*,\s*"runtimeConfig"',
+        html,
+        re.DOTALL,
+    )
+    assert match, "marimo export did not contain serialized cell outputs"
+    session = json.loads(match.group(1))
+    return [output["data"] for cell in session["cells"] for output in cell.get("outputs", [])]
+
+
+def _cupac_method_rows(outputs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Extract method result records from rendered marimo table payloads."""
+
+    class _Tables(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[dict[str, Any]] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag != "marimo-table":
+                return
+            data = dict(attrs).get("data-data")
+            if data is not None:
+                self.records.extend(json.loads(json.loads(data)))
+
+    tables = _Tables()
+    for output in outputs:
+        rendered_html = output.get("text/html")
+        if rendered_html:
+            tables.feed(rendered_html)
+    return {row["method"]: row for row in tables.records if isinstance(row.get("method"), str)}
+
+
+def _assert_cupac_method_rows(outputs: list[dict[str, Any]]) -> None:
+    method_rows = _cupac_method_rows(outputs)
+    for method in ("unadjusted", "cuped"):
+        assert method in method_rows, f"rendered method table is missing {method!r}"
+        row = method_rows[method]
+        for field in ("lift", "lower", "upper"):
+            value = row.get(field)
+            assert isinstance(value, (int, float)) and math.isfinite(value), (
+                f"{method!r} rendered {field} must be finite numeric data"
+            )
+
+
+@pytest.mark.integration
+def test_cupac_export_renders_expected_figures(tmp_path):
+    pytest.importorskip("pandas")
+    pytest.importorskip("altair")
+    outputs = _marimo_rendered_outputs(_export_html("cupac.py", tmp_path))
+    rendered = json.dumps(outputs)
+    for field in ("training_cutoff", "feature_as_of", "model_version", "trained_on"):
+        assert field in rendered
+    _assert_cupac_method_rows(outputs)
+    assert "shifted_lift" in rendered
+    assert "frame.validation.metric_covariate_column" in rendered
 
 
 # --- analysis_from_a_warehouse.py: realistic warehouse, needs tables -------

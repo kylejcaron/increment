@@ -650,7 +650,9 @@ an experiment around an expected $\rho$ is covered in the
 
 ## Next step
 
-Plan the expected precision gain with [Power analysis](power-analysis.md).
+Plan the expected precision gain with [Power analysis](power-analysis.md), or
+use [CUPAC](cupac.md) when your covariate is an independently trained, frozen
+prediction scored before assignment.
 
 ## References and assumptions
 
