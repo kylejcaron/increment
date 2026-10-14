@@ -420,23 +420,20 @@ class TestUnresolvedPublicAnswersAreDeterministic:
 
     def test_a_target_no_budgeted_enclosure_certifies_climbs_to_the_replay_ceiling(self):
         """No size's lower end reaches 0.8 under this budget: the search climbs to the size
-        whose windows meet the cell bound and refuses there with the replay-bound code, naming
-        the lower end it reached, not a decision the runtime refuses."""
+        whose windows meet the cell bound, where the budget leaves nearly every pair undecided,
+        so the enclosure there holds the target and the power is refused as unresolved, not as
+        a shortfall and not as a decision the runtime refuses."""
         failure = _failure(lambda: required_sample_size(0.8, self.BASELINE, _conversion()))
-        assert failure.code == "power.binomial_replay_bound_exceeded"
-        assert failure.context["power"] == PowerDesign().power
-        reached = failure.context["power_reached"]
-        assert 0.0 <= reached < PowerDesign().power
-        at_ceiling = planned_enclosure(failure.context["n_t"], 0.8, self.BASELINE, _conversion())
-        assert reached == at_ceiling.lower
+        assert failure.code == "power.binomial_probability_unresolved"
+        assert failure.context["lower"] < PowerDesign().power <= failure.context["upper"]
+        assert failure.context["error"] > failure.context["tolerance"]
 
     @pytest.mark.parametrize("straddles", [True, False])
-    def test_a_bracket_that_never_certifies_hits_the_size_ceiling_refusal(
-        self, monkeypatch, straddles
-    ):
+    def test_a_bracket_that_never_certifies_ends_at_the_size_ceiling(self, monkeypatch, straddles):
         """With the arm ceiling at 60 units, a target the ceiling's enclosure straddles (its
-        upper end, above its lower end) and one it fails outright both climb to the ceiling and
-        refuse with the size-limit code; the power named is the ceiling's certified lower end."""
+        upper end, above its lower end) is refused there as an unresolved probability with the
+        enclosure; a target the ceiling's upper end falls short of is refused with the
+        size-limit code, naming the ceiling's certified lower end."""
         from increment.power import core
 
         at_ceiling = planned_enclosure(60, 0.8, self.BASELINE, _conversion())
@@ -448,9 +445,17 @@ class TestUnresolvedPublicAnswersAreDeterministic:
                 0.8, self.BASELINE, _conversion(), PowerDesign(power=target)
             )
         )
-        assert failure.code == "power.binomial_size_search_unreachable"
-        assert failure.context["n_per_arm"] == 60
-        assert failure.context["maximum_power"] == at_ceiling.lower < target
+        if straddles:
+            assert failure.code == "power.binomial_probability_unresolved"
+            assert (failure.context["lower"], failure.context["upper"]) == (
+                at_ceiling.lower,
+                at_ceiling.upper,
+            )
+        else:
+            assert failure.code == "power.binomial_size_search_unreachable"
+            assert failure.context["n_per_arm"] == 60
+            assert failure.context["maximum_power"] == at_ceiling.lower
+            assert at_ceiling.upper < target
 
     def test_results_with_bounds_round_trip(self):
         result = achieved_power(60, 0.8, self.BASELINE, _conversion())

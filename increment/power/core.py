@@ -27,8 +27,9 @@ numerical error of its sum: neither route's power alone, and no function of the 
 The lattice is enumerated while it fits. Its computed rejection mass is published only when
 the internal enclosure bounds its absolute error by ``1e-6`` conditional on the deployed
 SciPy/Boost special-function error model; this is not a cross-build floating-point proof.
-Materially unresolved probabilities explicitly refuse. Size and effect targets compare this
-admitted point power. ``conversion_inference="finite_sample"`` always enumerates. Where the
+An enclosure the evaluation budgets leave wider than that is stated by its lower end
+(``power_basis="lower_bound"``), and a size or effect reaches a target only when the lower
+end does. ``conversion_inference="finite_sample"`` always enumerates. Where the
 counts are dense with near certainty and the lattice is too large to enumerate, this model's
 closed form applies (``power_basis="asymptotic"``) and ``power`` is the model's own value, not
 a bound on the runtime. The Bernoulli shape above applies to every conversion and retention
@@ -102,8 +103,10 @@ from increment.estimation.quantile import (
 from increment.estimation.quantile import _raise as _quantile_raise
 from increment.estimation.sequential import GaussianScoreMixture
 from increment.power._binomial import (
+    _PROBABILITY_UNRESOLVED,
     ENUMERATION_CELLS,
     PLANNING_CELL_CEILING,
+    RESOLUTION,
     BinomialDecision,
     BinomialPower,
     FiniteRouteUnavailable,
@@ -2556,11 +2559,23 @@ class _Probe:
 class _BinomialMdeState:
     evaluations: int = 0
     unresolved: tuple[float, float] | None = None
+    # The first band the budgets left straddling the target that the search passed over.
+    straddled: tuple[float, float] | None = None
     lower: float = 0.0
     upper: float = 0.0
     basis: PowerBasis = "exact"
     # Probes reserved and not yet decided, in the order they were made.
     deferred: list[_Probe] = field(default_factory=list)
+
+    def passed_over(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> None:
+        """Record the first band the evaluation budgets leave straddling the target that the
+        search passes over: an answer found later certifies its own target, but without one
+        the search has not established unattainability."""
+        if self.straddled is None and self.unresolved is None:
+            self.straddled = (lo, hi)
+            self.lower = max(left.lower, right.lower)
+            self.upper = max(left.upper, right.upper)
+            self.basis = "lower_bound"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2767,7 +2782,8 @@ class _BinomialMdeSearch(_MdeSearch):
         bound = self._bound(lo, hi, left, right)
         if bound < self.target:
             return None
-        if self.straddles(first) and self.straddles(self.value(right)):
+        if self.straddles(first) and self.straddles(last := self.value(right)):
+            self.state.passed_over(lo, hi, first, last)
             return None
         width = abs(hi - lo)
         adjacent = abs(float_ordinal(hi) - float_ordinal(lo)) <= 1
@@ -2779,7 +2795,9 @@ class _BinomialMdeSearch(_MdeSearch):
                         lo, hi, "an earlier detectable region remains unresolved"
                     )
                 return hi, last.published
-            if pending is None and not (self.straddles(first) or self.straddles(last)):
+            if self.straddles(first) or self.straddles(last):
+                self.state.passed_over(lo, hi, first, last)
+            elif pending is None:
                 self.state.unresolved = (lo, hi)
                 self.state.lower = max(first.lower, last.lower)
                 self.state.upper = bound
@@ -2911,6 +2929,15 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
             search.state.basis = final.basis
             return search.unresolved(
                 m_min, m_max, "the evaluation budgets leave the far end's enclosure unresolved"
+            )
+        if search.state.straddled is not None:
+            # No effect certifies the target, and a band the budgets left holding it was passed
+            # over: unattainability is not established.
+            search.state.unresolved = search.state.straddled
+            return search.unresolved(
+                m_min,
+                m_max,
+                "a band the evaluation budgets leave straddling the target was passed over",
             )
         limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
         # The maximum named is the far end's computed mass, or the upper end of its
@@ -3200,12 +3227,24 @@ def _binomial_size(
 
     def unreachable(lo: int, reached: BinomialPower) -> NoReturn:
         """Refuse a final search whose largest failing size is the ceiling: a decision the
-        runtime refuses there, the replay bound when it stopped the search short of the arm
-        ceiling, or the arm ceiling itself; the power named is the enclosure's published end."""
+        runtime refuses there, an enclosure the evaluation budgets leave holding the target
+        (nothing is established either way, so the probability is refused as unresolved), the
+        replay bound when it stopped the search short of the arm ceiling, or the arm ceiling
+        itself; the power named by the last two is the enclosure's published end."""
         n_T, n_C = _analyzed_counts(*_compute_arms(lo, design, minimum_per_arm=floor), baseline)
         if reached is _UNDECIDED:
             _refuse_undecided(
                 procedure, _binomial_key(procedure, n_T, n_C), p_c=baseline.mean, scope="requested"
+            )
+        if not reached.resolved and reached.upper >= target:
+            # The ceiling's enclosure holds the target: the point request's refusal states it.
+            refuse(
+                _PROBABILITY_UNRESOLVED,
+                point=reached.power,
+                lower=reached.lower,
+                upper=reached.upper,
+                error=reached.absolute_error,
+                tolerance=RESOLUTION,
             )
         if ceiling < arm_ceiling:
             cells, p_t = _sizing_cells(_binomial_key(procedure, n_T, n_C), baseline.mean, rate)
@@ -3316,7 +3355,11 @@ class _SizeBracket:
             else:
                 lo = n if lo is None else max(lo, n)
             if hi is not None and (hi <= floor or (lo is not None and hi - lo <= 1)):
-                return hi, None if lo is None else gradient(lo, hi)
+                # Adjacent integers can share a float square root at huge sizes: no slope then.
+                slope_out = (
+                    None if lo is None or math.sqrt(hi) <= math.sqrt(lo) else gradient(lo, hi)
+                )
+                return hi, slope_out
             if hi is None:
                 assert lo is not None
                 if lo >= ceiling:

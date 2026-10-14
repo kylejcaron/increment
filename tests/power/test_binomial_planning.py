@@ -16,7 +16,7 @@ import tracemalloc
 import weakref
 from decimal import Decimal
 from fractions import Fraction
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 import numpy as np
 import pytest
@@ -339,6 +339,64 @@ def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     assert sized.power_basis == "exact"
     assert sized.power >= PowerDesign().power
     assert achieved_power(sized.n_per_arm - 1, 0.8, baseline, procedure).power < 0.8
+
+
+def test_a_bracket_closed_at_a_huge_size_returns_without_a_slope():
+    """At 2**60 units adjacent integers share a float square root, so the closing bracket has
+    no measurable probit slope: the verified size is returned with ``None``, not an error."""
+    from increment.power._binomial import BinomialPower
+    from increment.power.core import _SizeBracket
+
+    answer = 2**60 + 129
+
+    def evaluate(n: int) -> BinomialPower:
+        return BinomialPower(
+            plus=0.9 if n >= answer else 0.7, minus=0.0, omitted=0.0, inflation=1.0
+        )
+
+    def unreachable(lo: int, reached: BinomialPower) -> NoReturn:
+        raise AssertionError("the bracket closes below the ceiling")
+
+    search = _SizeBracket(0.8, 2, 2**62, 0.8416, 1.96)
+    assert math.sqrt(answer) == math.sqrt(answer - 1)
+    assert search.crossing(evaluate, answer, unreachable=unreachable) == (answer, None)
+
+
+def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(monkeypatch):
+    """Effects whose enclosures the budgets leave holding the target are passed over; when no
+    later effect certifies it, the search has not established unattainability and refuses as
+    unresolved, naming the band and the enclosure it left."""
+    from increment.power import core
+    from increment.power._binomial import BinomialPower
+
+    baseline, procedure, target = Baseline.from_proportion(0.2), _conversion(), 0.8
+    band = (0.2, 0.4)  # log-scale distances whose enclosures straddle the target
+    short = BinomialPower(plus=0.5, minus=0.0, omitted=0.0, inflation=1.0)
+    straddle = BinomialPower(plus=0.79, minus=0.0, omitted=0.0, inflation=1.0, ambiguous=0.05)
+    assert straddle.lower < target <= straddle.upper and not straddle.resolved
+
+    def value(self, probe):
+        return straddle if band[0] <= probe.distance <= band[1] else short
+
+    def bound(self, lo, hi, left, right):
+        low, high = sorted((math.log1p(lo), math.log1p(hi)))
+        return 1.0 if low <= band[1] and high >= band[0] else 0.0
+
+    monkeypatch.setattr(core._BinomialMdeSearch, "value", value)
+    monkeypatch.setattr(core._BinomialMdeSearch, "_bound", bound)
+    bounded = core._bounded_preflight(procedure, baseline, null_lift=0.0)
+    plan = core._ArmPlan(procedure, baseline, 60, 60, None, bounded)
+    model = core._binomial_plan(procedure, baseline, plan, {})
+    search = core._BinomialMdeSearch.of(
+        plan, model, target=target, null_lift=0.0, alternative="two-sided"
+    )
+    refusal = core._ordered_exclusion(search)
+    assert isinstance(refusal, core._MdeRefusal)
+    assert refusal.reason == "numerical_resolution"
+    lo, hi = cast("tuple[float, float]", refusal.context["unresolved_interval"])
+    assert math.expm1(band[0]) - 1e-6 <= lo <= hi <= math.expm1(band[1]) + 1e-6
+    lower, upper = cast("tuple[float, float]", refusal.context["power_enclosure"])
+    assert lower < target <= upper
 
 
 def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
