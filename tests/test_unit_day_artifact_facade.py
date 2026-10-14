@@ -740,6 +740,31 @@ def test_non_canonical_stored_rows_refuse() -> None:
     assert raised.value.code == "artifact.digest.type"
 
 
+@pytest.mark.integration
+def test_adopted_run_warns_for_published_cuped_covariate(tmp_path: Path) -> None:
+    import warnings
+
+    from tests.warning_codes import warning_codes, warning_context
+
+    definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
+    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    requests = _extensions(context, "cuped_preperiod")
+    assert any(request.metric_name == "purchase_rate" for request in requests)
+    ref = native.publish_unit_day_artifact(store, extensions=requests)
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            adopted.run(metrics=["purchase_rate"], sensitivity_methods=[])
+        assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 1
+        context_values = warning_context(caught, "analysis.cuped.covariate_unused")
+        assert context_values["metric_names"] == ("purchase_rate",)
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
 # Guards CUPED dispatch from dropping pre-period covariate moments on breakout and retention-day paths.
 @pytest.mark.integration
 def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:

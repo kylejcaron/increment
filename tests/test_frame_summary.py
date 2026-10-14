@@ -525,10 +525,45 @@ def test_run_warns_when_available_covariate_is_not_requested(arrow_frame: pa.Tab
 
     from tests.warning_codes import warning_codes, warning_context
 
-    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
     context = warning_context(caught, "analysis.cuped.covariate_unused")
-    assert context["metric_name"] == "revenue"
+    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
+    assert context["metric_names"] == ("revenue",)
     assert "decision_method" in str(context["route"])
+
+
+def test_run_emits_one_unused_covariate_warning_per_run(arrow_frame: pa.Table) -> None:
+    import warnings
+
+    from increment import Analysis
+    from increment.errors import IncrementWarning
+    from tests.warning_codes import warning_codes
+
+    analysis = Analysis.from_unit_summary(
+        arrow_frame,
+        unit="user_id",
+        group="variant",
+        metrics=[
+            MetricSpec(name="revenue", type="mean", covariate="pre_revenue"),
+            MetricSpec(name="orders", type="mean", covariate="pre_balanced"),
+        ],
+        design=_DESIGN,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analysis.run()
+        analysis.run()
+
+    matching = [
+        item.message.context
+        for item in caught
+        if isinstance(item.message, IncrementWarning)
+        and item.message.code == "analysis.cuped.covariate_unused"
+    ]
+    assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 2
+    assert [context["metric_names"] for context in matching] == [
+        ("revenue", "orders"),
+        ("revenue", "orders"),
+    ]
 
 
 @pytest.mark.parametrize(

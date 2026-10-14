@@ -2573,6 +2573,7 @@ class Analysis:
             rows = extra if rows.metadata is None else rows.concat(extra)
         self._warn_run_advisories(
             selected,
+            added,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
         )
@@ -2581,6 +2582,7 @@ class Analysis:
     def _warn_run_advisories(
         self,
         selected: Sequence[Metric],
+        added: Sequence[Metric],
         *,
         decision_method: Method | _Unset,
         sensitivity_methods: Sequence[Method] | _Unset,
@@ -2589,22 +2591,51 @@ class Analysis:
 
         state = self._state
         assert not isinstance(state, ContrastAnalysisState)
-        if not selected:
+        metrics = (*selected, *added)
+        if not metrics:
             return
-        configs = overlay_configs(
-            selected,
-            state.source.context.configs,
-            methods=None,
-            prior=None,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
+        configs = (
+            overlay_configs(
+                selected,
+                state.source.context.configs,
+                methods=None,
+                prior=None,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+            )
+            if selected
+            else ()
         )
+        if added:
+            exploratory = self._exploratory_analysis(added, caller="run")
+            exploratory_source = exploratory._state.source
+            configs += overlay_configs(
+                added,
+                cast("SourceContext", exploratory_source.context).configs,
+                methods=None,
+                prior=None,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+            )
         warehouse_covariate = (
             isinstance(state, DefinitionsArmAnalysisState) and state.experiment.n_pre_periods > 0
         )
+        artifact_experiment = getattr(state.source, "artifact_experiment", None)
+        artifact_extensions = getattr(getattr(state.source, "_manifest", None), "extensions", ())
+        artifact_covariates = (
+            {
+                extension.metric_name
+                for extension in artifact_extensions
+                if extension.kind == "cuped_preperiod"
+            }
+            if artifact_experiment is not None and artifact_experiment.n_pre_periods > 0
+            else set()
+        )
+        unused: list[str] = []
         for config in configs:
             covariate_available = config.covariate_available or (
-                warehouse_covariate and config.metric.type in ("mean", "conversion", "ratio")
+                config.metric.type in ("mean", "conversion", "ratio")
+                and (warehouse_covariate or config.metric.name in artifact_covariates)
             )
             if (
                 covariate_available
@@ -2614,14 +2645,16 @@ class Analysis:
                     method.variance_reduction == "cuped" for method in config.sensitivity_methods
                 )
             ):
-                _warn(
-                    "analysis.cuped.covariate_unused",
-                    metric_name=config.metric.name,
-                    route=(
-                        "Request Method(name='cuped', variance_reduction='cuped') "
-                        "as decision_method or a sensitivity method in run()."
-                    ),
-                )
+                unused.append(config.metric.name)
+        if unused:
+            _warn(
+                "analysis.cuped.covariate_unused",
+                metric_names=tuple(unused),
+                route=(
+                    "Request Method(name='cuped', variance_reduction='cuped') "
+                    "as decision_method or a sensitivity method in run()."
+                ),
+            )
 
     def _run_contrast(
         self,

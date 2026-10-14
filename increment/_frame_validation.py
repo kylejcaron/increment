@@ -282,8 +282,8 @@ _register_warning(
 _register_warning(
     "analysis.cuped.covariate_unused",
     IncrementWarning,
-    lambda *, metric_name, route: (
-        f"metric {metric_name!r} has an available CUPED covariate that the default "
+    lambda *, metric_names, route: (
+        f"metrics {metric_names!r} have available CUPED covariates that the default "
         f"decision method does not use. {route}"
     ),
 )

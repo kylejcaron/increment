@@ -201,6 +201,33 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
     assert [row.family_id for row in restored] == [row.family_id for row in added]
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_run_warns_for_added_metric_with_unused_preperiod_covariate():
+    definitions = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    definitions["experiments"][0]["n_pre_periods"] = 14
+    con = ds.duckdb_connection(ds.event_rows())
+    analysis = make_analysis(
+        con,
+        Definitions.model_validate(definitions),
+        experiment="exp",
+    )
+    try:
+        with pytest.warns(IncrementWarning) as caught:
+            rows = analysis.run(metrics=[], exploratory_metrics=["rps"])
+        assert rows and {row.metric for row in rows} == {"rps"}
+        advisories = [
+            warning.message
+            for warning in caught
+            if isinstance(warning.message, IncrementWarning)
+            and warning.message.code == "analysis.cuped.covariate_unused"
+        ]
+        assert len(advisories) == 1
+        assert advisories[0].context["metric_names"] == ("rps",)
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     analysis = _analysis(
         warehouse, AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1)
