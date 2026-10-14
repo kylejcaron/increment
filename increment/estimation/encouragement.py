@@ -26,6 +26,7 @@ from narwhals.typing import IntoDataFrame
 from scipy.stats import norm as _norm
 
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.semantics.design import READOUT_ENCOURAGEMENT_RETENTION
 from increment.sequential_state import SequentialSnapshot, sequential_refuse
@@ -319,8 +320,10 @@ def estimate_compliance(
     ``estimate_encouragement``; this design-wide row never diagnoses it.
     """
     from increment._source_types import validate_compliance_design_match
-    from increment.estimation.decision_types import DecisionComputation
-    from increment.estimation.engine import _lift_decision_bundle
+    from increment.estimation.engine import (
+        _lift_decision_bundle,
+        _small_total_clusters_advisory,
+    )
 
     validate_compliance_design_match(compliance, design)
     cluster = compliance.cluster
@@ -338,6 +341,9 @@ def estimate_compliance(
         _refuse("estimation.encouragement.control.missing", control_group=control_id)
     c = _arm_stats_from_compliance(control_arm, study_id=compliance.study_id, cluster=cluster)
     results: list[LiftEstimate] = []
+    advisories = {}
+    from increment.estimation.decision_types import ArmHypothesisKey, DecisionComputation
+
     for arm in compliance.arms:
         if arm.group_id == control_id:
             continue
@@ -345,21 +351,26 @@ def estimate_compliance(
         context = _first_stage_context(t, c, design, cluster=cluster, late_requested=False)
         if not compliance_requested:
             continue
-        results.append(
-            _estimate_compliance_row(
-                t,
-                c,
-                design,
-                context,
-                inference=inference,
-                prior=prior,
-                alpha=alpha,
-                cluster=cluster,
-            )
+        row = _estimate_compliance_row(
+            t,
+            c,
+            design,
+            context,
+            inference=inference,
+            prior=prior,
+            alpha=alpha,
+            cluster=cluster,
         )
+        results.append(row)
+        advisory = _small_total_clusters_advisory("uptake", cluster, context.n_clusters)
+        if advisory is not None:
+            advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (advisory,)
     bundle = _lift_decision_bundle(results, inference=inference)
     return DecisionComputation(
-        results=tuple(results), evidence=bundle.evidence, failures=bundle.failures
+        results=tuple(results),
+        evidence=bundle.evidence,
+        failures=bundle.failures,
+        advisories={**bundle.advisories, **advisories},
     )
 
 
@@ -779,6 +790,7 @@ def _encouragement_decision_bundle(
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     late_failures: Sequence[tuple[str, str, float]],
     itt_bundle: DecisionComputation[LiftEstimate] | None,
+    first_stage_advisories: Mapping[Any, tuple[ReadoutAdvisory, ...]],
 ) -> DecisionComputation[LiftEstimate]:
     """Attach one decision value to each encouragement hypothesis.
 
@@ -804,6 +816,9 @@ def _encouragement_decision_bundle(
     failures = dict(itt_bundle.failures) if itt_bundle is not None else {}
     evidence.update(bundle.evidence)
     failures.update(bundle.failures)
+    advisories = dict(itt_bundle.advisories) if itt_bundle is not None else {}
+    advisories.update(bundle.advisories)
+    advisories.update(first_stage_advisories)
     for metric, group_id, z_fs in late_failures:
         hypothesis = ArmHypothesisKey(metric, group_id, "late")
         failures[hypothesis] = DecisionFailure(
@@ -811,7 +826,9 @@ def _encouragement_decision_bundle(
             "estimation.encouragement.late.weak_first_stage",
             {"metric": metric, "group_id": group_id, "first_stage_z": z_fs},
         )
-    return DecisionComputation(results=tuple(results), evidence=evidence, failures=failures)
+    return DecisionComputation(
+        results=tuple(results), evidence=evidence, failures=failures, advisories=advisories
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1774,6 +1791,10 @@ def _estimate_encouragement(  # noqa: PLR0913
     )
     out = list(prepared.results)
     late_failures: list[tuple[str, str, float]] = []
+    first_stage_advisories = {}
+    from increment.estimation.decision_types import ArmHypothesisKey
+    from increment.estimation.engine import _small_total_clusters_advisory
+
     reported_uptake_arms: set[str] = set()
     for t in prepared.treatments:
         c = prepared.control.get(t.metric)
@@ -1786,25 +1807,34 @@ def _estimate_encouragement(  # noqa: PLR0913
             cluster=cluster,
             late_requested="late" in prepared.estimands,
         )
-        if context.weak and "late" in prepared.estimands:
-            late_failures.append((t.metric, t.group_id, context.z_fs))
+        first_stage_advisory = _small_total_clusters_advisory(t.metric, cluster, context.n_clusters)
+        if first_stage_advisory is not None and "late" in prepared.estimands:
+            first_stage_advisories[ArmHypothesisKey(t.metric, t.group_id, "late")] = (
+                first_stage_advisory,
+            )
         if context.suppression is not None or (
             t.group_id not in reported_uptake_arms and "compliance" in prepared.estimands
         ):
             reported_uptake_arms.add(t.group_id)
-            out.append(
-                _estimate_compliance_row(
-                    t,
-                    c,
-                    design,
-                    context,
-                    inference=inference,
-                    prior=normal_prior,
-                    alpha=alpha,
-                    cluster=cluster,
-                ).model_copy(update={"metric": t.metric} if context.suppression else {})
-            )
-        if "late" not in prepared.estimands or context.weak:
+            row = _estimate_compliance_row(
+                t,
+                c,
+                design,
+                context,
+                inference=inference,
+                prior=normal_prior,
+                alpha=alpha,
+                cluster=cluster,
+            ).model_copy(update={"metric": t.metric} if context.suppression else {})
+            out.append(row)
+            if first_stage_advisory is not None:
+                first_stage_advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (
+                    first_stage_advisory,
+                )
+        if "late" not in prepared.estimands:
+            continue
+        if context.weak:
+            late_failures.append((t.metric, t.group_id, context.z_fs))
             continue
         if prepared.metric_types.get(t.metric) == "ratio":
             _refuse("estimation.encouragement.late.ratio", metric=t.metric)
@@ -1826,6 +1856,7 @@ def _estimate_encouragement(  # noqa: PLR0913
         inference=inference,
         late_failures=late_failures,
         itt_bundle=prepared.itt_bundle,
+        first_stage_advisories=first_stage_advisories,
     )
 
 

@@ -66,7 +66,7 @@ def _randomized_snapshot_id(source, request):
     return "sha256:" + sha256(canonical_json_bytes(preimage)).hexdigest()
 
 
-def _randomized_cell_record(cell, row, failure, config, snapshot_id):
+def _randomized_cell_record(cell, row, failure, config, snapshot_id, advisories=()):
     from increment.estimation.decision_types import PValueEvidence
     from increment.estimation.readout_types import (
         CellRecord,
@@ -106,6 +106,7 @@ def _randomized_cell_record(cell, row, failure, config, snapshot_id):
         failure=failure,
         sampling=sampling,
         posterior=posterior,
+        advisories=tuple(advisories),
     )
 
 
@@ -298,6 +299,19 @@ def _scoped_randomized_results(
     failure_by_cell, method_info, cells, decision_cells = _randomized_cell_registry(
         selected, configs, design, plan, computations, roster_arms, population
     )
+
+    advisories_by_identity = {}
+    for computation in computations:
+        for hypothesis, advisories in computation.advisories.items():
+            identity = (
+                hypothesis.metric,
+                getattr(hypothesis, "group_id", None),
+                getattr(hypothesis, "estimand", None),
+                getattr(hypothesis, "dimension", None),
+                getattr(hypothesis, "dimension_value", None),
+            )
+            values = advisories_by_identity.setdefault(identity, {})
+            values.update({item.model_dump_json(): item for item in advisories})
     cell_failures, complete, scope_reason_context = _randomized_cell_failures(
         method_info,
         failure_by_cell,
@@ -380,7 +394,21 @@ def _scoped_randomized_results(
             )
             output.append(row)
         config = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1]
-        records.append(_randomized_cell_record(cell, row, failure, config, snapshot_id))
+        advisories = advisories_by_identity.get(
+            (
+                cell.metric,
+                cell.group_id,
+                cell.estimand,
+                cell.dimension,
+                cell.dimension_value,
+            ),
+            {},
+        )
+        records.append(
+            _randomized_cell_record(
+                cell, row, failure, config, snapshot_id, tuple(advisories.values())
+            )
+        )
 
     ordered_cells = tuple(sorted(set(cells), key=cell_order))
     ordered_decisions = tuple(sorted(set(decision_cells), key=cell_order))

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any, Literal, cast
 
 from increment.decision import MultiplicityFamily
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.multiplicity import multiplicity_status, row_multiplicity_status
 from increment.estimation.readout_types import (
     CellFailure,
@@ -548,6 +550,7 @@ def scoped_collection(
                     if getattr(row, "failure_code", None) is not None and cell.method is not None
                     else None
                 ),
+                advisories=_row_advisories(row),
             )
         )
     metadata = ReadoutMetadata(
@@ -557,3 +560,26 @@ def scoped_collection(
         ),
     )
     return collection_type(stamped, metadata=metadata, sequential_snapshot=sequential_snapshot)
+
+
+_RATIO_NOTE_CODES = {
+    "ratio_denominator_precision": "estimation.engine.ratio_denominator_precision",
+    "ratio_denominator_skew": "estimation.engine.ratio_denominator_skew",
+}
+
+
+def _row_advisories(row):
+    note = getattr(row, "note", None)
+    if not isinstance(note, str):
+        return ()
+    # Ratio rows join their advisories with "; "; a skew note can itself contain "; ".
+    parts = re.split(r"; (?=ratio_denominator_(?:precision|skew):)", note)
+    return tuple(
+        ReadoutAdvisory(
+            code=_RATIO_NOTE_CODES[part.split(":", 1)[0]],
+            context={"metric_name": row.metric, "note": part},
+            message=part,
+        )
+        for part in parts
+        if part.split(":", 1)[0] in _RATIO_NOTE_CODES
+    )

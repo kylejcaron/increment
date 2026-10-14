@@ -1954,11 +1954,17 @@ def _rekey_segment_computation(
         key_for(value.hypothesis): type(value)(key_for(value.hypothesis), value.code, value.context)
         for value in bundle.failures.values()
     }
-    return DecisionComputation(
-        results=bundle.results,
+    results = tuple(
+        result.model_copy(update={"dimension": dimension, "dimension_value": dimension_value})
+        for result in bundle.results
+    )
+    advisories = {key_for(key): values for key, values in bundle.advisories.items() if values}
+    return DecisionComputation[LiftEstimate](
+        results=cast(Sequence[LiftEstimate], results),
         evidence=evidence,
         failures=failures,
         sequential_snapshot=bundle.sequential_snapshot,
+        advisories=cast(Any, advisories),
     )
 
 
@@ -1998,6 +2004,7 @@ def _estimate_lift_computation_or_reason(
             results=rows,
             evidence=computation.evidence,
             failures=computation.failures,
+            advisories=computation.advisories,
         ), None
     except LiftGuardError as exc:
         from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure

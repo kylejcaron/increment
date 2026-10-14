@@ -217,6 +217,80 @@ def test_clustered_run_stamps_t_reference_on_every_dof_row():
         assert restored.p_value() == pytest.approx(expected)
 
 
+def test_non_itt_decision_bundle_retains_evidence_for_family_selection():
+    from increment.estimation.decision_types import ArmHypothesisKey
+    from increment.estimation.family import select_family
+
+    computation = estimate_encouragement(
+        [METRIC], _rows(n=100), _design(one_sided=True), estimands=("compliance", "late")
+    )
+    expected = {
+        ArmHypothesisKey("uptake", "treat", "compliance"),
+        ArmHypothesisKey("rev", "treat", "late"),
+    }
+    assert expected <= set(computation.evidence)
+    cells = [
+        (key, row)
+        for key in expected
+        for row in computation.results
+        if row.metric == key.metric
+        and row.group_id == key.group_id
+        and row.estimand == key.estimand
+    ]
+    selected = select_family(
+        cells, q=0.10, inference=None, nominal_alpha=0.05, computation=computation
+    )
+    assert selected.n_family == len(expected)
+
+
+def test_non_itt_decision_bundle_retains_exact_failures():
+    from increment.estimation.decision_types import ArmHypothesisKey
+    from increment.estimation.family import select_family
+
+    constant_rows = []
+    for group_id, uptake, outcome in (("control", 0.0, 10.0), ("treat", 1.0, 12.0)):
+        n = 40
+        constant_rows.append(
+            centered_row_from_raw_sums(
+                {
+                    "experiment_id": "constant",
+                    "metric": "rev",
+                    "group_id": group_id,
+                    "n": n,
+                    "sum_y": n * outcome,
+                    "sum_y2": n * outcome**2,
+                    "sum_d": n * uptake,
+                    "sum_yd": n * outcome * uptake,
+                    "sum_y2d": n * outcome**2 * uptake,
+                }
+            )
+        )
+    computation = estimate_encouragement(
+        [METRIC], constant_rows, _design(one_sided=True), estimands=("compliance", "late")
+    )
+    expected = {
+        ArmHypothesisKey("uptake", "treat", "compliance"),
+        ArmHypothesisKey("rev", "treat", "late"),
+    }
+    assert expected <= set(computation.failures)
+    for key in expected:
+        failure = computation.failures[key]
+        assert failure.code == "evidence.p_value.unavailable"
+        assert failure.context["reason"] == "missing_raw_stats"
+
+    cells = [
+        (key, row)
+        for key in expected
+        for row in computation.results
+        if row.metric == key.metric
+        and row.group_id == key.group_id
+        and row.estimand == key.estimand
+    ]
+    with pytest.raises(CapabilityError) as exc_info:
+        select_family(cells, q=0.10, inference=None, nominal_alpha=0.05, computation=computation)
+    assert exc_info.value.code == "family.evidence.incomplete"
+
+
 def _winsorized_rows(**metadata):
     rows = _rows()
     for row, n, n_upper in zip(rows, (4000, 4000), (3, 5), strict=True):
