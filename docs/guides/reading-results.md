@@ -220,7 +220,15 @@ each row keeps its remaining evidence, are:
   `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
-  including when both arms are constant. Check the bounds before use.
+  including when both arms are constant. Check the bounds before use. When the
+  additive interval is present and no absolute margin is declared, it is the
+  row's decision: `r.p_value()` is the additive test of the difference against
+  zero under the row's alternative, using the reference the interval was cut
+  from (Welch `t` or Normal, `r.abs_reference_kind`), and `r.stat_sig()` is
+  whether that interval excludes zero. Such a row takes part in its family on
+  that evidence and, when selected, has its additive interval reissued at the
+  family level. A row with no additive interval keeps `r.p_value() == 1.0` and
+  `r.stat_sig()` False: a non-rejection, never a discovery.
 - A row whose joint relative covariance is unusable: it cannot be represented as
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).
@@ -274,7 +282,7 @@ missing point should stop the program rather than be handled.
 
 Two of the other causes are reproducible with small frames. A mean metric whose
 control mean is negative has no relative lift, no relative set, and a reported
-additive interval:
+additive interval that carries the row's decision:
 
 ```python
 k = 40
@@ -296,6 +304,8 @@ flat_mean = Analysis.from_unit_summary(
 assert flat_mean.lift is None and flat_mean.relative_confidence_set is None
 assert flat_mean.relative_unavailable_reason == "nonpositive_arm_mean"
 assert flat_mean.abs_lb < flat_mean.abs_diff < flat_mean.abs_ub
+assert flat_mean.stat_sig() is (flat_mean.abs_lb > 0.0)  # the additive interval decides
+assert flat_mean.p_value() <= 1.0
 ```
 
 A winsorized metric whose control arm sums to zero keeps a confidence set with a

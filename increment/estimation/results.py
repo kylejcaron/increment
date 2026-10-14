@@ -1800,7 +1800,10 @@ class LiftEstimate(_RowIdentity):
         selection never demotes it to match. A ``null_abs`` row decides
         against the additive interval (``abs_lb``/``abs_ub``) instead of
         the relative one; missing additive endpoints report False rather
-        than falling back to the relative interval.
+        than falling back to the relative interval. A row whose relative
+        scale is undefined because an arm mean is not positive, with no
+        declared margin, decides the same additive interval against zero
+        (see ``_additive_zero_reference``).
 
         A ``reference_kind="binomial"`` row (point-backed or not) instead
         tests ``r0 = 1 + null_lift`` for exclusion from the exact
@@ -1818,15 +1821,9 @@ class LiftEstimate(_RowIdentity):
         if self.sequential_result is not None:
             return self.sequential_result.rejects()
         if self.null_abs is not None:
-            if self.abs_lb is None or self.abs_ub is None:
-                return False
-            if self.alternative == "greater":
-                return self.abs_lb > self.null_abs
-            if self.alternative == "less":
-                return self.abs_ub < self.null_abs
-            return not (self.abs_lb <= self.null_abs <= self.abs_ub)
+            return self._additive_excludes(self.null_abs)
         if self.relative_unavailable_reason is not None:
-            return False
+            return self._additive_zero_reference() is not None and self._additive_excludes(0.0)
         if self.relative_confidence_set is not None:
             return self.relative_confidence_set.contains(self.null_lift) is False
         if self.reference_kind == "binomial":
@@ -1842,6 +1839,38 @@ class LiftEstimate(_RowIdentity):
             return self.lift.ub is not None and self.lift.ub < self.null_lift
         assert self.lift is not None
         return self.lift.excludes(self.null_lift)
+
+    def _additive_excludes(self, null: float) -> bool:
+        """Whether the additive interval lies beyond ``null`` on the tested side."""
+        if self.abs_lb is None or self.abs_ub is None:
+            return False
+        if self.alternative == "greater":
+            return self.abs_lb > null
+        if self.alternative == "less":
+            return self.abs_ub < null
+        return not (self.abs_lb <= null <= self.abs_ub)
+
+    def _additive_zero_reference(self) -> tuple[float, float, float | None] | None:
+        """``(abs_diff, abs_se, df)`` when this row's decision is the additive
+        difference tested against zero: the relative scale is undefined because
+        an arm mean is not positive, no absolute margin is declared, and the
+        additive sidecar carries an interval with its own reference. The
+        reference is the one the interval was cut from -- Welch or cluster
+        ``t`` at ``abs_reference_df``, Normal otherwise -- so ``p_value()`` and
+        ``stat_sig()`` read the same construction. ``None`` leaves the row a
+        conservative non-rejection."""
+        if (
+            self.relative_unavailable_reason != "nonpositive_arm_mean"
+            or self.null_abs is not None
+            or self.abs_diff is None
+            or self.abs_se is None
+            or not self.abs_se > 0.0
+            or self.abs_lb is None
+            or self.abs_ub is None
+            or self.abs_reference_kind is None
+        ):
+            return None
+        return self.abs_diff, self.abs_se, self.abs_reference_df
 
     def _null_abs_p_value(self) -> float:
         """The additive-margin tail from ``Normal(abs_diff, abs_se)``
@@ -1875,6 +1904,21 @@ class LiftEstimate(_RowIdentity):
             return float(_norm.sf(z_abs))
         return float(2.0 * min(_norm.cdf(z_abs), _norm.sf(z_abs)))
 
+    def _relative_unavailable_p_value(self) -> float:
+        """``p_value()`` for a row with no relative interval. A nonpositive arm
+        mean leaves the log route undefined, not indeterminate: with an additive
+        reference the row is decided on that scale against zero, and without one
+        the maximal, never-rejecting p-value is the correct answer. Unavailable
+        joint covariance and zero relative variance remain indeterminate."""
+        reason = self.relative_unavailable_reason
+        if reason != "nonpositive_arm_mean":
+            _raise("estimation.results.joint.unavailable", reason=reason)
+        reference = self._additive_zero_reference()
+        if reference is None:
+            return 1.0
+        abs_diff, abs_se, df = reference
+        return _additive_tail_p_value(abs_diff, abs_se, 0.0, self.alternative, df)
+
     def p_value(self) -> float | None:
         """Return a presentation-only sampling p-value for this displayed result.
 
@@ -1905,7 +1949,7 @@ class LiftEstimate(_RowIdentity):
         if self.null_abs is not None:
             return self._null_abs_p_value()
         if self.relative_unavailable_reason is not None:
-            return _nonpositive_arm_mean_p_value(self.relative_unavailable_reason)
+            return self._relative_unavailable_p_value()
         if self.relative_confidence_set is not None:
             return self.relative_confidence_set.p_value(self.null_lift)
         if (quantile_p_value := self.quantile_p_value) is not None:
@@ -1980,15 +2024,20 @@ class LiftEstimate(_RowIdentity):
         return float(2.0 * _norm.sf(abs(z)))
 
 
-def _nonpositive_arm_mean_p_value(reason: RelativeUnavailableReason) -> float:
-    """``p_value()``'s ``relative_unavailable_reason`` special case, split
-    out to keep that method's own branching flat. Unlike unavailable
-    covariance or zero relative variance, a nonpositive arm mean's log route
-    is undefined, not indeterminate: the maximal, never-rejecting p-value
-    IS the correct answer, not a missing one."""
-    if reason == "nonpositive_arm_mean":
-        return 1.0
-    _raise("estimation.results.joint.unavailable", reason=reason)
+def _additive_tail_p_value(
+    abs_diff: float, abs_se: float, null: float, alternative: str, df: float | None
+) -> float:
+    """The tail of ``abs_diff`` against ``null`` under the additive reference the
+    interval was cut from: Student-t at ``df`` when given, Normal otherwise.
+    Directional alternatives use one tail over the composite null."""
+    z = (abs_diff - null) / abs_se
+    distribution = _t if df is not None else _norm
+    shapes = (df,) if df is not None else ()
+    if alternative == "greater":
+        return float(distribution.sf(z, *shapes))
+    if alternative == "less":
+        return float(distribution.cdf(z, *shapes))
+    return float(2.0 * distribution.sf(abs(z), *shapes))
 
 
 def _fcr_alpha_for(alternative: str, fcr_alpha: float | Fraction) -> float:

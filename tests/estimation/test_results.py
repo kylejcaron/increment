@@ -1667,11 +1667,44 @@ def test_joint_relative_set_cannot_carry_sequential_evidence():
     assert exc_info.value.code == "sequential.source.invalid"
 
 
+def _additive_tail(row: LiftEstimate, null: float = 0.0) -> float:
+    """The tail of ``row``'s persisted additive reference against ``null``."""
+    assert row.abs_diff is not None and row.abs_se is not None
+    z = (row.abs_diff - null) / row.abs_se
+    if row.abs_reference_kind == "t":
+        assert row.abs_reference_df is not None
+        lower, upper = _t.cdf(z, row.abs_reference_df), _t.sf(z, row.abs_reference_df)
+    else:
+        lower, upper = _norm.cdf(z), _norm.sf(z)
+    if row.alternative == "greater":
+        return float(upper)
+    if row.alternative == "less":
+        return float(lower)
+    return float(2.0 * min(lower, upper))
+
+
+def _nonpositive_mean_unit_summary(*, n: int = 2000, seed: int = 20261013) -> pd.DataFrame:
+    """Control N(-2, 5) against treatment N(-1, 5): both arm means are negative, so
+    the log-scale relative lift is undefined while the additive difference is a
+    textbook Welch contrast."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "user_id": [f"u{i}" for i in range(2 * n)],
+            "variant": ["control"] * n + ["treatment"] * n,
+            "delta": np.concatenate([rng.normal(-2.0, 5.0, n), rng.normal(-1.0, 5.0, n)]),
+        }
+    )
+
+
 class TestNonpositiveArmMeanUnavailableReason:
-    """The new relative_unavailable_reason value ('nonpositive_arm_mean')
-    is a deliberate, always-conservative stand-in -- unlike the two
-    existing joint-covariance reasons, its p_value() is KNOWN (the
-    maximal, never-rejecting value), not indeterminate."""
+    """A ``nonpositive_arm_mean`` row has no relative scale, but its additive
+    difference is a real Wald contrast: with no declared margin and a persisted
+    additive reference the row's decision evidence is the additive test against
+    zero under its own alternative. Only a row with no additive reference keeps
+    the conservative, never-rejecting p-value."""
 
     def _row(self, **overrides: Any) -> LiftEstimate:
         fields: dict[str, Any] = {
@@ -1697,11 +1730,145 @@ class TestNonpositiveArmMeanUnavailableReason:
         fields.update(overrides)
         return LiftEstimate(**fields)
 
-    def test_p_value_returns_the_maximal_conservative_value(self):
-        assert self._row().p_value() == 1.0
+    def test_run_row_matches_the_welch_t_test_and_keeps_its_interval(self):
+        from scipy.stats import ttest_ind
 
-    def test_stat_sig_is_false(self):
-        assert self._row().stat_sig() is False
+        from increment import Analysis
+        from tests.analysis_factory import lift_rows
+
+        frame = _nonpositive_mean_unit_summary()
+        (row,) = lift_rows(
+            Analysis.from_unit_summary(
+                frame,
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics={"delta": "mean"},
+            ).run()
+        )
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert row.null_abs is None and row.lift is None
+        treatment = frame.loc[frame["variant"] == "treatment", "delta"].to_numpy()
+        control = frame.loc[frame["variant"] == "control", "delta"].to_numpy()
+        welch = ttest_ind(treatment, control, equal_var=False)
+        p_value = row.p_value()
+        assert p_value is not None
+        assert p_value == pytest.approx(welch.pvalue, rel=1e-10, abs=0.0)
+        assert row.stat_sig() is True
+        # The interval is the same Welch-t Wald interval the row reported before
+        # it carried decision evidence: the reference and its cut are untouched.
+        assert row.abs_reference_kind == "t"
+        assert row.abs_reference_df == pytest.approx(welch.df, rel=1e-12)
+        assert row.abs_diff is not None and row.abs_se is not None
+        half_width = _t.isf(0.025, row.abs_reference_df) * row.abs_se
+        assert row.abs_lb == pytest.approx(row.abs_diff - half_width, rel=1e-12)
+        assert row.abs_ub == pytest.approx(row.abs_diff + half_width, rel=1e-12)
+        assert row.abs_alpha == pytest.approx(0.05)
+
+    def test_cuped_adjusted_row_reads_its_own_additive_reference(self):
+        from increment.estimation.armstats import ArmStats
+        from increment.estimation.decision_types import PValueEvidence
+        from increment.estimation.engine import Method, estimate_lift
+        from increment.semantics.models import MeanMetric
+        from tests.estimation.test_engine import _summary_df
+
+        # A negative-mean metric with a moderately informative covariate: the
+        # adjusted contrast stays nonpositive and its p-value is a readable tail.
+        n, var_x, var_y = 1000, 1.0, 25.0
+        cov_xy = 0.5 * (var_x * var_y) ** 0.5
+
+        def arm(mean_y: float, mean_x: float, group_id: str) -> ArmStats:
+            sum_y, sum_x = n * mean_y, n * mean_x
+            return ArmStats.from_raw_sums(
+                study_id="e",
+                metric="rev",
+                group_id=group_id,
+                n=n,
+                sum_y=sum_y,
+                sum_y2=var_y * (n - 1) + sum_y**2 / n,
+                sum_x=sum_x,
+                sum_x2=var_x * (n - 1) + sum_x**2 / n,
+                sum_xy=cov_xy * (n - 1) + sum_x * sum_y / n,
+            )
+
+        computation = estimate_lift(
+            [MeanMetric(name="rev", entity="user", fact="rev")],
+            _summary_df([arm(-2.0, 0.0, "control"), arm(-1.0, 0.1, "treatment")]),
+            control_group="control",
+            methods=[Method(name="cuped", variance_reduction="cuped")],
+        )
+        (row,) = computation.results
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert row.abs_lb is not None and row.abs_ub is not None
+        expected = _additive_tail(row)
+        assert 0.0 < expected < 0.05
+        assert row.p_value() == pytest.approx(expected, rel=1e-12)
+        assert row.stat_sig() is (not row.abs_lb <= 0.0 <= row.abs_ub)
+        (evidence,) = computation.evidence.values()
+        assert isinstance(evidence, PValueEvidence)
+        assert evidence.p_value == pytest.approx(expected, rel=1e-12)
+
+    def test_normal_reference_row_uses_the_normal_tail(self):
+        row = self._row(
+            abs_reference_kind="normal",
+            abs_reference_df=None,
+            reference_kind="normal",
+            reference_df=None,
+        )
+        assert row.p_value() == pytest.approx(_additive_tail(row), rel=1e-12)
+        assert row.p_value() == pytest.approx(2.0 * _norm.sf(20.0), rel=1e-12)
+        assert row.stat_sig() is True
+
+    def test_clustered_t_reference_row_uses_its_cluster_degrees_of_freedom(self):
+        row = self._row(abs_reference_df=7.0, reference_df=7.0, n_clusters=9)
+        assert row.p_value() == pytest.approx(_additive_tail(row), rel=1e-12)
+        assert row.p_value() == pytest.approx(2.0 * _t.sf(20.0, 7.0), rel=1e-12)
+        assert row.stat_sig() is True
+
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    def test_one_sided_alternatives_read_one_tail(self, alternative):
+        row = self._row(alternative=alternative)
+        p_value = row.p_value()
+        assert p_value is not None
+        assert p_value == pytest.approx(_additive_tail(row), rel=1e-12)
+        # abs_diff=-1: a decrease is overwhelming evidence for "less", none for "greater".
+        assert row.stat_sig() is (alternative == "less")
+        assert (p_value < 0.05) is (alternative == "less")
+
+    def test_row_without_an_additive_interval_keeps_the_conservative_nonrejection(self):
+        row = self._row(
+            abs_se=None,
+            abs_lb=None,
+            abs_ub=None,
+            abs_reference_kind=None,
+            abs_reference_df=None,
+        )
+        assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+        assert row.p_value() == 1.0
+        assert row.stat_sig() is False
+
+    def test_a_declared_margin_keeps_the_margin_test(self):
+        row = self._row(
+            null_abs=-0.5,
+            abs_reference_kind="normal",
+            abs_reference_df=None,
+            reference_kind="normal",
+            reference_df=None,
+        )
+        assert row.p_value() == pytest.approx(_additive_tail(row, null=-0.5), rel=1e-12)
+        assert row.p_value() != pytest.approx(_additive_tail(row, null=0.0), rel=1e-12, abs=0.0)
+        assert row.stat_sig() is True
+
+    def test_round_trips_preserve_the_decision(self):
+        row = self._row()
+        expected = (row.p_value(), row.stat_sig())
+        assert expected[1] is True
+        for restored in (
+            LiftEstimate.model_validate_json(row.model_dump_json()),
+            pickle.loads(pickle.dumps(row)),
+            copy.deepcopy(row),
+        ):
+            assert (restored.p_value(), restored.stat_sig()) == expected
 
     def test_existing_joint_covariance_reasons_still_raise(self):
         row = self._row(relative_unavailable_reason="joint_covariance_indefinite")
