@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -33,6 +34,22 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "commit", "-qm", "base")
     base = _git(repo, "rev-parse", "HEAD")
     return repo, base
+
+
+def test_fixture_repo_ignores_inherited_git_dir(
+    repository: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import conftest
+
+    repo, _ = repository
+    other_repo = tmp_path / "other"
+    other_repo.mkdir()
+    _git(other_repo, "init", "-q")
+    monkeypatch.setenv("GIT_DIR", str(other_repo / ".git"))
+
+    conftest.pytest_sessionstart(cast(pytest.Session, None))
+
+    assert _git(repo, "rev-parse", "--show-toplevel") == str(repo)
 
 
 def _required(repo: Path, base: str, event: str = "pull_request") -> bool:

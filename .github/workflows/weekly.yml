@@ -33,7 +33,7 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           uv sync --group dev --extra demo --extra tables --extra dashboard
-          make test-fast PYTEST_ARGS="-n 4 --dist loadgroup --store-durations --durations-path .github/fast-test-durations.json"
+          make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
       - name: Upload fast-test durations
         if: matrix.python-version == '3.12' && steps.record-fast-durations.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

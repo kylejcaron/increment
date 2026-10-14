@@ -106,6 +106,36 @@ class OutputBlockParser:
 _DURATION_SNAPSHOT: tuple[tuple[str, float], ...] | None = None
 _PYTEST_ENVIRONMENT_SNAPSHOT = pytest.StashKey[dict[str, str]]()
 
+_GIT_LOCAL_ENVIRONMENT = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+)
+
+
+def _clear_git_repository_environment() -> None:
+    for name in _GIT_LOCAL_ENVIRONMENT:
+        os.environ.pop(name, None)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Keep test subprocesses from inheriting a hook's repository-local Git state."""
+    _clear_git_repository_environment()
+
 
 def _pytest_environment_controls() -> dict[str, str]:
     prefixes = ("COV_CORE_", "COVERAGE_")

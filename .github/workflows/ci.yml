@@ -54,7 +54,7 @@ jobs:
             export COVERAGE_CORE=sysmon
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
-          make test-fast WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Record fast coverage shard metadata
         if: always() && matrix.python-version == '3.12'
         env:
@@ -104,7 +104,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-slow WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --junitxml=junit.xml --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration"
+      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration"
       - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -201,7 +201,7 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --junitxml=junit.xml"
+      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml"
       - name: Retain certification JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

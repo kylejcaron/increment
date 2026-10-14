@@ -289,7 +289,7 @@ complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
 Refresh them with the complete fast suite, preserving worker group suffixes:
 
 ```bash
-make test-fast PYTEST_ARGS="-n auto --dist loadgroup --store-durations --durations-path .github/fast-test-durations.json"
+make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
 ```
 
 Functional-slow CI uses four isolated shards with workers inside each shard;
