@@ -200,7 +200,6 @@ def _runtime_methods(
     config: ResolvedMetricConfig,
     design: Randomized | Encouragement | Observational,
 ) -> list[Method]:
-    """Return one concrete method sequence for this metric and design."""
     return list(effective_methods(config, design=design))
 
 

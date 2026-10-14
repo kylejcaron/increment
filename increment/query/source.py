@@ -1539,6 +1539,57 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             {str(row[breakout.property]) for row in rows if row.get(breakout.property) is not None}
         )
 
+    def breakout_unit_frame(
+        self,
+        metric: Metric,
+        *,
+        breakout: Breakout,
+        covariates: Sequence[str] = (),
+        population: Literal["assigned", "triggered"] = "assigned",
+        outcome_stage: Literal["transformed", "raw"] = "transformed",
+    ) -> Any:
+        import narwhals as nw
+        import pyarrow as pa
+
+        from increment._source_types import breakout_dimension_column
+
+        if population == "triggered" and self._population_units is None:
+            return cast("_ArtifactFacadeSource", self.triggered_source()).breakout_unit_frame(
+                metric,
+                breakout=breakout,
+                covariates=covariates,
+                population=population,
+                outcome_stage=outcome_stage,
+            )
+        units = nw.from_native(
+            self.unit_frame(metric, covariates=covariates, outcome_stage=outcome_stage),
+            eager_only=True,
+        )
+        extension = self._extension(
+            {
+                "kind": "breakout_dimension",
+                "property_name": breakout.property,
+                "source_name": breakout.source,
+            }
+        )
+        rows = self._read_extension(extension, request=_artifact_request(extension))
+        values = {
+            str(row["unit_id"]): None if row.get("value_is_missing") else row["dimension_value"]
+            for row in rows
+        }
+        dimension = nw.from_native(
+            pa.table(
+                {
+                    "unit_id": [str(value) for value in units["unit_id"].to_list()],
+                    breakout_dimension_column(covariates): [
+                        values.get(str(value)) for value in units["unit_id"].to_list()
+                    ],
+                }
+            ),
+            eager_only=True,
+        )
+        return units.join(dimension, on="unit_id", how="left").to_native()
+
     def breakout_source(
         self,
         breakout: Breakout,
@@ -1588,6 +1639,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             plan=self.context.plan,
             configs=self.context.configs,
             _source=self,
+            population=population,
         )
 
     def breakout_sources(

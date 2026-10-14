@@ -32,6 +32,10 @@ class TriggeredPopulationSource:
         self.shape = source.shape
 
     @property
+    def population(self) -> Literal["triggered"]:
+        return "triggered"
+
+    @property
     def context(self) -> SourceContext:
         return self._source.context
 

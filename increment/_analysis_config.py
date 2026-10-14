@@ -31,7 +31,7 @@ from increment.semantics.models import ExperimentMetric, MethodSpec, Metric, Nor
 
 if TYPE_CHECKING:
     from increment._literals import MultiplicityCorrection
-    from increment._readout_request import Correction
+    from increment._readout_request import Correction, ReadoutRequest
     from increment.frame import MetricSpec
 
 
@@ -100,6 +100,20 @@ def effective_methods(
     methods = (decision, *config.sensitivity_methods)
     _validate_unique_method_names(methods, caller=f"metric {config.metric.name!r}")
     return methods
+
+
+def validate_readout_covariates(request: ReadoutRequest) -> None:
+    """Refuse an effective cuped_linear method whose metric declares no covariates.
+
+    Runs in the shared request preflight so a call-time override is refused
+    on every ingress before any source acquisition, matching the declaration
+    rule :func:`resolve_configs` applies to configured methods.
+    """
+    for config, methods in zip(request.configs, request.estimation_methods, strict=True):
+        if not config.covariates and any(
+            method.variance_reduction == "cuped_linear" for method in methods
+        ):
+            _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
 
 
 def normalize_display_correction(correction: MultiplicityCorrection) -> Correction:

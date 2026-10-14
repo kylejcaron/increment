@@ -24,6 +24,19 @@ from increment.errors import (
     refusals,
 )
 
+
+def breakout_dimension_column(covariates: Sequence[str]) -> str:
+    """Name the unit-frame segment column so it displaces no declared covariate.
+
+    Producers and consumers derive the name from the same covariate request,
+    so a covariate called ``__breakout_dimension`` keeps its own values.
+    """
+    name = "__breakout_dimension"
+    while name in covariates:
+        name += "_"
+    return name
+
+
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
