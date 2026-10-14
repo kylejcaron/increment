@@ -171,7 +171,8 @@ see [CUPED under sequential inference](#cuped-under-sequential-inference).
 
 With `Analysis.from_definitions`, Increment builds the covariate from
 the experiment's `n_pre_periods` setting. It totals each metric's value
-over those days strictly before each unit's first exposure. For a ratio
+over `[first exposure date − n_pre_periods days, first exposure timestamp)`,
+including exposure-day events before the unit's first exposure. For a ratio
 metric, it totals the numerator:
 
 ```yaml
