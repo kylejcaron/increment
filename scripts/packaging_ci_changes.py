@@ -7,6 +7,17 @@ import os
 import subprocess
 import sys
 
+_WHEEL_SMOKE_FILES = {
+    "pyproject.toml",
+    "uv.lock",
+    "MANIFEST.in",
+    "hatch_build.py",
+    "noxfile.py",
+    "scripts/wheel_smoke.py",
+    "scripts/packaging_ci_changes.py",
+    ".github/workflows/ci.yml",
+}
+
 
 def _requires_wheel_smoke(event: str, base: str, head: str) -> bool:
     if event != "pull_request":
@@ -29,8 +40,9 @@ def _requires_wheel_smoke(event: str, base: str, head: str) -> bool:
         path = os.fsdecode(entries[index + 1])
         if status not in {b"A", b"M"}:
             return True
-        if path in {"pyproject.toml", "uv.lock", "MANIFEST.in", "hatch_build.py"}:
+        if path in _WHEEL_SMOKE_FILES:
             return True
+
         if path.startswith("increment/") and (
             path.endswith("/py.typed") or not path.endswith(".py")
         ):

@@ -94,16 +94,14 @@ local fast/slow hooks until hosted success, failure/cancellation blocking,
 retained evidence, required-check configuration, and owner-approved activation
 have been verified. Workflow preparation alone does not establish those conditions.
 
-The two Python 3.12 fast CI shards also publish an optional combined executed-code
-coverage artifact when both shards succeed for the same commit and run attempt.
-It counts `increment/` source statements executed during the fast tier (including
-pytest-cov's measured test workers); it does not measure the slow or scientific
-tiers, establish whole-suite coverage, or rate test quality. Missing, failed or
-mismatched shard data is reported as incomplete and is not published as an
-aggregate. Collection runs inside the required shards to avoid a second fast-tier
-run, so a coverage save or combine error after the tests pass fails that shard. If
-that happens, remove the coverage arguments from the 3.12 shards rather than
-relaxing the test result.
+The Python 3.12 fast shards upload optional executed-code coverage artifacts.
+After the required jobs, `ci-ok` combines the matching shard artifacts and
+publishes a combined report when both are complete. This advisory step does not
+affect the required test result; missing, failed, or mismatched shard data means
+no combined report is published. Coverage counts `increment/` source statements
+executed during the fast tier (including pytest-cov's measured test workers); it
+does not measure the slow or scientific tiers, establish whole-suite coverage,
+or rate test quality.
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
@@ -360,9 +358,13 @@ Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
 and require dedicated scratch resources and credentials. Contributors do not
 need those services for ordinary changes.
 
-The checked-in CI candidate requires lint, fast tests on Python 3.12–3.14,
-functional slow tests, package builds, and live PostgreSQL 16 probes through
-`ci-ok`; hosted enforcement and required-check activation remain owner gates.
+The checked-in CI candidate requires lint, fast tests, functional slow tests,
+package builds, and live PostgreSQL 16 probes through `ci-ok`; hosted
+enforcement and required-check activation remain owner gates. PR fast tests run
+on Python 3.12 and 3.14; 3.13 remains in main pushes and weekly full/floor
+matrices. `ci-ok` validates every selected fast shard and required conditional
+gate. It combines Python 3.12 fast-shard coverage advisory; cross-platform wheel
+smoke runs for packaging-related PR changes and on pushes.
 PostgreSQL may skip a PR only when all changes are known prose or static
 documentation assets. Library, test, fixture, dependency, CI, unknown,
 deletion, and rename changes require it; an unavailable diff also requires it.
@@ -371,8 +373,9 @@ Main pushes never use this filter.
 The PR PostgreSQL gate runs one duration-balanced shard. The reusable
 warehouse workflow defaults to three shards for weekly and manual runs.
 
-Each fast Python-version cell has two duration-balanced `pytest-split` shards,
-with `xdist` workers inside each shard. `ci-ok` requires all six jobs. The
+Each selected fast Python-version cell has two duration-balanced `pytest-split`
+shards, with `xdist` workers inside each shard. `ci-ok` requires all four PR
+shards (Python 3.12/3.14) or all six main-push shards (Python 3.12–3.14). The
 machine-generated `.github/fast-test-durations.json` weights come from the
 complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
 Refresh them with the complete fast suite, preserving worker group suffixes:
