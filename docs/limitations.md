@@ -1,10 +1,11 @@
 # Statistical limitations
 
-Every result rests on assumptions. Use this page to check the limits that matter for your
-metric, method, or decision. Each entry opens with what the limit means for an analysis and
-what to do about it; the folds beneath hold the statistical detail, refusal codes and the
-measurements behind it. See [Evidence status](validation.md#evidence-status) for how the
-library labels its evidence.
+Use this page to check which assumptions and guarantees apply to your metric, method or
+decision. Start with [At a glance](#at-a-glance), then open the folds for statistical
+details, refusal codes and measurements; [Evidence status](validation.md#evidence-status)
+explains how the library labels its evidence.
+
+For a runnable analysis, follow the [quickstart](guides/quickstart.md#run-the-analysis).
 
 ## How to read a refusal
 
@@ -63,8 +64,8 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [Arm power planning depends on declared alternative-arm variance shapes](#arm-power-planning-depends-on-declared-alternative-arm-variance-shapes) | assumption | Planning when the treatment arm's variance may not follow the assumed shape. |
 | [Conversion planning follows the runtime's route; the finite-sample replay is bounded](#conversion-planning-follows-the-runtimes-route-the-finite-sample-replay-is-bounded) | approximation | Planning a conversion or retention test at large arms or with `conversion_inference="finite_sample"`. |
 | [Switchback planning requires its own model](#switchback-planning-requires-its-own-model) | approximation | Sizing a switchback from a pilot; the pilot's own uncertainty is not included. |
-| [DML reports a partially-linear slope, not an average treatment effect](#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect) | narrower estimand | Effects differ across units and you read DML as an average effect. |
-| [Only untrimmed native-logistic IPTW accounts for fitting its propensity](#only-untrimmed-native-logistic-iptw-accounts-for-fitting-its-propensity) | approximation | Using a trimmed or custom propensity fit; its standard error is understated. |
+| [DML reports a partially-linear slope, not an average treatment effect](#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect) | narrower estimand | Reading DML as an average effect when effects differ across units and treatment-assignment weights vary. |
+| [Only untrimmed native-logistic IPTW accounts for fitting its propensity](#only-untrimmed-native-logistic-iptw-accounts-for-fitting-its-propensity) | approximation | Using a trimmed or custom propensity fit; its standard error omits fitting uncertainty. |
 | [Trimming changes which population you estimated](#trimming-changes-which-population-you-estimated) | narrower estimand | Overlap trimming removed units; the result describes who is left. |
 | [The positivity gate is a fixed threshold with no weight diagnostics](#the-positivity-gate-is-a-fixed-threshold-with-no-weight-diagnostics) | scope of guarantee | Relying on weighting; passing the gate is not evidence of overlap. See [Unvalidated regimes](validation.md#unvalidated-regimes). |
 | [Fixed-horizon FDR control assumes a dependence condition that is not checked](#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked) | assumption | Selecting among correlated metrics that share a control arm. |
@@ -98,12 +99,13 @@ for row with that oracle.
 
 ### Uncertainty is estimated on every path
 
-No estimator here is handed a known variance: every interval comes from an uncertainty
-estimated from the data, through an approximation that differs by method family. Those
-approximations are weakest at small samples, for heavy-tailed outcomes and for ratio
-metrics. Only eligible conversion and retention rows labelled `reference_kind="binomial"`
-carry a finite-sample guarantee; every other interval, including the additive
-`abs_lb`/`abs_ub` sidecar on any route, is an approximation and is labelled as one.
+An interval's guarantee depends on its reference and assumptions, not just on estimating
+uncertainty from the data. Approximate references are weakest at small samples, for
+heavy-tailed outcomes and for ratio metrics. Finite-sample guarantees come from eligible
+fixed-horizon conversion and retention relative-risk sets labelled
+`reference_kind="binomial"`, prospective switchback `UnitCycleVarianceEnvelope` bounds,
+or the registered Bernoulli sequential route, each under its own declared assumptions;
+the binomial rows' additive `abs_lb`/`abs_ub` sidecar remains approximate.
 
 !!! warning "A feasibility floor is not a calibration guarantee"
     The sampling floor (two units per arm for most arm inference, twenty for a quantile)
@@ -545,6 +547,11 @@ The finite-sample interval is wider than necessary at moderate counts: on the lo
 is about 1.07–1.45× the Katz (log-scale Wald) interval at the measured shapes, because it
 orders candidates by the `r = 1` difference for every candidate. A tighter candidate-ordered
 construction that removes the gap at exact coverage is being evaluated.
+
+!!! warning "Neither conversion route supports repeated peeking"
+    Both routes are fixed-horizon: neither proves validity under optional stopping or
+    repeated peeking. To make decisions while monitoring an experiment, register
+    [sequential inference](guides/sequential-inference.md) before reading outcomes.
 
 !!! warning "Choose the route by the guarantee you need, not by width"
     Expect a wider interval on the finite-sample route when counts are moderate, and a null
@@ -1196,9 +1203,10 @@ under [Unvalidated regimes](validation.md#unvalidated-regimes).
 `estimate_policy_contrast` reports an interval that is asymptotic in the number of units
 and calibrated only when the logging policy was fixed: a trace logged under more than one
 policy version is refused (`logged_policy.inference.adaptive_logging_unsupported`), and
-every logging probability must meet the 0.05 floor
-(`logged_policy.trace.propensity_below_floor`). Under a fixed logger the interval is
-nominal from an effective sample size of 20 up (`ESS_FLOOR = 20`).
+every positive registered or recorded logging probability, chosen or not, must meet the
+0.05 floor (`logged_policy.trace.propensity_below_floor`). Exact zero support is allowed
+only where the evaluated policies also assign zero mass. Under a fixed logger the interval
+is nominal from an effective sample size of 20 up (`ESS_FLOOR = 20`).
 
 !!! warning "Adaptive loggers under-cover"
     Measured before the gate existed, adaptive loggers covered 86.4–89.6% at nominal 95%,
@@ -1624,9 +1632,10 @@ argument.
 ### DML reports a partially-linear slope, not an average treatment effect
 
 DML estimates the slope of a partially linear model, labelled `plr_slope`, which equals
-the average treatment effect only when effects are homogeneous. Where you expect
-heterogeneous effects, do not read a DML lift as a population ATE or compare it with IPTW
-or AIPW as though all three targeted the same quantity.
+the average treatment effect under homogeneous effects or constant weighting across the
+analysed population. With heterogeneous effects and varying weights, do not read a DML lift
+as a population ATE or compare it with IPTW or AIPW as though all three targeted the same
+quantity.
 
 ??? info "Statistical details: the slope's weighting and the relative DML row"
     The double machine-learning estimator identifies the slope of the partially linear model,
@@ -1856,6 +1865,11 @@ finite-cluster validity.
     weighting, correlation 0.5) each GATES interval missed 18 of 256 times against a nominal
     2.5%; the screen is a regression check, not a guarantee, and more repetitions do not
     remedy too few independent clusters.
+
+!!! warning "Selecting a policy does not give its value a nominal interval"
+    The selected inner winner and a policy value reported after the outer validation gate
+    still have no nominal confidence interval. The bootstrap does not remove this
+    selection restriction.
 
 ??? info "Statistical details: scores, clusters and weighting"
     With an `Observational` design, `validate_cate`, `targeting_rule`, and `select_targeting_rule` use doubly-robust scores; `Randomized` keeps IPW scores.
