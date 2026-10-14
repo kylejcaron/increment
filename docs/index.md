@@ -1,12 +1,8 @@
 # Increment
 
-Increment is an open-source Python library for A/B test analysis. It helps teams measure the impact of product changes using dataframes or SQL warehouses, with reusable metric definitions, effect estimates, uncertainty intervals, and shareable reports.
+Analyze A/B tests in Python from dataframes or SQL warehouses. Increment provides reusable metric definitions, effect estimates, uncertainty intervals, and shareable reports.
 
-Methods include exact constructions (such as Bernoulli e-processes), asymptotic
-approximations (such as `asymptotic_mean` confidence sequences), and empirically
-qualified procedures. Approximate results can carry advisory diagnostics rather
-than a refusal; see [Statistical limitations](limitations.md) for their guarantees
-and unresolved calibration limits.
+Methods include exact procedures, approximations, and empirically checked approaches. Results may include diagnostics instead of refusing; see [Statistical limitations](limitations.md) for guarantees and known calibration gaps.
 
 Requires Python 3.12, 3.13, or 3.14.
 

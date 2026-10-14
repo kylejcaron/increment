@@ -1,20 +1,23 @@
 # Triggered population dashboard
 
-This notebook builds a deterministic two-arm experiment with assignment events,
-trigger events, and outcomes. Its dashboard defaults to the triggered cohort and
-switches every readout together between **Assigned** and **Triggered**. The
-triggered-only caveat is always visible: triggered-cohort inference is
-appropriate only when triggering is unaffected by treatment. Definitions and
-unit-day artifacts with trigger evidence also expose triggered daily/as-of
-encouragement compliance; cohort membership begins at each trigger, but uptake
-windows remain anchored at assignment. If another source cannot provide
-triggered membership, its refusal remains visible rather than substituting the
-assigned population.
+This notebook creates a two-arm experiment with assignment, trigger, and
+outcome events. The dashboard defaults to the triggered cohort and switches
+all readouts together between **Assigned** and **Triggered**.
 
-Assigned-population allocation checks describe assignment integrity; triggered
-checks describe balance in the triggered cohort. They are separate statuses,
-not substitutes for each other. Registered sequential checkpoints stay
-assignment-scoped and are not borrowed for triggered group evidence.
+!!! warning "Triggered results need a treatment-independent trigger"
+    Triggered-cohort inference is appropriate only when treatment does not
+    affect triggering.
+
+Definitions and unit-day artifacts with trigger evidence also support
+triggered daily and as-of encouragement compliance. Cohort membership starts
+at each trigger, but uptake windows remain anchored at assignment. If a source
+cannot provide triggered membership, the notebook shows that refusal instead of
+substituting assigned users.
+
+Assigned-population allocation checks assess assignment integrity; triggered
+checks describe balance among triggered users. They are separate statuses.
+Registered sequential checkpoints apply to assigned users only and are not
+used as evidence for the triggered group.
 
 [Open the notebook in a full browser tab](triggered_population_dashboard.html)
 
@@ -22,4 +25,4 @@ assignment-scoped and are not borrowed for triggered group evidence.
 
 ## Next step
 
-See the [dashboard guide](../guides/dashboard.md) for binding a dashboard to your own experiment.
+See the [dashboard guide](../guides/dashboard.md) to connect a dashboard to your experiment.

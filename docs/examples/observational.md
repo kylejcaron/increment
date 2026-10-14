@@ -1,8 +1,8 @@
 # Observational
 
-This notebook compares a naive (confounded) estimate with an
-`Observational` + IPTW-adjusted estimate against known synthetic ground truth,
-so the bias and correction are visible in one run.
+Compare a confounded naive estimate with an IPTW-adjusted estimate from the
+`Observational` workflow. The synthetic data's known truth makes the bias and
+adjustment visible.
 
 [Open the notebook in a full browser tab](observational.html)
 

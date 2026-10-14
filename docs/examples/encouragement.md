@@ -1,8 +1,8 @@
-# Encouragement Design
+# Encouragement design
 
-This notebook runs a randomized encouragement analysis that reports
-assignment, uptake, ITT, compliance, and LATE from a single declared
-experiment.
+Analyze a randomized encouragement experiment. The notebook reports assignment,
+uptake, intent-to-treat effect (ITT), compliance, and local average treatment
+effect (LATE).
 
 [Open the notebook in a full browser tab](encouragement.html)
 
