@@ -378,9 +378,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         finally:
             self._assignment_validation_depth -= 1
 
-    def _get_fact_table(self, fact_source: FactSource) -> Table:
-        """Memoized fact table for *fact_source*, via the shared warehouse session."""
-        return self._session.fact_table(fact_source, self._experiment.unit)
+    def _get_fact_table(self, fact_source: FactSource, *, require_event: bool = True) -> Table:
+        """Memoized fact table with event-schema validation for event consumers."""
+        return self._session.fact_table(
+            fact_source, self._experiment.unit, require_event=require_event
+        )
 
     def _site_volume_scope_names(
         self, site_volume_metrics: frozenset[str], sources: dict[str, FactSource]
@@ -452,6 +454,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if self._session._source_tables is not None:
             return self
         sources: dict[str, FactSource] = {}
+        event_source_names: set[str] = set()
         queries: list[str] = []
         column_hints: dict[str, tuple[str | None, str | None]] = {}
         # Exposure/trigger SQL stays unscoped: it defines enrollment and the
@@ -462,6 +465,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         def add_fact(fact: str, *, unscoped: bool = False) -> str:
             source, _ = _find_fact_source(self._defs, fact)
             sources[source.name] = source
+            event_source_names.add(source.name)
             if unscoped:
                 unscoped_queries.add(source.sql)
             return source.name
@@ -537,7 +541,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
         for source in sources.values():
-            validate_fact_source_schema(self._session.source_sql(source.sql), source)
+            validate_fact_source_schema(
+                self._session.source_sql(source.sql),
+                source,
+                require_event=source.name in event_source_names,
+            )
         enrolled = self._scope_enrolled_units()
         # The generous lower margin limits only the snapshot copy, not builder
         # windows, and absorbs day-boundary edge cases. Add no upper ts bound:
@@ -808,7 +816,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         qualifying value is absent from the result and lands in the
         ``"__null__"`` bin via the caller's left join.
         """
-        raw = self._get_fact_table(fact_source)
+        raw = self._get_fact_table(fact_source, require_event=False)
         prop_def = next(p for p in self._defs.properties_of(fact_source) if p.name == property_name)
         scoped_exposures = exposures if prop_def.as_of == "pre_exposure" else None
         return breakout_property_table(raw, property_name, scoped_exposures)
