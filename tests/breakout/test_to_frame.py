@@ -146,3 +146,333 @@ def test_to_frame_open_side_distinguishes_open_from_closed_and_unavailable():
     assert by_segment.loc["MX", "lb"] == pytest.approx(0.05)
     assert pd.isna(by_segment.loc["MX", "ub"])
     assert by_segment.loc["MX", "open_side"] == "upper"
+
+
+def test_to_frame_summary_refuses_daily_metric_value():
+    from increment.breakout.estimates import DailyMetricValue, DailyMetricValues
+    from increment.errors import InvalidRequestError
+    from increment.estimation.results import Estimate
+
+    result = DailyMetricValues(
+        [
+            DailyMetricValue(
+                metric="rev",
+                group_id="treatment",
+                ds="2025-01-01",
+                value=Estimate(value=1.0),
+                n=10,
+            )
+        ]
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        result.to_frame(columns="summary")
+    assert raised.value.code == "results.frame.summary_unavailable"
+
+
+def test_to_frame_columns_validates_and_returns_canonical_order():
+    from increment.breakout.estimates import LiftEstimates
+    from increment.errors import InvalidRequestError
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    results = LiftEstimates(
+        [
+            LiftEstimate(
+                metric="rev",
+                group_id="treatment",
+                method="unadjusted",
+                method_role="decision",
+                lift=Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95),
+            )
+        ]
+    )
+    assert list(results.to_frame(columns=["ub", "metric", "lift"]).columns) == [
+        "metric",
+        "lift",
+        "ub",
+        "view_partial",
+    ]
+    with pytest.raises(InvalidRequestError) as raised:
+        results.to_frame(columns=["metric", "not_a_column"])
+    assert raised.value.code == "results.frame.unknown_columns"
+    assert raised.value.context["unknown"] == ("not_a_column",)
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_to_frame_refuses_empty_columns_without_dropping_rows(backend):
+    pytest.importorskip(backend)
+    from increment.breakout.estimates import LiftEstimates
+    from increment.errors import InvalidRequestError
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    results = LiftEstimates(
+        [
+            LiftEstimate(
+                metric="rev",
+                group_id="treatment",
+                method="unadjusted",
+                method_role="decision",
+                lift=Estimate(value=0.1),
+            )
+        ]
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        results.to_frame(backend=backend, columns=[])
+    assert raised.value.code == "results.frame.empty_columns"
+
+
+def test_to_frame_summary_presets_match_full_frame_subsets():
+    from datetime import date
+
+    from increment.breakout.estimates import (
+        BreakoutEstimate,
+        BreakoutEstimates,
+        DailyLiftEstimate,
+        DailyLiftEstimates,
+        LiftEstimates,
+    )
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    lift = Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95)
+    collections = [
+        (
+            LiftEstimates(
+                [
+                    LiftEstimate(
+                        metric="rev",
+                        group_id="treatment",
+                        method="unadjusted",
+                        method_role="decision",
+                        lift=lift,
+                    )
+                ]
+            ),
+            (
+                "metric",
+                "group_id",
+                "method",
+                "role",
+                "analysis_population",
+                "lift",
+                "lb",
+                "ub",
+                "discovery",
+                "failure_code",
+                "estimand",
+                "value_scale",
+                "decision_scope_complete",
+                "multiplicity_status",
+                "relative_unavailable_reason",
+                "view_partial",
+            ),
+        ),
+        (
+            BreakoutEstimates(
+                [
+                    BreakoutEstimate(
+                        metric="rev",
+                        group_id="treatment",
+                        method="unadjusted",
+                        method_role="decision",
+                        dimension="country",
+                        dimension_value="US",
+                        lift=lift,
+                    )
+                ]
+            ),
+            (
+                "metric",
+                "group_id",
+                "method",
+                "role",
+                "analysis_population",
+                "dimension",
+                "dimension_value",
+                "lift",
+                "lb",
+                "ub",
+                "discovery",
+                "failure_code",
+                "estimand",
+                "value_scale",
+                "decision_scope_complete",
+                "multiplicity_status",
+                "relative_unavailable_reason",
+                "excluded",
+                "view_partial",
+            ),
+        ),
+        (
+            DailyLiftEstimates(
+                [
+                    DailyLiftEstimate(
+                        metric="rev",
+                        group_id="treatment",
+                        method="unadjusted",
+                        method_role="decision",
+                        ds=date(2025, 1, 1),
+                        lift=lift,
+                    )
+                ]
+            ),
+            (
+                "metric",
+                "group_id",
+                "method",
+                "role",
+                "analysis_population",
+                "ds",
+                "lift",
+                "lb",
+                "ub",
+                "discovery",
+                "failure_code",
+                "dimension",
+                "dimension_value",
+                "estimand",
+                "value_scale",
+                "decision_scope_complete",
+                "multiplicity_status",
+                "unavailable",
+                "relative_unavailable_reason",
+                "view_partial",
+            ),
+        ),
+    ]
+
+    for results, expected_columns in collections:
+        full = cast(pd.DataFrame, results.to_frame())
+        summary = cast(pd.DataFrame, results.to_frame(columns="summary"))
+        assert set(summary.columns) == set(expected_columns)
+        pd.testing.assert_frame_equal(summary, full.loc[:, summary.columns])
+
+
+def test_encouragement_summary_retains_estimand_and_scale_identity():
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.breakout.estimates import LiftEstimates
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    df = pd.DataFrame(
+        [
+            ("u01", "control", 10.0, 0),
+            ("u02", "control", 12.0, 0),
+            ("u03", "control", 9.0, 0),
+            ("u04", "control", 20.0, 1),
+            ("u05", "treatment", 25.0, 1),
+            ("u06", "treatment", 30.0, 1),
+            ("u07", "treatment", 28.0, 1),
+            ("u08", "treatment", 15.0, 0),
+        ],
+        columns=["user_id", "variant", "revenue", "clicked"],
+    )
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked"),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="assignment only moves revenue via uptake"
+        ),
+        min_first_stage_z=0.5,
+    )
+    results = cast(
+        LiftEstimates,
+        Analysis.from_unit_summary(
+            df,
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=design,
+            uptake="clicked",
+        ).run(),
+    )
+
+    frame = cast(pd.DataFrame, results.to_frame(columns="summary"))
+    assert {"estimand", "value_scale"} <= set(frame.columns)
+    assert set(frame["estimand"]) == {"itt", "compliance", "late"}
+    identity = [
+        "metric",
+        "group_id",
+        "method",
+        "analysis_population",
+        "estimand",
+        "value_scale",
+    ]
+    assert frame.duplicated(identity).sum() == 0
+
+
+def test_dimensioned_daily_summary_retains_segment_identity_and_unavailability():
+    from datetime import date
+
+    from increment.breakout.estimates import DailyLiftEstimate, DailyLiftEstimates, run_daily_lift
+    from tests.breakout.test_daily import _make_daily_row, _mean_metric
+
+    day = date(2025, 1, 1)
+    rows = [
+        _make_daily_row(200, 10.0, 4.0, ds=day, group_id="control"),
+        _make_daily_row(200, 12.0, 4.0, ds=day, group_id="treatment"),
+        _make_daily_row(200, 20.0, 4.0, ds=day, group_id="control"),
+        _make_daily_row(200, 19.0, 4.0, ds=day, group_id="treatment"),
+    ]
+    for row in rows[:2]:
+        row["country"] = "US"
+    for row in rows[2:]:
+        row["country"] = "CA"
+    results = run_daily_lift(rows, [_mean_metric()], control_group="control", dimension="country")
+
+    frame = cast(pd.DataFrame, results.to_frame(columns="summary"))
+    assert {
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+        "unavailable",
+    } <= set(frame.columns)
+    assert set(frame["dimension_value"]) == {"US", "CA"}
+    identity = [
+        "metric",
+        "group_id",
+        "method",
+        "analysis_population",
+        "ds",
+        "dimension",
+        "dimension_value",
+        "estimand",
+        "value_scale",
+    ]
+    assert frame.duplicated(identity).sum() == 0
+
+    unavailable = DailyLiftEstimate(
+        metric="rev",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        ds=day,
+        lift=None,
+        unavailable="few_units",
+        dimension="country",
+        dimension_value="MX",
+    )
+    unavailable_frame = cast(
+        pd.DataFrame, DailyLiftEstimates([unavailable]).to_frame(columns="summary")
+    )
+    assert unavailable_frame.loc[0, "unavailable"] == "few_units"
+
+
+def test_selected_views_preserve_partial_and_scope_disclosures():
+    import warnings
+
+    from tests.test_readout_public_scope import _analysis, _frame
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        filtered = _analysis(_frame()).run().filter(lambda row: row.metric != "guard")
+
+    summary = cast(pd.DataFrame, filtered.to_frame(columns="summary"))
+    custom = cast(
+        pd.DataFrame,
+        filtered.to_frame(columns=["metric", "decision_scope_complete", "multiplicity_status"]),
+    )
+    for frame in (summary, custom):
+        assert frame["view_partial"].all()
+        assert not frame["decision_scope_complete"].any()
+        assert set(frame["multiplicity_status"]) == {"declared_plan"}

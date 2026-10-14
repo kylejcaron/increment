@@ -45,9 +45,11 @@ _DEFINITION_REFUSALS = refusals(
 _raise_definition = raiser(_DEFINITION_REFUSALS)
 
 
-def validate_fact_source_schema(tbl: Table, fs: FactSource) -> None:
-    """Refuse a source whose SQL omits columns required by fact consumers."""
-    required = {"event", fs.timestamp_column, *fs.entities}
+def validate_fact_source_schema(tbl: Table, fs: FactSource, *, require_event: bool = True) -> None:
+    """Require timestamp/entity aliases and an event alias when consumed as events."""
+    required = {fs.timestamp_column, *fs.entities}
+    if require_event:
+        required.add("event")
     missing = tuple(sorted(required - set(tbl.columns)))
     if missing:
         _raise_definition(
@@ -238,6 +240,7 @@ def _dim_joined_fact_table(
     dim_cache: dict[str, Table],
     *,
     resolve_sql: Callable[[str], Table] | None = None,
+    require_event: bool = True,
 ) -> Table:
     """Fact-source SQL -> declared dim joins -> builder column renames.
 
@@ -252,7 +255,7 @@ def _dim_joined_fact_table(
 
     resolve_sql = resolve_sql or default_resolver
     tbl = resolve_sql(fs.sql)
-    validate_fact_source_schema(tbl, fs)
+    validate_fact_source_schema(tbl, fs, require_event=require_event)
     if fs.dims:
         dim_by_name = {d.name: d for d in defs.dim_sources}
         pairs = []
