@@ -245,12 +245,12 @@ MATRIX: dict[str, dict[str, Cell]] = {
     },
     "breakout": {
         "mean": S(
-            note="native/panel run_breakout; unit-summary frame refuses (facade.analysis.operation)"
+            note="native/panel run_breakout and from_unit_summary breakouts; summaries remain total-only"
         ),
         "conversion": S(),
         "ratio": S(),
         "retention": S(
-            note="native/panel run_breakout; unit-summary frame refuses (facade.analysis.operation); bounded band"
+            note="bounded-band breakouts require date/window-aware definitions or panel inputs; unit summaries cannot construct retention metrics"
         ),
         "quantile": R(
             "quantiles do not decompose over segment moments",

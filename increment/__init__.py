@@ -178,6 +178,7 @@ if TYPE_CHECKING:
         declare_sequential_freeze,
         snapshot_from_json,
     )
+    from increment.summaries import moments_from_summaries
 
 try:
     __version__ = version("increment")
@@ -186,6 +187,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without an instal
 
 __all__ = [
     "Analysis",
+    "moments_from_summaries",
     "Report",
     "Definitions",
     "Metric",
@@ -420,6 +422,7 @@ _LAZY_IMPORTS = {
         "segment_rollout_recommendation",
     ),
     "estimate_policy_contrast": ("increment.logged_policy", "estimate_policy_contrast"),
+    "moments_from_summaries": ("increment.summaries", "moments_from_summaries"),
     "LoggedTrace": ("increment.logged_policy", "LoggedTrace"),
     "PolicyRegistry": ("increment.logged_policy", "PolicyRegistry"),
     "TabularPolicy": ("increment.logged_policy", "TabularPolicy"),

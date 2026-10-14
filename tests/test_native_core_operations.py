@@ -106,7 +106,11 @@ def test_plan_alpha_narrows_the_reported_absolute_interval() -> None:
             experiment=experiment,
             plan=experiment.plan.model_copy(update={"alpha": alpha}),
         )
-        row = next(r for r in lift_rows(analysis.run()) if r.metric == "purchase_rate")
+        row = next(
+            r
+            for r in lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+            if r.metric == "purchase_rate"
+        )
         assert row.abs_ub is not None and row.abs_lb is not None
         widths[alpha] = row.abs_ub - row.abs_lb
 
@@ -124,7 +128,7 @@ def test_call_wide_cuped_override_reaches_every_metric(seeded_pre_period_con, se
         store="none",
     )
     try:
-        unadjusted = lift_rows(analysis.run())
+        unadjusted = lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
         results = lift_rows(
             analysis.run(decision_method=Method(name="cuped", variance_reduction="cuped"))
         )

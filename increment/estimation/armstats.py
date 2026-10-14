@@ -1702,9 +1702,9 @@ def canonical_bernoulli_arm(arm: ArmStats, successes: int) -> ArmStats:
             sum_y=successes,
             n=n,
         )
-    ref_y = successes / n
-    cy1 = float(Fraction(successes) - n * Fraction(ref_y))
-    cy2 = float(Fraction(successes * (n - successes), n)) + scaled_cross_over_n(cy1, cy1, n)
+    from increment._bernoulli_moments import canonical_bernoulli_family
+
+    ref_y, cy1, cy2 = canonical_bernoulli_family(n, int(successes))
     return arm.model_copy(
         update={"ref_y": ref_y, "cy1": cy1, "cy2": cy2, "successes": int(successes)}
     )

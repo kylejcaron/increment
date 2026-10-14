@@ -54,7 +54,7 @@ def test_parity_case_ids_are_unique():
     ],
 )
 def test_prior_reset_matches_independent_prior_free_analysis(constructor):
-    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment import Analysis, AnalysisPlan, Method, MetricSpec
     from tests.analysis_factory import lift_rows
     from tests.parity_harness import dataset as ds
     from tests.parity_harness.cases import _prior_reset_case
@@ -80,7 +80,7 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
         plan=AnalysisPlan(secondaries=["revenue"]),
     )
     try:
-        expected = lift_rows(oracle.run())[0]
+        expected = lift_rows(oracle.run(decision_method=Method(name="unadjusted")))[0]
     finally:
         oracle.close()
     assert expected.discovery is True
@@ -88,9 +88,12 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
 
     analysis = _prior_reset_case().build[constructor]()
     try:
-        inherited = lift_rows(analysis.run(metrics=["revenue"]))[0]
+        method = Method(name="unadjusted")
+        inherited = lift_rows(analysis.run(metrics=["revenue"], decision_method=method))[0]
         for _ in range(2):
-            cleared = lift_rows(analysis.run(metrics=["revenue"], prior=None))[0]
+            cleared = lift_rows(
+                analysis.run(metrics=["revenue"], prior=None, decision_method=method)
+            )[0]
             assert cleared.discovery == expected.discovery
             assert cleared.family_axes == expected.family_axes
             assert cleared.prior_shrunk == expected.prior_shrunk is False
@@ -99,7 +102,7 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
                 wanted = getattr(expected.require_lift(), field)
                 assert wanted is not None
                 assert getattr(cleared.require_lift(), field) == pytest.approx(wanted)
-        restored = lift_rows(analysis.run(metrics=["revenue"]))[0]
+        restored = lift_rows(analysis.run(metrics=["revenue"], decision_method=method))[0]
         # The declared prior changes the posterior, not this secondary's
         # sampling-family membership; see docs/guides/priors-and-decisions.md:171-173.
         for row in (inherited, restored):

@@ -466,10 +466,13 @@ def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyP
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert manifest.base.exposures.digest_format == manifest.base.measure_stats.digest_format == 1
+    from increment.estimation.engine import Method
+
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    unadjusted = Method(name="unadjusted")
     try:
-        adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
-        native_rows = lift_rows(native.run(metrics=["purchase_rate"]))
+        adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
+        native_rows = lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))
         assert [row.require_lift().value for row in adopted_rows] == pytest.approx(
             [row.require_lift().value for row in native_rows]
         )
@@ -480,10 +483,13 @@ def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.integration
 def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
+    from increment.estimation.engine import Method
+
     _con, native, context, store, ref = _published()
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    native_rows = lift_rows(native.run(metrics=["purchase_rate"]))
-    adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
+    unadjusted = Method(name="unadjusted")
+    native_rows = lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))
+    adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
     assert adopted_rows[0].metric == native_rows[0].metric
     assert adopted_rows[0].require_lift().value == pytest.approx(
         native_rows[0].require_lift().value
@@ -492,7 +498,7 @@ def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
         native.run_daily(metrics=["purchase_rate"])
     )
     adopted.close()
-    assert lift_rows(adopted.run(metrics=["purchase_rate"]))
+    assert lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
 
 
 def _add_treatment_units(con: Any) -> None:
@@ -507,7 +513,15 @@ def _add_treatment_units(con: Any) -> None:
 
 
 def _purchase_lift(analysis: Analysis) -> float:
-    return lift_rows(analysis.run(metrics=["purchase_rate"]))[0].require_lift().value
+    from increment.estimation.engine import Method
+
+    return (
+        lift_rows(
+            analysis.run(metrics=["purchase_rate"], decision_method=Method(name="unadjusted"))
+        )[0]
+        .require_lift()
+        .value
+    )
 
 
 @pytest.mark.slow
@@ -740,6 +754,31 @@ def test_non_canonical_stored_rows_refuse() -> None:
     assert raised.value.code == "artifact.digest.type"
 
 
+@pytest.mark.integration
+def test_adopted_run_warns_for_published_cuped_covariate(tmp_path: Path) -> None:
+    import warnings
+
+    from tests.warning_codes import warning_codes, warning_context
+
+    definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
+    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    requests = _extensions(context, "cuped_preperiod")
+    assert any(request.metric_name == "purchase_rate" for request in requests)
+    ref = native.publish_unit_day_artifact(store, extensions=requests)
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            adopted.run(metrics=["purchase_rate"], sensitivity_methods=[])
+        assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 1
+        context_values = warning_context(caught, "analysis.cuped.covariate_unused")
+        assert context_values["metric_names"] == ("purchase_rate",)
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
 # Guards CUPED dispatch from dropping pre-period covariate moments on breakout and retention-day paths.
 @pytest.mark.integration
 def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
@@ -782,11 +821,29 @@ def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
         with_pre_period=True,
         with_late_returns=True,
     )
+    import warnings
+
+    from tests.warning_codes import warning_codes, warning_context
+
     assert native.experiment.n_pre_periods > 0
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        native.run(metrics=["d7_retention"], sensitivity_methods=[])
+    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
+    assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
+        "d7_retention",
+    )
     selected = _extensions(context, "cuped_preperiod")
     assert selected
     ref = native.publish_unit_day_artifact(store, extensions=selected)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        adopted.run(metrics=["d7_retention"], sensitivity_methods=[])
+    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
+    assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
+        "d7_retention",
+    )
     retention = next(metric for metric in adopted.metrics if metric.name == "d7_retention")
     with open_artifact(store, ref, expected_context=context) as source:
         daily_rows = source.moments(retention, grain="daily", include_covariate=True)
@@ -1816,13 +1873,20 @@ def test_equal_instants_in_different_offsets_share_one_context_for_adoption_and_
     assert utc_context.sha256 == offset_context.sha256
     assert utc_context == offset_context
 
+    from increment.estimation.engine import Method
+
+    unadjusted = Method(name="unadjusted")
     _con, native, _context, store = _native(definitions=offset)
     ref = native.publish_unit_day_artifact(store)
     refreshed = native.publish_unit_day_artifact(store, refresh_of=ref)
     adopted = Analysis.from_unit_day_artifact(store, refreshed, expected_context=utc_context)
     try:
-        assert lift_rows(adopted.run(metrics=["purchase_rate"]))[0].require_lift().value == (
-            pytest.approx(lift_rows(native.run(metrics=["purchase_rate"]))[0].require_lift().value)
+        assert lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))[
+            0
+        ].require_lift().value == pytest.approx(
+            lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))[0]
+            .require_lift()
+            .value
         )
     finally:
         adopted.close()
