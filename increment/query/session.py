@@ -1320,7 +1320,7 @@ class WarehouseSession:
     ) -> None:
         self._con = con
         self._defs = defs
-        self._fact_tables: dict[tuple[str, str], Table] = {}
+        self._fact_tables: dict[tuple[str, str, bool], Table] = {}
         self._source_tables: dict[str, Table] | None = None
         self._dim_tables: dict[str, Table] = {}
         self._materialized: list[_MaterializedRelation] = []
@@ -1421,15 +1421,16 @@ class WarehouseSession:
             )
         return pinned
 
-    def fact_table(self, fact_source: FactSource, unit: str) -> Table:
-        """Memoized fact-source SQL -> declared dim joins -> builder renames.
+    def fact_table(
+        self, fact_source: FactSource, unit: str, *, require_event: bool = True
+    ) -> Table:
+        """Memoize using the consumer's schema role.
 
-        Keyed by ``(fact_source.name, unit)``: two metrics sharing a fact
-        source at the same unit reuse one ``con.sql(...)`` call, and
-        `Report` can resolve a source at a unit other than the
-        experiment's own.
+        Property-only sources need timestamp/entity columns but no ``event``;
+        keep event and property views separately cached so one role cannot
+        weaken validation for the other.
         """
-        key = (fact_source.name, unit)
+        key = (fact_source.name, unit, require_event)
         cached = self._fact_tables.get(key)
         if cached is None:
             cached = _dim_joined_fact_table(
@@ -1439,6 +1440,7 @@ class WarehouseSession:
                 unit,
                 self._dim_tables,
                 resolve_sql=self.source_sql,
+                require_event=require_event,
             )
             self._fact_tables[key] = cached
         return cached
