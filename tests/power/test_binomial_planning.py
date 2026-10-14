@@ -16,7 +16,7 @@ import tracemalloc
 import weakref
 from decimal import Decimal
 from fractions import Fraction
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn, cast
 
 import numpy as np
 import pytest
@@ -203,6 +203,129 @@ class TestConversionExample:
         assert smaller.power < 0.8
 
 
+def _first_rejecting(reject, guess: int, low: int, high: int) -> int:
+    """Smallest treatment count in ``[low, high]`` at which ``reject`` holds (``high + 1`` when
+    none), for a predicate that holds from some count on. The bracket is grown from ``guess``
+    by doubling steps and closed by bisection, so a guess a count or two off costs two calls."""
+    if reject(guess):
+        passing, step = guess, 1
+        failing = guess - 1
+        while failing >= low and reject(failing):
+            passing, failing, step = failing, failing - step, 2 * step
+        if failing < low:
+            return low
+    else:
+        failing, step = guess, 1
+        passing = guess + 1
+        while passing <= high and not reject(passing):
+            failing, passing, step = passing, passing + step, 2 * step
+        if passing > high:
+            return high + 1
+    while passing - failing > 1:
+        middle = (failing + passing) // 2
+        if reject(middle):
+            passing = middle
+        else:
+            failing = middle
+    return passing
+
+
+def _standard_plan_reference(
+    n: int, p_c: float, p_t: float, procedure: ArmPlanningProcedure
+) -> tuple[float, float]:
+    """A bracket on the rejection probability of the runtime's own decision at ``n`` units per
+    arm, from ``binomial_rr.p_plus``/``p_minus`` (the runtime's p-values, about 30 ms each at
+    these counts) and SciPy's binomial tails; it shares no code with the planner.
+
+    Premise: at a fixed control count the runtime's p-value for ``R > r0`` is nonincreasing in
+    the treatment count and the one for ``R < r0`` nondecreasing, so each retained control row
+    rejects on a plus tail ``[t, n]`` and a minus head ``[0, s]`` of treatment counts, each
+    located from the previous row's by `_first_rejecting`. The premise is spot-checked on a
+    sample of rows: no decision reverses within 16 counts on either side of a located
+    threshold (`_monotone_about`). The plus tails and the minus heads of the rows that carry
+    material minus mass are summed exactly; the other rows' minus heads lie below a count near
+    a Normal guess whose minus p-value reaches the tail level, and that count's head mass,
+    with the control mass outside the retained rows, is the bracket's width."""
+    decision = procedure.decision
+    assert isinstance(decision, RelativeDecisionPolicy)
+    r0 = 1.0 + decision.null_lift
+    beta = binomial_rr.nuisance_beta(procedure.compiled_alpha)
+    tail = procedure.compiled_tail_alpha
+    control = binom(n, p_c)
+    lo, hi = int(control.ppf(1e-10)), int(control.isf(1e-10))
+    treatment = binom(n, p_t)
+    mass, slack = 0.0, float(control.cdf(lo - 1) + control.sf(hi))
+    plus_from = round(n * p_c * (1.0 + 2.0 * math.sqrt(2.0 * (1.0 - p_c) / (n * p_c))))
+    minus_to: int | None = None
+    sampled = max(1, (hi - lo) // 4)
+    for x_c in range(lo, hi + 1):
+        weight = float(control.pmf(x_c))
+
+        def rejects_plus(x_t: int, x_c: int = x_c) -> bool:
+            return binomial_rr.p_plus(r0, x_c, n, x_t, n, beta, tail=tail) < tail
+
+        def keeps_minus(x_t: int, x_c: int = x_c) -> bool:
+            return binomial_rr.p_minus(r0, x_c, n, x_t, n, beta, tail=tail) >= tail
+
+        plus_from = _first_rejecting(rejects_plus, min(plus_from + 1, n), 0, n)
+        mass += weight * float(treatment.sf(plus_from - 1))
+        if (x_c - lo) % sampled == 0:
+            _monotone_about(rejects_plus, plus_from, n)
+        near = max(0, x_c - round(1.5 * math.sqrt(2.0 * x_c * (1.0 - x_c / n))))
+        if minus_to is None and weight * float(treatment.cdf(near - 1)) < 1e-9:
+            while not keeps_minus(near):
+                near += 8
+            slack += weight * float(treatment.cdf(near - 1))
+            continue
+        minus_to = _first_rejecting(keeps_minus, near if minus_to is None else minus_to + 1, 0, n)
+        mass += weight * float(treatment.cdf(minus_to - 1))
+        if (x_c - lo) % sampled == 0:
+            _monotone_about(keeps_minus, minus_to, n)
+    return mass, mass + slack
+
+
+def _monotone_about(holds, threshold: int, n: int, reach: int = 16) -> None:
+    """Assert ``holds`` is false at every count within ``reach`` below ``threshold`` and true
+    at every count within ``reach`` from it on, within ``[0, n]``: the step the reference
+    assumes has no reversal near where it was located."""
+    assert not any(holds(x) for x in range(max(0, threshold - reach), min(threshold, n + 1)))
+    assert all(holds(x) for x in range(threshold, min(n, threshold + reach) + 1))
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+class TestStandardConversionPlan10pctBaseline10pctLift:
+    """The standard conversion plan (10% baseline, 10% relative lift, two-sided 0.05, 80%
+    power) is sized, and sized soundly: the runtime's rejection probability at the returned size
+    reaches the target. The published bounds at the returned size and at two fixed sizes hold an
+    independent bracket on that probability, and are narrow. Each reference costs about a
+    minute at these counts, so the sizes are certified one test at a time."""
+
+    PROCEDURE = ArmPlanningProcedure.standard("conversion")
+    BASELINE = Baseline.from_proportion(0.10)
+
+    def test_the_returned_size_reaches_the_target_at_the_runtime_decision(self):
+        target = PowerDesign().power
+        sized = required_sample_size(0.10, self.BASELINE, self.PROCEDURE)
+        assert sized.power_basis in ("exact", "lower_bound")
+        assert sized.power_lower is not None and sized.power_upper is not None
+        assert sized.power_lower >= target
+        assert sized.power_lower <= sized.power <= sized.power_upper
+        low, high = _standard_plan_reference(sized.n_per_arm, 0.10, 0.11, self.PROCEDURE)
+        assert low >= target
+        assert sized.power_lower <= low <= high <= sized.power_upper
+
+    @pytest.mark.parametrize("n", [14_000, 14_800])
+    def test_achieved_power_bounds_hold_the_runtime_rejection_probability(self, n):
+        at = achieved_power(n, 0.10, self.BASELINE, self.PROCEDURE)
+        assert at.power_lower is not None and at.power_upper is not None
+        assert at.power_lower <= at.power <= at.power_upper
+        assert at.power_upper - at.power_lower < 1e-3
+        low, high = _standard_plan_reference(n, 0.10, 0.11, self.PROCEDURE)
+        assert high - low < 1e-6
+        assert at.power_lower <= low <= high <= at.power_upper
+
+
 def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     """The size search runs over assigned units, so the returned size and
     its assigned predecessor are judged at the analyzed counts
@@ -216,6 +339,74 @@ def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     assert sized.power_basis == "exact"
     assert sized.power >= PowerDesign().power
     assert achieved_power(sized.n_per_arm - 1, 0.8, baseline, procedure).power < 0.8
+
+
+@pytest.mark.parametrize("offset", [0, 1, -64, 100_000])
+def test_a_bracket_at_a_huge_size_is_closed_from_every_side(offset):
+    """At 2**60 units adjacent integers share a float square root. Whether the search starts on
+    the answer, just above it, below it (climbing) or far above it (narrowing), every slope it
+    measures is a rise over an integer gap, so the verified size is returned with a finite
+    positive slope rather than a division by zero."""
+    from increment.power._binomial import BinomialPower
+    from increment.power.core import _SizeBracket
+
+    answer = 2**60 + 129
+
+    def evaluate(n: int) -> BinomialPower:
+        return BinomialPower(
+            plus=0.9 if n >= answer else 0.7, minus=0.0, omitted=0.0, inflation=1.0
+        )
+
+    def unreachable(lo: int, reached: BinomialPower) -> NoReturn:
+        raise AssertionError("the bracket closes below the ceiling")
+
+    search = _SizeBracket(0.8, 2, 2**62, 0.8416, 1.96)
+    assert math.sqrt(answer) == math.sqrt(answer - 1)
+    size, slope = search.crossing(evaluate, answer + offset, unreachable=unreachable)
+    assert size == answer
+    assert slope is not None and math.isfinite(slope) and slope > 0.0
+
+
+def test_a_passed_over_straddling_band_leaves_an_uncertified_target_unresolved(monkeypatch):
+    """Effects whose enclosures the budgets leave holding the target are passed over; when no
+    later effect certifies it, the search has not established unattainability and refuses as
+    unresolved, naming the band and an enclosure whose upper end is the band's interval bound
+    (which covers the interior), not the larger endpoint upper end (which need not)."""
+    from increment.power import core
+    from increment.power._binomial import BinomialPower
+
+    baseline, procedure, target = Baseline.from_proportion(0.2), _conversion(), 0.8
+    band = (0.2, 0.4)  # log-scale distances whose enclosures straddle the target
+    short = BinomialPower(plus=0.5, minus=0.0, omitted=0.0, inflation=1.0)
+    straddle = BinomialPower(plus=0.79, minus=0.0, omitted=0.0, inflation=1.0, ambiguous=0.05)
+    assert straddle.lower < target <= straddle.upper and not straddle.resolved
+
+    def value(self, probe):
+        return straddle if band[0] <= probe.distance <= band[1] else short
+
+    interior = 0.95  # the interval bound over the band, strictly above both endpoint uppers
+    assert interior > straddle.upper > target
+
+    def bound(self, lo, hi, left, right):
+        low, high = sorted((math.log1p(lo), math.log1p(hi)))
+        return interior if low <= band[1] and high >= band[0] else 0.0
+
+    monkeypatch.setattr(core._BinomialMdeSearch, "value", value)
+    monkeypatch.setattr(core._BinomialMdeSearch, "_bound", bound)
+    bounded = core._bounded_preflight(procedure, baseline, null_lift=0.0)
+    plan = core._ArmPlan(procedure, baseline, 60, 60, None, bounded)
+    model = core._binomial_plan(procedure, baseline, plan, {})
+    search = core._BinomialMdeSearch.of(
+        plan, model, target=target, null_lift=0.0, alternative="two-sided"
+    )
+    refusal = core._ordered_exclusion(search)
+    assert isinstance(refusal, core._MdeRefusal)
+    assert refusal.reason == "numerical_resolution"
+    lo, hi = cast("tuple[float, float]", refusal.context["unresolved_interval"])
+    assert math.expm1(band[0]) - 1e-6 <= lo <= hi <= math.expm1(band[1]) + 1e-6
+    lower, upper = cast("tuple[float, float]", refusal.context["power_enclosure"])
+    assert lower == straddle.lower < target
+    assert upper == interior
 
 
 def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
@@ -972,19 +1163,24 @@ class TestPlanningNumericalEnclosure:
             )
             assert Decimal(result.lower) <= retained <= Decimal(result.upper)
 
-    def test_endpoint_target_uses_point_power_not_its_lower_bound(self):
-        """The endpoint power is 11/32; roundoff no longer forces a lower-bound target."""
+    def test_endpoint_target_is_certified_by_the_enclosures_lower_end(self):
+        """The endpoint power is 11/32. A target at the computed lower end is reached there; one
+        the enclosure straddles is not certified, and one above the enclosure is unattainable."""
         baseline = Baseline.from_proportion(0.5)
         endpoint = planned_enclosure(6, 1.0, baseline, _FAR_END)
         assert Fraction(endpoint.lower) <= Fraction(11, 32) <= Fraction(endpoint.upper)
         assert endpoint.absolute_error <= _binomial.RESOLUTION
-        target = min(11 / 32, endpoint.power)
-        found = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=target))
+        found = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=endpoint.lower))
         assert found.mde_relative is not None
         assert found.mde_relative == pytest.approx(1.0, abs=2e-8)
-        assert found.power >= target
+        assert found.power >= endpoint.lower
+        assert found.power_lower is not None and found.power_lower >= endpoint.lower
         at_effect = achieved_power(6, found.mde_relative, baseline, _FAR_END)
-        assert found.power == at_effect.power
+        assert (found.power, found.power_lower, found.power_upper) == (
+            at_effect.power,
+            at_effect.power_lower,
+            at_effect.power_upper,
+        )
 
         with pytest.raises(InvalidRequestError) as above:
             minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 + 1e-9))
@@ -1017,7 +1213,7 @@ class TestPlanningNumericalEnclosure:
         assert units > 10**8 and sized.power == computed.power >= target
         assert computed.absolute_error <= _binomial.RESOLUTION
         predecessor = achieved_power(units - 1, 0.5, baseline, procedure)
-        assert predecessor.power < target
+        assert predecessor.power_lower is not None and predecessor.power_lower < target
 
 
 class TestPublishedPowerIsTheAdmittedPoint:
@@ -1047,16 +1243,25 @@ class TestPublishedPowerIsTheAdmittedPoint:
         assert result.power == computed.power
         assert abs(result.power - runtime) <= computed.absolute_error
 
-    def test_a_target_the_computed_mass_meets_is_met_at_its_size(self):
-        """The point estimate, not its lower bound, determines whether a size reaches target."""
+    def test_a_target_the_enclosures_lower_end_meets_is_met_at_its_size(self):
+        """The enclosure's lower end, not the computed point, decides whether a size reaches
+        the target: a target at the point itself is straddled, so the size does not certify it
+        and the search returns a larger one whose lower end does."""
         baseline, procedure, lift, n = Baseline.from_proportion(0.3), _conversion(), 1.0, 26
         computed = planned_enclosure(n, lift, baseline, procedure)
-        design = PowerDesign(power=computed.power)
-        assert computed.lower < design.power
-        at_size = achieved_power(n, lift, baseline, procedure, design)
-        sized = required_sample_size(lift, baseline, procedure, design)
+        assert computed.lower < computed.power
+        certified = PowerDesign(power=computed.lower)
+        sized = required_sample_size(lift, baseline, procedure, certified)
         assert sized.n_per_arm == n
-        assert at_size.power == design.power <= sized.power
+        assert sized.power == computed.power
+        assert sized.power_lower == computed.lower >= certified.power
+        straddled = PowerDesign(power=computed.power)
+        at_size = achieved_power(n, lift, baseline, procedure, straddled)
+        assert at_size.power_lower is not None and at_size.power_upper is not None
+        assert at_size.power_lower < straddled.power <= at_size.power_upper
+        sized = required_sample_size(lift, baseline, procedure, straddled)
+        assert sized.n_per_arm > n
+        assert sized.power_lower is not None and sized.power_lower >= straddled.power
 
     def test_every_public_path_publishes_the_same_point(self):
         baseline, procedure = Baseline.from_proportion(0.3), _conversion()
@@ -1191,7 +1396,9 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
     """Interval exclusion must find the earliest band, within numerical effect tolerance,
     without assuming that point power or its selected cells vary monotonically."""
 
-    def test_a_target_at_the_null_point_is_a_zero_effect_not_numerically_unresolved(self):
+    def test_a_target_the_null_certifies_is_a_zero_effect_and_one_it_straddles_is_unresolved(
+        self,
+    ):
         baseline = Baseline.from_proportion(0.9)
         procedure = _conversion(null_lift=-0.25)
         allocation = 0.35
@@ -1200,18 +1407,21 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
         )
         at_top = achieved_power(10, 0.11, baseline, procedure, PowerDesign(allocation=allocation))
         assert at_top.power < at_null.power / 2
+        assert at_null.lower < at_null.power <= at_null.upper
 
         def effect(target: float) -> PowerResult:
             design = PowerDesign(power=target, allocation=allocation)
             return minimum_detectable_effect(10, baseline, procedure, design)
 
-        with pytest.raises(InvalidRequestError) as raised:
+        for certified in (at_null.lower, at_null.power * (1.0 - 1e-9)):
+            with pytest.raises(InvalidRequestError) as raised:
+                effect(certified)
+            assert raised.value.code == "power.minimum_detectable_effect.design_search_minimum"
+        with pytest.raises(InvalidRequestError) as inside:
             effect(at_null.power)
-        assert raised.value.code == "power.minimum_detectable_effect.design_search_minimum"
-
-        with pytest.raises(InvalidRequestError) as below:
-            effect(at_null.power * (1.0 - 1e-9))
-        assert below.value.code == "power.minimum_detectable_effect.design_search_minimum"
+        assert inside.value.code == "power.minimum_detectable_effect.numerical_resolution"
+        lower, upper = cast("tuple[float, float]", inside.value.context["power_enclosure"])
+        assert lower <= at_null.power <= upper
         with pytest.raises(InvalidRequestError) as above:
             effect(at_null.power * (1.0 + 1e-9))
         assert above.value.code == "power.minimum_detectable_effect.unattainable"
@@ -1421,7 +1631,8 @@ class TestApproximateRoute:
 
         monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 2_000)
         enclosure = planned_enclosure(n, p_t / p_c - 1.0, Baseline.from_proportion(p_c), procedure)
-        assert enclosure.basis == "approximate"
+        assert enclosure.basis == "lower_bound"
+        assert enclosure.published == enclosure.lower
         assert enclosure.ambiguous > _binomial.RESOLUTION
         assert enclosure.lower <= enclosure.power <= exact + 1e-12
         assert enclosure.lower <= exact <= enclosure.upper
@@ -1881,8 +2092,14 @@ class TestPowerBasisSurvivesSerialization:
     def test_result_round_trips(self):
         result = achieved_power(60, 0.8, Baseline.from_proportion(0.2), _conversion())
         assert result.power_basis == "exact"
+        assert result.power_lower is not None and result.power_upper is not None
+        assert result.power_lower <= result.power <= result.power_upper
         dumped = result.model_dump(mode="json")
         assert dumped["power_basis"] == "exact"
+        assert (dumped["power_lower"], dumped["power_upper"]) == (
+            result.power_lower,
+            result.power_upper,
+        )
         assert PowerResult.model_validate(json.loads(json.dumps(dumped))) == result
 
     @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])

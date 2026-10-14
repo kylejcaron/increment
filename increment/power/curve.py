@@ -76,7 +76,8 @@ class PowerCurvePoint(CodedModel, BaseModel):
     no minimum detectable effect exists at that row's size and target
     (see ``PowerResult``); frames keep the column numeric with a null.
     ``power_basis`` names the planning model behind ``power`` and
-    ``mde_relative``, as on ``PowerResult``. ``numerical_qualification`` is
+    ``mde_relative``, and ``power_lower``/``power_upper`` carry an enumerated
+    enclosure, as on ``PowerResult``. ``numerical_qualification`` is
     copied from that result and records the arithmetic scope of the reported
     model, not its statistical guarantee.
     """
@@ -90,12 +91,13 @@ class PowerCurvePoint(CodedModel, BaseModel):
     target_power: float
     alpha: float
     power: float
+    power_lower: float | None = None
+    power_upper: float | None = None
     power_basis: PowerBasis
     numerical_qualification: Literal[
         "closed_form_model_only_v1",
         "sequential_crossing_quadrature_v1",
         "scipy_special_function_error_model_conditional_v1",
-        "unclaimed_approximation_diagnostic_v1",
     ]
     mde_relative: float | None
     mde_unavailable_reason: MdeUnavailableReason | None = None
@@ -256,6 +258,8 @@ def _point_from_result(
         target_power=job.design.power,
         alpha=job.procedure.compiled_alpha,
         power=result.power,
+        power_lower=result.power_lower,
+        power_upper=result.power_upper,
         power_basis=result.power_basis,
         numerical_qualification=result.numerical_qualification,
         mde_relative=result.mde_relative,
