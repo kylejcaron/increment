@@ -956,8 +956,10 @@ def select_exploratory_family(
     realized ``R*q/m``, ``None`` when nothing is selected) and ``family_size`` (``m``), so a row
     read alone states which family corrected it.
 
-    Selection is ``select_family`` over the p-values the estimators themselves emit, so
-    discovery equals ``bh_select`` on those p-values, ties at the threshold included. A selected
+    Selection is ``select_family`` over each member's family evidence -- the p-value the
+    estimators themselves emit, which for a delta-route conversion row is the composite of its
+    persisted counts rather than its delta p-value -- so discovery equals ``bh_select`` on that
+    evidence, ties at the threshold included. A selected
     row's interval is reissued at the Benjamini-Yekutieli level ``1 - R*q/m``, capped at the
     row's own nominal level, from the construction the row persists: the Wald interval from its
     raw statistics and reference, the exact binomial set from its counts, or the Fieller set

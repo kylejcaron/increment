@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import pickle
-import time
 
 import numpy as np
 import pytest
@@ -643,11 +642,23 @@ class TestPersistedRowsRoundTrip:
             LiftEstimate.model_validate(payload)
         assert getattr(raised.value, "code", None) == "estimation.results.delta.dense_level"
 
-    def test_restoring_a_row_with_evidence_costs_two_rule_evaluations(self):
+    def test_restoring_a_row_with_evidence_evaluates_the_rule_twice(self, monkeypatch):
+        """The restored level is checked by two evaluations of the count rule (dense at the
+        level, not one float below), never by a fresh inversion over the floats."""
+        import increment.estimation.conversion_route as conversion_route
+
         row = lift_row((2_500, 50_000, 2_700, 50_000))
         payload = row.model_dump(mode="python")
-        started = time.perf_counter()
-        for _ in range(200):
-            LiftEstimate.model_validate(payload)
-        per_row = (time.perf_counter() - started) / 200
-        assert per_row < 2e-3, per_row
+        rule = conversion_route.dense_min_count
+        calls: list[float] = []
+
+        def counted(tail: float) -> int:
+            calls.append(tail)
+            return rule(tail)
+
+        monkeypatch.setattr(conversion_route, "dense_min_count", counted)
+        LiftEstimate.model_validate(payload)
+        assert len(calls) == 2
+        assert row.delta_evidence is not None
+        tail = row.delta_evidence.dense_level / 2.0
+        assert calls == [tail, math.nextafter(tail, 0.0)]
