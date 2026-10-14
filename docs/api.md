@@ -115,6 +115,14 @@ with them and are not a source from which to recover one. Preserve count
 columns as integers through storage and partition merges; do not cast them
 through floating point.
 
+For per-arm aggregate statistics rather than an exported cube, use
+`moments_from_summaries(rows, metrics=..., control=..., study_id=...)` and
+pass its rows to `Analysis.from_moments`. It supports fixed-horizon mean
+summaries (`n`, `mean`, ddof=1 `var`) and conversion summaries (`n`, exact
+integer `successes`); centered moments are constructed without synthesizing
+raw sums. Ratio, covariate, cluster, and sequential requests are refused with
+`moments.summaries.unsupported` and route to `from_unit_summary`.
+
 **Unit-day artifacts.** Artifact context format 2 is the only supported
 context. It carries no fact, dimension or exposure SQL; source recipes are
 represented by domain-tagged SHA-256 digests. Opening or publishing with a

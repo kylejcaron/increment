@@ -293,6 +293,14 @@ depends_on = [
   "increment.sources", "increment.switchback",
 ]
 
+
+[[modules]]
+path = "increment.summaries"
+depends_on = [
+  "increment._analysis_config", "increment._moment_plan", "increment._source_identity",
+  "increment.decision_wire", "increment.errors", "increment.frame", "increment.plan",
+  "increment.semantics", "increment.sources",
+]
 [[modules]]
 path = "increment.switchback"
 depends_on = [

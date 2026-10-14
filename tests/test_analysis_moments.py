@@ -835,3 +835,157 @@ def test_moments_cube_normalizes_arm_identity_before_duplicate_check():
         with pytest.raises(CodedError) as refusal:
             Analysis.from_moments(cube, metrics={"revenue": "mean"}, control="control")
         assert refusal.value.code == "moments.rows.duplicate"
+
+
+def test_moments_from_summaries_replays_mean_and_conversion_summary(tmp_path):
+    import pandas as pd
+
+    from increment import Analysis, moments_from_summaries
+
+    units = [
+        {"unit": f"{group}-{index}", "arm": group, "value": value, "converted": converted}
+        for group, values, conversions in (
+            ("control", [0.0, 1.0, -1.0], [0, 1, 0]),
+            ("treatment", [2.0, 3.0, 1.0], [1, 1, 0]),
+        )
+        for index, (value, converted) in enumerate(zip(values, conversions, strict=True))
+    ]
+    offset_units = [{**unit, "value": 1_000_000_000.0 + float(unit["value"])} for unit in units]
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(offset_units),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean", "converted": "conversion"},
+        experiment_id="summary-audit",
+    )
+
+    import pyarrow.parquet as pq
+
+    source_export = tmp_path / "source.parquet"
+    original.export(source_export)
+    source_rows = {
+        (row["metric"], row["group_id"]): row for row in pq.read_table(source_export).to_pylist()
+    }
+    summaries = [
+        {"metric": "value", "group_id": group, "n": 3, "mean": mean, "var": 1.0}
+        for group, mean in (("control", 1_000_000_000.0), ("treatment", 1_000_000_002.0))
+    ] + [
+        {"metric": "converted", "group_id": group, "n": 3, "successes": successes}
+        for group, successes in (("control", 1), ("treatment", 2))
+    ]
+    exported = moments_from_summaries(
+        summaries,
+        metrics={"value": "mean", "converted": "conversion"},
+        control="control",
+        study_id="summary-audit",
+    )
+    replay = Analysis.from_moments(
+        exported,
+        metrics={"value": "mean", "converted": "conversion"},
+        control="control",
+    )
+    original_rows = {row.metric: row for row in _lift_rows(original.run())}
+    replay_rows = {row.metric: row for row in _lift_rows(replay.run())}
+    for metric, original_row in original_rows.items():
+        replay_row = replay_rows[metric]
+        assert replay_row.require_lift().value == pytest.approx(
+            original_row.require_lift().value, abs=1e-10
+        )
+        assert replay_row.require_lift().lb == pytest.approx(
+            original_row.require_lift().lb, abs=1e-10
+        )
+        assert replay_row.require_lift().ub == pytest.approx(
+            original_row.require_lift().ub, abs=1e-10
+        )
+    assert {row["moments_format"] for row in exported} == {12}
+    assert all(row["decision_plan"] and row["source_identity"] for row in exported)
+    from increment.sources import WINSORIZATION_MOMENT_FIELDS
+
+    assert all(all(field in row for field in WINSORIZATION_MOMENT_FIELDS) for row in exported)
+
+    for row in exported:
+        source_row = source_rows[(row["metric"], row["group_id"])]
+        assert row["decision_plan"] == source_row["decision_plan"]
+        assert row["source_identity"] == source_row["source_identity"]
+
+
+def test_moments_from_summaries_accepts_n_one_with_variance():
+    from increment import moments_from_summaries
+
+    rows = moments_from_summaries(
+        [
+            {"metric": "value", "group_id": "control", "n": 1, "mean": 2.0, "var": 9.0},
+            {"metric": "value", "group_id": "treatment", "n": 1, "mean": 3.0, "var": 7.0},
+        ],
+        metrics={"value": "mean"},
+        control="control",
+    )
+    assert len(rows) == 2
+    assert all(row["moments_format"] == 12 for row in rows)
+    assert all(row["ref_y"] in {2.0, 3.0} for row in rows)
+    assert all(row["cy1"] == 0.0 and row["cy2"] == 0.0 for row in rows)
+
+
+def test_moments_from_summaries_runs_two_arm_example():
+    from increment import Analysis, moments_from_summaries
+
+    rows = moments_from_summaries(
+        [
+            {"metric": "value", "group_id": "control", "n": 100, "mean": 100.0, "var": 4.0},
+            {"metric": "value", "group_id": "treatment", "n": 100, "mean": 110.0, "var": 4.0},
+        ],
+        metrics={"value": "mean"},
+        control="control",
+    )
+    assert Analysis.from_moments(rows, metrics={"value": "mean"}, control="control").run()
+
+
+@pytest.mark.parametrize(
+    "summary_rows, metric_types",
+    [
+        (
+            [
+                {"metric": "value", "group_id": "control", "n": 2, "mean": 1.0, "var": -1.0},
+                {"metric": "value", "group_id": "treatment", "n": 2, "mean": 2.0, "var": 1.0},
+            ],
+            {"value": "mean"},
+        ),
+        (
+            [
+                {"metric": "converted", "group_id": "control", "n": 2, "successes": 3},
+                {"metric": "converted", "group_id": "treatment", "n": 2, "successes": 1},
+            ],
+            {"converted": "conversion"},
+        ),
+        (
+            [
+                {"metric": "converted", "group_id": "control", "n": 2, "successes": 1.5},
+                {"metric": "converted", "group_id": "treatment", "n": 2, "successes": 1},
+            ],
+            {"converted": "conversion"},
+        ),
+    ],
+)
+def test_moments_from_summaries_refuses_invalid_summary_values(summary_rows, metric_types):
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(summary_rows, metrics=metric_types, control="control")
+    assert raised.value.code == "moments.summaries.invalid"
+
+
+@pytest.mark.parametrize("metric_type", ["ratio", "covariate", "cluster", "sequential"])
+def test_moments_from_summaries_refuses_unsupported_requests(metric_type):
+    from increment import moments_from_summaries
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as raised:
+        moments_from_summaries(
+            [],
+            metrics={"value": metric_type},
+            control="control",
+        )
+    assert raised.value.code == "moments.summaries.unsupported"
+    assert raised.value.context["route"] == "from_unit_summary"

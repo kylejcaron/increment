@@ -858,6 +858,14 @@ includes a legacy-format namespace and study ID; the original provenance
 cannot be reconstructed. A `source_identity` embedded in a moments cube is
 self-asserted, not authenticated provenance.
 
+For hand-authored per-arm summaries, `moments_from_summaries(...)` builds
+format-12 rows for fixed-horizon mean and conversion metrics. Mean summaries
+use `ref_y=mean`, `cy1=0`, and `cy2=(n-1)·var` with ddof=1; conversion
+summaries require exact integer successes and retain that count. The helper
+also attaches the compiled decision plan and source identity. It does not
+infer ratio denominators, covariates, cluster structure, or sequential
+registration; use `from_unit_summary` when those are needed.
+
 Each ordinary row carries integer `n >= 1` and nullable integer `successes`
 between zero and `n`. Eligible unit-grain conversion and retention outcomes
 retain their original 0/1 success counts; cluster-aggregate rows and other

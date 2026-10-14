@@ -1154,6 +1154,12 @@ class Analysis:
         (e.g. exported via :meth:`export`, or a warehouse table of
         pre-aggregated moments).
 
+        Per-arm ``n``/mean/variance or exact conversion-success summaries
+        are not wire rows; use :func:`increment.moments_from_summaries` to
+        build the supported fixed-horizon mean/conversion cube. That helper
+        does not synthesize ratio, covariate, clustered, or sequential state;
+        use :meth:`from_unit_summary` when those inputs are required.
+
         Enters at moment grain: ``run()``/``srm()`` work; the unit-frame
         method (needed for IPTW/DML) raises :class:`CapabilityError`, as do
         ``sql()`` and every method the other seam constructors already refuse
