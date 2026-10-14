@@ -102,6 +102,7 @@ for r in results:
     print(f"{r.metric:>10} role={r.role:<10} discovery={r.discovery} lift={r.lift.value:+.2%}")
 ```
 
+<!-- output -->
 ```text
   sessions role=primary    discovery=None lift=+12.94%
    signups role=secondary  discovery=False lift=-0.85%
@@ -178,6 +179,7 @@ for r in av_results:
     print(f"{r.metric:>10} inference={r.inference:<13} discovery={r.discovery}")
 ```
 
+<!-- output -->
 ```text
   sessions inference=asymptotic_mean discovery=None
    signups inference=asymptotic_mean discovery=False

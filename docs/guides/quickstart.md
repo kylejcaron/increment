@@ -79,9 +79,10 @@ for r in results:
     )
 ```
 
+<!-- output -->
 ```text
-revenue / treatment: lift=+11.33% [+6.27%, +16.64%] significant=True
-converted / treatment: lift=+12.90% [-5.44%, +34.80%] significant=False
+revenue / treatment: lift=+11.33% [+6.26%, +16.65%] significant=True
+converted / treatment: lift=+12.90% [-5.80%, +44.33%] significant=False
 ```
 
 ## Reading a `LiftEstimate`

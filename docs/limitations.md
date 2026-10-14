@@ -817,6 +817,7 @@ unadjusted arm instead uses joint relative inference, without the scalar log-SE
 admission rule. None of those approximate routes inherits finite-sample validity.
 The remaining scalar log-path refusal is:
 
+<!-- output -->
 ```text
 log-scale relative-lift inference is undefined (zero events, or a signed metric
 that needs an absolute-scale estimand)

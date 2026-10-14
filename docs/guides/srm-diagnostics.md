@@ -30,6 +30,7 @@ always_valid = sample_ratio_mismatch(observed, expected=expected)
 print(f"always_valid: is_srm={always_valid.is_srm} log_e_value={always_valid.log_e_value:.3f}")
 ```
 
+<!-- output -->
 ```text
 fixed: is_srm=False p=0.0164 low_expected_count=False
 always_valid: is_srm=False log_e_value=-1.499
@@ -136,6 +137,7 @@ for b in bands:
     print(f"{b.ds} {b.group_id:<10} mean={b.mean:.3f} [{b.lower:.3f}, {b.upper:.3f}]")
 ```
 
+<!-- output -->
 ```text
 2025-01-01 control    mean=0.510 [0.479, 0.541]
 2025-01-01 treatment  mean=0.490 [0.459, 0.521]

@@ -214,9 +214,10 @@ projection's column names and returned in canonical projection order before
 `view_partial`; unknown names raise `results.frame.unknown_columns`.
 
 
+<!-- output -->
 ```text
 revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), discovery=None)
+LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), route='finite_sample', discovery=None)
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where
