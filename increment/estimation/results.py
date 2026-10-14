@@ -2320,14 +2320,16 @@ def _null_abs_p_value(row: DecisionRow) -> float:
             group_id=row.group_id,
             metric=row.metric,
         )
-    abs_kind = row.abs_reference_kind or row.reference_kind
+    abs_kind = row.abs_reference_kind
     reference_df = row.abs_reference_df
-    if abs_kind == "t" and reference_df is None:
-        reference_df = row.reference_df
-    if getattr(row, "n_clusters", None) is not None and abs_kind != "t":
+    if getattr(row, "n_clusters", None) is not None or (
+        row.reference_kind == "t" and abs_kind is None
+    ):
         _raise(
             "estimation.results.lift.p_value_cluster_robust_null_abs",
-            reference_df=reference_df if abs_kind == "t" else row.reference_df,
+            reference_df=row.abs_reference_df
+            if row.abs_reference_kind == "t"
+            else row.reference_df,
             group_id=row.group_id,
             metric=row.metric,
         )
