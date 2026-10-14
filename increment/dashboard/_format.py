@@ -226,10 +226,12 @@ def primary_tone(row: Mapping[str, Any]) -> str:
     if direction not in ("increase", "decrease"):
         return "neutral"
 
-    if decision_scale(row) == "absolute":
-        null_abs = row.get("null_abs")
-        null = 0.0 if is_missing(null_abs) else null_abs
-        lower, higher = row.get("abs_lb"), row.get("abs_ub")
+    null_abs = row.get("null_abs")
+    if not is_missing(null_abs):
+        null, lower, higher = null_abs, row.get("abs_lb"), row.get("abs_ub")
+    elif decision_scale(row) == "absolute" and row.get("value_scale") != "absolute":
+        # The automatic additive-zero decision reads the additive sidecar.
+        null, lower, higher = 0.0, row.get("abs_lb"), row.get("abs_ub")
     else:
         null = row.get("null_lift")
         null = 0.0 if null is None else null
@@ -295,7 +297,13 @@ def null_text(row: Mapping[str, Any]) -> str:
     """The tested null on the row's own decision scale."""
     if decision_scale(row) == "absolute":
         null_abs = row.get("null_abs")
-        null = 0.0 if is_missing(null_abs) else null_abs
+        if not is_missing(null_abs):
+            null = null_abs
+        elif row.get("value_scale") == "absolute":
+            # A native absolute row's null_lift is already in the metric's units.
+            null = row.get("null_lift") or 0.0
+        else:
+            null = 0.0
         return f"{null:+,.4g} absolute"
     null_lift = row.get("null_lift")
     if null_lift is None:

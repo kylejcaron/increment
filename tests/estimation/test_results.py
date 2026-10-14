@@ -2115,3 +2115,108 @@ class TestStatSigIsUnavailableWithoutSamplingEvidence:
         )
         assert row.stat_sig() is True
         assert row.model_copy(update={"null_lift": 0.1}).stat_sig() is False
+
+
+class TestDecisionAvailability:
+    """``row_decision_available`` admits only sequential bounds that decide."""
+
+    @pytest.mark.parametrize("status", ["unresolved", "abstained", "unavailable"])
+    def test_undecided_sequential_bounds_are_unavailable(self, status):
+        from increment.estimation.results import (
+            DECIDABLE_SEQUENTIAL_STATUSES,
+            row_decision_available,
+        )
+
+        assert status not in DECIDABLE_SEQUENTIAL_STATUSES
+        row = SimpleNamespace(
+            failure_code=None,
+            sampling_available=True,
+            prior_shrunk=False,
+            low_reliability=False,
+            confidence_set=None,
+            sequential_result=SimpleNamespace(
+                rejects=lambda: False, bounds=SimpleNamespace(status=status)
+            ),
+        )
+        assert row_decision_available(cast("Any", row)) is False
+        decided = SimpleNamespace(
+            **{
+                **vars(row),
+                "sequential_result": SimpleNamespace(
+                    rejects=lambda: False, bounds=SimpleNamespace(status="interval")
+                ),
+            }
+        )
+        assert row_decision_available(cast("Any", decided)) is True
+
+    @pytest.mark.parametrize("status", ["unresolved", "abstained"])
+    def test_consumers_report_an_undecided_sequential_row_as_unavailable(self, status):
+        pytest.importorskip("coeftable")
+        from increment.tables import _decision_available
+
+        row = {"sequential_status": status, "stat_sig": False, "lower": 0.5, "higher": 2.0}
+        assert _decision_available(row) is False
+        pytest.importorskip("marimo")
+        from increment.dashboard._format import result_outcome
+
+        assert result_outcome(row).verdict == "unavailable"
+
+    def test_native_absolute_row_decides_on_its_own_scale(self):
+        pytest.importorskip("coeftable")
+        from increment.estimation.armstats import ScoreStats
+        from increment.estimation.inference import infer_ate
+        from increment.estimation.results import row_decision_alpha, row_decision_scale
+        from increment.tables import estimates_to_readout
+
+        row = infer_ate(
+            metric="m",
+            group_id="t",
+            method="unadjusted",
+            method_role="decision",
+            alpha=0.05,
+            alternative="two-sided",
+            point=2.0,
+            scores=ScoreStats(metric="m", contrast="t", n=100, sum_psi=0.0, sum_psi2=100.0),
+            value_scale="absolute",
+        )
+        assert row.null_abs is None and row.value_scale == "absolute"
+        assert row_decision_scale(row) == "absolute"
+        assert row_decision_alpha(row) == pytest.approx(0.05)
+        assert row.stat_sig() is True
+        (readout,) = estimates_to_readout([row])
+        assert readout["decision_scale"] == "absolute"
+        assert readout["decision_available"] is True and readout["stat_sig"] is True
+        pytest.importorskip("marimo")
+        from increment.dashboard._format import null_text, primary_tone, result_outcome
+
+        assert result_outcome(readout).verdict == "reject"
+        assert null_text(readout) == "+0 absolute"
+        assert primary_tone(readout) == "neutral"
+
+    def test_relative_margin_evidence_is_labelled(self):
+        from increment.estimation.decision_types import ArmHypothesisKey
+        from increment.estimation.engine import _raw_stats_evidence
+
+        row = LiftEstimate(
+            metric="refunds",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            alternative="greater",
+            null_lift=-0.05,
+            lift=None,
+            scale="linear",
+            relative_unavailable_reason="nonpositive_arm_mean",
+            abs_diff=-1.0,
+            abs_se=0.05,
+            abs_lb=-1.1,
+            abs_ub=-0.9,
+            abs_reference_kind="normal",
+            reference_kind="normal",
+        )
+        evidence, failure = _raw_stats_evidence(
+            row, ArmHypothesisKey("refunds", "treatment", "itt")
+        )
+        assert failure is None and evidence is not None
+        assert evidence.p_value == 1.0
+        assert evidence.reference == "relative_margin_conservative_nonrejection"

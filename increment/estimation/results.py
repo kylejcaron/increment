@@ -2018,30 +2018,47 @@ def _additive_zero_reference(row: DecisionRow) -> tuple[float, float, float | No
     return row.abs_diff, row.abs_se, row.abs_reference_df
 
 
+#: Sequential bound statuses that carry a usable decision: a non-rejection under
+#: one of these is a genuine non-rejection. ``unresolved``, ``abstained`` and
+#: ``unavailable`` bounds decide nothing.
+DECIDABLE_SEQUENTIAL_STATUSES = frozenset(
+    {"empty", "full-domain", "interval", "full", "ray", "bounded", "disconnected"}
+)
+
+
+def _additive_sidecar_decides(row: DecisionRow) -> bool:
+    """Whether the row's decision reads the additive sidecar (``abs_*``): a declared
+    absolute margin or the automatic additive-zero decision. A native absolute row
+    (``value_scale="absolute"``) is absolute too, but its ``lift`` and ``null_lift``
+    already live on that scale."""
+    return row.null_abs is not None or _additive_zero_reference(row) is not None
+
+
 def row_decision_scale(row: DecisionRow) -> Literal["relative", "absolute"]:
     """The scale ``row``'s own decision is made on: ``"absolute"`` for a declared
-    absolute margin or an automatic additive-zero decision, ``"relative"``
+    absolute margin, an automatic additive-zero decision, or a native absolute row
+    whose ``lift``/``null_lift`` are in the metric's own units; ``"relative"``
     otherwise. The readout adapter persists it as ``decision_scale`` so table
     and dashboard consumers label the tested null without re-deriving the rule."""
-    if row.null_abs is not None or _additive_zero_reference(row) is not None:
+    if row.value_scale == "absolute" or _additive_sidecar_decides(row):
         return "absolute"
     return "relative"
 
 
-def row_decision_available(row: DecisionRow) -> bool:
+def row_decision_available(row: DecisionRow, *, verdict: bool | None = None) -> bool:
     """Whether ``row`` carries a usable decision construction, so that a
     ``False`` verdict from :func:`row_stat_sig` is a genuine non-rejection
     rather than the absence of a test. Persisted by the readout adapter as
     ``decision_available``."""
-    verdict = row_stat_sig(row)
+    verdict = row_stat_sig(row) if verdict is None else verdict
     if verdict is None or getattr(row, "low_reliability", False):
         return False
     if verdict:
         return True
     sequential = row.sequential_result
     if sequential is not None:
-        return getattr(sequential.bounds, "status", None) != "unavailable"
-    absolute = row_decision_scale(row) == "absolute"
+        return getattr(sequential.bounds, "status", None) in DECIDABLE_SEQUENTIAL_STATUSES
+    absolute = _additive_sidecar_decides(row)
     confidence_set = getattr(row, "confidence_set", None)
     if confidence_set is not None:
         interval = (
@@ -2087,7 +2104,7 @@ def row_decision_alpha(row: DecisionRow) -> float | None:
     confidence_set = getattr(row, "confidence_set", None)
     if confidence_set is not None:
         return confidence_set.alpha
-    if row_decision_scale(row) == "absolute":
+    if _additive_sidecar_decides(row):
         abs_alpha = row.abs_alpha
         if abs_alpha is None:
             return None

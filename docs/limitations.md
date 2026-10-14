@@ -688,6 +688,10 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   matters more than exactness at your arm sizes.
   FCR-selected rows refresh this disclosure for the returned interval; an
   obsolete nominal disclosure is removed while unrelated notes are retained.
+  A directional row decided on its additive interval and selected by its family
+  has that interval reissued centrally (each tail at half the family level), so
+  it can show `discovery=True` beside `stat_sig()` False when its p-value lies
+  between half the family level and the family level.
 * **Extreme alpha.** Two floors bound the tail level. The frozen nuisance tail budget passed
   to the Clopper-Pearson endpoint solver is `min(1e-6, alpha / 32)`; below `1e-9` (i.e.
   `alpha < 3.2e-8`), SciPy's iterative beta-quantile solver has demonstrated large relative

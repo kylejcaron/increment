@@ -25,6 +25,7 @@ from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_evidence_available
 from increment.estimation.contrast_results import ContrastResult
 from increment.estimation.results import (
+    DECIDABLE_SEQUENTIAL_STATUSES,
     LiftEstimate,
     _selection_qualification,
     row_decision_available,
@@ -73,6 +74,7 @@ def _base_liftestimate_to_row(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, Any]:
     """Preserve points, canonical confidence evidence, and actual decision metadata."""
+    verdict = est.stat_sig()
     lift = est.lift
     region = getattr(est, "confidence_set", None)
     relative = getattr(est, "relative_confidence_set", None)
@@ -95,9 +97,9 @@ def _base_liftestimate_to_row(
         "higher": higher,
         "open_side": open_side,
         "level": level,
-        "stat_sig": est.stat_sig(),
+        "stat_sig": verdict,
         "decision_scale": row_decision_scale(est),
-        "decision_available": row_decision_available(est),
+        "decision_available": row_decision_available(est, verdict=verdict),
         "null_lift": getattr(est, "null_lift", 0.0),
         "null_abs": getattr(est, "null_abs", None),
         "abs_lb": getattr(est, "abs_lb", None),
@@ -837,15 +839,7 @@ def _decision_available(row: Mapping[str, Any]) -> bool:
         return bool(available)
     status = row.get("sequential_status")
     if not _is_missing(status):
-        return status in {
-            "empty",
-            "full-domain",
-            "interval",
-            "full",
-            "ray",
-            "bounded",
-            "disconnected",
-        }
+        return status in DECIDABLE_SEQUENTIAL_STATUSES
     low_reliability = row.get("low_reliability")
     if not _is_missing(low_reliability) and low_reliability:
         return False

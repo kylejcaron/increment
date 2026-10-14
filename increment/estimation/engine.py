@@ -1206,7 +1206,11 @@ def _raw_stats_evidence(
         if result.relative_confidence_set is not None:
             reference = "relative_confidence_set"
         elif _additive_zero_reference(result) is None:
-            reference = "degenerate_arm_conservative_nonrejection"
+            reference = (
+                "relative_margin_conservative_nonrejection"
+                if result.null_lift != 0.0 and result.null_abs is None
+                else "degenerate_arm_conservative_nonrejection"
+            )
         else:
             reference = "student_t" if result.abs_reference_kind == "t" else "normal"
         return PValueEvidence(hypothesis, result.method, p_value, reference), None

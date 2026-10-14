@@ -635,9 +635,13 @@ assert "estimate" in contrasts.to_frame(backend="polars").columns
 `dict` per row, so one loop or one dataframe reads a mixed list. It accepts
 `LiftEstimate`, `BreakoutEstimate`, `DailyLiftEstimate`, and `ContrastResult`
 rows. Each dict carries `lift`, `lower`, `higher`, `level`, `open_side`,
-`stat_sig`, `null_lift`, `null_abs`, `value_scale`, `estimand`, `inference`,
-`role`, and `discovery`, plus the sequential columns when the row is
-sequential. Contrast rows set `value_scale="absolute"` and
+`stat_sig`, `decision_scale`, `decision_available`, `null_lift`, `null_abs`,
+`value_scale`, `estimand`, `inference`, `role`, and `discovery`, plus the
+sequential columns when the row is sequential. `decision_scale` names the scale
+the row's own verdict is made on (`"absolute"` for a declared absolute margin,
+an additive-zero decision, or a native absolute row; `"relative"` otherwise) and
+`decision_available` whether a `False` verdict is a genuine non-rejection rather
+than the absence of a test. Contrast rows set `value_scale="absolute"` and
 `group_id=treatment_group`.
 
 ```python
