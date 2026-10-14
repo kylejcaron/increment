@@ -1191,3 +1191,128 @@ def test_nonpositive_raw_denominator_arm_is_refused_under_the_fit_code():
         )
     assert raised.value.code == "estimation.cuped_linear.nonpositive_component"
     assert raised.value.context == {"family": "denominator", "arm": "z", "value": 0.0}
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_median_centered_arm_mean_near_overflow_keeps_zero_contrast(sign):
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    y = sign * np.tile([0.0, 0.0, 1e308, 1e308], 2)
+    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    result = fit.absolute("t")
+    assert result.estimate == 0
+    assert result.se == pytest.approx(1e308 / math.sqrt(6), rel=1e-12)
+    assert result.dof == pytest.approx(6.0)
+    assert fit.adjusted_means == pytest.approx((sign * 5e307, sign * 5e307), rel=1e-12)
+    if sign > 0:
+        assert fit.relative("t").estimate == 0
+
+
+def test_slope_centering_near_overflow_is_power_of_two_scale_equivariant():
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    x = np.tile([0.0, 1.0, 2.0, 3.0], 2)
+    y = np.r_[[0.0, 0.0, 1e308, 1e308], [0.0, 1e308, 1e308, 1e308]]
+    fits = [
+        _fit_repeated_design(
+            y * factor,
+            arm,
+            control="c",
+            arm_order=("c", "t"),
+            covariates={"x": x},
+            kinds={"x": "continuous"},
+        )
+        for factor in (1.0, 2.0**-200)
+    ]
+    large, small = (fit.absolute("t") for fit in fits)
+    assert large.estimate == pytest.approx(small.estimate * 2.0**200, rel=1e-12)
+    assert large.se == pytest.approx(small.se * 2.0**200, rel=1e-12)
+    assert large.dof == pytest.approx(small.dof, rel=1e-12)
+    assert fits[0].theta[0] == pytest.approx(fits[1].theta[0] * 2.0**200, rel=1e-12)
+
+
+@pytest.mark.parametrize("denominator", [1.0, 3.0, 2.0**100])
+def test_constant_denominator_ratio_contrasts_match_mean_contrasts(denominator):
+    base = 2**54
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    numerator = np.r_[base + np.array([0.0, 0.0, 0.0, 4.0]), base + np.array([0.0, 0.0, 4.0, 4.0])]
+    ratio_fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=numerator,
+        denominator=np.full(8, denominator),
+    )
+    mean_fit = fit_cuped_linear(numerator, arm, control="c", arm_order=("c", "t"))
+    absolute, log = ratio_fit.ratio("t", scale="absolute"), ratio_fit.ratio("t", scale="log")
+    expected_absolute, expected_log = mean_fit.absolute("t"), mean_fit.relative("t")
+    assert expected_absolute.estimate == pytest.approx(1.0)
+    assert absolute.estimate == pytest.approx(1.0 / denominator, rel=1e-12, abs=0)
+    assert absolute.se == pytest.approx(expected_absolute.se / denominator, rel=1e-12)
+    assert absolute.dof == pytest.approx(expected_absolute.dof, rel=1e-9)
+    assert log.estimate == pytest.approx(math.log1p(1 / (base + 1)), rel=1e-12, abs=0)
+    assert log.estimate == pytest.approx(expected_log.estimate, rel=1e-12, abs=0)
+    assert log.se == pytest.approx(expected_log.se, rel=1e-12)
+    assert log.dof == pytest.approx(expected_log.dof, rel=1e-9)
+
+
+def test_constant_within_arm_subnormal_outcomes_project_a_finite_log_ratio():
+    arm = np.repeat(["c", "t"], 3)
+    y = np.r_[np.full(3, 1e-310), np.full(3, 2e-310)]
+    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    result = fit.relative("t")
+    assert result.estimate == pytest.approx(math.log(y[3] / y[0]), rel=1e-12, abs=0)
+    assert result.se == 0
+    assert math.isfinite(result.dof) and result.dof > 0
+    ratio_fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=y,
+        denominator=np.full(6, 1e-310),
+    )
+    assert ratio_fit.ratio("t", scale="log").estimate == pytest.approx(
+        math.log(y[3] / y[0]), rel=1e-12, abs=0
+    )
+    assert ratio_fit.ratio("t", scale="absolute").estimate == pytest.approx(
+        y[3] / y[0] - 1, rel=1e-12, abs=0
+    )
+    assert ratio_fit.ratio("t", scale="log").se == 0
+    assert ratio_fit.ratio("t", scale="absolute").se == 0
+
+
+# Subnormal outcomes carry at most 44 significant bits at 1e-310 and lose
+# further bits in each arm-mean subtraction, so a relative tolerance near
+# 1e-10 is the representability bound, not an estimator slack.
+@pytest.mark.parametrize("factor", [2.0**-1030, 2.0**1000])
+def test_log_scale_projections_are_invariant_through_extreme_outcome_scales(factor):
+    arm = np.repeat(["c", "t"], 4)
+    base = np.array([1.0, 1.1, 0.9, 1.05, 2.0, 2.2, 1.9, 2.05])
+    denominator = np.array([1.0, 1.2, 0.8, 1.1, 1.05, 1.15, 0.95, 1.0])
+    reference = fit_cuped_linear(base, arm, control="c", arm_order=("c", "t"))
+    scaled = fit_cuped_linear(base * factor, arm, control="c", arm_order=("c", "t"))
+    for field in ("estimate", "se", "dof"):
+        assert getattr(scaled.relative("t"), field) == pytest.approx(
+            getattr(reference.relative("t"), field), rel=1e-10
+        )
+    reference_ratio = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=base,
+        denominator=denominator,
+    )
+    scaled_ratio = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=base * factor,
+        denominator=denominator * factor,
+    )
+    for scale in ("log", "absolute"):
+        for field in ("estimate", "se", "dof"):
+            assert getattr(scaled_ratio.ratio("t", scale=scale), field) == pytest.approx(
+                getattr(reference_ratio.ratio("t", scale=scale), field), rel=1e-10
+            ), (scale, field)
