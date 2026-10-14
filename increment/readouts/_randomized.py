@@ -401,20 +401,6 @@ def _estimate_randomized_secondary_family(
             else test.alternative
         )
         selected_alpha = _fcr_alpha_for(selected_alternative, fcr_alpha)
-        reestimated[metric.name], refused, computation = _estimate_pass(
-            src,
-            metric,
-            evidence_by_metric[metric.name],
-            test,
-            config,
-            design,
-            alpha_for=selected_alpha,
-            role="secondary",
-            inference=None if is_quantile else effective_inference,
-            advisory_seen=advisory_seen,
-            methods=_metric_methods[:1],
-            route_tail=None if is_quantile else fcr_route_tail(test.alternative, fcr_alpha),
-        )
         metric_rows = loaded[metric.name]
         if metric_rows.unit_frame is not None and any(
             method.variance_reduction == "cuped_linear" for method in _metric_methods
@@ -449,6 +435,7 @@ def _estimate_randomized_secondary_family(
                 inference=None if is_quantile else effective_inference,
                 advisory_seen=advisory_seen,
                 methods=_metric_methods[:1],
+                route_tail=None if is_quantile else fcr_route_tail(test.alternative, fcr_alpha),
             )
             computations.append(computation)
         reestimated[metric.name] = [
