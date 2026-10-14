@@ -32,9 +32,16 @@ def test_artifact_open_is_the_adopted_panel_replacement() -> None:
     _connection, native, context, store = _native()
     reference = native.publish_unit_day_artifact(store)
     adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    from increment.estimation.engine import Method
+
+    unadjusted = Method(name="unadjusted")
     try:
-        native_result = lift_rows(native.run(metrics=["purchase_rate"]))[0]
-        adopted_result = lift_rows(adopted.run(metrics=["purchase_rate"]))[0]
+        native_result = lift_rows(
+            native.run(metrics=["purchase_rate"], decision_method=unadjusted)
+        )[0]
+        adopted_result = lift_rows(
+            adopted.run(metrics=["purchase_rate"], decision_method=unadjusted)
+        )[0]
         assert adopted_result.metric == native_result.metric == "purchase_rate"
         assert adopted_result.group_id == native_result.group_id == "treatment"
         assert adopted_result.require_lift().value == pytest.approx(

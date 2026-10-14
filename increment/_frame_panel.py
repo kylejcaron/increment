@@ -38,8 +38,9 @@ def _prepare_panel(
     unit: str,
     date: str,
     value_columns: Sequence[str],
+    zero_fill: bool = True,
 ) -> tuple[nw.DataFrame[Any], dict[str, int], int]:
-    """Canonical sparse observations and analytical zero-filled cell counts."""
+    """Build sparse unit-day rows and optionally zero-fill explicit nulls."""
     observed = frame.select(
         nw.col(unit).alias("unit_id"),
         nw.col(date).alias("ds"),
@@ -51,7 +52,8 @@ def _prepare_panel(
         for column in value_columns[1:]:
             any_null = any_null | _is_missing(observed, column)
         n_filled += int(observed.select(any_null.cast(nw.Int64).sum()).item())
-        observed = observed.with_columns(*[nw.col(c).fill_null(0.0) for c in value_columns])
+        if zero_fill:
+            observed = observed.with_columns(*[nw.col(c).fill_null(0.0) for c in value_columns])
     return (
         observed.join(identity, on="unit_id", how="left"),
         _group_counts(identity, "group_id"),

@@ -279,6 +279,15 @@ _register_warning(
     ),
 )
 
+_register_warning(
+    "analysis.cuped.covariate_unused",
+    IncrementWarning,
+    lambda *, metric_names, route: (
+        f"metrics {metric_names!r} have available CUPED covariates that the default "
+        f"decision method does not use. {route}"
+    ),
+)
+
 
 # Shared by frame panels and warehouse artifacts: the same unit_frame hazard.
 FRAME_UNIT_FRAME_PANEL = RefusalSpec(
