@@ -289,7 +289,7 @@ class FrameTotalsSource(SequentialSourceMixin):
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_summary"
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset({"export_moments"})
+    operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
     breakouts: tuple[str, ...] = ()
 
     # Public constructor signature is the API for frame-backed sources.
@@ -992,7 +992,7 @@ class FramePanelSource(SequentialSourceMixin):
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_panel"
     capabilities: frozenset[Grain] = frozenset({"total", "daily", "asof"})
-    operations: frozenset[SourceOperation] = frozenset({"export_moments"})
+    operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
     #: `from_unit_panel` takes no `cluster=` argument, so this shape never
     #: carries a randomization-cluster column (see `cluster_counts` below).
 

@@ -1129,6 +1129,15 @@ def validate_frame_registration(
     if registration is None:
         return
     validate_scalar_mean_design(registration, design)
+    if (registration.control_group, str(design.control_group)) in {
+        ("True", "true"),
+        ("False", "false"),
+    }:
+        sequential_refuse(
+            "source.invalid",
+            "pandas Boolean group labels changed from 'True'/'False' to canonical "
+            "'true'/'false'; a saved sequential registration cannot be relabelled",
+        )
     require_public_laws(registration.models, "frame registration")
     expected = sequential_definition_id(
         metrics, design, transformations=specs, source_mapping=source_mapping

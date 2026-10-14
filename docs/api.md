@@ -263,6 +263,10 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 
 ## Analysis and reporting
 
+`Analysis.unit_counts()` returns the enrolled unit counts keyed by canonical
+group label, including excluded units under `"(unassigned)"`. It requires a
+source with total-grain count evidence; a day-axis view refuses this operation.
+
 `Analysis.artifact_context` returns the trusted context bound to a definitions-backed
 analysis. Pass it as `expected_context` when opening a unit-day artifact published
 from that analysis.

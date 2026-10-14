@@ -102,6 +102,7 @@ SourceOperation = Literal[
     "triggered_counts",
     "triggered_source",
     "sitewide_evidence",
+    "unit_counts",
     "export_moments",
     "moments_source",
     "panel_sql",
@@ -1177,7 +1178,7 @@ class MomentsSource(SequentialSourceMixin):
     """
 
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset()
+    operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
     breakouts: tuple[str, ...] = ()
 
@@ -1615,7 +1616,7 @@ class BreakoutMomentsSource(SequentialSourceMixin):
     """
 
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset()
+    operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
 
     def __init__(

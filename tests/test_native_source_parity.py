@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ibis
 import numpy as np
+import pandas as pd
 import pytest
 
 from increment.analysis import Analysis
@@ -53,7 +54,53 @@ def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
         src.cluster_counts()
 
 
-def _quantile_defs_and_con(tmp_path, *, preferred_direction: str | None = None):
+def test_public_unit_counts_match_definition_source(pricing_analysis):
+    source = _native_source(pricing_analysis)
+    assert pricing_analysis.unit_counts() == source.unit_counts()
+
+
+def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
+    from increment.errors import CapabilityError
+
+    day_source = _native_source(pricing_analysis).day_source(metrics=pricing_analysis.metrics)
+    with pytest.raises(CapabilityError) as raised:
+        day_source.unit_counts()
+    assert raised.value.code == "source.native.operation"
+
+
+def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path):
+    defs_path, con = _quantile_defs_and_con(tmp_path, include_unassigned=True)
+    native = Analysis.from_definitions("exp", defs_path, con, on_mixed_assignment="exclude")
+    groups = ["C"] * 200 + ["T"] * 200 + [None]
+    units = [f"c{i}" for i in range(200)] + [f"t{i}" for i in range(200)] + ["unassigned"]
+    summary_frame = pd.DataFrame(
+        {"user_id": units, "arm": groups, "value": np.arange(len(units), dtype=float)}
+    )
+    summary = Analysis.from_unit_summary(
+        summary_frame,
+        unit="user_id",
+        group="arm",
+        control="C",
+        metrics={"value": "mean"},
+        on_unassigned="exclude",
+    )
+    panel_frame = summary_frame.assign(day=np.datetime64("2024-01-02"))
+    panel = Analysis.from_unit_panel(
+        panel_frame,
+        unit="user_id",
+        group="arm",
+        date="day",
+        control="C",
+        metrics={"value": "mean"},
+        on_unassigned="exclude",
+    )
+    assert native.unit_counts() == summary.unit_counts() == panel.unit_counts()
+    assert native.unit_counts()["(unassigned)"] == 1
+
+
+def _quantile_defs_and_con(
+    tmp_path, *, preferred_direction: str | None = None, include_unassigned: bool = False
+):
     direction_line = (
         f"    preferred_direction: {preferred_direction}\n" if preferred_direction else ""
     )
@@ -101,6 +148,10 @@ metrics:
         rows.append({**common, "ts": enroll_ts, "event": "enrolled", "value": None})
         rows.append({**common, "ts": metric_ts, "event": "latency", "value": float(value)})
 
+    if include_unassigned:
+        common = {"user_id": "unassigned", "experiment_id": "exp", "group_id": None}
+        rows.append({**common, "ts": enroll_ts, "event": "enrolled", "value": None})
+        rows.append({**common, "ts": metric_ts, "event": "latency", "value": 1.0})
     con = ibis.duckdb.connect()
     con.create_table("events", obj=rows)
     defs_path = tmp_path / "defs.yml"

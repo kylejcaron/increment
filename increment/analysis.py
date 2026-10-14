@@ -59,6 +59,7 @@ from increment._source_operations import (
     TriggeredCountsOperation,
     TriggeredHealthEvidenceOperation,
     TriggeredPopulationOperation,
+    UnitCountsOperation,
 )
 from increment._source_types import classify_source
 from increment._study import ParallelStudyEnvelope
@@ -940,7 +941,11 @@ class Analysis:
         _require_design(control, design, constructor="Analysis.from_unit_summary")
         from increment._frame_validation import canonical_control_for_frame
 
-        control = canonical_control_for_frame(frame, group, control)
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_summary as _make_source
         from increment.semantics.design import Randomized
 
@@ -1027,7 +1032,11 @@ class Analysis:
         _require_design(control, design, constructor="Analysis.from_unit_panel")
         from increment._frame_validation import canonical_control_for_frame
 
-        control = canonical_control_for_frame(frame, group, control)
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_panel as _make_source
         from increment.semantics.design import Randomized
 
@@ -1106,7 +1115,11 @@ class Analysis:
         from increment.semantics.design import Encouragement, Randomized
         from increment.sources import MomentsSource
 
-        control = str(control)
+        if control is None:
+            assert design is not None
+            control = str(design.control_group)
+        else:
+            control = str(control)
         design = design or Randomized(control_group=control)
         specs = _coerce_source_metrics(metrics, design=design)
         metric_catalog = [synthesise_metric(spec) for spec in specs]
@@ -1771,6 +1784,20 @@ class Analysis:
             return None if cutoff is None else cutoff.isoformat()
         evidence = self._session.source_snapshot_evidence if self._session is not None else None
         return None if evidence is None else evidence.observation_cutoff_ts.isoformat()
+
+    def unit_counts(self) -> dict[str, int]:
+        """Return enrolled unit counts by canonical group label.
+
+        Excluded unassigned units appear under ``"(unassigned)"``. Sources
+        without total-grain count evidence refuse with a coded capability error.
+        """
+        source = _require_analysis_operation(
+            self._src,
+            "unit_counts",
+            UnitCountsOperation,
+            message="unit_counts() requires a source with enrolled total-grain counts.",
+        )
+        return source.unit_counts()
 
     def srm(
         self,
