@@ -366,7 +366,7 @@ def test_registered_scalar_gaussian_runtime_route_smoke():
 
 @pytest.mark.slow
 def test_registered_ratio_gaussian_runtime_route_smoke():
-    """Fast-tier deployed witness for the NIW ratio runtime.
+    """Slow-tier deployed witness for the NIW ratio runtime.
 
     The NIW ratio evidence is strongly conservative at every count this
     runtime can be driven to: over the 2,000 prefixes its calibrated gate
