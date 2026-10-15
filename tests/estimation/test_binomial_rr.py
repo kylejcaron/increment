@@ -610,7 +610,7 @@ class TestFastBinomMatchesScipy:
     support where `_plus_threshold`/`_minus_threshold` can land.
     """
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("seed", range(20))
     def test_bit_exact_across_in_and_out_of_support_k(self, seed):
         rng = np.random.default_rng(seed)
         n = int(rng.integers(1, 5000))

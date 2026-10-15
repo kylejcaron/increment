@@ -32,7 +32,7 @@ ALTERNATIVES: tuple[Alternative, ...] = ("two-sided", "greater", "less")
     "control,treatment",
     [
         (Arm(nc, sc), Arm(nt, st))
-        for nc, nt in product(range(3), repeat=2)
+        for nc, nt in product(range(5), repeat=2)
         for sc in range(nc + 1)
         for st in range(nt + 1)
     ],
@@ -58,7 +58,7 @@ def test_screen_upper_encloses_independent_exact_evidence(control, treatment, al
 def test_screened_prefix_cannot_cross_the_deployed_lower_certificate(alpha, alternative):
     prior = BetaPrior(1, 1)
     screened = 0
-    for n in range(3):
+    for n in range(5):
         for control_successes, treatment_successes in product(range(n + 1), repeat=2):
             control = BernoulliState(n, control_successes)
             treatment = BernoulliState(n, treatment_successes)
