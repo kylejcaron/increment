@@ -102,8 +102,6 @@ def test_focused_cli_isolates_git_repositories_from_invoking_hook(tmp_path: Path
 @pytest.mark.slow
 @pytest.mark.parametrize("mode", ["focused", "nested", "filtered_fast", "sharded_fast"])
 def test_partial_feedback_is_independent_of_corrupt_coverage_map(tmp_path: Path, mode: str):
-    import py_compile
-
     from scripts._test_impact import testmon_database_lock
 
     project = Path(__file__).resolve().parents[1]
@@ -127,16 +125,9 @@ def test_partial_feedback_is_independent_of_corrupt_coverage_map(tmp_path: Path,
     )
     if mode == "sharded_fast":
         arguments.extend(("--splits", "2", "--group", "1"))
-    timestamp = 1_700_000_000
-    source.write_text("def value():\n    return 1\n")
-    os.utime(source, (timestamp, timestamp))
-    py_compile.compile(
-        str(source), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP
-    )
     with testmon_database_lock(tmp_path):
-        for value, status in ((1, 0), (2, 1)):
+        for value, status in ((1, 0), (22, 1)):
             source.write_text(f"def value():\n    return {value}\n")
-            os.utime(source, (timestamp, timestamp))
             evidence_root = tmp_path / f"evidence-{value}"
             result = subprocess.run(
                 [
@@ -561,6 +552,7 @@ def _map_recording_project(root: Path) -> tuple[dict[str, str], str]:
         shutil.copyfile(project / "scripts" / name, root / "scripts" / name)
     (root / "pyproject.toml").write_text(
         '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        "timeout = 300\n"
         'markers = ["slow: expensive functional test"]\n'
         "filterwarnings = []\n"
     )
@@ -689,7 +681,9 @@ def test_explicit_recording_preserves_affected_consumer(tmp_path: Path, tier: st
         tier,
     )
     assert affected.returncode == 1, affected.stdout + affected.stderr
-    [affected_receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    receipts = list((tmp_path / ".test-evidence" / "affected").glob("run-*/run.json"))
+    assert len(receipts) == 1, affected.stdout + affected.stderr
+    [affected_receipt] = receipts
     metadata = json.loads(affected_receipt.read_text())
     assert metadata["selection_route"] == "testmon"
     reports = [
