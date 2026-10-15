@@ -74,6 +74,66 @@ def test_batched_digest_equals_row_wise_updates_on_every_scalar_shape():
         assert direct.value.code == generic.value.code == "artifact.digest.json"
 
 
+def test_frame_digest_matches_canonical_streaming_encoder_for_edge_values():
+    import math
+
+    import polars as pl
+
+    from increment.readouts._metric_rows import _frame_digest_and_arms
+
+    frames = [
+        pl.DataFrame(
+            {
+                "group_id": ["a", "a", "b", "b", "b"],
+                "value": [None, float("nan"), float("inf"), float("-inf"), 2.0],
+            }
+        ),
+        pl.DataFrame({"group_id": ["a", "b"], "value": [0.0, -0.0]}),
+        pl.DataFrame({"group_id": ["a", "b"], "value": ["café", "雪"]}),
+        pl.DataFrame(
+            {
+                "group_id": ["a"],
+                "bool": [True],
+                "integer": [1],
+                "float": [1.0],
+            }
+        ),
+        pl.DataFrame({"group_id": ["a", "a", "a"], "value": [3.0, 3.0, 3.0]}),
+        pl.DataFrame({"group_id": ["a", "b"], "z": [2, 4], "a": [1, 3]}),
+    ]
+
+    def canonical_reference(frame):
+        digest = StreamingDigest()
+        for row in frame.iter_rows(named=True):
+            normalized = {}
+            for name, value in row.items():
+                if isinstance(value, float) and math.isnan(value):
+                    value = None
+                elif isinstance(value, float) and math.isinf(value):
+                    value = {"__float__": "+inf" if value > 0 else "-inf"}
+                normalized[name] = value
+            digest.update(normalized)
+        return digest.hexdigest(), digest.count
+
+    for frame in frames:
+        arms, digest, count = _frame_digest_and_arms(frame)
+        assert (digest, count) == canonical_reference(frame)
+        assert arms == frozenset(str(value) for value in frame["group_id"].unique().to_list())
+
+    # Canonical map encoding makes physical column order irrelevant.
+    reordered = pl.DataFrame({"group_id": ["a", "b"], "a": [1, 3], "z": [2, 4]})
+    for frame in (frames[-1], reordered):
+        assert _frame_digest_and_arms(frame)[1:] == canonical_reference(frame)
+    assert _frame_digest_and_arms(frames[-1])[1] == _frame_digest_and_arms(reordered)[1]
+
+    # The digest is a multiset: duplicates count, but row permutation does not.
+    forward = frames[-1]
+    reverse = forward.reverse()
+    assert _frame_digest_and_arms(forward)[1:] == canonical_reference(forward)
+    assert _frame_digest_and_arms(reverse)[1:] == canonical_reference(reverse)
+    assert _frame_digest_and_arms(forward)[1] == _frame_digest_and_arms(reverse)[1]
+
+
 def test_metadata_context_is_deeply_immutable_and_portable():
     result = IntegrityResult(
         status="not_applicable",
