@@ -122,6 +122,7 @@ CASES = [
     CASES,
     ids=[f"{axis}-{kind}" for axis, kind, *_ in CASES],
 )
+@pytest.mark.slow
 def test_binary_sequential_axis_has_a_named_outcome(axis, kind, axes, expected, reason):
     run = axis_run(InferenceSpec(kind=kind), seed=7, **axes)
     if expected == "supported":

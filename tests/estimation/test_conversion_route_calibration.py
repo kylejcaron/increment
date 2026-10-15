@@ -263,6 +263,7 @@ class TestLatticeSumsStreamOverBlocks:
         assert blocked.asymptotic_share == pytest.approx(whole.asymptotic_share, rel=1e-12)
         assert 0.2 < whole.asymptotic_share < 0.8
 
+    @pytest.mark.slow
     def test_the_finite_sample_set_does_not_depend_on_the_block_size(self, monkeypatch):
         whole = cr.finite_sample_misses(self.CELL, alpha=0.1, alternative="two-sided")
         self._small_blocks(monkeypatch)
@@ -678,6 +679,7 @@ class TestADirectionalRequestMissesOnlyOnTheSideItReads:
         ("alternative", "risk_ratio"),
         [("greater", 0.5), ("greater", 1.25), ("less", 0.5), ("less", 1.25)],
     )
+    @pytest.mark.slow
     def test_the_simulated_misses_are_the_exact_decisions_of_the_same_draws(
         self, monkeypatch, alternative, risk_ratio
     ):
@@ -811,6 +813,7 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         )
 
     @pytest.mark.parametrize("lift", [0.0, 0.13])
+    @pytest.mark.slow
     def test_a_pair_dense_only_at_the_nominal_tail(self, monkeypatch, lift):
         counts = (1_500, 3_000, 1_700, 3_000)
         assert dense_min_count(self.NOMINAL_TAIL) <= 1_300 < dense_min_count(self.TAIL)
@@ -831,6 +834,7 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         assert p_value is not None
         assert result.escalated == float(p_value < 2.0 * own)
 
+    @pytest.mark.slow
     def test_a_pair_dense_at_neither_tail_is_the_finite_sample_test(self, monkeypatch):
         counts = (300, 3_000, 400, 3_000)
         result = self._composite(monkeypatch, counts, 0.0)
@@ -841,6 +845,7 @@ class TestCompositeNoncoverageDecidesPairsByTheRuntime:
         assert result.lower + result.upper == result.pipeline_lower + result.pipeline_upper
         assert result.lower + result.upper == result.nominal_lower + result.nominal_upper
 
+    @pytest.mark.slow
     def test_a_pair_dense_at_the_read_tail_is_its_delta_row_there(self, monkeypatch):
         counts = (3_000, 6_000, 3_150, 6_000)
         assert 2_850 >= dense_min_count(self.TAIL)

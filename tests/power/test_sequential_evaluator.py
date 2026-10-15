@@ -208,6 +208,7 @@ class TestNodeFloor:
         assert floor >= NODES_MIN
         assert floor & (floor - 1) == 0
 
+    @pytest.mark.slow
     def test_not_resolved_below_the_floor(self):
         fractions = _fractions(14)
         bounds = planning_bounds(GaussianScoreMixture(), fractions, 0.02, 1e-300)

@@ -502,6 +502,7 @@ class TestCupedUnderSequentialPlanning:
     supports it: derived automatically from the solver's baseline
     exactly as the fixed-horizon case is."""
 
+    @pytest.mark.slow
     def test_cuped_composes_with_sequential_inference(self):
         from increment.semantics.models import InferenceSpec
 

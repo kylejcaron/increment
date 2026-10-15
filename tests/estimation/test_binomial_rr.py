@@ -1868,6 +1868,7 @@ class TestMarginDominatedAlpha:
         assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
         assert exc_info.value.context["margin"] == brr._eps_margin(1, n, n)
 
+    @pytest.mark.slow
     def test_the_structural_threshold_is_where_the_lower_bound_passes_the_null(self):
         """`structural_rejection` is exactly the emptiness of the domain `p_minus` evaluates: at
         the smallest control count whose lower bound exceeds ``1/null_r`` the certificate is the

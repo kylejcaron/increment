@@ -952,6 +952,7 @@ def test_adopted_factor_summaries_carry_the_native_covariate_moments(
 
 # Guards the adopted daily breakout table against being reduced at the wrong grain.
 @_shared_covariate_publication
+@pytest.mark.slow
 def test_adopted_daily_breakout_summaries_match_the_native_day_axis(
     covariate_pair: tuple[Any, ...],
 ) -> None:
@@ -968,6 +969,7 @@ def test_adopted_daily_breakout_summaries_match_the_native_day_axis(
     )
 
 
+@pytest.mark.slow
 def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
     evidence = SourceSnapshotEvidence(
@@ -1007,6 +1009,7 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_triggered_window_past_observation_end_matches_after_publish_reopen(
     tmp_path: Path,
 ) -> None:
@@ -1042,6 +1045,7 @@ def test_triggered_window_past_observation_end_matches_after_publish_reopen(
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: Path) -> None:
     definitions = _triggered_definitions(tmp_path, window_days=None)
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
@@ -1132,6 +1136,7 @@ def test_v3_trigger_population_count_mismatch_is_refused(
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> None:
     cutoff = datetime(2025, 1, 20, 12, tzinfo=UTC)
     definitions = _triggered_definitions(tmp_path, window_days=None)
@@ -1231,6 +1236,7 @@ def test_native_snapshot_asof_spine_excludes_partial_and_post_cutoff_days(
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
     tmp_path: Path,
 ) -> None:
@@ -1315,6 +1321,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
     tmp_path: Path,
 ) -> None:
@@ -1503,6 +1510,7 @@ def test_ratio_snapshot_spine_uses_only_its_minimum_measure_edge(tmp_path: Path)
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -> None:
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
     watermark = datetime(2025, 1, 16, 0, 0, tzinfo=UTC)
@@ -1800,6 +1808,7 @@ def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_unpinned_avg_calendar_day_asof_uses_declared_horizon(tmp_path: Path) -> None:
     import yaml
 
@@ -2847,6 +2856,7 @@ def test_aware_spellings_of_one_instant_agree_on_both_routes(
     )
 
 
+@pytest.mark.slow
 def test_a_naive_utc_minus_five_experiment_publishes_and_adopts_like_from_definitions(
     tmp_path: Path,
 ) -> None:
@@ -2978,6 +2988,7 @@ def _published_boundary_artifact_rows(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path) -> None:
     import yaml
 

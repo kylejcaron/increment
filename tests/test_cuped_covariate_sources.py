@@ -240,6 +240,7 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
     }
 
 
+@pytest.mark.slow
 def test_observational_covariate_name_is_not_shadowed_by_metric_binding(tmp_path):
     import warnings
 

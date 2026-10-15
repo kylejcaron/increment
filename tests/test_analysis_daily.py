@@ -1930,6 +1930,7 @@ def test_native_dimensioned_daily_lift_supports_cuped(seeded_pre_period_con):
     assert any(row.lift is not None and math.isfinite(row.require_lift().value) for row in rows)
 
 
+@pytest.mark.slow
 def test_native_daily_retention_lift_supports_cuped(retention_cuped_con):
     from increment import Method
 

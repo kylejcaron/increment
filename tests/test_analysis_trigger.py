@@ -158,6 +158,7 @@ def test_pinned_mixed_assignment_refusal_repeats_after_caught_error(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
     path = _write_defs(tmp_path)
     cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
@@ -274,6 +275,7 @@ def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
     definitions = _defs_yaml(end='"2024-01-10"', observation_end='"2024-01-31"').replace(
         "window_days: 7", "window_days: 3"
@@ -1322,6 +1324,7 @@ def test_triggered_artifact_breakout_refuses_invalid_method_before_population_re
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.slow
 def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
     events = _events(n_per_arm=2, trigger_rate=1.0).to_pylist()
     for row in events:
@@ -1392,6 +1395,7 @@ def test_triggered_breakout_summary_preserves_zero_event_days(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.slow
 def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
     events = _events(n_per_arm=2, trigger_rate=1.0).to_pylist()
     for row in events:
@@ -1466,6 +1470,7 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 def test_triggered_cate_uses_native_unit_population(tmp_path):
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
@@ -1551,6 +1556,7 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evidence(tmp_path):
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
@@ -1847,6 +1853,7 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
     from tests.capability_consumers_auxiliary import assert_refusal, assert_support
 
@@ -3740,6 +3747,7 @@ def _switchback_panel_analysis() -> Analysis:
     )
 
 
+@pytest.mark.slow
 def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
     import narwhals as nw
 

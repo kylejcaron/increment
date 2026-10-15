@@ -20,6 +20,7 @@ BASELINE = Baseline(mean=20.0, var=400.0)
 PROCEDURE = make_procedure(inference=GaussianScoreMixture(), alpha=ALPHA, population="assigned")
 
 
+@pytest.mark.slow
 def test_required_n_reaches_nominal_power_under_the_same_boundary():
     """Fast analytic smoke: true by construction once planning and runtime
     share one boundary (P1), pinned so a regression cannot silently reopen

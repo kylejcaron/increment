@@ -13,6 +13,7 @@ from calibration._process import run_with_timeout
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_outer_timeout_stops_nested_worker_process(tmp_path: Path) -> None:
     worker_pid_file = tmp_path / "worker.pid"
     controller = tmp_path / "controller.py"

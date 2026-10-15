@@ -412,6 +412,7 @@ class TestAssembledFromTheProductionPrimitives:
         return pairs
 
     @pytest.mark.parametrize("alternative", ["two-sided", "greater"])
+    @pytest.mark.slow
     def test_the_assembled_composite_rejects_only_where_the_pipeline_at_the_read_level_does(
         self, alternative
     ):

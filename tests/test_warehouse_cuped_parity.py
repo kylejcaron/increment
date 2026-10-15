@@ -234,6 +234,7 @@ def duck():
     return con
 
 
+@pytest.mark.slow
 def test_ratio_cuped_fixed_horizon_matches_the_dataframe_oracle(duck, tmp_path):
     intervals = check_fixed_horizon_parity(duck, "duckdb", "events", tmp_path)
     plain, adjusted = intervals["duckdb"]
@@ -264,6 +265,7 @@ def test_ratio_cuped_binding_without_a_pre_period_refuses_by_name():
     assert raised.value.code == "definition.experiment.metric_declares_cuped"
 
 
+@pytest.mark.slow
 def test_day_axis_ratio_cuped_matches_total_and_both_readers_agree(duck):
     check_day_axis_parity(duck, "duckdb", "events")
 
@@ -339,6 +341,7 @@ def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
         ),
     ],
 )
+@pytest.mark.slow
 def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
     from increment import Analysis
     from increment.query.artifact_publish import artifact_context
@@ -401,6 +404,7 @@ def test_mixed_cuped_support_refusals_are_exact(rows, code, tmp_path):
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tmp_path):
     from increment import Analysis
     from increment.query.artifact_publish import artifact_context
@@ -470,6 +474,7 @@ def test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses(tm
         native.close()
 
 
+@pytest.mark.slow
 def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
     from increment import Analysis
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
@@ -527,6 +532,7 @@ def test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.slow
 def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses(
     tmp_path,
 ):
@@ -586,6 +592,7 @@ def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingres
         connection.disconnect()
 
 
+@pytest.mark.slow
 def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path):
     from increment import Analysis
     from increment.errors import CodedError

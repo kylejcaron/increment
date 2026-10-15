@@ -431,6 +431,7 @@ def test_preparation_pins_allocation_history_and_estimates_without_rebinding_cal
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_dashboard_preparation_calls_public_health_method(
     dashboard_con, dashboard_definitions, pricing, monkeypatch
 ):
@@ -527,6 +528,7 @@ def test_allocation_check_uses_configured_shares(pricing: DashboardSnapshot) -> 
     assert allocation.is_srm is False
 
 
+@pytest.mark.slow
 def test_dashboard_readout_normalizes_relative_allocation_weights(
     dashboard_con, dashboard_definitions
 ) -> None:
@@ -642,6 +644,7 @@ def test_assigned_health_collapses_inapplicable_checks_and_omits_duplicate_alloc
     assert "Not applicable; this is not an evaluated check." not in visible
 
 
+@pytest.mark.slow
 def test_health_lists_every_triggered_check(tmp_path) -> None:
     from tests.test_dashboard_population import _triggered_dashboard
 
@@ -976,6 +979,7 @@ def test_prepared_config_rejects_mutation(pricing: DashboardSnapshot) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_mutating_caller_allocation_cannot_change_a_prepared_result(
     dashboard_con, dashboard_definitions
 ) -> None:
@@ -1896,6 +1900,7 @@ def storefront_payload(storefront: DashboardSnapshot, dashboard_con, dashboard_d
     return build_payload(analysis, snapshot=storefront)
 
 
+@pytest.mark.slow
 def test_exploring_never_changes_the_confirmatory_snapshot(
     storefront: DashboardSnapshot, dashboard_con, dashboard_definitions
 ) -> None:
@@ -1968,6 +1973,7 @@ def test_an_engine_refusal_is_visible_for_its_own_state_only(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_health_renders_not_applicable_allocation_as_not_checked(
     dashboard_con, dashboard_definitions, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2043,6 +2049,7 @@ def _open_sided_lift(metric: str, group: str, segment: str, day: int, value: flo
     )
 
 
+@pytest.mark.slow
 def test_document_embeds_untrusted_payload_text_as_inert_json(storefront_payload) -> None:
     from increment.dashboard._app import document
 
@@ -2266,6 +2273,7 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
 
 
 @pytest.mark.parametrize("surface", ["readout", "report"])
+@pytest.mark.slow
 def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
     storefront: DashboardSnapshot, storefront_analysis, surface: str
 ) -> None:

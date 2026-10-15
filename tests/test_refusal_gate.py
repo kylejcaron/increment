@@ -11,6 +11,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 INCREMENT_ROOT = ROOT / "increment"
 
@@ -118,6 +120,7 @@ def collect_keys(package_root: Path) -> set[str]:
     return keys
 
 
+@pytest.mark.slow
 def test_bare_raise_gate_is_empty() -> None:
     assert collect_keys(INCREMENT_ROOT) == set()
 

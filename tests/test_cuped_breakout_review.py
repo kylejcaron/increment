@@ -402,6 +402,7 @@ def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch)
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path):
     import datetime as dt
 
@@ -556,6 +557,7 @@ def _triggered_linear_artifact(tmp_path):
     return native, adopted, connection
 
 
+@pytest.mark.slow
 def test_triggered_cuped_definition_and_artifact_runs_match(tmp_path):
     from tests.parity_harness.comparison import nested_close
 

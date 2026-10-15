@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from types import ModuleType
 
+import pytest
+
 from tests.refusal_registry import (
     resolve_literal_raise_sites,
     validate_raise_sites,
@@ -211,6 +213,7 @@ def comprehensions():
     assert len(validate_raise_sites(sites)) == 4
 
 
+@pytest.mark.slow
 def test_every_literal_raise_site_supplies_exactly_its_spec_keys() -> None:
     from pathlib import Path
 

@@ -1515,6 +1515,7 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
         native.close()
 
 
+@pytest.mark.slow
 def test_extension_relation_publishes_and_reopens_under_digest_format_one() -> None:
     """Only the base relations move to digest_format 2. An extension relation
     keeps format 1, which validate_extension recomputes on read, so a
@@ -1548,6 +1549,7 @@ def test_extension_relation_publishes_and_reopens_under_digest_format_one() -> N
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.slow
 def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) -> None:
     """Logical names sharing a recipe publish one physical row set and adopt independently."""
     import yaml
