@@ -232,6 +232,67 @@ def test_definitions_and_artifact_breakouts_supply_cuped_unit_evidence(tmp_path)
     assert native_rows.metadata.scope.cells == artifact_rows.metadata.scope.cells
 
 
+def test_explicit_scalar_cuped_breakout_matches_frame_oracle(tmp_path) -> None:
+    from tests.covariate_cases import categorical_defs_and_con
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    text = defs_path.read_text().replace(
+        "    plan: {primary: revenue}",
+        "    plan: {primary: {metric: revenue, decision_method: {name: scalar, "
+        "variance_reduction: cuped, covariates: [{name: pre_tenure, kind: continuous, "
+        "property: tenure, source: events, missing: zero}]}}}\n"
+        "    breakouts: [{property: region, source: events}]",
+    )
+    defs_path.write_text(
+        text.replace(
+            "    design:\n"
+            "      mechanism: observational\n"
+            "      covariates:\n"
+            "        - {property: tenure, source: events}\n"
+            "        - {property: region, source: events}\n",
+            "",
+        )
+    )
+    native = Analysis.from_definitions("cat_test", defs_path, con)
+    frame = Analysis.from_unit_panel(
+        pa.Table.from_pylist(
+            [
+                {
+                    "unit": unit,
+                    "group": values["variant"],
+                    "day": 1,
+                    "segment": values["region"],
+                    "pre_tenure": values["tenure"],
+                    "revenue": values["revenue"],
+                }
+                for unit, values in units.items()
+            ]
+        ),
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped(
+                    name="scalar",
+                    covariates=CupedCovariate(name="pre_tenure", kind="continuous", missing="zero"),
+                ),
+            )
+        ],
+        breakouts=["segment"],
+    )
+    native_rows = native.run_breakout()
+    frame_rows = frame.run_breakout()
+    assert [(row.dimension_value, row.method) for row in native_rows] == [
+        (row.dimension_value, row.method) for row in frame_rows
+    ]
+    assert [row.require_lift().value for row in native_rows] == pytest.approx(
+        [row.require_lift().value for row in frame_rows], rel=1e-10
+    )
+
+
 def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflows() -> None:
     rows: list[dict[str, Any]] = []
     for group in ("control", "treatment"):

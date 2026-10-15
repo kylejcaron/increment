@@ -299,6 +299,103 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     assert native.require_lift().log_se == pytest.approx(oracle.require_lift().log_se)
 
 
+@pytest.mark.parametrize("missing", ["impute", "zero", "refuse"])
+def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
+    import pyarrow as pa
+
+    from increment.errors import CodedError, IncrementWarning
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path, null_units=("u3",))
+    con.raw_sql(
+        "UPDATE cat_events SET tenure = NULL WHERE user_id = 'u3' "
+        "AND ts < TIMESTAMP '2025-08-01 00:00:00'"
+    )
+    text = defs_path.read_text().replace(
+        "    design:\n"
+        "      mechanism: observational\n"
+        "      covariates:\n"
+        "        - {property: tenure, source: events}\n"
+        "        - {property: region, source: events}\n",
+        "",
+    )
+    text = text.replace(
+        "plan: {primary: revenue}",
+        "plan: {primary: {metric: revenue, decision_method: {name: scalar, "
+        "variance_reduction: cuped, covariates: [{name: pre_tenure, kind: continuous, "
+        "property: tenure, source: events, missing: " + missing + "}]}}}",
+    )
+    defs_path.write_text(text)
+    native = Analysis.from_definitions("cat_test", defs_path, con)
+    oracle_frame = pa.table(
+        {
+            "unit": list(units),
+            "group": [units[unit]["variant"] for unit in units],
+            "revenue": [units[unit]["revenue"] for unit in units],
+            "pre_tenure": [None if unit == "u3" else units[unit]["tenure"] for unit in units],
+        }
+    )
+    if missing == "refuse":
+        with pytest.raises(CodedError) as frame_error:
+            Analysis.from_unit_summary(
+                oracle_frame,
+                unit="unit",
+                group="group",
+                control="control",
+                metrics=[
+                    MetricSpec(
+                        name="revenue",
+                        decision_method=Method.cuped(
+                            name="scalar",
+                            covariates=CupedCovariate(
+                                name="pre_tenure", kind="continuous", missing=missing
+                            ),
+                        ),
+                    )
+                ],
+            )
+        with pytest.raises(CodedError) as native_error:
+            native.run()
+        assert native_error.value.code == "frame.validation.metric_covariate_column"
+        assert frame_error.value.code == native_error.value.code
+        return
+
+    with pytest.warns() as imputation_warnings:
+        oracle = Analysis.from_unit_summary(
+            oracle_frame,
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        name="scalar",
+                        covariates=CupedCovariate(
+                            name="pre_tenure", kind="continuous", missing=missing
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    warning = cast(IncrementWarning, imputation_warnings[0].message)
+    assert warning.code == "frame.validation.metric_covariate_missing_imputed"
+    assert warning.context["n_missing"] == 1
+
+    native_row = native.run()[0]
+    oracle_row = oracle.run()[0]
+    assert isinstance(native_row, LiftEstimate)
+    assert isinstance(oracle_row, LiftEstimate)
+    assert native_row.require_lift().value == pytest.approx(
+        oracle_row.require_lift().value, rel=1e-10
+    )
+    assert native_row.require_lift().log_se == pytest.approx(
+        oracle_row.require_lift().log_se, rel=1e-10
+    )
+
+
 @pytest.mark.slow
 def test_method_covariate_alias_conflicts_with_observational_binding(tmp_path):
     from increment.errors import InvalidRequestError

@@ -174,6 +174,7 @@ class _NativeMaterializationMixin:
         warn_on_censoring: bool,
         want_cuped: bool = True,
         pre_stats_override: Table | None = None,
+        covariate_missing: str | None = None,
         by: Sequence[str] = (),
         properties_table: Table | None = None,
     ) -> tuple[Table, Table | None, Table | None, Table]:
@@ -217,6 +218,7 @@ class _NativeMaterializationMixin:
             by=list(by) or None,
             properties_table=properties_table,
             explicit_covariate=pre_stats_override is not None,
+            covariate_missing=covariate_missing,
             data_as_of=data_as_of,
             warn_on_censoring=(
                 (lambda query: self._con.to_pyarrow(query).to_pylist())

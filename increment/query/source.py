@@ -1372,6 +1372,48 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return frame.to_native()
 
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, Any]] | None:
+        """Build one scalar family from the method's declared artifact covariate."""
+        if by:
+            raise ArtifactContractError(
+                "artifact.extension.missing",
+                "artifact base has no breakout evidence extension",
+            )
+        trusted = self.validated_metric(metric)
+        if not any(
+            getattr(covariate, field, None) is not None
+            for covariate in method.covariates
+            for field in ("property", "measure", "source")
+        ):
+            return None
+        covariate = method.covariates[0]
+        extension = self._covariate_extension(metric.name, covariate.name)
+        extension_rows = self._read_extension(extension, request=_artifact_request(extension))
+        pre_stats = self._covariate_table(
+            [
+                {
+                    "experiment_id": row["experiment_id"],
+                    "unit_id": row["unit_id"],
+                    "sum_value": row["value"],
+                }
+                for row in extension_rows
+            ]
+        )
+        return self._reduce(
+            trusted,
+            "total",
+            cluster=self.context.cluster,
+            cluster_table=self._cluster_table(),
+            pre_stats=pre_stats,
+            population_units=self._population_units,
+        )
+
     def _covariate_extension(self, metric_name: str, name: str) -> Any:
         property_name = name
         source_name = None
@@ -1485,12 +1527,20 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 ),
                 None,
             )
-            include_covariate = bool(
-                config
-                and any(
-                    method.variance_reduction == "cuped"
-                    for method in effective_methods(config, design=self.context.design)
+            methods = effective_methods(config, design=self.context.design) if config else ()
+            include_covariate = any(
+                method.variance_reduction == "cuped"
+                and (
+                    not method.covariates
+                    or any(
+                        not any(
+                            getattr(covariate, field, None) is not None
+                            for field in ("property", "measure", "source")
+                        )
+                        for covariate in method.covariates
+                    )
                 )
+                for method in methods
             )
         if (
             grain == "asof"

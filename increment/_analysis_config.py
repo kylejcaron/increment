@@ -82,6 +82,17 @@ _REFUSALS = refusals(
             template="metric {metric!r} requests multiple scalar CUPED covariate families, but the current moments format can retain only one x family; export is refused before writing. Export one scalar family, or use fixed-horizon unit evidence.",
             keys=frozenset({"metric"}),
         ),
+        "facade.analysis_config.multifamily_scalar_breakout": RefusalSpec(
+            "facade.analysis_config.multifamily_scalar_breakout",
+            UnsupportedRequestError,
+            template=(
+                "metric {metric!r} requests multiple distinct scalar CUPED covariate families "
+                "for a breakout; one breakout moment row can retain only one x family. "
+                "Run one scalar family per breakout request, or use cuped_multicovariate "
+                "when the covariates form one joint family."
+            ),
+            keys=frozenset({"metric"}),
+        ),
         "facade.analysis_config.covariate_binding_conflict": "covariate alias {covariate!r} has incompatible source binding or kind across methods",
     },
 )
@@ -210,8 +221,21 @@ def refuse_unrepresentable_scalar_export(
             )
 
 
+def refuse_multifamily_scalar_breakout(request: ReadoutRequest) -> None:
+    """Reject breakout rows that would silently reuse one scalar x family."""
+    if request.view != "breakout":
+        return
+    for config, methods in zip(request.configs, request.estimation_methods, strict=True):
+        families = {method.covariates for method in methods if method.variance_reduction == "cuped"}
+        if len(families) > 1:
+            _raise(
+                "facade.analysis_config.multifamily_scalar_breakout",
+                metric=config.metric.name,
+            )
+
+
 def validate_readout_covariates(request: ReadoutRequest) -> None:
-    """Refuse CUPED call-time overrides whose covariate input was not acquired."""
+    """Refuse CUPED call-time overrides whose covariate input is not available."""
     for config, methods in zip(request.configs, request.estimation_methods, strict=True):
         for method in methods:
             if (
@@ -220,6 +244,17 @@ def validate_readout_covariates(request: ReadoutRequest) -> None:
                 and not config.covariate_available
                 and method not in config.source_methods
             ):
+                legacy_scalar_x = (
+                    request.source_name == "MomentsSource"
+                    and method.variance_reduction == "cuped"
+                    and len(method.covariates) == 1
+                )
+                requested = frozenset(covariate.name for covariate in method.covariates)
+                if legacy_scalar_x or (
+                    request.available_covariates is not None
+                    and requested <= request.available_covariates
+                ):
+                    continue
                 _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
 
 

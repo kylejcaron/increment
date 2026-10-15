@@ -137,6 +137,29 @@ def test_observational_property_wins_over_same_named_measure_binding_on_replay(t
     assert {row["unit_id"]: row["tenure"] for row in artifact_rows.to_pylist()} == expected
 
 
+def test_artifact_scalar_cuped_uses_named_property_covariate(tmp_path):
+    defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=False)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: scalar, variance_reduction: cuped, covariates: "
+            "[{name: tenure, kind: continuous, property: tenure, source: events}]}}}",
+        )
+    )
+    artifact, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
+    native = Analysis.from_definitions("cov_test", defs_path, con)
+
+    from increment.estimation.results import LiftEstimate
+
+    artifact_row = next(row for row in artifact.run() if getattr(row, "method", None) == "scalar")
+    native_row = next(row for row in native.run() if getattr(row, "method", None) == "scalar")
+    assert isinstance(artifact_row, LiftEstimate)
+    assert isinstance(native_row, LiftEstimate)
+    assert artifact_row.require_lift().value == pytest.approx(native_row.require_lift().value)
+    assert artifact_row.require_lift().log_se == pytest.approx(native_row.require_lift().log_se)
+
+
 def test_reserved_binding_alias_has_same_native_and_artifact_refusal(tmp_path):
     defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=False)
     defs_path.write_text(

@@ -26,6 +26,7 @@ class MetricRows:
     evidence_sha256: str
     evidence_count: int
     evidence_components: tuple[tuple[str, str, int], ...] = ()
+    covariate_columns: tuple[tuple[str, str], ...] = ()
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
 
 
@@ -171,7 +172,6 @@ def _load_metric_rows(
             evidence_count=evidence_count,
         )
     _refuse_unsupported_by(metric, by)
-    rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
     scalar_methods = [
         method for method in methods if getattr(method, "variance_reduction", None) == "cuped"
     ]
@@ -179,10 +179,22 @@ def _load_metric_rows(
     if scalar_methods and any(method.covariates for method in scalar_methods):
         method_moments = getattr(src, "moments_for_method", None)
         if method_moments is not None:
-            method_rows = tuple(
-                (method.name, tuple(method_moments(metric, method, by=by)))
-                for method in scalar_methods
-            )
+            rows_by_method = []
+            for method in scalar_methods:
+                family_rows = method_moments(metric, method, by=by)
+                if family_rows is not None:
+                    rows_by_method.append((method.name, tuple(family_rows)))
+            method_rows = tuple(rows_by_method)
+    method_components = tuple(
+        (
+            f"scalar_method_rows:{method_name}",
+            digest,
+            count,
+        )
+        for method_name, rows_for_method in method_rows
+        for _arms, digest, count in (_rows_raw_digest_and_arms(rows_for_method),)
+    )
+    rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
     if has_linear:
         observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
@@ -195,13 +207,19 @@ def _load_metric_rows(
             evidence_kind="moments_rows",
             evidence_sha256=moments_sha256,
             evidence_count=moments_count,
-            evidence_components=(("moments_rows", moments_sha256, moments_count),),
+            evidence_components=(
+                ("moments_rows", moments_sha256, moments_count),
+                *method_components,
+            ),
             method_rows=method_rows,
         )
 
     import narwhals as nw
 
+    from increment._source_types import unit_frame_covariate_columns
+
     covariate_names = tuple(item.name for item in covariates)
+    acquired_columns = unit_frame_covariate_columns(covariate_names)
     native = src.unit_frame(metric, covariates=covariate_names)
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
@@ -216,6 +234,8 @@ def _load_metric_rows(
         evidence_components=(
             ("moments_rows", moments_sha256, moments_count),
             ("unit_evidence_rows", unit_sha256, unit_count),
+            *method_components,
         ),
         method_rows=method_rows,
+        covariate_columns=tuple(acquired_columns.items()),
     )

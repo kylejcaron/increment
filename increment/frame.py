@@ -514,7 +514,14 @@ class FrameTotalsSource(SequentialSourceMixin):
         spec = self._specs_by_name.get(metric.name)
         if spec is None:
             return []
-        method_spec = spec.model_copy(update={"decision_method": method, "sensitivity_methods": ()})
+        method_spec = MetricSpec.model_validate(
+            {
+                **spec.model_dump(),
+                "decision_method": method,
+                "sensitivity_methods": (),
+            }
+        )
+        _enforce_missing_policy(self._frame, (method_spec,), shape="summary", emit_warnings=False)
         if self._cluster is not None:
             _reject_cluster_request(
                 (method_spec,), cluster=self._cluster, design=self.design, uptake=self._uptake
@@ -1608,6 +1615,44 @@ class FramePanelSource(SequentialSourceMixin):
         if spec is None:
             _raise("frame.frame_totals.metric_was_declared", name=metric.name)
         return spec
+
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Build scalar CUPED moments from the requested panel covariate."""
+        if by:
+            refuse(
+                _FRAME_GRAIN,
+                grain="breakout",
+                offered=self.capabilities,
+            )
+        spec = self._spec_for(metric)
+        method_spec = MetricSpec.model_validate(
+            {
+                **spec.model_dump(),
+                "decision_method": method,
+                "sensitivity_methods": (),
+            }
+        )
+        if self._source_frame is not None:
+            _enforce_missing_policy(self._source_frame, (method_spec,), shape="panel")
+        covariate_names = tuple(item.name for item in method.covariates or ())
+        unit_data = nw.from_native(
+            self.unit_frame(metric, covariates=covariate_names), eager_only=True
+        )
+        return _moment_rows(
+            unit_data,
+            group="group_id",
+            metrics=(method_spec,),
+            experiment_id=self._experiment_id,
+            covariate_columns=unit_frame_covariate_columns(covariate_names),
+            outcome_column="y",
+            denominator_column="y_den",
+        )
 
     def unit_frame(
         self,

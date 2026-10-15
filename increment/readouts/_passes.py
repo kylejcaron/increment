@@ -50,6 +50,21 @@ def _emit_captured_lift_warnings(
         warnings.warn(record.message, record.category, stacklevel=3)
 
 
+def _method_unit_frame(
+    evidence: Any, method: Method, fallback: Sequence[Any]
+) -> tuple[Any, Mapping[str, str]]:
+    """Return acquired evidence and the actual source column for each method alias."""
+    covariates = method.covariates or tuple(fallback)
+    source_columns = dict(getattr(evidence, "covariate_columns", ()))
+    requested = tuple(item.name for item in covariates)
+    missing = tuple(name for name in requested if name not in source_columns)
+    if missing:
+        from increment._analysis_config import _raise as raise_config_refusal
+
+        raise_config_refusal("facade.analysis_config.cuped_linear_covariates", metric=method.name)
+    return evidence.unit_frame, {name: source_columns[name] for name in requested}
+
+
 def _lift_cells_missing_control(  # noqa: PLR0913
     *,
     metric: Metric,
@@ -397,6 +412,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
     rows for a moments metric, the native unit frame for a quantile metric.
     """
     method_roles = _runtime_method_roles(methods)
+    method_rows = dict(getattr(evidence, "method_rows", ()))
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         from increment.winsor import winsor_refuse
 
@@ -489,6 +505,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
                 },
                 family=retry == "family",
                 family_member=retry == "family",
+                method_rows=method_rows,
             )
             rows_est.extend(ordinary)
             refused.extend(ordinary_refused)
@@ -524,12 +541,16 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
                         advisories=cached_bundle.advisories,
                     )
                 else:
+                    method_frame, method_columns = _method_unit_frame(
+                        evidence, method, config.covariates
+                    )
                     linear = estimate_cuped_linear(
                         metric,
-                        evidence.unit_frame,
+                        method_frame,
                         control_group=design.control_group,
                         method=method,
                         method_role=method_roles[method.name],
+                        covariate_columns=method_columns,
                         covariates=method.covariates or config.covariates,
                         alpha=alpha_for,
                         alternative=test.alternative,
@@ -616,7 +637,6 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
         )
 
     rows_summary = getattr(evidence, "rows", evidence)
-    method_rows = dict(getattr(evidence, "method_rows", ()))
     rows_est, refused, computation = _estimate_lift_cells(
         metric=metric,
         summary=rows_summary or [],

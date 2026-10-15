@@ -1247,11 +1247,15 @@ class Analysis:
                 if method.variance_reduction == "cuped"
                 for covariate in method.covariates or ()
             }
-            if requested_covariates and any(
-                row.get("metric") == spec.name
-                and row.get("covariate_name") is not None
-                and row.get("covariate_name") not in requested_covariates
+            provenance_names = {
+                str(row["covariate_name"])
                 for row in rows
+                if row.get("metric") == spec.name and row.get("covariate_name") is not None
+            }
+            if (
+                requested_covariates
+                and provenance_names
+                and provenance_names != requested_covariates
             ):
                 from increment._analysis_config import refuse_unidentified_scalar_moments
 

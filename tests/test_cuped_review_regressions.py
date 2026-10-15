@@ -169,14 +169,15 @@ def test_relative_projection_failure_keeps_absolute_guardrail_inference() -> Non
 
 
 @pytest.mark.parametrize("override", ["decision", "sensitivity"])
-def test_undeclared_linear_override_refuses_before_evidence_acquisition(override):
+def test_unavailable_linear_override_refuses_before_evidence_acquisition(override):
     from increment.errors import CodedError
     from increment.readouts import run
     from tests.test_cuped_linear_acceptance import _summary_source
 
     source = _summary_source(metric=MetricSpec(name="revenue"))
     linear = Method.cuped_multicovariate(
-        name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
+        name="linear",
+        covariates=CupedCovariate(name="missing_covariate", kind="continuous"),
     )
     with pytest.raises(CodedError) as raised:
         if override == "decision":
@@ -185,6 +186,36 @@ def test_undeclared_linear_override_refuses_before_evidence_acquisition(override
             run(cast(MomentSource, source), sensitivity_methods=[linear])
     assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
     assert source.read_calls == 0
+
+
+def test_available_unadjusted_source_column_supports_mixed_cuped_override():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "revenue": float(index + (group == "treatment") * 3),
+            "prior": float(index % 7),
+        }
+        for group in ("control", "treatment")
+        for index in range(40)
+    ]
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[MetricSpec(name="revenue")],
+    )
+
+    result = analysis.run(
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="prior", kind="continuous")
+        )
+    )[0]
+
+    assert isinstance(result, LiftEstimate)
+    log_se = result.require_lift().log_se
+    assert log_se is not None and log_se > 0.0
 
 
 def test_m1_unavailable_readouts_replay_exact_fit_refusal():

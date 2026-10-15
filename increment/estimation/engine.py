@@ -3553,6 +3553,7 @@ def _fit_cuped_multicovariate_frame(
     control_group: str,
     arm_order: tuple[str, ...],
     ratio: bool,
+    covariate_columns: Mapping[str, str] | None = None,
 ) -> Any:
     """Fit the per-unit evidence frame once, returning the fit or its coded refusal."""
     import numpy as np
@@ -3562,7 +3563,9 @@ def _fit_cuped_multicovariate_frame(
     declarations = tuple(covariates)
     # The frame carries a covariate named like one of its own columns under
     # a scratch column; the declared name still identifies it in the fit.
-    columns = unit_frame_covariate_columns([item.name for item in declarations])
+    columns = covariate_columns or unit_frame_covariate_columns(
+        [item.name for item in declarations]
+    )
     y = np.asarray(frame.get_column("y").to_list(), dtype=float)
     try:
         return fit_cuped_multicovariate(
@@ -3593,6 +3596,7 @@ def estimate_cuped_linear(
     method: Method,
     method_role: Literal["decision", "sensitivity"],
     covariates: Sequence[Any],
+    covariate_columns: Mapping[str, str] | None = None,
     alpha: float,
     alternative: str,
     null_lift: float = 0.0,
@@ -3644,7 +3648,12 @@ def estimate_cuped_linear(
         if frame is None:
             return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
     fit = _fit_cuped_multicovariate_frame(
-        frame, covariates, control_group=control_group, arm_order=arm_order, ratio=ratio
+        frame,
+        covariates,
+        control_group=control_group,
+        arm_order=arm_order,
+        ratio=ratio,
+        covariate_columns=covariate_columns,
     )
     if isinstance(fit, CodedError):
         if not results or not fit.code.startswith("estimation.cuped_linear."):

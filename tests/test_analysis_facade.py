@@ -1814,28 +1814,7 @@ def test_analysis_run_native_binding_drives_cuped_dispatch(seeded_pre_period_con
                             metric="avg_session_duration",
                             decision_method=MethodSpec(name="unadjusted"),
                             sensitivity_methods=(
-                                MethodSpec(
-                                    name="cuped",
-                                    variance_reduction="cuped",
-                                    covariates=[
-                                        {
-                                            "name": "pre_period_avg_session_duration",
-                                            "kind": "continuous",
-                                            "measure": {
-                                                "fact": "session_end",
-                                                "aggregation": "avg_calendar_day",
-                                                "window_days": 7,
-                                                "filters": [
-                                                    {
-                                                        "property": "platform",
-                                                        "op": "equals",
-                                                        "values": ["web"],
-                                                    }
-                                                ],
-                                            },
-                                        }
-                                    ],
-                                ),
+                                MethodSpec(name="cuped", variance_reduction="cuped"),
                             ),
                         ),
                     ],

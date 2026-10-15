@@ -669,6 +669,108 @@ def test_scalar_method_subset_preserves_aliases_that_collide_with_scratch_column
     assert selected.require_lift().log_se == pytest.approx(reference.require_lift().log_se)
 
 
+def test_two_mixed_methods_preserve_aliases_colliding_with_scratch_columns():
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(71)
+    n = 40
+    frame = pd.DataFrame(
+        {
+            "unit": range(2 * n),
+            "arm": ["control"] * n + ["treatment"] * n,
+            "outcome": 10 + rng.normal(size=2 * n),
+            "y": rng.normal(size=2 * n),
+            "__covariate_y": rng.normal(size=2 * n),
+        }
+    )
+    first = Method.cuped_multicovariate(
+        name="linear_y", covariates=CupedCovariate(name="y", kind="continuous")
+    )
+    second = Method.cuped_multicovariate(
+        name="linear_scratch",
+        covariates=CupedCovariate(name="__covariate_y", kind="continuous"),
+    )
+
+    def run(methods):
+        return Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=methods[0],
+                    sensitivity_methods=tuple(methods[1:]),
+                )
+            ],
+        ).run()
+
+    together = run((first, second))
+    reference = run((first,))
+    combined = next(
+        row for row in together if isinstance(row, LiftEstimate) and row.method == first.name
+    )
+    alone = next(row for row in reference if isinstance(row, LiftEstimate))
+    assert combined.require_lift().value == pytest.approx(alone.require_lift().value)
+    assert combined.require_lift().log_se == pytest.approx(alone.require_lift().log_se)
+
+
+def test_scalar_sensitivity_uses_its_own_covariate_when_mixed_cuped_is_present():
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(19)
+    n = 80
+    frame = pd.DataFrame(
+        {
+            "unit": range(2 * n),
+            "arm": ["control"] * n + ["treatment"] * n,
+            "outcome": 10 + rng.normal(size=2 * n),
+            "history_a": rng.normal(size=2 * n),
+            "history_b": rng.normal(size=2 * n),
+            "mixed_x": rng.normal(size=2 * n),
+        }
+    )
+    first = Method.cuped(
+        name="scalar_a",
+        covariates=CupedCovariate(name="history_a", kind="continuous"),
+    )
+    second = Method.cuped(
+        name="scalar_b",
+        covariates=CupedCovariate(name="history_b", kind="continuous"),
+    )
+    mixed = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=CupedCovariate(name="mixed_x", kind="continuous"),
+    )
+
+    def run(methods):
+        return Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=methods[0],
+                    sensitivity_methods=tuple(methods[1:]),
+                )
+            ],
+        ).run()
+
+    together = run((first, second, mixed))
+    standalone = run((second,))
+    result = next(
+        row for row in together if isinstance(row, LiftEstimate) and row.method == second.name
+    )
+    reference = next(row for row in standalone if isinstance(row, LiftEstimate))
+    assert result.require_lift().value == pytest.approx(reference.require_lift().value)
+    assert result.require_lift().log_se == pytest.approx(reference.require_lift().log_se)
+
+
 def test_multi_family_scalar_export_refuses_before_writing_payload(tmp_path):
     import numpy as np
     import pandas as pd

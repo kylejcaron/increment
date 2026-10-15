@@ -693,6 +693,42 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
+@pytest.mark.parametrize("cluster", [None, "cluster_id"])
+def test_observational_explicit_unadjusted_keeps_result_label(cluster: str | None) -> None:
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.estimation.engine import Method
+    from increment.estimation.results import LiftEstimate
+    from increment.semantics.design import AdjustmentSet, Observational
+
+    frame = pd.DataFrame(
+        {
+            "unit": range(80),
+            "group": ["control"] * 40 + ["treatment"] * 40,
+            "outcome": [float(i % 5 + (i >= 40)) for i in range(80)],
+            "cluster_id": [f"c{i}" for i in range(80)],
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="group",
+        metrics=[MetricSpec(name="outcome", type="mean")],
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("outcome",))
+        ),
+        cluster=cluster,
+    )
+
+    rows = analysis.run(decision_method=Method.unadjusted())
+    estimate = next(row for row in rows if isinstance(row, LiftEstimate))
+
+    assert estimate.method == Method.unadjusted().name
+    assert estimate.estimand == "itt"
+    assert estimate.require_lift().value is not None
+
+
 def test_run_does_not_warn_for_defaulted_fixed_horizon_encouragement_cuped(
     arrow_frame: pa.Table,
 ) -> None:

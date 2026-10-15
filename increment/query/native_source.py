@@ -27,6 +27,12 @@ from increment._analysis_config import (
     overlay_configs,
     resolve_configs,
 )
+from increment._frame_validation import (
+    COVARIATE_COLUMN_MISSING as _NATIVE_COVARIATE_MISSING,
+)
+from increment._frame_validation import (
+    COVARIATE_IMPUTE_ALL_NULL as _NATIVE_COVARIATE_IMPUTE_ALL_NULL,
+)
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
@@ -1023,6 +1029,58 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         else:
             values = scoped.group_by("unit_id").agg(**{name: scoped.value.max()})
         return values
+
+    def _bound_scalar_covariate_pre_stats(
+        self,
+        covariate: CupedCovariateBinding,
+        exposures: Table,
+        metric: Metric,
+    ) -> Table:
+        if covariate.measure is not None:
+            values = self._pre_period_measure_covariate(
+                covariate.measure, covariate.name, exposures
+            )
+        else:
+            property_name = covariate.property or covariate.name
+            source = self._resolve_unit_covariate_source(
+                property_name,
+                declared_source=covariate.source,
+                kind=covariate.kind,
+            )
+            values = self._build_breakout_properties_table(source, property_name, exposures)
+            if property_name != covariate.name:
+                values = values.select("unit_id", **{covariate.name: values[property_name]})
+        values = (
+            exposures.select("unit_id")
+            .distinct()
+            .left_join(values, "unit_id")
+            .select("unit_id", covariate.name)
+        )
+        value = values[covariate.name].cast("float64")
+        normalized = ibis.ifelse(value.isnan(), ibis.null().cast("float64"), value)
+        values = values.select("unit_id", **{covariate.name: normalized})
+        if covariate.missing in ("refuse", "impute"):
+            counts = self._con.to_pyarrow(
+                values.aggregate(
+                    n_missing=values[covariate.name].isnull().cast("int64").sum(),
+                    n_observed=values[covariate.name].count(),
+                )
+            ).to_pylist()[0]
+            n_missing = int(counts["n_missing"] or 0)
+            if covariate.missing == "refuse" and n_missing:
+                _refuse(
+                    _NATIVE_COVARIATE_MISSING,
+                    metric=metric.name,
+                    covariate=covariate.name,
+                    n_missing=n_missing,
+                )
+            if covariate.missing == "impute" and not counts["n_observed"]:
+                _refuse(
+                    _NATIVE_COVARIATE_IMPUTE_ALL_NULL,
+                    metric=metric.name,
+                    covariate=covariate.name,
+                )
+        return values.select("unit_id", sum_value=values[covariate.name])
 
     def _build_exposure_events_table(self) -> Table:
         """Build the raw exposure-events table from the experiment's exposure.
@@ -2331,23 +2389,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 ),
                 None,
             )
-            pre_stats_override = None
-            if isinstance(covariate, CupedCovariateBinding):
-                if covariate.measure is not None:
-                    values = self._pre_period_measure_covariate(
-                        covariate.measure, covariate.name, exposures
-                    )
-                else:
-                    property_name = covariate.property or covariate.name
-                    source = self._resolve_unit_covariate_source(
-                        property_name,
-                        declared_source=covariate.source,
-                        kind=covariate.kind,
-                    )
-                    values = self._build_breakout_properties_table(source, property_name, exposures)
-                    if property_name != covariate.name:
-                        values = values.select("unit_id", **{covariate.name: values[property_name]})
-                pre_stats_override = values.select("unit_id", sum_value=values[covariate.name])
+            pre_stats_override = (
+                self._bound_scalar_covariate_pre_stats(covariate, exposures, metric)
+                if isinstance(covariate, CupedCovariateBinding)
+                else None
+            )
             want_cuped = resolved_cuped if narrow_cuped else True
             summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
                 metric,
@@ -2364,6 +2410,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 warn_on_censoring=True,
                 want_cuped=want_cuped,
                 pre_stats_override=pre_stats_override,
+                covariate_missing=(
+                    covariate.missing if isinstance(covariate, CupedCovariateBinding) else None
+                ),
             )
             tables.append(summary.to_pyarrow())
 
@@ -2759,6 +2808,21 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     population=population,
                 )
             )
+            config = next(item for item in self._context.configs if item.metric.name == metric.name)
+            scalar_covariate = next(
+                (
+                    covariate
+                    for method in effective_methods(config, design=self.context.design)
+                    if method.variance_reduction == "cuped"
+                    for covariate in method.covariates or ()
+                ),
+                None,
+            )
+            pre_stats_override = (
+                self._bound_scalar_covariate_pre_stats(scalar_covariate, exposures, metric)
+                if isinstance(scalar_covariate, CupedCovariateBinding)
+                else None
+            )
             summary_by, _pre_stats, _den_stats, _totals_by = self._build_metric_summary(
                 metric,
                 exposures,
@@ -2774,6 +2838,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 warn_on_censoring=True,
                 by=by,
                 properties_table=properties_table,
+                pre_stats_override=pre_stats_override,
+                covariate_missing=(
+                    scalar_covariate.missing
+                    if isinstance(scalar_covariate, CupedCovariateBinding)
+                    else None
+                ),
             )
             # Row dicts, never pa.concat_tables: differently winsorized metrics get
             # different winsor-column dtypes (null vs double), which it rejects.
@@ -3573,6 +3643,28 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 route="use breakout_moments() for a dimensioned totals view",
             )
         combined = self._moments_for_metrics(selected=[metric], population=population)
+        return cast("list[dict[str, Any]]", combined.to_pylist())
+
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Materialize the scalar family for exactly one method request."""
+        if by:
+            _refuse_operation(
+                operation="moments",
+                request={"metric": metric.name, "by": tuple(by)},
+                offered=tuple(sorted(self.capabilities)),
+                route="use breakout_moments() for dimensioned totals",
+            )
+        combined = self._moments_for_metrics(
+            methods=[method],
+            selected=[metric],
+            narrow_cuped=True,
+        )
         return cast("list[dict[str, Any]]", combined.to_pylist())
 
     def _sequential_observation_mapping(self):

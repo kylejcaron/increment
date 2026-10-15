@@ -1471,6 +1471,29 @@ class MomentsSource(SequentialSourceMixin):
             _refuse(_MOMENTS_BREAKOUT)
         return [dict(r) for r in self._rows if r["metric"] == metric.name]
 
+    def moments_for_method(
+        self,
+        metric,
+        method,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, object]]:
+        """Select a named scalar family, preserving anonymous legacy x rows."""
+        rows = self.moments(metric, by=by)
+        covariates = method.covariates or ()
+        if not covariates:
+            return rows
+        covariate_name = covariates[0].name
+        named = [row for row in rows if row.get("covariate_name") is not None]
+        if not named:
+            return rows
+        selected = [row for row in named if row.get("covariate_name") == covariate_name]
+        if not selected:
+            from increment._analysis_config import refuse_unidentified_scalar_moments
+
+            refuse_unidentified_scalar_moments(metric.name)
+        return selected
+
     def unit_frame(
         self,
         metric,

@@ -261,7 +261,8 @@ class ReadoutRequest:
     grain: Grain
     by: tuple[str, ...] = ()
     dimension: str | None = None
-    capabilities: frozenset[Grain] = frozenset()
+    available_covariates: frozenset[str] | None = None
+    capabilities: frozenset[str] = frozenset({"total"})
     source_breakouts: tuple[str, ...] = ()
     source_name: str = "source"
     shape: Shape | None = None
@@ -295,6 +296,10 @@ class ReadoutRequest:
         if len(metrics) != len(configs):
             _raise("readout.request.readoutrequest_requires_one_resolved")
         context = source.context
+        source_frame = getattr(source, "_frame", None)
+        if source_frame is None:
+            source_frame = getattr(source, "_source_frame", None)
+        available_covariates = frozenset(source_frame.columns) if source_frame is not None else None
         return cls(
             context=context,
             metrics=tuple(metrics),
@@ -303,6 +308,7 @@ class ReadoutRequest:
             grain=grain,
             by=tuple(by),
             dimension=dimension,
+            available_covariates=available_covariates,
             capabilities=frozenset(getattr(source, "capabilities", {"total"})),
             source_breakouts=tuple(getattr(source, "breakouts", ())),
             source_name=type(source).__name__,
@@ -405,6 +411,9 @@ def validate_request(request: ReadoutRequest) -> None:
     """
     _validate_estimands(request)
     _validate_identification(request)
+    from increment._analysis_config import refuse_multifamily_scalar_breakout
+
+    refuse_multifamily_scalar_breakout(request)
 
     from increment._analysis_config import validate_readout_covariates
     from increment.estimation.adjust import validate_readout_adjustment

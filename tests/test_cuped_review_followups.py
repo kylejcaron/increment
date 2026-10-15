@@ -9,7 +9,7 @@ import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
 from increment.breakout.estimates import BreakoutEstimates
-from increment.errors import IncrementWarning, InvalidRequestError
+from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.readout_types import ReadoutResults
@@ -539,6 +539,109 @@ def test_covariate_declaration_changes_the_readout_identity():
     assert imputed.metadata.scope.snapshot_id != refused.metadata.scope.snapshot_id
 
 
+def test_scalar_companion_evidence_changes_snapshot_without_changing_decision_estimate():
+    def run(scale: float):
+        rows = [
+            {
+                "unit": f"{group}-{index}",
+                "group": group,
+                "history_a": float(index % 5),
+                "history_b": scale * float((index * 3) % 7),
+                "revenue": float(index + (group == "treatment") * 3),
+            }
+            for group in ("control", "treatment")
+            for index in range(30)
+        ]
+        return Analysis.from_unit_summary(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        name="scalar_a",
+                        covariates=CupedCovariate(name="history_a", kind="continuous"),
+                    ),
+                    sensitivity_methods=(
+                        Method.cuped(
+                            name="scalar_b",
+                            covariates=CupedCovariate(name="history_b", kind="continuous"),
+                        ),
+                    ),
+                )
+            ],
+        ).run()
+
+    first, changed = run(1.0), run(2.0)
+    first_a = next(
+        row for row in first if isinstance(row, LiftEstimate) and row.method == "scalar_a"
+    )
+    changed_a = next(
+        row for row in changed if isinstance(row, LiftEstimate) and row.method == "scalar_a"
+    )
+    assert first.metadata is not None and changed.metadata is not None
+    assert first.metadata.scope.snapshot_id != changed.metadata.scope.snapshot_id
+    assert first_a.require_lift().value == pytest.approx(changed_a.require_lift().value)
+    assert first_a.require_lift().log_se == pytest.approx(changed_a.require_lift().log_se)
+
+
+def test_call_time_scalar_override_accepts_provenance_free_legacy_x():
+    from tests.test_analysis_moments import _legacy_fixed10_rows
+
+    rows = _legacy_fixed10_rows()
+    for row in rows:
+        row.update(
+            ref_x=10.0,
+            cx1=1.0 if row["group_id"] == "control" else 2.0,
+            cx2=20.0,
+            cxy=4.0 if row["group_id"] == "control" else 5.0,
+            x_role="covariate",
+        )
+    analysis = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+
+    result = analysis.run(
+        decision_method=Method.cuped(covariates=CupedCovariate(name="prior", kind="continuous"))
+    )[0]
+
+    assert isinstance(result, LiftEstimate)
+
+
+def test_moments_provenance_must_cover_each_requested_scalar_family():
+    from tests.test_analysis_moments import _legacy_fixed10_rows
+
+    scalar_a = Method.cuped(
+        name="scalar_a", covariates=CupedCovariate(name="history_a", kind="continuous")
+    )
+    scalar_b = Method.cuped(
+        name="scalar_b", covariates=CupedCovariate(name="history_b", kind="continuous")
+    )
+    rows = _legacy_fixed10_rows(
+        covariate_name="history_a",
+        ref_x=10.0,
+        cx1=1.0,
+        cx2=20.0,
+        cxy=4.0,
+        x_role="covariate",
+    )
+
+    with pytest.raises(UnsupportedRequestError) as raised:
+        Analysis.from_moments(
+            rows,
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=scalar_a,
+                    sensitivity_methods=(scalar_b,),
+                )
+            ],
+            control="control",
+        )
+
+    assert raised.value.code == "facade.analysis_config.cuped_scalar_moments"
+
+
 def test_scalar_sensitivity_refuse_rejects_missing_covariate_at_construction():
     rows = [
         {
@@ -572,6 +675,88 @@ def test_scalar_sensitivity_refuse_rejects_missing_covariate_at_construction():
                 )
             ],
         )
+
+    assert raised.value.code == "frame.validation.metric_covariate_column"
+
+
+def test_multicov_refusal_does_not_skip_shared_scalar_refusal():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "history": None if index % 4 == 0 else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for group in ("control", "treatment")
+        for index in range(20)
+    ]
+
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_unit_summary(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped_multicovariate(
+                        name="mixed",
+                        covariates=CupedCovariate(
+                            name="history", kind="continuous", missing="refuse"
+                        ),
+                    ),
+                    sensitivity_methods=(
+                        Method.cuped(
+                            name="scalar",
+                            covariates=CupedCovariate(
+                                name="history", kind="continuous", missing="refuse"
+                            ),
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    assert raised.value.code == "frame.validation.metric_covariate_column"
+
+
+def test_scalar_missing_refusal_is_rechecked_for_call_time_override():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "history": None if index % 4 == 0 else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for group in ("control", "treatment")
+        for index in range(20)
+    ]
+    with pytest.warns(IncrementWarning):
+        analysis = Analysis.from_unit_summary(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        name="scalar",
+                        covariates=CupedCovariate(
+                            name="history", kind="continuous", missing="impute"
+                        ),
+                    ),
+                )
+            ],
+        )
+    override = Method.cuped(
+        name="scalar_refuse",
+        covariates=CupedCovariate(name="history", kind="continuous", missing="refuse"),
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        analysis.run(decision_method=override)
 
     assert raised.value.code == "frame.validation.metric_covariate_column"
 

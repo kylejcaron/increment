@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._policy_alpha import resolve_cell_alpha
@@ -20,7 +21,7 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
-from increment.readouts._metric_rows import _load_metric_rows
+from increment.readouts._metric_rows import MetricRows, _load_metric_rows
 from increment.readouts._passes import _estimate_pass
 from increment.sources import MomentSource
 
@@ -323,9 +324,13 @@ def _estimate_randomized_secondary_family(
         evidence_components[metric.name] = evidence_component
         evidence_by_metric[metric.name] = (
             metric_rows
-            if metric_rows.unit_frame is not None
-            and any(
-                method.variance_reduction == "cuped_multicovariate" for method in _metric_methods
+            if metric_rows.method_rows
+            or (
+                metric_rows.unit_frame is not None
+                and any(
+                    method.variance_reduction == "cuped_multicovariate"
+                    for method in _metric_methods
+                )
             )
             else rows
         )
@@ -403,12 +408,26 @@ def _estimate_randomized_secondary_family(
         metric_rows = loaded[metric.name]
         selected_evidence = evidence_by_metric[metric.name]
         if not is_quantile and metric_rows.unit_frame is None:
-            selected_evidence = [
-                row
-                for row in selected_evidence
-                if str(row["group_id"]) == design.control_group
-                or str(row["group_id"]) in selected_groups
-            ]
+
+            def keep(row: Any, groups: set[str]) -> bool:
+                return (
+                    str(row["group_id"]) == design.control_group or str(row["group_id"]) in groups
+                )
+
+            if isinstance(selected_evidence, MetricRows):
+                selected_evidence = replace(
+                    selected_evidence,
+                    rows=tuple(row for row in selected_evidence.rows if keep(row, selected_groups)),
+                    method_rows=tuple(
+                        (
+                            name,
+                            tuple(row for row in rows_for_method if keep(row, selected_groups)),
+                        )
+                        for name, rows_for_method in selected_evidence.method_rows
+                    ),
+                )
+            else:
+                selected_evidence = [row for row in selected_evidence if keep(row, selected_groups)]
         selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])

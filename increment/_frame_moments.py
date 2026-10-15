@@ -457,6 +457,9 @@ def _moment_rows(
     uptake: str | None = None,
     cluster: str | None = None,
     by: Sequence[str] = (),
+    outcome_column: str | None = None,
+    denominator_column: str | None = None,
+    covariate_columns: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build centered moments after each metric's pooled unit transform."""
     rows: list[dict[str, Any]] = []
@@ -482,10 +485,12 @@ def _moment_rows(
                 *[nw.col(name) for name in by],
                 nw.col(group).alias("group_id"),
                 nw.col(cluster).alias("__cluster__"),
-                nw.col(spec.y_column).cast(nw.Float64).alias("y"),
+                nw.col(outcome_column or spec.y_column).cast(nw.Float64).alias("y"),
             ]
             if has_den:
-                select_exprs.append(nw.col(spec.denominator).cast(nw.Float64).alias("y_den"))
+                select_exprs.append(
+                    nw.col(denominator_column or spec.denominator).cast(nw.Float64).alias("y_den")
+                )
             if has_uptake:
                 select_exprs.append(nw.col(uptake).cast(nw.Float64).alias("d"))
             long = frame.select(*select_exprs)
@@ -528,11 +533,14 @@ def _moment_rows(
                 )
             continue
 
-        exprs = [nw.col(spec.y_column).cast(nw.Float64).alias("y")]
+        exprs = [nw.col(outcome_column or spec.y_column).cast(nw.Float64).alias("y")]
         if has_x:
-            exprs.append(nw.col(covariate.name).cast(nw.Float64).alias("x"))
+            x_column = (covariate_columns or {}).get(covariate.name, covariate.name)
+            exprs.append(nw.col(x_column).cast(nw.Float64).alias("x"))
         if has_den:
-            exprs.append(nw.col(spec.denominator).cast(nw.Float64).alias("y_den"))
+            exprs.append(
+                nw.col(denominator_column or spec.denominator).cast(nw.Float64).alias("y_den")
+            )
         if uptake is not None:
             exprs.append(nw.col(uptake).cast(nw.Float64).alias("d"))
 
