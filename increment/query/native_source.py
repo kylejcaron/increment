@@ -368,6 +368,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._session._source_tables is not None
             and self._mixed_assignment_fingerprint is not None
         ):
+            assert self._mixed_assignment_units is not None
+            assert self._unassigned_assignment_units is not None
+            self._mixed_assignment_warned = enforce_mixed_assignments(
+                self._mixed_assignment_units,
+                getattr(self, "_on_mixed_assignment", "error"),
+                unassigned_count=self._unassigned_assignment_units,
+                already_warned=getattr(self, "_mixed_assignment_warned", False),
+            )
             return
         exposure_events_table = self._build_exposure_events_table()
         mixed, unassigned, fingerprint = self._mixed_assignment_snapshot(exposure_events_table)

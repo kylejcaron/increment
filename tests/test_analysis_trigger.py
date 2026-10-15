@@ -124,6 +124,39 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         analysis.close()
 
 
+def test_pinned_mixed_assignment_refusal_repeats_after_caught_error(tmp_path):
+    events = _events(n_per_arm=2)
+    rows = events.to_pylist()
+    control_assignment = next(
+        row for row in rows if row["user_id"] == "C0" and row["event"] == "enrolled"
+    )
+    rows.append({**control_assignment, "group_id": "T"})
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(rows, schema=events.schema))
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path),
+        con,
+        on_mixed_assignment="error",
+    )
+    pinned = None
+    try:
+        pinned = analysis._src._pinned_source()
+        codes = []
+        for _ in range(2):
+            with pytest.raises(InvalidRequestError) as raised:
+                pinned._validate_mixed_assignments()
+            codes.append(raised.value.code)
+        assert codes == [
+            "query.integrity.mixed_assignment_units",
+            "query.integrity.mixed_assignment_units",
+        ]
+    finally:
+        if pinned is not None:
+            pinned._session.drop_materialized()
+        analysis.close()
+
+
 @pytest.mark.integration
 def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
     path = _write_defs(tmp_path)
