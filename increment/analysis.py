@@ -1234,14 +1234,37 @@ class Analysis:
         from increment._analysis_config import refuse_cuped_linear_moments
 
         for spec in specs:
+            methods_for_metric = (
+                () if spec.decision_method is None else (spec.decision_method,)
+            ) + spec.sensitivity_methods
             if any(
-                method.variance_reduction == "cuped_multicovariate"
-                for method in (
-                    (() if spec.decision_method is None else (spec.decision_method,))
-                    + spec.sensitivity_methods
-                )
+                method.variance_reduction == "cuped_multicovariate" for method in methods_for_metric
             ):
                 refuse_cuped_linear_moments(spec.name)
+            requested_covariates = {
+                covariate.name
+                for method in methods_for_metric
+                if method.variance_reduction == "cuped"
+                for covariate in method.covariates or ()
+            }
+            if requested_covariates and any(
+                row.get("metric") == spec.name
+                and row.get("covariate_name") is not None
+                and row.get("covariate_name") not in requested_covariates
+                for row in rows
+            ):
+                from increment._analysis_config import refuse_unidentified_scalar_moments
+
+                refuse_unidentified_scalar_moments(spec.name)
+            if requested_covariates and any(
+                row.get("metric") == spec.name
+                and row.get("ref_x") is not None
+                and row.get("x_role") not in (None, "covariate")
+                for row in rows
+            ):
+                from increment._analysis_config import refuse_unidentified_scalar_moments
+
+                refuse_unidentified_scalar_moments(spec.name)
         metric_catalog = [synthesise_metric(spec) for spec in specs]
         from increment._analysis_config import resolve_configs
 

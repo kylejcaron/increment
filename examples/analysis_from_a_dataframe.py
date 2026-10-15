@@ -10,14 +10,15 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis, CupedCovariate, MetricSpec, Normal
+    from increment import Analysis, CupedCovariate, Method, MetricSpec, Normal
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
 
     return (
         Analysis,
-        LiftEstimate,
         CupedCovariate,
+        LiftEstimate,
+        Method,
         MetricSpec,
         Normal,
         estimates_to_readout,
@@ -198,6 +199,7 @@ def cuped(
             MetricSpec(
                 name="revenue",
                 type="mean",
+                sensitivity_methods=(CUPED,),
             )
         ],
     )

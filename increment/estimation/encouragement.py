@@ -64,6 +64,7 @@ from increment.estimation.engine import (
     Method,
     _df_to_arms,
     _estimate_lift,
+    _is_unadjusted_method,
     _validate_methods,
     _warn_if_open_ended_sequential,
     _winsorization_result_fields,
@@ -1724,9 +1725,7 @@ def _estimate_encouragement(  # noqa: PLR0913
             or cluster is not None
             or null_lift not in (None, 0.0)
             or null_abs is not None
-            or any(
-                m.variance_reduction != "none" or m.name != "unadjusted" for m in (methods or ())
-            )
+            or any(not _is_unadjusted_method(m) for m in (methods or ()))
         ):
             sequential_refuse(
                 "route.unsupported",

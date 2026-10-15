@@ -71,6 +71,7 @@ from increment.estimation.engine import (
     Method,
     _cuped_linear_unavailable_row,
     _estimate_lift,
+    _is_unadjusted_method,
     _validate_methods,
     reintervalize_cuped_decision,
     reject_unbounded_retention,
@@ -3994,9 +3995,7 @@ def run_breakout(  # noqa: PLR0913
             *(methods or ()),
             *(m for group in (methods_by_metric or {}).values() for m in group),
         ]
-        if prior is not None or any(
-            m.name != "unadjusted" or m.variance_reduction != "none" for m in declared_methods
-        ):
+        if prior is not None or any(not _is_unadjusted_method(m) for m in declared_methods):
             sequential_refuse(
                 "route.unsupported", "certified breakout requires raw unadjusted observations"
             )

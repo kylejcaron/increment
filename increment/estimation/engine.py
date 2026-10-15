@@ -752,6 +752,11 @@ def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _Win
     }
 
 
+def _is_unadjusted_method(method: Method) -> bool:
+    """Whether a method represents the raw, unadjusted estimator."""
+    return method.variance_reduction == "none" and method.name in {"unadjusted", "naive"}
+
+
 def _validate_unique_method_names(
     methods: Sequence[Method] | None,
     *,
@@ -775,7 +780,7 @@ def _validate_unique_method_names(
 def resolve_method_roles(
     methods: Sequence[Method],
     *,
-    prefer: Callable[[Method], bool] = lambda m: m.name == "unadjusted",
+    prefer: Callable[[Method], bool] = _is_unadjusted_method,
     override: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     decision: Method | None = None,
 ) -> dict[str, Literal["decision", "sensitivity"]]:

@@ -758,8 +758,12 @@ def _reject_duplicate_units(frame: nw.DataFrame[Any], unit: str) -> None:
 
 
 def _reject_windowed_specs(specs: Sequence[MetricSpec]) -> None:
-    """Reject windowed metrics on the one-row-per-unit constructor."""
+    """Reject windows on summaries after metric-level compatibility checks."""
     for spec in specs:
+        if spec.type == "quantile":
+            # The estimator incompatibility remains the first refusal when a
+            # quantile request also carries a frame-only window modifier.
+            MetricSpec.model_validate(spec.model_dump())
         if spec.window_days is not None:
             refuse(
                 _CONSTRUCTOR_CAPABILITY,
@@ -1386,14 +1390,19 @@ def _enforce_missing_policy(
                 dropped=dropped,
                 stacklevel=4,
             )
-        # Sensitivity-only inputs must not affect the decision roster;
-        # sensitivity estimators report their own missing-input refusals.
-        if spec.decision_method is not None:
-            for covariate in spec.decision_method.covariates or ():
+        seen_covariate_policies: set[tuple[str, str]] = set()
+        for method in spec._methods:
+            for covariate in method.covariates or ():
+                policy_key = (covariate.name, covariate.missing)
+                if policy_key in seen_covariate_policies:
+                    continue
+                seen_covariate_policies.add(policy_key)
                 n_missing = miss(covariate.name)
                 if n_missing == 0 or covariate.missing == "impute-indicator":
                     continue
                 if covariate.missing == "refuse":
+                    if method.variance_reduction == "cuped_multicovariate":
+                        continue
                     _raise(
                         "frame.validation.metric_covariate_column",
                         metric=spec.name,

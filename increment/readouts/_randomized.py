@@ -565,7 +565,8 @@ def _estimate_randomized_non_secondary(
                 src,
                 metric,
                 metric_rows
-                if any(
+                if metric_rows.method_rows
+                or any(
                     method.variance_reduction == "cuped_multicovariate" for method in metric_methods
                 )
                 else list(metric_rows.rows),

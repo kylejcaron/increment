@@ -808,6 +808,20 @@ def _golden_asymptotic_plan() -> CompiledDecisionPlan:
     )
 
 
+def test_legacy_fixed_contrast_wire_decodes_without_arm_methods():
+    payload = json.loads(
+        (
+            Path(__file__).parent / "goldens" / "decision_wire" / "fixed_frame_contrast.json"
+        ).read_text()
+    )
+    payload["wire_version"] = 2
+
+    restored = compiled_plan_from_json(json.dumps(payload))
+
+    procedure = restored.procedures[_METRIC_A]
+    assert isinstance(procedure, ContrastDecisionProcedure)
+
+
 def test_decision_wire_goldens_round_trip_byte_for_byte():
 
     variants = {

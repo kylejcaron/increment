@@ -239,6 +239,66 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
     }
 
 
+def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_path):
+    import pyarrow as pa
+
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    text = defs_path.read_text()
+    text = text.replace(
+        "    design:\n"
+        "      mechanism: observational\n"
+        "      covariates:\n"
+        "        - {property: tenure, source: events}\n"
+        "        - {property: region, source: events}\n",
+        "",
+    )
+    text = text.replace(
+        "plan: {primary: revenue}",
+        "plan: {primary: {metric: revenue, decision_method: {name: scalar, "
+        "variance_reduction: cuped, covariates: [{name: pre_tenure, kind: continuous, "
+        "property: tenure, source: events}]}}}",
+    )
+    defs_path.write_text(text)
+    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    from increment.semantics.models import CupedCovariateBinding
+
+    (bound_covariate,) = analysis._src.context.configs[0].decision_method.covariates
+    assert isinstance(bound_covariate, CupedCovariateBinding)
+    raw_moments = analysis._src.moments(analysis._src.context.metrics[0])
+    assert raw_moments[0]["ref_x"] is not None
+    native = analysis.run()[0]
+    oracle_frame = pa.table(
+        {
+            "unit": list(units),
+            "group": [units[unit]["variant"] for unit in units],
+            "revenue": [units[unit]["revenue"] for unit in units],
+            "pre_tenure": [units[unit]["tenure"] for unit in units],
+        }
+    )
+    oracle = Analysis.from_unit_summary(
+        oracle_frame,
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped(
+                    name="scalar",
+                    covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                ),
+            )
+        ],
+    ).run()[0]
+
+    assert isinstance(native, LiftEstimate) and isinstance(oracle, LiftEstimate)
+    assert native.require_lift().value == pytest.approx(oracle.require_lift().value)
+    assert native.require_lift().log_se == pytest.approx(oracle.require_lift().log_se)
+
+
 @pytest.mark.slow
 def test_method_covariate_alias_conflicts_with_observational_binding(tmp_path):
     from increment.errors import InvalidRequestError
@@ -621,6 +681,59 @@ def test_from_moments_refuses_multicovariate_with_unit_source_route():
     for restored in (copy.deepcopy(raised.value), pickle.loads(pickle.dumps(raised.value))):
         assert restored.code == raised.value.code
         assert restored.context == raised.value.context
+
+
+def test_from_moments_named_scalar_accepts_legacy_x_and_refuses_known_mismatch(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment.errors import UnsupportedRequestError
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+
+    frame = pa.table(
+        {
+            "unit": range(8),
+            "arm": ["control"] * 4 + ["treatment"] * 4,
+            "revenue": [10.0, 12.0, 9.0, 11.0, 13.0, 14.0, 12.0, 15.0],
+            "history_a": [1.0, 2.0, 4.0, 3.0, 1.0, 3.0, 2.0, 5.0],
+        }
+    )
+    source = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped(
+                    name="history_a",
+                    covariates=CupedCovariate(name="history_a", kind="continuous"),
+                ),
+            )
+        ],
+    )
+    path = tmp_path / "moments.parquet"
+    source.export(path)
+    stored = pq.read_table(path).to_pylist()
+    named = MetricSpec(
+        name="revenue",
+        decision_method=Method.cuped(
+            name="history_b",
+            covariates=CupedCovariate(name="history_b", kind="continuous"),
+        ),
+    )
+
+    (result,) = Analysis.from_moments(stored, metrics=[named], control="control").run()
+    assert isinstance(result, LiftEstimate)
+    assert result.lift is not None
+
+    mismatched = [{**row, "covariate_name": "history_a"} for row in stored]
+    with pytest.raises(UnsupportedRequestError) as raised:
+        Analysis.from_moments(mismatched, metrics=[named], control="control")
+
+    assert raised.value.code == "facade.analysis_config.cuped_scalar_moments"
 
 
 def test_switchback_refuses_multicovariate_with_independent_unit_route():

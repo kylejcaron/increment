@@ -627,6 +627,7 @@ def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
             )
         ]
     )
+    assert all(r.lift is not None for r in rows)
     assert {(r.dimension_value, r.method) for r in rows} == {
         (segment, method) for segment in ("north", "south") for method in ("linear", "other-linear")
     }

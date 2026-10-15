@@ -173,6 +173,7 @@ class _NativeMaterializationMixin:
         uptake_window_days: int | None,
         warn_on_censoring: bool,
         want_cuped: bool = True,
+        pre_stats_override: Table | None = None,
         by: Sequence[str] = (),
         properties_table: Table | None = None,
     ) -> tuple[Table, Table | None, Table | None, Table]:
@@ -182,14 +183,17 @@ class _NativeMaterializationMixin:
         Disable CUPED work when no requested method needs a pre-period covariate.
         """
         # Build CUPED covariates from the same fact/value-column/aggregation as the outcome.
-        pre_events = self._build_pre_events(fact_tbl, metric, value_col) if want_cuped else None
-        pre_stats = (
-            pre_period_stats(
-                pre_events, exposures, self._experiment, source_key=f"{metric.name}:pre"
+        if pre_stats_override is not None:
+            pre_stats = pre_stats_override
+        else:
+            pre_events = self._build_pre_events(fact_tbl, metric, value_col) if want_cuped else None
+            pre_stats = (
+                pre_period_stats(
+                    pre_events, exposures, self._experiment, source_key=f"{metric.name}:pre"
+                )
+                if pre_events is not None
+                else None
             )
-            if pre_events is not None
-            else None
-        )
         den_stats = (
             post_exposure_stats(
                 den_events,
@@ -212,6 +216,7 @@ class _NativeMaterializationMixin:
             uptake_exposures=exposures,
             by=list(by) or None,
             properties_table=properties_table,
+            explicit_covariate=pre_stats_override is not None,
             data_as_of=data_as_of,
             warn_on_censoring=(
                 (lambda query: self._con.to_pyarrow(query).to_pylist())

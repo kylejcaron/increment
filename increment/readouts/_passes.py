@@ -177,6 +177,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     family: bool = False,
     family_member: bool = False,
     route_tail: float | None = None,
+    method_rows: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Estimate randomized whole-window cells independently.
 
@@ -225,12 +226,22 @@ def _estimate_lift_cells(  # noqa: PLR0913
         if group_id == control_group:
             continue
         for method in effective_methods:
+            family_rows = (method_rows or {}).get(method.name)
+            if family_rows is None:
+                method_control, method_treatment = control, treatment
+            else:
+                family_own = [row for row in family_rows if str(row["metric"]) == metric.name]
+                family_by_group = {str(row["group_id"]): row for row in family_own}
+                method_control = family_by_group.get(control_group)
+                method_treatment = family_by_group.get(group_id)
+                if method_control is None or method_treatment is None:
+                    continue
             captured: list[Any] = []
             try:
                 with warnings.catch_warnings(record=True) as captured:
                     computation = _estimate_lift(
                         metrics=[metric],
-                        summary=[control, treatment],
+                        summary=[method_control, method_treatment],
                         control_group=control_group,
                         methods=[method],
                         prior=prior,
@@ -604,9 +615,11 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
             computation,
         )
 
+    rows_summary = getattr(evidence, "rows", evidence)
+    method_rows = dict(getattr(evidence, "method_rows", ()))
     rows_est, refused, computation = _estimate_lift_cells(
         metric=metric,
-        summary=evidence or [],
+        summary=rows_summary or [],
         control_group=design.control_group,
         methods=methods,
         prior=config.prior,
@@ -622,5 +635,6 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
         family=retry == "family",
         family_member=family_member,
         route_tail=route_tail,
+        method_rows=method_rows,
     )
     return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation

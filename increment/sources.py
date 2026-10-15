@@ -1166,6 +1166,11 @@ def _configs_from_compiled_plan(
                 if runtime_procedure.prior is not None
                 else fallback_by_name[metric.name].prior_is_global,
                 covariates=fallback_by_name[metric.name].covariates,
+                source_methods=(
+                    runtime_procedure.decision_method,
+                    *runtime_procedure.sensitivity_methods,
+                ),
+                covariate_available=bool(fallback_by_name[metric.name].covariates),
                 methods_explicitly_empty=runtime_procedure.methods_explicitly_empty,
             )
         )

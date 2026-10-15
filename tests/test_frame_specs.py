@@ -503,6 +503,36 @@ def test_metric_spec_quantile_rejects_covariate() -> None:
     assert exc_info.value.context["name"] == "latency"
 
 
+def test_quantile_cuped_refusal_precedes_windowed_summary_refusal() -> None:
+    metric = MetricSpec(name="latency", type="quantile", quantile=0.9).model_copy(
+        update={
+            "decision_method": Method.cuped(
+                covariates=CupedCovariate(name="pre", kind="continuous")
+            ),
+            "window_days": 7,
+            "missing": "drop",
+        }
+    )
+
+    with pytest.raises(InvalidRequestError) as exc_info:
+        from_unit_summary(
+            pa.table(
+                {
+                    "unit": ["u0", "u1"],
+                    "arm": ["control", "treatment"],
+                    "latency": [1.0, 2.0],
+                    "pre": [0.0, 1.0],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[metric],
+        )
+
+    assert exc_info.value.code == "frame.metric.cuped_does_apply"
+
+
 def test_metric_spec_quantile_field_rejected_on_non_quantile_type() -> None:
     with pytest.raises(InvalidRequestError) as exc_info:
         MetricSpec(name="latency", type="mean", quantile=0.5)

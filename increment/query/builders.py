@@ -1714,9 +1714,11 @@ def _attach_covariate(
     totals: ir.Table,
     pre_stats: ir.Table | None,
     experiment: Experiment,
+    *,
+    explicit: bool = False,
 ) -> ir.Table:
-    """Attach the CUPED covariate or its typed null placeholder."""
-    if pre_stats is not None and experiment.n_pre_periods > 0:
+    """Attach the declared CUPED covariate or its typed null placeholder."""
+    if pre_stats is not None and (experiment.n_pre_periods > 0 or explicit):
         return join_pre_period_covariate(totals, pre_stats)
     return totals.mutate(x=ibis.null().cast("float64"))
 
@@ -1802,6 +1804,8 @@ def unit_totals(  # noqa: PLR0913
     # The public aggregate signature preserves distinct evidence inputs.
     warn_on_censoring: bool | Callable[[ir.Table], list[dict[str, Any]]] = True,  # noqa: FBT001, FBT002
     uptake_exposures: ir.Table | None = None,
+    *,
+    explicit_covariate: bool = False,
 ) -> ir.Table:
     """Aggregate spine + sparse stats to one row per unit (window aggregate).
 
@@ -1848,6 +1852,8 @@ def unit_totals(  # noqa: PLR0913
         Warning bookkeeping costs an extra execution round-trip.
     uptake_exposures : ir.Table | None
         Assignment exposure anchors for encouragement uptake; defaults to the outcome spine.
+    explicit_covariate : bool
+        Whether ``pre_stats`` is an explicitly bound CUPED covariate.
     """
     cluster = experiment.cluster
     if cluster is not None:
@@ -1881,7 +1887,7 @@ def unit_totals(  # noqa: PLR0913
     dense = window_bound_stats(dense, metric)
     totals = _aggregate_unit_outcome(dense, spine, metric, den_stats)
 
-    totals = _attach_covariate(totals, pre_stats, experiment)
+    totals = _attach_covariate(totals, pre_stats, experiment, explicit=explicit_covariate)
     uptake_anchor = spine if uptake_exposures is None else uptake_exposures
     totals = _attach_uptake_flag(
         totals,

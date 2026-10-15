@@ -251,6 +251,8 @@ class WireViewPolicies(_WireBase):
 
 def _refuse_legacy_cuped_covariates(procedures: Mapping[str, Any]) -> None:
     for procedure in procedures.values():
+        if not isinstance(procedure, (WireRelativeArmProcedure, WireAbsoluteArmProcedure)):
+            continue
         methods = (
             procedure.decision_method,
             *procedure.sensitivity_methods,

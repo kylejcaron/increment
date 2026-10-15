@@ -155,8 +155,9 @@ def validate_sequential_methods(registration, metric: str, methods, *, prior=Non
         )
     adjustment = adjustment_kind(registration, metric)
     model = next((m for m in registration.models if m.metric == metric), None)
+
     for method in methods:
-        if method.name == "unadjusted" and method.variance_reduction == "none":
+        if method.variance_reduction == "none" and method.name in {"unadjusted", "naive"}:
             if adjustment is not None:
                 sequential_refuse(
                     "source.invalid",

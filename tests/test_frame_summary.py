@@ -660,6 +660,7 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     import warnings
 
     from increment import Analysis
+    from increment.estimation.results import LiftEstimate
     from increment.semantics.design import AdjustmentSet, Observational
     from tests.warning_codes import warning_codes
 
@@ -671,7 +672,6 @@ def test_run_does_not_recommend_cuped_for_observational_default(
             MetricSpec(
                 name="revenue",
                 type="mean",
-                decision_method=Method.unadjusted(),
             )
         ],
         design=Observational(
@@ -681,8 +681,15 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run()
+        rows = analysis.run()
 
+    decision_rows = [row for row in rows if row.estimand == "ate"]
+    assert len(decision_rows) == 1
+    decision = decision_rows[0]
+    assert isinstance(decision, LiftEstimate)
+    assert decision.group_id == "treatment"
+    assert decision.method == "iptw"
+    assert decision.estimand == "ate"
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 

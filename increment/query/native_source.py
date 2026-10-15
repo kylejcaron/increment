@@ -2322,6 +2322,32 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 method.variance_reduction == "cuped"
                 for method in effective_methods(config, design=self.context.design)
             )
+            covariate = next(
+                (
+                    covariate
+                    for method in effective_methods(config, design=self.context.design)
+                    if method.variance_reduction == "cuped"
+                    for covariate in method.covariates or ()
+                ),
+                None,
+            )
+            pre_stats_override = None
+            if isinstance(covariate, CupedCovariateBinding):
+                if covariate.measure is not None:
+                    values = self._pre_period_measure_covariate(
+                        covariate.measure, covariate.name, exposures
+                    )
+                else:
+                    property_name = covariate.property or covariate.name
+                    source = self._resolve_unit_covariate_source(
+                        property_name,
+                        declared_source=covariate.source,
+                        kind=covariate.kind,
+                    )
+                    values = self._build_breakout_properties_table(source, property_name, exposures)
+                    if property_name != covariate.name:
+                        values = values.select("unit_id", **{covariate.name: values[property_name]})
+                pre_stats_override = values.select("unit_id", sum_value=values[covariate.name])
             want_cuped = resolved_cuped if narrow_cuped else True
             summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
                 metric,
@@ -2337,6 +2363,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 uptake_window_days=uptake_window_days,
                 warn_on_censoring=True,
                 want_cuped=want_cuped,
+                pre_stats_override=pre_stats_override,
             )
             tables.append(summary.to_pyarrow())
 

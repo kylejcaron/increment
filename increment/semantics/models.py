@@ -2557,15 +2557,39 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
         if self.n_pre_periods > 0:
             return self
         for name, binding in self.bindings.items():
-            if binding.wants_cuped:
-                _definition_refusal(
-                    "definition.experiment.metric_declares_cuped",
-                    f"experiment '{self.name}': metric '{name}' declares a CUPED "
-                    f"method but n_pre_periods=0 -- no pre-period covariate can "
-                    f"be materialized",
-                    experiment_name=self.name,
-                    metric_name=name,
-                )
+            methods = (
+                () if binding.decision_method is None else (binding.decision_method,)
+            ) + binding.sensitivity_methods
+            for method in methods:
+                if method.variance_reduction != "cuped":
+                    continue
+                if not method.covariates:
+                    _definition_refusal(
+                        "definition.experiment.metric_declares_cuped",
+                        f"experiment '{self.name}': metric '{name}' declares scalar CUPED "
+                        f"without an explicit bound covariate and n_pre_periods=0",
+                        experiment_name=self.name,
+                        metric_name=name,
+                    )
+                for covariate in method.covariates:
+                    if not isinstance(covariate, CupedCovariateBinding) or (
+                        covariate.property is None and covariate.measure is None
+                    ):
+                        _definition_refusal(
+                            "definition.experiment.metric_declares_cuped",
+                            f"experiment '{self.name}': metric '{name}' requires a bound "
+                            "property or measure when n_pre_periods=0",
+                            experiment_name=self.name,
+                            metric_name=name,
+                        )
+                    if covariate.measure is not None:
+                        _definition_refusal(
+                            "definition.experiment.metric_declares_cuped",
+                            f"experiment '{self.name}': metric '{name}' uses a pre-period "
+                            "measure but n_pre_periods=0",
+                            experiment_name=self.name,
+                            metric_name=name,
+                        )
         return self
 
     @model_validator(mode="after")

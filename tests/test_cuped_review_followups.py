@@ -9,7 +9,7 @@ import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
 from increment.breakout.estimates import BreakoutEstimates
-from increment.errors import IncrementWarning
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.readout_types import ReadoutResults
@@ -495,17 +495,98 @@ def _declaration_analysis(missing: Literal["refuse", "impute-indicator"]) -> Ana
     )
 
 
-def test_refused_missing_method_covariate_fails_during_source_validation():
-    from increment.errors import InvalidRequestError
+def test_covariate_declaration_changes_the_readout_identity():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "history": None if index % 4 == 0 else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for group in ("control", "treatment")
+        for index in range(20)
+    ]
 
+    def run_with_policy(missing: Literal["refuse", "impute-indicator"]):
+        analysis = Analysis.from_unit_summary(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped_multicovariate(
+                        name="linear",
+                        covariates=CupedCovariate(
+                            name="history", kind="continuous", missing=missing
+                        ),
+                    ),
+                )
+            ],
+        )
+        return analysis.run()
+
+    imputed = run_with_policy("impute-indicator")
+    refused = run_with_policy("refuse")
+
+    imputed_row, refused_row = imputed[0], refused[0]
+    assert isinstance(imputed_row, LiftEstimate) and isinstance(refused_row, LiftEstimate)
+    assert imputed_row.lift is not None
+    assert refused_row.lift is None
+    assert refused_row.failure_code == "estimation.cuped_linear.missing_refused"
+    assert imputed.metadata is not None and refused.metadata is not None
+    assert imputed.metadata.scope.snapshot_id != refused.metadata.scope.snapshot_id
+
+
+def test_scalar_sensitivity_refuse_rejects_missing_covariate_at_construction():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "history": None if index % 4 == 0 else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for group in ("control", "treatment")
+        for index in range(20)
+    ]
+
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_unit_summary(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method(name="unadjusted"),
+                    sensitivity_methods=(
+                        Method.cuped(
+                            name="scalar_sensitivity",
+                            covariates=CupedCovariate(
+                                name="history", kind="continuous", missing="refuse"
+                            ),
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    assert raised.value.code == "frame.validation.metric_covariate_column"
+
+
+def test_multicovariate_refuse_fails_only_its_estimate():
     imputed = _declaration_analysis("impute-indicator").run()
     imputed_row = imputed[0]
     assert isinstance(imputed_row, LiftEstimate)
     assert imputed_row.lift is not None
 
-    with pytest.raises(InvalidRequestError) as raised:
-        _declaration_analysis("refuse")
-    assert raised.value.code == "frame.validation.metric_covariate_column"
+    refused = _declaration_analysis("refuse").run()
+    refused_row = refused[0]
+    assert isinstance(refused_row, LiftEstimate)
+    assert refused_row.lift is None
+    assert refused_row.failure_code == "estimation.cuped_linear.missing_refused"
 
 
 def test_breakout_unit_covariate_values_enter_the_source_identity():

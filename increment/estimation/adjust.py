@@ -34,6 +34,7 @@ from increment.estimation.engine import (
     Method,
     _df_to_arms,
     _estimate_lift,
+    _is_unadjusted_method,
     _validate_unique_method_names,
     _winsorization_result_fields,
 )
@@ -61,13 +62,6 @@ if TYPE_CHECKING:
 ADJUSTMENTS: Registry[AdjustmentFn] = Registry("adjustment")
 
 _BUILTIN_ADJUSTMENTS = frozenset(("iptw", "dml", "aipw"))
-
-
-def _is_unadjusted_method(method: Method) -> bool:
-    """Recognize the explicit raw label and the unadjusted factory's default label."""
-    return method.name == "unadjusted" or (
-        method.name == "naive" and method.variance_reduction == "none"
-    )
 
 
 from increment.estimation._adjust import aipw as _aipw  # noqa: E402,F401

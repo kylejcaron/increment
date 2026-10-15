@@ -501,6 +501,32 @@ class FrameTotalsSource(SequentialSourceMixin):
             )
         return [dict(r) for r in self._moments if r["metric"] == metric.name]
 
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Recompute one scalar CUPED family from its own covariate input."""
+        if by:
+            refuse(_FRAME_GRAIN, grain="breakout", offered=self.capabilities)
+        spec = self._specs_by_name.get(metric.name)
+        if spec is None:
+            return []
+        method_spec = spec.model_copy(update={"decision_method": method, "sensitivity_methods": ()})
+        if self._cluster is not None:
+            _reject_cluster_request(
+                (method_spec,), cluster=self._cluster, design=self.design, uptake=self._uptake
+            )
+        return _moment_rows(
+            self._frame,
+            group=self._group,
+            metrics=(method_spec,),
+            experiment_id=self._experiment_id,
+            uptake=self._uptake,
+        )
+
     def _spec_for(self, metric: Metric) -> MetricSpec:
         spec = self._specs_by_name.get(metric.name)
         if spec is None:

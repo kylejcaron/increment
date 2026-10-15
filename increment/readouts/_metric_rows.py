@@ -26,6 +26,7 @@ class MetricRows:
     evidence_sha256: str
     evidence_count: int
     evidence_components: tuple[tuple[str, str, int], ...] = ()
+    method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
 
 
 def _frame_digest_and_arms(frame):
@@ -171,6 +172,17 @@ def _load_metric_rows(
         )
     _refuse_unsupported_by(metric, by)
     rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
+    scalar_methods = [
+        method for method in methods if getattr(method, "variance_reduction", None) == "cuped"
+    ]
+    method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
+    if scalar_methods and any(method.covariates for method in scalar_methods):
+        method_moments = getattr(src, "moments_for_method", None)
+        if method_moments is not None:
+            method_rows = tuple(
+                (method.name, tuple(method_moments(metric, method, by=by)))
+                for method in scalar_methods
+            )
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
     if has_linear:
         observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
@@ -184,6 +196,7 @@ def _load_metric_rows(
             evidence_sha256=moments_sha256,
             evidence_count=moments_count,
             evidence_components=(("moments_rows", moments_sha256, moments_count),),
+            method_rows=method_rows,
         )
 
     import narwhals as nw
@@ -204,4 +217,5 @@ def _load_metric_rows(
             ("moments_rows", moments_sha256, moments_count),
             ("unit_evidence_rows", unit_sha256, unit_count),
         ),
+        method_rows=method_rows,
     )

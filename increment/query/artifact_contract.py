@@ -375,6 +375,20 @@ def _dump_context_plan(plan: Any) -> dict[str, Any]:
     checkpoint identity.
     """
     result = cast("dict[str, Any]", _dump(plan))
+
+    def omit_undeclared_covariates(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: omit_undeclared_covariates(item)
+                for key, item in value.items()
+                if not (key == "covariates" and item is None)
+            }
+        if isinstance(value, (list, tuple)):
+            items = (omit_undeclared_covariates(item) for item in value)
+            return tuple(items) if isinstance(value, tuple) else list(items)
+        return value
+
+    result = cast("dict[str, Any]", omit_undeclared_covariates(result))
     result.setdefault("q", plan.q)
     inference = result.get("inference")
     if isinstance(inference, dict):

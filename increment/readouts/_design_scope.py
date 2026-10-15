@@ -18,6 +18,7 @@ from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.decision_types import PValueEvidence
+from increment.estimation.engine import _is_unadjusted_method
 from increment.estimation.readout_types import (
     CellFailure,
     CellKey,
@@ -289,7 +290,7 @@ def observational_expected(selected, configs, design, plan, *, value_scale, arms
                         "plr_slope"
                         if method.name == "dml"
                         else "itt"
-                        if method.name == "unadjusted"
+                        if _is_unadjusted_method(method)
                         else "ate",
                         plan.procedures[metric.name].alternative,
                         (value_scale or {}).get(metric.name, "relative"),

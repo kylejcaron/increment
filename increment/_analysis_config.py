@@ -24,7 +24,12 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.estimation.engine import Method, _validate_unique_method_names, resolve_method_roles
+from increment.estimation.engine import (
+    Method,
+    _is_unadjusted_method,
+    _validate_unique_method_names,
+    resolve_method_roles,
+)
 from increment.estimation.inference import Normal, Prior
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import (
@@ -61,6 +66,12 @@ _REFUSALS = refusals(
             "facade.analysis_config.cuped_linear_moments",
             UnsupportedRequestError,
             template="metric {metric!r} requests cuped_multicovariate, but from_moments stores aggregate moments rather than per-unit covariates; use from_unit_summary, from_unit_panel, from_definitions, or an artifact published with covariate extensions.",
+            keys=frozenset({"metric"}),
+        ),
+        "facade.analysis_config.cuped_scalar_moments": RefusalSpec(
+            "facade.analysis_config.cuped_scalar_moments",
+            UnsupportedRequestError,
+            template="metric {metric!r} requests named scalar CUPED covariates, but this moments format carries no covariate-name provenance; use from_unit_summary, from_unit_panel, from_definitions, or an artifact with covariate extensions.",
             keys=frozenset({"metric"}),
         ),
         "facade.analysis_config.cuped_linear_covariates": "metric {metric!r} requests cuped_multicovariate without covariates declared on the method.",
@@ -157,6 +168,7 @@ class ResolvedMetricConfig:
     # It is not inferred from a placeholder ``Method`` instance.
     decision_defaulted: bool = False
     covariate_available: bool = False
+    source_methods: tuple[Method, ...] = ()
 
     @property
     def uses_design_default(self) -> bool:
@@ -199,17 +211,16 @@ def refuse_unrepresentable_scalar_export(
 
 
 def validate_readout_covariates(request: ReadoutRequest) -> None:
-    """Refuse an effective cuped_multicovariate method without method covariates.
-
-    Runs in the shared request preflight so a call-time override is refused
-    on every ingress before any source acquisition, matching the declaration
-    rule :func:`resolve_configs` applies to configured methods.
-    """
+    """Refuse CUPED call-time overrides whose covariate input was not acquired."""
     for config, methods in zip(request.configs, request.estimation_methods, strict=True):
-        if not config.covariates and any(
-            method.variance_reduction == "cuped_multicovariate" for method in methods
-        ):
-            _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
+        for method in methods:
+            if (
+                method.variance_reduction in ("cuped", "cuped_multicovariate")
+                and method.covariates
+                and not config.covariate_available
+                and method not in config.source_methods
+            ):
+                _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
 
 
 def normalize_display_correction(correction: MultiplicityCorrection) -> Correction:
@@ -238,9 +249,9 @@ def _roles_from_methods(
     from increment.estimation.adjust import ADJUSTMENTS
 
     prefer = (
-        (lambda m: m.name != "unadjusted")
+        (lambda method: not _is_unadjusted_method(method))
         if any(method.name in ADJUSTMENTS for method in methods)
-        else (lambda m: m.name == "unadjusted")
+        else _is_unadjusted_method
     )
     roles = resolve_method_roles(methods, prefer=prefer)
     decision = next(m for m in methods if roles[m.name] == "decision")
@@ -403,6 +414,11 @@ def refuse_cuped_linear_moments(metric: str) -> NoReturn:
     _raise("facade.analysis_config.cuped_linear_moments", metric=metric)
 
 
+def refuse_unidentified_scalar_moments(metric: str) -> NoReturn:
+    """Refuse a named scalar covariate absent from aggregate-moment provenance."""
+    _raise("facade.analysis_config.cuped_scalar_moments", metric=metric)
+
+
 def resolve_configs(
     selected: Sequence[Metric],
     bindings: Mapping[str, ExperimentMetric] | None,
@@ -515,6 +531,7 @@ def resolve_configs(
                 methods_explicitly_empty=methods_explicitly_empty,
                 decision_defaulted=decision_defaulted,
                 covariates=tuple(covariates),
+                source_methods=configured_methods,
                 covariate_available=(
                     bool(covariates) or metric.name in covariate_available_metrics
                 ),
@@ -579,12 +596,19 @@ def overlay_configs(
             else (resolved_decision, *resolved_sensitivity),
             caller=f"metric {metric.name!r}",
         )
+        configured_methods = (
+            ()
+            if methods_explicitly_empty
+            else ((() if result_defaulted else (resolved_decision,)) + tuple(resolved_sensitivity))
+        )
+        covariates = union_covariates((config,), (configured_methods,))
         out.append(
             replace(
                 config,
                 metric=metric,
                 decision_method=resolved_decision,
                 sensitivity_methods=resolved_sensitivity,
+                covariates=covariates,
                 prior=cast(
                     Prior | None,
                     (
@@ -604,6 +628,7 @@ def overlay_configs(
                     else config.methods_explicitly_empty
                 ),
                 decision_defaulted=result_defaulted,
+                covariate_available=config.covariate_available,
             )
         )
     return tuple(out)

@@ -561,6 +561,114 @@ def test_conflicting_cross_role_method_label_is_refused_at_declaration():
     assert raised.value.code == "estimation.engine.method_names_unique"
 
 
+def test_method_override_replaces_acquired_scalar_covariate_and_clears_sensitivities():
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(41)
+    n = 40
+    frame = pd.DataFrame(
+        {
+            "unit": range(2 * n),
+            "arm": ["control"] * n + ["treatment"] * n,
+            "outcome": 10 + rng.normal(size=2 * n),
+            "history_a": rng.normal(size=2 * n),
+            "history_b": rng.normal(size=2 * n),
+        }
+    )
+    declared = Method.cuped(
+        name="history_a",
+        covariates=CupedCovariate(name="history_a", kind="continuous"),
+    )
+    override = Method.cuped(
+        name="history_b",
+        covariates=CupedCovariate(name="history_b", kind="continuous"),
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="outcome",
+                decision_method=declared,
+                sensitivity_methods=(
+                    Method.cuped(
+                        name="sensitivity",
+                        covariates=CupedCovariate(name="history_a", kind="continuous"),
+                    ),
+                ),
+            )
+        ],
+    )
+    overridden = analysis.run(decision_method=override, sensitivity_methods=())[0]
+    reference = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="outcome", decision_method=override)],
+    ).run()[0]
+
+    assert isinstance(overridden, LiftEstimate) and isinstance(reference, LiftEstimate)
+    assert overridden.method == "history_b"
+    assert overridden.require_lift().value == pytest.approx(reference.require_lift().value)
+    assert overridden.require_lift().log_se == pytest.approx(reference.require_lift().log_se)
+
+
+def test_scalar_method_subset_preserves_aliases_that_collide_with_scratch_columns():
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(71)
+    n = 40
+    frame = pd.DataFrame(
+        {
+            "unit": range(2 * n),
+            "arm": ["control"] * n + ["treatment"] * n,
+            "outcome": 10 + rng.normal(size=2 * n),
+            "y": rng.normal(size=2 * n),
+            "__covariate_y": rng.normal(size=2 * n),
+        }
+    )
+    decision = Method.cuped(
+        name="y",
+        covariates=CupedCovariate(name="y", kind="continuous"),
+    )
+    sensitivity = Method.cuped(
+        name="__covariate_y",
+        covariates=CupedCovariate(name="__covariate_y", kind="continuous"),
+    )
+    combined = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="outcome",
+                decision_method=decision,
+                sensitivity_methods=(sensitivity,),
+            )
+        ],
+    ).run()
+    reference = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="outcome", decision_method=sensitivity)],
+    ).run()[0]
+    selected = next(
+        row for row in combined if isinstance(row, LiftEstimate) and row.method == sensitivity.name
+    )
+    assert isinstance(reference, LiftEstimate)
+
+    assert selected.require_lift().value == pytest.approx(reference.require_lift().value)
+    assert selected.require_lift().log_se == pytest.approx(reference.require_lift().log_se)
+
+
 def test_multi_family_scalar_export_refuses_before_writing_payload(tmp_path):
     import numpy as np
     import pandas as pd
@@ -574,7 +682,7 @@ def test_multi_family_scalar_export_refuses_before_writing_payload(tmp_path):
         {
             "unit": range(2 * n_per_arm),
             "arm": arms,
-            "outcome": rng.normal(size=2 * n_per_arm),
+            "outcome": 10 + rng.normal(size=2 * n_per_arm),
             "history_a": rng.normal(size=2 * n_per_arm),
             "history_b": rng.normal(size=2 * n_per_arm),
         }
@@ -600,6 +708,33 @@ def test_multi_family_scalar_export_refuses_before_writing_payload(tmp_path):
             )
         ],
     )
+    combined = {row.method: row for row in analysis.run() if isinstance(row, LiftEstimate)}
+    for name in ("history_a", "history_b"):
+        single = Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=Method.cuped(
+                        name=name,
+                        covariates=CupedCovariate(name=name, kind="continuous"),
+                    ),
+                )
+            ],
+        )
+        try:
+            reference = single.run()[0]
+        finally:
+            single.close()
+        assert isinstance(reference, LiftEstimate)
+        assert combined[name].require_lift().value == pytest.approx(reference.require_lift().value)
+        assert combined[name].require_lift().log_se == pytest.approx(
+            reference.require_lift().log_se
+        )
+
     path = tmp_path / "multi-family.parquet"
 
     with pytest.raises(UnsupportedRequestError) as raised:
