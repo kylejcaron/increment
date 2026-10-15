@@ -235,27 +235,33 @@ def refuse_multifamily_scalar_breakout(request: ReadoutRequest) -> None:
 
 
 def validate_readout_covariates(request: ReadoutRequest) -> None:
-    """Refuse CUPED call-time overrides whose covariate input is not available."""
+    """Refuse effective CUPED bindings absent from the source's available columns."""
     for config, methods in zip(request.configs, request.estimation_methods, strict=True):
         for method in methods:
-            if (
-                method.variance_reduction in ("cuped", "cuped_multicovariate")
-                and method.covariates
-                and not config.covariate_available
-                and method not in config.source_methods
-            ):
-                legacy_scalar_x = (
-                    request.source_name == "MomentsSource"
-                    and method.variance_reduction == "cuped"
-                    and len(method.covariates) == 1
-                )
-                requested = frozenset(covariate.name for covariate in method.covariates)
-                if legacy_scalar_x or (
-                    request.available_covariates is not None
-                    and requested <= request.available_covariates
-                ):
+            if method.variance_reduction not in ("cuped", "cuped_multicovariate"):
+                continue
+            if not method.covariates:
+                continue
+            requested = frozenset(covariate.name for covariate in method.covariates)
+            if request.available_covariates is not None:
+                if requested <= request.available_covariates:
                     continue
-                _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
+                _raise(
+                    "facade.analysis_config.cuped_linear_covariates",
+                    metric=config.metric.name,
+                )
+            if config.covariate_available or method in config.source_methods:
+                continue
+            legacy_scalar_x = (
+                request.source_name == "MomentsSource"
+                and method.variance_reduction == "cuped"
+                and len(method.covariates) == 1
+            )
+            if not legacy_scalar_x:
+                _raise(
+                    "facade.analysis_config.cuped_linear_covariates",
+                    metric=config.metric.name,
+                )
 
 
 def normalize_display_correction(correction: MultiplicityCorrection) -> Correction:

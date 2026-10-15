@@ -617,6 +617,69 @@ def test_method_override_replaces_acquired_scalar_covariate_and_clears_sensitivi
     assert overridden.require_lift().log_se == pytest.approx(reference.require_lift().log_se)
 
 
+@pytest.mark.parametrize("panel", [False, True])
+def test_missing_effective_scalar_override_column_is_refused_for_adjusted_frames(panel):
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(202)
+    n = 24
+    frame = pd.DataFrame(
+        {
+            "unit": range(2 * n),
+            "arm": ["control"] * n + ["treatment"] * n,
+            "outcome": 10 + rng.normal(size=2 * n),
+            "history": rng.normal(size=2 * n),
+        }
+    )
+    if panel:
+        frame["day"] = 1
+    analysis = (
+        Analysis.from_unit_panel(
+            frame,
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=Method.cuped(
+                        name="declared",
+                        covariates=CupedCovariate(name="history", kind="continuous"),
+                    ),
+                )
+            ],
+        )
+        if panel
+        else Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=Method.cuped(
+                        name="declared",
+                        covariates=CupedCovariate(name="history", kind="continuous"),
+                    ),
+                )
+            ],
+        )
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        analysis.run(
+            decision_method=Method.cuped(
+                name="missing",
+                covariates=CupedCovariate(name="nope", kind="continuous"),
+            ),
+            sensitivity_methods=(),
+        )
+    assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
+
+
 def test_scalar_method_subset_preserves_aliases_that_collide_with_scratch_columns():
     import numpy as np
     import pandas as pd

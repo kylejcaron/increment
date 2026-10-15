@@ -46,6 +46,7 @@ from scipy.stats import norm as _norm
 from increment._literals import Alternative, Correction, Role, RowRole, ValueScale
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
+from increment._source_types import unit_frame_covariate_columns
 from increment.breakout.projection import Backend
 from increment.compatibility import _conservative_divide
 from increment.errors import (
@@ -2346,6 +2347,9 @@ def _estimate_lift_computation_or_reason(
                         method=method,
                         method_role=role,
                         covariates=method.covariates or covariates,
+                        covariate_columns=unit_frame_covariate_columns(
+                            tuple(item.name for item in covariates)
+                        ),
                         alpha=alpha,
                         alternative=alternative,
                         prior=prior,

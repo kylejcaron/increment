@@ -15,6 +15,7 @@ from increment.estimation.quantile import estimate_quantile_lift_computation
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.readouts._common import _raise, _runtime_method_roles, _warn
+from increment.readouts._metric_rows import MetricRows
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
 
@@ -192,7 +193,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     family: bool = False,
     family_member: bool = False,
     route_tail: float | None = None,
-    method_rows: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    evidence: MetricRows | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Estimate randomized whole-window cells independently.
 
@@ -241,16 +242,18 @@ def _estimate_lift_cells(  # noqa: PLR0913
         if group_id == control_group:
             continue
         for method in effective_methods:
-            family_rows = (method_rows or {}).get(method.name)
-            if family_rows is None:
-                method_control, method_treatment = control, treatment
-            else:
+            if method.variance_reduction == "cuped":
+                if evidence is None:
+                    raise AssertionError("Scalar estimation requires method-scoped evidence.")
+                family_rows = evidence.rows_for_method(method)
                 family_own = [row for row in family_rows if str(row["metric"]) == metric.name]
                 family_by_group = {str(row["group_id"]): row for row in family_own}
                 method_control = family_by_group.get(control_group)
                 method_treatment = family_by_group.get(group_id)
                 if method_control is None or method_treatment is None:
                     continue
+            else:
+                method_control, method_treatment = control, treatment
             captured: list[Any] = []
             try:
                 with warnings.catch_warnings(record=True) as captured:
@@ -412,16 +415,24 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
     rows for a moments metric, the native unit frame for a quantile metric.
     """
     method_roles = _runtime_method_roles(methods)
-    method_rows = dict(getattr(evidence, "method_rows", ()))
+
+    for method in methods:
+        if method.variance_reduction == "cuped":
+            if not isinstance(evidence, MetricRows):
+                raise AssertionError(
+                    "Scalar estimation requires method-scoped MetricRows evidence."
+                )
+            evidence.rows_for_method(method)
+    rows_summary = list(evidence.rows) if isinstance(evidence, MetricRows) else evidence
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         from increment.winsor import winsor_refuse
 
-        if not evidence:
+        if not rows_summary:
             from increment.estimation.decision_types import DecisionComputation
 
             return [], [], DecisionComputation(results=(), evidence={}, failures={})
 
-        if "_winsor_raw_state" not in evidence[0]:
+        if "_winsor_raw_state" not in rows_summary[0]:
             winsor_refuse(
                 "raw_state_required", "Percentile inference requires the loaded raw cutoff pool."
             )
@@ -439,8 +450,8 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
             preferred_direction=metric.declared_preferred_direction,
             cluster=src.context.cluster,
             method_roles=method_roles,
-            raw_outcomes={metric.name: evidence[0]["_winsor_raw_state"]},
-            winsor_references=evidence[0]["_winsor_references"],
+            raw_outcomes={metric.name: rows_summary[0]["_winsor_raw_state"]},
+            winsor_references=rows_summary[0]["_winsor_references"],
         )
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
@@ -459,7 +470,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
             alpha=alpha_for,
             method_roles=method_roles,
             inference=inference,
-            unit_rows=evidence,
+            unit_rows=evidence.unit_frame if isinstance(evidence, MetricRows) else evidence,
         )
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
@@ -467,7 +478,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
             computation,
         )
 
-    if hasattr(evidence, "unit_frame") and any(
+    if isinstance(evidence, MetricRows) and any(
         method.variance_reduction == "cuped_multicovariate" for method in methods
     ):
         from increment.estimation.engine import (
@@ -505,7 +516,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
                 },
                 family=retry == "family",
                 family_member=retry == "family",
-                method_rows=method_rows,
+                evidence=evidence,
             )
             rows_est.extend(ordinary)
             refused.extend(ordinary_refused)
@@ -613,30 +624,37 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
         computation = _merge_decision_computations(computations)
         return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation
     if retry in ("whole", "whole_asof"):
-        computation = _estimate_lift(
-            metrics=[metric],
-            summary=evidence or [],
-            control_group=design.control_group,
-            methods=methods,
-            prior=config.prior,
-            alpha=alpha_for,
-            alternative=test.alternative,
-            inference=inference,
-            null_lift=getattr(test, "null_lift", 0.0),
-            null_abs=getattr(test, "null_abs", None),
-            preferred_direction=metric.declared_preferred_direction,
-            method_roles=method_roles,
-            cluster=src.context.cluster,
-            family_member=family_member,
-            route_tail=route_tail,
-        )
+        computations = [
+            _estimate_lift(
+                metrics=[metric],
+                summary=(
+                    evidence.rows_for_method(method)
+                    if method.variance_reduction == "cuped" and isinstance(evidence, MetricRows)
+                    else rows_summary or []
+                ),
+                control_group=design.control_group,
+                methods=[method],
+                prior=config.prior,
+                alpha=alpha_for,
+                alternative=test.alternative,
+                inference=inference,
+                null_lift=getattr(test, "null_lift", 0.0),
+                null_abs=getattr(test, "null_abs", None),
+                preferred_direction=metric.declared_preferred_direction,
+                method_roles=method_roles,
+                cluster=src.context.cluster,
+                family_member=family_member,
+                route_tail=route_tail,
+            )
+            for method in methods
+        ]
+        computation = _merge_decision_computations(computations)
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
             [],
             computation,
         )
 
-    rows_summary = getattr(evidence, "rows", evidence)
     rows_est, refused, computation = _estimate_lift_cells(
         metric=metric,
         summary=rows_summary or [],
@@ -655,6 +673,6 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
         family=retry == "family",
         family_member=family_member,
         route_tail=route_tail,
-        method_rows=method_rows,
+        evidence=evidence if isinstance(evidence, MetricRows) else None,
     )
     return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation

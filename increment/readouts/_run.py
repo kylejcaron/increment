@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from increment._analysis_config import UNSET, _Unset
+from increment._analysis_config import UNSET, _Unset, effective_methods
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
@@ -25,7 +25,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
-from increment.readouts._metric_rows import _load_metric_rows
+from increment.readouts._metric_rows import MetricRows, _load_metric_rows
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
 from increment.readouts._randomized import (
@@ -285,6 +285,20 @@ def _run_plan_and_roster(src, design, configs, population):
     return plan, _preflight_roster(src, design, population)
 
 
+def _load_encouragement_evidence(src, selected, configs, design, by):
+    config_by_metric = {config.metric.name: config for config in configs}
+    return {
+        metric.name: _load_metric_rows(
+            src,
+            metric,
+            by=by,
+            control_group=design.control_group,
+            methods=effective_methods(config_by_metric[metric.name], design=design),
+        )
+        for metric in selected
+    }
+
+
 def _run_prepared(
     src: MomentSource,
     selected: Sequence[Metric],
@@ -328,6 +342,7 @@ def _run_prepared(
         if by and compliance_only:
             _raise_readout_request("readout.run.segment_unsupported", metric="uptake")
         rows_by_metric: dict[str, list[Mapping[str, Any]]] = {}
+        evidence_by_metric: dict[str, MetricRows] = {}
         if not compliance_only:
             reject_quantile_metrics(
                 selected,
@@ -336,11 +351,9 @@ def _run_prepared(
                 "which a quantile metric has none of",
                 remedy="Drop the encouragement design or the quantile metric.",
             )
+            evidence_by_metric = _load_encouragement_evidence(src, selected, configs, design, by)
             rows_by_metric = {
-                metric.name: list(
-                    _load_metric_rows(src, metric, by=by, control_group=design.control_group).rows
-                )
-                for metric in selected
+                name: list(evidence.rows) for name, evidence in evidence_by_metric.items()
             }
             if selected:
                 _refuse_if_no_treatment_arm(
@@ -377,6 +390,7 @@ def _run_prepared(
             metrics=selected,
             rows_by_metric=rows_by_metric,
             configs=configs,
+            evidence_by_metric=evidence_by_metric,
             design=design,
             plan=plan,
             estimands=estimands,

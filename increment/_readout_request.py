@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from increment._analysis_config import effective_methods
 from increment._literals import Correction, ValueScale
+from increment._source_types import CovariateAvailability
 from increment.errors import (
     RefusalSpec,
     refuse,
@@ -296,10 +297,9 @@ class ReadoutRequest:
         if len(metrics) != len(configs):
             _raise("readout.request.readoutrequest_requires_one_resolved")
         context = source.context
-        source_frame = getattr(source, "_frame", None)
-        if source_frame is None:
-            source_frame = getattr(source, "_source_frame", None)
-        available_covariates = frozenset(source_frame.columns) if source_frame is not None else None
+        available_covariates = (
+            source.available_covariates if isinstance(source, CovariateAvailability) else None
+        )
         return cls(
             context=context,
             metrics=tuple(metrics),

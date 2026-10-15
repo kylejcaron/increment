@@ -511,6 +511,27 @@ class SourceContext:
 
 
 @runtime_checkable
+class CovariateAvailability(Protocol):
+    """Optional source metadata listing names usable as unit covariates."""
+
+    @property
+    def available_covariates(self) -> frozenset[str] | None: ...
+
+
+@runtime_checkable
+class ScalarMethodMomentSource(Protocol):
+    """Sources capable of acquiring moments for one effective method."""
+
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> Sequence[Mapping[str, Any]]: ...
+
+
+@runtime_checkable
 class MomentSource(Protocol):
     """A source of aggregated moments, decoupled from how they were computed."""
 

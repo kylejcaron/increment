@@ -188,6 +188,12 @@ the analyzed-trigger count remains distinct in baseline-derived sample-size
 results. These claims apply to those two warehouse ingresses, not to the
 summary, panel, switchback, or portable-moment routes marked refused above.
 
+Scalar CUPED readouts require moments for each effective method's covariate
+and missing-value policy. A source adapter without that capability refuses
+with `readout.scalar_method_evidence`, naming the route, before reading rows.
+Portable single-family moments retain their established scalar covariate;
+they do not acquire a different named family from unit data.
+
 Mean/Ratio CUPED on the unit panel resolves the declared covariate the same
 way observational adjustment already does: through the per-unit value
 `unit_frame()`/`moments(grain="total")` join in, constant across a unit's

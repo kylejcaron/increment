@@ -1385,24 +1385,49 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 "artifact.extension.missing",
                 "artifact base has no breakout evidence extension",
             )
+        if method.variance_reduction != "cuped":
+            return self.moments(metric, grain="total")
         trusted = self.validated_metric(metric)
-        if not any(
-            getattr(covariate, field, None) is not None
-            for covariate in method.covariates
-            for field in ("property", "measure", "source")
-        ):
-            return None
-        covariate = method.covariates[0]
+        covariates = method.covariates or ()
+        if not covariates:
+            return self.moments(metric, grain="total", include_covariate=True)
+        covariate = covariates[0]
         extension = self._covariate_extension(metric.name, covariate.name)
         extension_rows = self._read_extension(extension, request=_artifact_request(extension))
+        values = [
+            None if row.get("value_is_missing") else row.get("value") for row in extension_rows
+        ]
+        missing_policy = getattr(covariate, "missing", "zero")
+        missing_count = sum(value is None for value in values)
+        if missing_policy == "refuse" and missing_count:
+            from increment._frame_validation import _raise as frame_raise
+
+            frame_raise(
+                "frame.validation.metric_covariate_column",
+                metric=metric.name,
+                covariate=covariate.name,
+                n_missing=missing_count,
+            )
+        if missing_policy in ("impute", "impute-indicator"):
+            observed = [value for value in values if value is not None]
+            if not observed:
+                from increment._frame_validation import _raise as frame_raise
+
+                frame_raise(
+                    "frame.validation.metric_covariate_impute_all_null",
+                    metric=metric.name,
+                    covariate=covariate.name,
+                )
+            mean_value = sum(observed) / len(observed)
+            values = [mean_value if value is None else value for value in values]
         pre_stats = self._covariate_table(
             [
                 {
                     "experiment_id": row["experiment_id"],
                     "unit_id": row["unit_id"],
-                    "sum_value": row["value"],
+                    "sum_value": value,
                 }
-                for row in extension_rows
+                for row, value in zip(extension_rows, values, strict=True)
             ]
         )
         return self._reduce(
@@ -1528,6 +1553,19 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 None,
             )
             methods = effective_methods(config, design=self.context.design) if config else ()
+            if by and any(
+                method.variance_reduction == "cuped"
+                and any(
+                    getattr(covariate, field, None) is not None
+                    for covariate in method.covariates or ()
+                    for field in ("property", "measure", "source")
+                )
+                for method in methods
+            ):
+                raise ArtifactContractError(
+                    "artifact.extension.missing",
+                    "artifact base has no binding-aware scalar breakout moments",
+                )
             include_covariate = any(
                 method.variance_reduction == "cuped"
                 and (

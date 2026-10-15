@@ -3,15 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from increment.readouts._common import _refuse_unsupported_by
+from increment._source_types import ScalarMethodMomentSource
+from increment.readouts._common import _raise, _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
-from increment.sources import MomentSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._source_types import RawOutcomeSource
     from increment.semantics.models import Metric
+    from increment.sources import MomentSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,13 @@ class MetricRows:
     evidence_components: tuple[tuple[str, str, int], ...] = ()
     covariate_columns: tuple[tuple[str, str], ...] = ()
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
+
+    def rows_for_method(self, method: Any) -> tuple[Mapping[str, Any], ...]:
+        """Return rows produced for an effective scalar method or fail loudly."""
+        for name, rows in self.method_rows:
+            if name == method.name:
+                return rows
+        raise AssertionError(f"Scalar evidence for method {method.name!r} was not acquired.")
 
 
 def _frame_digest_and_arms(frame):
@@ -176,28 +184,30 @@ def _load_metric_rows(
         method for method in methods if getattr(method, "variance_reduction", None) == "cuped"
     ]
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
-    if scalar_methods and any(method.covariates for method in scalar_methods):
-        method_moments = getattr(src, "moments_for_method", None)
-        if method_moments is not None:
-            rows_by_method = []
-            for method in scalar_methods:
-                family_rows = method_moments(metric, method, by=by)
-                if family_rows is not None:
-                    rows_by_method.append((method.name, tuple(family_rows)))
-            method_rows = tuple(rows_by_method)
-    method_components = tuple(
-        (
-            f"scalar_method_rows:{method_name}",
-            digest,
-            count,
+    if scalar_methods:
+        if not isinstance(src, ScalarMethodMomentSource):
+            _raise(
+                "readout.scalar_method_evidence",
+                route=type(src).__name__,
+                method=scalar_methods[0].name,
+            )
+        method_rows = tuple(
+            (method.name, tuple(src.moments_for_method(metric, method, by=by)))
+            for method in scalar_methods
         )
-        for method_name, rows_for_method in method_rows
-        for _arms, digest, count in (_rows_raw_digest_and_arms(rows_for_method),)
-    )
-    rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
+        rows = list(method_rows[0][1])
+    elif methods and isinstance(src, ScalarMethodMomentSource):
+        rows = list(src.moments_for_method(metric, methods[0], by=by))
+    else:
+        rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
     if has_linear:
         observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
+    method_components = tuple(
+        (f"scalar_method:{name}", *_rows_raw_digest_and_arms(family_rows)[1:])
+        for name, family_rows in method_rows
+        if any(method.name == name and method.covariates for method in scalar_methods)
+    )
     if not has_linear:
         return MetricRows(
             rows=tuple(rows),

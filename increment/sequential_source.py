@@ -1338,7 +1338,7 @@ def validate_frame_registration(
             )
         validate_sequential_transform(spec)
         if adjustment_kind(registration, model.metric) is not None and not any(
-            method.variance_reduction == "cuped" and method.covariates
+            method is not None and method.variance_reduction == "cuped" and method.covariates
             for method in (spec.decision_method, *spec.sensitivity_methods)
         ):
             sequential_refuse(

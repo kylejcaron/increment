@@ -501,6 +501,10 @@ class FrameTotalsSource(SequentialSourceMixin):
             )
         return [dict(r) for r in self._moments if r["metric"] == metric.name]
 
+    @property
+    def available_covariates(self) -> frozenset[str]:
+        return frozenset(self._frame.columns)
+
     def moments_for_method(
         self,
         metric: Metric,
@@ -509,6 +513,8 @@ class FrameTotalsSource(SequentialSourceMixin):
         by: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         """Recompute one scalar CUPED family from its own covariate input."""
+        if method.variance_reduction != "cuped" or method.covariates is None:
+            return self.moments(metric, by=by)
         if by:
             refuse(_FRAME_GRAIN, grain="breakout", offered=self.capabilities)
         spec = self._specs_by_name.get(metric.name)
@@ -1520,6 +1526,18 @@ class FramePanelSource(SequentialSourceMixin):
                     if self._summary_reducer and reducer_by and specs[0].missing == "drop"
                     else []
                 )
+                covariates, covariate_failures = self._total_covariates(specs)
+                for name in {
+                    covariate.name
+                    for spec in specs
+                    for method in spec._methods
+                    if method.variance_reduction == "cuped"
+                    for covariate in method.covariates or ()
+                    if covariate.missing == "impute"
+                } & covariates.keys():
+                    covariates[name] = covariates[name].with_columns(
+                        nw.col(name).fill_null(nw.col(name).mean()).alias(name)
+                    )
                 if self._summary_reducer and specs[0].missing == "drop":
                     missing = nw.col(specs[0].y_column).is_null()
                     if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
@@ -1530,7 +1548,6 @@ class FramePanelSource(SequentialSourceMixin):
                         if total_panel.schema[denominator] in (nw.Float32, nw.Float64):
                             missing = missing | nw.col(denominator).is_nan()
                     total_panel = total_panel.filter(~missing)
-                covariates, covariate_failures = self._total_covariates(specs)
 
                 def scalar_names(spec: MetricSpec) -> tuple[str, ...]:
                     return tuple(
@@ -1610,6 +1627,11 @@ class FramePanelSource(SequentialSourceMixin):
                 failures[name] = (_REFUSALS[exc.code], exc.context)
         return covariates, failures
 
+    @property
+    def available_covariates(self) -> frozenset[str]:
+        frame = self._source_frame if self._source_frame is not None else self._sparse_panel
+        return frozenset(frame.columns)
+
     def _spec_for(self, metric: Metric) -> MetricSpec:
         spec = self._specs_by_name.get(metric.name)
         if spec is None:
@@ -1624,6 +1646,8 @@ class FramePanelSource(SequentialSourceMixin):
         by: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         """Build scalar CUPED moments from the requested panel covariate."""
+        if method.variance_reduction != "cuped" or method.covariates is None:
+            return self.moments(metric, by=by)
         if by:
             refuse(
                 _FRAME_GRAIN,
@@ -1641,15 +1665,50 @@ class FramePanelSource(SequentialSourceMixin):
         if self._source_frame is not None:
             _enforce_missing_policy(self._source_frame, (method_spec,), shape="panel")
         covariate_names = tuple(item.name for item in method.covariates or ())
-        unit_data = nw.from_native(
-            self.unit_frame(metric, covariates=covariate_names), eager_only=True
+        acquired_columns = unit_frame_covariate_columns(covariate_names)
+        admitted = _admit_panel_totals(
+            self._sparse_panel,
+            self._exposure,
+            value_columns=[name for name in (spec.y_column, spec.denominator) if name],
         )
+        collapsed = _collapse_to_unit_totals(
+            admitted,
+            [spec],
+            uptake=self._uptake,
+            window_days=self._window_days,
+            first_exposure=self._first_exposure,
+        )
+        expressions = [
+            nw.col("unit_id"),
+            nw.col("group_id"),
+            nw.col(spec.y_column).cast(nw.Float64).alias("y"),
+        ]
+        if spec.denominator is not None:
+            expressions.append(nw.col(spec.denominator).cast(nw.Float64).alias("y_den"))
+        if self._uptake is not None:
+            expressions.append(nw.col(self._uptake))
+        unit_data = collapsed.select(*expressions)
+        for name, column in acquired_columns.items():
+            unit_data = unit_data.join(
+                self._resolve_panel_covariate(name, column=column),
+                on="unit_id",
+                how="left",
+            )
+        for covariate in method.covariates or ():
+            if covariate.missing == "impute":
+                column = acquired_columns[covariate.name]
+                full_values = self._resolve_panel_covariate(covariate.name)
+                mean_value = full_values.select(nw.col(covariate.name).mean()).item()
+                unit_data = unit_data.with_columns(
+                    nw.col(column).fill_null(mean_value).alias(column)
+                )
         return _moment_rows(
             unit_data,
-            group="group_id",
             metrics=(method_spec,),
+            group="group_id",
             experiment_id=self._experiment_id,
-            covariate_columns=unit_frame_covariate_columns(covariate_names),
+            uptake=self._uptake,
+            covariate_columns=acquired_columns,
             outcome_column="y",
             denominator_column="y_den",
         )

@@ -274,7 +274,7 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     ordinary_rows, refused, computation = _estimate_pass(
         src,
         metric,
-        evidence.rows if hasattr(evidence, "rows") else evidence,
+        evidence,
         test,
         config,
         design,
@@ -322,18 +322,7 @@ def _estimate_randomized_secondary_family(
         )
         observed_by_metric[metric.name] = metric_observed
         evidence_components[metric.name] = evidence_component
-        evidence_by_metric[metric.name] = (
-            metric_rows
-            if metric_rows.method_rows
-            or (
-                metric_rows.unit_frame is not None
-                and any(
-                    method.variance_reduction == "cuped_multicovariate"
-                    for method in _metric_methods
-                )
-            )
-            else rows
-        )
+        evidence_by_metric[metric.name] = metric_rows
         observed_arms |= metric_observed
         if is_quantile and not metric_rows.n_treatment_arms:
             # Nothing to contrast; the final arm gate decides whether the
@@ -427,7 +416,7 @@ def _estimate_randomized_secondary_family(
                     ),
                 )
             else:
-                selected_evidence = [row for row in selected_evidence if keep(row, selected_groups)]
+                raise AssertionError("Scalar secondary evidence lost its MetricRows contract.")
         selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])
@@ -583,12 +572,7 @@ def _estimate_randomized_non_secondary(
             rows_est, refused, computation = _estimate_pass(
                 src,
                 metric,
-                metric_rows
-                if metric_rows.method_rows
-                or any(
-                    method.variance_reduction == "cuped_multicovariate" for method in metric_methods
-                )
-                else list(metric_rows.rows),
+                metric_rows,
                 test,
                 config,
                 design,

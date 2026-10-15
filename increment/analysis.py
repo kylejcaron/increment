@@ -2230,11 +2230,41 @@ class Analysis:
             if population == "triggered":
                 return (self._src).triggered_source()
             return self._src
+        multifamily_scalar = False
+        for metric in selected or self._metrics:
+            config = next(
+                config for config in self._src.context.configs if config.metric.name == metric.name
+            )
+            base_methods = effective_methods(config, design=self._src.context.design)
+            methods = (
+                (
+                    cast(Method, decision_method)
+                    if decision_method is not UNSET
+                    else base_methods[0]
+                ),
+                *(
+                    tuple(cast("Sequence[Method]", sensitivity_methods))
+                    if sensitivity_methods is not UNSET
+                    else base_methods[1:]
+                ),
+            )
+            if (
+                len(
+                    {
+                        method.covariates
+                        for method in methods
+                        if method.variance_reduction == "cuped"
+                    }
+                )
+                > 1
+            ):
+                multifamily_scalar = True
+                break
         # Compliance and per-unit methods need the original source.
         needs_direct_source = (
             design_summary_only
+            or multifamily_scalar
             or self._experiment.cluster is not None
-            or getattr(self._design, "mechanism", None) == "observational"
             or any(
                 getattr(m, "type", None) == "quantile"
                 or getattr(getattr(m, "winsorization", None), "has_percentile", False)

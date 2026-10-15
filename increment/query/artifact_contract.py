@@ -875,17 +875,16 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
             () if binding.decision_method is None else (binding.decision_method,)
         ) + binding.sensitivity_methods
         declarations.extend(
-            covariate
-            for method in methods
-            for covariate in method.covariates or ()
-            if getattr(covariate, "property", None) is not None
+            covariate for method in methods for covariate in method.covariates or ()
         )
 
     entries: list[Any] = []
     seen_sources: set[tuple[str, str]] = set()
     for declaration in declarations:
-        property_name = declaration.property
-        source_name = declaration.source
+        if getattr(declaration, "measure", None) is not None:
+            continue
+        property_name = getattr(declaration, "property", None) or declaration.name
+        source_name = getattr(declaration, "source", None)
         source = _source_for(definitions, property_name, source_name, unit=experiment.unit)
         source_key = (property_name, source.name)
         if source_key in seen_sources:

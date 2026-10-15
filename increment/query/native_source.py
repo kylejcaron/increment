@@ -1032,20 +1032,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def _bound_scalar_covariate_pre_stats(
         self,
-        covariate: CupedCovariateBinding,
+        covariate: Any,
         exposures: Table,
         metric: Metric,
     ) -> Table:
-        if covariate.measure is not None:
-            values = self._pre_period_measure_covariate(
-                covariate.measure, covariate.name, exposures
-            )
+        measure = getattr(covariate, "measure", None)
+        if measure is not None:
+            values = self._pre_period_measure_covariate(measure, covariate.name, exposures)
         else:
-            property_name = covariate.property or covariate.name
+            property_name = getattr(covariate, "property", None) or covariate.name
             source = self._resolve_unit_covariate_source(
                 property_name,
-                declared_source=covariate.source,
-                kind=covariate.kind,
+                declared_source=getattr(covariate, "source", None),
+                kind=getattr(covariate, "kind", None),
             )
             values = self._build_breakout_properties_table(source, property_name, exposures)
             if property_name != covariate.name:
@@ -2820,7 +2819,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
             pre_stats_override = (
                 self._bound_scalar_covariate_pre_stats(scalar_covariate, exposures, metric)
-                if isinstance(scalar_covariate, CupedCovariateBinding)
+                if scalar_covariate is not None
                 else None
             )
             summary_by, _pre_stats, _den_stats, _totals_by = self._build_metric_summary(
@@ -2840,8 +2839,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 properties_table=properties_table,
                 pre_stats_override=pre_stats_override,
                 covariate_missing=(
-                    scalar_covariate.missing
-                    if isinstance(scalar_covariate, CupedCovariateBinding)
+                    getattr(scalar_covariate, "missing", None)
+                    if scalar_covariate is not None
                     else None
                 ),
             )

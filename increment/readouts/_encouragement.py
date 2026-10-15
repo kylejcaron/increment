@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.inference import Prior
+    from increment.readouts._metric_rows import MetricRows
     from increment.semantics.models import Metric
 
 
@@ -204,6 +205,7 @@ def encouragement_rows(
     src: MomentSource,
     metrics: Sequence[Metric],
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
+    evidence_by_metric: Mapping[str, MetricRows],
     configs: Sequence[ResolvedMetricConfig],
     design: Encouragement,
     plan: CompiledDecisionPlan,
@@ -251,7 +253,19 @@ def encouragement_rows(
     computations: list[DecisionComputation[LiftEstimate]] = []
     family_refusal_deferred = False
     for group in groups:
-        summary = [row for m in group.metrics for row in rows_by_metric[m.name]]
+        scalar_method = next(
+            (method for method in group.methods if method.variance_reduction == "cuped"),
+            None,
+        )
+        summary = [
+            row
+            for metric in group.metrics
+            for row in (
+                evidence_by_metric[metric.name].rows_for_method(scalar_method)
+                if scalar_method is not None
+                else rows_by_metric[metric.name]
+            )
+        ]
         method_roles = _runtime_method_roles(group.methods)
         try:
             computation = _estimate_encouragement(
@@ -332,6 +346,7 @@ def encouragement_rows(
             plan=plan,
             design=design,
             rows_by_metric=rows_by_metric,
+            evidence_by_metric=evidence_by_metric,
             estimands=estimands,
             cluster=cluster,
             computations=computations,
@@ -388,6 +403,7 @@ def _select_encouragement_family(
     plan: CompiledDecisionPlan,
     design: Encouragement,
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
+    evidence_by_metric: Mapping[str, MetricRows],
     estimands: Sequence[str] | None,
     cluster: str | None,
     computations: list[DecisionComputation[LiftEstimate]],
@@ -483,7 +499,11 @@ def _select_encouragement_family(
             )
             pass_computation = _estimate_encouragement(
                 metrics=[metric],
-                summary=rows_by_metric[name],
+                summary=(
+                    evidence_by_metric[name].rows_for_method(config.decision_method)
+                    if config.decision_method.variance_reduction == "cuped"
+                    else rows_by_metric[name]
+                ),
                 design=design,
                 estimands=estimands if estimands is not None else ESTIMANDS,
                 methods=[config.decision_method],
