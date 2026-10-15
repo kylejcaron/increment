@@ -451,6 +451,18 @@ def _exact_group_sums(
     return [Fraction(total << e_min) for total in totals]
 
 
+def _exact_shared_block_sums(
+    values: np.ndarray, *, n_units: int, n_cycles: int, rows: int
+) -> list[Fraction]:
+    """Accumulate each shared block's signed roster total exactly in one grouped pass."""
+    shape = (n_units, n_cycles, 2, rows)
+    signs = np.broadcast_to(np.array([-1, 1], dtype=np.int64)[None, None, :, None], shape).ravel()
+    groups = np.broadcast_to(
+        np.arange(n_cycles, dtype=np.int64)[None, :, None, None], shape
+    ).ravel()
+    return _exact_group_sums(values.reshape(shape).ravel(), signs, groups, n_cycles)
+
+
 def _exact_branch_sums(
     values: np.ndarray | Sequence[Any], control_first: np.ndarray, rows: int
 ) -> tuple[list[Fraction], list[Fraction]]:
@@ -1021,16 +1033,24 @@ def _build_shared_stats(  # noqa: PLR0913
         else:
             observations = blocks.values[spec.name]
             rows = blocks.rows
+        exact_block_totals = (
+            _exact_shared_block_sums(observations, n_units=n_units, n_cycles=n_cycles, rows=rows)
+            if isinstance(observations, np.ndarray) and observations.dtype.kind in "fiu"
+            else None
+        )
         block_deltas: dict[str, float] = {}
         block_sizes: dict[str, int] = {}
         for offset, current_cycle in enumerate(cycles):
             try:
-                exact_total = Fraction(0)
-                for index in roster:
-                    block = (index * n_cycles + offset) * 2
-                    first = observations[block * rows : (block + 1) * rows]
-                    second = observations[(block + 1) * rows : (block + 2) * rows]
-                    exact_total += _exact_signed_total(((1, second), (-1, first)))
+                if exact_block_totals is not None:
+                    exact_total = exact_block_totals[offset]
+                else:
+                    exact_total = Fraction(0)
+                    for index in roster:
+                        block = (index * n_cycles + offset) * 2
+                        first = observations[block * rows : (block + 1) * rows]
+                        second = observations[(block + 1) * rows : (block + 2) * rows]
+                        exact_total += _exact_signed_total(((1, second), (-1, first)))
                 exact_delta = exact_total / (n_units * exact_weights[offset])
                 x_b = float(exact_delta)
             except OverflowError:
