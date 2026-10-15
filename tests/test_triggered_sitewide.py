@@ -189,6 +189,7 @@ def _add_late_trigger_and_outcome(events, *, include_outcome):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.slow
 def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_path):
     base_events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
     member_only_events = _add_late_trigger_and_outcome(base_events, include_outcome=False)

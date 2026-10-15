@@ -459,6 +459,7 @@ def test_previous_writer_relations_match_the_saved_digests_and_its_context_is_re
 # the one its digest_format names: the previous writer's format-1 base
 # relations must verify on a backend that now publishes the fast format.
 @pytest.mark.integration
+@pytest.mark.slow
 def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "ARTIFACT_BASE_RELATION_ROLES", ())
     _con, native, context, store, ref = _published()
@@ -482,6 +483,7 @@ def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
     from increment.estimation.engine import Method
 
@@ -672,6 +674,7 @@ def test_refresh_preserves_artifact_identity_and_rejects_cross_context() -> None
 
 # Guards triggered dispatch from silently returning only the assigned population.
 @pytest.mark.integration
+@pytest.mark.slow
 def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
     _con, native, context, store = _native(
@@ -781,6 +784,7 @@ def test_adopted_run_warns_for_published_cuped_covariate(tmp_path: Path) -> None
 
 # Guards CUPED dispatch from dropping pre-period covariate moments on breakout and retention-day paths.
 @pytest.mark.integration
+@pytest.mark.slow
 def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
     _con, native, context, store = _native(definitions=definitions, with_pre_period=True)
@@ -814,6 +818,7 @@ def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
 
 # Guards bounded-retention daily lift from losing its non-null CUPED covariate moments.
 @pytest.mark.integration
+@pytest.mark.slow
 def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("d7_retention",))
     _con, native, context, store = _native(
@@ -1852,6 +1857,7 @@ def _rewritten_definitions(tmp_path: Path, name: str, edit: Any) -> Path:
     return target
 
 
+@pytest.mark.slow
 def test_equal_instants_in_different_offsets_share_one_context_for_adoption_and_refresh(
     tmp_path: Path,
 ) -> None:

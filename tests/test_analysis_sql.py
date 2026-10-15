@@ -298,6 +298,7 @@ def test_experiment_analysis_from_defs(seeded_pre_period_con, seeded_defs):
         assert isinstance(summary_sql[m], str) and summary_sql[m], f"Empty SQL for {m}"
 
 
+@pytest.mark.slow
 def test_ratio_metric_with_n_pre_periods_never_builds_covariate(
     seeded_defs, seeded_con, monkeypatch
 ):

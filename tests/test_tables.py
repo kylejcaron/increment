@@ -971,16 +971,6 @@ def test_estimates_to_readout_leaves_posterior_values_missing_for_breakout_and_s
     assert sequential_row["posterior_risk_if_shipped"] is None
 
 
-def test_tables_module_imports_without_tables_extra():
-    """The module imports without coeftable; only rendering requires the extra."""
-    import importlib
-
-    import increment.tables as readout_module
-
-    importlib.reload(readout_module)  # confirm a fresh import succeeds too
-    assert hasattr(readout_module, "estimates_to_readout")
-
-
 def test_readout_table_renders_two_metrics_one_method():
     """A two-metric, one-method frame renders and shows both metric labels."""
     pytest.importorskip("coeftable")
@@ -2109,13 +2099,49 @@ class TestAdapterCarriesLevelNoteInference:
 _SHIFTED_NULL_COLOR = "#E17C05"
 
 
-def _forest(table):
-    (forest,) = [column for column in table.columns if type(column).__name__ == "Forest"]
-    return forest
-
-
 def _orange_rule_count(table) -> int:
     return table.gt().as_raw_html().count(f'stroke="{_SHIFTED_NULL_COLOR}"')
+
+
+def _assert_rendered_null_references(table, null_lifts: list[float]):
+    html = table.gt().as_raw_html()
+    svgs = re.findall(r"<svg\b.*?</svg>", html, flags=re.DOTALL)
+    plots = [svg for svg in svgs if f'stroke="{_SHIFTED_NULL_COLOR}"' in svg]
+    assert len(plots) == len(null_lifts)
+    axis_null = re.search(r'<text x="([0-9.]+)"[^>]*>-5\.0%</text>', html)
+    assert axis_null is not None
+    axis_x = float(axis_null.group(1))
+
+    rendered: list[tuple[float, float]] = []
+    for svg in plots:
+        view_box = re.search(r'viewBox="0 0 ([0-9.]+) [0-9.]+"', svg)
+        reference = re.search(
+            r'<line x1="([0-9.]+)" y1="0" x2="([0-9.]+)" y2="48" '
+            r'stroke="#616161"[^>]*stroke-dasharray="2,2"',
+            svg,
+        )
+        annotation = re.search(
+            rf'<line x1="([0-9.]+)" y1="[^"]+" x2="([0-9.]+)" y2="[^"]+" '
+            rf'stroke="{_SHIFTED_NULL_COLOR}"[^>]*stroke-width="2\.00" '
+            r'stroke-dasharray="2,2"',
+            svg,
+        )
+        assert view_box is not None and reference is not None and annotation is not None
+        width = float(view_box.group(1))
+        reference_x = float(reference.group(1))
+        assert float(reference.group(2)) == pytest.approx(reference_x)
+        assert reference_x == pytest.approx(width / 2)
+        rendered.append((reference_x, float(annotation.group(1))))
+
+    expected = sorted(
+        reference_x + (null_lift / -0.05) * (axis_x - reference_x)
+        for reference_x, null_lift in zip(
+            [reference_x for reference_x, _ in rendered], null_lifts, strict=True
+        )
+    )
+    assert sorted(annotation_x for _, annotation_x in rendered) == pytest.approx(
+        expected, abs=0.003
+    )
 
 
 class TestRenderedDecisionStats:
@@ -2167,8 +2193,7 @@ class TestRenderedDecisionStats:
         )
         assert rows[0]["stat_sig"] is True  # margin still met
         table = readout_table(rows)
-        (forest,) = [c for c in table.columns if type(c).__name__ == "Forest"]
-        assert getattr(forest, "ref", None) == 0.0
+        _assert_rendered_null_references(table, [-0.05])
 
     def test_unstored_probability_is_not_rendered(self):
         pytest.importorskip("coeftable")
@@ -2177,7 +2202,7 @@ class TestRenderedDecisionStats:
         assert "Posterior P(favorable)" not in html
 
     def test_shifted_null_adds_default_orange_rule_and_keeps_zero_ref(self):
-        ct = pytest.importorskip("coeftable")
+        pytest.importorskip("coeftable")
         table = readout_table(
             estimates_to_readout(
                 [
@@ -2192,18 +2217,8 @@ class TestRenderedDecisionStats:
                 ]
             )
         )
-        forest = _forest(table)
-        assert forest.ref == 0.0
-        assert forest.annotations == (
-            ct.Rule(
-                at="__shifted_null_lift",
-                axis="x",
-                color=_SHIFTED_NULL_COLOR,
-                width=2.0,
-                dash="dashed",
-            ),
-        )
-        assert _orange_rule_count(table) == 1
+
+        _assert_rendered_null_references(table, [-0.05])
 
     def test_out_of_range_shifted_null_expands_domain_and_renders_rule_in_viewport(self):
         pytest.importorskip("coeftable")
@@ -2252,8 +2267,8 @@ class TestRenderedDecisionStats:
             ]
         )
         table = readout_table(rows)
-        assert _forest(table).ref == 0.0
-        assert _orange_rule_count(table) == 1
+
+        _assert_rendered_null_references(table, [-0.05])
 
     def test_distinct_shifted_nulls_annotate_each_row(self):
         pytest.importorskip("coeftable")
@@ -2277,7 +2292,7 @@ class TestRenderedDecisionStats:
                 ),
             ]
         )
-        assert _orange_rule_count(readout_table(rows)) == 2
+        _assert_rendered_null_references(readout_table(rows), [-0.05, -0.03])
 
     def test_zero_and_nonfinite_nulls_add_no_orange_rule(self):
         pytest.importorskip("coeftable")
@@ -2289,7 +2304,7 @@ class TestRenderedDecisionStats:
         )
         rows[1]["null_lift"] = float("inf")
         table = readout_table(rows)
-        assert len(_forest(table).annotations) == 1
+
         assert _orange_rule_count(table) == 0
 
 

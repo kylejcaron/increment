@@ -229,6 +229,7 @@ def test_run_warns_for_added_metric_with_unused_preperiod_covariate():
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     analysis = _analysis(
         warehouse, AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1)
@@ -260,6 +261,7 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_triggered_added_metric_reports_both_populations_without_changing_declared_family(
     triggered_warehouse,
 ):
@@ -624,6 +626,7 @@ def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
 
 @pytest.mark.parametrize("alpha", PLAN_ALPHAS)
 @pytest.mark.parametrize("name", ADDED)
+@pytest.mark.slow
 def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse, name, alpha):
     declared = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name))
     added = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
@@ -807,6 +810,7 @@ def test_uncorrected_segments_carry_added_metrics_as_exploratory_rows(warehouse)
     assert all(row.role == "exploratory" and row.family_q is None for row in rows)
 
 
+@pytest.mark.slow
 def test_dashboard_snapshot_pins_and_serves_added_metrics():
     con: Any = ds.duckdb_connection()
     try:

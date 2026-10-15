@@ -295,6 +295,9 @@ def simulate_logged_run(
     rng = np.random.default_rng(seed)
     learner = _LEARNERS[logger](epsilon)
     policy, batch = learner.fit(START)
+    # Logger policies are tabulated on x alone; keep their immutable rows once per
+    # version instead of re-freezing the context for every unit decision.
+    distributions = tuple(policy.distribution({"x": x, "prior": None}) for x in CONTEXTS)
     adaptive = logger != "fixed_random"
     records: list[DecisionRecord] = []
     prior_reward: list[float | None] = [None] * n_units
@@ -307,7 +310,7 @@ def simulate_logged_run(
         for i in range(n_units):
             x = int(rng.random() < p_context_one[i])
             context = {"x": x, "prior": prior_reward[i]}
-            distribution = policy.distribution(context)
+            distribution = distributions[x]
             action = "B" if rng.random() < distribution["B"] else "A"
             reward = float(rng.random() < reward_model.mean(action, x))
             records.append(
@@ -333,6 +336,9 @@ def simulate_logged_run(
             if adaptive and decided % batch_size == 0 and decided < total:
                 next_time = decision_time + PERIOD if i == n_units - 1 else decision_time
                 policy, batch = learner.fit(next_time)
+                distributions = tuple(
+                    policy.distribution({"x": x, "prior": None}) for x in CONTEXTS
+                )
     registry = PolicyRegistry(learner.versions)
     trace = LoggedTrace.from_records(records, registry=registry, horizon=horizon)
     return LoggedRun(trace=trace, registry=registry, reward_model=reward_model)

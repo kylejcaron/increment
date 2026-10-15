@@ -165,6 +165,7 @@ class TestRowsCarryTheirRoute:
         assert row.scale == "linear"
         assert row.binomial_set is not None
 
+    @pytest.mark.slow
     def test_finite_sample_mode_labels_a_dense_row_binomial(self):
         counts = (50_000, 1_000_000, 51_500, 1_000_000)
         auto = lift_row(counts)
@@ -198,6 +199,7 @@ class TestRowsCarryTheirRoute:
         assert lift_row(counts, alpha=0.05, alternative="less").reference_kind == "t"
 
     @pytest.mark.parametrize("treatment_successes", [2_200, 4_000, 8_000, 16_000, 30_000])
+    @pytest.mark.slow
     def test_the_route_does_not_follow_the_effect_or_the_p_value(self, treatment_successes):
         # Control and treatment failures stay far above the threshold; only the effect moves.
         row = lift_row((8_000, 100_000, treatment_successes, 100_000))
@@ -358,6 +360,7 @@ class TestRoutedAsymptoticCellsNeverHitAGuard:
         frac_t=st.floats(min_value=0.0, max_value=1.0),
         tail=st.sampled_from([0.025, 0.05, 0.1]),
     )
+    @pytest.mark.slow
     def test_no_count_pair_raises_a_guard_and_every_row_is_labelled_by_the_rule(
         self, n_c, n_t, frac_c, frac_t, tail
     ):

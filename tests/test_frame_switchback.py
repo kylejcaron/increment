@@ -6,6 +6,7 @@ import math
 from fractions import Fraction
 from typing import cast
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -31,6 +32,18 @@ from tests.capability_consumers_scalar import (
     UNBOUNDED_RETENTION_SEQUENTIAL,
     refused,
 )
+
+
+def test_exact_shared_block_sums_preserve_signed_binary_values():
+    from increment.switchback import _exact_shared_block_sums
+
+    values = np.asarray([0.1, 0.3, 0.2, 0.4, 0.5, 0.9, 0.7, 0.8])
+    totals = _exact_shared_block_sums(values, n_units=2, n_cycles=2, rows=1)
+    assert totals == [
+        Fraction(0.3) - Fraction(0.1) + Fraction(0.9) - Fraction(0.5),
+        Fraction(0.4) - Fraction(0.2) + Fraction(0.8) - Fraction(0.7),
+    ]
+    assert [float(total) for total in totals] == [0.6, 0.3000000000000001]
 
 
 def test_prospective_reference_binding_and_sufficient_state_are_preserved():

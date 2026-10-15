@@ -1218,18 +1218,25 @@ class EstimateList[M: BaseModel](list[M]):
             "unavailable_cell_count",
             "hidden_cell_count",
         }
-        for name, values in evidence_columns.items():
-            dtype = (
-                nw.String()
-                if name in string_columns
-                else nw.Boolean()
-                if name in boolean_columns
-                else nw.Int64()
-                if name in count_columns
-                else None
-            )
+        if evidence_columns:
             frame = frame.with_columns(
-                nw.new_series(name, values, dtype=dtype, backend=nw.get_native_namespace(frame))
+                *(
+                    nw.new_series(
+                        name,
+                        values,
+                        dtype=(
+                            nw.String()
+                            if name in string_columns
+                            else nw.Boolean()
+                            if name in boolean_columns
+                            else nw.Int64()
+                            if name in count_columns
+                            else None
+                        ),
+                        backend=nw.get_native_namespace(frame),
+                    )
+                    for name, values in evidence_columns.items()
+                )
             )
         frame = frame.with_columns(
             nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")

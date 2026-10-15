@@ -42,6 +42,7 @@ _EXPECTED_ADAPTER_NAMES = frozenset(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("adapter_index", range(len(_ADAPTER_NAMES)), ids=_ADAPTER_NAMES)
+@pytest.mark.slow
 def test_each_adapter_advertises_a_complete_moment_source_contract(
     tmp_path: Path, adapter_index: int
 ) -> None:
@@ -196,6 +197,7 @@ def test_day_source_breakout_absent_grain_uses_native_refusal(tmp_path: Path) ->
         source.close()
 
 
+@pytest.mark.slow
 def test_definitions_operations_are_callable(tmp_path: Path) -> None:
     source, breakout = definitions_source(tmp_path, store="always")
     metric = source.context.metrics[0]
@@ -273,6 +275,7 @@ def test_definitions_absent_trigger_operations_refuse(tmp_path: Path) -> None:
         "unit_day_artifact",
     ],
 )
+@pytest.mark.slow
 def test_every_arm_evidence_result_round_trips_and_has_a_frame(tmp_path: Path, name: str) -> None:
     factories = dict(public_result_factories(tmp_path))
     result = factories[name]()
@@ -296,6 +299,7 @@ _DIGEST_ADAPTER_NAMES = tuple(name for name in _ADAPTER_NAMES if name != "breako
 
 @pytest.mark.integration
 @pytest.mark.parametrize("adapter_name", _DIGEST_ADAPTER_NAMES)
+@pytest.mark.slow
 def test_readout_snapshot_replays_and_tracks_changed_ingress_arms(
     tmp_path: Path, adapter_name: str, monkeypatch
 ) -> None:

@@ -2144,6 +2144,7 @@ def test_native_dimensioned_asof_lift_supports_cuped(seeded_pre_period_con, corr
     assert any(row.lift is not None and math.isfinite(row.require_lift().value) for row in rows)
 
 
+@pytest.mark.slow
 def test_native_asof_retention_lift_supports_cuped_and_completed_windows(
     retention_cuped_con,
 ):

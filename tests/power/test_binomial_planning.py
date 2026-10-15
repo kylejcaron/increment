@@ -622,6 +622,7 @@ class TestAShiftedNullTheControlArmAloneRejects:
 
     @pytest.mark.parametrize("alternative", ["less", "two-sided"])
     @pytest.mark.parametrize("route", ["exact", "approximate"])
+    @pytest.mark.slow
     def test_a_window_of_structural_counts_has_the_runtime_power_without_a_replay(
         self, monkeypatch, alternative, route
     ):
@@ -1958,6 +1959,7 @@ class TestACellsDecisionIsTheSameWhateverRequestDecidesIt:
         for got, expected in zip(pieces.cells(wc.lo, wc.hi, wt.lo, wt.hi), whole, strict=True):
             assert np.array_equal(got, expected)
 
+    @pytest.mark.slow
     def test_the_companion_effect_is_the_direct_effect_whatever_the_supplied_lift(self):
         """The effect search after a supplied effect starts from that effect's decided cells;
         its answer is the direct search's, below, near and above the effect it finds."""

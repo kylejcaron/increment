@@ -111,6 +111,7 @@ def _assert_dashboard_population_dom_behavior(tmp_path, payload):
     )
 
 
+@pytest.mark.slow
 def test_dashboard_snapshot_retains_population_specific_headline_and_group_evidence(tmp_path):
     analysis = _triggered_dashboard(tmp_path)
     try:
@@ -198,6 +199,7 @@ def test_dashboard_without_trigger_is_assigned_only(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 def test_triggered_explore_retains_triggered_daily_series(tmp_path):
     analysis = _triggered_dashboard(tmp_path)
     try:
@@ -223,6 +225,7 @@ def test_triggered_explore_retains_triggered_daily_series(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_overview_exploratory_rows_stay_in_their_population_family(tmp_path):
     analysis = _triggered_dashboard(tmp_path, extra_metric=True)
     try:
@@ -239,6 +242,7 @@ def test_overview_exploratory_rows_stay_in_their_population_family(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 def test_standalone_population_sections_use_one_population(tmp_path):
     analysis = _triggered_dashboard(tmp_path)
     try:
@@ -269,6 +273,7 @@ def test_standalone_population_sections_use_one_population(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 def test_triggered_health_uses_triggered_balance_result(tmp_path):
     import dataclasses
     import re
@@ -316,6 +321,7 @@ def test_triggered_health_uses_triggered_balance_result(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_path):
     import dataclasses
 
