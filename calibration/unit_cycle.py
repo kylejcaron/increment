@@ -16,7 +16,7 @@ import traceback
 from importlib.metadata import version
 from pathlib import Path
 
-from scripts.run_test_tier import run_with_budget
+from calibration._process import run_with_timeout
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -169,11 +169,9 @@ def controller(args):
         remaining = args.budget_seconds - (time.monotonic() - started) - 2 * grace
         if remaining <= 0:
             return 124
-        code = run_with_budget(
+        code = run_with_timeout(
             command(args, "--_case-index", str(index)),
-            tier=f"unit-cycle-design-{index}",
-            budget_seconds=min(args.case_budget_seconds, remaining),
-            grace_seconds=grace,
+            min(args.case_budget_seconds, remaining),
         )
         status = {0: "certified", 1: "failed", 2: "inconclusive", 124: "timeout"}.get(
             code, "interrupted"
@@ -216,7 +214,7 @@ def provenance():
         ROOT / "tests/unit_cycle_prospective.json",
         ROOT / "tests/simulate/test_unit_cycle_calibration.py",
         ROOT / "tests/simulate/unit_cycle_sizing.py",
-        ROOT / "scripts/run_test_tier.py",
+        ROOT / "calibration/_process.py",
         Path(__file__).resolve(),
     ]
     return {
@@ -289,16 +287,7 @@ def main(argv=None):
     )
     outer_grace = min(5.0, args.budget_seconds / 10)
     remaining = args.budget_seconds - (time.monotonic() - started) - outer_grace
-    code = (
-        124
-        if remaining <= 0
-        else run_with_budget(
-            command(args, "--_controller"),
-            tier="unit-cycle-campaign",
-            budget_seconds=remaining,
-            grace_seconds=outer_grace,
-        )
-    )
+    code = 124 if remaining <= 0 else run_with_timeout(command(args, "--_controller"), remaining)
     status = {0: "complete", 1: "failed", 2: "inconclusive", 124: "timeout"}.get(
         code, "interrupted"
     )

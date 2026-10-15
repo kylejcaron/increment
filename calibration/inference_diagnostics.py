@@ -415,7 +415,7 @@ def _worker(directory: Path) -> int:
 
 
 def _controller(output: Path, case_seconds: float, work_seconds: float) -> int:
-    from scripts.run_test_tier import run_with_budget
+    from calibration._process import run_with_timeout
 
     selection = json.loads((output / "selection.json").read_text())
     deadline = time.monotonic() + work_seconds
@@ -435,10 +435,9 @@ def _controller(output: Path, case_seconds: float, work_seconds: float) -> int:
             str(directory),
         ]
         started = time.monotonic()
-        code = run_with_budget(
+        code = run_with_timeout(
             command,
-            tier=f"inference-{unit['directory']}",
-            budget_seconds=min(case_seconds * len(unit["case_ids"]), remaining),
+            min(case_seconds * len(unit["case_ids"]), remaining),
         )
         _publish(
             directory / "execution.json",
@@ -772,7 +771,7 @@ def _selection(args, manifest):
 
 
 def main(argv=None):
-    from scripts.run_test_tier import run_with_budget
+    from calibration._process import run_with_timeout
     from tests._i15_design import load_manifest
 
     started = time.monotonic()
@@ -813,7 +812,7 @@ def main(argv=None):
     remaining = args.overall_seconds - (time.monotonic() - started)
     code = 124
     if remaining > 0:
-        code = run_with_budget(
+        code = run_with_timeout(
             [
                 sys.executable,
                 "-c",
@@ -823,8 +822,7 @@ def main(argv=None):
                 str(args.case_seconds),
                 str(remaining),
             ],
-            tier="inference-diagnostics",
-            budget_seconds=remaining,
+            remaining,
         )
     return _summarize(args.output, selection, provenance, code)
 

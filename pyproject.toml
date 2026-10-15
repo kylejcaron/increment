@@ -98,7 +98,6 @@ dev = [
     "mutmut>=3.8,<3.9",
     "pydoclint>=0.9.1",
     "complexipy==8.0.1",
-"pytest-testmon==2.2.0",
 ]
 warehouse-backends = [
     "ibis-framework[postgres]>=10.1.0",
@@ -155,6 +154,7 @@ markers = [
     "warehouse_bigquery: executes real query builders against a live BigQuery connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_bigquery nox session, never collected from testpaths",
 ]
 timeout = 300
+junit_family = "legacy"
 addopts = "-m 'not slow and not parameter_recovery and not numerical_certification'"
 filterwarnings = [
     "error",

@@ -77,39 +77,42 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   invariants and parity. Do not pin permitted wording, private wiring or exact
   bits where a tolerance defines the contract. Replay tests exercise the
   claimed consumers on the restored object.
-- Start with `make test TESTS=tests/file.py::test_name`, then
-  `make test-affected BASE=<task-base-sha>`; include relevant slow cases.
-  Resolve the base at dispatch and reuse it across commits/resumes.
+- Start with `make test TESTS=tests/file.py::test_name`, then run
+  `make test-affected BASE=<task-base-sha>` and include relevant slow cases.
+  Resolve the base at dispatch and reuse it across commits/resumes;
   `BASE=HEAD` is only a working-tree comparison.
-- Affected checks require nonempty selection and complete source-bound
-  execution evidence. They do not waive slow, parity, fixtures, public smokes,
-  docs, scientific or full-suite gates. See
-  [selection controls and evidence](CONTRIBUTING.md#tests-and-quality-checks).
-- Dependency-map recording is optional: `make test-map TIER=fast|slow`.
-  Ordinary full-tier checks keep all tests without rebuilding the map;
-  affected checks retain their trusted-map or conservative-graph routes.
-- Reuse matching source/worktree/environment-bound evidence across read-only
-  reviews; changed inputs invalidate it. Required integration gates remain.
-- Run `make install` for explicit hook setup. Do not activate shared hooks while
-  live consumers are unprepared. Before pushing, run the fast tier plus slow tests
-  of changed test files; pushes skip local test hooks and CI runs `make check`.
-  Reserve `make test-all` for final integration or release candidates changing
-  estimation or a wire format.
+- Affected selection uses the changed-path rules in
+  [CONTRIBUTING.md](CONTRIBUTING.md#tests-and-quality-checks). It is local
+  feedback, may select no tests, and does not waive slow, parity, fixtures,
+  public smokes, documentation, scientific or full-suite gates. CI is the
+  authoritative full-suite gate.
+- Test targets use plain pytest marker expressions: fast excludes `slow`,
+  `parameter_recovery` and `numerical_certification`; slow selects `slow`
+  excluding those scientific markers and `examples`; scientific is the union
+  of `parameter_recovery` and `numerical_certification`; all uses
+  `slow or not slow`. Each test has the configured 300-second timeout.
+- The default local worker count is `max(1, CPU count // 3)`; CI passes
+  `WORKERS=auto`. Tests MUST remain xdist-independent. The ignored
+  `.test_durations` cache controls stable longest-first ordering.
+- The pre-push hook runs lint, type-checking and the affected fast tier.
+  `make check` is an optional broader local check; full-suite and required
+  scientific gates remain CI responsibilities.
 - Use `make fmt`; build docs with `nox -s docs`, not bare MkDocs.
 
 ## Coordination and review
 
 - Record the integration branch, absolute worktree, immutable base, worker
-  allowance and evidence location. Assign disjoint files; shared schemas and
-  serialization have one writer. Consume exercised handoffs, not design-only
-  carriers. Keep modules importable and preserve other writers' work. Delegated
-  workers use absolute paths in their assigned worktree for every read, edit and
-  command; relative tool paths resolve to the coordinator's worktree.
+  allowance, exact commands and remaining acceptance. Assign disjoint files;
+  shared schemas and serialization have one writer. Consume exercised
+  handoffs, not design-only carriers. Keep modules importable and preserve
+  other writers' work. Delegated workers use absolute paths in their assigned
+  worktree for every read, edit and command; relative tool paths resolve to the
+  coordinator's worktree.
 - One coordinator owns broad checks; focused suites may overlap within the
   host allowance. Timing measurements require an uncontended window.
-- Integrate reviewed slices promptly. Before each integration commit, include
-  relevant slow tests of changed test files. A changed source/environment
-  invalidates affected evidence.
+- Integrate reviewed slices promptly. Include relevant slow tests of changed
+  test files before integration; changed source or environment inputs require
+  rerunning affected checks.
 - Before any merge, inspect main and the integration worktree's status; do not
   overwrite unrelated dirty work. Each task's reviewer is independent of its
   writer and receives the brief, report and diff, not the controller conversation.
@@ -122,10 +125,11 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   [review and handoffs](CONTRIBUTING.md#review-and-handoffs).
 - Ignored plans and temporary probes stay local; never force-add scaffolding.
   Record decisions, verification and blockers in the issue ledger as they change.
-- Handoffs identify commits, dirty/untracked work, evidence, remaining decisions
-  and next action; distinguish implemented, verified, integrated and closed.
-  Stop old writers before transferring ownership. Preserve original scientific
-  and human acceptance; a design review is not implementation verification.
+- Handoffs identify commits, dirty/untracked files, exact verification commands,
+  remaining decisions and next action. Distinguish implemented, verified,
+  integrated and closed state. Stop old writers before transferring ownership.
+  Preserve original scientific and human acceptance; a design review is not
+  implementation verification.
 
 ### Recommended local verification and review
 
@@ -134,17 +138,16 @@ acceptance; it does not authorize shared-hook changes.
 
 | Boundary | Checks and tests | Review |
 | --- | --- | --- |
-| Commit | Existing format/lint/type hooks; relevant regressions while editing, not a broad suite merely because a commit is created. | Roborev per commit; resolve findings with concrete evidence. |
-| Task / AI task | Focused regressions, affected fast and relevant affected slow against the immutable task base, plus the changed public-behavior smoke. Follow broader routes when selection refuses. | One independent high-depth correctness review of the completed task; consume commit findings. |
-| PR | Fast tier plus slow tests of changed test files before pushing; required CI (`make check`) and applicable docs/build, parity and scientific gates. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
+| Commit | Existing format/lint/type hooks; relevant regressions while editing, not a broad suite merely because a commit is created. | Roborev per commit; resolve findings with concrete code/test results. |
+| Task / AI task | Focused regressions, affected fast and relevant affected slow against the immutable task base, plus the changed public-behavior smoke. | One independent high-depth correctness review of the completed task; consume commit findings. |
+| PR | Required CI full-suite and applicable docs/build, parity and scientific gates; pre-push runs lint, type-checking and affected fast. `make check` is optional. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
 | Stack / final integration | Same baseline on the frozen combined source, plus cross-PR journeys and applicable scientific campaigns or `make test-all`. | High-depth integration review of interactions and unreviewed resolutions; do not re-review every constituent PR from scratch. |
 
-- A standalone PR is the final integration gate. Reuse matching evidence when
-  its validated head is already the final stack head; changed source or inputs
-  require fresh relevant checks.
-- Escalate statistical, numerical, wire-format and selection-certification
-  changes to domain review; add targeted security review for security-sensitive
-  boundaries. A review is not execution evidence.
+- A standalone PR is the final integration gate. Rerun affected checks when
+  their source or environment inputs change.
+- Escalate statistical, numerical and wire-format changes to domain review;
+  add targeted security review for security-sensitive boundaries. A review does
+  not replace required execution checks.
 
 
 ## Analysis ingress and parity

@@ -383,95 +383,73 @@ def test_batched_actual_kernels_equal_separate_public_sources(shared):
         }
     ],
 )
-def test_source_estimator_and_planning_variance_calibration(
-    cell_index, cell, record_property, runtime_diagnostics
-):
+def test_source_estimator_and_planning_variance_calibration(cell_index, cell, record_property):
     record_property("cell", cell.id)
-    with runtime_diagnostics.stage("setup"):
-        count = repetitions(cell)
-        streams = _streams(ROOT_SEED, cell_index)
-        reference_law = moments(cell, REFERENCE_PER_STEP)
-        alternative_law = moments(cell, ALTERNATIVE_PER_STEP)
-        delta_ref, delta = REFERENCE_PER_STEP * cell.retained, ALTERNATIVE_PER_STEP * cell.retained
-        population = _population_baseline(cell)
-        planning_procedure, runtime_procedure = (
-            _procedure(shared=cell.shared),
-            _procedure("alternative", shared=cell.shared),
-        )
-        exact_plan = switchback_achieved_power(cell.n, delta, population, planning_procedure)
-        assert exact_plan.standard_error is not None
-        assert exact_plan.standard_error**2 == pytest.approx(alternative_law.variance / cell.n)
-        runtime_variances, pilot_reference, pilot_shifted = [], [], []
-        refused: list[str] = []
-        draws = cell.cycles if cell.shared else UNIT_COUNT * cell.cycles
-        suspect_counts = {
-            k for k in range(draws + 1) if binomtest(k, draws, cell.probability_ct).pvalue < 1e-6
-        }
-    runtime_diagnostics.progress(
-        completed_batches=0,
-        completed_draws=0,
-        planned_draws=count,
-        batch_size=BATCH_SIZE,
+    count = repetitions(cell)
+    streams = _streams(ROOT_SEED, cell_index)
+    reference_law = moments(cell, REFERENCE_PER_STEP)
+    alternative_law = moments(cell, ALTERNATIVE_PER_STEP)
+    delta_ref, delta = REFERENCE_PER_STEP * cell.retained, ALTERNATIVE_PER_STEP * cell.retained
+    population = _population_baseline(cell)
+    planning_procedure, runtime_procedure = (
+        _procedure(shared=cell.shared),
+        _procedure("alternative", shared=cell.shared),
     )
-    for batch_index in range(count // BATCH_SIZE):
-        with runtime_diagnostics.stage("panel"):
-            frame, ct_counts = _panel(cell, BATCH_SIZE, streams)
-        with runtime_diagnostics.stage("source"):
-            source, captured = _capture_source(frame, cell)
-        with runtime_diagnostics.stage("planning"):
-            pilot = source.planning_baseline(source.metrics[0], delta_ref=delta_ref)
-            assert pilot.assignment == population.assignment
-            assert pilot.cycles_per_unit == population.cycles_per_unit
-            assert pilot.shared_roster == population.shared_roster
-            assert pilot.metric == population.metric
-            assert pilot.estimand == population.estimand
-            assert pilot.control_group == population.control_group
-            assert pilot.treatment_group == population.treatment_group
-            for effect, values in ((delta_ref, pilot_reference), (delta, pilot_shifted)):
-                prediction = switchback_achieved_power(cell.n, effect, pilot, planning_procedure)
-                assert prediction.standard_error is not None, prediction
-                assert prediction.n == cell.n and prediction.df == cell.n - 1
-                assert prediction.planning_grain == ("shared_block" if cell.shared else "unit")
-                values.append(prediction.standard_error**2)
-        with runtime_diagnostics.stage("estimation"):
-            for replication, part in enumerate(_split(captured["alternative"], cell, BATCH_SIZE)):
-                # Re-enter the public constructor for splits its integrity guard could refuse.
-                # Record real refusals; do not condition the law by silently redrawing.
-                if int(ct_counts[replication]) in suspect_counts:
-                    try:
-                        _source(_single_frame(frame, cell, replication), cell)
-                    except CodedError as error:
-                        refused.append(error.code)
-                        continue
-                computation = estimate_contrast(
-                    reduce_contrast_partitions([part]), runtime_procedure
-                )
-                row = computation.results[0]
-                _assert_metadata(row, cell)
-                assert row.standard_error is not None
-                assert not computation.failures, computation.failures
-                # An available interval is exactly a calibrated level on the estimate.
-                assert row.estimate.level is not None, row.estimate
-                runtime_variances.append(row.standard_error**2)
-        runtime_diagnostics.progress(
-            completed_batches=batch_index + 1,
-            completed_draws=(batch_index + 1) * BATCH_SIZE,
-            planned_draws=count,
-            batch_size=BATCH_SIZE,
-        )
-    with runtime_diagnostics.stage("assessment"):
-        record_property(
-            "accounting",
-            {"attempted": count, "estimable": len(runtime_variances), "refused": refused},
-        )
-        assert not refused, refused
-        assert len(runtime_variances) == count
-        statistics = (
-            ("runtime_variance", runtime_variances, alternative_law, cell.n),
-            ("pilot_reference_variance", pilot_reference, reference_law, BATCH_SIZE * cell.n),
-            ("pilot_shifted_variance", pilot_shifted, alternative_law, BATCH_SIZE * cell.n),
-        )
-        _assert_variance_calibration(cell, count, statistics, record_property)
+    exact_plan = switchback_achieved_power(cell.n, delta, population, planning_procedure)
+    assert exact_plan.standard_error is not None
+    assert exact_plan.standard_error**2 == pytest.approx(alternative_law.variance / cell.n)
+    runtime_variances, pilot_reference, pilot_shifted = [], [], []
+    refused: list[str] = []
+    draws = cell.cycles if cell.shared else UNIT_COUNT * cell.cycles
+    suspect_counts = {
+        k for k in range(draws + 1) if binomtest(k, draws, cell.probability_ct).pvalue < 1e-6
+    }
+    for _ in range(count // BATCH_SIZE):
+        frame, ct_counts = _panel(cell, BATCH_SIZE, streams)
+        source, captured = _capture_source(frame, cell)
+        pilot = source.planning_baseline(source.metrics[0], delta_ref=delta_ref)
+        assert pilot.assignment == population.assignment
+        assert pilot.cycles_per_unit == population.cycles_per_unit
+        assert pilot.shared_roster == population.shared_roster
+        assert pilot.metric == population.metric
+        assert pilot.estimand == population.estimand
+        assert pilot.control_group == population.control_group
+        assert pilot.treatment_group == population.treatment_group
+        for effect, values in ((delta_ref, pilot_reference), (delta, pilot_shifted)):
+            prediction = switchback_achieved_power(cell.n, effect, pilot, planning_procedure)
+            assert prediction.standard_error is not None, prediction
+            assert prediction.n == cell.n and prediction.df == cell.n - 1
+            assert prediction.planning_grain == ("shared_block" if cell.shared else "unit")
+            values.append(prediction.standard_error**2)
+        for replication, part in enumerate(_split(captured["alternative"], cell, BATCH_SIZE)):
+            # Re-enter the public constructor for splits its integrity guard could refuse.
+            # Record real refusals; do not condition the law by silently redrawing.
+            if int(ct_counts[replication]) in suspect_counts:
+                try:
+                    _source(_single_frame(frame, cell, replication), cell)
+                except CodedError as error:
+                    refused.append(error.code)
+                    continue
+            computation = estimate_contrast(reduce_contrast_partitions([part]), runtime_procedure)
+            row = computation.results[0]
+            _assert_metadata(row, cell)
+            assert row.standard_error is not None
+            assert not computation.failures, computation.failures
+            # An available interval is exactly a calibrated level on the estimate.
+            assert row.estimate.level is not None, row.estimate
+            runtime_variances.append(row.standard_error**2)
+    record_property(
+        "accounting",
+        {"attempted": count, "estimable": len(runtime_variances), "refused": refused},
+    )
+    assert not refused, refused
+    assert len(runtime_variances) == count
+    statistics = (
+        ("runtime_variance", runtime_variances, alternative_law, cell.n),
+        ("pilot_reference_variance", pilot_reference, reference_law, BATCH_SIZE * cell.n),
+        ("pilot_shifted_variance", pilot_shifted, alternative_law, BATCH_SIZE * cell.n),
+    )
+    _assert_variance_calibration(cell, count, statistics, record_property)
 
 
 def _assert_variance_calibration(cell, count, statistics, record_property):

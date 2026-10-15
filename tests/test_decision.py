@@ -180,7 +180,11 @@ def test_constructor_invariants_survive_optimized_python():
     import sys
     from pathlib import Path
 
-    from scripts.run_test_tier import _clean_pytest_environment
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
+    }
 
     checks = [
         "tests/test_decision.py::test_decision_refusal_carries_code",
@@ -211,7 +215,7 @@ def test_constructor_invariants_survive_optimized_python():
             *checks,
         ],
         cwd=Path(__file__).resolve().parents[1],
-        env=_clean_pytest_environment(os.environ),
+        env=environment,
         capture_output=True,
         text=True,
         check=False,

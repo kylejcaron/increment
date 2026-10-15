@@ -12,10 +12,6 @@ _GATE_FILES = {
     "noxfile.py",
     "pyproject.toml",
     "uv.lock",
-    "scripts/_test_tier_policy.py",
-    "scripts/certification_ci_changes.py",
-    "scripts/run_test_tier.py",
-    "scripts/run_test_tier_plugin.py",
     "tests/estimation/test_conversion_route_calibration.py",
     ".github/workflows/ci.yml",
     ".github/workflows/weekly.yml",
@@ -55,10 +51,6 @@ def _requires_certification(event: str, base: str, head: str) -> bool:
         if path.startswith("tests/estimation/") and (
             path == "tests/estimation/test_conversion_route_calibration.py"
             or "conversion_route" in path
-        ):
-            return True
-        if path.startswith("scripts/") and (
-            path.startswith("scripts/run_test_") or path == "scripts/_test_tier_policy.py"
         ):
             return True
         if path in _ROOT_DOCS or (path.startswith("docs/") and path.endswith(_DOC_SUFFIXES)):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -35,6 +36,22 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
     return repo, base
 
 
+def test_fixture_repo_ignores_inherited_git_dir(
+    repository: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import conftest
+
+    repo, _ = repository
+    other_repo = tmp_path / "other"
+    other_repo.mkdir()
+    _git(other_repo, "init", "-q")
+    monkeypatch.setenv("GIT_DIR", str(other_repo / ".git"))
+
+    conftest.pytest_sessionstart(cast(pytest.Session, None))
+
+    assert _git(repo, "rev-parse", "--show-toplevel") == str(repo)
+
+
 def _required(repo: Path, base: str, event: str = "pull_request") -> bool:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--event", event, "--base", base, "--head", "HEAD"],
@@ -60,7 +77,7 @@ def _commit_change(repo: Path, path: str) -> None:
         "calibration/model.py",
         "tests/estimation/test_conversion_route_calibration.py",
         "tests/estimation/helper.py",
-        "scripts/run_test_tier.py",
+        "scripts/affected.py",
         "scripts/certification_ci_changes.py",
         "Makefile",
         "noxfile.py",

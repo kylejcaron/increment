@@ -56,7 +56,7 @@ def _sources():
         ROOT / name
         for name in (
             "calibration/cluster_diagnostics.py",
-            "scripts/run_test_tier.py",
+            "calibration/_process.py",
             "tests/estimation/_i13_manifest.py",
             "tests/estimation/_i13_adapters.py",
             "tests/estimation/_i13_calibration.py",
@@ -361,7 +361,7 @@ def _case_name(index, paired):
 
 
 def _controller(payload):
-    from scripts.run_test_tier import run_with_budget
+    from calibration._process import run_with_timeout
     from tests.estimation._i13_calibration import manifest_replications
 
     output = Path(payload["output"])
@@ -390,7 +390,7 @@ def _controller(payload):
             failed = True
             break
         name = _case_name(index, paired)
-        code = run_with_budget(
+        code = run_with_timeout(
             _command(
                 "_worker",
                 {
@@ -401,8 +401,7 @@ def _controller(payload):
                     "historical_repetitions": historical_repetitions,
                 },
             ),
-            tier=f"cluster-{name}",
-            budget_seconds=min(payload["case_budget"], remaining),
+            min(payload["case_budget"], remaining),
         )
         _write(output / f"{name}-execution.json", {"worker_exit_code": code})
         failed |= code != 0
@@ -490,7 +489,7 @@ def _summary(output, manifest, controller_code):
 
 
 def main(argv=None):
-    from scripts.run_test_tier import run_with_budget
+    from calibration._process import run_with_timeout
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -597,7 +596,7 @@ def main(argv=None):
             "certification_claim": "none",
         },
     )
-    code = run_with_budget(
+    code = run_with_timeout(
         _command(
             "_controller",
             {
@@ -608,8 +607,7 @@ def main(argv=None):
                 "case_budget": args.case_seconds,
             },
         ),
-        tier="cluster-diagnostics",
-        budget_seconds=budget,
+        budget,
     )
     _write(output / "launcher.json", {"controller_exit_code": code, "budget_seconds": budget})
     print(
