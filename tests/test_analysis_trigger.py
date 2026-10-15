@@ -124,7 +124,7 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         analysis.close()
 
 
-def test_pinned_mixed_assignment_refusal_repeats_after_caught_error(tmp_path):
+def test_mixed_assignment_refusal_repeats_for_pinned_public_reads(tmp_path):
     events = _events(n_per_arm=2)
     rows = events.to_pylist()
     control_assignment = next(
@@ -133,27 +133,32 @@ def test_pinned_mixed_assignment_refusal_repeats_after_caught_error(tmp_path):
     rows.append({**control_assignment, "group_id": "T"})
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.Table.from_pylist(rows, schema=events.schema))
+    evidence_cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
     analysis = Analysis.from_definitions(
         "exp",
         _write_defs(tmp_path),
         con,
         on_mixed_assignment="error",
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            evidence_cutoff, {"events": evidence_cutoff}
+        ),
     )
-    pinned = None
-    try:
-        pinned = analysis._src._pinned_source()
-        codes = []
+    codes = []
+
+    def read_pinned_snapshot(snapshot: Analysis) -> Any:
         for _ in range(2):
             with pytest.raises(InvalidRequestError) as raised:
-                pinned._validate_mixed_assignments()
+                snapshot.unit_counts()
             codes.append(raised.value.code)
+        return None
+
+    try:
+        analysis.dashboard_snapshot(read_pinned_snapshot, metrics=analysis.metrics)
         assert codes == [
             "query.integrity.mixed_assignment_units",
             "query.integrity.mixed_assignment_units",
         ]
     finally:
-        if pinned is not None:
-            pinned._session.drop_materialized()
         analysis.close()
 
 
