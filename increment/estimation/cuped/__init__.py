@@ -12,11 +12,19 @@ from increment.estimation.cuped.scalar import (
     pooled_theta,
 )
 from increment.estimation.cuped.types import (
+    CategoricalCells,
+    FitState,
+    InferenceSummary,
     MulticovariateCupedFit,
     MulticovariateCupedProjection,
+    ProjectionSpec,
 )
 
 __all__ = [
+    "CategoricalCells",
+    "FitState",
+    "InferenceSummary",
+    "ProjectionSpec",
     "AdjustedRatioMoments",
     "CupedFit",
     "MISSING_CATEGORY",

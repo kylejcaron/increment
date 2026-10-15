@@ -135,10 +135,10 @@ def _exact_sum(terms: Sequence[float]) -> float:
 
 def _arm_mean(values: np.ndarray) -> float:
     """Mean of finite values whose exact sum may overflow; always representable."""
-    items = values.tolist()
     try:
-        return math.fsum(items) / len(items)
+        return math.fsum(float(value) for value in values) / len(values)
     except OverflowError:
+        items = tuple(float(value) for value in values)
         large, shift, small = _partial_sums(items)
         return math.ldexp(large / len(items), shift) + small / len(items)
 

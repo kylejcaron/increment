@@ -14,11 +14,12 @@ from increment.estimation.cuped.types import MulticovariateCupedProjection
 
 def _cache_projections(calculator, outcomes, order):
     cached = []
+    mean_values = np.asarray(calculator.adjusted_means[: len(order)])
+    components = np.asarray(calculator.adjusted_means).reshape(len(outcomes), -1)
     for ti in range(1, len(order)):
         treatment = order[ti]
         for ci in range(ti):
             control = order[ci]
-            mean_values = np.asarray(calculator.adjusted_means[: len(order)])
             _append_projection(
                 cached,
                 "absolute",
@@ -43,7 +44,6 @@ def _cache_projections(calculator, outcomes, order):
                     reverse=True,
                 )
             if len(outcomes) == 2:
-                components = np.asarray(calculator.adjusted_means).reshape(2, -1)
                 if np.all(components[:, [ti, ci]] > 0):
                     for scale in ("log", "absolute"):
                         _append_projection(
