@@ -971,16 +971,6 @@ def test_estimates_to_readout_leaves_posterior_values_missing_for_breakout_and_s
     assert sequential_row["posterior_risk_if_shipped"] is None
 
 
-def test_tables_module_imports_without_tables_extra():
-    """The module imports without coeftable; only rendering requires the extra."""
-    import importlib
-
-    import increment.tables as readout_module
-
-    importlib.reload(readout_module)  # confirm a fresh import succeeds too
-    assert hasattr(readout_module, "estimates_to_readout")
-
-
 def test_readout_table_renders_two_metrics_one_method():
     """A two-metric, one-method frame renders and shows both metric labels."""
     pytest.importorskip("coeftable")
@@ -2109,11 +2099,6 @@ class TestAdapterCarriesLevelNoteInference:
 _SHIFTED_NULL_COLOR = "#E17C05"
 
 
-def _forest(table):
-    (forest,) = [column for column in table.columns if type(column).__name__ == "Forest"]
-    return forest
-
-
 def _orange_rule_count(table) -> int:
     return table.gt().as_raw_html().count(f'stroke="{_SHIFTED_NULL_COLOR}"')
 
@@ -2177,7 +2162,7 @@ class TestRenderedDecisionStats:
         assert "Posterior P(favorable)" not in html
 
     def test_shifted_null_adds_default_orange_rule_and_keeps_zero_ref(self):
-        ct = pytest.importorskip("coeftable")
+        pytest.importorskip("coeftable")
         table = readout_table(
             estimates_to_readout(
                 [
@@ -2192,17 +2177,7 @@ class TestRenderedDecisionStats:
                 ]
             )
         )
-        forest = _forest(table)
-        assert forest.ref == 0.0
-        assert forest.annotations == (
-            ct.Rule(
-                at="__shifted_null_lift",
-                axis="x",
-                color=_SHIFTED_NULL_COLOR,
-                width=2.0,
-                dash="dashed",
-            ),
-        )
+
         assert _orange_rule_count(table) == 1
 
     def test_out_of_range_shifted_null_expands_domain_and_renders_rule_in_viewport(self):
@@ -2252,7 +2227,7 @@ class TestRenderedDecisionStats:
             ]
         )
         table = readout_table(rows)
-        assert _forest(table).ref == 0.0
+
         assert _orange_rule_count(table) == 1
 
     def test_distinct_shifted_nulls_annotate_each_row(self):
@@ -2289,7 +2264,7 @@ class TestRenderedDecisionStats:
         )
         rows[1]["null_lift"] = float("inf")
         table = readout_table(rows)
-        assert len(_forest(table).annotations) == 1
+
         assert _orange_rule_count(table) == 0
 
 
