@@ -98,6 +98,7 @@ def test_frame_digest_matches_canonical_streaming_encoder_for_edge_values():
                 "float": [1.0],
             }
         ),
+        pl.DataFrame({"group_id": [0.0, -0.0]}),
         pl.DataFrame({"group_id": ["a", "a", "a"], "value": [3.0, 3.0, 3.0]}),
         pl.DataFrame({"group_id": ["a", "b"], "z": [2, 4], "a": [1, 3]}),
     ]
@@ -118,7 +119,9 @@ def test_frame_digest_matches_canonical_streaming_encoder_for_edge_values():
     for frame in frames:
         arms, digest, count = _frame_digest_and_arms(frame)
         assert (digest, count) == canonical_reference(frame)
-        assert arms == frozenset(str(value) for value in frame["group_id"].unique().to_list())
+        assert arms == frozenset(
+            str(value) for value in frame["group_id"].to_list() if value is not None
+        )
 
     # Canonical map encoding makes physical column order irrelevant.
     reordered = pl.DataFrame({"group_id": ["a", "b"], "a": [1, 3], "z": [2, 4]})
