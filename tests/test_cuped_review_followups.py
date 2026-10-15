@@ -17,7 +17,9 @@ from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate
 from increment.semantics.models import ExperimentMetric
 
-LINEAR = Method(name="linear", variance_reduction="cuped_linear")
+LINEAR = Method.cuped_multicovariate(
+    name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
+)
 
 
 def _unit_rows(*, panel: bool) -> list[dict[str, Any]]:
@@ -42,8 +44,9 @@ def _run_with_covariate_name(name: str, *, panel: bool) -> LiftEstimate:
         rows = [{key: value for key, value in row.items() if key != "pre"} for row in rows]
     metric = MetricSpec(
         name="revenue",
-        decision_method=LINEAR,
-        covariates=(CupedCovariate(name=name, kind="continuous"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name=name, kind="continuous")
+        ),
     )
     table = pa.Table.from_pylist(rows)
     if panel:
@@ -102,7 +105,6 @@ def _margin_analysis(table: pa.Table, **methods: Any) -> Analysis:
     metric = MetricSpec(
         name="revenue",
         preferred_direction="increase",
-        covariates=(CupedCovariate(name="pre", kind="continuous"),),
         **(methods or {"decision_method": LINEAR}),
     )
     return Analysis.from_unit_summary(
@@ -182,7 +184,6 @@ def test_projection_failure_row_states_posterior_unavailability():
         numerator="num",
         denominator="den",
         decision_method=LINEAR,
-        covariates=(CupedCovariate(name="pre", kind="continuous"),),
     )
     results = Analysis.from_unit_summary(
         frame, unit="unit", group="arm", control="c", metrics=[metric]
@@ -241,9 +242,10 @@ def _fcr_rows(*, segment: bool) -> list[dict[str, Any]]:
 
 def test_fcr_reinversion_rebuilds_selected_cuped_arms_only_in_run():
     cov = (CupedCovariate(name="pre", kind="continuous"),)
+    method = Method.cuped_multicovariate(name="linear", covariates=cov)
     metrics = [
-        MetricSpec(name="primary", decision_method=LINEAR, covariates=cov),
-        MetricSpec(name="revenue", decision_method=LINEAR, covariates=cov),
+        MetricSpec(name="primary", decision_method=method),
+        MetricSpec(name="revenue", decision_method=method),
     ]
     analysis = Analysis.from_unit_summary(
         pa.Table.from_pylist(_fcr_rows(segment=False)),
@@ -294,9 +296,10 @@ def _deep_rows(*, segment: bool) -> list[dict[str, Any]]:
 
 def test_selected_cell_with_unrepresentable_fcr_bounds_keeps_its_selection_evidence():
     cov = (CupedCovariate(name="pre", kind="continuous"),)
+    method = Method.cuped_multicovariate(name="linear", covariates=cov)
     metrics = [
-        MetricSpec(name="primary", decision_method=LINEAR, covariates=cov),
-        MetricSpec(name="revenue", decision_method=LINEAR, covariates=cov),
+        MetricSpec(name="primary", decision_method=method),
+        MetricSpec(name="revenue", decision_method=method),
     ]
     analysis = Analysis.from_unit_summary(
         pa.Table.from_pylist(_deep_rows(segment=False)),
@@ -349,11 +352,7 @@ def test_selected_cell_with_unrepresentable_fcr_bounds_keeps_its_selection_evide
 
 
 def test_selected_breakout_cell_with_unrepresentable_fcr_bounds_keeps_its_selection_evidence():
-    metric = MetricSpec(
-        name="revenue",
-        decision_method=LINEAR,
-        covariates=(CupedCovariate(name="pre", kind="continuous"),),
-    )
+    metric = MetricSpec(name="revenue", decision_method=LINEAR)
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(_deep_rows(segment=True)),
         unit="unit",
@@ -388,11 +387,7 @@ def test_selected_breakout_cell_with_unrepresentable_fcr_bounds_keeps_its_select
 
 
 def test_fcr_reinversion_rebuilds_selected_cuped_cells_only_in_breakout():
-    metric = MetricSpec(
-        name="revenue",
-        decision_method=LINEAR,
-        covariates=(CupedCovariate(name="pre", kind="continuous"),),
-    )
+    metric = MetricSpec(name="revenue", decision_method=LINEAR)
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(_fcr_rows(segment=True)),
         unit="unit",
@@ -427,13 +422,15 @@ def test_scalar_cuped_constant_covariate_is_localized_to_its_breakout_cell():
     ]
     metric = MetricSpec(
         name="revenue",
-        covariate="scalar_pre",
-        decision_method=LINEAR,
-        sensitivity_methods=[Method(name="scalar", variance_reduction="cuped")],
-        covariates=(
-            CupedCovariate(name="pre", kind="continuous"),
-            CupedCovariate(name="scalar_pre", kind="continuous"),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
         ),
+        sensitivity_methods=[
+            Method.cuped(
+                name="scalar",
+                covariates=CupedCovariate(name="scalar_pre", kind="continuous"),
+            )
+        ],
     )
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
@@ -488,24 +485,27 @@ def _declaration_analysis(missing: Literal["refuse", "impute-indicator"]) -> Ana
     ]
     metric = MetricSpec(
         name="revenue",
-        decision_method=LINEAR,
-        covariates=(CupedCovariate(name="history", kind="continuous", missing=missing),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear",
+            covariates=CupedCovariate(name="history", kind="continuous", missing=missing),
+        ),
     )
     return Analysis.from_unit_summary(
         pa.Table.from_pylist(rows), unit="unit", group="group", control="control", metrics=[metric]
     )
 
 
-def test_covariate_declaration_changes_the_readout_identity():
-    imputed = _declaration_analysis("impute-indicator").run()
-    refused = _declaration_analysis("refuse").run()
+def test_refused_missing_method_covariate_fails_during_source_validation():
+    from increment.errors import InvalidRequestError
 
-    imputed_row, refused_row = imputed[0], refused[0]
-    assert isinstance(imputed_row, LiftEstimate) and isinstance(refused_row, LiftEstimate)
+    imputed = _declaration_analysis("impute-indicator").run()
+    imputed_row = imputed[0]
+    assert isinstance(imputed_row, LiftEstimate)
     assert imputed_row.lift is not None
-    assert refused_row.lift is None
-    assert imputed.metadata is not None and refused.metadata is not None
-    assert imputed.metadata.scope.snapshot_id != refused.metadata.scope.snapshot_id
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _declaration_analysis("refuse")
+    assert raised.value.code == "frame.validation.metric_covariate_column"
 
 
 def test_breakout_unit_covariate_values_enter_the_source_identity():
@@ -525,11 +525,7 @@ def test_breakout_unit_covariate_values_enter_the_source_identity():
             for group in ("control", "treatment")
             for index in range(18)
         ]
-        metric = MetricSpec(
-            name="revenue",
-            decision_method=LINEAR,
-            covariates=(CupedCovariate(name="pre", kind="continuous"),),
-        )
+        metric = MetricSpec(name="revenue", decision_method=LINEAR)
         return Analysis.from_unit_panel(
             pa.Table.from_pylist(rows),
             unit="unit",
@@ -566,13 +562,15 @@ def test_ordinary_lane_breakout_failure_states_posterior_unavailability():
     ]
     metric = MetricSpec(
         name="revenue",
-        covariate="scalar_pre",
-        decision_method=LINEAR,
-        sensitivity_methods=[Method(name="scalar", variance_reduction="cuped")],
-        covariates=(
-            CupedCovariate(name="pre", kind="continuous"),
-            CupedCovariate(name="scalar_pre", kind="continuous"),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
         ),
+        sensitivity_methods=[
+            Method.cuped(
+                name="scalar",
+                covariates=CupedCovariate(name="scalar_pre", kind="continuous"),
+            )
+        ],
     )
     result = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),

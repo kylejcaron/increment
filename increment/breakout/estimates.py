@@ -2283,7 +2283,7 @@ def _estimate_lift_computation_or_reason(
     from increment.errors import CodedError
 
     linear_methods = [
-        method for method in methods or () if method.variance_reduction == "cuped_linear"
+        method for method in methods or () if method.variance_reduction == "cuped_multicovariate"
     ]
     if linear_methods:
         from increment.estimation.engine import estimate_cuped_linear
@@ -2344,7 +2344,7 @@ def _estimate_lift_computation_or_reason(
                         control_group=control_group,
                         method=method,
                         method_role=role,
-                        covariates=covariates,
+                        covariates=method.covariates or covariates,
                         alpha=alpha,
                         alternative=alternative,
                         prior=prior,
@@ -2729,9 +2729,11 @@ def _mixed_binomial_method_groups(
     exact = [
         method
         for method in configured
-        if method.variance_reduction not in ("cuped", "cuped_linear")
+        if method.variance_reduction not in ("cuped", "cuped_multicovariate")
     ]
-    linear = [method for method in configured if method.variance_reduction == "cuped_linear"]
+    linear = [
+        method for method in configured if method.variance_reduction == "cuped_multicovariate"
+    ]
     legacy = [method for method in configured if method.variance_reduction == "cuped"]
     if legacy and (exact or linear):
         return exact, linear, legacy
@@ -3152,7 +3154,9 @@ def _record_failed_method_rows(
     from increment.decision import ArmHypothesisKey, DecisionFailure
 
     linear_names = {
-        method.name for method in method_group if method.variance_reduction == "cuped_linear"
+        method.name
+        for method in method_group
+        if method.variance_reduction == "cuped_multicovariate"
     }
     failed = {
         (result.group_id, result.method)
@@ -3247,12 +3251,15 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
             )
             groups = [group for group in mixed_groups if group] if mixed_groups is not None else []
             if mixed_groups is None:
-                ordinary = [m for m in configured if m.variance_reduction != "cuped_linear"]
-                linear = [m for m in configured if m.variance_reduction == "cuped_linear"]
+                ordinary = [m for m in configured if m.variance_reduction != "cuped_multicovariate"]
+                linear = [m for m in configured if m.variance_reduction == "cuped_multicovariate"]
                 groups = [group for group in (ordinary, linear) if group]
             for method_group in groups:
                 legacy_lane = method_group[0].variance_reduction == "cuped"
-                exact_lane = method_group[0].variance_reduction not in ("cuped", "cuped_linear")
+                exact_lane = method_group[0].variance_reduction not in (
+                    "cuped",
+                    "cuped_multicovariate",
+                )
                 method_rows = rows
                 if mixed_groups is not None and exact_lane:
                     method_rows = _unadjusted_binomial_rows(rows)
@@ -3697,7 +3704,7 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             metric_methods[0] if metric_methods else Method(name="unadjusted"),
         )
         decision_method_by_metric[metric_name] = decision_method
-        if decision_method.variance_reduction == "cuped_linear":
+        if decision_method.variance_reduction == "cuped_multicovariate":
             # Only a selected cell is rebuilt at the FCR level; an unselected
             # sibling keeps its nominal row, so its wider interval is never built.
             selected_alpha = _fcr_alpha_for(alternative, outcome.fcr_alpha)

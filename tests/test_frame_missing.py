@@ -29,6 +29,7 @@ from increment.errors import (
 from increment.estimation.diagnostics import SRMResult
 from increment.estimation.engine import Method
 from increment.frame import (
+    CupedCovariate,
     FramePanelSource,
     FrameTotalsSource,
     MetricSpec,
@@ -827,7 +828,14 @@ def test_cuped_covariate_nulls_auto_imputed_with_counted_warning() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", covariate="x")],
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
+                    ),
+                )
+            ],
             design=_DESIGN,
         )
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(rec)
@@ -857,9 +865,10 @@ def test_all_null_covariate_refuses_with_actionable_message() -> None:
     long = nw.from_native(table, eager_only=True).with_columns(
         nw.col("y").cast(nw.Float64), nw.col("x").cast(nw.Float64)
     )
-    spec = MetricSpec(name="y", covariate="x")
+    covariate = CupedCovariate(name="x", kind="continuous", missing="impute")
+    spec = MetricSpec(name="y", decision_method=Method.cuped(covariates=covariate))
     with pytest.raises(InvalidRequestError) as exc_info:
-        _apply_spec_missing(long, spec, has_x=True, has_den=False)
+        _apply_spec_missing(long, spec, has_x=True, has_den=False, covariate=covariate)
     assert exc_info.value.code == "frame.validation.metric_covariate_impute_all_null"
     assert exc_info.value.context == {"metric": "y", "covariate": "x"}
 
@@ -965,7 +974,15 @@ def test_covariate_imputation_computed_before_outcome_drop() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", missing="drop", covariate="x")],
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    missing="drop",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
+                    ),
+                )
+            ],
         )
     moments = {row["group_id"]: row for row in src.moments(_metric(src, "y"))}
     observed_x_mean = (0.0 + 100.0 + 10.0) / 3
@@ -982,7 +999,14 @@ def test_cuped_covariate_missing_error_escape_hatch() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", covariate="x", covariate_missing="error")],
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous", missing="refuse")
+                    ),
+                )
+            ],
         )
     assert exc_info.value.code == "frame.validation.metric_covariate_column"
     assert exc_info.value.context["n_missing"] == 50
@@ -1006,7 +1030,14 @@ def test_enforce_missing_policy_all_null_impute_covariate_refuses() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", covariate="x")],
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
+                    ),
+                )
+            ],
         )
     assert exc_info.value.code == "frame.validation.metric_covariate_impute_all_null"
     assert exc_info.value.context["metric"] == "y"
@@ -1023,9 +1054,10 @@ def test_all_null_covariate_entry_points_share_canonical_refusal_code() -> None:
         pa.table({"group_id": ["control", "treatment"], "y": [1.0, 2.0], "x": [None, None]}),
         eager_only=True,
     ).with_columns(nw.col("y").cast(nw.Float64), nw.col("x").cast(nw.Float64))
-    spec = MetricSpec(name="y", covariate="x")
+    covariate = CupedCovariate(name="x", kind="continuous", missing="impute")
+    spec = MetricSpec(name="y", decision_method=Method.cuped(covariates=covariate))
     with pytest.raises(InvalidRequestError) as via_moments:
-        _apply_spec_missing(long, spec, has_x=True, has_den=False)
+        _apply_spec_missing(long, spec, has_x=True, has_den=False, covariate=covariate)
 
     with pytest.raises(InvalidRequestError) as via_validation:
         from_unit_summary(
@@ -1040,7 +1072,14 @@ def test_all_null_covariate_entry_points_share_canonical_refusal_code() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", covariate="x")],
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
+                    ),
+                )
+            ],
         )
 
     assert (
@@ -1061,7 +1100,14 @@ def test_cuped_covariate_missing_zero_uses_dense_zero_convention() -> None:
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="y", covariate="x", covariate_missing="zero")],
+            metrics=[
+                MetricSpec(
+                    name="y",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous", missing="zero")
+                    ),
+                )
+            ],
         )
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(rec)
     moments = {r["group_id"]: r for r in src.moments(_metric(src, "y"))}
@@ -1069,12 +1115,6 @@ def test_cuped_covariate_missing_zero_uses_dense_zero_convention() -> None:
     assert moments["control"]["n"] == 500
     assert _sum_x(moments["control"]) == pytest.approx(observed_sum)
     assert math.isfinite(moments["control"]["cx2"])
-
-
-def test_covariate_missing_without_covariate_is_refused() -> None:
-    with pytest.raises(InvalidRequestError) as error:
-        MetricSpec(name="y", covariate_missing="error")
-    assert error.value.code == "frame.metric.sets_covariate_missing"
 
 
 def test_panel_null_metric_value_refuses_and_zero_fills() -> None:

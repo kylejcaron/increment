@@ -408,6 +408,10 @@ def _request_snapshot(value: Any, *, field: str = "request") -> Any:
             refuse_readout("readout.scope.request_not_canonical", fields=[field])
         return {"kind": "callable", "module": module, "qualname": qualname}
     if isinstance(value, dict):
+        # Optional method-owned CUPED inputs are absent in legacy request
+        # identities when unconfigured. Keep that representation stable.
+        if {"name", "variance_reduction"} <= value.keys() and value.get("covariates") is None:
+            value = {key: item for key, item in value.items() if key != "covariates"}
         return {key: _request_snapshot(item, field=f"{field}.{key}") for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [
@@ -427,19 +431,27 @@ def _config_snapshot(config, design):
     from increment.estimation.readout_types import refuse_readout
 
     try:
-        snapshot = {
-            "metric": config.metric.model_dump(mode="json"),
-            "methods": [
+        methods = []
+        for index, method in enumerate(effective_methods(config, design=design)):
+            method_snapshot = method.model_dump(mode="python")
+            if method.covariates is None:
+                # ``covariates`` is new in the method-owned CUPED API. Omitting its
+                # empty value preserves the historic identity of every method request
+                # that does not declare CUPED inputs.
+                method_snapshot.pop("covariates", None)
+            methods.append(
                 _request_snapshot(
-                    method.model_dump(mode="python"),
+                    method_snapshot,
                     field=(
                         "configs.decision_method"
                         if index == 0
                         else f"configs.sensitivity_methods[{index - 1}]"
                     ),
                 )
-                for index, method in enumerate(effective_methods(config, design=design))
-            ],
+            )
+        snapshot = {
+            "metric": config.metric.model_dump(mode="json"),
+            "methods": methods,
             "prior": None if config.prior is None else config.prior.model_dump(mode="json"),
             "prior_is_global": config.prior_is_global,
         }

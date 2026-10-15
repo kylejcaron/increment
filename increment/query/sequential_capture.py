@@ -126,7 +126,7 @@ def validate_relational_capture(
                 f"covariate, so it cannot supply the registered {adjustment} adjustment; "
                 "declare n_pre_periods > 0 on the experiment (the covariate is the metric's "
                 "own pre-period total, a ratio's numerator) or use a unit-summary frame with "
-                "MetricSpec.covariate",
+                "Method.cuped(covariates=...)",
             )
     metrics = {m.name: m for m in source.context.metrics}
     for model in registration.models:

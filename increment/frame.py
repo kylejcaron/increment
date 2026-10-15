@@ -283,6 +283,32 @@ _raise = raiser(_REFUSALS)
 # column is coerced to numeric (_coerce_metric_columns): a null group is not an arm.
 
 
+def _apply_plan_methods(specs: Sequence[MetricSpec], plan: AnalysisPlan | None) -> list[MetricSpec]:
+    if plan is None:
+        return list(specs)
+    from increment._analysis_config import method_from_spec
+
+    resolved: list[MetricSpec] = []
+    for spec in specs:
+        binding = plan.entry(spec.name)
+        if binding is None:
+            resolved.append(spec)
+            continue
+        updates: dict[str, Any] = {}
+        if "decision_method" in binding.model_fields_set:
+            updates["decision_method"] = (
+                None
+                if binding.decision_method is None
+                else method_from_spec(binding.decision_method)
+            )
+        if "sensitivity_methods" in binding.model_fields_set:
+            updates["sensitivity_methods"] = tuple(
+                method_from_spec(method) for method in binding.sensitivity_methods
+            )
+        resolved.append(spec.model_copy(update=updates) if updates else spec)
+    return resolved
+
+
 class FrameTotalsSource(SequentialSourceMixin):
     """``MomentSource`` built from a one-row-per-unit frame.
 
@@ -498,11 +524,10 @@ class FrameTotalsSource(SequentialSourceMixin):
         accessor because every existing non-ratio caller reads columns by
         name, so an extra ratio-only column is invisible to them.
 
-        This is the unit-grain view used by the IPTW/DML estimators; a
-        moments-only source can never build it. *covariates* names arbitrary
-        property columns from the original frame (e.g. propensity-model
-        features) - NOT the CUPED ``covariate`` field on ``MetricSpec``, which
-        is already folded into ``x`` in the moments.
+        This is the unit-grain view used by the IPTW/DML estimators. Requested
+        *covariates* are property columns from the original frame (e.g.
+        propensity-model features); CUPED inputs are method-owned and requested
+        here through the same argument.
 
         When this source declares ``cluster=``, an aligned ``cluster_id``
         column carries that identity at its ORIGINAL native dtype (never one
@@ -737,7 +762,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         exposure_date: str | None = None,
     ) -> FrameTotalsSource:
         """Build a source from a one-row-per-unit dataframe. See :func:`from_unit_summary`."""
-        specs = _coerce_source_metrics(metrics, design=design)
+        specs = _apply_plan_methods(_coerce_source_metrics(metrics, design=design), plan)
         _reject_windowed_specs(specs)
         synthesised_metrics = [synthesise_metric(s) for s in specs]
         from increment._analysis_config import resolve_configs
@@ -815,9 +840,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             nwf = nwf.with_columns(_normalized_breakout_expr(nwf, dimension).alias(scratch))
             segment_columns[dimension] = scratch
         nwf = _canonicalize_group_identity(nwf, group)
-        metric_columns = sorted(
-            {c for s in specs for c in (s.y_column, s.denominator, s.covariate) if c}
-        )
+        metric_columns = sorted(_numeric_metric_columns(specs))
         if uptake is not None:
             metric_columns = sorted({*metric_columns, uptake})
         nwf = _coerce_metric_columns(nwf, metric_columns)
@@ -891,6 +914,30 @@ class FrameTotalsSource(SequentialSourceMixin):
             synthesised_metrics=synthesised_metrics,
             segment_columns=segment_columns,
         )
+
+
+def _numeric_metric_columns(specs: Sequence[MetricSpec]) -> set[str]:
+    columns = {column for spec in specs for column in (spec.y_column, spec.denominator) if column}
+    columns.update(
+        covariate.name
+        for spec in specs
+        for method in spec._methods
+        for covariate in (method.covariates or ())
+        if covariate.kind == "continuous"
+    )
+    return columns
+
+
+def _remap_method_covariates(method: Any, columns: Mapping[str, str]) -> Any:
+    if not method.covariates:
+        return method
+    covariates = tuple(
+        covariate.model_copy(update={"name": columns[covariate.name]})
+        if covariate.name in columns
+        else covariate
+        for covariate in method.covariates
+    )
+    return method.model_copy(update={"covariates": covariates})
 
 
 # Public factory signature is the API for summary-backed sources.
@@ -1027,16 +1074,22 @@ def from_unit_summary(  # noqa: PLR0913
             )
         panel_specs = []
         for spec in source._specs:
-            updates: dict[str, str] = {}
+            updates: dict[str, Any] = {}
             if spec.type == "ratio":
                 if spec.numerator in remapped_columns:
                     updates["numerator"] = remapped_columns[spec.numerator]
             elif spec.y_column in remapped_columns:
                 updates["value_column"] = remapped_columns[spec.y_column]
-            for column in ("denominator", "covariate"):
-                value = getattr(spec, column)
-                if value in remapped_columns:
-                    updates[column] = remapped_columns[value]
+            if spec.denominator in remapped_columns:
+                updates["denominator"] = remapped_columns[spec.denominator]
+            if spec.decision_method is not None:
+                updates["decision_method"] = _remap_method_covariates(
+                    spec.decision_method, remapped_columns
+                )
+            updates["sensitivity_methods"] = tuple(
+                _remap_method_covariates(method, remapped_columns)
+                for method in spec.sensitivity_methods
+            )
             panel_specs.append(spec.model_copy(update=updates) if updates else spec)
         panel_uptake = remapped_columns.get(source._uptake, source._uptake)
         synthetic_date = _scratch_name(panel_frame, "__summary_day__")
@@ -1445,12 +1498,22 @@ class FramePanelSource(SequentialSourceMixin):
                             missing = missing | nw.col(denominator).is_nan()
                     total_panel = total_panel.filter(~missing)
                 covariates, covariate_failures = self._total_covariates(specs)
-                usable_specs = [spec for spec in specs if spec.covariate not in covariate_failures]
-                usable_synthesised = [
-                    metric
+
+                def scalar_names(spec: MetricSpec) -> tuple[str, ...]:
+                    return tuple(
+                        covariate.name
+                        for method in spec._methods
+                        if method.variance_reduction == "cuped"
+                        for covariate in method.covariates or ()
+                    )
+
+                usable_pairs = [
+                    (spec, metric)
                     for spec, metric in zip(specs, summary_metrics, strict=True)
-                    if spec.covariate not in covariate_failures
+                    if not (set(scalar_names(spec)) & covariate_failures.keys())
                 ]
+                usable_specs = [spec for spec, _metric in usable_pairs]
+                usable_synthesised = [metric for _spec, metric in usable_pairs]
                 rows, total_failures = _total_moment_rows(
                     total_panel,
                     usable_specs,
@@ -1474,9 +1537,10 @@ class FramePanelSource(SequentialSourceMixin):
                         experiment_id=self._experiment_id,
                     )
                 failures = {
-                    spec.name: covariate_failures[spec.covariate]
+                    spec.name: covariate_failures[name]
                     for spec in specs
-                    if spec.covariate in covariate_failures
+                    for name in scalar_names(spec)
+                    if name in covariate_failures
                 }
                 failures.update(total_failures)
             self._moment_rows_cache[cache_key] = rows
@@ -1495,9 +1559,12 @@ class FramePanelSource(SequentialSourceMixin):
         self, specs: Sequence[MetricSpec]
     ) -> tuple[dict[str, nw.DataFrame[Any]], dict[str, _DeferredRefusal]]:
         covariate_names = {
-            spec.covariate
+            covariate.name
             for spec in specs
-            if spec.covariate is not None and spec.window_days is None and spec.type != "retention"
+            if spec.window_days is None and spec.type != "retention"
+            for method in spec._methods
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
         }
         covariates: dict[str, nw.DataFrame[Any]] = {}
         failures: dict[str, _DeferredRefusal] = {}
@@ -1508,25 +1575,6 @@ class FramePanelSource(SequentialSourceMixin):
                 if exc.code != "frame.frame_panel.unit_covariate_varies":
                     raise
                 failures[name] = (_REFUSALS[exc.code], exc.context)
-        if self._summary_reducer:
-            for spec in specs:
-                name = spec.covariate
-                if name is None or name not in covariates:
-                    continue
-                per_unit = covariates[name]
-                missing_covariate = nw.col(name).is_null()
-                if per_unit.schema[name] in (nw.Float32, nw.Float64):
-                    per_unit = per_unit.with_columns(nw.col(name).fill_nan(None).alias(name))
-                missing_count = int(per_unit.select(missing_covariate.cast(nw.Int64).sum()).item())
-                if missing_count:
-                    fill = (
-                        0.0
-                        if spec.covariate_missing == "zero"
-                        else float(per_unit.select(nw.col(name).mean()).item())
-                    )
-                    covariates[name] = per_unit.with_columns(
-                        nw.col(name).fill_null(fill).alias(name)
-                    )
         return covariates, failures
 
     def _spec_for(self, metric: Metric) -> MetricSpec:
@@ -1771,7 +1819,7 @@ class FramePanelSource(SequentialSourceMixin):
         _summary_reducer: bool = False,
     ) -> FramePanelSource:
         """Build a source from a one-row-per-unit-per-day dataframe. See :func:`from_unit_panel`."""
-        specs = _coerce_source_metrics(metrics, design=design)
+        specs = _apply_plan_methods(_coerce_source_metrics(metrics, design=design), plan)
         if isinstance(design, Encouragement):
             retention = [spec.name for spec in specs if spec.type == "retention"]
             if retention:
@@ -1853,9 +1901,7 @@ class FramePanelSource(SequentialSourceMixin):
                 declarations.append(("uptake", uptake))
             _validate_panel_declarations(declarations)
         nwf = _canonicalize_group_identity(nwf, group)
-        metric_columns = sorted(
-            {c for s in specs for c in (s.y_column, s.denominator, s.covariate) if c}
-        )
+        metric_columns = sorted(_numeric_metric_columns(specs))
         if uptake is not None:
             metric_columns = sorted({*metric_columns, uptake})
         nwf = _coerce_metric_columns(nwf, metric_columns)

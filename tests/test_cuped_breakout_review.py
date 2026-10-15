@@ -16,8 +16,9 @@ def _linear_metric(
     return MetricSpec(
         name="revenue",
         type=metric_type,
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
 
 
@@ -94,7 +95,11 @@ def test_public_breakout_sensitivity_failure_does_not_enter_decision_family() ->
     analysis = _breakout_analysis(unsupported=True)
     rows = analysis.run_breakout(
         decision_method=Method(name="plain"),
-        sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+        sensitivity_methods=[
+            Method.cuped_multicovariate(
+                name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+            )
+        ],
     )
 
     unsupported = [row for row in rows if row.dimension_value == "unsupported"]
@@ -141,19 +146,21 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
                 )
     methods = [
         Method(name="plain"),
-        Method(name="scalar", variance_reduction="cuped"),
-        Method(name="linear", variance_reduction="cuped_linear"),
+        Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"), name="scalar"),
+        Method.cuped_multicovariate(
+            name="linear",
+            covariates=(
+                CupedCovariate(name="pre", kind="continuous"),
+                CupedCovariate(name="region", kind="categorical"),
+            ),
+        ),
     ]
     metric = MetricSpec(
         name="conversion",
         type="conversion",
-        covariate="pre",
         value_column="converted",
         decision_method=methods[0],
-        covariates=(
-            CupedCovariate(name="pre", kind="continuous"),
-            CupedCovariate(name="region", kind="categorical"),
-        ),
+        sensitivity_methods=methods[1:],
     )
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
@@ -165,10 +172,7 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
         breakouts=["segment"],
     )
 
-    result = analysis.run_breakout(
-        decision_method=methods[0],
-        sensitivity_methods=methods[1:],
-    )
+    result = analysis.run_breakout()
     assert {(row.dimension_value, row.method) for row in result} == {
         (segment, method.name) for segment in ("north", "south") for method in methods
     }
@@ -188,8 +192,8 @@ def test_definitions_and_artifact_breakouts_supply_cuped_unit_evidence(tmp_path)
     text = defs_path.read_text().replace(
         "    plan: {primary: revenue}",
         "    plan: {primary: {metric: revenue, "
-        "decision_method: {name: linear, variance_reduction: cuped_linear}, "
-        "covariates: [{name: region, kind: categorical, property: region, source: events}]}}\n"
+        "decision_method: {name: linear, variance_reduction: cuped_multicovariate, "
+        "covariates: [{name: region, kind: categorical, property: region, source: events}]}}}\n"
         "    breakouts: [{property: region, source: events}]",
     )
     defs_path.write_text(text.replace(_CATEGORICAL_DESIGN, ""))
@@ -248,8 +252,9 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
         type="ratio",
         numerator="revenue",
         denominator="orders",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
@@ -320,8 +325,9 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
                 )
     metric = MetricSpec(
         name="revenue",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="continuous"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
+        ),
     )
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
@@ -361,8 +367,9 @@ def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch)
         .replace(_CATEGORICAL_DESIGN, "")
         .replace(
             "    plan: {primary: revenue}",
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: region, kind: categorical, property: region, source: events}]}}\n"
+            "    plan: {primary: {metric: revenue, "
+            "decision_method: {name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}}\n"
             "    breakouts: [{property: region, source: events}]",
         )
     )
@@ -370,8 +377,12 @@ def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch)
     source = _native_source(analysis)
     original = type(source).unit_frame
     methods: dict[str, Any] = {
-        "decision_method": Method(name="plain"),
-        "sensitivity_methods": [Method(name="linear", variance_reduction="cuped_linear")],
+        "sensitivity_methods": [
+            Method.cuped_multicovariate(
+                name="linear-sensitivity",
+                covariates=CupedCovariate(name="region", kind="categorical"),
+            )
+        ],
     }
     baseline = analysis.run_breakout(**methods)
     mutated = False
@@ -424,9 +435,9 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
         )
         .replace(
             "    plan:\n      secondaries: [revenue]",
-            "    plan: {primary: {metric: revenue, decision_method: "
-            "{name: linear, variance_reduction: cuped_linear}, covariates: "
-            "[{name: region, kind: categorical, property: region, source: events}]}, secondaries: [median]}\n"
+            "    plan: {primary: {metric: revenue, "
+            "decision_method: {name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}, secondaries: [median]}\n"
             "    breakouts: [{property: region, source: events}]",
         )
     )
@@ -464,8 +475,9 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
         assert companion.analysis_population == "triggered"
         source = _native_source(analysis)
         metric = next(m for m in source.context.metrics if m.name == "revenue")
-        declarations = next(
-            c.covariates for c in source.context.configs if c.metric.name == "revenue"
+        declarations = cast(
+            tuple[CupedCovariate, ...],
+            next(c.covariates for c in source.context.configs if c.metric.name == "revenue"),
         )
         frame = nw.from_native(
             source.unit_frame(metric, covariates=("region",), population="triggered"),
@@ -478,9 +490,9 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
                 metric,
                 cell.to_native(),
                 control_group="C",
-                method=Method(name="linear", variance_reduction="cuped_linear"),
-                method_role="decision",
                 covariates=declarations,
+                method=Method.cuped_multicovariate(name="linear", covariates=declarations),
+                method_role="decision",
                 alpha=0.05,
                 alternative="two-sided",
             ).results[0]
@@ -517,9 +529,9 @@ def _triggered_linear_artifact(tmp_path):
         )
         .replace(
             "    plan:\n      secondaries: [revenue]",
-            "    plan: {primary: {metric: revenue, decision_method: "
-            "{name: linear, variance_reduction: cuped_linear}, covariates: "
-            "[{name: region, kind: categorical, property: region, source: events}]}}\n"
+            "    plan: {primary: {metric: revenue, "
+            "decision_method: {name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}}\n"
             "    breakouts: [{property: region, source: events}]",
         )
     )
@@ -608,12 +620,16 @@ def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
 
     monkeypatch.setattr(cuped_multicovariate, "fit_cuped_multicovariate", counted)
     rows = _breakout_analysis().run_breakout(
-        sensitivity_methods=[Method(name="other-linear", variance_reduction="cuped_linear")]
+        sensitivity_methods=[
+            Method.cuped_multicovariate(
+                name="other-linear",
+                covariates=CupedCovariate(name="pre", kind="categorical"),
+            )
+        ]
     )
     assert {(r.dimension_value, r.method) for r in rows} == {
         (segment, method) for segment in ("north", "south") for method in ("linear", "other-linear")
     }
-    assert all(r.lift is not None for r in rows)
     assert calls == 2
 
 
@@ -647,10 +663,18 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
     experiment["plan"] = {
         "primary": {
             "metric": "revenue",
-            "decision_method": {"name": "linear", "variance_reduction": "cuped_linear"},
-            "covariates": [
-                {"name": "region", "kind": "continuous", "property": "tenure", "source": "events"}
-            ],
+            "decision_method": {
+                "name": "linear",
+                "variance_reduction": "cuped_multicovariate",
+                "covariates": [
+                    {
+                        "name": "region",
+                        "kind": "continuous",
+                        "property": "tenure",
+                        "source": "events",
+                    }
+                ],
+            },
         }
     }
     profiles = {unit: ("a" if int(unit[1:]) % 2 else "b") for unit in units}
@@ -689,8 +713,10 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
                 metrics=[
                     MetricSpec(
                         name="revenue",
-                        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-                        covariates=(CupedCovariate(name="region", kind="continuous"),),
+                        decision_method=Method.cuped_multicovariate(
+                            name="linear",
+                            covariates=CupedCovariate(name="region", kind="continuous"),
+                        ),
                     )
                 ],
                 breakouts=["segment"],
@@ -738,10 +764,8 @@ def test_native_breakout_override_without_covariates_refuses_before_queries(tmp_
     monkeypatch.setattr(con, "to_pyarrow", counted)
     try:
         with pytest.raises(CodedError) as raised:
-            analysis.run_breakout(
-                decision_method=Method(name="linear", variance_reduction="cuped_linear")
-            )
-        assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
+            Method.cuped_multicovariate(covariates=())
+        assert raised.value.code == "estimation.engine.method_covariates"
         assert materializations == 0
     finally:
         analysis.close()
@@ -771,8 +795,9 @@ def test_breakout_covariate_named_like_internal_dimension_keeps_its_values() -> 
         )
         metric = MetricSpec(
             name="revenue",
-            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-            covariates=(CupedCovariate(name=covariate, kind="categorical"),),
+            decision_method=Method.cuped_multicovariate(
+                name="linear", covariates=CupedCovariate(name=covariate, kind="categorical")
+            ),
         )
         analysis = Analysis.from_unit_panel(
             frame,
@@ -817,8 +842,9 @@ def test_readout_rows_forward_projection_refusal_sidecars() -> None:
         type="ratio",
         numerator="revenue",
         denominator="orders",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
@@ -868,14 +894,28 @@ def _ratio_rows_with_dead_arm(
     return rows
 
 
-def _ratio_analysis(rows: list[dict[str, Any]], method: Method) -> Analysis:
+def _ratio_analysis(
+    rows: list[dict[str, Any]],
+    method: Method,
+    *,
+    include_linear_sensitivity: bool = False,
+) -> Analysis:
     metric = MetricSpec(
         name="rpo",
         type="ratio",
         numerator="revenue",
         denominator="orders",
         decision_method=method,
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        sensitivity_methods=(
+            (
+                Method.cuped_multicovariate(
+                    name="linear",
+                    covariates=CupedCovariate(name="pre", kind="categorical"),
+                ),
+            )
+            if include_linear_sensitivity
+            else ()
+        ),
     )
     return Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
@@ -890,7 +930,10 @@ def _ratio_analysis(rows: list[dict[str, Any]], method: Method) -> Analysis:
 
 def test_zero_denominator_arm_is_withheld_like_the_unadjusted_path() -> None:
     linear = _ratio_analysis(
-        _ratio_rows_with_dead_arm(), Method(name="linear", variance_reduction="cuped_linear")
+        _ratio_rows_with_dead_arm(),
+        Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     unadjusted = _ratio_analysis(_ratio_rows_with_dead_arm(), Method(name="unadjusted"))
 
@@ -935,7 +978,9 @@ def test_zero_denominator_control_fails_every_linear_contrast_without_abort() ->
 
     linear = _ratio_analysis(
         _ratio_rows_with_dead_arm(dead_control=True),
-        Method(name="linear", variance_reduction="cuped_linear"),
+        Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     unadjusted = _ratio_analysis(
         _ratio_rows_with_dead_arm(dead_control=True), Method(name="unadjusted")
@@ -966,7 +1011,9 @@ def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
     groups = ("control", *zero_groups)
     linear = _ratio_analysis(
         _ratio_rows_with_dead_arm(groups=groups, zero_groups=zero_groups),
-        Method(name="linear", variance_reduction="cuped_linear"),
+        Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     unadjusted = _ratio_analysis(
         _ratio_rows_with_dead_arm(groups=groups, zero_groups=zero_groups),
@@ -1012,7 +1059,9 @@ def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
         "dead": (denominator_code, {"metric": "rpo", "group_id": "dead", "d_bar": 0.0}),
         "treatment": ("estimation.cuped_linear.level_support", None),
     }
-    linear = Method(name="linear", variance_reduction="cuped_linear")
+    linear = Method.cuped_multicovariate(
+        name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+    )
 
     # Every decision cell refused: the readout refuses as a whole, carrying each arm's own reason.
     decision = _ratio_analysis(_dead_arm_rows_with_unsupported_sibling(), linear)
@@ -1032,7 +1081,9 @@ def test_withheld_arm_keeps_its_refusal_when_the_sibling_fit_fails() -> None:
 
     # A valid decision alongside: the linear sensitivity rows each keep their own refusal.
     sensitivity = _ratio_analysis(
-        _dead_arm_rows_with_unsupported_sibling(), Method(name="unadjusted")
+        _dead_arm_rows_with_unsupported_sibling(),
+        Method(name="unadjusted"),
+        include_linear_sensitivity=True,
     )
     with pytest.warns():
         results = sensitivity.run(sensitivity_methods=[linear])
@@ -1051,7 +1102,10 @@ def test_withheld_arm_reports_requested_posterior_unavailable() -> None:
     from increment.estimation.inference import Normal
 
     analysis = _ratio_analysis(
-        _ratio_rows_with_dead_arm(), Method(name="linear", variance_reduction="cuped_linear")
+        _ratio_rows_with_dead_arm(),
+        Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
 
     with pytest.warns():

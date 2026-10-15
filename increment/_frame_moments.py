@@ -238,7 +238,12 @@ def _moment_fields(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _apply_spec_missing(
-    long: nw.DataFrame[Any], spec: MetricSpec, *, has_x: bool, has_den: bool
+    long: nw.DataFrame[Any],
+    spec: MetricSpec,
+    *,
+    has_x: bool,
+    has_den: bool,
+    covariate: Any | None = None,
 ) -> nw.DataFrame[Any]:
     """Apply *spec*'s declared null/NaN policy to its own selected columns.
 
@@ -248,7 +253,7 @@ def _apply_spec_missing(
     ``missing="zero"`` counts a missing value as 0 with the row still in
     ``n``; ``missing="drop"`` removes the row from THIS metric's moments
     (complete-case). A missing covariate value is filled with the pooled
-    mean of the observed values (or 0 under ``covariate_missing="zero"``),
+    mean of the observed values (or 0 under ``missing="zero"``),
     computed from the covariate column alone -- BEFORE ``missing="drop"``
     removes any outcome-null rows below, never from the arm or the
     outcome, which is what keeps the adjusted estimate unbiased under
@@ -261,7 +266,8 @@ def _apply_spec_missing(
             long.select((nw.col("x").is_null() | nw.col("x").is_nan()).cast(nw.Int64).sum()).item()
         )
         if x_missing:
-            if spec.covariate_missing == "zero":
+            assert covariate is not None
+            if covariate.missing == "zero":
                 fill = 0.0
             else:
                 mean = long.select(nw.col("x").fill_nan(None).mean()).item()
@@ -269,7 +275,7 @@ def _apply_spec_missing(
                     refuse(
                         COVARIATE_IMPUTE_ALL_NULL,
                         metric=spec.name,
-                        covariate=spec.covariate,
+                        covariate=covariate.name,
                     )
                 fill = float(mean)
             long = long.with_columns(nw.col("x").fill_nan(None).fill_null(fill).alias("x"))
@@ -457,7 +463,16 @@ def _moment_rows(
     has_d = uptake is not None
 
     for spec in metrics:
-        has_x = spec.covariate is not None
+        covariate = next(
+            (
+                covariate
+                for method in spec._methods
+                if method.variance_reduction == "cuped"
+                for covariate in method.covariates or ()
+            ),
+            None,
+        )
+        has_x = covariate is not None
         has_den = spec.denominator is not None
         key_cols = ("group_id", *by)
 
@@ -474,7 +489,7 @@ def _moment_rows(
             if has_uptake:
                 select_exprs.append(nw.col(uptake).cast(nw.Float64).alias("d"))
             long = frame.select(*select_exprs)
-            long = _apply_spec_missing(long, spec, has_x=False, has_den=has_den)
+            long = _apply_spec_missing(long, spec, has_x=False, has_den=has_den, covariate=None)
             long, winsor_metadata = _apply_winsorization(long, spec, key_cols=key_cols)
             cluster_aggs = [
                 nw.col("y").sum().alias("y"),
@@ -515,7 +530,7 @@ def _moment_rows(
 
         exprs = [nw.col(spec.y_column).cast(nw.Float64).alias("y")]
         if has_x:
-            exprs.append(nw.col(spec.covariate).cast(nw.Float64).alias("x"))
+            exprs.append(nw.col(covariate.name).cast(nw.Float64).alias("x"))
         if has_den:
             exprs.append(nw.col(spec.denominator).cast(nw.Float64).alias("y_den"))
         if uptake is not None:
@@ -526,7 +541,7 @@ def _moment_rows(
             nw.col(group).alias("group_id"),
             *exprs,
         )
-        long = _apply_spec_missing(long, spec, has_x=has_x, has_den=has_den)
+        long = _apply_spec_missing(long, spec, has_x=has_x, has_den=has_den, covariate=covariate)
         long, winsor_metadata = _apply_winsorization(long, spec, key_cols=key_cols)
         columns = {"y": "y"}
         if has_x:
@@ -1483,10 +1498,32 @@ def _total_moment_rows(
             collapsed = collapsed.join(
                 per_unit.rename({name: covariate_aliases[name]}), on="unit_id", how="left"
             )
+
+        def remap_method(method: Any) -> Any:
+            if not method.covariates:
+                return method
+            return method.model_copy(
+                update={
+                    "covariates": tuple(
+                        covariate.model_copy(update={"name": covariate_aliases[covariate.name]})
+                        if covariate.name in covariate_aliases
+                        else covariate
+                        for covariate in method.covariates
+                    )
+                }
+            )
+
         moment_specs = [
-            spec.model_copy(update={"covariate": covariate_aliases[spec.covariate]})
-            if spec.covariate in covariate_aliases
-            else spec
+            spec.model_copy(
+                update={
+                    "decision_method": (
+                        None if spec.decision_method is None else remap_method(spec.decision_method)
+                    ),
+                    "sensitivity_methods": tuple(
+                        remap_method(method) for method in spec.sensitivity_methods
+                    ),
+                }
+            )
             for spec in plain
         ]
         # A conversion is any-occurrence (0/1). The unwindowed sum would

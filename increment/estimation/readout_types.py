@@ -765,8 +765,7 @@ def _digest_positional_rows(
     total = 0
     count = 0
     for row in rows:
-        if not isinstance(row, tuple):
-            raise TypeError("column-layout digest rows must be tuples")
+        assert isinstance(row, tuple), "column-layout digest rows must be tuples"
         parts = []
         generic_row = None
         for key, prefix, index in zip(keys, prefixes, indices, strict=True):

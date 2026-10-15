@@ -26,7 +26,7 @@ from increment.estimation.engine import Method
 from increment.frame import MetricSpec
 from increment.plan import compile_decision_plan
 from increment.semantics.design import AdjustmentSet, Observational
-from increment.semantics.models import AnalysisPlan, MeanMetric
+from increment.semantics.models import AnalysisPlan, CupedCovariate, MeanMetric
 from increment.sources import MomentSource
 from tests.analysis_factory import lift_rows
 from tests.sequential_cases import registered_spec
@@ -71,9 +71,13 @@ def test_declared_duplicate_methods_refuse_during_configuration_resolution():
             metrics=[
                 MetricSpec(
                     name="revenue",
-                    covariate="pre_revenue",
                     decision_method=Method(name="same"),
-                    sensitivity_methods=(Method(name="same", variance_reduction="cuped"),),
+                    sensitivity_methods=(
+                        Method.cuped(
+                            name="same",
+                            covariates=CupedCovariate(name="pre_revenue", kind="continuous"),
+                        ),
+                    ),
                 )
             ],
         )
@@ -292,13 +296,19 @@ def test_unit_summary_breakout_missing_drop_warns_once_per_metric():
                     name="value",
                     type="mean",
                     missing="drop",
-                    covariate="covariate",
-                    covariate_missing="impute",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(
+                            name="covariate", kind="continuous", missing="impute"
+                        )
+                    ),
                 )
             ],
             breakouts=("segment",),
         )
-        results = analysis.run_breakout()
+        results = analysis.run_breakout(
+            decision_method=Method(name="unadjusted"),
+            sensitivity_methods=(),
+        )
 
     codes = warning_codes(recorded)
     assert codes.count("frame.validation.metric_missing_drop") == 1
@@ -555,9 +565,18 @@ def test_encouragement_summary_breakout_empty_identities_match_requested_methods
     frame.loc[frame["segment"] == "A", "y"] = None
     with pytest.warns(IncrementWarning):
         analysis = _encouragement_summary_breakout_analysis(
-            frame, [MetricSpec(name="y", missing="drop", covariate="x")]
+            frame,
+            [
+                MetricSpec(
+                    name="y",
+                    missing="drop",
+                    sensitivity_methods=(
+                        Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+                    ),
+                )
+            ],
         )
-    sensitivity = [Method(name="cuped", variance_reduction="cuped")]
+    sensitivity = [Method.cuped(covariates=CupedCovariate(name="x", kind="continuous"))]
     rows = analysis.run_breakout(sensitivity_methods=sensitivity)
     for group in ("treatment_1", "treatment_2"):
         missing = [row for row in rows if row.dimension_value == "A" and row.group_id == group]
@@ -655,7 +674,15 @@ def test_unit_summary_breakout_preserves_unit_column_used_as_covariate():
         unit="ds",
         group="arm",
         control="control",
-        metrics=[MetricSpec(name="y", type="mean", covariate="ds")],
+        metrics=[
+            MetricSpec(
+                name="y",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="ds", kind="continuous")
+                ),
+            )
+        ],
         breakouts=("segment",),
     )
 
@@ -944,7 +971,9 @@ def test_from_unit_panel_daily_lift_refuses_sequential_before_moments():
 def test_from_unit_panel_daily_lift_refuses_cuped_without_covariate(panel_breakout_analysis):
     with pytest.raises(InvalidRequestError) as raised:
         panel_breakout_analysis.run_daily_lift(
-            decision_method=Method(name="cuped", variance_reduction="cuped"),
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name="revenue", kind="continuous")
+            ),
             metrics=["revenue"],
         )
     assert raised.value.code == "estimation.cuped.arm_no_covariate"
@@ -971,11 +1000,13 @@ def test_from_unit_panel_quantile_cuped_refusal_is_preserved():
                     name="revenue",
                     type="quantile",
                     quantile=0.5,
-                    decision_method=Method(name="cuped", variance_reduction="cuped"),
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="revenue", kind="continuous")
+                    ),
                 )
             ],
         )
-    assert raised.value.code == "frame.metric.cuped_supported_metrics"
+    assert raised.value.code == "frame.metric.cuped_does_apply"
 
 
 def test_from_unit_summary_clustered_cuped_refusal_is_preserved():
@@ -1025,8 +1056,9 @@ def test_from_unit_summary_clustered_cuped_refusal_is_preserved():
             metrics=[
                 MetricSpec(
                     name="revenue",
-                    covariate="pre_revenue",
-                    decision_method=Method(name="cuped", variance_reduction="cuped"),
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                    ),
                 )
             ],
         )
@@ -1568,7 +1600,7 @@ def test_from_unit_panel_run_asof_late_honors_requested_methods(encouragement_pa
 def test_from_unit_panel_run_asof_late_refuses_cuped(encouragement_panel_analysis):
     with pytest.raises(InvalidRequestError) as raised:
         encouragement_panel_analysis.run_asof_lift(
-            decision_method=Method(name="cuped", variance_reduction="cuped"),
+            decision_method=Method.cuped(),
             estimands=("late",),
         )
     assert raised.value.code == "estimation.cuped.arm_no_covariate"

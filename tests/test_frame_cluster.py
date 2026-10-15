@@ -26,9 +26,14 @@ from typing import Any, Literal
 
 import pytest
 
-from increment.errors import CapabilityError, IncrementRuntimeWarning, InvalidRequestError
+from increment import Method
+from increment.errors import (
+    CapabilityError,
+    IncrementRuntimeWarning,
+    InvalidRequestError,
+)
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
-from increment.frame import MetricSpec, from_unit_panel, from_unit_summary
+from increment.frame import CupedCovariate, MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.design import (
     AdjustmentSet,
     Encouragement,
@@ -241,7 +246,15 @@ def test_cluster_with_covariate_refuses():
     with pytest.raises(CapabilityError) as raised:
         _source(
             rows=_rows(),
-            metrics=[MetricSpec(name="revenue", type="mean", covariate="solo_id")],
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    type="mean",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="solo_id", kind="continuous")
+                    ),
+                )
+            ],
         )
     assert raised.value.code == "source.frame.cluster_capability"
 
@@ -260,7 +273,9 @@ def test_cluster_with_ratio_metric_and_covariate_refuses():
                     type="ratio",
                     numerator="revenue",
                     denominator="sessions",
-                    covariate="solo_id",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="solo_id", kind="continuous")
+                    ),
                 )
             ],
         )
@@ -411,7 +426,15 @@ def test_cluster_with_covariate_and_encouragement_refuses():
             rows=rows,
             design=design,
             uptake="took_up",
-            metrics=[MetricSpec(name="revenue", type="mean", covariate="solo_id")],
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    type="mean",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="solo_id", kind="continuous")
+                    ),
+                )
+            ],
         )
     assert raised.value.code == "source.frame.cluster_capability"
 

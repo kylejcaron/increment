@@ -241,7 +241,9 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     from increment.decision import ArmHypothesisKey
 
     cuped_by_name = {
-        method.name: method for method in methods if method.variance_reduction == "cuped_linear"
+        method.name: method
+        for method in methods
+        if method.variance_reduction == "cuped_multicovariate"
     }
     rows = [
         reintervalize_cuped_decision(
@@ -264,7 +266,7 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     ordinary_decision_methods = [
         method
         for method in methods
-        if method.name in decision_names and method.variance_reduction != "cuped_linear"
+        if method.name in decision_names and method.variance_reduction != "cuped_multicovariate"
     ]
     if not ordinary_decision_methods:
         return rows, []
@@ -322,7 +324,9 @@ def _estimate_randomized_secondary_family(
         evidence_by_metric[metric.name] = (
             metric_rows
             if metric_rows.unit_frame is not None
-            and any(method.variance_reduction == "cuped_linear" for method in _metric_methods)
+            and any(
+                method.variance_reduction == "cuped_multicovariate" for method in _metric_methods
+            )
             else rows
         )
         observed_arms |= metric_observed
@@ -412,7 +416,7 @@ def _estimate_randomized_secondary_family(
         )
         selected_alpha = _fcr_alpha_for(selected_alternative, fcr_alpha)
         if metric_rows.unit_frame is not None and any(
-            method.variance_reduction == "cuped_linear" for method in _metric_methods
+            method.variance_reduction == "cuped_multicovariate" for method in _metric_methods
         ):
             reestimated[metric.name], refused = _reintervalize_cuped_secondary(
                 src,
@@ -561,7 +565,9 @@ def _estimate_randomized_non_secondary(
                 src,
                 metric,
                 metric_rows
-                if any(method.variance_reduction == "cuped_linear" for method in metric_methods)
+                if any(
+                    method.variance_reduction == "cuped_multicovariate" for method in metric_methods
+                )
                 else list(metric_rows.rows),
                 test,
                 config,

@@ -12,18 +12,15 @@ effect still targets the same comparison.
 
 ## On the dataframe path
 
-Declare the pre-period column with `MetricSpec(covariate=...)`, then request
-the adjustment with `variance_reduction="cuped"` on a decision or sensitivity
-`Method`. Declaring the covariate alone changes nothing: `run()` keeps its
-declared or default decision method. When the effective design, metric, and
-inference support CUPED, `run()` emits `analysis.cuped.covariate_unused` only
-if an omitted decision method defaults to unadjusted and no CUPED sensitivity
-method is selected. An explicitly chosen unadjusted decision does not warn.
+Declare each covariate on the method that uses it. For the usual scalar
+procedure, use `Method.cuped` with one continuous covariate. Declaring a
+covariate alone changes nothing: `run()` keeps its declared or default
+decision method.
 
 ```python
 import numpy as np
 import polars as pl
-from increment import Analysis, Method, MetricSpec
+from increment import Analysis, CupedCovariate, Method, MetricSpec
 
 rng = np.random.default_rng(11)
 n = 20_000
@@ -50,11 +47,20 @@ results = Analysis.from_unit_summary(
     unit="user_id",
     group="variant",
     control="control",
-    metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
-).run(
-    decision_method=Method(name="unadjusted"),
-    sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
-)
+    metrics=[
+        MetricSpec(
+            name="revenue",
+            type="mean",
+            sensitivity_methods=(
+                Method.cuped(
+                    covariates=CupedCovariate(
+                        name="pre_revenue", kind="continuous", missing="impute"
+                    )
+                ),
+            ),
+        )
+    ],
+).run(decision_method=Method.unadjusted(name="unadjusted"))
 
 for r in results:
     width = r.lift.ub - r.lift.lb
@@ -74,32 +80,94 @@ The adjusted estimate is similar, with an interval less than half as wide.
     $\sqrt{1 - 0.89^2} \approx 0.47$, matches the observed ratio,
     $1.77\% / 3.79\% \approx 0.47$.
 
-`variance_reduction="cuped"` enables the adjustment; `name` only labels
-the result. This example keeps the unadjusted decision method and reports
-CUPED alongside it as a sensitivity analysis. See
-[Reading results](reading-results.md) for row interpretation and
-[Multiplicity](multiplicity.md) for the result population and status table.
+Choose scalar CUPED for one continuous covariate when the ordinary
+pairwise procedure is the goal. Choose multicovariate for multiple,
+categorical, or indicator inputs, or when an intentional fixed-horizon HC2/BM
+regression fit is desired. A backend does not select the procedure, and
+adding covariates does not itself justify a different inference method.
+
+### Comparing scalar and multicovariate procedures
+
+The example below uses a single continuous covariate with three arms. The
+decision method is predeclared scalar CUPED; multicovariate HC2/BM is reported
+as a sensitivity. Scalar CUPED fits each treatment/control pair separately.
+The multicovariate procedure fits all eligible arms together, so even with the
+same covariate its coefficients and interval can differ.
+
+```python
+import numpy as np
+import polars as pl
+from increment import Analysis, CupedCovariate, Method, MetricSpec
+
+rng = np.random.default_rng(21)
+n_per_arm = 80
+arm = np.repeat(["control", "variant_a", "variant_b"], n_per_arm)
+pre_period = rng.normal(size=3 * n_per_arm)
+effect = np.repeat([0.0, 0.4, 0.8], n_per_arm)
+outcome = 10 + effect + 0.9 * pre_period + rng.normal(0, 1, size=3 * n_per_arm)
+covariate = CupedCovariate(name="pre_period", kind="continuous")
+
+analysis = Analysis.from_unit_summary(
+    pl.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(len(arm))],
+            "arm": arm,
+            "outcome": outcome,
+            "pre_period": pre_period,
+        }
+    ),
+    unit="unit",
+    group="arm",
+    control="control",
+    metrics=[
+        MetricSpec(
+            name="outcome",
+            decision_method=Method.cuped(covariates=covariate),
+            sensitivity_methods=(Method.cuped_multicovariate(name="hc2_bm", covariates=covariate),),
+        )
+    ],
+)
+
+for row in analysis.run():
+    lift = row.require_lift()
+    print(
+        f"{row.method:>6} {row.group_id}: "
+        f"lift={lift.value:.4f}, interval=({lift.lb:.4f}, {lift.ub:.4f})"
+    )
+```
+
+<!-- output -->
+```text
+ cuped variant_a: lift=0.0627, interval=(0.0345, 0.0916)
+hc2_bm variant_a: lift=0.0641, interval=(0.0359, 0.0929)
+ cuped variant_b: lift=0.0969, interval=(0.0658, 0.1289)
+hc2_bm variant_b: lift=0.0955, interval=(0.0641, 0.1278)
+```
+
+This is a fixed-horizon procedure comparison, not an automatic choice:
+ordinary scalar CUPED is the one-continuous-covariate default, while the
+multicovariate fit is an explicit alternative.
 
 !!! warning "Panel covariates must be constant per unit"
     Under fixed-horizon inference, `from_unit_panel` supports CUPED for
-    unwindowed mean and ratio metrics when `covariate=` is constant across
-    each unit's rows; varying values raise
+    unwindowed mean and ratio metrics when each method-owned CUPED covariate
+    is constant across every unit's rows; varying values raise
     `frame.frame_panel.unit_covariate_varies`. Windowed and retention metrics
-    reject panel covariates (`frame.validation.from_unit_panel`): compute a
-    non-retention windowed metric per unit upstream and declare it on
-    `from_unit_summary`. No frame source serves a per-unit retention value;
-    remove the covariate to run retention without CUPED. For sequential
+    reject CUPED covariate declarations on a panel (`frame.validation.from_unit_panel`):
+    compute a non-retention windowed metric per unit upstream and declare its
+    covariate on the method. No frame source serves a per-unit retention value;
+    remove the method covariate to run retention without CUPED. For sequential
     CUPED, use the paths [below](#cuped-under-sequential-inference).
 
 ### Missing covariates
 
-By default, a missing covariate is filled with the pooled mean of the
-observed covariates, and a `UserWarning` reports how many values were filled.
-The fill uses neither group assignment nor outcomes; under randomization,
-this preserves the covariate's independence from assignment. Filled values
-add no precision.
-Use `MetricSpec(covariate_missing="error")` to reject missing covariates, or
-`covariate_missing="zero"` when missing means no pre-period activity.
+For scalar CUPED, choose the missing-value policy on its covariate:
+`CupedCovariate(name="pre_revenue", kind="continuous", missing="impute")`
+fills missing values with the pooled observed mean and warns with the count;
+`missing="zero"` treats null as no pre-period activity, and `missing="refuse"`
+rejects missing values. The policy belongs to the method, so decision and
+sensitivity methods can make different choices without changing the raw
+covariate binding.
 
 ### Ratio metrics
 
@@ -113,15 +181,15 @@ MetricSpec(
     type="ratio",
     numerator="revenue",
     denominator="orders",
-    covariate="pre_revenue_per_order",
+    decision_method=Method.cuped(
+        covariates=CupedCovariate(name="pre_revenue_per_order", kind="continuous", missing="impute")
+    ),
 )
 ```
-
-!!! warning "One covariate column, two slopes"
-    Separate covariates for the numerator and denominator are not supported
-    on any path: the stored moments contain only one covariate and its cross
-    moments. If each component needs its own covariate, analyze them as two
-    mean metrics instead. That reports component effects, not the ratio effect.
+The scalar `cuped` procedure uses one continuous covariate for both
+components, with a separate slope for numerator and denominator. For multiple
+or categorical covariates on a fixed-horizon mean or ratio, use
+`Method.cuped_multicovariate`; it retains the joint component covariance.
 
 On `from_definitions` and `from_unit_day_artifact`, the covariate is the
 **pre-period numerator**: its total over the `n_pre_periods` days before
@@ -239,18 +307,17 @@ arrived. `InferenceSpec(kind="asymptotic_mean")` supports two forms, below.
 ### The standard coefficient on the asymptotic route
 
 `InferenceSpec(kind="asymptotic_mean")` fits the coefficient from experiment
-data at each look. A metric with `covariate=` and a CUPED method registers
+data at each look. A method declares the source covariate and registers
 `adjusted_mean`, or `adjusted_ratio_mean` for a ratio metric.
 
 <!-- skip: next "requires a prepared unit frame" -->
 ```python
-from increment import Analysis, AnalysisPlan, InferenceSpec, Method, MetricSpec
+from increment import Analysis, AnalysisPlan, CupedCovariate, InferenceSpec, Method, MetricSpec
 
 plan = AnalysisPlan(primary="revenue", inference=InferenceSpec(kind="asymptotic_mean"))
 spec = MetricSpec(
     name="revenue",
-    covariate="revenue_pre",
-    decision_method=Method(name="cuped", variance_reduction="cuped"),
+    decision_method=Method.cuped(covariates=CupedCovariate(name="revenue_pre", kind="continuous")),
 )
 analysis = Analysis.from_unit_summary(
     units,
@@ -266,10 +333,10 @@ analysis = Analysis.from_unit_summary(
 The method needs positive within-group covariate variance (a constant
 covariate reports `zero_covariate_variance`) and per-unit covariate data:
 
-- `from_unit_summary`: supply `MetricSpec(covariate=...)`.
+- `from_unit_summary`: declare the covariate on a CUPED method.
 - `from_definitions`: set `n_pre_periods > 0`. A plan binding with a CUPED
   method registers the adjusted law automatically.
-- `from_unit_day_artifact`: publish each adjusted metric's `cuped_preperiod`
+- `from_unit_day_artifact`: publish each adjusted method's `cuped_preperiod`
   extension. Select its `entry.request` from
   `unit_day_artifact_extension_catalog(context)` and pass it through
   `extensions=` to `analysis.publish_unit_day_artifact`. Default publication
@@ -311,8 +378,8 @@ per unit. The exact Bernoulli method does not accept this adjustment.
 <!-- skip: next "requires a prepared pre-period frame" -->
 ```python
 from increment import (
-    Analysis,
     AnalysisPlan,
+    CupedCovariate,
     InferenceSpec,
     Method,
     MetricSpec,
@@ -333,8 +400,7 @@ plan = AnalysisPlan(
 )
 spec = MetricSpec(
     name="revenue",
-    covariate="revenue_pre",
-    decision_method=Method(name="cuped", variance_reduction="cuped"),
+    decision_method=Method.cuped(covariates=CupedCovariate(name="revenue_pre", kind="continuous")),
 )
 ```
 
@@ -395,7 +461,14 @@ analysis = inc.Analysis.from_unit_summary(
     df,  # one row per unit, carrying the uptake column and the pre-period covariate
     unit="user_id",
     group="variant",
-    metrics=[inc.MetricSpec(name="revenue", covariate="revenue_pre")],
+    metrics=[
+        inc.MetricSpec(
+            name="revenue",
+            decision_method=inc.Method.cuped(
+                covariates=inc.CupedCovariate(name="revenue_pre", kind="continuous")
+            ),
+        )
+    ],
     design=inc.Encouragement(
         control_group="control",
         uptake=inc.UptakeSpec(fact="clicked"),
@@ -406,7 +479,6 @@ analysis = inc.Analysis.from_unit_summary(
     ),
 )
 results = analysis.run(
-    decision_method=inc.Method(name="cuped", variance_reduction="cuped"),
     estimands=("itt", "compliance", "late"),
 )
 ```
@@ -546,7 +618,7 @@ pre-period history. Watch for:
 - **Constant covariate:** zero variance makes $\theta$ undefined. The
   estimator raises a `ValueError` rather than reporting an unadjusted
   estimate under a CUPED label.
-- **Quantile metrics:** these reject `covariate=` because a quantile is not
+- **Quantile metrics:** these reject CUPED covariates because a quantile is not
   a mean of per-unit values. [Ratio metrics](#ratio-metrics) adjust both
   components with one covariate.
 - **Covariates that mostly predict uptake:** an adjusted LATE can have a
@@ -569,30 +641,31 @@ precision.
 
 ## Mixed numeric and categorical covariates
 
-`Method(name="linear", variance_reduction="cuped_linear")` uses the metric's
-declared `covariates` set. Mean, conversion and ratio metrics use a shared
-fitted linear adjustment, HC2 uncertainty including the fitted slope and pooled
-covariate anchor, and a Bell–McCaffrey Student-t reference. This is a
-fixed-horizon approximation, not a finite-sample or sequential guarantee.
-Scalar `cuped` remains unchanged and may be used alongside `cuped_linear` when
-its scalar `covariate` name is also a member of the mixed `covariates` set.
+`Method.cuped_multicovariate` fits a fixed-horizon linear adjustment. Mean,
+conversion, and ratio metrics use HC2 uncertainty, including fitted-slope and
+pooled-covariate-anchor uncertainty, with a Bell–McCaffrey Student-t
+reference. This is an explicit procedure, not a finite-sample or sequential
+guarantee.
 
 ### Combining scalar and mixed CUPED
 
-The two estimators can be emitted for the same metric. On
-`from_unit_summary` and `from_unit_panel`, set
-`MetricSpec.covariate="pre_revenue"` for scalar `cuped` and include that same
-name in `MetricSpec.covariates` for `cuped_linear`; assign one estimator as
-the decision method and the other as a sensitivity method.
+Both procedures can be emitted for the same metric. Declare the covariate on
+each method; they may share a source binding while choosing independent
+missing-value policies:
 
-`from_definitions` has no scalar `covariate` field on `ExperimentMetric`.
-Instead, declare `n_pre_periods > 0` so scalar `cuped` can derive the metric's
-own pre-period outcome, while the mixed estimator uses its declared
-`covariates` bindings. To adjust the same historical signal, those pre-period
-metric values and the mixed covariate values must represent the same per-unit
-data. Publishing for `from_unit_day_artifact` must include the
-`cuped_preperiod` extension required by the scalar method. The four-ingress
-witness in `test_warehouse_cuped_parity.py` exercises both methods on the same
+```python
+history = CupedCovariate(name="pre_revenue", kind="continuous")
+scalar = Method.cuped(covariates=history)
+mixed = Method.cuped_multicovariate(name="linear", covariates=history)
+```
+
+Assign one estimator as the decision method and the other as a sensitivity
+method. `from_definitions` can use `n_pre_periods > 0` for scalar CUPED's
+implicit pre-period binding, while the multicovariate method uses its explicit
+`covariates` bindings. To adjust the same historical signal, those per-unit
+values must match. Publication for `from_unit_day_artifact` must include the
+`cuped_preperiod` extension required by scalar CUPED. The four-ingress witness
+in `test_warehouse_cuped_parity.py` exercises both methods on the same
 per-unit historical revenue data; this is runtime compatibility, not coverage
 certification.
 
@@ -663,14 +736,13 @@ covariates = [
         missing="impute-indicator",
     ),
 ]
-metrics = [
-    MetricSpec(name="revenue", type="mean", covariates=covariates),
+methods = [
+    MetricSpec(name="revenue", type="mean"),
     MetricSpec(
         name="revenue_per_order",
         type="ratio",
         numerator="revenue",
         denominator="orders",
-        covariates=covariates,
     ),
 ]
 analysis = Analysis.from_unit_summary(
@@ -678,11 +750,11 @@ analysis = Analysis.from_unit_summary(
     unit="user_id",
     group="variant",
     control="control",
-    metrics=metrics,
+    metrics=methods,
 )
 results = analysis.run(
-    decision_method=Method(name="unadjusted"),
-    sensitivity_methods=(Method(name="linear", variance_reduction="cuped_linear"),),
+    decision_method=Method.unadjusted(name="unadjusted"),
+    sensitivity_methods=(Method.cuped_multicovariate(name="linear", covariates=covariates),),
 )
 
 for result in results:
@@ -717,11 +789,12 @@ the mean of users' individual revenue-per-order values. Both metrics share the
 same covariate set; the ratio adjustment jointly accounts for its numerator and
 denominator.
 
-This is intentionally not scalar CUPED: `cuped_linear` fits one multivariable
-adjustment to the per-unit outcome vector and uses HC2 uncertainty (including
-fitted-slope and pooled-anchor uncertainty) with a Bell–McCaffrey Student-t
-approximation. Scalar `cuped` keeps its existing Welch–Satterthwaite route.
-Neither route inherits the other's statistical properties.
+This is intentionally not scalar CUPED: `cuped_multicovariate` fits one
+multivariable adjustment to the per-unit outcome vector and uses HC2
+uncertainty (including fitted-slope and pooled-anchor uncertainty) with a
+Bell–McCaffrey Student-t approximation. Scalar `cuped` keeps its
+Welch–Satterthwaite route. Neither route inherits the other's statistical
+properties.
 
 The fixed-horizon M1 support region below is a hard boundary, not a warning or
 an automatic fallback. For a concrete small-sample failure, a balanced
@@ -770,8 +843,7 @@ violations, rather than an unadjusted substitute. Each violation is
 `(observable, value, bound)`; an observable that is not finite is kept as
 its text form (`"inf"`, `"nan"`) so the refusal survives JSON replay. The
 decision cell keeps this refusal whatever sensitivity methods accompany it,
-and a call-time `cuped_linear` override on a metric without declared
-covariates is refused on every ingress before any source query. Breakout
+and a call-time `cuped_multicovariate` override on a metric without declared
 cells fit separately and may therefore be unavailable even when the
 whole-population fit is supported. Assigned and triggered results retain
 their own populations; aggregate and per-unit evidence share one source

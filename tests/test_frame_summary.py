@@ -195,7 +195,9 @@ def test_moments_match_group_summary(arrow_frame: pa.Table) -> None:
                 type="ratio",
                 numerator="revenue",
                 denominator="orders",
-                covariate="pre_revenue",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                ),
             )
         ],
     )
@@ -498,17 +500,26 @@ def _cuped_pair(frame: pa.Table, covariate: str):
         unit="user_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate=covariate)],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name=covariate, kind="continuous")
+                ),
+            )
+        ],
         design=_DESIGN,
     )
-    plain = readouts.run(analysis)[0]
-    adjusted = readouts.run(
-        analysis, decision_method=Method(name="cuped", variance_reduction="cuped")
-    )[0]
+    plain = readouts.run(analysis, decision_method=Method.unadjusted())[0]
+    adjusted = readouts.run(analysis)[0]
     return plain, adjusted
 
 
-def test_run_warns_when_available_covariate_is_not_requested(arrow_frame: pa.Table) -> None:
+def test_declared_method_covariates_do_not_emit_unused_metric_field_warnings(
+    arrow_frame: pa.Table,
+) -> None:
+
     import warnings
 
     from increment import Analysis
@@ -517,26 +528,33 @@ def test_run_warns_when_available_covariate_is_not_requested(arrow_frame: pa.Tab
         arrow_frame,
         unit="user_id",
         group="variant",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                ),
+            )
+        ],
         design=_DESIGN,
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         analysis.run()
 
-    from tests.warning_codes import warning_codes, warning_context
+    from tests.warning_codes import warning_codes
 
-    context = warning_context(caught, "analysis.cuped.covariate_unused")
-    assert "analysis.cuped.covariate_unused" in warning_codes(caught)
-    assert context["metric_names"] == ("revenue",)
-    assert "decision_method" in str(context["route"])
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
-def test_run_emits_one_unused_covariate_warning_per_run(arrow_frame: pa.Table) -> None:
+def test_declared_method_covariates_do_not_emit_unused_metric_field_warnings_per_run(
+    arrow_frame: pa.Table,
+) -> None:
+
     import warnings
 
     from increment import Analysis
-    from increment.errors import IncrementWarning
     from tests.warning_codes import warning_codes
 
     analysis = Analysis.from_unit_summary(
@@ -544,8 +562,20 @@ def test_run_emits_one_unused_covariate_warning_per_run(arrow_frame: pa.Table) -
         unit="user_id",
         group="variant",
         metrics=[
-            MetricSpec(name="revenue", type="mean", covariate="pre_revenue"),
-            MetricSpec(name="orders", type="mean", covariate="pre_balanced"),
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                ),
+            ),
+            MetricSpec(
+                name="orders",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_balanced", kind="continuous")
+                ),
+            ),
         ],
         design=_DESIGN,
     )
@@ -554,23 +584,13 @@ def test_run_emits_one_unused_covariate_warning_per_run(arrow_frame: pa.Table) -
         analysis.run()
         analysis.run()
 
-    matching = [
-        item.message.context
-        for item in caught
-        if isinstance(item.message, IncrementWarning)
-        and item.message.code == "analysis.cuped.covariate_unused"
-    ]
-    assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 2
-    assert [context["metric_names"] for context in matching] == [
-        ("revenue", "orders"),
-        ("revenue", "orders"),
-    ]
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
 @pytest.mark.parametrize(
     "decision_method",
     [
-        Method(name="cuped", variance_reduction="cuped"),
+        Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
         Method(name="unadjusted"),
     ],
 )
@@ -586,7 +606,13 @@ def test_run_does_not_warn_when_decision_method_is_explicit(
         arrow_frame,
         unit="user_id",
         group="variant",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=decision_method,
+            )
+        ],
         design=_DESIGN,
     )
     with warnings.catch_warnings(record=True) as caught:
@@ -606,12 +632,24 @@ def test_run_does_not_warn_when_cuped_is_a_sensitivity_method(arrow_frame: pa.Ta
         arrow_frame,
         unit="user_id",
         group="variant",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
+                ),
+            )
+        ],
         design=_DESIGN,
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        analysis.run(sensitivity_methods=[Method(name="cuped", variance_reduction="cuped")])
+        analysis.run(
+            sensitivity_methods=[
+                Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
+            ]
+        )
 
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
@@ -629,7 +667,13 @@ def test_run_does_not_recommend_cuped_for_observational_default(
         arrow_frame,
         unit="user_id",
         group="variant",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=Method.unadjusted(),
+            )
+        ],
         design=Observational(
             control_group="control",
             adjustment=AdjustmentSet(covariates=("pre_revenue",)),
@@ -642,21 +686,29 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
-def test_run_warns_for_defaulted_fixed_horizon_encouragement_cuped(
+def test_run_does_not_warn_for_defaulted_fixed_horizon_encouragement_cuped(
     arrow_frame: pa.Table,
 ) -> None:
     import warnings
 
     from increment import Analysis
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
-    from tests.warning_codes import warning_codes, warning_context
+    from tests.warning_codes import warning_codes
 
     frame = arrow_frame.append_column("took", arrow_frame["converted"])
     analysis = Analysis.from_unit_summary(
         frame,
         unit="user_id",
         group="variant",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
+                ),
+            )
+        ],
         design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="took"),
@@ -671,10 +723,7 @@ def test_run_warns_for_defaulted_fixed_horizon_encouragement_cuped(
         warnings.simplefilter("always")
         analysis.run()
 
-    assert warning_codes(caught).count("analysis.cuped.covariate_unused") == 1
-    assert warning_context(caught, "analysis.cuped.covariate_unused")["metric_names"] == (
-        "revenue",
-    )
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
 def test_run_does_not_recommend_cuped_for_compliance_only_encouragement(
@@ -691,7 +740,15 @@ def test_run_does_not_recommend_cuped_for_compliance_only_encouragement(
         frame,
         unit="user_id",
         group="variant",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
+                ),
+            )
+        ],
         design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="took"),
@@ -784,15 +841,15 @@ def _ratio_cuped_pair(table: pa.Table):
                 type="ratio",
                 numerator="revenue",
                 denominator="orders",
-                covariate="pre",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre", kind="continuous")
+                ),
             )
         ],
         design=_DESIGN,
     )
-    plain = readouts.run(analysis, decision_method=Method(name="unadjusted"))[0]
-    adjusted = readouts.run(
-        analysis, decision_method=Method(name="cuped", variance_reduction="cuped")
-    )[0]
+    plain = readouts.run(analysis, decision_method=Method.unadjusted())[0]
+    adjusted = readouts.run(analysis)[0]
     return plain, adjusted
 
 
@@ -841,9 +898,9 @@ def test_metric_spec_roles_drive_run_dispatch(arrow_frame: pa.Table) -> None:
         metrics=[
             MetricSpec(
                 name="revenue",
-                covariate="pre_revenue",
-                decision_method=Method(name="unadjusted"),
-                sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
+                ),
             ),
             MetricSpec(name="orders", type="ratio", numerator="revenue", denominator="orders"),
         ],
@@ -868,8 +925,9 @@ def test_run_call_wide_methods_override_declared_per_metric(arrow_frame: pa.Tabl
         metrics=[
             MetricSpec(
                 name="revenue",
-                covariate="pre_revenue",
-                decision_method=Method(name="cuped", variance_reduction="cuped"),
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                ),
             )
         ],
         design=_DESIGN,
@@ -1366,9 +1424,14 @@ def test_summary_public_unit_frame_preserves_mixed_declared_covariates():
     )
     metric = MetricSpec(
         name="revenue",
-        covariates=(
-            CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
-            CupedCovariate(name="region", kind="categorical"),
+        sensitivity_methods=(
+            Method.cuped_multicovariate(
+                name="linear",
+                covariates=(
+                    CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
+                    CupedCovariate(name="region", kind="categorical"),
+                ),
+            ),
         ),
     )
     with pytest.warns(IncrementWarning):

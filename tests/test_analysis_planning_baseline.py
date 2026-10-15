@@ -12,10 +12,11 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, SourceSnapshotEvidence
+from increment import Analysis, CupedCovariate, Method, SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
+from increment.semantics.models import CupedCovariateBinding, Measure, MethodSpec
 from tests.capability_consumers_scalar import PLANNING_BASELINE, completed, refused
 
 
@@ -81,8 +82,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                 {
                     "name": "revenue",
                     "type": "mean",
-                    "covariate": "revenue_pre",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="revenue_pre", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -171,8 +173,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                 {
                     "name": "revenue",
                     "type": "mean",
-                    "covariate": "revenue_pre",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="revenue_pre", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -222,8 +225,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                     "type": "ratio",
                     "numerator": "revenue",
                     "denominator": "revenue_den",
-                    "covariate": "revenue_pre",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="revenue_pre", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -250,8 +254,9 @@ class TestPlanningBaselineOnDataframeRoutes:
             "type": "ratio",
             "numerator": "revenue",
             "denominator": "revenue_den",
-            "covariate": "revenue_pre",
-            "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+            "decision_method": Method.cuped(
+                covariates=CupedCovariate(name="revenue_pre", kind="continuous")
+            ),
         }
         direct = Analysis.from_unit_summary(
             frame,
@@ -299,8 +304,9 @@ class TestPlanningBaselineOnDataframeRoutes:
             metrics=[
                 {
                     **metric,
-                    "covariate": "revenue_pre",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="revenue_pre", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -353,13 +359,19 @@ class TestPlanningBaselineOnDataframeRoutes:
             if metric_type == "mean"
             else {"name": "m", "type": "ratio", "numerator": "num", "denominator": "den"}
         )
-        cuped = {"name": "cuped", "variance_reduction": "cuped"}
         adjusted = Analysis.from_unit_summary(
             frame,
             unit="unit_id",
             group="group_id",
             control="control",
-            metrics=[{**spec, "covariate": "x", "decision_method": cuped}],
+            metrics=[
+                {
+                    **spec,
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous")
+                    ),
+                }
+            ],
         )
         unadjusted = Analysis.from_unit_summary(
             frame, unit="unit_id", group="group_id", control="control", metrics=[spec]
@@ -427,8 +439,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                     "name": "m",
                     "type": "mean",
                     "value_column": "y",
-                    "covariate": "y_copy",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="y_copy", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -462,8 +475,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                     "name": "m",
                     "type": "mean",
                     "value_column": "y",
-                    "covariate": "x",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -507,8 +521,9 @@ class TestPlanningBaselineOnDataframeRoutes:
                     "type": "ratio",
                     "numerator": "num",
                     "denominator": "den",
-                    "covariate": "x",
-                    "decision_method": {"name": "cuped", "variance_reduction": "cuped"},
+                    "decision_method": Method.cuped(
+                        covariates=CupedCovariate(name="x", kind="continuous")
+                    ),
                 }
             ],
         )
@@ -1620,7 +1635,20 @@ experiments:
         assert baseline.trigger_rate == 1.0
 
 
-_CUPED = ({"name": "cuped", "variance_reduction": "cuped"},)
+_CUPED = (
+    MethodSpec(
+        name="cuped",
+        variance_reduction="cuped",
+        covariates=(
+            CupedCovariateBinding(
+                name="pre_revenue",
+                kind="continuous",
+                missing="zero",
+                measure=Measure(fact="purchase", aggregation="sum"),
+            ),
+        ),
+    ),
+)
 
 
 def _parity_rows(*, clustered):
@@ -1686,18 +1714,28 @@ def _parity_metrics(*, covariate):
                 name="revenue_cuped",
                 type="mean",
                 value_column="revenue",
-                covariate="pre_revenue",
                 missing="zero",
-                sensitivity_methods=_CUPED,
+                sensitivity_methods=(
+                    Method.cuped(
+                        covariates=CupedCovariate(
+                            name="pre_revenue", kind="continuous", missing="zero"
+                        )
+                    ),
+                ),
             ),
             MetricSpec(
                 name="rps_cuped",
                 type="ratio",
                 numerator="revenue",
                 denominator="sessions",
-                covariate="pre_revenue",
                 missing="zero",
-                sensitivity_methods=_CUPED,
+                sensitivity_methods=(
+                    Method.cuped(
+                        covariates=CupedCovariate(
+                            name="pre_revenue", kind="continuous", missing="zero"
+                        )
+                    ),
+                ),
             ),
         ]
     return metrics
@@ -1772,7 +1810,6 @@ def _parity_analyses(*, clustered):
                 type=m.type,
                 numerator=m.numerator,
                 denominator=m.denominator,
-                covariate=m.covariate,
                 sensitivity_methods=m.sensitivity_methods,
             )
             for m in metrics

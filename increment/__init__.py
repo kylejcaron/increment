@@ -148,9 +148,12 @@ if TYPE_CHECKING:
     )
     from increment.semantics.models import (
         AnalysisPlan,
+        CupedCovariate,
+        CupedCovariateBinding,
         Definitions,
         ExperimentMetric,
         InferenceSpec,
+        MethodSpec,
         Metric,
         MultiplicitySpec,
         Winsorization,
@@ -192,6 +195,8 @@ __all__ = [
     "Definitions",
     "Metric",
     "MetricSpec",
+    "CupedCovariate",
+    "CupedCovariateBinding",
     "Winsorization",
     "Design",
     "Randomized",
@@ -266,6 +271,7 @@ __all__ = [
     "ExperimentMetric",
     "InferenceSpec",
     "Method",
+    "MethodSpec",
     "Normal",
     "AsymptoticMean",
     "AsymptoticSequentialResult",
@@ -355,6 +361,9 @@ _LAZY_IMPORTS = {
     "Analysis": ("increment.analysis", "Analysis"),
     "SourceSnapshotEvidence": ("increment.query.session", "SourceSnapshotEvidence"),
     "MetricSpec": ("increment.frame", "MetricSpec"),
+    "CupedCovariate": ("increment.semantics.models", "CupedCovariate"),
+    "CupedCovariateBinding": ("increment.semantics.models", "CupedCovariateBinding"),
+    "MethodSpec": ("increment.semantics.models", "MethodSpec"),
     # The identification union every readout's `design=` argument names.
     # Annotation-only: construct one of its members, which are exported
     # alongside it.

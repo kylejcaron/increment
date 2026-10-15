@@ -38,7 +38,7 @@ def _ols_relative_interval(y: np.ndarray, x: np.ndarray, n: int) -> tuple[float,
 def run(*, reps: int = 50, seed: int = 20261008) -> dict[str, object]:
     import polars as pl
 
-    from increment import Analysis, Method, MetricSpec
+    from increment import Analysis, CupedCovariate, Method, MetricSpec
     from tests.analysis_factory import lift_rows
 
     rng = np.random.default_rng(seed)
@@ -63,7 +63,8 @@ def run(*, reps: int = 50, seed: int = 20261008) -> dict[str, object]:
                 "x": x,
             }
         )
-        metric = MetricSpec(name="y", type="mean", covariate="x")
+        cuped = Method.cuped(covariates=CupedCovariate(name="x", kind="continuous"))
+        metric = MetricSpec(name="y", type="mean", sensitivity_methods=(cuped,))
         analysis = Analysis.from_unit_summary(
             frame, unit="unit_id", group="variant", control="control", metrics=[metric]
         )
@@ -72,7 +73,7 @@ def run(*, reps: int = 50, seed: int = 20261008) -> dict[str, object]:
             rows = lift_rows(
                 analysis.run(
                     decision_method=Method(name="unadjusted"),
-                    sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+                    sensitivity_methods=(cuped,),
                 )
             )
         finally:

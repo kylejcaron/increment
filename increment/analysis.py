@@ -219,17 +219,26 @@ def fit_predeclared_adjustment(
     from fractions import Fraction
 
     from increment.estimation.cuped import fit_cuped
-    from increment.estimation.engine import _df_to_arms
+    from increment.estimation.engine import Method, _df_to_arms
     from increment.frame import MetricSpec, from_unit_summary
+    from increment.semantics.models import CupedCovariate
     from increment.semantics.sequential import PredeclaredAdjustment
 
+    covariate_declaration = CupedCovariate(
+        name=covariate,
+        kind="continuous",
+        missing="refuse" if covariate_missing == "error" else covariate_missing,
+    )
     source = from_unit_summary(
         frame,
         unit=unit,
         group=group,
         control=control,
         metrics=[
-            MetricSpec(name=outcome, covariate=covariate, covariate_missing=covariate_missing)
+            MetricSpec(
+                name=outcome,
+                decision_method=Method.cuped(covariates=covariate_declaration),
+            )
         ],
         experiment_id="pre-period",
     )
@@ -1217,14 +1226,16 @@ class Analysis:
             control = canonical_control_for_moments(control)
         validate_moments_control(rows, control)
         if design is None:
-            design = MomentsSource.design_summary_design(rows, control_group=control)
-        design = design or Randomized(control_group=control)
+            design = MomentsSource.design_summary_design(rows, control_group=control) or Randomized(
+                control_group=control
+            )
         specs = _coerce_source_metrics(metrics, design=design)
+
         from increment._analysis_config import refuse_cuped_linear_moments
 
         for spec in specs:
-            if spec.covariates or any(
-                method.variance_reduction == "cuped_linear"
+            if any(
+                method.variance_reduction == "cuped_multicovariate"
                 for method in (
                     (() if spec.decision_method is None else (spec.decision_method,))
                     + spec.sensitivity_methods

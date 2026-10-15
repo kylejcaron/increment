@@ -218,7 +218,7 @@ _ON_UNASSIGNED_INVALID = RefusalSpec(
 _METRIC_COVARIATE_IMPUTE_ALL_NULL = RefusalSpec(
     "frame.validation.metric_covariate_impute_all_null",
     InvalidRequestError,
-    template="metric {metric!r}: covariate column {covariate!r} has no observed values to impute a pooled mean from -- every row is null/NaN. Drop covariate= or repair the column upstream.",
+    template="metric {metric!r}: covariate column {covariate!r} has no observed values to impute a pooled mean from -- every row is null/NaN. Drop the covariate method or repair the column upstream.",
 )
 
 Renderer = Callable[..., str]
@@ -274,8 +274,8 @@ _register_warning(
         f"{filled} -- a deterministic imputation computed without "
         f"the arm or the outcome, so randomization keeps the "
         f"estimate unbiased and only the imputed units' variance "
-        f"reduction is forgone. Set covariate_missing='error' to "
-        f"refuse instead."
+        f"reduction is forgone. Set the method covariate's missing='refuse' "
+        f"to reject instead."
     ),
 )
 
@@ -304,7 +304,7 @@ _REFUSALS = refusals(
         "frame.validation.metric_covariate_impute_all_null": _METRIC_COVARIATE_IMPUTE_ALL_NULL,
         "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r} -- one control, declared once",
         "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind -- one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
-        "frame.validation.metric_covariate_column": "metric {metric!r}: covariate column {covariate!r} has {n_missing} null/NaN value(s) and covariate_missing='error'. Sums skip nulls while n counts every row, which would silently bias the CUPED estimate (an artificial covariate imbalance). Drop covariate_missing='error' to pooled-mean impute them (unbiased under randomization), declare covariate_missing='zero' if null means \"no pre-period activity\", or repair upstream with increment.impute.pooled_mean.",
+        "frame.validation.metric_covariate_column": "metric {metric!r}: covariate column {covariate!r} has {n_missing} null/NaN value(s) and its method declares missing='refuse'. Choose missing='impute' for pooled-mean imputation (unbiased under randomization), missing='zero' if null means \"no pre-period activity\", or repair upstream with increment.impute.pooled_mean.",
         "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). An undeclared null is silently averaged as 0 (n counts the row, sum skips it) and NaN sums diverge by backend. If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.impute.zeros(df, {column!r}). If \"not observed\", declare missing='drop' (complete-case; unbiased only when missingness is unrelated to the values) or run df, n = increment.impute.drop_null(df, {column!r}).",
         "frame.validation.from_unit_panel": RefusalSpec(
             "frame.validation.from_unit_panel",
@@ -985,7 +985,7 @@ def _reject_cluster_request(
             mechanism=mechanism,
             route="drop cluster= or use an encouragement design",
         )
-    covered = [s.name for s in specs if s.covariate is not None]
+    covered = [s.name for s in specs if any(method.covariates for method in s._methods)]
     if covered:
         refuse(
             _CLUSTER_CAPABILITY,
@@ -1172,7 +1172,8 @@ def _reject_non_finite_metrics(frame: nw.DataFrame[Any], specs: Sequence[MetricS
     """
     checked: set[str] = set()
     for spec in specs:
-        for col in (spec.y_column, spec.denominator, spec.covariate):
+        columns = [spec.y_column, spec.denominator]
+        for col in columns:
             if col is None or col in checked:
                 continue
             checked.add(col)
@@ -1385,37 +1386,39 @@ def _enforce_missing_policy(
                 dropped=dropped,
                 stacklevel=4,
             )
-        if spec.covariate is not None:
-            n_missing = miss(spec.covariate)
-            if n_missing == 0:
-                continue
-            if spec.covariate_missing == "error":
-                _raise(
-                    "frame.validation.metric_covariate_column",
-                    metric=spec.name,
-                    covariate=spec.covariate,
+        # Sensitivity-only inputs must not affect the decision roster;
+        # sensitivity estimators report their own missing-input refusals.
+        if spec.decision_method is not None:
+            for covariate in spec.decision_method.covariates or ():
+                n_missing = miss(covariate.name)
+                if n_missing == 0 or covariate.missing == "impute-indicator":
+                    continue
+                if covariate.missing == "refuse":
+                    _raise(
+                        "frame.validation.metric_covariate_column",
+                        metric=spec.name,
+                        covariate=covariate.name,
+                        n_missing=n_missing,
+                    )
+                n_observed = frame.shape[0] - n_missing
+                if covariate.missing == "impute" and n_observed == 0:
+                    _raise(
+                        "frame.validation.metric_covariate_impute_all_null",
+                        metric=spec.name,
+                        covariate=covariate.name,
+                    )
+                _warn(
+                    "frame.validation.metric_covariate_missing_imputed",
+                    name=spec.name,
+                    covariate=covariate.name,
                     n_missing=n_missing,
+                    filled=(
+                        "the pooled mean of the observed values"
+                        if covariate.missing == "impute"
+                        else "zero"
+                    ),
+                    stacklevel=4,
                 )
-            n_observed = frame.shape[0] - n_missing
-            if spec.covariate_missing == "impute" and n_observed == 0:
-                _raise(
-                    "frame.validation.metric_covariate_impute_all_null",
-                    metric=spec.name,
-                    covariate=spec.covariate,
-                )
-            filled = (
-                "the pooled mean of the observed values"
-                if spec.covariate_missing == "impute"
-                else "zero"
-            )
-            _warn(
-                "frame.validation.metric_covariate_missing_imputed",
-                name=spec.name,
-                covariate=spec.covariate,
-                n_missing=n_missing,
-                filled=filled,
-                stacklevel=4,
-            )
     if fill_zero:
         nan_cols = [
             col for col in sorted(fill_zero) if frame.schema[col] in (nw.Float32, nw.Float64)
@@ -1438,9 +1441,10 @@ def _reject_covariates(specs: Sequence[MetricSpec]) -> None:
     combination still refuses here.
     """
     covered = [
-        s.name
-        for s in specs
-        if s.covariate is not None and (s.window_days is not None or s.type == "retention")
+        spec.name
+        for spec in specs
+        if any(method.covariates for method in spec._methods)
+        and (spec.window_days is not None or spec.type == "retention")
     ]
     retention = [s.name for s in specs if s.name in covered and s.type == "retention"]
     if covered:

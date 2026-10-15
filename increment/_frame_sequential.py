@@ -61,28 +61,35 @@ def _outcome_value(value, spec) -> Fraction:
     return _observation(value)
 
 
-def _covariate_value(row, spec, center, unit) -> Fraction:
-    """Read one unit's pre-period covariate under the spec's missing-covariate policy.
+def _scalar_covariate(spec):
+    return next(
+        (
+            covariate
+            for method in spec._methods
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
+        ),
+        None,
+    )
 
-    A predeclared adjustment imputes its registered centre, the pre-period
-    estimate of ``E[X]``; a retained joint law has no centre fixed before the
-    data, so a missing covariate can only be zeroed or refused.
-    """
-    value = row[spec.covariate]
+
+def _covariate_value(row, spec, covariate, center, unit) -> Fraction:
+    """Read a unit's method-owned covariate under its declared missing policy."""
+    value = row[covariate.name]
     if not _missing(value):
         return _observation(value)
-    if spec.covariate_missing == "impute" and center is not None:
+    if covariate.missing == "impute" and center is not None:
         return center
-    if spec.covariate_missing == "zero":
+    if covariate.missing == "zero":
         return Fraction(0)
     sequential_refuse(
         "source.invalid",
         f"metric {spec.name!r}: unit {row[unit]!r} has no covariate value and "
         + (
-            "covariate_missing='error'"
-            if spec.covariate_missing == "error"
+            "the method declares missing='refuse'"
+            if covariate.missing == "refuse"
             else "the retained joint law fixes no pre-period centre to impute; declare "
-            "covariate_missing='zero' or 'error'"
+            "missing='zero' or 'refuse'"
         ),
     )
 
@@ -103,14 +110,16 @@ def _joint_observation(spec, model, unit):
         if upper is not None and value > upper:
             value = upper
         adjustment = getattr(model, "adjustment", None)
+        covariate = _scalar_covariate(spec)
         if adjustment is not None:
-            covariate = _covariate_value(row, spec, adjustment.center, unit)
-            value -= adjustment.coefficient * (covariate - adjustment.center)
+            value -= adjustment.coefficient * (
+                _covariate_value(row, spec, covariate, adjustment.center, unit) - adjustment.center
+            )
         vector = [value]
         if spec.denominator is not None:
             vector.append(_outcome_value(row[spec.denominator], spec))
         if model_adjustment(model) == "retained":
-            vector.append(_covariate_value(row, spec, None, unit))
+            vector.append(_covariate_value(row, spec, covariate, None, unit))
         return vector[0] if len(vector) == 1 else tuple(vector)
 
     return observe
@@ -159,11 +168,14 @@ def capture_frame_totals(source):
             )
         spec = specs[model.metric]
         validate_sequential_transform(spec)
-        if adjustment_kind(registration, model.metric) is not None and spec.covariate is None:
+        if (
+            adjustment_kind(registration, model.metric) is not None
+            and _scalar_covariate(spec) is None
+        ):
             sequential_refuse(
                 "source.invalid",
                 f"metric {model.metric!r}: the registered covariate adjustment needs the "
-                "frame's covariate column (MetricSpec.covariate)",
+                "frame's scalar Method.cuped(covariates=...) input",
             )
     observers = {
         model.metric: _joint_observation(specs[model.metric], model, source._unit)
@@ -243,7 +255,7 @@ def _validate_panel_models(source, registration) -> None:
                 "route.unsupported",
                 f"metric {model.metric!r}: a unit panel carries no per-unit pre-period "
                 f"covariate, so it cannot supply the registered {model.law!r} adjustment; "
-                "use a unit-summary frame with MetricSpec.covariate",
+                "use a unit-summary frame with a method-owned CUPED covariate",
             )
 
 

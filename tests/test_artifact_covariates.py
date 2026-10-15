@@ -93,8 +93,9 @@ def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_
     defs_path.write_text(
         defs_path.read_text().replace(
             "    plan: {primary: revenue}",
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: tenure, kind: categorical, property: region, source: events}]}}",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: tenure, kind: categorical, property: region, source: events}]}}}",
         )
     )
     analysis, _ = _publish_categorical(defs_path, con)
@@ -113,9 +114,10 @@ def test_observational_property_wins_over_same_named_measure_binding_on_replay(t
         defs_path.read_text().replace(
             "    plan: {secondaries: [revenue]}",
             "    n_pre_periods: 30\n"
-            "    plan: {primary: {metric: revenue, covariates: "
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_multicovariate, covariates: "
             "[{name: tenure, kind: continuous, measure: "
-            "{fact: exposure, aggregation: count}}]}}",
+            "{fact: exposure, aggregation: count}}]}}}",
         )
     )
     analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
@@ -140,8 +142,9 @@ def test_reserved_binding_alias_has_same_native_and_artifact_refusal(tmp_path):
     defs_path.write_text(
         defs_path.read_text().replace(
             "    plan: {secondaries: [revenue]}",
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: metric, kind: continuous, property: tenure, source: events}]}}",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: metric, kind: continuous, property: tenure, source: events}]}}}",
         )
     )
 

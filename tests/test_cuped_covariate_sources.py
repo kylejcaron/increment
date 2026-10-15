@@ -18,9 +18,8 @@ def _with_metric_covariates(path, binding: str, *, n_pre_periods: int = 0):
         "    plan: {primary: revenue}",
         "    n_pre_periods: "
         + str(n_pre_periods)
-        + "\n    plan: {primary: {metric: revenue, covariates: ["
-        + binding
-        + "]}}",
+        + "\n    plan: {primary: {metric: revenue, decision_method: {name: mixed, "
+        "variance_reduction: cuped_multicovariate, covariates: [" + binding + "]}}}",
     )
     path.write_text(text)
     return path
@@ -241,49 +240,19 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
 
 
 @pytest.mark.slow
-def test_observational_covariate_name_is_not_shadowed_by_metric_binding(tmp_path):
-    import warnings
+def test_method_covariate_alias_conflicts_with_observational_binding(tmp_path):
+    from increment.errors import InvalidRequestError
 
-    import pytest
-
-    from increment.errors import IncrementWarning
-
-    defs_path, con, units = categorical_defs_and_con(tmp_path)
-    text = defs_path.read_text().replace(
-        "    plan: {primary: revenue}",
-        "    plan: {primary: {metric: revenue, covariates: "
-        "[{name: tenure, kind: categorical, property: region, source: events}]}}",
+    defs_path, con, _units = categorical_defs_and_con(tmp_path)
+    _with_metric_covariates(
+        defs_path,
+        "{name: tenure, kind: categorical, property: region, source: events}",
     )
-    defs_path.write_text(text)
-
     source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
-    metric = source.context.metrics[0]
-    rows = nw.from_native(source.unit_frame(metric, covariates=["tenure"]), eager_only=True)
-    values = {row["unit_id"]: row["tenure"] for row in rows.to_arrow().to_pylist()}
-    assert values["u0"] == units["u0"]["tenure"]
 
-    from tests.analysis_factory import lift_rows
-
-    baseline_path = tmp_path / "without_metric_binding.yaml"
-    baseline_path.write_text(
-        defs_path.read_text().replace(
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: tenure, kind: categorical, property: region, source: events}]}}",
-            "    plan: {primary: revenue}",
-        )
-    )
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=DeprecationWarning)
-        with pytest.warns(IncrementWarning):
-            baseline_result = lift_rows(
-                Analysis.from_definitions("cat_test", baseline_path, con).run()
-            )[0].require_lift()
-        with pytest.warns(IncrementWarning):
-            bound_result = lift_rows(Analysis.from_definitions("cat_test", defs_path, con).run())[
-                0
-            ].require_lift()
-
-    assert bound_result.value == pytest.approx(baseline_result.value)
+    with pytest.raises(InvalidRequestError) as raised:
+        source.unit_frame(source.context.metrics[0], covariates=["tenure"])
+    assert raised.value.code == "facade.analysis_config.covariate_binding_conflict"
 
 
 @pytest.mark.parametrize(
@@ -383,8 +352,9 @@ def test_multiple_primary_artifact_binding_resolves_property_alias(tmp_path):
         )
         .replace(
             "    plan: {primary: revenue}",
-            "    plan: {primary: [{metric: revenue, covariates: "
-            "[{name: pre_region, kind: categorical, property: region, source: events}]}, "
+            "    plan: {primary: [{metric: revenue, decision_method: {name: mixed, "
+            "variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: pre_region, kind: categorical, property: region, source: events}]}}, "
             "revenue_other]}",
         )
     )
@@ -420,8 +390,9 @@ def test_artifact_deduplicates_omitted_and_explicit_resolved_source(tmp_path):
     defs_path.write_text(
         defs_path.read_text().replace(
             "    plan: {secondaries: [revenue]}",
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: pre_tenure, kind: continuous, property: tenure}]}}",
+            "    plan: {primary: {metric: revenue, decision_method: {name: mixed, "
+            "variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: pre_tenure, kind: continuous, property: tenure}]}}}",
         )
     )
     definitions = load(defs_path)
@@ -506,8 +477,9 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
         )
         .replace(
             "    plan: {secondaries: [revenue]}",
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: pre_tenure, kind: continuous, property: tenure, source: events_b}]}}",
+            "    plan: {primary: {metric: revenue, decision_method: {name: mixed, "
+            "variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: pre_tenure, kind: continuous, property: tenure, source: events_b}]}}}",
         )
     )
     defs_path.write_text(text)
@@ -566,10 +538,12 @@ def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
         .replace(
             "    plan: {primary: revenue}",
             "    n_pre_periods: 30\n"
-            "    plan: {primary: [{metric: revenue, covariates: "
-            "[{name: prior, kind: continuous, measure: {fact: purchase, aggregation: sum}}]}, "
-            "{metric: revenue_other, covariates: "
-            "[{name: prior, kind: continuous, property: prior, source: events}]}]}",
+            "    plan: {primary: [{metric: revenue, decision_method: {name: scalar, "
+            "variance_reduction: cuped, covariates: [{name: prior, kind: continuous, "
+            "measure: {fact: purchase, aggregation: sum}}]}}, "
+            "{metric: revenue_other, decision_method: {name: mixed, "
+            "variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: prior, kind: continuous, property: prior, source: events}]}}]}",
         )
     )
     defs_path.write_text(text)
@@ -606,7 +580,7 @@ def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
     }
 
 
-def test_cuped_linear_observational_route_refuses_before_acquisition(tmp_path):
+def test_multicovariate_observational_route_refuses_before_acquisition(tmp_path):
     import pytest
 
     from increment.errors import UnsupportedRequestError
@@ -616,11 +590,6 @@ def test_cuped_linear_observational_route_refuses_before_acquisition(tmp_path):
         defs_path,
         "{name: region, kind: categorical, property: region, source: events}",
     )
-    text = defs_path.read_text().replace(
-        "covariates: [",
-        "decision_method: {name: linear, variance_reduction: cuped_linear}, covariates: [",
-    )
-    defs_path.write_text(text)
     analysis = Analysis.from_definitions("cat_test", defs_path, con)
 
     with pytest.raises(UnsupportedRequestError) as raised:
@@ -629,7 +598,7 @@ def test_cuped_linear_observational_route_refuses_before_acquisition(tmp_path):
     assert raised.value.code == "estimation.engine.cuped_linear_observational"
 
 
-def test_from_moments_refuses_cuped_linear_with_unit_source_route():
+def test_from_moments_refuses_multicovariate_with_unit_source_route():
     import pytest
 
     from increment.errors import UnsupportedRequestError
@@ -638,8 +607,9 @@ def test_from_moments_refuses_cuped_linear_with_unit_source_route():
 
     spec = MetricSpec(
         name="revenue",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="prior_spend", kind="continuous"),),
+        decision_method=Method.cuped_multicovariate(
+            covariates=CupedCovariate(name="prior_spend", kind="continuous")
+        ),
     )
     with pytest.raises(UnsupportedRequestError) as raised:
         Analysis.from_moments([], metrics=[spec], control="control")
@@ -653,7 +623,7 @@ def test_from_moments_refuses_cuped_linear_with_unit_source_route():
         assert restored.context == raised.value.context
 
 
-def test_switchback_refuses_cuped_linear_with_independent_unit_route():
+def test_switchback_refuses_multicovariate_with_independent_unit_route():
     import pytest
 
     from increment.errors import CapabilityError
@@ -668,8 +638,9 @@ def test_switchback_refuses_cuped_linear_with_independent_unit_route():
 
     spec = MetricSpec(
         name="revenue",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="prior_spend", kind="continuous"),),
+        decision_method=Method.cuped_multicovariate(
+            covariates=CupedCovariate(name="prior_spend", kind="continuous")
+        ),
     )
     with pytest.raises(CapabilityError) as raised:
         Analysis.from_switchback_panel(
@@ -712,8 +683,9 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
         )
         .replace(
             "    plan:\n      secondaries: [revenue]",
-            "    plan: {primary: {metric: revenue, covariates: "
-            "[{name: region, kind: categorical, property: region, source: events}]}}",
+            "    plan: {primary: {metric: revenue, decision_method: {name: mixed, "
+            "variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}}",
         )
     )
     defs_path.write_text(defs)
@@ -782,8 +754,8 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
     text = defs_path.read_text().replace(
         "    plan: {secondaries: [revenue]}",
         "    plan: {primary: {metric: revenue, "
-        "decision_method: {name: linear, variance_reduction: cuped_linear}, "
-        "covariates: [{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}",
+        "decision_method: {name: linear, variance_reduction: cuped_multicovariate, "
+        "covariates: [{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}}",
     )
     defs_path.write_text(text)
 
@@ -816,8 +788,10 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
         metrics=[
             MetricSpec(
                 name="revenue",
-                decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-                covariates=(CupedCovariate(name="pre_tenure", kind="continuous"),),
+                decision_method=Method.cuped_multicovariate(
+                    name="linear",
+                    covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                ),
             )
         ],
         plan=AnalysisPlan(primary="revenue"),
@@ -912,6 +886,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
     import pytest
 
     from increment import Method
+    from increment.frame import CupedCovariate
     from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
 
@@ -920,8 +895,8 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
         defs_path.read_text().replace(
             "    plan: {secondaries: [revenue]}",
             "    plan: {primary: {metric: revenue, decision_method: "
-            "{name: linear, variance_reduction: cuped_linear}, covariates: "
-            "[{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}",
+            "{name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}}",
         )
     )
     analysis = Analysis.from_definitions("cov_test", defs_path, con, store="none")
@@ -932,7 +907,12 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
                 list[LiftEstimate],
                 analysis.run(
                     decision_method=Method(name="plain"),
-                    sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+                    sensitivity_methods=[
+                        Method.cuped_multicovariate(
+                            name="linear",
+                            covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                        )
+                    ],
                 ),
             )
             if row.group_id == "treatment" and row.method == "linear"
@@ -958,7 +938,12 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
                 list[LiftEstimate],
                 analysis.run(
                     decision_method=Method(name="plain"),
-                    sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+                    sensitivity_methods=[
+                        Method.cuped_multicovariate(
+                            name="linear",
+                            covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                        )
+                    ],
                 ),
             )
             if row.group_id == "treatment" and row.method == "linear"
@@ -994,8 +979,9 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
         metrics=[
             MetricSpec(
                 name="revenue",
-                decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-                covariates=(CupedCovariate(name="pre", kind="continuous"),),
+                decision_method=Method.cuped_multicovariate(
+                    name="linear", covariates=CupedCovariate(name="pre", kind="continuous")
+                ),
             )
         ],
     )
@@ -1004,7 +990,12 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
         list(
             analysis.run(
                 decision_method=Method(name="plain"),
-                sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+                sensitivity_methods=[
+                    Method.cuped_multicovariate(
+                        name="linear",
+                        covariates=CupedCovariate(name="pre", kind="continuous"),
+                    )
+                ],
             )
         ),
     )

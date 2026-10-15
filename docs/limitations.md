@@ -491,10 +491,11 @@ unequal allocation and arm-specific slopes were not tested.
 
 ### Mixed-covariate linear CUPED is fixed-horizon approximate
 
-`cuped_linear` adjusts mean, conversion, and ratio metrics using a shared
-linear covariate fit, with HC2 uncertainty and a Bell–McCaffrey Student-t
-reference. Both the fitted slopes and pooled covariate anchor contribute to
-the uncertainty calculation. This fixed-horizon approximation does not
+`Method.cuped_multicovariate` adjusts mean, conversion, and ratio metrics using
+a shared linear covariate fit, with HC2 uncertainty and a Bell–McCaffrey Student-t
+reference.
+Both the fitted slopes and pooled covariate anchor contribute to the
+uncertainty calculation. This fixed-horizon approximation does not
 provide finite-sample coverage. A covariate can improve or worsen precision;
 fit support is not a promise of a narrower interval.
 

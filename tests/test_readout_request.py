@@ -15,7 +15,7 @@ from increment.errors import (
     UnsupportedRequestError,
 )
 from increment.estimation.engine import Method
-from increment.frame import MetricSpec, from_unit_panel, from_unit_summary
+from increment.frame import CupedCovariate, MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.design import Randomized
 from increment.sources import Grain, MomentSource, SourceOperation
 from tests.sequential_cases import registration
@@ -481,8 +481,9 @@ def test_sequential_cuped_refuses_before_frame_access():
     specs = [
         MetricSpec(
             name="metric",
-            covariate="covariate",
-            decision_method=Method(name="cuped", variance_reduction="cuped"),
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name="covariate", kind="continuous")
+            ),
         )
     ]
     design = Randomized(control_group="control")

@@ -271,7 +271,7 @@ def _scoped_randomized_results(
         ReadoutMetadata,
         SourceReadoutScope,
     )
-    from increment.readouts._design_scope import _config_snapshot, resolve_roster
+    from increment.readouts._design_scope import _config_snapshot, _request_snapshot, resolve_roster
 
     roster = resolve_roster(src, design, population, observed_by_metric, base_roster=base_roster)
     roster_arms = roster.arms
@@ -297,7 +297,8 @@ def _scoped_randomized_results(
         "q": plan.q,
         "declared": plan.declared,
         "procedures": {
-            name: value.model_dump(mode="json") for name, value in plan.procedures.items()
+            name: _request_snapshot(value.model_dump(mode="json"), field=f"procedures.{name}")
+            for name, value in plan.procedures.items()
         },
         "source_identity": source_identity(src),
     }

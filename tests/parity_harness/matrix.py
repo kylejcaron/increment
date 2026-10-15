@@ -864,7 +864,7 @@ _OPTION_AUTHORITY = {
 }
 _OPTION_PREREQUISITE = {
     "none": "",
-    "cuped": "a pre-period covariate (n_pre_periods on the warehouse, covariate= on a frame)",
+    "cuped": "a pre-period covariate (n_pre_periods on the warehouse, Method.cuped(covariates=...) on a frame)",
     "winsor_fixed": "a mean metric with a declared upper bound",
     "winsor_percentile": "a mean metric with a declared upper percentile and positive outcomes",
     "cluster": "a declared cluster column with at least 40 clusters",

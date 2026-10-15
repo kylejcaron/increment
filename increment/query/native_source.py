@@ -21,7 +21,12 @@ import ibis.expr.types as ir
 from ibis import Table
 from ibis import to_sql as ibis_to_sql
 
-from increment._analysis_config import effective_methods, overlay_configs, resolve_configs
+from increment._analysis_config import (
+    effective_methods,
+    ensure_covariate_binding_compatible,
+    overlay_configs,
+    resolve_configs,
+)
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
@@ -117,6 +122,7 @@ from increment.semantics.design import Encouragement
 from increment.semantics.models import (
     Breakout,
     ConversionMetric,
+    CupedCovariateBinding,
     Definitions,
     Experiment,
     Factor,
@@ -540,14 +546,28 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             binding = self._experiment.bindings.get(metric.name)
             if binding is None:
                 continue
-            for covariate in binding.covariates:
-                if covariate.measure is not None:
+            methods = (
+                () if binding.decision_method is None else (binding.decision_method,)
+            ) + binding.sensitivity_methods
+            for covariate in (
+                covariate for method in methods for covariate in method.covariates or ()
+            ):
+                if isinstance(covariate, CupedCovariateBinding) and covariate.measure is not None:
                     add_fact(covariate.measure.fact)
                 else:
-                    property_name = covariate.property or covariate.name
+                    property_name = (
+                        covariate.property
+                        if isinstance(covariate, CupedCovariateBinding)
+                        and covariate.property is not None
+                        else covariate.name
+                    )
                     fact_source = self._resolve_unit_covariate_source(
                         property_name,
-                        declared_source=covariate.source,
+                        declared_source=(
+                            covariate.source
+                            if isinstance(covariate, CupedCovariateBinding)
+                            else None
+                        ),
                         kind=covariate.kind,
                     )
                     sources[fact_source.name] = fact_source
@@ -3764,11 +3784,23 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if "cluster_id" in covariates and cluster != "cluster_id":
             _refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)
         metric_binding = self._experiment.bindings.get(metric.name)
-        declared_covariates = (
-            {covariate.name: covariate for covariate in metric_binding.covariates}
-            if metric_binding is not None
-            else {}
+        metric_methods = (
+            ()
+            if metric_binding is None
+            else (
+                (
+                    ()
+                    if metric_binding.decision_method is None
+                    else (metric_binding.decision_method,)
+                )
+                + metric_binding.sensitivity_methods
+            )
         )
+        declared_covariates = {
+            covariate.name: covariate
+            for method in metric_methods
+            for covariate in method.covariates or ()
+        }
         design = self._experiment.design
         adjustment_covariates = {
             covariate.property: covariate for covariate in getattr(design, "covariates", ())
@@ -3780,19 +3812,29 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 continue
             adjustment_declared = adjustment_covariates.get(name)
             metric_declared = declared_covariates.get(name)
-            if adjustment_declared is None and metric_declared is not None:
-                if metric_declared.measure is not None:
-                    covariate_measures[name] = metric_declared.measure
-                    continue
+            if (
+                adjustment_declared is not None
+                and isinstance(metric_declared, CupedCovariateBinding)
+                and metric_declared.measure is None
+            ):
+                ensure_covariate_binding_compatible(
+                    adjustment_declared,
+                    metric_declared,
+                    current_alias=name,
+                )
+            if (
+                adjustment_declared is None
+                and isinstance(metric_declared, CupedCovariateBinding)
+                and metric_declared.measure is not None
+            ):
+                covariate_measures[name] = metric_declared.measure
+                continue
             declared = adjustment_declared or metric_declared
-            property_name = (
-                declared.property
-                if declared is not None and declared.property is not None
-                else name
-            )
+            declared_property = getattr(declared, "property", None)
+            property_name = declared_property if declared_property is not None else name
             fact_source = self._resolve_unit_covariate_source(
                 property_name,
-                declared_source=declared.source if declared is not None else None,
+                declared_source=getattr(declared, "source", None),
                 kind=getattr(declared, "kind", None) if declared is not None else None,
             )
             prop = next(p for p in self._defs.properties_of(fact_source) if p.name == property_name)
@@ -3805,7 +3847,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             measure_sources = tuple(
                 _find_fact_source(self._defs, covariate.measure.fact)[0].name
                 for covariate in declared_covariates.values()
-                if covariate.measure is not None and covariate.name in covariates
+                if isinstance(covariate, CupedCovariateBinding)
+                and covariate.measure is not None
+                and covariate.name not in adjustment_covariates
+                and covariate.name in covariates
             )
             property_sources = tuple(
                 source.name for source, _property, _categorical in covariate_sources.values()

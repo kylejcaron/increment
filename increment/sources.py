@@ -1483,9 +1483,13 @@ class MomentsSource(SequentialSourceMixin):
             winsor_refuse(
                 "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
             )
+        self.refuse_unavailable_covariates(covariates)
+        _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
+
+    @staticmethod
+    def refuse_unavailable_covariates(covariates: Sequence[str]) -> None:
         if covariates:
             _refuse(_MOMENTS_COVARIATE_UNAVAILABLE, covariates=tuple(covariates))
-        _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
 
     def unit_counts(self) -> dict[str, int]:
         """Return source-level enrolled counts carried by supported cubes."""
@@ -1600,6 +1604,12 @@ def export_source_moments(
     from increment.semantics.design import Encouragement
 
     context = source.context
+    from increment._analysis_config import refuse_unrepresentable_scalar_export
+
+    refuse_unrepresentable_scalar_export(
+        source.context.configs,
+        design=source.context.design,
+    )
     identity_payload = json.dumps(source_identity(source), sort_keys=True, separators=(",", ":"))
     plan_payload = compiled_plan_to_json(
         context.plan,

@@ -63,6 +63,13 @@ if TYPE_CHECKING:
     from increment.semantics.models import Experiment, Metric
 
 
+def _binding_covariates(binding: Any) -> tuple[Any, ...]:
+    methods = (() if binding.decision_method is None else (binding.decision_method,)) + (
+        binding.sensitivity_methods
+    )
+    return tuple(covariate for method in methods for covariate in method.covariates or ())
+
+
 def _utc_now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
@@ -417,7 +424,7 @@ class ArtifactPublisher:
                 continue
             binding = self._experiment.bindings[request.metric_name]
             covariate = next(
-                item for item in binding.covariates if item.name == request.covariate_name
+                item for item in _binding_covariates(binding) if item.name == request.covariate_name
             )
             if covariate.measure is not None:
                 measure_source, _ = _find_fact_source(self._defs, covariate.measure.fact)
@@ -942,7 +949,9 @@ class ArtifactPublisher:
         exposure_rows: list[dict[str, object]],
     ) -> _PublicationExtensionSpec:
         binding = self._experiment.bindings[request.metric_name]
-        covariate = next(item for item in binding.covariates if item.name == request.covariate_name)
+        covariate = next(
+            item for item in _binding_covariates(binding) if item.name == request.covariate_name
+        )
         measure = covariate.measure
         assert measure is not None
         source, fact = _find_fact_source(self._defs, measure.fact)

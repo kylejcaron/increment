@@ -408,7 +408,7 @@ def test_golden_payload_has_stable_bytes() -> None:
     expected = (
         '{"alpha":0.025,"compliance":null,"declared":true,"inference":{"kind":"fixed"},"path":"warehouse",'
         '"procedures":{"revenue_2024-01-15":{"alpha":0.025,"alternative":"greater",'
-        '"axis":"relative","decision_method":{"conversion_inference":"auto","name":"cuped",'
+        '"axis":"relative","decision_method":{"conversion_inference":"auto","covariates":null,"name":"cuped",'
         '"variance_reduction":"cuped"},'
         '"family":{"family":{"axes":["date","metric"],"correction":"bonferroni",'
         '"guarantee":"fwer","kind":"multiplicity","name":"revenue_family","q":null},'
@@ -416,13 +416,13 @@ def test_golden_payload_has_stable_bytes() -> None:
         '"methods_explicitly_empty":false,"metric":"revenue_2024-01-15","null_lift":0.0,'
         '"prior":{"mu":0.02,"sigma":0.15},"prior_is_global":false,"role":"primary",'
         '"scale":"relative","sensitivity_methods":[{"conversion_inference":"auto",'
-        '"name":"unadjusted","variance_reduction":"none"}]}},'
+        '"covariates":null,"name":"unadjusted","variance_reduction":"none"}]}},'
         '"q":0.1,"view_policies":{"asof":{"axes":["date","metric"],"correction":"bonferroni",'
         '"guarantee":"fwer","kind":"multiplicity","name":"asof_family","q":null},'
         '"encouragement_breakout":{"axes":["date","metric"],"correction":"none",'
         '"guarantee":"none","kind":"multiplicity","name":"encouragement_family","q":null},'
         '"randomized_breakout":{"axes":["date","metric"],"correction":"bh",'
-        '"guarantee":"fdr","kind":"multiplicity","name":"randomized_family","q":0.1}},"wire_version":2}'
+        '"guarantee":"fdr","kind":"multiplicity","name":"randomized_family","q":0.1}},"wire_version":4}'
     )
     payload = compiled_plan_to_json(_rich_plan())
     assert payload == expected

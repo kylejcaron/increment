@@ -36,6 +36,7 @@ from increment.frame import (
 from increment.semantics.design import Randomized
 from increment.semantics.models import (
     ConversionMetric,
+    CupedCovariate,
     MeanMetric,
     Metric,
     RatioMetric,
@@ -230,7 +231,13 @@ def test_from_unit_panel_covariate_refusal_beats_synthesis_validation_error() ->
             date="day",
             control="control",
             metrics=[
-                MetricSpec(name="revenue", covariate="pre_revenue", window_days=7),
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                    ),
+                    window_days=7,
+                ),
                 MetricSpec(name="d7", type="retention", threshold_days=(1, 3)),
                 _SYNTHESIS_ONLY_FAILURE,
             ],
@@ -486,7 +493,12 @@ def test_metric_spec_quantile_requires_q() -> None:
 
 def test_metric_spec_quantile_rejects_covariate() -> None:
     with pytest.raises(InvalidRequestError) as exc_info:
-        MetricSpec(name="latency", type="quantile", quantile=0.9, covariate="pre")
+        MetricSpec(
+            name="latency",
+            type="quantile",
+            quantile=0.9,
+            decision_method=Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous")),
+        )
     assert exc_info.value.code == "frame.metric.cuped_does_apply"
     assert exc_info.value.context["name"] == "latency"
 
@@ -622,9 +634,10 @@ def test_frame_metric_with_declared_decrease_direction_flips_prob_favorable(
 def test_metric_spec_accepts_method_roles_and_prior() -> None:
     spec = MetricSpec(
         name="orders",
-        covariate="pre_orders",
         decision_method=Method(name="unadjusted"),
-        sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+        sensitivity_methods=(
+            Method.cuped(covariates=CupedCovariate(name="pre_orders", kind="continuous")),
+        ),
         prior=Normal(mu=0.0, sigma=0.03),
     )
     assert spec.decision_method is not None
@@ -634,24 +647,16 @@ def test_metric_spec_accepts_method_roles_and_prior() -> None:
 
 
 def test_metric_spec_method_roles_and_prior_default_to_none() -> None:
-    """Omitted method roles/prior inherit call-wide defaults."""
     spec = MetricSpec(name="revenue")
     assert spec.decision_method is None
     assert spec.sensitivity_methods == ()
     assert spec.prior is None
 
 
-def test_metric_spec_covariate_without_cuped_method_stays_valid() -> None:
-    """A covariate declares capability only."""
-    spec = MetricSpec(name="revenue", covariate="pre_revenue")
-    assert spec.covariate == "pre_revenue"
-    assert spec.decision_method is None
-
-    spec_unadjusted_only = MetricSpec(
-        name="revenue", covariate="pre_revenue", decision_method=Method(name="unadjusted")
-    )
-    assert spec_unadjusted_only.decision_method is not None
-    assert spec_unadjusted_only.decision_method.variance_reduction == "none"
+def test_metric_spec_rejects_metric_owned_covariates() -> None:
+    with pytest.raises(InvalidRequestError) as exc_info:
+        MetricSpec(name="revenue", covariate="pre_revenue")  # ty: ignore[unknown-argument]
+    assert exc_info.value.code == "model.field.unknown"
 
 
 def test_metric_spec_cuped_method_requires_covariate() -> None:
@@ -664,16 +669,13 @@ def test_metric_spec_cuped_method_requires_covariate() -> None:
     assert exc_info.value.context == {"name": "orders"}
 
 
-def test_metric_spec_cuped_method_accepted_on_ratio_with_a_covariate() -> None:
-    """A ratio metric adjusts its numerator and denominator against the one
-    declared covariate, so CUPED is a legal declaration for it."""
+def test_metric_spec_cuped_method_accepted_on_ratio_with_covariate() -> None:
     spec = MetricSpec(
         name="rpo",
         type="ratio",
         numerator="rev",
         denominator="orders",
-        covariate="pre_rpo",
-        decision_method=Method(name="cuped", variance_reduction="cuped"),
+        decision_method=Method.cuped(covariates=CupedCovariate(name="pre_rpo", kind="continuous")),
     )
     assert spec.decision_method is not None
     assert spec.decision_method.variance_reduction == "cuped"
@@ -738,7 +740,7 @@ def test_metric_spec_cuped_method_rejected_on_quantile() -> None:
             quantile=0.9,
             decision_method=Method(name="cuped", variance_reduction="cuped"),
         )
-    assert exc_info.value.code == "frame.metric.cuped_supported_metrics"
+    assert exc_info.value.code == "frame.metric.cuped_does_apply"
     assert exc_info.value.context["name"] == "latency"
 
 
@@ -1568,7 +1570,7 @@ def _type_but_sets_metric():
 
 
 def _sets_covariate_missing_metric():
-    MetricSpec(name="revenue", covariate_missing="zero")
+    MetricSpec(name="revenue", covariate_missing="zero")  # ty: ignore[unknown-argument]
 
 
 def _metrics_entries_not_metricspec():
@@ -1614,11 +1616,6 @@ def _frame_asof_completed_windows_contradictory():
 
 _FRAME_SPEC_REFUSAL_CASES = [
     ("frame.metric.type_but_sets", _type_but_sets_metric, {"name": "revenue", "type": "mean"}),
-    (
-        "frame.metric.sets_covariate_missing",
-        _sets_covariate_missing_metric,
-        {"covariate_missing": "zero", "name": "revenue"},
-    ),
     ("frame.metrics_entries_metricspec", _metrics_entries_not_metricspec, {"type_name": "int"}),
     ("frame.duplicate_metric_name", _duplicate_metric_name_specs, {"name": "a"}),
     ("frame.metric_type_retention", _terse_retention_type, {"name": "revenue"}),
@@ -1700,36 +1697,38 @@ def test_warehouse_metrics_cannot_declare_a_missing_policy(model, payload) -> No
         assert {error["type"] for error in raised.value.errors()} == {"extra_forbidden"}
 
 
-def test_metric_spec_declares_mixed_covariates_with_independent_missing_policies():
+def test_metric_spec_declares_method_owned_mixed_covariates_with_independent_missing_policies():
     from increment._metric_specs import CupedCovariate
 
     spec = MetricSpec(
         name="revenue",
-        covariates=(
-            CupedCovariate(name="pre_revenue", kind="continuous"),
-            CupedCovariate(name="country", kind="categorical", missing="impute-indicator"),
+        decision_method=Method.cuped_multicovariate(
+            covariates=(
+                CupedCovariate(name="pre_revenue", kind="continuous"),
+                CupedCovariate(name="country", kind="categorical", missing="impute-indicator"),
+            ),
         ),
     )
 
-    assert [(item.name, item.kind, item.missing) for item in spec.covariates] == [
+    assert spec.decision_method is not None
+    assert spec.decision_method.covariates is not None
+    assert [(item.name, item.kind, item.missing) for item in spec.decision_method.covariates] == [
         ("pre_revenue", "continuous", "refuse"),
         ("country", "categorical", "impute-indicator"),
     ]
 
 
-def test_cuped_linear_requires_a_covariate_set():
+def test_cuped_multicovariate_requires_a_covariate_set():
     with pytest.raises(InvalidRequestError) as raised:
         MetricSpec(
             name="revenue",
-            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+            decision_method=Method(name="linear", variance_reduction="cuped_multicovariate"),
         )
 
-    assert raised.value.code == "frame.metric.declares_cuped_linear"
+    assert raised.value.code == "estimation.engine.method_covariates"
 
 
 def test_summary_unit_frame_preserves_mixed_covariate_values_and_nulls():
-    from increment._metric_specs import CupedCovariate
-
     source = from_unit_summary(
         pa.table(
             {
@@ -1743,15 +1742,7 @@ def test_summary_unit_frame_preserves_mixed_covariate_values_and_nulls():
         unit="unit",
         group="group",
         control="control",
-        metrics=[
-            MetricSpec(
-                name="outcome",
-                covariates=(
-                    CupedCovariate(name="pre", kind="continuous", missing="impute-indicator"),
-                    CupedCovariate(name="country", kind="categorical"),
-                ),
-            )
-        ],
+        metrics=[MetricSpec(name="outcome")],
     )
 
     table = nw.from_native(

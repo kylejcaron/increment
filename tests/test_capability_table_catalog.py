@@ -169,18 +169,6 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
     )
 
 
-def test_scalar_cuped_nonmember_declaration_has_a_separate_refusal_row():
-    from tests.capability_entry_point_catalog import ENTRY_ROWS, resolve_cell
-
-    row = next(
-        entry for entry in ENTRY_ROWS if entry.id == "cuped-linear-scalar-nonmember-conflict"
-    )
-    for ingress in ("from_unit_summary", "from_unit_panel"):
-        display = resolve_cell(row.bindings[ingress])[0][1]
-        assert display.status == "refused"
-        assert display.codes == ("frame.metric.scalar_and_set_covariates",)
-
-
 def test_linear_cuped_matrix_dispositions_cover_six_ingresses():
     from tests.parity_harness.matrix import (
         LINEAR_CUPED_DISPOSITIONS,

@@ -176,7 +176,7 @@ def validate_sequential_methods(registration, metric: str, methods, *, prior=Non
                     f"registered {model.law!r} state does not carry. Register the "
                     f"{'adjusted_ratio_mean' if model.law == 'ratio_mean' else 'adjusted_mean'!r} "
                     "law instead (automatic under InferenceSpec(kind='asymptotic_mean') when "
-                    "a CUPED method is declared with MetricSpec(covariate=...) on a frame or "
+                    "a CUPED method is declared with Method.cuped(covariates=...) on a frame or "
                     "with n_pre_periods > 0 on a definitions experiment). "
                     "For scalar_mean only, a pre-period coefficient and centre can instead "
                     "be declared through InferenceSpec.adjustments or ScalarMeanModel.adjustment "

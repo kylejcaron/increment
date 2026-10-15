@@ -820,8 +820,9 @@ arm retains with its full centered scatter:
     2022, [pdf](https://svenschmit.com/assets/pdf/code_2022_ci.pdf)). The
     `adjusted_*` laws are admitted on `AsymptoticMean` only; the exact Bernoulli
     route admits neither fitted nor predeclared CUPED. The adjusted laws need a
-    per-unit covariate: `from_unit_summary` supplies it through `MetricSpec(covariate=...)`,
-    while `from_definitions` derives it from `n_pre_periods > 0`.
+    per-unit covariate: `from_unit_summary` supplies it through a metric's
+    `decision_method=Method.cuped(covariates=CupedCovariate(...))`, while
+    `from_definitions` derives it from `n_pre_periods > 0`.
     The ratio laws declare
     `positive_population_denominators=True`; a zero or insufficiently separated
     observed denominator leaves that cell unavailable at the requested level
@@ -830,9 +831,10 @@ arm retains with its full centered scatter:
     applies to outcome coordinates before they enter the retained sequential
     state: null and NaN numerator values become exact zeroes (and the same
     policy applies to a ratio denominator when declared). This outcome policy is
-    independent of covariate missingness: `covariate_missing` controls how a
-    declared pre-period covariate is imputed or refused and never changes the
-    metric outcome. The sequential route does not silently clip infinities.
+    independent of method covariate preparation: `CupedCovariate.missing`
+    controls how each registered method handles its pre-period covariate and
+    never changes the metric outcome.
+    The sequential route does not silently clip infinities.
 
     Ratio-family log evidence depends on the stopped state, not its current
     inversion alpha, and is capped by denominator stability. This capped evidence

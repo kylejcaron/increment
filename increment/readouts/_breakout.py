@@ -315,7 +315,10 @@ def _load_cuped_breakout_frames(
 
     for config in configs:
         name = config.metric.name
-        if any(method.variance_reduction == "cuped_linear" for method in methods_by_metric[name]):
+        if any(
+            method.variance_reduction == "cuped_multicovariate"
+            for method in methods_by_metric[name]
+        ):
             names = tuple(item.name for item in config.covariates)
             column = breakout_dimension_column(names)
             if isinstance(src, BreakoutMomentsSource):

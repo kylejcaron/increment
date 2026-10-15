@@ -60,6 +60,7 @@ Each tracker is a kata issue linked to t8tc; each cell below carries the code no
 
 A hazard that several routes refuse with different codes is unfinished on every route that raises it (`matrix._reconcile_hazards`); `check_disposition` rejects a diverging hazard with no tracker. Tracker `66mg` covers both quantile x CUPED (`arm.metric.quantile_cuped`, `frame.metric.cuped_does_apply`, `artifact.extension.invalid`) and quantile x cluster (`arm.metric.quantile_cluster`, `source.frame.cluster_capability`); `0f6d` and `1cr4` cover the quantile day-axis and unbounded-sequential hazards the same way.
 
+
 An observational design has no quantile estimator. The readout seam (`increment/estimation/_readout_refusals.py::refuse_observational_quantile`) refuses `run()` with `readout.observational.quantile` on the definitions, artifact, unit-summary, unit-panel and portable (`from_moments`) ingresses. A windowed quantile reaches the seam on the warehouse routes only; the frame routes refuse its window declaration first (`6z2f`). Descriptive day-axis value legs do not call `validate_readout_adjustment`; the artifact's unwindowed `run_asof()` value leg raises `readout.observational.quantile` from its source guard and remains under `0f6d` with the other quantile x day-axis ordering discrepancies.
 
 ### Portable quantile cells
@@ -142,7 +143,7 @@ The `mixed-cuped-linear-fixed-horizon` case is separate from the 3,584-cell scal
 
 The same four ingresses compare exact `estimation.cuped_linear.support_region` (M1) and `estimation.cuped_linear.level_support` failures. `from_moments` and `from_switchback_panel` are attempted and assert, before acquisition, `facade.analysis_config.cuped_linear_moments` and `source.frame.switchback.metric`, respectively.
 
-`test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses` measures scalar CUPED with mixed CUPED on each supported route. Frames use `MetricSpec.covariate` with the same name included in `MetricSpec.covariates`; definitions additionally require `n_pre_periods > 0`, and artifacts need the `cuped_preperiod` extension. The distinct nonmember frame declaration refuses with `frame.metric.scalar_and_set_covariates`.
+`test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses` measures scalar CUPED with mixed CUPED on each supported route. Frames declare scalar covariates on `Method.cuped(covariates=...)` and include the same name in `MetricSpec.decision_method`; definitions additionally require `n_pre_periods > 0`, and artifacts need the `cuped_preperiod` extension. The distinct nonmember frame declaration refuses with `frame.metric.scalar_and_set_covariates`.
 
 `test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses` exercises fixed lower and upper bounds on all four supported routes and compares rows and retained scope. Percentile winsorization remains unfinished with `estimation.engine.cuped_linear_winsorization`.
 

@@ -732,7 +732,6 @@ def _metric_spec_from_binding(
         "threshold_days",
         "quantile",
         "missing",
-        "covariate_missing",
         "winsorization",
     ):
         if key in definition:

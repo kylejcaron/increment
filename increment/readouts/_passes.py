@@ -441,7 +441,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
         )
 
     if hasattr(evidence, "unit_frame") and any(
-        method.variance_reduction == "cuped_linear" for method in methods
+        method.variance_reduction == "cuped_multicovariate" for method in methods
     ):
         from increment.estimation.engine import (
             _cuped_linear_unavailable_row,
@@ -449,10 +449,10 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
         )
 
         linear_methods = [
-            method for method in methods if method.variance_reduction == "cuped_linear"
+            method for method in methods if method.variance_reduction == "cuped_multicovariate"
         ]
         ordinary_methods = [
-            method for method in methods if method.variance_reduction != "cuped_linear"
+            method for method in methods if method.variance_reduction != "cuped_multicovariate"
         ]
         computations = []
         rows_est = []
@@ -519,7 +519,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
                         control_group=design.control_group,
                         method=method,
                         method_role=method_roles[method.name],
-                        covariates=config.covariates,
+                        covariates=method.covariates or config.covariates,
                         alpha=alpha_for,
                         alternative=test.alternative,
                         null_abs=getattr(test, "null_abs", None),

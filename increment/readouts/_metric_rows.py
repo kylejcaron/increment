@@ -91,7 +91,7 @@ def _load_metric_rows(
     this function's contract) call it before `_load_metric_rows`.
     """
     has_linear = any(
-        getattr(method, "variance_reduction", None) == "cuped_linear" for method in methods
+        getattr(method, "variance_reduction", None) == "cuped_multicovariate" for method in methods
     )
     if has_linear and not _snapshot_active:
         snapshot = getattr(src, "readout_snapshot", None)

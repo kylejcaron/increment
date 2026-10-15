@@ -616,7 +616,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             reason="the portable cube cannot supply per-unit covariates; use a unit source",
             stage="construction",
             evidence=(
-                "tests/test_cuped_covariate_sources.py::test_from_moments_refuses_cuped_linear_with_unit_source_route",
+                "tests/test_cuped_covariate_sources.py::test_from_moments_refuses_multicovariate_with_unit_source_route",
             ),
         ),
         _e(
@@ -628,39 +628,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             reason="use an independent-unit randomized ingress",
             stage="construction",
             evidence=(
-                "tests/test_cuped_covariate_sources.py::test_switchback_refuses_cuped_linear_with_independent_unit_route",
-            ),
-        ),
-    ),
-)
-
-SCALAR_CUPED_NONMEMBER_CONFLICT = ConsumerContract(
-    "scalar-cuped-nonmember-conflict",
-    (
-        _e(
-            "summary_refused",
-            "MetricSpec construction for scalar and mixed CUPED",
-            "from_unit_summary",
-            "the scalar covariate is not declared as a member of covariates",
-            "refused",
-            codes=("frame.metric.scalar_and_set_covariates",),
-            reason="declare the scalar covariate as a member of covariates",
-            stage="construction",
-            evidence=(
-                "tests/test_cuped_covariates.py::test_scalar_and_set_cuped_reject_a_nonmember_scalar_covariate",
-            ),
-        ),
-        _e(
-            "panel_refused",
-            "MetricSpec construction for scalar and mixed CUPED",
-            "from_unit_panel",
-            "the scalar covariate is not declared as a member of covariates",
-            "refused",
-            codes=("frame.metric.scalar_and_set_covariates",),
-            reason="declare the scalar covariate as a member of covariates",
-            stage="construction",
-            evidence=(
-                "tests/test_cuped_covariates.py::test_scalar_and_set_cuped_reject_a_nonmember_scalar_covariate",
+                "tests/test_cuped_covariate_sources.py::test_switchback_refuses_multicovariate_with_independent_unit_route",
             ),
         ),
     ),
@@ -676,7 +644,6 @@ CONSUMER_CONTRACTS = (
     PLANNING_BASELINE,
     UNBOUNDED_RETENTION_SEQUENTIAL,
     MIXED_CUPED_FIXED_HORIZON,
-    SCALAR_CUPED_NONMEMBER_CONFLICT,
 )
 _SWITCHBACK_NO_SCHEDULE = (
     "SOURCE: a switchback contrast has no sequential construction, and from_switchback_panel "

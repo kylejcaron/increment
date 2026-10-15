@@ -240,7 +240,7 @@ def test_frame_current_wire_and_moments_replay_same_actual_decision(tmp_path, la
     analysis.export(path)
     payload = pq.read_table(path).to_pylist()
     assert payload[0]["moments_format"] == 10
-    assert '"wire_version":3' in payload[0]["decision_plan"]
+    assert '"wire_version":5' in payload[0]["decision_plan"]
     legacy_payload = [dict(payload[0], moments_format=8)]
     with pytest.raises(CapabilityError) as legacy:
         Analysis.from_moments(legacy_payload, metrics=specs, control="control")

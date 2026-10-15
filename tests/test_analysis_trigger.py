@@ -3763,9 +3763,11 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
         )
         .replace(
             "    plan:\n      secondaries: [revenue]",
-            "    plan: {primary: {metric: revenue, decision_method: "
-            "{name: linear, variance_reduction: cuped_linear}, covariates: "
-            "[{name: region, kind: categorical, property: region, source: events}]}}",
+            "    plan:\n      primary:\n        metric: revenue\n"
+            "        decision_method: {name: plain}\n"
+            "        sensitivity_methods:\n"
+            "          - {name: linear, variance_reduction: cuped_multicovariate, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}",
         )
     )
     defs_path = tmp_path / "triggered-cuped.yaml"
@@ -3787,13 +3789,7 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
     try:
         from increment.estimation.results import LiftEstimate
 
-        rows = cast(
-            list[LiftEstimate],
-            analysis.run(
-                decision_method=Method(name="plain"),
-                sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
-            ),
-        )
+        rows = cast(list[LiftEstimate], analysis.run())
         estimates = {
             row.analysis_population: row
             for row in rows
@@ -3819,7 +3815,7 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
             metric,
             triggered_frame,
             control_group="C",
-            method=Method(name="linear", variance_reduction="cuped_linear"),
+            method=Method.cuped_multicovariate(name="linear", covariates=covariates),
             method_role="sensitivity",
             covariates=covariates,
             alpha=0.05,

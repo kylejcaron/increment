@@ -857,7 +857,15 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
     if design is not None and design.mechanism == "observational":
         declarations.extend(design.covariates)
     for binding in experiment.bindings.values():
-        declarations.extend(c for c in binding.covariates if c.property is not None)
+        methods = (
+            () if binding.decision_method is None else (binding.decision_method,)
+        ) + binding.sensitivity_methods
+        declarations.extend(
+            covariate
+            for method in methods
+            for covariate in method.covariates or ()
+            if getattr(covariate, "property", None) is not None
+        )
 
     entries: list[Any] = []
     seen_sources: set[tuple[str, str]] = set()
@@ -965,8 +973,11 @@ def _cuped_catalog_entries(
         binding = experiment.bindings.get(metric_name)
         if binding is None:
             continue
-        for covariate in binding.covariates:
-            measure = covariate.measure
+        methods = (
+            () if binding.decision_method is None else (binding.decision_method,)
+        ) + binding.sensitivity_methods
+        for covariate in (covariate for method in methods for covariate in method.covariates or ()):
+            measure = getattr(covariate, "measure", None)
             if measure is None:
                 continue
             request = _model("CupedMeasureCovariateRequest").model_validate(

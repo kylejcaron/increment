@@ -144,7 +144,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "supported",
         None,
         "tests/test_warehouse_cuped_parity.py::test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses",
-        "Frames declare the same MetricSpec.covariate and member of MetricSpec.covariates; definitions declare n_pre_periods > 0 for scalar CUPED and bind the mixed covariates separately. Publish the cuped_preperiod artifact extension.",
+        "Frames declare scalar and mixed covariates on their respective Method.cuped(covariates=...) declarations; definitions derive the scalar covariate from n_pre_periods > 0 and bind mixed covariates separately. Publish the cuped_preperiod artifact extension.",
     ),
     MethodInteraction(
         "ratio",

@@ -149,20 +149,33 @@ if TYPE_CHECKING:
     from increment.semantics.models import Breakout, Metric
 
 
+def _scalar_covariate(spec: MetricSpec):
+    return next(
+        (
+            covariate
+            for method in spec._methods
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
+        ),
+        None,
+    )
+
+
 def _melt_to_unit_totals(
     tbl: ir.Table, *, unit: str, group: str, study_id: str, specs: Sequence[MetricSpec]
 ) -> ir.Table:
     """Project one policy-adjusted ``(unit, metric)`` row per specification."""
     per_metric = []
     for spec in specs:
+        covariate = _scalar_covariate(spec)
         base = tbl.select(
             unit_id=tbl[unit].cast("string"),
             experiment_id=ibis.literal(study_id),
             group_id=tbl[group].cast("string"),
             y=tbl[spec.y_column].cast("float64"),
             x=(
-                tbl[spec.covariate].cast("float64")
-                if spec.covariate
+                tbl[covariate.name].cast("float64")
+                if covariate is not None
                 else ibis.literal(None, type="float64")
             ),
             y_den=(
@@ -176,10 +189,10 @@ def _melt_to_unit_totals(
             x=ibis.ifelse(base.x.isnan(), ibis.null().cast("float64"), base.x),
             y_den=ibis.ifelse(base.y_den.isnan(), ibis.null().cast("float64"), base.y_den),
         )
-        if spec.covariate and spec.covariate_missing != "error":
+        if covariate is not None and covariate.missing != "refuse":
             fill = (
                 ibis.literal(0.0)
-                if spec.covariate_missing == "zero"
+                if covariate.missing == "zero"
                 else base.x.mean().over(ibis.window())
             )
             base = base.mutate(x=ibis.coalesce(base.x, fill))
@@ -328,7 +341,19 @@ class SqlPanelSource:
         _validate_columns(nwf, roles=[("unit", unit), ("group", group)], metrics=specs)
         nwf = _canonicalize_group_identity(nwf, group)
         metric_columns = sorted(
-            {c for s in specs for c in (s.y_column, s.denominator, s.covariate) if c}
+            {
+                column
+                for spec in specs
+                for column in (spec.y_column, spec.denominator)
+                if column is not None
+            }
+            | {
+                covariate.name
+                for spec in specs
+                for method in spec._methods
+                for covariate in (method.covariates or ())
+                if covariate.kind == "continuous"
+            }
         )
         nwf = _coerce_metric_columns(nwf, metric_columns)
         _validate_frame_boundary(nwf, unit=unit, date=None, specs=specs)
@@ -1374,15 +1399,24 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             for entry in entries:
                 if not isinstance(entry, dict) or entry.get("metric") != metric_name:
                     continue
-                for covariate in cast(Sequence[Any], entry.get("covariates", ())):
-                    if covariate.get("name") != name:
-                        continue
-                    if covariate.get("property") is not None:
-                        property_name = covariate["property"]
-                        source_name = covariate.get("source")
-                    elif covariate.get("measure") is not None:
-                        measure_bound = True
-                    break
+                methods = [
+                    method
+                    for method in (
+                        entry.get("decision_method"),
+                        *cast(Sequence[Any], entry.get("sensitivity_methods") or ()),
+                    )
+                    if isinstance(method, dict)
+                ]
+                for method in methods:
+                    for covariate in cast(Sequence[Any], method.get("covariates") or ()):
+                        if covariate.get("name") != name:
+                            continue
+                        if covariate.get("property") is not None:
+                            property_name = covariate["property"]
+                            source_name = covariate.get("source")
+                        elif covariate.get("measure") is not None:
+                            measure_bound = True
+                        break
         if not measure_bound and source_name is None:
             design = experiment_context.get("design") or {}
             for covariate in design.get("covariates", ()):
