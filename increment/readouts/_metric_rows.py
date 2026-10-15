@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -32,28 +31,15 @@ class MetricRows:
 def _frame_digest_and_arms(frame):
     from increment.estimation.readout_types import StreamingDigest
 
+    columns = tuple(frame.columns)
     digest = StreamingDigest()
-
-    for row in frame.iter_rows(named=True):
-        normalized = {}
-        for name, value in row.items():
-            if isinstance(value, float):
-                if math.isnan(value):
-                    normalized[name] = None
-                elif math.isinf(value):
-                    normalized[name] = {"__float__": "+inf" if value > 0 else "-inf"}
-                else:
-                    normalized[name] = value
-            else:
-                normalized[name] = value
-        digest.update(normalized)
+    digest.update_positional_rows(
+        frame.iter_rows(named=False), columns=columns, normalize_frame_floats=True
+    )
     arms: set[str] = set()
-    if "group_id" in frame.columns:
-        arms = {
-            str(group_id)
-            for group_id in frame.get_column("group_id").to_list()
-            if group_id is not None
-        }
+    if "group_id" in columns:
+        observed = frame["group_id"].to_list()
+        arms = {str(group_id) for group_id in observed if group_id is not None}
     return frozenset(arms), digest.hexdigest(), digest.count
 
 
