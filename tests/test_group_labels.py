@@ -636,3 +636,31 @@ def test_empty_string_moments_control_survives_export_reload(tmp_path):
         pq.read_table(path).to_pylist(), metrics={"y": "mean"}, control=""
     )
     assert reloaded.run() == original.run()
+
+
+def test_literal_true_count_only_arm_does_not_collide_with_boolean_alias(tmp_path):
+
+    import pyarrow.parquet as pq
+
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2", "l1", "l2"],
+                "arm": ["control", "control", "true", "true", "True", "True"],
+                "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "literal-true-count-only.parquet"
+    original.export(path)
+    rows = [row for row in pq.read_table(path).to_pylist() if row["group_id"] != "True"]
+    counts = {"control": 2, "true": 2, "True": 2}
+    for row in rows:
+        if row["group_id"] == "true":
+            row["group_id"] = True
+    replay = Analysis.from_moments(rows, metrics={"y": "mean"}, control="control")
+    assert replay.unit_counts() == counts

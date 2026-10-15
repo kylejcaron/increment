@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from increment._canonical import canonical_json_bytes
-from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+from increment._labels import (
+    MIXED_ASSIGNMENT_LABEL,
+    UNASSIGNED_LABEL,
+    boolean_group_count_aliases,
+)
 from increment._moment_plan import X_SLOT_ROLES
 from increment._source_identity import (
     source_identities_equal,
@@ -834,12 +838,13 @@ def _canonicalize_boolean_moment_group_ids(
     rows: Sequence[Mapping[str, object]],
 ) -> tuple[list[Mapping[str, object]], dict[str, str]]:
     raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
-    literal_labels = {group_id for group_id in raw_group_ids if isinstance(group_id, str)}
-    boolean_count_aliases = {
-        str(group_id): "true" if group_id else "false"
-        for group_id in raw_group_ids
-        if isinstance(group_id, bool) and str(group_id) not in literal_labels
-    }
+    count_labels = tuple(
+        label
+        for row in rows
+        if (counts := _parse_assignment_counts(row.get(ASSIGNMENT_COUNTS_FIELD))) is not None
+        for label in counts
+    )
+    boolean_count_aliases = boolean_group_count_aliases(raw_group_ids, count_labels)
     normalized = [
         {**row, "group_id": "true" if row.get("group_id") else "false"}
         if isinstance(row.get("group_id"), bool)
