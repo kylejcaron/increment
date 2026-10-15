@@ -314,8 +314,10 @@ class GaussianState:
         Chan's centered merge with a singleton is the exact Welford update.
         No decimal-string conversion or rounded raw-second-moment subtraction occurs.
         """
-        state = cls.empty(dimension)
-        zero_scatter = state.scatter
+        _dimension(dimension)
+        count = 0
+        mean = (_ZERO,) * dimension
+        scatter = ((_ZERO,) * dimension,) * dimension
         for row in rows:
             if len(row) != dimension:
                 refuse(_ROW_DIMENSION_MISMATCH, dimension=dimension, row_dimension=len(row))
@@ -328,8 +330,23 @@ class GaussianState:
                         refuse(_NONFINITE_OBSERVATION, value=value)
                 else:
                     values.append(_rational(value))
-            state = state.merge(cls(1, tuple(values), zero_scatter))
-        return state
+            observation = tuple(values)
+            if count == 0:
+                mean = observation
+                count = 1
+                continue
+            next_count = count + 1
+            delta = tuple(b - a for a, b in zip(mean, observation, strict=True))
+            weight = Fraction(count, next_count)
+            mean = tuple(a + Fraction(1, next_count) * d for a, d in zip(mean, delta, strict=True))
+            scatter = tuple(
+                tuple(scatter[i][j] + weight * delta[i] * delta[j] for j in range(dimension))
+                for i in range(dimension)
+            )
+            count = next_count
+        if count == 0:
+            return cls.empty(dimension)
+        return cls(count, mean, scatter)
 
     def merge(self, other: "GaussianState") -> "GaussianState":
         """Chan merge: S=S1+S2+n1*n2/(n1+n2)*ΔΔ'."""
