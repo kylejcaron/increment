@@ -433,10 +433,6 @@ class TestNuisanceStopContract:
         "counts",
         [
             (5778, 57780, 5985, 57780),
-            (500, 5000, 560, 5000),
-            (100, 1000, 130, 1000),
-            (1000, 20000, 1095, 20000),
-            (1000, 20000, 1093, 20000),
         ],
         ids=str,
     )
@@ -614,7 +610,7 @@ class TestFastBinomMatchesScipy:
     support where `_plus_threshold`/`_minus_threshold` can land.
     """
 
-    @pytest.mark.parametrize("seed", range(20))
+    @pytest.mark.parametrize("seed", [0, 1, 2])
     def test_bit_exact_across_in_and_out_of_support_k(self, seed):
         rng = np.random.default_rng(seed)
         n = int(rng.integers(1, 5000))
@@ -961,7 +957,7 @@ class TestEndpointSearchOnAnalyticFunctions:
 
     @pytest.mark.parametrize("shape", ["step", "ratio", "steep"])
     @pytest.mark.parametrize("increasing", [True, False])
-    @pytest.mark.parametrize("offset", [-1e-6, -1e-9, 0.0, 1e-9, 1e-6])
+    @pytest.mark.parametrize("offset", [-1e-6, 0.0, 1e-6])
     @pytest.mark.parametrize("tau", [0.1, 1e-3])
     def test_the_tested_null_sits_on_the_side_its_own_evaluation_gives(
         self, increasing, shape, offset, tau

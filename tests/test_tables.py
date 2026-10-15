@@ -2152,8 +2152,7 @@ class TestRenderedDecisionStats:
         )
         assert rows[0]["stat_sig"] is True  # margin still met
         table = readout_table(rows)
-        (forest,) = [c for c in table.columns if type(c).__name__ == "Forest"]
-        assert getattr(forest, "ref", None) == 0.0
+        assert _orange_rule_count(table) == 1
 
     def test_unstored_probability_is_not_rendered(self):
         pytest.importorskip("coeftable")
