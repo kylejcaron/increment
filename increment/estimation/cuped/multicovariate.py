@@ -275,11 +275,18 @@ class _LinearCupedCalculator:
         size: int, terms: tuple[tuple[int, _ScaledMean, float], ...]
     ) -> np.ndarray:
         """Jacobian ``weight / mean`` per entry, scaled by the smallest mean so no reciprocal forms."""
+        return _LinearCupedCalculator._scaled_jacobian_details(size, terms)[0]
+
+    @staticmethod
+    def _scaled_jacobian_details(
+        size: int, terms: tuple[tuple[int, _ScaledMean, float], ...]
+    ) -> tuple[np.ndarray, float, float, int]:
+        """Return a stable Jacobian and its reciprocal reference-scale metadata."""
         reference = min((mean[2], mean[0]) for _, mean, _ in terms)
-        jac = np.zeros(size)
-        for index, (hi, _, exponent), weight in terms:
-            jac[index] = math.ldexp(reference[1] / hi, reference[0] - exponent) * weight
-        return jac
+        jacobian = np.zeros(size)
+        for index, (high, _, exponent), weight in terms:
+            jacobian[index] = math.ldexp(reference[1] / high, reference[0] - exponent) * weight
+        return jacobian, 1.0, reference[1], -reference[0]
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
         try:
@@ -616,44 +623,56 @@ def _make_inference_summary(identity, cached, calculator, outcomes, order, lever
 def _projection_specs(identity, cached, calculator, order):
     specs = []
     narm = len(order)
-    for kind, arm, ci, scale, estimate, se, dof in cached:
+    for kind, arm, control, projection_scale, estimate, se, dof in cached:
         available = bool(np.isfinite((estimate, se, dof)).all())
+        scale_metadata, divisor_metadata, exponent_metadata = 1.0, 1.0, 0
         if not available:
             jacobian = [0.0] * (2 * narm if kind == "ratio" else narm)
-        elif kind in ("absolute", "relative"):
+        elif kind == "absolute":
             jacobian = [0.0] * narm
-            if kind == "absolute":
-                jacobian[order.index(arm)] = 1.0
-                jacobian[order.index(ci)] = -1.0
-            else:
-                jacobian[order.index(arm)] = 1.0 / calculator.adjusted_means[order.index(arm)]
-                jacobian[order.index(ci)] = -1.0 / calculator.adjusted_means[order.index(ci)]
+            jacobian[order.index(arm)] = 1.0
+            jacobian[order.index(control)] = -1.0
+        elif kind == "relative":
+            ti, ci = order.index(arm), order.index(control)
+            treatment_mean = calculator._usable(0, ti, arm, "outcome")
+            control_mean = calculator._usable(0, ci, control, "outcome")
+            (
+                jacobian,
+                scale_metadata,
+                divisor_metadata,
+                exponent_metadata,
+            ) = calculator._scaled_jacobian_details(
+                narm,
+                ((ti, treatment_mean, 1.0), (ci, control_mean, -1.0)),
+            )
         else:
-            ti, control_index = order.index(arm), order.index(ci)
-            means = np.asarray(calculator.adjusted_means).reshape(2, narm)
-            nt, dt = means[0, ti], means[1, ti]
-            nc, dc = means[0, control_index], means[1, control_index]
-            jacobian = [0.0] * (2 * narm)
-            if scale == "log":
-                jacobian[ti], jacobian[control_index] = 1.0 / nt, -1.0 / nc
-                jacobian[narm + ti], jacobian[narm + control_index] = -1.0 / dt, 1.0 / dc
+            ti, ci = order.index(arm), order.index(control)
+            nt = calculator._usable(0, ti, arm, "numerator")
+            nd = calculator._usable(1, ti, arm, "denominator")
+            nc = calculator._usable(0, ci, control, "numerator")
+            cd = calculator._usable(1, ci, control, "denominator")
+            if projection_scale == "log":
+                terms = ((ti, nt, 1.0), (ci, nc, -1.0), (narm + ti, nd, -1.0), (narm + ci, cd, 1.0))
             else:
-                jacobian[ti], jacobian[control_index] = 1.0 / dt, -1.0 / dc
-                jacobian[narm + ti], jacobian[narm + control_index] = (
-                    -nt / (dt * dt),
-                    nc / (dc * dc),
-                )
+                rt, rc = _rounded_ratio(nt, nd), _rounded_ratio(nc, cd)
+                terms = ((ti, nd, 1.0), (ci, cd, -1.0), (narm + ti, nd, -rt), (narm + ci, cd, rc))
+            (
+                jacobian,
+                scale_metadata,
+                divisor_metadata,
+                exponent_metadata,
+            ) = calculator._scaled_jacobian_details(2 * narm, terms)
         specs.append(
             ProjectionSpec(
-                identity=identity + (kind, arm, ci, scale),
+                identity=identity + (kind, arm, control, projection_scale),
                 kind=kind,
                 jacobian=tuple(float(value) for value in jacobian),
-                scale=1.0,
-                divisor=1.0,
-                exponent=0,
+                scale=scale_metadata,
+                divisor=divisor_metadata,
+                exponent=exponent_metadata,
                 arm=arm,
-                control=ci,
-                available=available and all(np.isfinite(jacobian)),
+                control=control,
+                available=available and bool(np.isfinite(jacobian).all()),
             )
         )
     return tuple(specs)

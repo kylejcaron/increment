@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import math
+import pickle
+from dataclasses import replace
+from typing import Any
+
 import numpy as np
 import pytest
 from scipy import stats
 
 from increment.errors import InvalidRequestError
 from increment.estimation.cuped import fit_cuped_multicovariate
-from increment.estimation.cuped.types import FitState, InferenceSummary, ProjectionSpec
+from increment.estimation.cuped.encoding import MulticovariateCupedLayout
+from increment.estimation.cuped.inference import _bm_terms, finalize_fit
+from increment.estimation.cuped.types import (
+    CategoricalCells,
+    FitState,
+    InferenceSummary,
+    ProjectionSpec,
+)
 
 
 def _direct_mean_reference(y, arms, order, x):
@@ -279,14 +291,16 @@ def test_evidence_types_are_frozen_and_reject_mismatched_summary_identity():
     assert FitState.__dataclass_params__.frozen
     assert InferenceSummary.__dataclass_params__.frozen
     assert ProjectionSpec.__dataclass_params__.frozen
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidRequestError) as raised:
         ProjectionSpec(
             identity=("fit-a",), kind="absolute", jacobian=(), scale=1.0, divisor=1.0, exponent=0
         )
+    assert raised.value.code == "estimation.cuped_linear.invalid_evidence"
     left = InferenceSummary(("fit-a",), ("all",), 0.2, 4.0, (), ((1.0,),), ())
     right = InferenceSummary(("fit-b",), ("all",), 0.2, 4.0, (), ((1.0,),), ())
-    with pytest.raises(ValueError, match="incompatible identities"):
+    with pytest.raises(InvalidRequestError) as raised:
         left.merge(right)
+    assert raised.value.code == "estimation.cuped_linear.incompatible_evidence"
     assert left.merge(left) is left
 
 
@@ -306,3 +320,275 @@ def test_categorical_cell_failure_preserves_joint_cell_context():
     assert raised.value.context["column"] == "segment"
     assert raised.value.context["level"] == "rare"
     assert raised.value.context["counts"] == {"c": 1, "t": 8}
+
+
+def _minimal_finalizer_evidence():
+    identity = ("compact-test-fit",)
+    arms = ("c", "t")
+    layout = MulticovariateCupedLayout((), (), (), (), (), (), ())
+    state = FitState(
+        identity=identity,
+        eligible_arms=arms,
+        withheld_arms=(),
+        refusal_contexts=(),
+        counts=(3, 3),
+        layout=layout,
+        offsets=(),
+        scales=(),
+        centered_means=((), ()),
+        anchor=(),
+        triangular_factor=((1.0, 0.0), (0.0, 1.0)),
+        transformed_rhs=((),),
+        slopes=((),),
+        adjusted_means=(2.0, -3.0),
+        theta=(),
+        n_min=3,
+        p=0,
+        is_ratio=False,
+        control="c",
+    )
+    projection_records = (
+        ("absolute", "t", "c", "", 1.0, 0.0, 0.0),
+        ("absolute", "c", "t", "", -1.0, 0.0, 0.0),
+    )
+    matrix = tuple(tuple(0.0 for _ in range(4)) for _ in range(4))
+    summary = InferenceSummary(
+        fit_identity=identity,
+        projection_identity=identity + ("all-pairs-v1",),
+        max_leverage=0.2,
+        sum_leverage=1.2,
+        refusal_witness=(),
+        adjusted_component_covariance=((1.0, 0.0), (0.0, 1.0)),
+        scaled_projected_score_squares=projection_records,
+        s2=((0.0,), (0.0,)),
+        s4=((0.0,), (0.0,)),
+        g=(((matrix),), ((matrix),)),
+        g2=(((matrix),), ((matrix),)),
+        u=((0.0, 0.0), (0.0, 0.0)),
+        evidence_identity=identity,
+        projection_specs=tuple(
+            ProjectionSpec(
+                identity=identity + row[:4],
+                kind=row[0],
+                jacobian=(1.0, -1.0) if row[1] == "t" else (-1.0, 1.0),
+                scale=1.0,
+                divisor=1.0,
+                exponent=0,
+                arm=row[1],
+                control=row[2],
+            )
+            for row in projection_records
+        ),
+    )
+    return state, summary
+
+
+def test_finalizer_fit_dof_uses_first_noncontrol_arm_against_designated_control():
+    order = ("a", "b", "c")
+    arms = np.repeat(order, (20, 25, 30))
+    row = np.arange(len(arms), dtype=float)
+    x = np.sin(0.37 * row)
+    y = 8.0 + 0.4 * x + np.cos(0.61 * row)
+    groups = [np.flatnonzero(arms == arm) for arm in order]
+    means_x = np.array([x[index].mean() for index in groups])
+    centered_x = x - np.array([means_x[order.index(arm)] for arm in arms])
+    weights = np.array(
+        [
+            1.0 / (len(groups[order.index(arm)]) * (len(groups[order.index(arm)]) - 1))
+            for arm in arms
+        ]
+    )
+    design = np.zeros((len(arms), len(order) + 1))
+    for index, arm in enumerate(arms):
+        design[index, order.index(arm)] = 1.0
+    design[:, -1] = centered_x
+    contrast = np.zeros(len(order) + 1)
+    contrast[order.index("a")] = 1.0
+    contrast[order.index("c")] = -1.0
+    contrast[-1] = -(means_x[order.index("a")] - means_x[order.index("c")])
+    inverse = np.linalg.inv(design.T @ (design * weights[:, None]))
+    hat = design @ inverse @ (design * weights[:, None]).T
+    leverage = np.diag(hat)
+    influence = design @ (inverse @ contrast) * weights
+    dense = (np.eye(len(arms)) - hat).T * (influence / np.sqrt(1.0 - leverage))[None, :]
+    eigenvalues = np.linalg.eigvalsh(dense.T @ dense)
+    expected = eigenvalues.sum() ** 2 / (eigenvalues @ eigenvalues)
+
+    fit = fit_cuped_multicovariate(
+        y, arms, control="c", arm_order=order, covariates={"x": x}, kinds={"x": "continuous"}
+    )
+    assert fit.dof == pytest.approx(expected, rel=2e-10, abs=1e-11)
+
+
+def test_finalizer_rejects_truncated_projection_roster():
+    state, summary = _minimal_finalizer_evidence()
+    with pytest.raises(InvalidRequestError) as raised:
+        finalize_fit(
+            state,
+            replace(
+                summary,
+                scaled_projected_score_squares=summary.scaled_projected_score_squares[:1],
+                s2=summary.s2[:1],
+                s4=summary.s4[:1],
+                g=summary.g[:1],
+                g2=summary.g2[:1],
+                projection_specs=summary.projection_specs[:1],
+            ),
+        )
+    assert raised.value.code == "estimation.cuped_linear.invalid_evidence"
+
+
+def test_finalizer_rejects_invalid_bm_trace_square():
+    state, summary = _minimal_finalizer_evidence()
+    with pytest.raises(InvalidRequestError) as raised:
+        finalize_fit(state, replace(summary, s4=((-1.0,), (0.0,))))
+    assert raised.value.code == "estimation.cuped_linear.invalid_evidence"
+
+
+def test_finalizer_enforces_m1_support_witness():
+    state, summary = _minimal_finalizer_evidence()
+    with pytest.raises(InvalidRequestError) as raised:
+        finalize_fit(
+            state,
+            replace(
+                summary,
+                max_leverage=0.46,
+                refusal_witness=(("max_leverage", 0.46, 0.45),),
+            ),
+        )
+    assert raised.value.code == "estimation.cuped_linear.support_region"
+    assert raised.value.context["region"] == "M1"
+
+
+def test_frozen_evidence_recursively_copies_mutable_payloads():
+    state, summary = _minimal_finalizer_evidence()
+    covariance = np.array([[1.0, 0.0], [0.0, 1.0]])
+    frozen_summary = replace(summary, adjusted_component_covariance=covariance)
+    covariance[0, 0] = 99.0
+    assert frozen_summary.adjusted_component_covariance == ((1.0, 0.0), (0.0, 1.0))
+    assert isinstance(frozen_summary.adjusted_component_covariance, tuple)
+
+    counts = np.array([3, 3])
+    frozen_state = replace(state, counts=counts)
+    counts[0] = 99
+    assert frozen_state.counts == (3, 3)
+
+    jacobian: Any = np.array([1.0, -1.0])
+    spec = ProjectionSpec(("identity",), "absolute", jacobian, 1.0, 1.0, 0)
+    jacobian[0] = 99.0
+    assert spec.jacobian == (1.0, -1.0)
+
+    layout_args: Any = (
+        ["category"],
+        ["categorical"],
+        [["a"]],
+        [],
+        ["category=a"],
+        [],
+        [],
+    )
+    layout = MulticovariateCupedLayout(*layout_args)
+    frozen_layout_state = replace(state, layout=layout)
+    assert frozen_layout_state.layout.names == ("category",)
+    assert frozen_layout_state.layout.levels == (("a",),)
+
+    cell_counts: Any = np.array([[2], [3]])
+    cell_evidence: Any = {
+        "identity": ["cells"],
+        "arms": ["c", "t"],
+        "patterns": [["a"]],
+        "counts": cell_counts,
+        "levels": [["a"]],
+        "null_metadata": [[False]],
+        "outcome_references": [],
+        "centered_first_moments": [[], []],
+        "symmetric_cross_moments": [[], []],
+    }
+    cells = CategoricalCells(**cell_evidence)
+    cell_counts[0, 0] = 99
+    assert cells.counts == ((2,), (3,))
+
+
+def test_unavailable_nan_evidence_merges_after_pickle_replay():
+    summary = InferenceSummary(("nan-fit",), ("all-pairs",), 0.2, 1.0, (), ((float("nan"),),), ())
+    replayed = pickle.loads(pickle.dumps(summary))
+    assert summary.merge(replayed) is summary
+    with pytest.raises(InvalidRequestError) as raised:
+        summary.merge(replace(summary, adjusted_component_covariance=((1.0,),)))
+    assert raised.value.code == "estimation.cuped_linear.invalid_evidence"
+
+
+def test_lowrank_bm_trace_square_is_stable_near_leverage_saturation():
+    design = np.array([[1.0, 0.0], [0.0, 1.0], [1e-4, 1e-4]])
+    weights = np.ones(3)
+    contrast = np.array([1.0, -0.3])
+    q, factor = np.linalg.qr(design, mode="reduced")
+    leverage = np.einsum("ij,ij->i", q, q)
+    trace, trace_square = _bm_terms(
+        design,
+        weights,
+        leverage,
+        factor,
+        contrast,
+        scale=1.0,
+        q_design=q,
+    )
+    influence = q @ np.linalg.solve(factor.T, contrast)
+    weighted_score = influence / np.sqrt(1.0 - leverage)
+    dense = (np.eye(len(weights)) - q @ q.T).T * weighted_score[None, :]
+    eigenvalues = np.linalg.eigvalsh(dense.T @ dense)
+    assert trace == pytest.approx(eigenvalues.sum(), rel=2e-8, abs=1e-10)
+    assert trace_square == pytest.approx(eigenvalues @ eigenvalues, rel=2e-10, abs=1e-11)
+
+
+def test_ratio_projection_spec_retains_scaled_jacobian_for_tiny_units(monkeypatch):
+    from increment.estimation.cuped import multicovariate
+
+    original_finalize = multicovariate.finalize_fit
+    captured = {}
+
+    def capture_finalize(state, summary):
+        captured["summary"] = summary
+        return original_finalize(state, summary)
+
+    monkeypatch.setattr(multicovariate, "finalize_fit", capture_finalize)
+    arms = np.repeat(["c", "t"], 20)
+    row = np.arange(len(arms), dtype=float)
+    numerator = 1e-200 * (3.0 + 0.1 * np.sin(row))
+    denominator = 1e-200 * (2.0 + 0.05 * np.cos(row))
+    fit = fit_cuped_multicovariate(
+        None,
+        arms,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=numerator,
+        denominator=denominator,
+    )
+    projection = next(
+        item
+        for item in captured["summary"].projection_specs
+        if item.kind == "ratio"
+        and item.arm == "t"
+        and item.control == "c"
+        and item.identity[-1] == "absolute"
+    )
+    assert fit.ratio("t", scale="absolute").estimate == pytest.approx(
+        0.0038545262890675876, rel=2e-10, abs=1e-11
+    )
+    assert fit.ratio("t", scale="absolute").se == pytest.approx(
+        0.014151358400968225, rel=2e-10, abs=1e-11
+    )
+    assert projection.available
+    assert np.isfinite(projection.jacobian).all()
+    assert projection.divisor != 1.0 or projection.exponent != 0
+    component_means = np.asarray(fit.adjusted_means).reshape(2, 2)
+    nc, nt = component_means[0]
+    dc, dt = component_means[1]
+    reconstructed = np.array(
+        [
+            math.ldexp(value * projection.scale / projection.divisor, projection.exponent)
+            for value in projection.jacobian
+        ]
+    )
+    expected_jacobian = np.array([-1.0 / dc, 1.0 / dt, nc / dc / dc, -nt / dt / dt])
+    assert reconstructed == pytest.approx(expected_jacobian, rel=2e-10, abs=1e-11)

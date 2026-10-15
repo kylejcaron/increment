@@ -65,6 +65,16 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="projection is unavailable for fit: kind={kind!r}, arm={arm!r}, control={control!r}",
         ),
+        "estimation.cuped_linear.invalid_evidence": RefusalSpec(
+            "estimation.cuped_linear.invalid_evidence",
+            InvalidRequestError,
+            template="invalid CUPED compact evidence: reason={reason!r}",
+        ),
+        "estimation.cuped_linear.incompatible_evidence": RefusalSpec(
+            "estimation.cuped_linear.incompatible_evidence",
+            InvalidRequestError,
+            template="incompatible CUPED compact evidence: reason={reason!r}",
+        ),
     },
 )
 
