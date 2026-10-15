@@ -38,7 +38,7 @@ def _frame_digest_and_arms(frame):
     )
     arms: set[str] = set()
     if "group_id" in columns:
-        observed = frame.get_column("group_id")
+        observed = frame["group_id"].to_list()
         arms = {str(group_id) for group_id in observed if group_id is not None}
     return frozenset(arms), digest.hexdigest(), digest.count
 

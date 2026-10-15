@@ -99,6 +99,7 @@ def test_frame_digest_matches_canonical_streaming_encoder_for_edge_values():
             }
         ),
         pl.DataFrame({"group_id": [0.0, -0.0]}),
+        pl.DataFrame({"group_id": [[1, 2], [3]]}),
         pl.DataFrame({"group_id": ["a", "a", "a"], "value": [3.0, 3.0, 3.0]}),
         pl.DataFrame({"group_id": ["a", "b"], "z": [2, 4], "a": [1, 3]}),
     ]
