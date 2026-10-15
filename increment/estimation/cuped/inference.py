@@ -323,8 +323,9 @@ def _bm_terms(design, weights, leverage, factor, contrast, *, scale, q_design=No
     if len(weights) <= 1024 and (
         float(leverage.max(initial=0.0)) >= 1.0 - 1e-6 or trace_square < 0.0
     ):
-        hat = q @ q.T
-        bm_scores = (np.eye(len(weights)) - hat).T * qscore[None, :]
+        sqrt_weights = np.sqrt(weights)
+        weighted_hat_transpose = sqrt_weights[:, None] * (q @ q.T) / sqrt_weights[None, :]
+        bm_scores = (np.eye(len(weights)) - weighted_hat_transpose) * qscore[None, :]
         eigenvalues = np.linalg.eigvalsh(bm_scores.T @ bm_scores)
         trace = float(eigenvalues.sum())
         trace_square = float(eigenvalues @ eigenvalues)

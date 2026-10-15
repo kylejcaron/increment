@@ -541,6 +541,32 @@ def test_lowrank_bm_trace_square_is_stable_near_leverage_saturation():
     assert trace_square == pytest.approx(eigenvalues @ eigenvalues, rel=2e-10, abs=1e-11)
 
 
+def test_small_n_bm_fallback_matches_weighted_dense_reference():
+    design = np.array([[1.0, 0.0], [0.0, 1.0], [1e-4, 1e-4], [1e-4, -1e-4]])
+    weights = np.array([1.0, 2.0, 3.0, 4.0])
+    contrast = np.array([1.0, -0.3])
+    roots = np.sqrt(weights)
+    q, factor = np.linalg.qr(design * roots[:, None], mode="reduced")
+    leverage = np.einsum("ij,ij->i", q, q)
+    trace, trace_square = _bm_terms(
+        design,
+        weights,
+        leverage,
+        factor,
+        contrast,
+        scale=1.0,
+        q_design=q,
+    )
+    coefficients = np.linalg.solve(factor.T, contrast)
+    score = roots * (q @ coefficients) / np.sqrt(1.0 - leverage)
+    weighted_hat_transpose = roots[:, None] * (q @ q.T) / roots[None, :]
+    dense = (np.eye(len(weights)) - weighted_hat_transpose) * score[None, :]
+    eigenvalues = np.linalg.eigvalsh(dense.T @ dense)
+    assert leverage.max() == pytest.approx(0.999999965, abs=1e-9)
+    assert trace == pytest.approx(eigenvalues.sum(), rel=2e-10, abs=1e-11)
+    assert trace_square == pytest.approx(eigenvalues @ eigenvalues, rel=2e-10, abs=1e-11)
+
+
 def test_ratio_projection_spec_retains_scaled_jacobian_for_tiny_units(monkeypatch):
     from increment.estimation.cuped import multicovariate
 
