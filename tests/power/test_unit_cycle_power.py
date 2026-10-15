@@ -20,6 +20,7 @@ from increment.power.unit_cycle import (
     _experiments,
     _extreme_accepted,
     _Prefix,
+    _prefixes,
     _reject,
     _RejectionRule,
     _sampler,
@@ -597,6 +598,13 @@ def test_batch_size_does_not_change_power_or_required_n_results(innovation):
         batch_size=4,
     )
     assert required_singles == required_batched
+
+
+def test_final_only_prefix_stream_matches_the_full_stream_final_state():
+    sampler = _sampler(law())
+    full = list(_prefixes(sampler, maximum=4, replicate=2, seed=17))
+    final = list(_prefixes(sampler, maximum=4, replicate=2, seed=17, final_only=True))
+    assert final == [full[-1]]
 
 
 def test_huge_repetition_request_streams_before_allocating_other_experiments(monkeypatch):

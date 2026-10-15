@@ -1896,7 +1896,9 @@ class _Prefix:
     q_gg: Fraction = Fraction()
 
 
-def _prefixes(sampler: _Sampler, *, maximum: int, replicate: int, seed: int) -> Iterator[_Prefix]:
+def _prefixes(
+    sampler: _Sampler, *, maximum: int, replicate: int, seed: int, final_only: bool = False
+) -> Iterator[_Prefix]:
     rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence([seed, replicate])))
     u, g, ct, failure = Fraction(), Fraction(), 0, None
     q_uu = q_ug = q_gg = Fraction()
@@ -1911,7 +1913,8 @@ def _prefixes(sampler: _Sampler, *, maximum: int, replicate: int, seed: int) -> 
         g += dg / n
         ct += count
         failure = failure or reason
-        yield _Prefix(n, u, g, ct, failure, q_uu, q_ug, q_gg)
+        if not final_only or n == maximum:
+            yield _Prefix(n, u, g, ct, failure, q_uu, q_ug, q_gg)
 
 
 def _experiments(
@@ -1924,6 +1927,7 @@ def _experiments(
                 maximum=n,
                 replicate=replicate,
                 seed=seed,
+                final_only=True,
             ):
                 if state.n == n:
                     yield state
