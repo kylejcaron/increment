@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from increment.analysis import Analysis
 from increment.errors import DefinitionError, InvalidRequestError
-from increment.estimation.cuped_linear import fit_cuped_linear
+from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
@@ -77,7 +77,7 @@ def test_public_run_routes_mixed_covariate_fit():
     (row,) = analysis.run()
     assert isinstance(row, LiftEstimate)
     expected = (
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             np.asarray(frame["revenue"].to_pylist()),
             frame["arm"].to_pylist(),
             control="c",
@@ -129,7 +129,7 @@ def test_public_run_routes_joint_ratio_cuped_projection():
     (row,) = result
     assert isinstance(row, LiftEstimate)
     expected = (
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             None,
             frame["arm"].to_pylist(),
             control="c",

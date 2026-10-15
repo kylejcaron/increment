@@ -1852,7 +1852,7 @@ class TestRatioVarianceClampPolicy:
 
 
 # CUPED at small n with a strong covariate: the within-arm theta in
-# estimation/cuped.py removes the attenuation the pooled form had, so this
+# estimation/cuped/scalar.py removes the attenuation the pooled form had, so this
 # regime is estimated rather than refused.
 
 

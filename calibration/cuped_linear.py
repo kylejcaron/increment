@@ -26,7 +26,7 @@ outcome exists; see ``manifest_record``. A failed gate never licenses a Normal
 interval.
 
 Every profile needs two production prerequisites, probed before any draw:
-``fit_cuped_linear`` must refuse a fit outside the M1 support region with the
+``fit_cuped_multicovariate`` must refuse a fit outside the M1 support region with the
 registered ``estimation.cuped_linear.support_region`` code and the harness
 observables, and the public ``cuped_linear`` route must run. Without them the
 campaign refuses with ``calibration.cuped_linear.prerequisite``.
@@ -60,8 +60,8 @@ from scipy.stats import binom
 
 from calibration.journal import DrawJournal, verify
 from increment.errors import CodedError, refusals, refuse
-from increment.estimation import cuped_linear as production
-from increment.estimation.cuped_linear import fit_cuped_linear
+from increment.estimation.cuped import _numeric as production
+from increment.estimation.cuped import fit_cuped_multicovariate
 from tests.mc import coverage_lower_bound, family_eta, kl_chernoff_upper_bound, mcse
 
 FAMILY_SIZE = 67
@@ -756,7 +756,7 @@ class Prerequisite:
 PREREQUISITES = MappingProxyType(
     {
         "support_region_refusal": Prerequisite(
-            f"fit_cuped_linear refuses a fit outside M1 with {SUPPORT_REGION_CODE}, naming the harness observables {tuple(SUPPORT_REGION)} with the same bounds; the harness audits every returned fit and blocks, never filters, one outside M1",
+            f"fit_cuped_multicovariate refuses a fit outside M1 with {SUPPORT_REGION_CODE}, naming the harness observables {tuple(SUPPORT_REGION)} with the same bounds; the harness audits every returned fit and blocks, never filters, one outside M1",
             _support_region_probe,
         ),
         "public_route": Prerequisite(
@@ -1038,7 +1038,7 @@ def generate(cell: Cell, replication: int, metric: int = 0) -> Draw:
 
 
 def fit_draw(draw: Draw):
-    return fit_cuped_linear(
+    return fit_cuped_multicovariate(
         draw.outcomes[0] if len(draw.outcomes) == 1 else None,
         draw.arms,
         control="c",

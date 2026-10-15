@@ -3465,7 +3465,7 @@ def _withhold_ratio_arms(
     return frame, arm_order
 
 
-def _fit_cuped_linear_frame(
+def _fit_cuped_multicovariate_frame(
     frame: Any,
     covariates: Sequence[Any],
     *,
@@ -3476,7 +3476,7 @@ def _fit_cuped_linear_frame(
     """Fit the per-unit evidence frame once, returning the fit or its coded refusal."""
     import numpy as np
 
-    from increment.estimation.cuped_linear import fit_cuped_linear
+    from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
 
     declarations = tuple(covariates)
     # The frame carries a covariate named like one of its own columns under
@@ -3484,7 +3484,7 @@ def _fit_cuped_linear_frame(
     columns = unit_frame_covariate_columns([item.name for item in declarations])
     y = np.asarray(frame.get_column("y").to_list(), dtype=float)
     try:
-        return fit_cuped_linear(
+        return fit_cuped_multicovariate(
             None if ratio else y,
             frame.get_column("group_id").to_list(),
             control=control_group,
@@ -3562,7 +3562,7 @@ def estimate_cuped_linear(
         )
         if frame is None:
             return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
-    fit = _fit_cuped_linear_frame(
+    fit = _fit_cuped_multicovariate_frame(
         frame, covariates, control_group=control_group, arm_order=arm_order, ratio=ratio
     )
     if isinstance(fit, CodedError):
