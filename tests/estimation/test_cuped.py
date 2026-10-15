@@ -23,12 +23,12 @@ from increment.errors import InvalidRequestError
 from increment.estimation.armstats import CENTERED_FIELDS, ArmStats
 from increment.estimation.cuped import (
     CupedFit,
-    _within_arm_theta,
     cuped_adjust,
     fit_cuped,
     fit_ratio_cuped,
     pooled_theta,
 )
+from increment.estimation.cuped.scalar import _within_arm_theta
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import ratio_abs_diff_se, ratio_log_mean_se
 from increment.semantics.models import MeanMetric, Measure, RatioMetric
@@ -1795,7 +1795,7 @@ class TestZeroVarianceArmIsExcludedFromTheta:
         (
             "estimation.cuped.pooled_theta_least",
             lambda: cuped_adjust([_make_arm_stats(n=100, mean=10.0, var=4.0, group_id="A")]),
-        ),  # estimation/cuped.py::_within_arm_theta
+        ),  # estimation/cuped/scalar.py::_within_arm_theta
     ],
 )
 def test_cuped_refusal_carries_code(code, build):

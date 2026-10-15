@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from increment import Analysis, MetricSpec
-from increment.estimation.cuped_linear import fit_cuped_linear
+from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import CupedCovariate
@@ -41,7 +41,7 @@ def test_public_linear_cuped_accepts_nan_history_as_imputed_missingness():
 
     (row,) = results
     assert isinstance(row, LiftEstimate)
-    expected = fit_cuped_linear(
+    expected = fit_cuped_multicovariate(
         frame["outcome"].to_numpy(),
         frame["arm"].to_list(),
         control="control",

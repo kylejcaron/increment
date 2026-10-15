@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from increment.estimation.cuped_linear import fit_cuped_linear
+from increment.estimation.cuped import fit_cuped_multicovariate
 from tests.oracles.generate.gen_cuped_linear_oracle import bm_traces, reference
 
 _ROOT = Path(__file__).parent
@@ -43,7 +43,7 @@ def test_frozen_fixtures_agree_with_independent_construction():
         assert expected["condition_number"] < manifest["tolerance"]["maximum_condition_number"]
         for field in ("estimate", "se", "dof", "lower", "upper"):
             assert expected[field] == pytest.approx(case[field], rel=1e-12, abs=1e-12)
-        fit = fit_cuped_linear(
+        fit = fit_cuped_multicovariate(
             outcomes[0] if len(outcomes) == 1 else None,
             arms,
             control="c",

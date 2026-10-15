@@ -20,6 +20,16 @@ from increment.estimation.cate import (
     fit_cate,
     prune_gram,
 )
+from increment.estimation.cuped import (
+    CupedFit,
+    MulticovariateCupedFit,
+    MulticovariateCupedLayout,
+    MulticovariateCupedProjection,
+    RatioCupedFit,
+    fit_cuped,
+    fit_cuped_multicovariate,
+    fit_ratio_cuped,
+)
 from increment.estimation.decision_types import AsymptoticSequentialEvidence
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.inference import (
@@ -78,6 +88,11 @@ __all__ = [
     "normal_posterior",
     "Estimate",
     "LiftEstimate",
+    "CupedFit",
+    "MulticovariateCupedFit",
+    "MulticovariateCupedLayout",
+    "MulticovariateCupedProjection",
+    "RatioCupedFit",
     "Method",
     "VarianceModel",
     "MeanVarianceModel",
@@ -86,6 +101,9 @@ __all__ = [
     "se_log_mean",
     "stable_log_ratio",
     "ratio_moments",
+    "fit_cuped",
+    "fit_cuped_multicovariate",
+    "fit_ratio_cuped",
     "estimate_lift",
     "infer_lift",
     "SRMResult",
