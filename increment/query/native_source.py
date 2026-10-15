@@ -358,8 +358,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return self._mixed_assignment_snapshot(exposure_events)[0]
 
     def _validate_mixed_assignments(self) -> None:
-        """Refresh and enforce assignment integrity for one readout."""
+        """Enforce assignment integrity, refreshing only for live warehouse inputs."""
         if self._assignment_validation_depth:
+            return
+        # A pinned session's source tables are immutable for this source's
+        # lifetime. Re-running the same integrity aggregate per readout only
+        # recompiles and executes an identical query.
+        if (
+            self._session._source_tables is not None
+            and self._mixed_assignment_fingerprint is not None
+        ):
             return
         exposure_events_table = self._build_exposure_events_table()
         mixed, unassigned, fingerprint = self._mixed_assignment_snapshot(exposure_events_table)
