@@ -103,6 +103,7 @@ def test_locked_prek_version_requires_one_package(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_installed_hooks_run_in_linked_worktrees_without_project_environment(
     tmp_path: Path, stable_tool: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -288,6 +289,7 @@ def test_main_discovers_windows_user_tool_filename(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_reinstallation_replaces_removed_guard_interpreter(
     tmp_path: Path, stable_tool: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

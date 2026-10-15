@@ -259,11 +259,18 @@ def _evaluate_sequential_diagnostic(
         checkpoint.cell: checkpoint.model_copy(update={"status": "frozen"})
         for checkpoint in snapshot.frozen
     }
-    models = {m.metric: m for m in registration.models}
+    state_map = {(state.metric, state.group_id, state.segment): state for state in snapshot.states}
+    models = {model.metric: model for model in registration.models}
     evaluated_results: list[SequentialResult] = []
     for cell in registration.roster:
-        c = snapshot.arm(cell.metric, registration.control_group, cell.segment)
-        t = snapshot.arm(cell.metric, cell.group_id, cell.segment)
+        key_c = (cell.metric, registration.control_group, cell.segment)
+        key_t = (cell.metric, cell.group_id, cell.segment)
+        c = state_map.get(key_c)
+        t = state_map.get(key_t)
+        if c is None:
+            c = snapshot.arm(*key_c)
+        if t is None:
+            t = snapshot.arm(*key_t)
         checkpoint = frozen_map.get(cell) or SequentialCheckpoint(
             registration_id=snapshot.registration_id,
             prefix_id=snapshot.prefix_id,

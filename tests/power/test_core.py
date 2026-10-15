@@ -539,6 +539,7 @@ class TestNonInferiority:
         ).n_per_arm
         assert n_tight > n_loose
 
+    @pytest.mark.slow
     def test_sequential_sizing_inverts_at_the_shifted_null(self):
         """Sequential sizing measures drift FROM the null with the variance
         of the ABSOLUTE alternative: achieved power at the sized n reproduces
@@ -2543,6 +2544,7 @@ class TestSequentialMdeUsesTheBoundarysOwnNullPower:
         # The refusal quotes the boundary's actual crossing probability, not alpha.
         assert f"{raised.value.context['estimate']:.6g}" == self.NULL_POWER
 
+    @pytest.mark.slow
     def test_the_mde_decreases_monotonically_with_target_power(self):
         mdes = [self._mde(p).mde_relative for p in (0.02, 0.05, 0.10, 0.80)]
         assert mdes == sorted(mdes)
@@ -2693,6 +2695,7 @@ class TestSequentialMdeLargeStandardError:
         assert raised.value.code == "power.minimum_detectable_effect.unattainable"
         assert raised.value.context["limiting_condition"] == "sequential_exclusion"
 
+    @pytest.mark.slow
     def test_certified_crossing_beyond_floor_preserves_the_decrease_code(self):
         from increment.errors import InvalidRequestError
 
@@ -4053,6 +4056,7 @@ class TestCodedRefusals:
             required_sample_size(1e-300, Baseline(mean=1.0, var=1.0), make_procedure())
         assert exc_info.value.code == "power.sample_size_detecting"
 
+    @pytest.mark.slow
     def test_sequential_design_gives_up_past_1024x_the_fixed_horizon_size(self, monkeypatch):
         # GaussianScoreMixture is tuned at its own se-independent optimum, so
         # it no longer diverges from the fixed-horizon size under ordinary

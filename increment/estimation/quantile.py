@@ -309,6 +309,8 @@ def _binomial_bracket_rank(n: int, q: float, tail: float, *, upper: bool = False
     return rank
 
 
+# Paired arms often share (n, q), so every inversion asks for the same ranks twice at an alpha.
+@lru_cache(maxsize=1024)
 def _bracket_ranks(n: int, q: float, alpha: float) -> tuple[int, int] | None:
     """Return 1-based bracket ranks, or None when unclamped bounds do not exist.
 

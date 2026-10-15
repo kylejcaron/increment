@@ -32,6 +32,7 @@ BASE = Baseline(mean=1.0, var=2.0)
 
 @pytest.mark.parametrize("rho", [0.3, -0.3])
 @pytest.mark.parametrize("solver", ["required", "achieved", "mde"])
+@pytest.mark.slow
 def test_sequential_power_supports_nonzero_cuped_rho(rho, solver):
     """CUPED now composes with sequential planning: arm_planning_support
     translates planning's ambiguous MethodSpec('cuped') into whichever

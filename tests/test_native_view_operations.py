@@ -249,6 +249,7 @@ def test_day_source_dimensioned_result_is_typed_and_attributed(pricing_con):
     assert {row.source for row in values} == {"events"}
 
 
+@pytest.mark.slow
 def test_day_source_adhoc_ratio_denominator_extends_daily_and_asof_horizon():
     import ibis
 

@@ -752,6 +752,7 @@ def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_pat
     ],
     ids=["all-clusters-contribute", "half-clusters-contribute", "unequal-analyzed-sizes"],
 )
+@pytest.mark.slow
 def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_grains(
     tmp_path, assigned_sizes, analyzed_sizes, expected_df
 ):
@@ -899,6 +900,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
 
 
 @pytest.mark.filterwarnings("always::increment.errors.IncrementRuntimeWarning")
+@pytest.mark.slow
 def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path):
     import warnings
 

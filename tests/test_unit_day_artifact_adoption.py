@@ -854,6 +854,7 @@ def test_adopted_avg_event_covariate_requires_cuped_extension() -> None:
     fixture["source"].close()
 
 
+@pytest.mark.slow
 def test_completed_windows_gates_bounded_mean_and_retention_but_is_noop_for_unbounded() -> None:
     mean_fixture = _adopted_artifact_fixture("windowed_mean")
     mean_metric = mean_fixture["source"].context.metrics[0]

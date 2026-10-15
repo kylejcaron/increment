@@ -605,6 +605,7 @@ def test_sufficient_state_campaign_worker_journals_completed_replication(tmp_pat
     )
 
 
+@pytest.mark.slow
 def test_scalar_manifest_freezes_the_declared_science_and_cli_selection():
     from dataclasses import replace
 

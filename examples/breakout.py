@@ -11,11 +11,12 @@ def _():
     import marimo as mo
     from _seed import seed_event_log
 
-    from increment import Analysis
+    from increment import Analysis, Method
     from increment.tables import estimates_to_readout, readout_table
 
     return (
         Analysis,
+        Method,
         ct,
         estimates_to_readout,
         ibis,
@@ -75,11 +76,11 @@ def _(mo):
 
 
 @app.cell
-def _(analysis, estimates_to_readout, readout_table):
+def _(Method, analysis, estimates_to_readout, readout_table):
     # new_onboarding_v2 declares Bonferroni segmented views in
     # examples/definitions/experiments.yaml; its plan keeps fixed-horizon
     # inference because the declared retention guardrail carries a prior.
-    breakout_estimates = analysis.run_breakout()
+    breakout_estimates = analysis.run_breakout(decision_method=Method(name="unadjusted"))
     breakout_table = readout_table(
         estimates_to_readout(breakout_estimates),
         title="new_onboarding_v2 readout, by country",
@@ -87,7 +88,9 @@ def _(analysis, estimates_to_readout, readout_table):
         nest_by="segment",
         show_interval_level=False,
         # visualize time series
-        trend=analysis.run_asof_lift(dimension="country"),
+        trend=analysis.run_asof_lift(
+            dimension="country", decision_method=Method(name="unadjusted")
+        ),
         trend_label="As-of lift trend",
     )
     breakout_table
@@ -218,10 +221,10 @@ def _(mo):
 
 
 @app.cell
-def _(analysis, estimates_to_readout, readout_table):
-    daily_lift = analysis.run_daily_lift()
+def _(Method, analysis, estimates_to_readout, readout_table):
+    daily_lift = analysis.run_daily_lift(decision_method=Method(name="unadjusted"))
     calendar_daily_lift = [e for e in daily_lift if e.ds_basis == "calendar"]
-    estimates = analysis.run()
+    estimates = analysis.run(decision_method=Method(name="unadjusted"))
     lift_table = readout_table(
         estimates_to_readout(estimates),
         title="new_onboarding_v2 readout",
@@ -246,12 +249,12 @@ def _(mo):
 
 
 @app.cell
-def _(analysis, estimates_to_readout, readout_table, estimates):
+def _(Method, analysis, estimates_to_readout, readout_table, estimates):
     readout_table(
         estimates_to_readout(estimates),
         title="new_onboarding_v2 readout, as-of trend",
         subtitle="Relative lift vs control, 95 % credible interval",
-        trend=analysis.run_asof_lift(),
+        trend=analysis.run_asof_lift(decision_method=Method(name="unadjusted")),
         trend_label="As-of lift trend",
     )
     return

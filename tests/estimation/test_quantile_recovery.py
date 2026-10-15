@@ -346,6 +346,7 @@ def _null_rejection_rate(kind: str, n: int, q: float, alpha: float, n_sims: int)
     return replicate(n_sims, trial).rate
 
 
+@pytest.mark.slow
 def test_two_arm_null_size_on_a_lattice_smoke_fast():
     """Millisecond-rounded medians at n=5000: an unresolved cell, where the
     allowance is active."""

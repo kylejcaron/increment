@@ -1047,6 +1047,7 @@ def test_export(metric_type, native, tmp_path):
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
+@pytest.mark.slow
 def test_sitewide(metric_type, native, tmp_path):
     cell = _cell("sitewide", metric_type)
     if cell.status == "na":

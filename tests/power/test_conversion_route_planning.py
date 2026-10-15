@@ -150,6 +150,7 @@ class TestSparsePlansAreTheReplay:
     @pytest.mark.parametrize(
         ("n", "p", "lift"), [(120, 0.1, 0.6), (400, 0.02, 0.8), (150, 0.4, 0.3)]
     )
+    @pytest.mark.slow
     def test_a_sparse_plan_equals_the_finite_sample_plan_exactly(self, n, p, lift):
         baseline = Baseline.from_proportion(p)
         assert planning_route(n, n, p, p * (1 + lift), tail_alpha=TAIL, mode="auto") == "sparse"
@@ -158,6 +159,7 @@ class TestSparsePlansAreTheReplay:
         assert auto == pinned
         assert auto.power_basis == "exact"
 
+    @pytest.mark.slow
     def test_a_sparse_size_search_equals_the_finite_sample_search(self):
         baseline = Baseline.from_proportion(0.02)
         assert required_sample_size(0.9, baseline, _plan("auto")) == required_sample_size(

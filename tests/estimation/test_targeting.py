@@ -841,6 +841,7 @@ class TestClusterSupport:
             gate=IdentificationGate(overlap="trim"),
         )
 
+    @pytest.mark.slow
     def test_mixed_treatment_clustered_dr_selection_is_row_order_invariant(self):
         """The whole pipeline - outer split, cross-fitted DR folds, and the
         inner selection folds - keys on canonical cluster identity, not row

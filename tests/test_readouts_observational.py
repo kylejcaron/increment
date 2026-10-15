@@ -2577,6 +2577,7 @@ def _snapshot_analysis(tmp_path, name):
 
 
 @pytest.mark.parametrize("method", ["iptw", "unadjusted"])
+@pytest.mark.slow
 def test_native_observational_readout_is_one_snapshot_when_arms_land_mid_readout(
     tmp_path, monkeypatch, method
 ):
