@@ -457,8 +457,7 @@ def scoped_collection(  # noqa: PLR0913
         if hasattr(row, "sampling_available") and row.sampling_available is None:
             update["sampling_available"] = True
         stamped.append(row.model_copy(update=update))
-    row_cells = [CellKey.from_row(row) for row in stamped]
-    cells = tuple(sorted(set(row_cells), key=cell_order))
+    cells = tuple(sorted({CellKey.from_row(row) for row in stamped}, key=cell_order))
     families = ()
     if stamped and hasattr(stamped[0], "family_id"):
         stamped, families = _attach_family_scope(
@@ -518,7 +517,8 @@ def scoped_collection(  # noqa: PLR0913
     )
     config_by_metric = {config.metric.name: config for config in configs}
     records: list[CellRecord] = []
-    for row, cell in zip(stamped, row_cells, strict=True):
+    for row in stamped:
+        cell = CellKey.from_row(row)
         sampling = None
         if hasattr(row, "sampling_available"):
             evidence = None
