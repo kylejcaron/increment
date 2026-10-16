@@ -99,3 +99,167 @@ def test_source_without_method_evidence_refuses_before_reading():
         run(cast(Any, AggregateOnlySource()))
     assert raised.value.code == "readout.scalar_method_evidence"
     assert raised.value.context["route"] == "AggregateOnlySource"
+
+
+def _two_family_frame():
+    rng = np.random.default_rng(281)
+    n = 160
+    a, b = rng.normal(size=(2, 2 * n))
+    treated = np.repeat([0, 1], n)
+    return pd.DataFrame(
+        {
+            "unit": range(2 * n),
+            "arm": np.where(treated, "treatment", "control"),
+            "day": 1,
+            "outcome": 20 + 2 * a - b + 5 * treated + rng.normal(size=2 * n),
+            "a": a,
+            "b": b,
+            "uptake": treated * rng.binomial(1, 0.75, size=2 * n),
+        }
+    )
+
+
+def _scalar(name, *, missing="refuse"):
+    return Method.cuped(
+        name=name, covariates=CupedCovariate(name=name, kind="continuous", missing=missing)
+    )
+
+
+@pytest.mark.parametrize("panel", [False, True])
+@pytest.mark.parametrize("secondary", [False, True])
+def test_encouragement_scalar_families_match_standalone(panel, secondary):
+    from increment import AnalysisPlan
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = _two_family_frame()
+    methods = (_scalar("a"), _scalar("b"))
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="uptake"),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="assignment affects outcomes through uptake"
+        ),
+    )
+
+    def run(selected):
+        constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+        with constructor(
+            frame,
+            unit="unit",
+            group="arm",
+            metrics=[
+                MetricSpec(
+                    name="outcome",
+                    decision_method=selected[0],
+                    sensitivity_methods=selected[1:],
+                )
+            ],
+            design=design,
+            uptake="uptake",
+            plan=(
+                AnalysisPlan(secondaries=["outcome"], q=0.1)
+                if secondary
+                else AnalysisPlan(primary="outcome")
+            ),
+            **({"date": "day"} if panel else {}),
+        ) as analysis:
+            return {
+                (row.method, row.estimand): row
+                for row in analysis.run(estimands=("itt", "late"))
+                if isinstance(row, LiftEstimate)
+            }
+
+    joint = run(methods)
+    for method in methods:
+        alone = run((method,))
+        for estimand in ("itt", "late"):
+            actual = joint[method.name, estimand]
+            expected = alone[method.name, estimand]
+            assert actual.require_lift().value == pytest.approx(
+                expected.require_lift().value, rel=1e-10
+            )
+            assert actual.require_lift().log_se is not None
+            assert actual.require_lift().log_se == pytest.approx(
+                expected.require_lift().log_se, rel=1e-10
+            )
+            if estimand == "itt":
+                assert actual.abs_diff == pytest.approx(expected.abs_diff, rel=1e-10)
+                assert actual.abs_se == pytest.approx(expected.abs_se, rel=1e-10)
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_selected_scalar_secondary_with_override_matches_standalone(mixed):
+    from increment import AnalysisPlan
+
+    frame = _two_family_frame()
+    decision = _scalar("b")
+    companions = [_scalar("a")]
+    if mixed:
+        companions.append(
+            Method.cuped_multicovariate(
+                name="mixed", covariates=CupedCovariate(name="a", kind="continuous")
+            )
+        )
+
+    def run(joint):
+        with Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[MetricSpec(name="outcome", decision_method=_scalar("a"))],
+            plan=AnalysisPlan(secondaries=["outcome"], q=0.1),
+        ) as analysis:
+            return {
+                row.method: row
+                for row in analysis.run(
+                    decision_method=decision,
+                    sensitivity_methods=tuple(companions) if joint else (),
+                )
+                if isinstance(row, LiftEstimate)
+            }
+
+    actual = run(True)["b"]
+    expected = run(False)["b"]
+    assert actual.discovery is True and expected.discovery is True
+    assert actual.require_lift().value == pytest.approx(expected.require_lift().value, rel=1e-10)
+    assert actual.require_lift().log_se == pytest.approx(expected.require_lift().log_se, rel=1e-10)
+    assert actual.require_lift().lb == pytest.approx(expected.require_lift().lb, rel=1e-10)
+    assert actual.require_lift().ub == pytest.approx(expected.require_lift().ub, rel=1e-10)
+
+
+@pytest.mark.parametrize("panel", [False, True])
+def test_encouragement_scalar_override_rechecks_missing_policy(panel):
+    from increment.errors import InvalidRequestError
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = _two_family_frame()
+    frame.loc[0, "a"] = np.nan
+    constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+    from increment.errors import IncrementWarning
+
+    with pytest.warns(IncrementWarning) as caught:
+        analysis = constructor(
+            frame,
+            unit="unit",
+            group="arm",
+            metrics=[MetricSpec(name="outcome", decision_method=_scalar("a", missing="impute"))],
+            design=Encouragement(
+                control_group="control",
+                uptake=UptakeSpec(fact="uptake"),
+                exclusion_restriction=ExclusionRestriction(
+                    acknowledged=True, justification="assignment affects outcomes through uptake"
+                ),
+            ),
+            uptake="uptake",
+            **({"date": "day"} if panel else {}),
+        )
+    assert {
+        warning.message.code for warning in caught if isinstance(warning.message, IncrementWarning)
+    } == {"frame.validation.metric_covariate_missing_imputed"}
+    try:
+        with pytest.raises(InvalidRequestError) as raised:
+            analysis.run(decision_method=_scalar("a"), estimands=("itt", "late"))
+        assert raised.value.code == "frame.validation.metric_covariate_column"
+    finally:
+        analysis.close()

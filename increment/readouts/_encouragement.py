@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
@@ -23,7 +23,6 @@ from increment.estimation.results import (
 from increment.readouts._common import (
     _joint_relative_rows,
     _refuse_if_no_treatment_arm,
-    _runtime_method_roles,
     _runtime_methods,
     _sequential_inference,
 )
@@ -98,6 +97,7 @@ class _EncouragementCellGroup(NamedTuple):
     null_abs: float | None
     family_member: bool
     metrics: list[Metric]
+    method_role: Literal["decision", "sensitivity"]
 
 
 def _encouragement_cell_groups(
@@ -117,32 +117,35 @@ def _encouragement_cell_groups(
         null_lift = null_lift_by_metric[metric.name]
         null_abs = null_abs_by_metric[metric.name]
         family_member = metric.name in family_metric_names
-        metric_methods = _runtime_methods(config, design)
-        for group in groups:
-            if (
-                group.methods == metric_methods
-                and group.prior == config.prior
-                and group.alternative == alternative
-                and group.alpha == alpha
-                and group.null_lift == null_lift
-                and group.null_abs == null_abs
-                and group.family_member == family_member
-            ):
-                group.metrics.append(metric)
-                break
-        else:
-            groups.append(
-                _EncouragementCellGroup(
-                    metric_methods,
-                    config.prior,
-                    alternative,
-                    alpha,
-                    null_lift,
-                    null_abs,
-                    family_member,
-                    [metric],
+        for index, method in enumerate(_runtime_methods(config, design)):
+            role: Literal["decision", "sensitivity"] = "decision" if index == 0 else "sensitivity"
+            for group in groups:
+                if (
+                    group.methods == [method]
+                    and group.method_role == role
+                    and group.prior == config.prior
+                    and group.alternative == alternative
+                    and group.alpha == alpha
+                    and group.null_lift == null_lift
+                    and group.null_abs == null_abs
+                    and group.family_member == family_member
+                ):
+                    group.metrics.append(metric)
+                    break
+            else:
+                groups.append(
+                    _EncouragementCellGroup(
+                        [method],
+                        config.prior,
+                        alternative,
+                        alpha,
+                        null_lift,
+                        null_abs,
+                        family_member,
+                        [metric],
+                        role,
+                    )
                 )
-            )
     return groups
 
 
@@ -266,7 +269,7 @@ def encouragement_rows(
                 else rows_by_metric[metric.name]
             )
         ]
-        method_roles = _runtime_method_roles(group.methods)
+        method_roles = {group.methods[0].name: group.method_role}
         try:
             computation = _estimate_encouragement(
                 metrics=group.metrics,

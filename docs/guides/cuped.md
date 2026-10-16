@@ -437,6 +437,12 @@ $$
        {\bar d_t - \bar d_c}
 $$
 
+Decision and sensitivity scalar methods may name different covariates. Each
+ITT and LATE fit uses that method's own prepared covariate and its joint
+moments with outcome and uptake. Selected secondary intervals reuse the same
+method-specific evidence at the family's corrected level; a multicovariate
+sensitivity does not change the scalar decision fit.
+
 <!-- invisible-code-block: python
 rng = np.random.default_rng(3)
 m = 2_000
