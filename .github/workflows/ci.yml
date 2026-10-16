@@ -28,7 +28,7 @@ jobs:
       - run: uv run ty check
 
   test:
-    name: fast (${{ matrix.python-version }}, shard ${{ matrix.group }}/2)
+    name: fast (${{ matrix.python-version }}, shard ${{ matrix.group }}/${{ matrix.splits }})
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 15
@@ -36,9 +36,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # Pull requests run Python 3.14 as one shard; main runs every version in two.
       matrix:
-        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12","3.14"]') || fromJSON('["3.12","3.13","3.14"]') }}
-        group: [1, 2]
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":1}]' || '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.13","group":1,"splits":2},{"python-version":"3.13","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":2},{"python-version":"3.14","group":2,"splits":2}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -54,7 +54,7 @@ jobs:
             export COVERAGE_CORE=sysmon
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
-          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+          make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Record fast coverage shard metadata
         if: always() && matrix.python-version == '3.12'
         env:
@@ -116,11 +116,16 @@ jobs:
 
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.
+  # Also builds the documentation when changed paths require it, saving a job.
   build:
+    needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      snippets_result: ${{ steps.snippets.outcome }}
+      strict_docs_result: ${{ steps.strict-docs.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,6 +151,12 @@ jobs:
               sys.exit(f"::error::{whl[0]} contains no increment/*.py modules")
           print(f"{len(mods)} module(s)")
           PY
+      - id: snippets
+        if: ${{ needs.changes.outputs.snippets == 'true' }}
+        run: uv run --with nox nox -s docs_snippets
+      - id: strict-docs
+        if: ${{ always() && needs.changes.outputs.strict_docs == 'true' }}
+        run: uv run --with nox nox -s docs
 
   changes:
     runs-on: ubuntu-latest
@@ -211,29 +222,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  docs:
-    name: documentation
-    needs: changes
-    if: ${{ needs.changes.outputs.snippets == 'true' || needs.changes.outputs.strict_docs == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    outputs:
-      snippets_result: ${{ steps.snippets.outcome }}
-      strict_docs_result: ${{ steps.strict-docs.outcome }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-        with: {enable-cache: true}
-      - id: snippets
-        if: ${{ needs.changes.outputs.snippets == 'true' }}
-        run: uv run --with nox nox -s docs_snippets
-      - id: strict-docs
-        if: ${{ always() && needs.changes.outputs.strict_docs == 'true' }}
-        run: uv run --with nox nox -s docs
-
   warehouse-postgres:
     needs: changes
     if: ${{ needs.changes.outputs.postgres_required == 'true' }}
@@ -283,7 +271,7 @@ jobs:
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, slow, build, changes, warehouse-postgres, numerical-certification, docs, wheel-smoke-macos, wheel-smoke-windows]
+    needs: [lint, test, slow, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows]
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -324,9 +312,9 @@ jobs:
           CERTIFICATION_REQUIRED: ${{ needs.changes.outputs.certification_required }}
           CERTIFICATION_RESULT: ${{ needs.numerical-certification.result }}
           SNIPPETS_REQUIRED: ${{ needs.changes.outputs.snippets }}
-          SNIPPETS_RESULT: ${{ needs.docs.outputs.snippets_result || needs.docs.result }}
+          SNIPPETS_RESULT: ${{ needs.build.outputs.snippets_result || needs.build.result }}
           STRICT_DOCS_REQUIRED: ${{ needs.changes.outputs.strict_docs }}
-          STRICT_DOCS_RESULT: ${{ needs.docs.outputs.strict_docs_result || needs.docs.result }}
+          STRICT_DOCS_RESULT: ${{ needs.build.outputs.strict_docs_result || needs.build.result }}
           WHEEL_SMOKE_MACOS_RESULT: ${{ needs.wheel-smoke-macos.result }}
           WHEEL_SMOKE_REQUIRED: ${{ needs.changes.outputs.wheel_smoke_required }}
           WHEEL_SMOKE_WINDOWS_RESULT: ${{ needs.wheel-smoke-windows.result }}
