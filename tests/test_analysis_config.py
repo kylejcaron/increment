@@ -29,6 +29,7 @@ from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.models import (
     AnalysisPlan,
     ConversionMetric,
+    CupedCovariate,
     ExperimentMetric,
     MeanMetric,
     MethodSpec,
@@ -45,7 +46,8 @@ LATENCY = MeanMetric(name="latency", entity="user_id", fact="latency_fact", aggr
 DECLARED = [REVENUE, ORDERS, LATENCY]
 
 UNADJUSTED = Method(name="unadjusted")
-CUPED = Method(name="cuped", variance_reduction="cuped")
+CUPED_COVARIATE = CupedCovariate(name="pre_revenue", kind="continuous")
+CUPED = Method.cuped(covariates=CUPED_COVARIATE)
 
 OBSERVATIONAL = Observational(
     control_group="control", adjustment=AdjustmentSet(covariates=("covariate",))
@@ -297,7 +299,9 @@ def test_resolve_configs_explicit_cuped_decision_is_not_rewritten():
     plan = AnalysisPlan(
         primary=ExperimentMetric(
             metric="revenue",
-            decision_method=MethodSpec(name="cuped", variance_reduction="cuped"),
+            decision_method=MethodSpec(
+                name="cuped", variance_reduction="cuped", covariates=(CUPED_COVARIATE,)
+            ),
         )
     )
     procedure = _procedure(compile_decision_plan(plan, [REVENUE]))
@@ -309,7 +313,9 @@ def test_resolve_configs_omitted_decision_keeps_unadjusted_then_sensitivity():
     plan = AnalysisPlan(
         primary=ExperimentMetric(
             metric="revenue",
-            sensitivity_methods=(MethodSpec(name="cuped", variance_reduction="cuped"),),
+            sensitivity_methods=(
+                MethodSpec(name="cuped", variance_reduction="cuped", covariates=(CUPED_COVARIATE,)),
+            ),
         )
     )
     procedure = _procedure(compile_decision_plan(plan, [REVENUE]))
@@ -366,7 +372,9 @@ def test_resolve_configs_binding_roles_used_when_no_global():
         primary=ExperimentMetric(
             metric="revenue",
             decision_method=MethodSpec(name="unadjusted"),
-            sensitivity_methods=(MethodSpec(name="cuped", variance_reduction="cuped"),),
+            sensitivity_methods=(
+                MethodSpec(name="cuped", variance_reduction="cuped", covariates=(CUPED_COVARIATE,)),
+            ),
         )
     )
     compiled = compile_decision_plan(plan, [REVENUE, ORDERS])
@@ -408,7 +416,9 @@ def test_resolve_configs_global_methods_override_binding_roles():
     plan = AnalysisPlan(
         primary=ExperimentMetric(
             metric="revenue",
-            decision_method=MethodSpec(name="cuped", variance_reduction="cuped"),
+            decision_method=MethodSpec(
+                name="cuped", variance_reduction="cuped", covariates=(CUPED_COVARIATE,)
+            ),
         )
     )
     procedure = _procedure(compile_decision_plan(plan, [REVENUE], methods=[UNADJUSTED]))
@@ -425,7 +435,6 @@ def test_resolve_configs_spec_roles_used_when_no_global():
         metrics=[
             MetricSpec(
                 name="revenue",
-                covariate="pre_revenue",
                 decision_method=UNADJUSTED,
                 sensitivity_methods=(CUPED,),
             )

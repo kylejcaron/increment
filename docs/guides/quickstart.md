@@ -309,8 +309,9 @@ A column declared `"outcome"` is refused (`impute.pooled_mean_outcome`) before
 any fill. Filling a column with no declared role still works but emits the
 `impute.pooled_mean_role_undeclared` warning with per-column counts.
 `MetricSpec(missing="impute")` is refused (`frame.metric.missing_impute`); use
-`missing="zero"` or `"drop"` for an outcome, or `covariate_missing="impute"` for
-a covariate.
+`missing="zero"` or `"drop"` for an outcome. Set a CUPED covariate's policy on
+its method-owned declaration, for example
+`Method.cuped(covariates=CupedCovariate(name="baseline", kind="continuous", missing="impute"))`.
 
 ## One row per unit per day
 

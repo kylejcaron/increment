@@ -128,6 +128,7 @@
       "axis": "relative",
       "decision_method": {
         "conversion_inference": "auto",
+        "covariates": null,
         "name": "unadjusted",
         "variance_reduction": "none"
       },
@@ -275,6 +276,7 @@
       "axis": "relative",
       "decision_method": {
         "conversion_inference": "auto",
+        "covariates": null,
         "name": "unadjusted",
         "variance_reduction": "none"
       },
@@ -446,5 +448,5 @@
       "q": 0.1
     }
   },
-  "wire_version": 3
+  "wire_version": 5
 }

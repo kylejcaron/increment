@@ -20,6 +20,7 @@ from increment.errors import CodedError, _freeze
 if TYPE_CHECKING:
     import pyarrow as pa
 
+    from increment._analysis_config import ResolvedMetricConfig
     from increment.analysis import Analysis
     from increment.breakout.estimates import (
         BreakoutEstimates,
@@ -314,6 +315,7 @@ class BreakoutSourcesOperation(Protocol):
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> Sequence[BreakoutMomentsSource]: ...
 
 
@@ -371,6 +373,13 @@ class SummarySQLOperation(Protocol):
 
 
 @runtime_checkable
+class ReadoutExecutionOperation(Protocol):
+    """Source-owned reduction lifetime shared by all cells in one readout."""
+
+    def readout_execution(self) -> AbstractContextManager[None]: ...
+
+
+@runtime_checkable
 class ReadoutSnapshotOperation(Protocol):
     """Source-owned snapshot spanning one complete readout operation."""
 
@@ -381,6 +390,7 @@ class ReadoutSnapshotOperation(Protocol):
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> AbstractContextManager[MomentSource]: ...
 
 

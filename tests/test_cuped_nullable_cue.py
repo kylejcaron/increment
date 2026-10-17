@@ -28,11 +28,13 @@ def test_public_linear_cuped_accepts_nan_history_as_imputed_missingness():
     frame = pd.DataFrame(rows)
     metric = MetricSpec(
         name="outcome",
-        covariates=(
-            CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
-            CupedCovariate(name="country", kind="categorical"),
+        decision_method=Method.cuped_multicovariate(
+            name="linear",
+            covariates=(
+                CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
+                CupedCovariate(name="country", kind="categorical"),
+            ),
         ),
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
     )
 
     results = Analysis.from_unit_summary(

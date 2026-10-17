@@ -358,9 +358,8 @@ class TestNullMarginPrecedence:
         assert resolved.procedures["rev"].null_abs == pytest.approx(-2.0)  # ty: ignore[unresolved-attribute] -- plan variant is fixed by test fixture
 
 
-class TestFrameMethodsAndPriorRefused:
-    """Rule: frame plan entries with method roles/prior set refuse, pointing
-    at MetricSpec."""
+class TestFrameMethodsAndPrior:
+    """Frame plans allow method-role overrides but still refuse priors."""
 
     def test_frame_entry_with_prior_refuses(self):
         metrics = [_mean("rev")]
@@ -373,39 +372,53 @@ class TestFrameMethodsAndPriorRefused:
         assert raised.value.context["metric"] == "rev"
         assert raised.value.context["field"] == "prior"
 
-    def test_frame_entry_with_methods_refuses(self):
-        from increment.semantics.models import MethodSpec
+    def test_frame_entry_with_methods_resolves(self):
+        from increment.semantics.models import CupedCovariate, MethodSpec
 
         metrics = [_mean("rev")]
+        method = MethodSpec(
+            name="cuped",
+            variance_reduction="cuped",
+            covariates=(CupedCovariate(name="pre", kind="continuous"),),
+        )
         plan = AnalysisPlan(
             primary=ExperimentMetric(
                 metric="rev",
-                decision_method=MethodSpec(name="ols"),
+                decision_method=method,
             )
         )
-        with pytest.raises(InvalidRequestError) as raised:
-            compile_decision_plan(plan, metrics, path="frame")
-        assert raised.value.code == "plan.frame.override"
-        assert raised.value.context["metric"] == "rev"
-        assert raised.value.context["field"] == "decision_method"
+        compiled = compile_decision_plan(plan, metrics, path="frame")
+        procedure = compiled.procedures["rev"]
+        assert isinstance(procedure, RelativeArmDecisionProcedure)
+        assert procedure.decision_method.name == "cuped"
+        assert procedure.decision_method.variance_reduction == "cuped"
+        assert procedure.decision_method.covariates is not None
+        assert procedure.decision_method.covariates[0].name == "pre"
 
-    def test_frame_entry_sensitivity_only_refuses_with_field_context(self):
-        from increment.semantics.models import MethodSpec
+    def test_frame_entry_sensitivity_only_resolves(self):
+        from increment.semantics.models import CupedCovariate, MethodSpec
 
         metrics = [_mean("rev")]
-
+        method = MethodSpec(
+            name="sensitivity",
+            variance_reduction="cuped",
+            covariates=(CupedCovariate(name="pre", kind="continuous"),),
+        )
         plan = AnalysisPlan(
             primary=ExperimentMetric(
                 metric="rev",
-                sensitivity_methods=(MethodSpec(name="sensitivity"),),
+                sensitivity_methods=(method,),
             )
         )
-        with pytest.raises(InvalidRequestError) as raised:
-            compile_decision_plan(plan, metrics, path="frame")
-
-        assert raised.value.code == "plan.frame.override"
-        assert raised.value.context["metric"] == "rev"
-        assert raised.value.context["field"] == "sensitivity_methods"
+        compiled = compile_decision_plan(plan, metrics, path="frame")
+        procedure = compiled.procedures["rev"]
+        assert isinstance(procedure, RelativeArmDecisionProcedure)
+        assert len(procedure.sensitivity_methods) == 1
+        sensitivity = procedure.sensitivity_methods[0]
+        assert sensitivity.name == "sensitivity"
+        assert sensitivity.variance_reduction == "cuped"
+        assert sensitivity.covariates is not None
+        assert sensitivity.covariates[0].name == "pre"
 
     def test_warehouse_entry_with_prior_is_allowed(self):
         metrics = [_mean("rev")]

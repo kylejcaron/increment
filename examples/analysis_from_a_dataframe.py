@@ -10,12 +10,13 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis, Method, MetricSpec, Normal
+    from increment import Analysis, CupedCovariate, Method, MetricSpec, Normal
     from increment.results import LiftEstimate
     from increment.tables import estimates_to_readout, readout_table
 
     return (
         Analysis,
+        CupedCovariate,
         LiftEstimate,
         Method,
         MetricSpec,
@@ -179,6 +180,7 @@ def _(mo):
 @app.cell
 def cuped(
     Analysis,
+    CupedCovariate,
     Method,
     MetricSpec,
     checkout_df,
@@ -186,7 +188,7 @@ def cuped(
     readout_table,
 ):
     UNADJUSTED = Method(name="unadjusted")
-    CUPED = Method(name="cuped", variance_reduction="cuped")
+    CUPED = Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
 
     cuped_analysis = Analysis.from_unit_summary(
         checkout_df,
@@ -197,7 +199,7 @@ def cuped(
             MetricSpec(
                 name="revenue",
                 type="mean",
-                covariate="pre_revenue",
+                sensitivity_methods=(CUPED,),
             )
         ],
     )

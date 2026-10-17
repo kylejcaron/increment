@@ -123,13 +123,4 @@ increment/query/builders.py
     DOC103: Function `unit_day_spine_stats`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [events: ir.Table, experiment: Experiment, exposures: ir.Table, metric_name: str].
     DOC201: Function `unit_day_spine_stats` does not have a return section in docstring
     DOC203: Function `unit_day_spine_stats` return type(s) in docstring not consistent with the return annotation. Return annotation has 2 type(s); docstring return section has 0 type(s).
-    DOC101: Function `unit_totals`: Docstring contains fewer arguments than in function signature.
-    DOC103: Function `unit_totals`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [by: list[str] | None, experiment: Experiment, metric: Metric, pre_stats: ir.Table | None, properties_table: ir.Table | None, spine: ir.Table, stats: ir.Table, uptake_events: ir.Table | None, uptake_window_days: int | None].
-    DOC201: Function `unit_totals` does not have a return section in docstring
-    DOC203: Function `unit_totals` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
-    DOC102: Function `group_summary`: Docstring contains more arguments than in function signature.
-    DOC110: Function `group_summary`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
-    DOC103: Function `group_summary`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [totals: ir.Table]. Arguments in the docstring but not in the function signature: [The row shape comes from ``_moment_plan.UNIT_GRAIN`` (or the cluster: , emitted (typed NULL when *totals* has no ``d`` column), centered on the: , overall group reference, never on the ``d = 1`` subgroup mean.: , plans under *cluster*): ``sum_d``/``cyd``/``cy2d``/``cxd`` are always].
-    DOC201: Function `group_summary` does not have a return section in docstring
-    DOC203: Function `group_summary` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
 --------------------

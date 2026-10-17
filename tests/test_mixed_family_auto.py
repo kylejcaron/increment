@@ -192,7 +192,7 @@ def test_compiled_plan_round_trips_the_wire():
         estimands=("itt", "compliance"),
     )
     payload = compiled_plan_to_dict(compiled)
-    assert payload["wire_version"] == 3
+    assert payload["wire_version"] == 5
     inference_payload = cast("dict[str, object]", payload["inference"])
     assert inference_payload["kind"] == "asymptotic_mean"
     registration = cast("dict[str, object]", inference_payload["registration"])

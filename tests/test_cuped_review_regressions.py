@@ -41,7 +41,6 @@ def _metric(method: Method) -> MetricSpec:
         name="outcome",
         preferred_direction="decrease",
         decision_method=method,
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
     )
 
 
@@ -51,7 +50,13 @@ def _analysis(table: pa.Table, *, plan: AnalysisPlan | None = None) -> Analysis:
         unit="unit",
         group="arm",
         control="control",
-        metrics=[_metric(Method(name="linear", variance_reduction="cuped_linear"))],
+        metrics=[
+            _metric(
+                Method.cuped_multicovariate(
+                    name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+                )
+            )
+        ],
         plan=plan,
     )
 
@@ -66,11 +71,14 @@ def test_failed_linear_sensitivity_does_not_break_ordinary_secondary_fcr() -> No
         list(
             analysis.run(
                 decision_method=Method(name="plain"),
-                sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+                sensitivity_methods=[
+                    Method.cuped_multicovariate(
+                        name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+                    )
+                ],
             )
         ),
     )
-
     by_method = {row.method: row for row in result}
     assert by_method["plain"].lift is not None
     assert by_method["linear"].lift is None
@@ -107,8 +115,12 @@ def test_linear_methods_with_same_construction_share_one_fit(
     monkeypatch.setattr(cuped_multicovariate, "fit_cuped_multicovariate", counted)
     analysis = _analysis(_rows())
     methods = [
-        Method(name="linear-decision", variance_reduction="cuped_linear"),
-        Method(name="linear-sensitivity", variance_reduction="cuped_linear"),
+        Method.cuped_multicovariate(
+            name="linear-decision", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
+        Method.cuped_multicovariate(
+            name="linear-sensitivity", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     ]
 
     result = cast(
@@ -157,13 +169,16 @@ def test_relative_projection_failure_keeps_absolute_guardrail_inference() -> Non
 
 
 @pytest.mark.parametrize("override", ["decision", "sensitivity"])
-def test_undeclared_linear_override_refuses_before_evidence_acquisition(override):
+def test_unavailable_linear_override_refuses_before_evidence_acquisition(override):
     from increment.errors import CodedError
     from increment.readouts import run
     from tests.test_cuped_linear_acceptance import _summary_source
 
     source = _summary_source(metric=MetricSpec(name="revenue"))
-    linear = Method(name="linear", variance_reduction="cuped_linear")
+    linear = Method.cuped_multicovariate(
+        name="linear",
+        covariates=CupedCovariate(name="missing_covariate", kind="continuous"),
+    )
     with pytest.raises(CodedError) as raised:
         if override == "decision":
             run(cast(MomentSource, source), decision_method=linear)
@@ -171,6 +186,36 @@ def test_undeclared_linear_override_refuses_before_evidence_acquisition(override
             run(cast(MomentSource, source), sensitivity_methods=[linear])
     assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
     assert source.read_calls == 0
+
+
+def test_available_unadjusted_source_column_supports_mixed_cuped_override():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "revenue": float(index + (group == "treatment") * 3),
+            "prior": float(index % 7),
+        }
+        for group in ("control", "treatment")
+        for index in range(40)
+    ]
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[MetricSpec(name="revenue")],
+    )
+
+    result = analysis.run(
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="prior", kind="continuous")
+        )
+    )[0]
+
+    assert isinstance(result, LiftEstimate)
+    log_se = result.require_lift().log_se
+    assert log_se is not None and log_se > 0.0
 
 
 def test_m1_unavailable_readouts_replay_exact_fit_refusal():
@@ -211,8 +256,10 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
     )
     metric = MetricSpec(
         name="outcome",
-        covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        decision_method=Method.cuped_multicovariate(
+            name="linear",
+            covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
+        ),
     )
     analysis = Analysis.from_unit_panel(
         frame,
@@ -272,8 +319,10 @@ def _m1_rejected_frame() -> tuple[pa.Table, MetricSpec, Any]:
     )
     metric = MetricSpec(
         name="outcome",
-        covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        decision_method=Method.cuped_multicovariate(
+            name="linear",
+            covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
+        ),
     )
     return frame, metric, raised.value
 
@@ -284,11 +333,14 @@ def test_m1_decision_refusal_survives_companion_sensitivity_method(companion: st
     analysis = Analysis.from_unit_summary(
         frame, unit="unit", group="arm", control="control", metrics=[metric]
     )
-    sensitivity = (
-        Method(name="plain")
-        if companion == "plain"
-        else Method(name=companion, variance_reduction="cuped_linear")
-    )
+    if companion == "plain":
+        sensitivity = Method(name="plain")
+    else:
+        decision_method = metric.decision_method
+        assert decision_method is not None
+        covariates = decision_method.covariates
+        assert covariates is not None
+        sensitivity = Method.cuped_multicovariate(name=companion, covariates=covariates)
 
     results = analysis.run(sensitivity_methods=[sensitivity])
 
@@ -324,8 +376,9 @@ def test_nonfinite_support_observable_is_retained_canonically() -> None:
         type="ratio",
         numerator="revenue",
         denominator="orders",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     analysis = Analysis.from_unit_summary(
         pa.Table.from_pylist(rows), unit="unit", group="arm", control="control", metrics=[metric]

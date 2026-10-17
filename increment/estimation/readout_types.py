@@ -435,6 +435,11 @@ class FamilyScope(_ReadoutModel):
     identity_look: date | datetime | str | int | float | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    decision_snapshot_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Decision-only input snapshot when the readout also captures companion evidence.",
+    )
     members: tuple[CellKey, ...]
     complete: bool
 
@@ -484,6 +489,7 @@ class FamilyScope(_ReadoutModel):
             self.name,
             identity_metric=self.identity_metric,
             identity_look=self.identity_look,
+            decision_snapshot_id=self.decision_snapshot_id,
         )
         if self.family_id != expected:
             refuse_readout(
@@ -505,11 +511,14 @@ def family_identity(
     *,
     identity_metric: str | None = None,
     identity_look: date | datetime | str | int | float | None = None,
+    decision_snapshot_id: str | None = None,
 ):
     payload = {
         "kind": "increment.readout.family",
         "version": 2 if identity_metric is not None or identity_look is not None else 1,
-        "source_snapshot_id": source_snapshot_id,
+        "source_snapshot_id": source_snapshot_id
+        if decision_snapshot_id is None
+        else decision_snapshot_id,
         "analysis_population": analysis_population,
         "view": view,
         "dimension": dimension,
@@ -765,6 +774,7 @@ def _digest_positional_rows(
     total = 0
     count = 0
     for row in rows:
+
         parts = []
         generic_row = None
         for key, prefix, index in zip(keys, prefixes, indices, strict=True):

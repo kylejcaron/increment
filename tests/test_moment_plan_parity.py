@@ -17,8 +17,9 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
+from increment import Method
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW, SLOTS
-from increment.frame import MetricSpec, from_unit_summary
+from increment.frame import CupedCovariate, MetricSpec, from_unit_summary
 from increment.query.builders import group_summary
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
@@ -117,7 +118,9 @@ def test_unit_grain_every_family_agrees():
                 type="ratio",
                 numerator="rev",
                 denominator="sessions",
-                covariate="pre_rev",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_rev", kind="continuous")
+                ),
             )
         ],
         uptake="took",

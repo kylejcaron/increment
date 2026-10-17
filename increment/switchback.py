@@ -1196,13 +1196,13 @@ def from_switchback_panel(  # noqa: PLR0915
             reason="unsupported_metric_type",
         )
     if plan is not None and any(
-        getattr(entry, "covariates", ()) or getattr(entry, "wants_cuped_linear", False)
+        getattr(entry, "covariates", ()) or getattr(entry, "wants_cuped_multicovariate", False)
         for entry in (*plan.primaries, *(plan.secondaries or ()), *plan.guardrails)
         if not isinstance(entry, str)
     ):
         _reject_metric(
             message=(
-                "switchback plans cannot use cuped_linear or per-metric covariates; "
+                "switchback plans cannot use cuped_multicovariate or per-metric covariates; "
                 "use from_unit_summary, from_unit_panel, definitions, or a covariate "
                 "artifact for independent-unit randomized inference"
             ),
@@ -1231,8 +1231,8 @@ def from_switchback_panel(  # noqa: PLR0915
                 policy=spec.missing,
                 reason="ignored_metric_option",
             )
-        if spec.covariates or any(
-            method.variance_reduction == "cuped_linear"
+        if any(
+            method.variance_reduction == "cuped_multicovariate"
             for method in (
                 (() if spec.decision_method is None else (spec.decision_method,))
                 + spec.sensitivity_methods
@@ -1240,7 +1240,7 @@ def from_switchback_panel(  # noqa: PLR0915
         ):
             _reject_metric(
                 message=(
-                    f"switchback metric {spec.name!r} cannot use cuped_linear; "
+                    f"switchback metric {spec.name!r} cannot use cuped_multicovariate; "
                     "use from_unit_summary, from_unit_panel, definitions, or a covariate "
                     "artifact for independent-unit randomized inference"
                 ),
@@ -1271,10 +1271,17 @@ def from_switchback_panel(  # noqa: PLR0915
                 field="prior",
                 reason="ignored_metric_option",
             )
-    if any(spec.covariate is not None for spec in specs):
+    if any(
+        method.covariates
+        for spec in specs
+        for method in (
+            (() if spec.decision_method is None else (spec.decision_method,))
+            + spec.sensitivity_methods
+        )
+    ):
         _reject_metric(
-            message="switchback metrics do not support covariate adjustment",
-            field="covariate",
+            message="switchback metrics do not support method-owned CUPED covariates",
+            field="covariates",
             reason="unsupported_metric_option",
         )
     if any(spec.window_days is not None for spec in specs):

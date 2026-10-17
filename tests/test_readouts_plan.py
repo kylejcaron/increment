@@ -36,7 +36,7 @@ from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid
-from increment.frame import FrameTotalsSource, MetricSpec
+from increment.frame import CupedCovariate, FrameTotalsSource, MetricSpec
 from increment.readouts import _passes
 from increment.semantics.design import (
     Encouragement,
@@ -85,12 +85,11 @@ def _cuped_family_table(*, uptake: bool = False):
 
 
 def _cuped_family_specs() -> list[MetricSpec]:
-    cuped = Method(name="cuped", variance_reduction="cuped")
+    cuped = Method.cuped(covariates=CupedCovariate(name="baseline", kind="continuous"))
     unadjusted = Method(name="unadjusted")
     return [
         MetricSpec(
             name=name,
-            covariate="baseline",
             decision_method=cuped,
             sensitivity_methods=(unadjusted,),
         )
@@ -1564,7 +1563,14 @@ def test_cuped_row_never_reads_discovery_true_off_an_unadjusted_canonical(q: flo
         unit="user_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="y", covariate="x")],
+        metrics=[
+            MetricSpec(
+                name="y",
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+                ),
+            )
+        ],
         plan=AnalysisPlan(q=q),  # declared=True, "y" defaults to secondary
     )
     results = readouts.run(

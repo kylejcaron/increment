@@ -9,6 +9,7 @@ import pytest
 from increment import (
     Analysis,
     AsymptoticMean,
+    CupedCovariate,
     Method,
     SequentialCell,
     declare_sequential_freeze,
@@ -43,7 +44,7 @@ from tests.asymptotic_cases import mean_capture, mean_model, mean_records, mean_
 from tests.mc import binomial_error_upper_bound, family_eta, scientific_delta
 
 _DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
-_CUPED = Method(name="cuped", variance_reduction="cuped")
+_CUPED = Method.cuped()
 _PLAN = AnalysisPlan(primary="m", inference=InferenceSpec(kind="asymptotic_mean"))
 ALPHA = 0.05
 
@@ -89,10 +90,22 @@ def test_adjusted_mean_narrows_with_a_predictive_covariate_and_not_with_noise():
     frame = _frame(np.random.default_rng(11))
     _, plain = _run(frame, MetricSpec(name="m", type="mean"))
     analysis, adjusted = _run(
-        frame, MetricSpec(name="m", type="mean", covariate="x", decision_method=_CUPED)
+        frame,
+        MetricSpec(
+            name="m",
+            type="mean",
+            decision_method=Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+        ),
     )
     _, noise = _run(
-        frame, MetricSpec(name="m", type="mean", covariate="noise", decision_method=_CUPED)
+        frame,
+        MetricSpec(
+            name="m",
+            type="mean",
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name="noise", kind="continuous")
+            ),
+        ),
     )
     model = analysis.sequential_snapshot().registration.models[0]
     assert model.law == "adjusted_mean" and adjusted.method == "cuped"
@@ -649,8 +662,7 @@ def test_adjusted_ratio_narrows_ratio_and_keeps_the_covariate_induced_covariance
             type="ratio",
             numerator="m",
             denominator="d",
-            covariate="x",
-            decision_method=_CUPED,
+            decision_method=Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
         ),
     )
     assert analysis.sequential_snapshot().registration.models[0].law == "adjusted_ratio_mean"

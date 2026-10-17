@@ -156,16 +156,20 @@ def validate_sequential_methods(registration, metric: str, methods, *, prior=Non
     adjustment = adjustment_kind(registration, metric)
     model = next((m for m in registration.models if m.metric == metric), None)
     for method in methods:
-        if method.name == "unadjusted" and method.variance_reduction == "none":
+        if (
+            method.variance_reduction == "none"
+            and not method.is_observational
+            and (method.name in {"naive", "unadjusted"} or method.procedure == "unadjusted")
+        ):
             if adjustment is not None:
                 sequential_refuse(
                     "source.invalid",
                     f"metric {metric!r}: the registration retains a CUPED adjustment "
                     f"({adjustment} coefficient), so its decision method must be "
-                    "Method(name='cuped', variance_reduction='cuped')",
+                    "a scalar CUPED method",
                 )
             continue
-        if method.name == "cuped" and method.variance_reduction == "cuped":
+        if method.variance_reduction == "cuped" and not method.is_observational:
             if adjustment is not None:
                 continue
             if model is not None and model.law in ("scalar_mean", "ratio_mean"):
@@ -176,7 +180,7 @@ def validate_sequential_methods(registration, metric: str, methods, *, prior=Non
                     f"registered {model.law!r} state does not carry. Register the "
                     f"{'adjusted_ratio_mean' if model.law == 'ratio_mean' else 'adjusted_mean'!r} "
                     "law instead (automatic under InferenceSpec(kind='asymptotic_mean') when "
-                    "a CUPED method is declared with MetricSpec(covariate=...) on a frame or "
+                    "a CUPED method is declared with Method.cuped(covariates=...) on a frame or "
                     "with n_pre_periods > 0 on a definitions experiment). "
                     "For scalar_mean only, a pre-period coefficient and centre can instead "
                     "be declared through InferenceSpec.adjustments or ScalarMeanModel.adjustment "
