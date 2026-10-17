@@ -1,9 +1,12 @@
 # Parity matrix coverage
 
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
-`tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs every cell.
+`tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs
+the PR covering scope by default and all cells when `INCREMENT_PARITY_MATRIX=full`.
 
-Every count below was computed from `matrix.classify` over `matrix.iter_cells()` when this file was last changed; no test enforces the numbers. `tests/test_parity_matrix.py` enforces the dispositions themselves, cell by cell.
+Every count below describes the full grid, computed from `matrix.classify` over
+`matrix.iter_cells()`; no test enforces the aggregate numbers. Tests enforce each
+selected cell's disposition and that the PR scope preserves every full-grid disposition.
 
 ## Axes
 
@@ -15,7 +18,17 @@ Every count below was computed from `matrix.classify` over `matrix.iter_cells()`
 | day_boundary | utc, fixed_offset (`UTC-05:00`) |
 | missing | error, zero, drop, impute |
 
-Cells: 3,584. Ingress-cells (six constructors each): 21,504. Every cell is executed; none is collapsed.
+Cells: 3,584. Ingress-cells (six constructors each): 21,504. Full scope executes every cell; none is collapsed.
+
+## PR and nightly scopes
+
+PRs run a deterministic strength-3 covering array plus one sentinel for each distinct
+disposition (verdict statuses, refusal codes, and waived-ingress set). The current PR
+scope is 584 cells: 448 covering cells plus 136 additional sentinels, covering all
+145 dispositions. Only combinations present in the full grid are required for
+three-way coverage. Set `INCREMENT_PARITY_MATRIX=full` for the exhaustive 3,584-cell
+grid used by the nightly gate. The 64 asymptotic-retention variants and the 11
+non-parametrized tests always run in either scope.
 
 ## Cells per disposition
 
@@ -109,7 +122,7 @@ Every cell builds and runs each of its ingresses itself; no result is shared bet
 
 ## Collapse proofs
 
-None. No cell is collapsed into a representative.
+No cells are collapsed in full scope; PR scope uses covering cells and disposition sentinels.
 
 ## Existing scenario cases
 

@@ -1,4 +1,4 @@
-"""Every cell of the enumerated parity matrix, on every ingress.
+"""Behavioral checks for parity matrix cells, on every ingress.
 
 ``tests/parity_harness/matrix.py`` names, for each cell of metric x view x option x
 day_boundary x missing, what each of the six ingress constructors must do: run, refuse with a
@@ -8,6 +8,10 @@ ingresses that run are compared with each other within 1e-9 relative;
 exist but never compared. ``test_cell`` builds the cell on each ingress, runs it, and asserts
 exactly that, so a stale refusal code, a refusal that became a number, a number that became a
 refusal and a numeric disagreement all fail.
+
+By default the primary cells are a strength-3 covering array with one sentinel per
+disposition; ``INCREMENT_PARITY_MATRIX=full`` executes the full grid. The 64
+asymptotic-retention variants always execute in either scope.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request
@@ -53,7 +57,7 @@ def _params(cells: Iterable[matrix.Cell]) -> list:
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     cells = {
-        "test_cell": matrix.iter_cells,
+        "test_cell": matrix.parity_matrix_cells,
         "test_asymptotic_retention_cell": matrix.iter_asymptotic_retention_cells,
     }.get(metafunc.function.__name__)
     if cells is not None:

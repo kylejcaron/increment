@@ -691,6 +691,10 @@ A new method needs all of the following:
    `LoggedTrace`, or a power solver) does not belong in that matrix; it
    enumerates parity across its own public ingresses instead. Path presence
    alone is not evidence of parity.
+   PRs run the deterministic strength-3 covering scope plus disposition
+   sentinels; the nightly gate sets `INCREMENT_PARITY_MATRIX=full` to execute
+   the exhaustive grid. Both scopes always run the asymptotic-retention variants
+   and non-parametrized parity tests; see the coverage page for counts.
 6. **An independent reference.** Either a frozen comparison against a
    third-party tool or independent primitive under `tests/oracles/`, or a
    justified independent construction check (an enumeration or an exact
