@@ -282,8 +282,10 @@ The PR PostgreSQL gate runs one duration-balanced shard. The reusable
 warehouse workflow defaults to three shards for weekly and manual runs.
 
 Each selected fast Python-version cell has two duration-balanced `pytest-split`
-shards, with `xdist` workers inside each shard. `ci-ok` requires all four PR
-shards (Python 3.12/3.14) or all six main-push shards (Python 3.12–3.14). The
+shards, with `xdist` workers inside each shard, except that pull requests run
+Python 3.14 as a single shard. `ci-ok` requires all three PR shards or all six
+main-push shards (Python 3.12–3.14). The build job also runs the documentation
+snippet and strict-docs checks when changed paths require them. The
 machine-generated `.github/fast-test-durations.json` weights come from the
 complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
 Refresh them with the complete fast suite, preserving worker group suffixes:
