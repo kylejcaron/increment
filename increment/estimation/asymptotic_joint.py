@@ -138,7 +138,7 @@ def _coefficient(control: GaussianState, treatment: GaussianState, y: int, x: in
     """Inverse-n weighted within-arm ``Cov(Y, X) / Var(X)``; None when unidentified.
 
     Bessel-corrected retained moments, an arm whose covariate is constant
-    excluded from both sums, exactly ``estimation.cuped._within_arm_theta``.
+    excluded from both sums, exactly ``estimation.cuped.scalar._within_arm_theta``.
     """
     covariance = variance = _ZERO
     for arm in (control, treatment):

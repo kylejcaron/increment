@@ -10,7 +10,7 @@ import pytest
 from scipy import stats
 
 from increment.errors import InvalidRequestError
-from increment.estimation.cuped_linear import fit_cuped_linear
+from increment.estimation.cuped import fit_cuped_multicovariate
 
 
 def _fit_repeated_design(y, arms, *, repetitions=4, **options):
@@ -22,7 +22,7 @@ def _fit_repeated_design(y, arms, *, repetitions=4, **options):
         options["covariates"] = {
             name: np.repeat(values, repetitions) for name, values in options["covariates"].items()
         }
-    return fit_cuped_linear(
+    return fit_cuped_multicovariate(
         None if y is None else np.repeat(y, repetitions), np.repeat(arms, repetitions), **options
     )
 
@@ -87,7 +87,7 @@ def test_absolute_projection_matches_independent_wls_hc2_and_bm_reference():
     x = rng.normal(size=(len(arm), 2))
     y = 1.2 + 0.8 * (arm == "t") + x @ np.array([0.7, -0.4]) + rng.normal(size=len(arm))
     order = ("c", "t")
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -114,12 +114,12 @@ def test_absolute_projection_matches_independent_wls_hc2_and_bm_reference():
 def test_fit_and_refusal_are_pickle_and_deepcopy_safe():
     y = np.array([1.0, 2.0, 3.0, 2.0, 4.0, 5.0, 6.0, 4.0])
     arm = np.array(["c"] * 4 + ["t"] * 4)
-    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    fit = fit_cuped_multicovariate(y, arm, control="c", arm_order=("c", "t"))
     for restored in (pickle.loads(pickle.dumps(fit)), copy.deepcopy(fit)):
         assert restored.absolute("t").estimate == pytest.approx(fit.absolute("t").estimate)
     x = np.array([0.0, 1.0, 2.0, 3.0, 0.0, 2.0, 1.0, 4.0])
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             y,
             arm,
             control="c",
@@ -136,7 +136,7 @@ def test_unadjusted_hc2_is_welch_and_alpha_only_changes_endpoints():
     rng = np.random.default_rng(42)
     arm = np.array(["c"] * 11 + ["t"] * 15)
     y = rng.normal(size=len(arm))
-    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    fit = fit_cuped_multicovariate(y, arm, control="c", arm_order=("c", "t"))
     result = fit.absolute("t", alpha=0.05)
     welch = y[arm == "t"].var(ddof=1) / 15 + y[arm == "c"].var(ddof=1) / 11
     assert result.se**2 == pytest.approx(welch, rel=1e-12)
@@ -155,7 +155,7 @@ def test_scalar_point_matches_scalar_cuped_moment_fit():
     x_t = np.array([1.0, 2.0, 3.0, 6.0, 7.0, 8.0])
     y_c = 2 + 0.8 * x_c + np.array([1.0, -1.0, 0.0, 1.0, -1.0])
     y_t = 3 + 0.8 * x_t + np.array([-1.0, 1.0, 0.0, -1.0, 1.0, 0.0])
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         np.r_[y_c, y_t],
         ["c"] * 5 + ["t"] * 6,
         control="c",
@@ -196,7 +196,7 @@ def test_categorical_missing_token_is_distinct_and_rows_are_retained():
         kinds={"category": "categorical"},
         missing={"category": "impute-indicator"},
     )
-    from increment.estimation.cuped_linear import MISSING_CATEGORY
+    from increment.estimation.cuped.encoding import MISSING_CATEGORY
 
     category_levels = fit.layout.levels[0]
     assert category_levels is not None
@@ -234,7 +234,7 @@ def test_categorical_only_fit_equals_target_weighted_stratum_contrast():
         ]
     )
     # Stratum proportions and allocation probabilities are equal by construction.
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -251,7 +251,7 @@ def test_repeated_fit_has_stable_results():
     arm = np.array(["c"] * 30 + ["t"] * 30)
     x = rng.normal(size=60)
     y = 3 + (arm == "t") + 2 * x + rng.normal(size=60)
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -259,7 +259,7 @@ def test_repeated_fit_has_stable_results():
         covariates={"x": x},
         kinds={"x": "continuous"},
     )
-    altered = fit_cuped_linear(
+    altered = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -279,7 +279,7 @@ def test_ratio_projection_uses_joint_component_covariance():
     x = rng.normal(size=80)
     num = 5 + 0.6 * x + rng.normal(scale=0.7, size=80) + (arm == "t") * 0.4
     den = 3 + 0.3 * x + 0.5 * (num - 5 - 0.6 * x) + rng.normal(scale=0.4, size=80)
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         None,
         arm,
         control="c",
@@ -351,7 +351,7 @@ def test_fit_refusals_have_stable_codes(case, code):
         y = y.copy()
         y[2] = np.inf
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             y,
             arm,
             control="c",
@@ -365,7 +365,7 @@ def test_fit_refusals_have_stable_codes(case, code):
 def test_relative_projection_refuses_nonpositive_adjusted_means():
     arm = np.array(["c"] * 6 + ["t"] * 6)
     y = np.r_[np.full(6, -1.0), np.full(6, 2.0)]
-    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    fit = fit_cuped_multicovariate(y, arm, control="c", arm_order=("c", "t"))
     with pytest.raises(InvalidRequestError) as raised:
         fit.relative("t")
     assert raised.value.code == "estimation.cuped_linear.nonpositive_component"
@@ -452,7 +452,7 @@ def test_ratio_log_projection_matches_independent_stacked_reference():
     x = rng.normal(size=80)
     num = 5 + 0.6 * x + rng.normal(scale=0.7, size=80) + (arm == "t") * 0.4
     den = 3 + 0.3 * x + 0.5 * (num - 5 - 0.6 * x) + rng.normal(scale=0.4, size=80)
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         None,
         arm,
         control="c",
@@ -472,7 +472,7 @@ def test_ratio_log_projection_matches_independent_stacked_reference():
 def test_constant_covariates_are_disclosed_without_losing_missingness_indicators():
     arm = np.array(["c"] * 6 + ["t"] * 6)
     history = np.array([0.0, 0.0, None, None, 0.0, 0.0] * 2, dtype=object)
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         np.arange(12.0),
         arm,
         control="c",
@@ -491,7 +491,7 @@ def test_three_arm_absolute_projection_uses_joint_covariance():
     arm = np.repeat(["c", "t", "other"], [9, 13, 11])
     x = rng.normal(size=33)
     y = 2.0 + (arm == "t") * 0.7 + (arm == "other") * 0.2 + 1.4 * x + rng.normal(size=33)
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -511,7 +511,7 @@ def test_three_arm_relative_and_ratio_projections_remain_finite():
     y = 5 + (arm == "t") * 0.8 + 0.3 * x + rng.normal(scale=0.2, size=33)
     numerator = 8 + (arm == "t") * 0.7 + 0.5 * x + rng.normal(scale=0.2, size=33)
     denominator = 4 + (arm == "other") * 0.2 + 0.1 * x + rng.normal(scale=0.1, size=33)
-    mean_fit = fit_cuped_linear(
+    mean_fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -519,7 +519,7 @@ def test_three_arm_relative_and_ratio_projections_remain_finite():
         covariates={"x": x},
         kinds={"x": "continuous"},
     )
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         None,
         arm,
         control="c",
@@ -559,7 +559,7 @@ def test_near_collinear_accepted_fit_matches_weighted_qr(epsilon):
     v = rng.normal(size=40)
     x = np.column_stack([z, z + epsilon * v])
     y = 2 + (arm == "t") * 0.5 + x @ np.array([0.7, -0.2]) + rng.normal(size=40)
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -623,10 +623,10 @@ def test_all_projection_dofs_match_dense_eigenvalue_reference(arm_order):
     y = 5 + (arm == "t") * 0.7 + 0.3 * x + rng.normal(scale=0.5, size=len(arm))
     numerator = 9 + (arm == "t") * 0.8 + 0.4 * x + rng.normal(scale=0.4, size=len(arm))
     denominator = 4 + (arm == "other") * 0.2 + 0.1 * x + rng.normal(scale=0.2, size=len(arm))
-    mean_fit = fit_cuped_linear(
+    mean_fit = fit_cuped_multicovariate(
         y, arm, control="c", arm_order=arm_order, covariates={"x": x}, kinds={"x": "continuous"}
     )
-    ratio_fit = fit_cuped_linear(
+    ratio_fit = fit_cuped_multicovariate(
         None,
         arm,
         control="c",
@@ -693,7 +693,7 @@ def test_rank_deficient_covariates_refuse_exact_linear_combinations():
     arm = np.repeat(["c", "t"], 8)
     x = np.arange(len(arm), dtype=float)
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             x,
             arm,
             control="c",
@@ -714,7 +714,7 @@ def test_large_fit_and_projections_use_linear_memory():
     covariates = {f"x{i}": rng.normal(size=2 * n_arm) for i in range(10)}
     y = covariates["x0"] + rng.normal(size=2 * n_arm)
     tracemalloc.start()
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -734,7 +734,7 @@ def test_rank_refuses_seeded_exact_covariate_sum(seed):
     arm = np.repeat(["c", "t"], 12)
     x, z = rng.integers(-5, 6, size=(2, len(arm)))
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             np.arange(len(arm), dtype=float),
             arm,
             control="c",
@@ -827,14 +827,16 @@ def test_arm_local_outcome_offsets_preserve_contrasts_and_row_order():
     arm = np.array(["c"] * 4 + ["t"] * 4)
     y = np.r_[base + np.array([0.0, 0.0, 0.0, 4.0]), base + np.array([0.0, 0.0, 4.0, 4.0])]
     for permutation in (np.arange(8), np.array([7, 3, 1, 5, 0, 6, 4, 2])):
-        fit = fit_cuped_linear(y[permutation], arm[permutation], control="c", arm_order=("c", "t"))
+        fit = fit_cuped_multicovariate(
+            y[permutation], arm[permutation], control="c", arm_order=("c", "t")
+        )
         assert fit.absolute("t").estimate == pytest.approx(1.0)
 
 
 def test_small_positive_arm_is_not_erased_by_large_other_arm():
     arm = np.array(["c"] * 4 + ["t"] * 4)
     y = np.r_[np.full(4, 2**54), [0.25, 0.75, 0.25, 0.75]]
-    fit = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    fit = fit_cuped_multicovariate(y, arm, control="c", arm_order=("c", "t"))
     assert fit.adjusted_means[1] == pytest.approx(0.5)
     assert fit.absolute("t").se > 0
 
@@ -875,7 +877,7 @@ def test_near_collinear_bm_dof_matches_dense_eigenvalue_reference(epsilon):
     v = 4 * rng.normal(size=len(arm))
     x = np.column_stack([z, z + epsilon * v])
     y = 4 + (arm == "t") + 0.3 * z + rng.normal(size=len(arm))
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -925,7 +927,7 @@ def test_correlation_scaled_pivot_refuses_numerically_dependent_column():
     z = np.tile([-1.0, 1.0], 4)
     near = z + 1e-9 * np.tile([1.0, 1.0, -1.0, -1.0], 2)
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             np.arange(8.0),
             arm,
             control="c",
@@ -940,7 +942,7 @@ def test_categorical_sequence_detects_nan_before_string_coercion():
     arm = np.repeat(["c", "t"], 4)
     category = ["nan", "nan", float("nan"), float("nan")] * 2
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             np.arange(8.0),
             arm,
             control="c",
@@ -955,7 +957,7 @@ def test_covariate_constant_within_each_arm_is_rank_deficient():
     arm = np.repeat(["c", "t"], 4)
     x = np.repeat([1.0, 2.0], 4)
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             np.arange(8.0),
             arm,
             control="c",
@@ -974,7 +976,7 @@ def test_large_near_collinear_bm_dof_matches_qr_reference(counts):
     v = rng.normal(size=len(arm))
     x = np.column_stack([z, z + 1e-7 * v])
     y = 4 + (arm == "t") + 0.3 * z + rng.normal(size=len(arm))
-    fit = fit_cuped_linear(
+    fit = fit_cuped_multicovariate(
         y,
         arm,
         control="c",
@@ -1005,7 +1007,9 @@ def test_large_near_collinear_bm_dof_matches_qr_reference(counts):
 def test_large_well_conditioned_bm_dof_matches_closed_form_reference():
     counts = (35_000, 35_001)
     arm = np.repeat(["c", "t"], counts)
-    fit = fit_cuped_linear(np.arange(len(arm), dtype=float), arm, control="c", arm_order=("c", "t"))
+    fit = fit_cuped_multicovariate(
+        np.arange(len(arm), dtype=float), arm, control="c", arm_order=("c", "t")
+    )
     trace = sum(1 / count for count in counts)
     trace_square = sum(1 / (count**2 * (count - 1)) for count in counts)
     assert fit.dof == pytest.approx(trace**2 / trace_square, rel=1e-8)
@@ -1112,7 +1116,7 @@ def test_m1_support_refusal_retains_exact_observable_contract(observable):
         options = {"numerator": y, "denominator": denominator}
         y = None
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             y,
             arms,
             control="c",
@@ -1158,7 +1162,7 @@ def test_m1_inside_every_bound_preserves_mean_and_ratio_inference():
     kinds = {"category": "categorical", "x": "continuous"}
     y = 10 + (arms == "t") + rng.normal(size=80)
     for options in ({}, {"numerator": y, "denominator": 5 + rng.uniform(size=80)}):
-        fit = fit_cuped_linear(
+        fit = fit_cuped_multicovariate(
             None if options else y,
             arms,
             control="c",
@@ -1181,7 +1185,7 @@ def test_nonpositive_raw_denominator_arm_is_refused_under_the_fit_code():
     numerator = np.arange(24, dtype=float) + 1
     denominator = np.r_[np.full(16, 2.0), np.zeros(8)]
     with pytest.raises(InvalidRequestError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             None,
             arms,
             control="c",
@@ -1198,7 +1202,7 @@ def test_constant_denominator_ratio_contrasts_match_mean_contrasts(denominator):
     base = 2**54
     arm = np.array(["c"] * 4 + ["t"] * 4)
     numerator = np.r_[base + np.array([0.0, 0.0, 0.0, 4.0]), base + np.array([0.0, 0.0, 4.0, 4.0])]
-    ratio_fit = fit_cuped_linear(
+    ratio_fit = fit_cuped_multicovariate(
         None,
         arm,
         control="c",
@@ -1206,7 +1210,7 @@ def test_constant_denominator_ratio_contrasts_match_mean_contrasts(denominator):
         numerator=numerator,
         denominator=np.full(8, denominator),
     )
-    mean_fit = fit_cuped_linear(numerator, arm, control="c", arm_order=("c", "t"))
+    mean_fit = fit_cuped_multicovariate(numerator, arm, control="c", arm_order=("c", "t"))
     absolute, log = ratio_fit.ratio("t", scale="absolute"), ratio_fit.ratio("t", scale="log")
     expected_absolute, expected_log = mean_fit.absolute("t"), mean_fit.relative("t")
     assert expected_absolute.estimate == pytest.approx(1.0)

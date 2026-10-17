@@ -582,10 +582,10 @@ def test_d6_named_refusals(case, code):
         covariates = {f"x{i}": matrix[:, i] for i in range(4)}
         kinds = dict.fromkeys(covariates, "continuous")
         y = np.arange(6.0)
-    from increment.estimation.cuped_linear import fit_cuped_linear
+    from increment.estimation.cuped import fit_cuped_multicovariate
 
     with pytest.raises(InvalidRequestError) as raised:
-        fit = fit_cuped_linear(
+        fit = fit_cuped_multicovariate(
             y, arms, control="c", arm_order=("c", "t"), covariates=covariates, kinds=kinds
         )
         fit.relative("t")

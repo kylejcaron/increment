@@ -596,9 +596,9 @@ def test_triggered_cuped_definition_and_artifact_runs_match(tmp_path):
 
 
 def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
-    import increment.estimation.cuped_linear as cuped_linear
+    import increment.estimation.cuped.multicovariate as cuped_multicovariate
 
-    original = cuped_linear.fit_cuped_linear
+    original = cuped_multicovariate.fit_cuped_multicovariate
     calls = 0
 
     def counted(*args, **kwargs):
@@ -606,7 +606,7 @@ def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(cuped_linear, "fit_cuped_linear", counted)
+    monkeypatch.setattr(cuped_multicovariate, "fit_cuped_multicovariate", counted)
     rows = _breakout_analysis().run_breakout(
         sensitivity_methods=[Method(name="other-linear", variance_reduction="cuped_linear")]
     )

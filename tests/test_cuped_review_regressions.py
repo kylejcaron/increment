@@ -94,9 +94,9 @@ def test_fit_wide_failure_retains_direction_margin_and_posterior_reason() -> Non
 def test_linear_methods_with_same_construction_share_one_fit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import increment.estimation.cuped_linear as cuped_linear
+    import increment.estimation.cuped.multicovariate as cuped_multicovariate
 
-    original = cuped_linear.fit_cuped_linear
+    original = cuped_multicovariate.fit_cuped_multicovariate
     calls = 0
 
     def counted(*args: Any, **kwargs: Any):
@@ -104,7 +104,7 @@ def test_linear_methods_with_same_construction_share_one_fit(
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(cuped_linear, "fit_cuped_linear", counted)
+    monkeypatch.setattr(cuped_multicovariate, "fit_cuped_multicovariate", counted)
     analysis = _analysis(_rows())
     methods = [
         Method(name="linear-decision", variance_reduction="cuped_linear"),
@@ -180,7 +180,7 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
     import numpy as np
 
     from increment.errors import CodedError
-    from increment.estimation.cuped_linear import fit_cuped_linear
+    from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.estimation.readout_types import ReadoutResults
 
     arms = np.repeat(["control", "treatment"], 10)
@@ -190,7 +190,7 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
     covariates = {f"x{i}": x[:, i] for i in range(3)}
     kinds = dict.fromkeys(covariates, "continuous")
     with pytest.raises(CodedError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             y,
             arms,
             control="control",
@@ -251,7 +251,7 @@ def _m1_rejected_frame() -> tuple[pa.Table, MetricSpec, Any]:
     import numpy as np
 
     from increment.errors import CodedError
-    from increment.estimation.cuped_linear import fit_cuped_linear
+    from increment.estimation.cuped import fit_cuped_multicovariate
 
     arms = np.repeat(["control", "treatment"], 10)
     phase = np.tile(np.arange(10) * 2 * np.pi / 10, 2)
@@ -259,7 +259,7 @@ def _m1_rejected_frame() -> tuple[pa.Table, MetricSpec, Any]:
     y = 10 + np.arange(20) / 10
     covariates = {f"x{i}": x[:, i] for i in range(3)}
     with pytest.raises(CodedError) as raised:
-        fit_cuped_linear(
+        fit_cuped_multicovariate(
             y,
             arms,
             control="control",
