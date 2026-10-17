@@ -302,11 +302,18 @@ Refresh them with the complete fast suite, preserving worker group suffixes:
 make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
 ```
 
-Functional-slow CI uses four isolated shards with workers inside each shard;
-`ci-ok` requires their aggregate success. Every case remains selected exactly
-once. Until a complete hosted timing baseline is available, the splitter uses
-equal default weights. Each shard uploads a JUnit report; partial shard timings
-are not a complete baseline.
+Functional-slow CI uses three isolated shards and the certification job two,
+with workers inside each shard; `ci-ok` requires their aggregate success. Every
+case remains selected exactly once. Both split by the recorded weights in
+`.github/slow-test-durations.json` and `.github/certification-test-durations.json`;
+a test without a weight still runs. Proportions matter, not absolute seconds, so
+refresh the weights from a complete local run of the tier when the tier changes
+materially:
+
+```bash
+make test-slow WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/slow-test-durations.json"
+make test-numerical-certification WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/certification-test-durations.json"
+```
 
 The root pytest hook uses the ignored `.test_durations` cache for stable,
 longest-first local scheduling across fast and slow tests. Each run refreshes
