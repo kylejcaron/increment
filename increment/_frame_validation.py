@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 import narwhals as nw
 import numpy as np
 
-from increment._labels import canonical_group_label
+from increment._labels import boolean_group_count_aliases, canonical_group_label
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics
 from increment.errors import (
     CapabilityError,
@@ -437,10 +437,7 @@ def _moment_group_label(value: object) -> str | None:
 def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
     """Read exact arm identities from ordinary rows or typed moments envelopes."""
     raw_group_ids = tuple(row.get("group_id") for row in rows if row.get("group_id") is not None)
-    boolean_group_ids = any(isinstance(group_id, bool) for group_id in raw_group_ids)
-    labels = {
-        label for row in rows if (label := _moment_group_label(row.get("group_id"))) is not None
-    }
+    parsed_counts: list[Mapping[Any, Any] | None] = []
     for row in rows:
         counts = row.get(ASSIGNMENT_COUNTS_FIELD)
         if isinstance(counts, str):
@@ -448,13 +445,18 @@ def moments_group_labels(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...
                 counts = json.loads(counts)
             except (json.JSONDecodeError, TypeError):
                 counts = None
-        if isinstance(counts, Mapping):
+        parsed_counts.append(counts if isinstance(counts, Mapping) else None)
+    count_labels = tuple(
+        label for counts in parsed_counts if counts is not None for label in counts
+    )
+    boolean_count_aliases = boolean_group_count_aliases(raw_group_ids, count_labels)
+    labels = {
+        label for row in rows if (label := _moment_group_label(row.get("group_id"))) is not None
+    }
+    for row, counts in zip(rows, parsed_counts, strict=True):
+        if counts is not None:
             labels.update(
-                "true"
-                if boolean_group_ids and label == "True"
-                else "false"
-                if boolean_group_ids and label == "False"
-                else label
+                boolean_count_aliases.get(label, label)
                 for label in counts
                 if isinstance(label, str)
             )

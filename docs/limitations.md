@@ -807,10 +807,11 @@ that needs an absolute-scale estimand)
     Both routes are fixed-horizon: neither proves validity under optional
     stopping or repeated peeking (see the sequential-inference limitations elsewhere on this
     page for that separate guarantee). Under `conversion_inference="auto"`, an informative
-    prior leaves sparse counts on the exact binomial sampling route; dense counts use the
-    Normal approximation. A registered sequential specification instead uses its declared
-    raw-observation likelihood and matching sequential inversion, subject to the registered
-    sampling and finalized-window contract.
+    prior leaves sparse counts on the exact binomial sampling route; dense counts use
+    sampling inference with the delta-method Welch-Satterthwaite t reference. The
+    separately reported posterior uses a Normal approximation. A registered sequential
+    specification instead uses its declared raw-observation likelihood and matching
+    sequential inversion, subject to the registered sampling and finalized-window contract.
 
 ??? info "Statistical details: the three finite-sample boundaries (arm size, latency, extreme alpha)"
     The finite-sample route also has three boundaries, each a refusal rather than silent degradation (dense counts under `auto` meet none of them):

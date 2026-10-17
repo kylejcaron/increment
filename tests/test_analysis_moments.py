@@ -1224,3 +1224,34 @@ def test_moments_from_summaries_refuses_unsupported_requests(metric_type):
         )
     assert raised.value.code == "moments.summaries.unsupported"
     assert raised.value.context["route"] == "from_unit_summary"
+
+
+def test_boolean_moment_control_preserves_count_only_literal_false(tmp_path):
+    import json
+
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    original = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "y": [1.0, 2.0, 3.0, 4.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"y": "mean"},
+    )
+    path = tmp_path / "literal-false-count-only.parquet"
+    original.export(path)
+    rows = pq.read_table(path).to_pylist()
+    counts = {"True": 2, "treatment": 2, "False": 2}
+    expected_counts = {"true": 2, "treatment": 2, "False": 2}
+    for row in rows:
+        row["assignment_counts"] = json.dumps(counts)
+        row["group_id"] = True if row["group_id"] == "treatment" else "treatment"
+    replay = Analysis.from_moments(rows, metrics={"y": "mean"}, control="False")
+    assert replay.unit_counts() == expected_counts
