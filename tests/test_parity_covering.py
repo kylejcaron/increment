@@ -9,6 +9,8 @@ import pytest
 
 from tests.parity_harness import covering, matrix
 
+pytestmark = pytest.mark.integration
+
 AXES = (
     matrix.METRICS,
     matrix.VIEWS,
