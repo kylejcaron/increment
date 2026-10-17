@@ -214,7 +214,7 @@ class _NativeMaterializationMixin:
             properties_table=properties_table,
             data_as_of=data_as_of,
             warn_on_censoring=(
-                (lambda query: self._con.to_pyarrow(query).to_pylist())
+                (lambda query: self._session.fetch_arrow(query).to_pylist())
                 if warn_on_censoring
                 else False
             ),
