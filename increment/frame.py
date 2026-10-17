@@ -539,6 +539,12 @@ class FrameTotalsSource(SequentialSourceMixin):
             _enforce_missing_policy(
                 self._frame, (method_spec,), shape="summary", emit_warnings=False
             )
+            declared_scalar = next(
+                (declared for declared in spec._methods if declared.variance_reduction == "cuped"),
+                None,
+            )
+            if declared_scalar is not None and method.covariates == declared_scalar.covariates:
+                return self.moments(metric, by=by)
         if self._cluster is not None:
             _reject_cluster_request(
                 (method_spec,), cluster=self._cluster, design=self.design, uptake=self._uptake
@@ -922,7 +928,9 @@ class FrameTotalsSource(SequentialSourceMixin):
             _validate_control(nwf, group, control)
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
-        nwf = _enforce_missing_policy(nwf, specs, shape="summary", defer_scalar_failures=True)
+        nwf = _enforce_missing_policy(
+            nwf, specs, shape="summary", defer_scalar_failures=registration is None
+        )
         _validate_conversion_binary(nwf, specs)
         if cluster is not None:
             # A declared cluster-randomization (or encouragement) requires
@@ -2103,7 +2111,9 @@ class FramePanelSource(SequentialSourceMixin):
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
         if not _summary_reducer:
-            nwf = _enforce_missing_policy(nwf, specs, shape="panel", defer_scalar_failures=True)
+            nwf = _enforce_missing_policy(
+                nwf, specs, shape="panel", defer_scalar_failures=registration is None
+            )
         _validate_conversion_binary(nwf, specs)
         identity = _unit_identity(nwf, unit=unit, group=group, breakouts=breakouts)
 

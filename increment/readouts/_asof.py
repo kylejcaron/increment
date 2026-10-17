@@ -32,6 +32,7 @@ from increment.readouts._common import (
     _sequential_inference,
     _validate_encouragement_asof_inference,
 )
+from increment.readouts._metric_rows import MetricRows, _rows_digest_and_arms
 from increment.readouts._passes import _estimate_pass
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
@@ -46,6 +47,27 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
+def _asof_metric_rows(rows, methods, control_group) -> MetricRows:
+    """Identify the methods sharing one acquired implicit pre-period family."""
+    rows = tuple(rows)
+    observed, digest, count = _rows_digest_and_arms(rows)
+    component = ("moments_rows", digest, count)
+    return MetricRows(
+        rows=rows,
+        unit_frame=None,
+        observed_arms=observed,
+        n_treatment_arms=len(observed - {control_group}),
+        evidence_kind="moments_rows",
+        evidence_sha256=digest,
+        evidence_count=count,
+        decision_evidence_components=(component,),
+        evidence_components=(component,),
+        method_rows=tuple(
+            (method.name, rows) for method in methods if method.variance_reduction == "cuped"
+        ),
+    )
+
+
 def _load_asof_rows_by_metric(
     src: MomentSource,
     selected: Sequence[Metric],
@@ -53,12 +75,13 @@ def _load_asof_rows_by_metric(
     *,
     by: Sequence[str],
     completed_windows_only: bool,
-) -> dict[str, dict[Any, list[Mapping[str, Any]]]]:
+    control_group: str,
+) -> dict[str, dict[Any, MetricRows]]:
     """Load and bucket each metric's as-of moments by date."""
     common_moment_kwargs: dict[str, Any] = (
         {"completed_windows_only": True} if completed_windows_only else {}
     )
-    by_metric_date: dict[str, dict[Any, list[Mapping[str, Any]]]] = {}
+    by_metric_date: dict[str, dict[Any, MetricRows]] = {}
     for metric in selected:
         moment_kwargs = dict(common_moment_kwargs)
         if any(method.variance_reduction == "cuped" for method in methods_by_metric[metric.name]):
@@ -70,7 +93,10 @@ def _load_asof_rows_by_metric(
         dated: dict[Any, list[Mapping[str, Any]]] = {}
         for row in rows:
             dated.setdefault(row["ds"], []).append(row)
-        by_metric_date[metric.name] = dated
+        by_metric_date[metric.name] = {
+            date: _asof_metric_rows(rows, methods_by_metric[metric.name], control_group)
+            for date, rows in dated.items()
+        }
     return by_metric_date
 
 
@@ -85,36 +111,54 @@ class _AsofMetricContext:
     methods: list[Method]
 
 
+def _asof_encouragement_rows(metric, evidence, context, alpha):
+    results = []
+    diagnostics = {}
+    for method in context.methods:
+        rows = (
+            evidence.rows_for_method(method)
+            if method.variance_reduction == "cuped"
+            else evidence.rows
+        )
+        computation = estimate_encouragement(
+            [metric],
+            rows,
+            context.design,
+            estimands=tuple(
+                name
+                for name in (context.estimands if context.estimands is not None else ESTIMANDS)
+                if name != "compliance"
+            ),
+            methods=[method],
+            prior=context.config.prior,
+            alpha=alpha,
+            alternative=context.procedure.alternative,
+            inference=_sequential_inference(context.plan),
+            method_roles=_runtime_method_roles(context.methods),
+        )
+        for row in computation.results:
+            if row.estimand == "compliance":
+                diagnostics.setdefault((row.metric, row.group_id, row.value_scale), row)
+            else:
+                results.append(row)
+    return [*results, *diagnostics.values()]
+
+
 def _estimate_asof_metric_date(
     metric: Metric,
-    date_rows: list[Mapping[str, Any]],
+    evidence: MetricRows,
     date_value: Any,
     context: _AsofMetricContext,
 ) -> list[LiftEstimate]:
     """Estimate one fixed-horizon metric/date under the compiled role policy."""
     src, config, test = context.source, context.config, context.procedure
-    design, plan, estimands = context.design, context.plan, context.estimands
+    design, plan = context.design, context.plan
     inference = _sequential_inference(plan)
     role_for_row = test.role if plan.declared else None
     if design.mechanism == "encouragement":
-        n_arms = len({str(row["group_id"]) for row in date_rows} - {str(design.control_group)})
+        n_arms = evidence.n_treatment_arms
         cell_alpha = resolve_cell_alpha(plan, test, n_arms=n_arms, view=None)
-        results = estimate_encouragement(
-            [metric],
-            date_rows,
-            design,
-            estimands=tuple(
-                name
-                for name in (estimands if estimands is not None else ESTIMANDS)
-                if name != "compliance"
-            ),
-            methods=context.methods,
-            prior=config.prior,
-            alpha=cell_alpha,
-            alternative=test.alternative,
-            inference=inference,
-            method_roles=_runtime_method_roles(context.methods),
-        ).results
+        results = _asof_encouragement_rows(metric, evidence, context, cell_alpha)
         return [
             row.model_copy(
                 update={
@@ -135,7 +179,7 @@ def _estimate_asof_metric_date(
         nominal, _refused, _computation = _estimate_pass(
             src,
             metric,
-            date_rows,
+            evidence,
             test,
             config,
             design,
@@ -164,14 +208,14 @@ def _estimate_asof_metric_date(
             for row in nominal
         ]
 
-    n_arms = len({str(row["group_id"]) for row in date_rows} - {str(design.control_group)})
+    n_arms = evidence.n_treatment_arms
     if test.role == "primary" and n_arms == 0:
         return []
     cell_alpha = resolve_cell_alpha(plan, test, n_arms=n_arms, view=None)
     rows_est, _refused, _computation = _estimate_pass(
         src,
         metric,
-        date_rows,
+        evidence,
         test,
         config,
         design,
@@ -318,6 +362,18 @@ def asof_lift(
         combined = list(dict.fromkeys([*shifted, *declared]))
         if combined:
             _raise("readout.metric_declare_non", combined=combined)
+    outcome_metrics = [] if estimands is not None and set(estimands) == {"compliance"} else selected
+    methods_by_metric = {
+        metric.name: _runtime_methods(configs[metric.name], design) for metric in outcome_metrics
+    }
+    for methods in methods_by_metric.values():
+        for method in methods:
+            if method.variance_reduction == "cuped" and method.covariates:
+                _raise(
+                    "readout.scalar_method_evidence",
+                    route="readouts.asof_lift",
+                    method=method.name,
+                )
     from increment._frame_panel import _day_axis_label_order
     from increment._source_types import compliance_summary_series
 
@@ -330,16 +386,13 @@ def asof_lift(
         if isinstance(design, Encouragement) and (estimands is None or "compliance" in estimands)
         else {}
     )
-    outcome_metrics = [] if estimands is not None and set(estimands) == {"compliance"} else selected
-    methods_by_metric = {
-        metric.name: _runtime_methods(configs[metric.name], design) for metric in outcome_metrics
-    }
     by_metric_date = _load_asof_rows_by_metric(
         src,
         outcome_metrics,
         methods_by_metric,
         by=by,
         completed_windows_only=completed_windows_only,
+        control_group=str(design.control_group),
     )
     day_order = _day_axis_label_order(
         [*compliance_by_date, *(date for dated in by_metric_date.values() for date in dated)]

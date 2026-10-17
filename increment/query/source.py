@@ -785,8 +785,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         )
         if assignment_extensions:
             operations.add("unit_counts")
+        if has_trigger_population:
+            operations.add("triggered_source")
         if has_trigger_population and assignment_extensions:
-            operations.update({"triggered_counts", "triggered_source"})
+            operations.add("triggered_counts")
         catalog = unit_day_artifact_extension_catalog(expected_context)
         for extension in manifest.extensions:
             if extension.kind == "site_volume":

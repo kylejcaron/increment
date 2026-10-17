@@ -293,6 +293,15 @@ by the artifact route: `from_unit_day_artifact.run_breakout` refuses with
 `artifact.cuped.scalar_breakout` before reading evidence. Use definitions or
 frame input for those breakouts, or run the artifact's scalar headline.
 
+Direct `readouts.asof_lift` retains method identity for the implicit pre-period
+scalar family at every date. Its fixed-horizon moments interface cannot select
+a named scalar binding: these requests refuse with
+`readout.scalar_method_evidence`, route `readouts.asof_lift`, before reading
+outcome or compliance evidence. Registered sequential inputs are validated at
+construction; a refusing covariate policy retains the
+`frame.validation.metric_covariate_column` refusal rather than deferring that
+invalid input to capture.
+
 ### Per-metric method bindings
 
 Methods passed to `run()` apply to every reported metric. To request CUPED
