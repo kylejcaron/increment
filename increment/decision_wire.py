@@ -2,10 +2,9 @@
 
 The wire model is deliberately narrower than the runtime model.  A moments
 cube can carry declaration-safe method names and Normal priors, but never
-callable learners, fold state, or runtime-only prior implementations. Fixed
-horizon plans remain on wire version 2; registered sequential plans use wire
-version 3 because their registration includes the source mapping and explicit
-compliance policy.
+callable learners, fold state, or runtime-only prior implementations. New fixed
+horizon plans use wire version 4; sequential plans use version 5. Versions 2/3
+are read only for legacy configurations whose covariate meaning is recoverable.
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ from increment.estimation.sequential import (
     MixedFamily,
     compose_asymptotic_or_mixed,
 )
-from increment.semantics.models import NormalPriorSpec
+from increment.semantics.models import CupedCovariate, CupedCovariateBinding, NormalPriorSpec
 from increment.semantics.rational import _JSON_RATIONAL_CONTEXT, RATIONAL_INVALID
 from increment.semantics.sequential import (
     SequentialCompliancePolicy,
@@ -84,6 +83,10 @@ class WireMethod(_WireBase):
     name: str = Field(min_length=1)
     variance_reduction: str = "none"
     conversion_inference: ConversionInference
+    covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
+    procedure: Literal["unadjusted"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class WireFixedInference(_WireBase):
@@ -249,8 +252,25 @@ class WireViewPolicies(_WireBase):
     encouragement_breakout: WireMultiplicityFamily
 
 
+def _refuse_legacy_cuped_covariates(procedures: Mapping[str, Any]) -> None:
+    for procedure in procedures.values():
+        if not isinstance(procedure, (WireRelativeArmProcedure, WireAbsoluteArmProcedure)):
+            continue
+        methods = (
+            procedure.decision_method,
+            *procedure.sensitivity_methods,
+        )
+        for method in methods:
+            if method.variance_reduction == "cuped_multicovariate" or method.covariates is not None:
+                _raise(
+                    "wire.payload.invalid",
+                    "legacy decision wire versions cannot recover method-owned CUPED covariates; "
+                    "re-export the plan using wire version 4 or 5",
+                )
+
+
 class WireCompiledDecisionPlan(_WireBase):
-    wire_version: Literal[2, 3] = 2
+    wire_version: Literal[2, 3, 4, 5] = 4
     declared: bool
     alpha: float = Field(gt=0, lt=1, allow_inf_nan=False)
     q: float = Field(gt=0, lt=1, allow_inf_nan=False)
@@ -281,12 +301,9 @@ class WireCompiledDecisionPlan(_WireBase):
                 else getattr(inference, "kind", None)
             )
             wire_version = value.get("wire_version", 2)
-            if kind == "fixed" and wire_version != 2:
-                _raise(
-                    "wire.payload.invalid",
-                    "fixed-horizon plans require wire version 2",
-                )
-            if kind in ("always_valid", "asymptotic_mean") and wire_version != 3:
+            if kind == "fixed" and wire_version not in (2, 4):
+                _raise("wire.payload.invalid", "fixed-horizon plans require wire version 2 or 4")
+            if kind in ("always_valid", "asymptotic_mean") and wire_version not in (3, 5):
                 from increment.sequential_state import sequential_refuse
 
                 sequential_refuse(
@@ -300,15 +317,19 @@ class WireCompiledDecisionPlan(_WireBase):
     @model_validator(mode="after")
     def _sequential_wire_version(self) -> WireCompiledDecisionPlan:
         if isinstance(self.inference, (WireAsymptoticMean, WireAlwaysValid)):
-            if self.wire_version != 3:
+            if self.wire_version not in (3, 5):
                 from increment.sequential_state import sequential_refuse
 
                 sequential_refuse(
                     "continuation.legacy",
-                    "legacy sequential plans cannot replay without the current observation mapping and compliance policy",
+                    "sequential plans require wire version 3 or 5",
                 )
-        elif self.wire_version != 2:
-            _raise("wire.payload.invalid", "fixed-horizon plans require wire version 2")
+            if self.wire_version == 3:
+                _refuse_legacy_cuped_covariates(self.procedures)
+        elif self.wire_version not in (2, 4):
+            _raise("wire.payload.invalid", "fixed-horizon plans require wire version 2 or 4")
+        elif self.wire_version == 2:
+            _refuse_legacy_cuped_covariates(self.procedures)
         return self
 
     @model_validator(mode="after")
@@ -382,8 +403,10 @@ def _method_to_wire(method: Method, *, metric: str, role: str) -> WireMethod:
         )
     return WireMethod(
         name=method.name,
-        variance_reduction=method.variance_reduction,
         conversion_inference=method.conversion_inference,
+        variance_reduction=method.variance_reduction,
+        covariates=method.covariates,
+        procedure=method.procedure,
     )
 
 
@@ -391,8 +414,10 @@ def _method_from_wire(method: WireMethod, *, metric: str, role: str) -> Method:
     try:
         return Method(
             name=method.name,
-            variance_reduction=method.variance_reduction,
             conversion_inference=method.conversion_inference,
+            variance_reduction=method.variance_reduction,
+            covariates=method.covariates,
+            procedure=method.procedure,
         )
     except (TypeError, ValueError) as exc:
         _raise(
@@ -598,7 +623,7 @@ def _procedure_from_wire(procedure: WireProcedure) -> DecisionProcedure:
 
 def compiled_plan_to_dto(plan: CompiledDecisionPlan) -> WireCompiledDecisionPlan:
     return WireCompiledDecisionPlan(
-        wire_version=3 if isinstance(plan.inference, SEQUENTIAL_POLICIES) else 2,
+        wire_version=5 if isinstance(plan.inference, SEQUENTIAL_POLICIES) else 4,
         declared=plan.declared,
         alpha=plan.alpha,
         q=plan.q,
@@ -679,12 +704,12 @@ def _refuse_legacy_plan(payload: Mapping[str, object]) -> None:
             "group-sequential inference was removed; an always-valid plan monitors every look",
             inference="group_sequential",
         )
-    if kind in ("always_valid", "asymptotic_mean") and payload.get("wire_version") != 3:
+    if kind in ("always_valid", "asymptotic_mean") and payload.get("wire_version") not in (3, 5):
         from increment.sequential_state import sequential_refuse
 
         sequential_refuse(
             "continuation.legacy",
-            "legacy sequential plans have no committed raw-likelihood model or checkpoint",
+            "unsupported sequential plan wire version",
         )
     if kind == "asymptotic_mean" and isinstance(inference, Mapping):
         refuse_legacy_asymptotic_family(inference.get("registration"))

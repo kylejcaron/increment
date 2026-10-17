@@ -29,7 +29,6 @@ from increment._analysis_config import (
     UNSET,
     ResolvedMetricConfig,
     _Unset,
-    effective_methods,
     normalize_display_correction,
     overlay_configs,
     select_exploratory_metrics,
@@ -219,17 +218,26 @@ def fit_predeclared_adjustment(
     from fractions import Fraction
 
     from increment.estimation.cuped import fit_cuped
-    from increment.estimation.engine import _df_to_arms
+    from increment.estimation.engine import Method, _df_to_arms
     from increment.frame import MetricSpec, from_unit_summary
+    from increment.semantics.models import CupedCovariate
     from increment.semantics.sequential import PredeclaredAdjustment
 
+    covariate_declaration = CupedCovariate(
+        name=covariate,
+        kind="continuous",
+        missing="refuse" if covariate_missing == "error" else covariate_missing,
+    )
     source = from_unit_summary(
         frame,
         unit=unit,
         group=group,
         control=control,
         metrics=[
-            MetricSpec(name=outcome, covariate=covariate, covariate_missing=covariate_missing)
+            MetricSpec(
+                name=outcome,
+                decision_method=Method.cuped(covariates=covariate_declaration),
+            )
         ],
         experiment_id="pre-period",
     )
@@ -259,28 +267,6 @@ SOURCE_CONTEXT_DESIGN_DISAGREES_ARM = _REFUSALS[
 ]
 
 _raise = raiser(_REFUSALS)
-
-
-def _refuse_legacy_boolean_registration(
-    frame: Any, group: str, control: object | None, design: Any, plan: Any
-) -> None:
-    registration = getattr(
-        getattr(getattr(plan, "inference", None), "registration", None), "control_group", None
-    )
-    candidate = control if control is not None else getattr(design, "control_group", None)
-    if registration not in {"True", "False"} or candidate is None:
-        return
-    from increment._frame_validation import canonical_control_for_frame
-    from increment.sequential_state import sequential_refuse
-
-    canonical = canonical_control_for_frame(frame, group, candidate)
-    if (registration, canonical) in {("True", "true"), ("False", "false")}:
-        sequential_refuse(
-            "source.invalid",
-            "pandas Boolean group labels changed from 'True'/'False' to canonical "
-            "'true'/'false'; retain the saved record for replay with its original "
-            "protocol, or create a new sequential registration for canonical labels",
-        )
 
 
 if TYPE_CHECKING:
@@ -1006,28 +992,17 @@ class Analysis:
         ``run_breakout`` reads. This source remains total-only: it does not
         expose daily or as-of methods, or a synthetic day axis.
         """
-        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
-        from increment._frame_validation import (
-            canonical_control_for_frame,
-            canonical_design_for_frame,
-        )
-
-        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_summary")
         if control is None:
             assert design is not None
             control = str(design.control_group)
-        else:
-            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_summary as _make_source
-        from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
             group=group,
-            control=design.control_group,
+            control=cast(str, control),
             metrics=metrics,
             experiment_id=experiment_id,
             uptake=uptake,
@@ -1039,7 +1014,7 @@ class Analysis:
             exposure_date=exposure_date,
             breakouts=breakouts,
         )
-        return cls._from_source(src, design)
+        return cls._from_source(src, src.context.design)
 
     @classmethod
     # Public factory signature is the API for panel-backed analysis.
@@ -1103,29 +1078,18 @@ class Analysis:
         refuses; ``"exclude"`` drops those units, with the count
         surfaced in ``unit_counts()`` and :meth:`srm`.
         """
-        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
-        from increment._frame_validation import (
-            canonical_control_for_frame,
-            canonical_design_for_frame,
-        )
-
-        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_panel")
         if control is None:
             assert design is not None
             control = str(design.control_group)
-        else:
-            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_panel as _make_source
-        from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
             group=group,
             date=date,
-            control=design.control_group,
+            control=cast(str, control),
             metrics=metrics,
             experiment_id=experiment_id,
             uptake=uptake,
@@ -1137,7 +1101,7 @@ class Analysis:
             on_unassigned=on_unassigned,
             cluster=cluster,
         )
-        return cls._from_source(src, design)
+        return cls._from_source(src, src.context.design)
 
     @classmethod
     def from_moments(
@@ -1217,20 +1181,49 @@ class Analysis:
             control = canonical_control_for_moments(control)
         validate_moments_control(rows, control)
         if design is None:
-            design = MomentsSource.design_summary_design(rows, control_group=control)
-        design = design or Randomized(control_group=control)
+            design = MomentsSource.design_summary_design(rows, control_group=control) or Randomized(
+                control_group=control
+            )
         specs = _coerce_source_metrics(metrics, design=design)
+
         from increment._analysis_config import refuse_cuped_linear_moments
 
         for spec in specs:
-            if spec.covariates or any(
-                method.variance_reduction == "cuped_linear"
-                for method in (
-                    (() if spec.decision_method is None else (spec.decision_method,))
-                    + spec.sensitivity_methods
-                )
+            methods_for_metric = (
+                () if spec.decision_method is None else (spec.decision_method,)
+            ) + spec.sensitivity_methods
+            if any(
+                method.variance_reduction == "cuped_multicovariate" for method in methods_for_metric
             ):
                 refuse_cuped_linear_moments(spec.name)
+            requested_covariates = {
+                covariate.name
+                for method in methods_for_metric
+                if method.variance_reduction == "cuped"
+                for covariate in method.covariates or ()
+            }
+            provenance_names = {
+                str(row["covariate_name"])
+                for row in rows
+                if row.get("metric") == spec.name and row.get("covariate_name") is not None
+            }
+            if (
+                requested_covariates
+                and provenance_names
+                and provenance_names != requested_covariates
+            ):
+                from increment._analysis_config import refuse_unidentified_scalar_moments
+
+                refuse_unidentified_scalar_moments(spec.name)
+            if requested_covariates and any(
+                row.get("metric") == spec.name
+                and row.get("ref_x") is not None
+                and row.get("x_role") not in (None, "covariate")
+                for row in rows
+            ):
+                from increment._analysis_config import refuse_unidentified_scalar_moments
+
+                refuse_unidentified_scalar_moments(spec.name)
         metric_catalog = [synthesise_metric(spec) for spec in specs]
         from increment._analysis_config import resolve_configs
 
@@ -1240,6 +1233,14 @@ class Analysis:
             specs={spec.name: spec for spec in specs},
             methods=None,
             prior=None,
+        )
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            configs,
+            route="Analysis.from_moments",
+            representation="moments",
+            design=design,
         )
         if experiment_id is None:
             experiment_id = (
@@ -2176,101 +2177,20 @@ class Analysis:
         self,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-        selected: Sequence[Metric] | None = None,
-        design_summary_only: bool = False,
-        decision_method: Method | _Unset = UNSET,
-        sensitivity_methods: Sequence[Method] | _Unset = UNSET,
     ) -> MomentSource:
-        """The source `readouts` should read this readout from.
-
-        Normally the moments cube: one warehouse reduction serves every
-        metric. Design-level compliance, clustered, quantile and pooled-percentile
-        analyses use the warehouse source directly. A triggered population uses
-        the source-owned population view on that direct path.
-        """
-        if classify_source(self._src) == "artifact":
-            if population == "triggered":
-                return (self._src).triggered_source()
+        """Keep source-owned evidence acquisition intact for the requested population."""
+        if population == "assigned":
             return self._src
-        # Compliance and per-unit methods need the original source.
-        needs_direct_source = (
-            design_summary_only
-            or self._experiment.cluster is not None
-            or getattr(self._design, "mechanism", None) == "observational"
-            or any(
-                getattr(m, "type", None) == "quantile"
-                or getattr(getattr(m, "winsorization", None), "has_percentile", False)
-                for m in (selected or self._metrics)
-            )
-        )
-        if needs_direct_source:
-            if population == "assigned":
-                return self._src
-            triggered = _require_analysis_operation(
-                self._src,
-                "triggered_source",
-                TriggeredPopulationOperation,
-                message=(
-                    "_readout_source(population='triggered') needs a native "
-                    "Analysis.from_definitions instance -- a frame/warehouse/"
-                    "moments-backed analysis retains no raw event stream to "
-                    "narrow to a triggered population."
-                ),
-            )
-            return triggered.triggered_source()
-        src = _require_analysis_operation(
+        triggered = _require_analysis_operation(
             self._src,
-            "moments_source",
-            NativeCoreSource,
+            "triggered_source",
+            TriggeredPopulationOperation,
             message=(
-                "moments_source() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has "
-                "nothing beyond what you already hold to re-serve."
+                "A triggered readout requires a source retaining the raw event stream "
+                "and its declared trigger."
             ),
         )
-        source_methods = None
-        if decision_method is not UNSET or sensitivity_methods is not UNSET:
-            source_methods = []
-            seen_method_names: set[str] = set()
-            for metric in selected or self._metrics:
-                config = next(
-                    config
-                    for config in self._src.context.configs
-                    if config.metric.name == metric.name
-                )
-                base_methods = effective_methods(config, design=self._src.context.design)
-                effective = (
-                    (
-                        cast(Method, decision_method)
-                        if decision_method is not UNSET
-                        else base_methods[0]
-                    ),
-                    *(
-                        tuple(cast("Sequence[Method]", sensitivity_methods))
-                        if sensitivity_methods is not UNSET
-                        else base_methods[1:]
-                    ),
-                )
-                for method in effective:
-                    if method.name not in seen_method_names:
-                        seen_method_names.add(method.name)
-                        source_methods.append(method)
-                    elif method.variance_reduction == "cuped":
-                        # Native reduction accepts one global method catalog;
-                        # retain the capability union when metrics reuse a
-                        # label with different variance-reduction settings.
-                        index = next(
-                            i
-                            for i, existing in enumerate(source_methods)
-                            if existing.name == method.name
-                        )
-                        source_methods[index] = method
-        return src.moments_source(
-            metrics=selected or self._metrics,
-            methods=source_methods,
-            population=population,
-            narrow_cuped=True,
-        )
+        return triggered.triggered_source()
 
     # Properties
 

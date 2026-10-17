@@ -32,6 +32,7 @@ def attach_multiplicity_scope(
     source: str | None = None,
     family_populations: set[str] | None = None,
     view_policy: MultiplicityFamily | None = None,
+    decision_snapshot_id: str | None = None,
 ) -> tuple[list[Any], tuple[FamilyScope, ...]]:
     """Attach row provenance and the unchanged source family membership.
 
@@ -133,6 +134,7 @@ def attach_multiplicity_scope(
             name,
             identity_metric=metric,
             identity_look=look,
+            decision_snapshot_id=decision_snapshot_id,
         )
         family_ids[key] = family_id
         family_scopes.append(
@@ -146,6 +148,7 @@ def attach_multiplicity_scope(
                 name=name,
                 identity_metric=metric,
                 identity_look=look,
+                decision_snapshot_id=decision_snapshot_id,
                 family=family,
                 members=tuple(sorted(set(members), key=cell_order)),
                 complete=True,

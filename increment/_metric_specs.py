@@ -8,9 +8,9 @@ unchanged.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import PreferredDirection
@@ -20,7 +20,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.estimation.engine import Method
+from increment.estimation.engine import Method, _validate_unique_method_names
 from increment.estimation.inference import Normal
 from increment.semantics.models import (
     ConversionMetric,
@@ -32,7 +32,6 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
     Winsorization,
-    _ExplicitOnlyFields,
     _reject_bool_days,
     _validate_retention_declaration,
 )
@@ -63,7 +62,7 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "frame.metric.type_quantile_needs": "metric {name!r} has type='quantile' and needs quantile in (0, 1), got {quantile!r}",
-        "frame.metric.cuped_does_apply": "metric {name!r}: CUPED does not apply to quantile metrics (no mean to adjust) -- drop covariate=",
+        "frame.metric.cuped_does_apply": "metric {name!r}: CUPED does not apply to quantile metrics (no mean to adjust) -- remove the method CUPED declaration or use a mean-based metric",
         "frame.metric.sets_quantile_but": "metric {name!r} sets quantile= but type={type!r}",
         "frame.metric.winsorization_applies_type": "metric {name!r}: winsorization applies only to type='mean', got {type!r}",
         "frame.metric.type_retention_needs": "metric {name!r}: type='retention' needs threshold_days -- an int N for the unbounded band [N, inf), or [a, b] for the half-open observation band [a, b)",
@@ -72,15 +71,13 @@ _REFUSALS = refusals(
         "frame.metric.type_ratio_but": "metric {name!r} has type='ratio' but is missing {missing}; a ratio metric needs both a numerator and a denominator column",
         "frame.metric.type_but_sets": "metric {name!r} has type={type!r} but sets numerator/denominator; those belong to type='ratio'",
         "frame.metric.missing_impute": "metric {metric!r}: missing='impute' would fill the outcome with its own mean, shrinking variance and biasing the estimate. Route: {route}",
-        "frame.metric.sets_covariate_missing": "metric {name!r} sets covariate_missing={covariate_missing!r} but declares no covariate; the policy governs the CUPED covariate column only",
-        "frame.metric.method_name_cuped": "metric {name!r}: Method(name='cuped') without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; pass Method(name='cuped', variance_reduction='cuped') or rename.",
-        "frame.metric.cuped_supported_metrics": "metric {name!r}: CUPED is not supported for {type} metrics -- a quantile is not a mean of per-unit values, so there is no per-unit residual for a covariate slope to act on. CUPED is supported for mean, conversion, retention and ratio metrics; a ratio adjusts its numerator and denominator against covariate= with a slope each.",
-        "frame.metric.declares_cuped_method": "metric {name!r} declares a CUPED method but no covariate= column -- CUPED needs a pre-period covariate",
+        "frame.metric.method_name_cuped": "metric {name!r}: Method(name='cuped') without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; use Method.cuped(...) or choose a different result label.",
+        "frame.metric.declares_cuped_method": "metric {name!r} declares a scalar CUPED method without its required method-owned covariate.",
         "frame.metrics_empty_supply": "metrics is empty; supply at least one metric to estimate",
-        "frame.metric.declares_cuped_linear": "metric {name!r} requests cuped_linear but declares no covariate set",
-        "frame.metric.cuped_linear_supported_metrics": "metric {name!r}: cuped_linear is supported only for mean, conversion, and ratio metrics, got {type!r}",
-        "frame.metric.covariate_names_unique": "metric {name!r} declares duplicate covariate names",
-        "frame.metric.scalar_and_set_covariates": "metric {name!r} cannot declare both covariate= and covariates=",
+        "frame.metric.declares_cuped_linear": "metric {name!r} requests cuped_multicovariate without declaring covariates on that method",
+        "frame.metric.cuped_linear_supported_metrics": "metric {name!r}: cuped_multicovariate is supported only for mean, conversion, and ratio metrics, got {type!r}",
+        "frame.metric.covariate_names_unique": "metric {name!r} methods must declare unique covariate names",
+        "frame.metric.scalar_and_set_covariates": "metric {name!r} cannot combine scalar and multicovariate CUPED declarations on the same method",
         "frame.metrics_entries_metricspec": "metrics entries must be MetricSpec or mapping, got {type_name}",
         "frame.duplicate_metric_name": "duplicate metric name {name!r}: moments are keyed by name, so two specs sharing one name silently interleave their rows and cross-pair arms. Give each metric a distinct name.",
         "frame.metric_type_retention": "metric {name!r}: type='retention' needs threshold_days -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='retention', threshold_days=...)",
@@ -91,7 +88,7 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
-class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
+class MetricSpec(CodedModel, BaseModel):
     """One metric to estimate from a dataframe column.
 
     Parameters
@@ -105,8 +102,6 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
         "quantile" needs *quantile*, "retention" needs *threshold_days*.
     winsorization : Winsorization | None
         Optional lower/upper outcome bounds for a mean metric.
-    covariate : str | None
-        Pre-experiment covariate column for CUPED.
     numerator, denominator : str | None
         Ratio-metric columns; both required when ``type="ratio"``.
     window_days : int | None
@@ -120,17 +115,14 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
         Null/NaN policy for the value column: refuse (default), count as
         0, or drop those rows from this metric's moments. ``"impute"`` is
         refused (``frame.metric.missing_impute``): an outcome is never
-        mean-filled; use ``"zero"`` or ``"drop"``, or
-        ``covariate_missing="impute"`` for a covariate.
-    covariate_missing : {"impute", "zero", "error"}
-        Null/NaN policy for *covariate*: impute the pooled mean (default,
-        warns with the count), treat as 0, or refuse.
+        mean-filled; use ``"zero"`` or ``"drop"``.
     decision_method : Method | None
         Decision estimator for this metric. Omitted uses IPTW for an
         observational design, otherwise unadjusted; ``run(decision_method=...)``
         overrides it without changing the declared sensitivities.
     sensitivity_methods : tuple[Method, ...]
-        Additional estimators reported after the decision estimator.
+        Additional estimators reported after the decision estimator. Each
+        CUPED method owns its covariate declarations and missing policy.
     prior : Normal | None
         Informative prior for this metric's ``run()`` rows; omitted = inherit
         the call's ``prior=``.
@@ -140,7 +132,6 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
         onto the synthesised ``Metric`` only when explicitly set, so an
         undeclared frame metric never silently reports a favorable
         direction (see ``LiftEstimate.preferred_direction``).
-
     Notes
     -----
     ``window_days``/``threshold_days`` are validated here, at construction, with
@@ -152,14 +143,10 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    # Undeclared covariates stay out of dumps so existing specs keep their
-    # registration and definitions identities.
-    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"covariates"})
 
     name: str
     type: MetricSpecType = "mean"
     value_column: str | None = None
-    covariate: str | None = None
     numerator: str | None = None
     denominator: str | None = None
     window_days: int | None = None
@@ -167,10 +154,8 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
     quantile: float | None = None
     winsorization: Winsorization | None = None
     missing: Literal["error", "zero", "drop", "impute"] = "error"
-    covariate_missing: Literal["impute", "zero", "error"] = "impute"
     decision_method: Method | None = None
     sensitivity_methods: tuple[Method, ...] = ()
-    covariates: tuple[CupedCovariate, ...] = Field(default=(), exclude_if=lambda value: not value)
     prior: Normal | None = None
     preferred_direction: PreferredDirection | None = None
 
@@ -179,10 +164,35 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
         if self.type == "quantile":
             if self.quantile is None or not 0.0 < self.quantile < 1.0:
                 _raise("frame.metric.type_quantile_needs", name=self.name, quantile=self.quantile)
-            if self.covariate is not None:
-                _raise("frame.metric.cuped_does_apply", name=self.name)
         elif self.quantile is not None:
             _raise("frame.metric.sets_quantile_but", name=self.name, type=self.type)
+        return self
+
+    @model_validator(mode="after")
+    def _check_methods(self) -> MetricSpec:
+        """Validate the procedure against its method-owned input declaration."""
+        methods = self._methods
+        _validate_unique_method_names(methods, caller=f"metric {self.name!r}")
+        for method in methods:
+            if method.name == "cuped" and method.variance_reduction != "cuped":
+                _raise("frame.metric.method_name_cuped", name=self.name)
+        wants_cuped = any(method.variance_reduction == "cuped" for method in methods)
+        wants_multicovariate = any(
+            method.variance_reduction == "cuped_multicovariate" for method in methods
+        )
+        if wants_cuped:
+            if self.type == "quantile":
+                _raise("frame.metric.cuped_does_apply", name=self.name)
+            if any(
+                method.variance_reduction == "cuped" and not method.covariates for method in methods
+            ):
+                _raise("frame.metric.declares_cuped_method", name=self.name)
+        if wants_multicovariate and self.type in ("quantile", "retention"):
+            _raise("frame.metric.cuped_linear_supported_metrics", name=self.name, type=self.type)
+        if self.type not in ("conversion", "retention") and any(
+            method.conversion_inference == "finite_sample" for method in methods
+        ):
+            refuse_finite_sample_metric_type(self.type, metric=self.name)
         return self
 
     @model_validator(mode="after")
@@ -212,21 +222,6 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_cuped_covariates(self) -> MetricSpec:
-        if (
-            self.covariate is not None
-            and self.covariates
-            and self.covariate not in {covariate.name for covariate in self.covariates}
-        ):
-            _raise("frame.metric.scalar_and_set_covariates", name=self.name)
-        names = [covariate.name for covariate in self.covariates]
-        if len(names) != len(set(names)):
-            _raise("frame.metric.covariate_names_unique", name=self.name)
-        if self.covariates and self.type in ("quantile", "retention"):
-            _raise("frame.metric.cuped_linear_supported_metrics", name=self.name, type=self.type)
-        return self
-
-    @model_validator(mode="after")
     def _check_ratio_parts(self) -> MetricSpec:
         if self.type == "ratio":
             missing = [
@@ -246,58 +241,20 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
             _raise("frame.metric.type_but_sets", name=self.name, type=self.type)
         return self
 
+    @property
+    def _methods(self) -> tuple[Method, ...]:
+        return (
+            () if self.decision_method is None else (self.decision_method,)
+        ) + self.sensitivity_methods
+
     @model_validator(mode="after")
     def _refuse_outcome_impute(self) -> MetricSpec:
         if self.missing == "impute":
             _raise(
                 "frame.metric.missing_impute",
                 metric=self.name,
-                route=(
-                    "missing='zero' if null means no events, missing='drop' if not observed, "
-                    "or covariate_missing='impute' for a covariate column"
-                ),
+                route="missing='zero' if null means no events, or missing='drop' if not observed",
             )
-        return self
-
-    @model_validator(mode="after")
-    def _check_covariate_missing(self) -> MetricSpec:
-        if self.covariate is None and self.covariate_missing != "impute":
-            _raise(
-                "frame.metric.sets_covariate_missing",
-                covariate_missing=self.covariate_missing,
-                name=self.name,
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _check_methods(self) -> MetricSpec:
-        """Validate declared decision and sensitivity methods.
-
-        ``covariate`` only declares that the pre-period column is available.
-        A CUPED-requesting method needs a covariate to adjust. A ratio metric
-        adjusts both of its components against that one column, each with its
-        own slope; a quantile has no per-unit residual to adjust at all.
-        """
-        methods = (
-            () if self.decision_method is None else (self.decision_method,)
-        ) + self.sensitivity_methods
-        for method in methods:
-            if method.name == "cuped" and method.variance_reduction != "cuped":
-                _raise("frame.metric.method_name_cuped", name=self.name)
-        wants_cuped = any(method.variance_reduction == "cuped" for method in methods)
-        wants_cuped_linear = any(method.variance_reduction == "cuped_linear" for method in methods)
-        if wants_cuped and self.type == "quantile":
-            _raise("frame.metric.cuped_supported_metrics", name=self.name, type=self.type)
-        if wants_cuped and self.covariate is None:
-            _raise("frame.metric.declares_cuped_method", name=self.name)
-        if wants_cuped_linear and self.type in ("quantile", "retention"):
-            _raise("frame.metric.cuped_linear_supported_metrics", name=self.name, type=self.type)
-        if wants_cuped_linear and not self.covariates:
-            _raise("frame.metric.declares_cuped_linear", name=self.name)
-        if self.type not in ("conversion", "retention") and any(
-            method.conversion_inference == "finite_sample" for method in methods
-        ):
-            refuse_finite_sample_metric_type(self.type, metric=self.name)
         return self
 
     @property
@@ -312,11 +269,11 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
     def source_columns(self) -> list[str]:
         """Every input column this metric reads."""
         cols = [self.y_column]
-        if self.covariate is not None:
-            cols.append(self.covariate)
         if self.denominator is not None:
             cols.append(self.denominator)
-        cols.extend(covariate.name for covariate in self.covariates)
+        cols.extend(
+            covariate.name for method in self._methods for covariate in (method.covariates or ())
+        )
         return list(dict.fromkeys(cols))
 
 

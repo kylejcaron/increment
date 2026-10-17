@@ -812,11 +812,13 @@ def test_d7_declared_unrelated_metric_does_not_change_public_inference():
     )
     target = MetricSpec(
         name="outcome",
-        covariates=tuple(
-            CupedCovariate(name=name, kind=kind, missing="impute-indicator")
-            for name, kind in draw.kinds.items()
+        decision_method=Method.cuped_multicovariate(
+            name="linear",
+            covariates=tuple(
+                CupedCovariate(name=name, kind=kind, missing="impute-indicator")
+                for name, kind in draw.kinds.items()
+            ),
         ),
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
     )
     observations = []
     for include_unrelated in (False, True):

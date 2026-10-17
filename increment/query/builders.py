@@ -1206,12 +1206,19 @@ def pre_period_stats(
     )
 
 
-def join_pre_period_covariate(table: ir.Table, pre_stats: ir.Table) -> ir.Table:
-    """Attach one zero-filled fixed pre-period total ``x`` per unit."""
+def join_pre_period_covariate(
+    table: ir.Table, pre_stats: ir.Table, *, missing: str | None = None
+) -> ir.Table:
+    """Attach one fixed per-unit covariate, preserving implicit zero-fill."""
     original = list(table.columns)
     pre_totals = pre_stats.group_by("unit_id").agg(x=pre_stats.sum_value.sum())
     joined = table.left_join(pre_totals, "unit_id")
-    joined = joined.mutate(x=ibis.coalesce(joined.x, 0.0))
+    if missing == "impute":
+        joined = joined.mutate(x=ibis.coalesce(joined.x, joined.x.mean().over(ibis.window())))
+    else:
+        fill = 0.0 if missing in (None, "zero") else None
+        if fill is not None:
+            joined = joined.mutate(x=ibis.coalesce(joined.x, fill))
     return joined.select(*original, "x")
 
 
@@ -1714,10 +1721,13 @@ def _attach_covariate(
     totals: ir.Table,
     pre_stats: ir.Table | None,
     experiment: Experiment,
+    *,
+    explicit: bool = False,
+    missing: str | None = None,
 ) -> ir.Table:
-    """Attach the CUPED covariate or its typed null placeholder."""
-    if pre_stats is not None and experiment.n_pre_periods > 0:
-        return join_pre_period_covariate(totals, pre_stats)
+    """Attach the declared CUPED covariate or its typed null placeholder."""
+    if pre_stats is not None and (experiment.n_pre_periods > 0 or explicit):
+        return join_pre_period_covariate(totals, pre_stats, missing=missing)
     return totals.mutate(x=ibis.null().cast("float64"))
 
 
@@ -1802,6 +1812,9 @@ def unit_totals(  # noqa: PLR0913
     # The public aggregate signature preserves distinct evidence inputs.
     warn_on_censoring: bool | Callable[[ir.Table], list[dict[str, Any]]] = True,  # noqa: FBT001, FBT002
     uptake_exposures: ir.Table | None = None,
+    *,
+    explicit_covariate: bool = False,
+    covariate_missing: str | None = None,
 ) -> ir.Table:
     """Aggregate spine + sparse stats to one row per unit (window aggregate).
 
@@ -1837,17 +1850,45 @@ def unit_totals(  # noqa: PLR0913
 
     Parameters
     ----------
+    spine : ir.Table
+        Calendar-day spine containing every enrolled unit in the outcome window.
+    stats : ir.Table
+        Sparse event statistics for the metric and outcome window.
+    metric : Metric
+        Metric whose per-unit totals are being constructed.
+    experiment : Experiment
+        Experiment configuration, including cluster and calendar semantics.
+    pre_stats : ir.Table | None
+        Per-unit CUPED covariate evidence; omitted when no covariate is materialized.
     den_stats : ir.Table | None
         Ratio-denominator stats; required for a ``RatioMetric``.
-    data_as_of : ir.Scalar | date | datetime | None
+    uptake_events : ir.Table | None
+        Events used to materialize encouragement uptake.
+    uptake_window_days : int | None
+        Window length used to evaluate uptake.
+    by : list[str] | None
+        Breakout dimension column(s) attached to the unit totals.
+    properties_table : ir.Table | None
+        Per-unit breakout properties used to attach ``by`` columns.
+    data_as_of : ir.Scalar | dt.date | dt.datetime | None
         Latest timestamp this metric's data has actually loaded through;
         caps censoring at the earlier of this and the observation horizon.
-    warn_on_censoring : bool or callable
+    warn_on_censoring : bool | Callable[[ir.Table], list[dict[str, Any]]]
         A callable executes bookkeeping tables and returns rows through the
         owning source. Otherwise, warn on a material drop (default True).
         Warning bookkeeping costs an extra execution round-trip.
     uptake_exposures : ir.Table | None
         Assignment exposure anchors for encouragement uptake; defaults to the outcome spine.
+    explicit_covariate : bool
+        Whether ``pre_stats`` is an explicitly bound CUPED covariate.
+    covariate_missing : str | None
+        Missing-value policy for an explicitly bound CUPED covariate. ``None``
+        preserves legacy zero-fill for implicit outcome-preperiod covariates.
+
+    Returns
+    -------
+    ir.Table
+        One row per unit containing the requested outcome and covariate totals.
     """
     cluster = experiment.cluster
     if cluster is not None:
@@ -1881,7 +1922,13 @@ def unit_totals(  # noqa: PLR0913
     dense = window_bound_stats(dense, metric)
     totals = _aggregate_unit_outcome(dense, spine, metric, den_stats)
 
-    totals = _attach_covariate(totals, pre_stats, experiment)
+    totals = _attach_covariate(
+        totals,
+        pre_stats,
+        experiment,
+        explicit=explicit_covariate,
+        missing=covariate_missing,
+    )
     uptake_anchor = spine if uptake_exposures is None else uptake_exposures
     totals = _attach_uptake_flag(
         totals,
@@ -2009,8 +2056,17 @@ def group_summary(
     aggregation: window functions compute each group's reference means,
     then a second pass aggregates the residuals against them.
 
+    The row shape comes from ``_moment_plan.UNIT_GRAIN`` (or the cluster
+    plans under *cluster*): ``sum_d``/``cyd``/``cy2d``/``cxd`` are always
+    emitted (typed NULL when *totals* has no ``d`` column), centered on the
+    overall group reference, never on the ``d = 1`` subgroup mean.
+
     Parameters
     ----------
+    totals : ir.Table
+        Per-unit totals produced by ``unit_totals``.
+    by : list[str] | None
+        Extra breakout-dimension column(s) to group by (default: none).
     cluster : str | None
         The experiment's declared randomization-grain column. When set,
         the row is a two-stage collapse over cluster rows instead of unit
@@ -2022,8 +2078,6 @@ def group_summary(
         *ratio_metrics* rebinds the ``den`` family to its own denominator
         total instead, and *uptake* (if set) claims the ``x`` family for
         each cluster's uptake total.
-    by : list[str] | None
-        Extra breakout-dimension column(s) to group by (default: none).
     ratio_metrics : Collection[str] | None
         Names of metrics in *totals* that carry their own denominator in
         ``y_den``; read only under *cluster* (see above).
@@ -2037,10 +2091,10 @@ def group_summary(
         Ignored under *cluster*: a cluster sum is not binary, so a clustered
         row's ``successes`` is always an explicit NULL.
 
-    The row shape comes from ``_moment_plan.UNIT_GRAIN`` (or the cluster
-    plans under *cluster*): ``sum_d``/``cyd``/``cy2d``/``cxd`` are always
-    emitted (typed NULL when *totals* has no ``d`` column), centered on the
-    overall group reference, never on the ``d = 1`` subgroup mean.
+    Returns
+    -------
+    ir.Table
+        One row per requested group containing centered sufficient moments.
     """
     if cluster is not None:
         if by:

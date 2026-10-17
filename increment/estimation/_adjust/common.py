@@ -148,7 +148,7 @@ _REFUSALS = refusals(
         "estimation.adjust_common.supported_ratio_metric": RefusalSpec(
             "estimation.adjust_common.supported_ratio_metric",
             UnsupportedRequestError,
-            template="{method} is not supported for ratio metric {metric!r} -- {method} reweights or residualizes a single per-unit outcome, and a ratio's two components would need the weights applied jointly with their covariance retained, which is not implemented for this method. Ratio metrics ARE supported under randomized CUPED (Method(name='cuped', variance_reduction='cuped') with a covariate= column), which adjusts the numerator and the denominator with a slope each and keeps their induced covariance. Otherwise adjust the numerator and denominator as separate mean metrics.",
+            template="{method} is not supported for ratio metric {metric!r} -- {method} reweights or residualizes a single per-unit outcome, and a ratio's two components would need the weights applied jointly with their covariance retained, which is not implemented for this method. Ratio metrics ARE supported under randomized CUPED (Method.cuped(covariates=...)), which adjusts the numerator and the denominator with a slope each and keeps their induced covariance. Otherwise adjust the numerator and denominator as separate mean metrics.",
             # Every raise site names the plan role and family; None where unknown.
             keys=frozenset({"role", "family", "correction"}),
         ),

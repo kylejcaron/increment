@@ -39,7 +39,7 @@ from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.estimation.sequential import AlwaysValid
 from increment.estimation.variance import cluster_uptake_moments
-from increment.frame import MetricSpec, from_unit_summary
+from increment.frame import CupedCovariate, MetricSpec, from_unit_summary
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 from increment.semantics.models import Definitions, MeanMetric
 from tests.analysis_factory import make_analysis
@@ -750,7 +750,15 @@ def test_cluster_with_covariate_and_encouragement_still_refuses_at_frame_entry()
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="revenue", type="mean", covariate="revenue_pre")],
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    type="mean",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="revenue_pre", kind="continuous")
+                    ),
+                )
+            ],
             design=DESIGN,
             uptake="took",
             cluster="store_id",

@@ -727,7 +727,7 @@ def test_legacy_sequential_wire_rejected_before_payload_rehydration(typed):
             source.experiment.plan, source.metrics, design=_uptake_design()
         )
         payload = compiled_plan_to_dict(plan)
-        assert payload["wire_version"] == 3
+        assert payload["wire_version"] == 5
         payload["wire_version"] = 2
         payload["procedures"] = None
         if typed:
@@ -837,7 +837,7 @@ def test_fixed_wire_refuses_sequential_version_before_payload_rehydration(typed)
     )
     payload = compiled_plan_to_dict(plan)
     assert compiled_plan_from_dict(payload) == plan
-    payload["wire_version"] = 3
+    payload["wire_version"] = 5
     payload["procedures"] = None
     if typed:
         payload["inference"] = compiled_plan_to_dto(plan).inference

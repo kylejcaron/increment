@@ -726,8 +726,10 @@ def _public_route_probe() -> dict:
     )
     metric = MetricSpec(
         name="outcome",
-        covariates=(CupedCovariate(name="x", kind="continuous", missing="impute-indicator"),),
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        decision_method=Method.cuped_multicovariate(
+            name="linear",
+            covariates=CupedCovariate(name="x", kind="continuous", missing="impute-indicator"),
+        ),
     )
     analysis = Analysis.from_unit_summary(
         frame,
@@ -760,7 +762,7 @@ PREREQUISITES = MappingProxyType(
             _support_region_probe,
         ),
         "public_route": Prerequisite(
-            f"Analysis.run() with Method(name='linear', variance_reduction='cuped_linear') returns LiftEstimates rows instead of {PUBLIC_ROUTE_UNFINISHED_CODE}; the FCP families and the public D7 sentinel select and reinterval through it",
+            "Analysis.run() with Method.cuped_multicovariate(name='linear', covariates=...) returns LiftEstimates rows instead of {PUBLIC_ROUTE_UNFINISHED_CODE}; the FCP families and the public D7 sentinel select and reinterval through it",
             _public_route_probe,
         ),
     }
@@ -1218,8 +1220,7 @@ def family_trial(cell: Cell, replication: int) -> dict:
         )
         kwargs = {
             "name": name,
-            "covariates": declarations,
-            "decision_method": Method(name="linear", variance_reduction="cuped_linear"),
+            "decision_method": Method.cuped_multicovariate(name="linear", covariates=declarations),
         }
         if len(draw.outcomes) == 2:
             frame[f"{name}_num"], frame[f"{name}_den"] = draw.outcomes

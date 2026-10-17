@@ -273,17 +273,17 @@ clustered sources refuse with `CapabilityError`.
 ### Mixed-covariate fixed-horizon CUPED
 
 On per-unit fixed-horizon inputs such as `Analysis.from_unit_summary`,
-`MetricSpec.covariates` declares multiple typed covariates for the
-`Method(name="linear", variance_reduction="cuped_linear")` estimator. Each
-declaration has a `name`, `kind="continuous"` or `"categorical"`, and a
+declare inputs on `Method.cuped_multicovariate(covariates=...)`, using
+`CupedCovariate` or the binding-aware `CupedCovariateBinding` for each input.
+Each declaration has a `name`, `kind="continuous"` or `"categorical"`, and a
 `missing` policy (`"refuse"` or `"impute-indicator"`). Categorical values
-must be strings. `cuped_linear` supports mean, conversion, and ratio metrics;
-ratio metrics use the same declared covariates for numerator and denominator.
-Scalar `cuped` remains available alongside `cuped_linear` when its scalar
-`covariate` name is also a member of `MetricSpec.covariates`. See the runnable
+must be strings. Multicovariate CUPED supports mean, conversion, and ratio
+metrics; ratio metrics use the same declared covariates for numerator and
+denominator. The scalar `Method.cuped(covariates=...)` factory is for one
+continuous covariate. See the runnable
 [mixed-covariate CUPED recipe](guides/cuped.md#a-mixed-covariate-dataframe-recipe).
 
-This estimator uses HC2 uncertainty and a Bell–McCaffrey Student-t
+Multicovariate CUPED uses HC2 uncertainty and a Bell–McCaffrey Student-t
 approximation, unlike scalar `cuped`, which retains its separate
 Welch–Satterthwaite method. It is fixed-horizon only. It requires per-unit
 covariate evidence, so `from_moments` cannot use it; clustered assignment and

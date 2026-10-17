@@ -102,7 +102,7 @@ SEQUENTIAL_CUPED_REFUSAL = (
     "adjusted_mean and adjusted_ratio_mean laws retain the joint (Y, X) moments that "
     "construction reads: the heteroskedasticity-robust asymptotic regression-adjusted "
     "confidence sequence of Lindon, Ham, Tingley and Bojinov (2022, arXiv:2210.08589). "
-    "A unit-summary frame with MetricSpec(covariate=...) and a CUPED method registers it "
+    "A unit-summary frame with Method.cuped(covariates=...) registers it "
     "automatically. The exact Bernoulli e-process route (AlwaysValid) does not admit "
     "CUPED, including a pre-period coefficient. A coefficient and covariate centre "
     "fixed from pre-period data are supported by the asymptotic scalar_mean route "

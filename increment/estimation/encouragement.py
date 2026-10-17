@@ -64,6 +64,7 @@ from increment.estimation.engine import (
     Method,
     _df_to_arms,
     _estimate_lift,
+    _is_unadjusted_method,
     _validate_methods,
     _warn_if_open_ended_sequential,
     _winsorization_result_fields,
@@ -144,7 +145,7 @@ _REFUSALS = refusals(
         ),
         "estimation.encouragement.control.missing": "control_group '{control_group}' not found in summary",
         "estimation.encouragement.negative_variance": "{what} computed as {value:.6g}, negative beyond floating-point rounding (~{slack:.3g}) -- this scale of deficit means the upstream moments feeding the Wald ratio's delta-method variance are infeasible or inconsistent (mis-aggregated or corrupted), not merely cancelled.",
-        "estimation.encouragement.cuped_adjusted_late": "CUPED-adjusted LATE needs the covariate x uptake cross-moment cxd, which is None for arm {arm_group}/{arm_metric} although its covariate moments are present -- the moments were aggregated before this estimator existed. Re-aggregate the summary (re-run the query, or rebuild from_unit_summary with both covariate= and uptake=), or request the late estimand with variance_reduction='none'.",
+        "estimation.encouragement.cuped_adjusted_late": "CUPED-adjusted LATE needs the covariate x uptake cross-moment cxd, which is None for arm {arm_group}/{arm_metric} although its covariate moments are present -- the moments were aggregated before this estimator existed. Re-aggregate the summary (re-run the query, or rebuild from_unit_summary with a CUPED method declaring covariates and uptake='<column>'), or request the late estimand with variance_reduction='none'.",
         "estimation.encouragement.needs_uptake_cyd": "needs uptake: cyd is None (uptake fact not materialised)",
         "estimation.encouragement.unknown_estimand_supported": "unknown estimand(s) {unknown}; supported: {estimands}. As-treated / per-protocol comparisons are deliberately not offered.",
         "estimation.encouragement.prior_inference_are": "prior and inference are mutually exclusive: a conjugate posterior has no always-valid guarantee under repeated looks",
@@ -1724,9 +1725,7 @@ def _estimate_encouragement(  # noqa: PLR0913
             or cluster is not None
             or null_lift not in (None, 0.0)
             or null_abs is not None
-            or any(
-                m.variance_reduction != "none" or m.name != "unadjusted" for m in (methods or ())
-            )
+            or any(not _is_unadjusted_method(m) for m in (methods or ()))
         ):
             sequential_refuse(
                 "route.unsupported",

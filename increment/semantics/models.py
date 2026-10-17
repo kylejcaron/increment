@@ -383,6 +383,9 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     "definition.method.methodspec_name_cuped": RefusalSpec(
         "definition.method.methodspec_name_cuped", DefinitionError, _render_definition_message
     ),
+    "definition.method.covariates": RefusalSpec(
+        "definition.method.covariates", DefinitionError, _render_definition_message
+    ),
     "definition.metric_base.margin_margin_abs": RefusalSpec(
         "definition.metric_base.margin_margin_abs", DefinitionError, _render_definition_message
     ),
@@ -1745,11 +1748,11 @@ class EncouragementDeclaration(_Base):
 
 
 class CupedCovariate(_Base):
-    """One explicitly typed per-unit covariate for mixed linear CUPED."""
+    """One explicitly typed covariate owned by a CUPED method."""
 
     name: str = Field(min_length=1)
     kind: Literal["continuous", "categorical"]
-    missing: Literal["refuse", "impute-indicator"] = "refuse"
+    missing: Literal["impute", "zero", "refuse", "impute-indicator"] = "refuse"
 
 
 class CupedCovariateBinding(CupedCovariate):
@@ -1872,30 +1875,79 @@ def _validate_day_boundary(v: str) -> str:
 # Experiment
 
 
-class MethodSpec(_Base):
-    """Serializable estimation-method declaration - the YAML-safe subset
-    of ``increment.estimation.engine.Method`` (learners/folds are
-    call-time-only, never declared here).
+def _validate_method_covariates(
+    name: str,
+    procedure: str,
+    covariates: tuple[CupedCovariate, ...] | None,
+) -> None:
+    if procedure == "none" and covariates:
+        _definition_refusal(
+            "definition.method.covariates", f"unadjusted method {name!r} cannot declare covariates"
+        )
+    if procedure == "cuped":
+        if covariates is not None and (len(covariates) != 1 or covariates[0].kind != "continuous"):
+            _definition_refusal(
+                "definition.method.covariates",
+                f"scalar CUPED method {name!r} accepts exactly one continuous covariate",
+            )
+        if covariates and covariates[0].missing not in ("impute", "zero", "refuse"):
+            _definition_refusal(
+                "definition.method.covariates",
+                f"scalar CUPED method {name!r} requires missing='impute', 'zero', or 'refuse'",
+            )
+    if procedure == "cuped_multicovariate":
+        if not covariates:
+            _definition_refusal(
+                "definition.method.covariates",
+                f"multicovariate CUPED method {name!r} requires explicit covariates",
+            )
+        if len({item.name for item in covariates}) != len(covariates):
+            _definition_refusal(
+                "definition.method.covariates",
+                f"method {name!r} declares duplicate covariate names",
+            )
+        if any(item.missing not in ("refuse", "impute-indicator") for item in covariates):
+            _definition_refusal(
+                "definition.method.covariates",
+                f"multicovariate CUPED method {name!r} requires missing='refuse' or 'impute-indicator'",
+            )
 
-    ``conversion_inference`` mirrors ``Method.conversion_inference``:
-    ``"auto"`` (the default) routes an unadjusted conversion or retention
-    contrast by its counts, and ``"finite_sample"`` always uses the
-    finite-sample binomial route. It is refused with CUPED and, on a
-    metric that is not a conversion or retention rate, at definition load."""
+
+class MethodSpec(_Base):
+    """Serializable estimation-method declaration, including CUPED inputs."""
 
     name: str
-    variance_reduction: Literal["none", "cuped", "cuped_linear"] = "none"
+    variance_reduction: Literal["none", "cuped", "cuped_multicovariate"] = "none"
     conversion_inference: ConversionInference = "auto"
+    covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
+    procedure: Literal["unadjusted"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @field_validator("covariates", mode="before")
+    @classmethod
+    def _normalize_covariates(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, CupedCovariate):
+            return (value,)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return tuple(value)
+        return value
 
     @model_validator(mode="after")
-    def _no_mislabel(self) -> "MethodSpec":
+    def _validate_declaration(self) -> "MethodSpec":
+        _validate_method_covariates(self.name, self.variance_reduction, self.covariates)
         if self.name == "cuped" and self.variance_reduction != "cuped":
             _definition_refusal(
                 "definition.method.methodspec_name_cuped",
                 "MethodSpec(name='cuped') without variance_reduction='cuped' "
                 "would label an unadjusted estimate as CUPED-adjusted",
             )
-        if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
+        if self.conversion_inference == "finite_sample" and self.variance_reduction in (
+            "cuped",
+            "cuped_multicovariate",
+        ):
             refuse_finite_sample_cuped(self.name)
         return self
 
@@ -1908,7 +1960,7 @@ class NormalPriorSpec(_Base):
     sigma: float = Field(gt=0, allow_inf_nan=False)
 
 
-class ExperimentMetric(_ExplicitOnlyFields, _Base):
+class ExperimentMetric(_Base):
     """One metric's method-role and prior declaration within an experiment.
 
     A bare metric NAME in a plan role (``primary``/``secondaries``/
@@ -1918,19 +1970,12 @@ class ExperimentMetric(_ExplicitOnlyFields, _Base):
     reported after that decision estimate.
     """
 
-    # Undeclared covariates stay out of dumps so existing definitions keep their
-    # canonical context and artifact identity.
-    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"covariates"})
-
     metric: str
     decision_method: MethodSpec | None = None
     sensitivity_methods: tuple[MethodSpec, ...] = ()
     prior: NormalPriorSpec | None = None
     margin: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     margin_abs: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
-    covariates: tuple[CupedCovariateBinding, ...] = Field(
-        default=(), exclude_if=lambda value: not value
-    )
 
     @model_validator(mode="after")
     def _margins_mutually_exclusive(self) -> "ExperimentMetric":
@@ -1957,23 +2002,12 @@ class ExperimentMetric(_ExplicitOnlyFields, _Base):
         ) + self.sensitivity_methods
         return any(method.conversion_inference == "finite_sample" for method in methods)
 
-    @model_validator(mode="after")
-    def _unique_covariates(self) -> "ExperimentMetric":
-        names = [covariate.name for covariate in self.covariates]
-        if len(names) != len(set(names)):
-            _definition_refusal(
-                "definition.experiment.covariate_names_unique",
-                f"experiment metric {self.metric!r} declares duplicate CUPED covariate names",
-                metric=self.metric,
-            )
-        return self
-
     @property
-    def wants_cuped_linear(self) -> bool:
+    def wants_cuped_multicovariate(self) -> bool:
         methods = (
             () if self.decision_method is None else (self.decision_method,)
         ) + self.sensitivity_methods
-        return any(method.variance_reduction == "cuped_linear" for method in methods)
+        return any(method.variance_reduction == "cuped_multicovariate" for method in methods)
 
 
 def _plan_entry_name(entry: "PlanEntry") -> str:
@@ -2526,29 +2560,58 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
         if self.n_pre_periods > 0:
             return self
         for name, binding in self.bindings.items():
-            if binding.wants_cuped:
-                _definition_refusal(
-                    "definition.experiment.metric_declares_cuped",
-                    f"experiment '{self.name}': metric '{name}' declares a CUPED "
-                    f"method but n_pre_periods=0 -- no pre-period covariate can "
-                    f"be materialized",
-                    experiment_name=self.name,
-                    metric_name=name,
-                )
+            methods = (
+                () if binding.decision_method is None else (binding.decision_method,)
+            ) + binding.sensitivity_methods
+            for method in methods:
+                if method.variance_reduction != "cuped":
+                    continue
+                if not method.covariates:
+                    _definition_refusal(
+                        "definition.experiment.metric_declares_cuped",
+                        f"experiment '{self.name}': metric '{name}' declares scalar CUPED "
+                        f"without an explicit bound covariate and n_pre_periods=0",
+                        experiment_name=self.name,
+                        metric_name=name,
+                    )
+                for covariate in method.covariates:
+                    if (
+                        isinstance(covariate, CupedCovariateBinding)
+                        and covariate.measure is not None
+                    ):
+                        _definition_refusal(
+                            "definition.experiment.metric_declares_cuped",
+                            f"experiment '{self.name}': metric '{name}' uses a pre-period "
+                            "measure but n_pre_periods=0",
+                            experiment_name=self.name,
+                            metric_name=name,
+                        )
         return self
 
     @model_validator(mode="after")
-    def _validate_cuped_linear_bindings(self):
+    def _validate_cuped_multicovariate_bindings(self):
         for name, binding in self.bindings.items():
-            if binding.wants_cuped_linear and not binding.covariates:
+            methods = (
+                () if binding.decision_method is None else (binding.decision_method,)
+            ) + binding.sensitivity_methods
+            covariates = tuple(
+                covariate for method in methods for covariate in (method.covariates or ())
+            )
+            if binding.wants_cuped_multicovariate and not covariates:
                 _definition_refusal(
                     "definition.experiment.metric_cuped_linear_needs_covariates",
-                    f"experiment '{self.name}': metric '{name}' requests cuped_linear "
+                    f"experiment '{self.name}': metric '{name}' requests cuped_multicovariate "
                     "without a declared covariate set",
                     experiment_name=self.name,
                     metric_name=name,
                 )
-            if any(c.measure is not None for c in binding.covariates) and self.n_pre_periods <= 0:
+            if (
+                any(
+                    isinstance(c, CupedCovariateBinding) and c.measure is not None
+                    for c in covariates
+                )
+                and self.n_pre_periods <= 0
+            ):
                 _definition_refusal(
                     "definition.experiment.covariate_measure_needs_preperiod",
                     f"experiment '{self.name}': measure-bound CUPED covariates require "
@@ -2562,7 +2625,14 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     def _validate_covariate_cluster_aliases(self) -> "Experiment":
         if self.cluster is not None:
             for binding in self.bindings.values():
-                if any(covariate.name == self.cluster for covariate in binding.covariates):
+                methods = (
+                    () if binding.decision_method is None else (binding.decision_method,)
+                ) + binding.sensitivity_methods
+                if any(
+                    covariate.name == self.cluster
+                    for method in methods
+                    for covariate in method.covariates or ()
+                ):
                     _definition_refusal(
                         "definition.experiment.covariate_name_reserved",
                         f"CUPED covariate name {self.cluster!r} is reserved for the "
@@ -3322,7 +3392,14 @@ class Definitions(CodedModel, _Base):
     ) -> None:
         """Validate CUPED bindings against declared properties and facts."""
         for binding in experiment.bindings.values():
-            for covariate in binding.covariates:
+            methods = (
+                () if binding.decision_method is None else (binding.decision_method,)
+            ) + binding.sensitivity_methods
+            for covariate in (
+                covariate for method in methods for covariate in method.covariates or ()
+            ):
+                if not isinstance(covariate, CupedCovariateBinding):
+                    continue
                 if covariate.measure is not None:
                     if covariate.kind != "continuous":
                         errors.append(

@@ -143,10 +143,23 @@ if TYPE_CHECKING:
     from ibis.backends.duckdb import Backend
     from ibis.backends.sql import SQLBackend
 
+    from increment._analysis_config import ResolvedMetricConfig
     from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Breakout, Metric
+
+
+def _scalar_covariate(spec: MetricSpec):
+    return next(
+        (
+            covariate
+            for method in spec._methods
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
+        ),
+        None,
+    )
 
 
 def _melt_to_unit_totals(
@@ -155,14 +168,15 @@ def _melt_to_unit_totals(
     """Project one policy-adjusted ``(unit, metric)`` row per specification."""
     per_metric = []
     for spec in specs:
+        covariate = _scalar_covariate(spec)
         base = tbl.select(
             unit_id=tbl[unit].cast("string"),
             experiment_id=ibis.literal(study_id),
             group_id=tbl[group].cast("string"),
             y=tbl[spec.y_column].cast("float64"),
             x=(
-                tbl[spec.covariate].cast("float64")
-                if spec.covariate
+                tbl[covariate.name].cast("float64")
+                if covariate is not None
                 else ibis.literal(None, type="float64")
             ),
             y_den=(
@@ -176,10 +190,10 @@ def _melt_to_unit_totals(
             x=ibis.ifelse(base.x.isnan(), ibis.null().cast("float64"), base.x),
             y_den=ibis.ifelse(base.y_den.isnan(), ibis.null().cast("float64"), base.y_den),
         )
-        if spec.covariate and spec.covariate_missing != "error":
+        if covariate is not None and covariate.missing != "refuse":
             fill = (
                 ibis.literal(0.0)
-                if spec.covariate_missing == "zero"
+                if covariate.missing == "zero"
                 else base.x.mean().over(ibis.window())
             )
             base = base.mutate(x=ibis.coalesce(base.x, fill))
@@ -328,7 +342,19 @@ class SqlPanelSource:
         _validate_columns(nwf, roles=[("unit", unit), ("group", group)], metrics=specs)
         nwf = _canonicalize_group_identity(nwf, group)
         metric_columns = sorted(
-            {c for s in specs for c in (s.y_column, s.denominator, s.covariate) if c}
+            {
+                column
+                for spec in specs
+                for column in (spec.y_column, spec.denominator)
+                if column is not None
+            }
+            | {
+                covariate.name
+                for spec in specs
+                for method in spec._methods
+                for covariate in (method.covariates or ())
+                if covariate.kind == "continuous"
+            }
         )
         nwf = _coerce_metric_columns(nwf, metric_columns)
         _validate_frame_boundary(nwf, unit=unit, date=None, specs=specs)
@@ -759,8 +785,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         )
         if assignment_extensions:
             operations.add("unit_counts")
+        if has_trigger_population:
+            operations.add("triggered_source")
         if has_trigger_population and assignment_extensions:
-            operations.update({"triggered_counts", "triggered_source"})
+            operations.add("triggered_counts")
         catalog = unit_day_artifact_extension_catalog(expected_context)
         for extension in manifest.extensions:
             if extension.kind == "site_volume":
@@ -1347,6 +1375,99 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return frame.to_native()
 
+    @property
+    def scalar_bindings(self):
+        """Published raw covariate recipes, independent of runtime method labels."""
+        return {
+            config.metric.name: tuple(
+                covariate
+                for method in effective_methods(config, design=self.context.design)
+                for covariate in method.covariates or ()
+            )
+            for config in self.context.configs
+        }
+
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Build one scalar family from the method's declared artifact covariate."""
+        if by:
+            raise ArtifactContractError(
+                "artifact.extension.missing",
+                "artifact base has no breakout evidence extension",
+            )
+        from increment._analysis_config import overlay_configs, validate_scalar_route
+
+        validate_scalar_route(
+            overlay_configs((metric,), self.context.configs, methods=[method], prior=None),
+            route="artifact.moments_for_method",
+            design=self.context.design,
+            bindings=self.scalar_bindings,
+        )
+        trusted = self.validated_metric(metric)
+        if method.variance_reduction != "cuped":
+            return self._reduce(
+                trusted,
+                "total",
+                cluster=self.context.cluster,
+                cluster_table=self._cluster_table(),
+                population_units=self._population_units,
+            )
+        covariates = method.covariates or ()
+        if not covariates:
+            return self.moments(metric, grain="total", include_covariate=True)
+        covariate = covariates[0]
+        extension = self._covariate_extension(metric.name, covariate.name)
+        extension_rows = self._read_extension(extension, request=_artifact_request(extension))
+        values = [
+            None if row.get("value_is_missing") else row.get("value") for row in extension_rows
+        ]
+        missing_policy = getattr(covariate, "missing", "zero")
+        missing_count = sum(value is None for value in values)
+        if missing_policy == "refuse" and missing_count:
+            from increment._frame_validation import _raise as frame_raise
+
+            frame_raise(
+                "frame.validation.metric_covariate_column",
+                metric=metric.name,
+                covariate=covariate.name,
+                n_missing=missing_count,
+            )
+        if missing_policy in ("impute", "impute-indicator"):
+            observed = [value for value in values if value is not None]
+            if not observed:
+                from increment._frame_validation import _raise as frame_raise
+
+                frame_raise(
+                    "frame.validation.metric_covariate_impute_all_null",
+                    metric=metric.name,
+                    covariate=covariate.name,
+                )
+            mean_value = sum(observed) / len(observed)
+            values = [mean_value if value is None else value for value in values]
+        pre_stats = self._covariate_table(
+            [
+                {
+                    "experiment_id": row["experiment_id"],
+                    "unit_id": row["unit_id"],
+                    "sum_value": value,
+                }
+                for row, value in zip(extension_rows, values, strict=True)
+            ]
+        )
+        return self._reduce(
+            trusted,
+            "total",
+            cluster=self.context.cluster,
+            cluster_table=self._cluster_table(),
+            pre_stats=pre_stats,
+            population_units=self._population_units,
+        )
+
     def _covariate_extension(self, metric_name: str, name: str) -> Any:
         property_name = name
         source_name = None
@@ -1374,15 +1495,24 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             for entry in entries:
                 if not isinstance(entry, dict) or entry.get("metric") != metric_name:
                     continue
-                for covariate in cast(Sequence[Any], entry.get("covariates", ())):
-                    if covariate.get("name") != name:
-                        continue
-                    if covariate.get("property") is not None:
-                        property_name = covariate["property"]
-                        source_name = covariate.get("source")
-                    elif covariate.get("measure") is not None:
-                        measure_bound = True
-                    break
+                methods = [
+                    method
+                    for method in (
+                        entry.get("decision_method"),
+                        *cast(Sequence[Any], entry.get("sensitivity_methods") or ()),
+                    )
+                    if isinstance(method, dict)
+                ]
+                for method in methods:
+                    for covariate in cast(Sequence[Any], method.get("covariates") or ()):
+                        if covariate.get("name") != name:
+                            continue
+                        if covariate.get("property") is not None:
+                            property_name = covariate["property"]
+                            source_name = covariate.get("source")
+                        elif covariate.get("measure") is not None:
+                            measure_bound = True
+                        break
         if not measure_bound and source_name is None:
             design = experiment_context.get("design") or {}
             for covariate in design.get("covariates", ()):
@@ -1451,12 +1581,33 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 ),
                 None,
             )
-            include_covariate = bool(
-                config
+            methods = effective_methods(config, design=self.context.design) if config else ()
+            if by and any(
+                method.variance_reduction == "cuped"
                 and any(
-                    method.variance_reduction == "cuped"
-                    for method in effective_methods(config, design=self.context.design)
+                    getattr(covariate, field, None) is not None
+                    for covariate in method.covariates or ()
+                    for field in ("property", "measure", "source")
                 )
+                for method in methods
+            ):
+                raise ArtifactContractError(
+                    "artifact.extension.missing",
+                    "artifact base has no binding-aware scalar breakout moments",
+                )
+            include_covariate = any(
+                method.variance_reduction == "cuped"
+                and (
+                    not method.covariates
+                    or any(
+                        not any(
+                            getattr(covariate, field, None) is not None
+                            for field in ("property", "measure", "source")
+                        )
+                        for covariate in method.covariates
+                    )
+                )
+                for method in methods
             )
         if (
             grain == "asof"
@@ -1634,12 +1785,30 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> BreakoutMomentsSource:
+        configs = self.context.configs if configs is None else configs
+        for config in configs:
+            if config.metric not in metrics:
+                continue
+            for method in effective_methods(config, design=self.context.design):
+                if method.variance_reduction == "cuped" and method.covariates:
+                    raise ArtifactContractError(
+                        "artifact.cuped.scalar_breakout",
+                        "Named scalar CUPED breakout evidence is unavailable from this artifact "
+                        "route. Run the scalar headline, or use definitions or frame input "
+                        "for the breakout.",
+                        context={
+                            "metric": config.metric.name,
+                            "method": method.name,
+                            "route": "from_unit_day_artifact.run_breakout",
+                        },
+                    )
         if population == "triggered" and self._population_units is None:
             return cast(
                 "_ArtifactFacadeSource",
                 self.triggered_source(),
-            ).breakout_source(breakout, metrics=metrics)
+            ).breakout_source(breakout, metrics=metrics, configs=configs)
         extension = self._extension(
             {
                 "kind": "breakout_dimension",
@@ -1650,7 +1819,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         source_name = extension.source_name
         cuped_names = {
             config.metric.name
-            for config in self.context.configs
+            for config in configs
             if any(
                 method.variance_reduction == "cuped"
                 for method in effective_methods(config, design=self.context.design)
@@ -1675,7 +1844,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             source_name=source_name,
             design=self.context.design,
             plan=self.context.plan,
-            configs=self.context.configs,
+            configs=configs,
             _source=self,
             population=population,
         )
@@ -1686,10 +1855,11 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> tuple[BreakoutMomentsSource, ...]:
         self._require_extension_coverage("breakout_dimension")
         return tuple(
-            self.breakout_source(breakout, metrics=metrics, population=population)
+            self.breakout_source(breakout, metrics=metrics, population=population, configs=configs)
             for breakout in breakouts
         )
 
@@ -1702,6 +1872,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
     ) -> _ArtifactFacadeSource:
+        from increment._analysis_config import overlay_configs, validate_scalar_route
+
+        validate_scalar_route(
+            overlay_configs(metrics, self.context.configs, methods=methods, prior=prior),
+            route="artifact.moments_source",
+            representation="export",
+            design=self.context.design,
+        )
         if population == "triggered":
             return cast("_ArtifactFacadeSource", self.triggered_source())
         return self

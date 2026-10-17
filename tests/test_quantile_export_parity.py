@@ -129,7 +129,7 @@ def test_observational_quantile_export_refuses_on_definitions_and_reopened_artif
 
 def _mixed_observational_frame(shape: str, *, varying_covariate: bool) -> Analysis:
     """A mean precedes the quantile in the catalog; with a varying covariate it cannot be read."""
-    from increment import AdjustmentSet, MetricSpec, Observational
+    from increment import AdjustmentSet, CupedCovariate, Method, MetricSpec, Observational
     from tests.test_frame_panel_unit_frame import _panel_with_covariate
 
     quantile = MetricSpec(name="p50", type="quantile", quantile=0.5, value_column="revenue")
@@ -147,7 +147,16 @@ def _mixed_observational_frame(shape: str, *, varying_covariate: bool) -> Analys
         unit="user_id",
         group="variant",
         date="date",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="tenure"), quantile],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="tenure", kind="continuous")
+                ),
+            ),
+            quantile,
+        ],
         design=Observational(
             control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
         ),

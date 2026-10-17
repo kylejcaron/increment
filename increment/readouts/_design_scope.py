@@ -6,7 +6,7 @@ source-owned roster before result projection; typed producer failures remain att
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -17,7 +17,8 @@ from increment.breakout.estimates import LiftEstimates
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
-from increment.estimation.decision_types import PValueEvidence
+from increment.estimation.decision_types import DecisionFailure, PValueEvidence
+from increment.estimation.engine import _is_unadjusted_method
 from increment.estimation.readout_types import (
     CellFailure,
     CellKey,
@@ -39,6 +40,8 @@ from increment.readouts._source_digest import component, composite_source
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    from increment.readouts._metric_rows import MetricRows
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +135,14 @@ def _collect_expected_cells(
                 break
         if matched:
             for row in matched:
-                cell_rows.setdefault(population_cell(row), row)
+                cell = population_cell(row)
+                cell_rows.setdefault(cell, row)
+                if row.failure_code is not None:
+                    failures[cell] = CellFailure(
+                        hypothesis=cell.hypothesis(),
+                        code=row.failure_code,
+                        context=row.failure_context or {},
+                    )
             continue
         cell = CellKey(
             kind="arm",
@@ -289,7 +299,7 @@ def observational_expected(selected, configs, design, plan, *, value_scale, arms
                         "plr_slope"
                         if method.name == "dml"
                         else "itt"
-                        if method.name == "unadjusted"
+                        if _is_unadjusted_method(method)
                         else "ate",
                         plan.procedures[metric.name].alternative,
                         (value_scale or {}).get(metric.name, "relative"),
@@ -408,6 +418,14 @@ def _request_snapshot(value: Any, *, field: str = "request") -> Any:
             refuse_readout("readout.scope.request_not_canonical", fields=[field])
         return {"kind": "callable", "module": module, "qualname": qualname}
     if isinstance(value, dict):
+        # Empty covariates and sequential procedure tags are not fixed-horizon
+        # estimator inputs; preserve the established request identity.
+        if {"name", "variance_reduction"} <= value.keys():
+            value = {
+                key: item
+                for key, item in value.items()
+                if key != "procedure" and (key != "covariates" or item is not None)
+            }
         return {key: _request_snapshot(item, field=f"{field}.{key}") for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [
@@ -427,19 +445,27 @@ def _config_snapshot(config, design):
     from increment.estimation.readout_types import refuse_readout
 
     try:
-        snapshot = {
-            "metric": config.metric.model_dump(mode="json"),
-            "methods": [
+        methods = []
+        for index, method in enumerate(effective_methods(config, design=design)):
+            method_snapshot = method.model_dump(mode="python")
+            if method.covariates is None:
+                # ``covariates`` is new in the method-owned CUPED API. Omitting its
+                # empty value preserves the historic identity of every method request
+                # that does not declare CUPED inputs.
+                method_snapshot.pop("covariates", None)
+            methods.append(
                 _request_snapshot(
-                    method.model_dump(mode="python"),
+                    method_snapshot,
                     field=(
                         "configs.decision_method"
                         if index == 0
                         else f"configs.sensitivity_methods[{index - 1}]"
                     ),
                 )
-                for index, method in enumerate(effective_methods(config, design=design))
-            ],
+            )
+        snapshot = {
+            "metric": config.metric.model_dump(mode="json"),
+            "methods": methods,
             "prior": None if config.prior is None else config.prior.model_dump(mode="json"),
             "prior_is_global": config.prior_is_global,
         }
@@ -455,6 +481,159 @@ def _config_snapshot(config, design):
         raise
     except (TypeError, ValueError):
         refuse_readout("readout.scope.request_not_canonical", fields=["configs"])
+
+
+def has_covariate_declarations(configs):
+    """Distinguish method-owned inputs from unchanged legacy request identities."""
+    return any(
+        config.covariates or any(method.covariates for method in config.source_methods)
+        for config in configs
+    )
+
+
+def decision_request_snapshot(request, configs, design):
+    """Identify decision requests without companion methods or their inputs."""
+    snapshots = {
+        config.metric.name: _config_snapshot(
+            replace(
+                config,
+                sensitivity_methods=(),
+                covariates=tuple(config.decision_method.covariates or ()),
+            ),
+            design,
+        )
+        for config in sorted(configs, key=lambda item: item.metric.name)
+    }
+    return {
+        **request,
+        "configs": list(snapshots.values()),
+        "procedures": {
+            name: {
+                **procedure,
+                "decision_method": snapshots[name]["methods"][0]
+                if name in snapshots and snapshots[name]["methods"]
+                else procedure["decision_method"],
+                "sensitivity_methods": [],
+            }
+            for name, procedure in request["procedures"].items()
+        },
+    }
+
+
+def _project_scoped_row(row, failure, scope):
+    if failure is None and row.failure_code is not None:
+        failure = DecisionFailure(
+            hypothesis=CellKey.from_row(row).hypothesis(),
+            code=row.failure_code,
+            context=row.failure_context or {},
+        )
+    return row.model_copy(
+        update={
+            **scope,
+            "sampling_available": failure is None,
+            "sampling_reason_code": None if failure is None else failure.code,
+            "sampling_reason_context": None if failure is None else freeze(failure.context),
+            "failure_code": None if failure is None else failure.code,
+            "failure_context": None if failure is None else freeze(failure.context),
+            **weight_diagnostics_projection(row.method, row=row, failure=failure),
+        }
+    )
+
+
+def _indexed_advisories(computations):
+    result = {}
+    for computation in computations:
+        for hypothesis, advisories in computation.advisories.items():
+            identity = (
+                hypothesis.metric,
+                getattr(hypothesis, "group_id", None),
+                hypothesis.estimand,
+                getattr(hypothesis, "dimension", None),
+                getattr(hypothesis, "dimension_value", None),
+            )
+            values = result.setdefault(identity, {})
+            values.update({item.model_dump_json(): item for item in advisories})
+    return result
+
+
+def _design_evidence_components(evidence_rows, method_evidence, coordinates, *, decision=False):
+    if method_evidence is None:
+        parts = [
+            (metric, "moments_rows", _rows_digest(list(evidence_rows[metric]))[0])
+            for metric in sorted(evidence_rows)
+        ]
+    else:
+        parts = [
+            (metric, kind, digest)
+            for metric in sorted(evidence_rows)
+            for kind, digest, _count in (
+                method_evidence[metric].decision_evidence_components
+                if decision
+                else method_evidence[metric].evidence_components
+            )
+        ]
+    return [
+        component(kind=kind, metric=metric, sha256=digest, **coordinates)
+        for metric, kind, digest in parts
+    ]
+
+
+def _design_snapshot_id(src, source, request):
+    return (
+        "sha256:"
+        + sha256(
+            canonical_json_bytes(
+                {
+                    "kind": "increment.readout.snapshot",
+                    "version": 2,
+                    "collection": "LiftEstimates",
+                    "source_identity": source_identity(src),
+                    "source": source,
+                    "request": request,
+                }
+            )
+        ).hexdigest()
+    )
+
+
+def _design_decision_snapshot(
+    src,
+    request,
+    configs,
+    design,
+    *,
+    evidence_rows,
+    method_evidence,
+    coordinates,
+    shared_components,
+):
+    if not method_evidence or not has_covariate_declarations(configs):
+        return None
+    decision_components = _design_evidence_components(
+        evidence_rows, method_evidence, coordinates, decision=True
+    )
+    decision_source = composite_source([*decision_components, *shared_components])
+    return _design_snapshot_id(
+        src, decision_source, decision_request_snapshot(request, configs, design)
+    )
+
+
+def _indexed_cell_outcomes(rows, computations):
+    row_map: dict[tuple, list[LiftEstimate]] = {}
+    for row in rows:
+        key = row.metric, row.group_id, row.method, row.estimand
+        row_map.setdefault(key, []).append(row)
+    failure_map = {}
+    for computation in computations:
+        for hypothesis, failure in computation.failures.items():
+            key = (
+                hypothesis.metric,
+                hypothesis.group_id,
+                failure.context.get("method"),
+                hypothesis.estimand,
+            )
+            failure_map[key] = failure
+    return row_map, failure_map
 
 
 def scope_design_results(  # noqa: PLR0913
@@ -476,6 +655,7 @@ def scope_design_results(  # noqa: PLR0913
     request_extra: Mapping[str, Any] | None = None,
     component_source: str | None = None,
     dimension: str | None = None,
+    method_evidence: Mapping[str, MetricRows] | None = None,
 ) -> LiftEstimates:
     """Attach source identity and every expected cell, preserving provider failures."""
     roster = resolve_roster(
@@ -490,17 +670,13 @@ def scope_design_results(  # noqa: PLR0913
     counts = roster.counts
     integrity_counts = roster.integrity_counts
     expected = expected_for(arms)
-    components = [
-        component(
-            kind="moments_rows",
-            metric=metric,
-            population=population,
-            sha256=_rows_digest(list(evidence_rows[metric]))[0],
-            source=component_source,
-            dimension=dimension,
-        )
-        for metric in sorted(evidence_rows)
-    ]
+    coordinates = {
+        "population": population,
+        "source": component_source,
+        "dimension": dimension,
+    }
+    components = _design_evidence_components(evidence_rows, method_evidence, coordinates)
+    evidence_component_count = len(components)
     if compliance_summary is not None:
         components.append(
             compliance_component(
@@ -541,54 +717,23 @@ def scope_design_results(  # noqa: PLR0913
     if trigger_name is not None:
         request["trigger_declared"] = True
         request["trigger_name"] = trigger_name
-    snapshot_id = (
-        "sha256:"
-        + sha256(
-            canonical_json_bytes(
-                {
-                    "kind": "increment.readout.snapshot",
-                    "version": 2,
-                    "collection": "LiftEstimates",
-                    "source_identity": source_identity(src),
-                    "source": source,
-                    "request": request,
-                }
-            )
-        ).hexdigest()
+    snapshot_id = _design_snapshot_id(src, source, request)
+    decision_snapshot_id = _design_decision_snapshot(
+        src,
+        request,
+        configs,
+        design,
+        evidence_rows=evidence_rows,
+        method_evidence=method_evidence,
+        coordinates=coordinates,
+        shared_components=components[evidence_component_count:],
     )
+    if decision_snapshot_id == snapshot_id:
+        decision_snapshot_id = None
 
-    def cell_id(metric, group, method, estimand):
-        return metric, group, method, estimand
+    row_map, failure_map = _indexed_cell_outcomes(rows, computations)
 
-    row_map: dict[tuple, list[LiftEstimate]] = {}
-    for row in rows:
-        row_map.setdefault(cell_id(row.metric, row.group_id, row.method, row.estimand), []).append(
-            row
-        )
-    failure_map: dict[tuple, Any] = {}
-    for computation in computations:
-        for hypothesis, failure in computation.failures.items():
-            failure_map[
-                cell_id(
-                    hypothesis.metric,
-                    hypothesis.group_id,
-                    failure.context.get("method"),
-                    hypothesis.estimand,
-                )
-            ] = failure
-
-    advisories_by_identity = {}
-    for computation in computations:
-        for hypothesis, advisories in computation.advisories.items():
-            identity = (
-                hypothesis.metric,
-                getattr(hypothesis, "group_id", None),
-                hypothesis.estimand,
-                getattr(hypothesis, "dimension", None),
-                getattr(hypothesis, "dimension_value", None),
-            )
-            values = advisories_by_identity.setdefault(identity, {})
-            values.update({item.model_dump_json(): item for item in advisories})
+    advisories_by_identity = _indexed_advisories(computations)
 
     cell_rows, failures = _collect_expected_cells(
         expected,
@@ -614,29 +759,22 @@ def scope_design_results(  # noqa: PLR0913
     )
     configs_by_metric = {config.metric.name: config for config in configs}
 
+    projection = {
+        "source_snapshot_id": snapshot_id,
+        "analysis_population": population,
+        "decision_scope_complete": complete,
+        "decision_scope_reason_code": None if complete else "readout.scope.decision_incomplete",
+        "decision_scope_reason_context": freeze(reason_context),
+    }
+
     def project(row, failure):
-        return row.model_copy(
-            update={
-                "source_snapshot_id": snapshot_id,
-                "analysis_population": population,
-                "sampling_available": failure is None,
-                "sampling_reason_code": None if failure is None else failure.code,
-                "sampling_reason_context": None if failure is None else freeze(failure.context),
-                "failure_code": None if failure is None else failure.code,
-                "failure_context": None if failure is None else freeze(failure.context),
-                "decision_scope_complete": complete,
-                "decision_scope_reason_code": None
-                if complete
-                else "readout.scope.decision_incomplete",
-                "decision_scope_reason_context": freeze(reason_context),
-                **weight_diagnostics_projection(row.method, row=row, failure=failure),
-            }
-        )
+        return _project_scoped_row(row, failure, projection)
 
     output = [project(row, None) for row in rows]
     records = []
     for cell in ordered:
         config = configs_by_metric.get(cell.metric)
+        procedure = plan.procedures.get(cell.metric)
         row = cell_rows[cell]
         failure = failures.get(cell)
         if row is None:
@@ -669,6 +807,12 @@ def scope_design_results(  # noqa: PLR0913
                     value_scale=cell.value_scale,
                     alternative=cell.alternative,
                     inference=cell.inference,
+                    role=procedure.role if procedure is not None and plan.declared else None,
+                    preferred_direction=config.metric.declared_preferred_direction
+                    if config is not None
+                    else None,
+                    null_lift=getattr(procedure, "null_lift", 0.0),
+                    null_abs=getattr(procedure, "null_abs", None),
                     lift=None,
                     failure_code=failure.code,
                     failure_context=failure.context,
@@ -759,7 +903,14 @@ def scope_design_results(  # noqa: PLR0913
         decision_complete_by_population={population: complete},
         integrity=(integrity,),
     )
-    output, families = attach_multiplicity_scope(output, ordered, plan, configs, snapshot_id)
+    output, families = attach_multiplicity_scope(
+        output,
+        ordered,
+        plan,
+        configs,
+        snapshot_id,
+        decision_snapshot_id=decision_snapshot_id,
+    )
     scope = ReadoutScope(
         snapshot_id=snapshot_id,
         cells=ordered,

@@ -211,7 +211,7 @@ _REFUSALS = refusals(
         "power.cuped_linear_unavailable": RefusalSpec(
             "power.cuped_linear_unavailable",
             InvalidRequestError,
-            template="power planning does not construct the requested CUPED-linear estimator; plan without variance reduction, or use scalar CUPED on one covariate as an approximation that is not a CUPED-linear power claim",
+            template="power planning does not construct the requested multicovariate CUPED estimator; plan without variance reduction, or use scalar CUPED on one continuous covariate as an approximation that is not a multicovariate CUPED power claim",
         ),
         "power.minimum_detectable_effect.design_search_minimum": "fixed-horizon design cannot search for a minimum detectable effect when target_power={target} is at or below the null's own crossing probability ({estimate:.6g}) -- zero distance already qualifies, so no strictly nonzero minimum detectable effect exists",
         "power.baseline.mean": "mean must be > 0",
@@ -1403,7 +1403,7 @@ def _cluster_dof(
 
 def _refuse_cuped_linear_planning(procedure: ArmPlanningProcedure) -> None:
     if any(
-        method.variance_reduction == "cuped_linear"
+        method.variance_reduction == "cuped_multicovariate"
         for method in (procedure.decision_method, *procedure.sensitivity_methods)
     ):
         _raise("power.cuped_linear_unavailable")
