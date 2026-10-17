@@ -31,6 +31,65 @@ from tests.test_cuped_route_evidence import (
     _sequential_source,
 )
 
+_NON_SCALAR_OPERATIONS = {
+    "allocation_history",
+    "assignment_diagnostic",
+    "breakout_summaries",
+    "build_panel_for_metric",
+    "capture_sequential",
+    "close",
+    "dashboard_breakout_reads",
+    "dashboard_group_data",
+    "dashboard_snapshot",
+    "estimate_cate",
+    "factor_summaries",
+    "from_definitions",
+    "from_switchback_panel",
+    "from_unit_day_artifact",
+    "health_check",
+    "materialize",
+    "panel_sql",
+    "planning_baseline",
+    "publish_unit_day_artifact",
+    "run_asof",
+    "run_daily",
+    "select_targeting_rule",
+    "sequential_snapshot",
+    "sitewide",
+    "srm",
+    "summary_sql",
+    "targeting_rule",
+    "trigger_rates",
+    "unit_counts",
+    "validate_cate",
+}
+_SCALAR_EXECUTION_CASES = {
+    "run": "readout",
+    "run_breakout": "readout",
+    "run_asof_lift": "readout",
+    "run_daily_lift": "readout",
+    "export": "readout",
+    "from_unit_summary": "registration",
+    "from_unit_panel": "registration",
+    "from_moments": "checkpoint",
+}
+
+
+def _scalar_operation_cases(kind=None):
+    public_operations = {
+        name
+        for name, method in inspect.getmembers(Analysis)
+        if not name.startswith("_") and (inspect.isfunction(method) or inspect.ismethod(method))
+    }
+    operations = public_operations - _NON_SCALAR_OPERATIONS
+    missing = operations - _SCALAR_EXECUTION_CASES.keys()
+    assert not missing, f"Public operations without an execution case: {sorted(missing)}"
+    assert _SCALAR_EXECUTION_CASES.keys() <= operations
+    assert set(_SCALAR_EXECUTION_CASES.values()) <= {"readout", "registration", "checkpoint"}
+    return tuple(
+        name for name in sorted(operations) if kind is None or _SCALAR_EXECUTION_CASES[name] == kind
+    )
+
 
 def _native_case(tmp_path, *, decision=None, sensitivity=(), breakout=False):
     path, con, methods, *_ = _scalar_native_case(tmp_path)
@@ -102,6 +161,40 @@ def test_facade_day_scalar_binding_refuses_before_reading(
         con.disconnect()
 
 
+@pytest.mark.parametrize("operation", ["run_daily_lift", "run_asof_lift"])
+@pytest.mark.parametrize("panel", [False, True])
+def test_day_axis_source_capability_refuses_before_scalar_admission(monkeypatch, operation, panel):
+    from increment.frame import FramePanelSource, FrameTotalsSource
+
+    scalar = _scalar("cuped", "history_a")
+    analysis = (Analysis.from_unit_panel if panel else Analysis.from_unit_summary)(
+        pa.Table.from_pylist(_records()),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="outcome", decision_method=scalar)],
+        **({"date": "day"} if panel else {}),
+    )
+    reads = []
+
+    def unread(*args, **kwargs):
+        reads.append("evidence")
+        pytest.fail("source capability refusal accessed evidence")
+
+    for source_type in (FrameTotalsSource, FramePanelSource):
+        monkeypatch.setattr(source_type, "moments", unread)
+        monkeypatch.setattr(source_type, "unit_frame", unread)
+    try:
+        with pytest.raises(CodedError) as raised:
+            getattr(analysis, operation)()
+        assert raised.value.code == (
+            "estimation.cuped.arm_no_covariate" if panel else "facade.analysis.no_definitions"
+        )
+        assert reads == []
+    finally:
+        analysis.close()
+
+
 @pytest.mark.parametrize("change", ["column", "missing"])
 def test_restored_sequential_checkpoint_refuses_recipe_mismatch(tmp_path, change):
     source = _sequential_source(_scalar("cuped", "history_a"))
@@ -118,6 +211,73 @@ def test_restored_sequential_checkpoint_refuses_recipe_mismatch(tmp_path, change
             experiment_id="frame",
         )
     assert raised.value.code == "sequential.source.invalid"
+
+
+@pytest.mark.parametrize("change", ["column", "missing", "same"])
+def test_explicit_checkpoint_plan_preserves_saved_scalar_recipe(tmp_path, monkeypatch, change):
+    from increment.semantics.models import MethodSpec
+    from increment.sources import MomentsSource
+
+    original = _scalar("cuped", "history_a")
+    source = _sequential_source(original)
+    destination = tmp_path / "checkpoint.parquet"
+    source.export_moments(destination)
+    checkpoint = source.sequential_snapshot()
+    requested = _scalar(
+        "cuped",
+        "history_b" if change == "column" else "history_a",
+        missing="impute" if change == "missing" else "zero",
+    )
+    registration = source.context.plan.inference.registration
+    assert registration is not None
+    plan = AnalysisPlan(
+        primary=ExperimentMetric(
+            metric="outcome",
+            decision_method=MethodSpec.model_validate(
+                requested.model_dump(mode="json", exclude_none=True)
+            ),
+        ),
+        inference=InferenceSpec(kind="asymptotic_mean", registration=registration),
+    )
+    rows = pq.read_table(destination).to_pylist()
+    reads = []
+
+    def unread(*args, **kwargs):
+        reads.append(True)
+        pytest.fail("a replacement recipe reached checkpoint adoption")
+
+    if change == "same":
+        restored = Analysis.from_moments(
+            rows,
+            metrics=[MetricSpec(name="outcome", decision_method=requested)],
+            design=source.context.design,
+            plan=plan,
+        )
+        assert restored.sequential_snapshot() == checkpoint
+        (actual,) = restored.run()
+        (expected,) = run(source)
+        assert isinstance(actual, LiftEstimate)
+        assert actual.require_lift().value == pytest.approx(
+            expected.require_lift().value, rel=1e-10
+        )
+        assert actual.require_lift().log_se == pytest.approx(
+            expected.require_lift().log_se, rel=1e-10
+        )
+    else:
+        monkeypatch.setattr(MomentsSource, "adopt_sequential_snapshot", unread)
+        monkeypatch.setattr(MomentsSource, "moments", unread)
+        monkeypatch.setattr(MomentsSource, "unit_frame", unread)
+        monkeypatch.setattr(MomentsSource, "unit_counts", unread)
+        with pytest.raises(CodedError) as raised:
+            Analysis.from_moments(
+                rows,
+                metrics=[MetricSpec(name="outcome", decision_method=requested)],
+                design=source.context.design,
+                plan=plan,
+            )
+        assert raised.value.code == "sequential.source.invalid"
+        assert raised.value.context["route"] == "sequential.checkpoint_adoption"
+    assert reads == []
 
 
 def test_summary_breakout_refusing_input_precedes_outcome_deletion():
@@ -288,47 +448,14 @@ def test_analysis_method_operation_inventory_is_complete():
         <= inspect.signature(method).parameters.keys()
     }
     assert operations == {"run", "run_breakout", "run_asof_lift", "run_daily_lift"}
-    public_operations = {
-        name
-        for name, method in inspect.getmembers(Analysis)
-        if not name.startswith("_") and (inspect.isfunction(method) or inspect.ismethod(method))
-    }
-    assert public_operations - operations == {
-        "allocation_history",
-        "assignment_diagnostic",
-        "breakout_summaries",
-        "build_panel_for_metric",
-        "capture_sequential",
-        "close",
-        "dashboard_breakout_reads",
-        "dashboard_group_data",
-        "dashboard_snapshot",
-        "estimate_cate",
-        "export",
-        "factor_summaries",
-        "from_definitions",
-        "from_moments",
-        "from_switchback_panel",
-        "from_unit_day_artifact",
-        "from_unit_panel",
-        "from_unit_summary",
-        "health_check",
-        "materialize",
-        "panel_sql",
-        "planning_baseline",
-        "publish_unit_day_artifact",
-        "run_asof",
-        "run_daily",
-        "select_targeting_rule",
-        "sequential_snapshot",
-        "sitewide",
-        "srm",
-        "summary_sql",
-        "targeting_rule",
-        "trigger_rates",
-        "unit_counts",
-        "validate_cate",
-    }
+    assert operations <= set(_scalar_operation_cases("readout"))
+    assert set(_scalar_operation_cases()) == _SCALAR_EXECUTION_CASES.keys()
+
+
+def test_new_public_operation_requires_an_execution_case(monkeypatch):
+    monkeypatch.setattr(Analysis, "future_evidence", Analysis.unit_counts, raising=False)
+    with pytest.raises(AssertionError):
+        _scalar_operation_cases()
 
 
 @pytest.fixture
@@ -353,7 +480,7 @@ def scalar_probe(monkeypatch):
 
 @pytest.mark.parametrize(
     "operation",
-    ["run", "run_breakout", "run_asof_lift", "run_daily_lift", "export", "export_moments"],
+    [*_scalar_operation_cases("readout"), "export_moments"],
 )
 def test_public_scalar_operations_refuse_before_evidence(
     tmp_path, monkeypatch, scalar_probe, operation
@@ -417,10 +544,10 @@ def test_public_scalar_operations_refuse_before_evidence(
 
 
 @pytest.mark.parametrize("explicit", [False, True])
-@pytest.mark.parametrize("panel", [False, True])
+@pytest.mark.parametrize("operation", _scalar_operation_cases("registration"))
 @pytest.mark.parametrize("ingress", ["facade", "source"])
 def test_frame_registration_refuses_before_evidence(
-    monkeypatch, scalar_probe, explicit, panel, ingress
+    monkeypatch, scalar_probe, explicit, operation, ingress
 ):
     import narwhals as nw
 
@@ -428,6 +555,7 @@ def test_frame_registration_refuses_before_evidence(
     from increment.frame import from_unit_panel, from_unit_summary
     from increment.sequential_source import frame_observation_mapping, sequential_definition_id
 
+    panel = operation == "from_unit_panel"
     admissions, reads, unread = scalar_probe
     first = _scalar("first", "history_a")
     second = _scalar("second", "history_b")
@@ -460,7 +588,7 @@ def test_frame_registration_refuses_before_evidence(
             },
         )
     if ingress == "facade":
-        constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+        constructor = getattr(Analysis, operation)
     else:
         constructor = from_unit_panel if panel else from_unit_summary
     admissions.clear()
@@ -482,7 +610,10 @@ def test_frame_registration_refuses_before_evidence(
     assert reads == []
 
 
-def test_checkpoint_adoption_refuses_before_evidence(tmp_path, monkeypatch, scalar_probe):
+@pytest.mark.parametrize("operation", _scalar_operation_cases("checkpoint"))
+def test_checkpoint_adoption_refuses_before_evidence(
+    tmp_path, monkeypatch, scalar_probe, operation
+):
     from increment.sources import MomentsSource
 
     admissions, reads, unread = scalar_probe
@@ -495,7 +626,7 @@ def test_checkpoint_adoption_refuses_before_evidence(tmp_path, monkeypatch, scal
     monkeypatch.setattr(MomentsSource, "adopt_sequential_snapshot", unread)
     admissions.clear()
     with pytest.raises(CodedError) as raised:
-        Analysis.from_moments(
+        getattr(Analysis, operation)(
             rows,
             metrics=[MetricSpec(name="outcome", decision_method=second)],
             design=source.context.design,

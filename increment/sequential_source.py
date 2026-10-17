@@ -988,6 +988,19 @@ def validate_scalar_mean_design(registration, design):
             )
 
 
+def _validate_control_labels(registration, design):
+    if (registration.control_group, str(design.control_group)) in {
+        ("True", "true"),
+        ("False", "false"),
+    }:
+        sequential_refuse(
+            "source.invalid",
+            "pandas Boolean group labels changed from 'True'/'False' to canonical "
+            "'true'/'false'; retain the saved record for replay with its original "
+            "protocol, or create a new sequential registration for canonical labels",
+        )
+
+
 def validate_sequential_plan(plan, metrics, design):
     """Check the complete registered decision before any producer reads data."""
     from fractions import Fraction
@@ -1017,6 +1030,7 @@ def validate_sequential_plan(plan, metrics, design):
                 + fixed_horizon_alternative(metrics, "an observational design", "observational")
             ),
         )
+    _validate_control_labels(registration, design)
     if str(design.control_group) != registration.control_group:
         sequential_refuse(
             "source.invalid", "registered control differs from the declared assignment"
@@ -1295,16 +1309,7 @@ def validate_frame_registration(
         design=design,
     )
     validate_scalar_mean_design(registration, design)
-    if (registration.control_group, str(design.control_group)) in {
-        ("True", "true"),
-        ("False", "false"),
-    }:
-        sequential_refuse(
-            "source.invalid",
-            "pandas Boolean group labels changed from 'True'/'False' to canonical "
-            "'true'/'false'; retain the saved record for replay with its original "
-            "protocol, or create a new sequential registration for canonical labels",
-        )
+    _validate_control_labels(registration, design)
     require_public_laws(registration.models, "frame registration")
     expected = sequential_definition_id(
         metrics, design, transformations=specs, source_mapping=source_mapping

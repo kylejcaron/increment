@@ -231,12 +231,15 @@ def validate_scalar_route(
     retained_configs: Sequence[ResolvedMetricConfig] = (),
     registered_plan: CompiledDecisionPlan | None = None,
     bindings: Mapping[str, Sequence[CupedCovariate]] | None = None,
+    covariate_moments_available: bool | None = None,
 ) -> None:
     """Admit effective scalar inputs against a route's retained representation.
 
     The input family includes its missing-value preparation, not its display
     label. This check uses declarations only and precedes evidence acquisition.
     Raw published bindings can apply each supported missing policy at reduction.
+    Known moment capabilities retain their existing missing-covariate refusal
+    before checking whether a named binding is representable.
     """
     retained = {config.metric.name: config for config in retained_configs}
     for config in configs:
@@ -290,6 +293,18 @@ def validate_scalar_route(
             if representation == "prepared" and method.covariates not in expected:
                 if expected or method.covariates is not None:
                     _raise("readout.scalar_method_evidence", route=route, method=method.name)
+            if (
+                representation == "implicit"
+                and method.covariates
+                and covariate_moments_available is not None
+                and (not config.covariate_available or not covariate_moments_available)
+            ):
+                from increment.estimation.cuped.scalar import refuse_unmaterialized_covariate
+
+                refuse_unmaterialized_covariate(
+                    group_id=getattr(design, "control_group", None),
+                    metric=config.metric.name,
+                )
             if representation == "unavailable" or (
                 representation == "implicit" and method.covariates
             ):

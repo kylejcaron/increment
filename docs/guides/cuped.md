@@ -323,14 +323,20 @@ named scalar binding: direct requests refuse with
 `readout.scalar_method_evidence`, route `readouts.asof_lift`, before reading
 outcome or compliance evidence. The facade applies the same admission rule to
 `Analysis.run_asof_lift` and `Analysis.run_daily_lift`, including dimensioned
-reads, and reports the corresponding facade route. Registered sequential
-inputs are validated at construction; a refusing covariate policy retains
-`frame.validation.metric_covariate_column` rather than deferring that invalid
-input to capture.
+reads, and reports the corresponding facade route. Existing operation and
+source capabilities are checked first: a non-panel moments source retains
+`facade.analysis.no_definitions`, and a panel without covariate moments retains
+`estimation.cuped.arm_no_covariate`.
+
+Registered sequential inputs are validated at construction. A refusing covariate
+policy retains `frame.validation.metric_covariate_column` rather than deferring
+that invalid input to capture.
 
 A sequential continuation, including adoption of a saved checkpoint, must
 retain the registered scalar covariate and missing-value preparation. The saved
 registration, not replacement declarations, identifies the original recipe.
+Passing an explicit `plan=` does not replace that saved recipe: an identical
+recipe can resume, but a different column or missing policy must register anew.
 A changed recipe refuses with `sequential.source.invalid` before checkpoint
 capture or adoption; a display-name change
 with the same recipe is allowed and emitted under that declared name. No

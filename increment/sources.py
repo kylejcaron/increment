@@ -1368,7 +1368,7 @@ class MomentsSource(SequentialSourceMixin):
 
         metric_catalog = tuple(cast("Metric", metric) for metric in metrics)
         stored_plan: CompiledDecisionPlan | None = None
-        if plan_payload is not None and (plan is None or envelope_identity is not None):
+        if plan_payload is not None:
             from increment.decision_wire import compiled_plan_from_json
 
             stored_plan = compiled_plan_from_json(

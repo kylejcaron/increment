@@ -126,6 +126,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NoReturn
 
 from increment.errors import InvalidRequestError, raiser, refusals
 from increment.estimation.armstats import (
@@ -147,6 +148,11 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def refuse_unmaterialized_covariate(*, group_id: object, metric: str) -> NoReturn:
+    """Refuse scalar adjustment when the source has no covariate moments."""
+    _raise("estimation.cuped.arm_no_covariate", arm_group=group_id, arm_metric=metric)
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,11 +315,7 @@ def _within_arm_theta(arms: list[ArmStats], family: _OutcomeFamily = NUMERATOR) 
 
     for arm in arms:
         if arm.ref_x is None or arm.cx1 is None or arm.cx2 is None or arm.cxy is None:
-            _raise(
-                "estimation.cuped.arm_no_covariate",
-                arm_group=arm.group_id,
-                arm_metric=arm.metric,
-            )
+            refuse_unmaterialized_covariate(group_id=arm.group_id, metric=arm.metric)
 
     # Within-arm moments weighted by 1/n minimize the additive contrast variance, so no
     # cross-arm delta enters theta. Use corrected ddof=1 moments, not raw cxy/cx2 centered on a

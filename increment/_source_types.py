@@ -519,6 +519,14 @@ class CovariateAvailability(Protocol):
 
 
 @runtime_checkable
+class ScalarCovariateMoments(Protocol):
+    """Static grains that can retain scalar covariate cross moments."""
+
+    @property
+    def scalar_covariate_grains(self) -> frozenset[Grain]: ...
+
+
+@runtime_checkable
 class ScalarBindingSource(Protocol):
     """Static published bindings available to scalar reductions."""
 
