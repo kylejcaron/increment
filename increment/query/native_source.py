@@ -128,6 +128,7 @@ from increment.semantics.design import Encouragement
 from increment.semantics.models import (
     Breakout,
     ConversionMetric,
+    CupedCovariate,
     CupedCovariateBinding,
     Definitions,
     Experiment,
@@ -160,6 +161,7 @@ if TYPE_CHECKING:
 
     import pyarrow as pa
 
+    from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
     from increment.sequential_state import SequentialCheckpoint
@@ -485,6 +487,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         extra_sources: Sequence[str] = (),
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> DefinitionsMomentSource:
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
@@ -548,16 +551,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # every readout of this design needs `unit_frame`'s covariate join
         # to resolve, not only an explicit publish request.
         self._add_observational_covariate_sources(sources, property_source_names)
-        for metric in self._metrics if metrics is None else metrics:
-            binding = self._experiment.bindings.get(metric.name)
-            if binding is None:
+        requested_configs = self._context.configs if configs is None else configs
+        for config in requested_configs:
+            if metrics is not None and config.metric not in metrics:
                 continue
-            methods = (
-                () if binding.decision_method is None else (binding.decision_method,)
-            ) + binding.sensitivity_methods
+            methods = effective_methods(config, design=self.context.design)
             for covariate in (
                 covariate for method in methods for covariate in method.covariates or ()
             ):
+                covariate = self._resolve_covariate_binding(covariate, config.metric)
                 if isinstance(covariate, CupedCovariateBinding) and covariate.measure is not None:
                     add_fact(covariate.measure.fact)
                 else:
@@ -633,6 +635,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         # Preserve registration metadata, but derive freshness only from captured streams.
         pinned._horizon_metrics = tuple(self._metrics if metrics is None else metrics)
+        if configs is not None:
+            pinned._context = replace(pinned._context, configs=tuple(configs))
         if self._sequential_snapshot is not None:
             pinned.adopt_sequential_snapshot(self._sequential_snapshot)
         return pinned
@@ -687,6 +691,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         extra_sources: Sequence[str] = (),
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ):
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         pinned = self._pinned_source(
@@ -694,6 +699,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             extra_sources=extra_sources,
             uptake_facts=uptake_facts,
             site_volume_metrics=site_volume_metrics,
+            configs=configs,
         )
         try:
             yield pinned
@@ -717,6 +723,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return tuple(names)
 
     @contextmanager
+    def readout_execution(self) -> Iterator[None]:
+        """Share one warehouse reduction across the readout's metric and method cells."""
+        with self._reduction_batch():
+            yield
+
+    @contextmanager
     def readout_snapshot(
         self,
         *,
@@ -724,6 +736,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> Iterator[MomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
@@ -735,6 +748,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             metrics=metrics,
             uptake_facts=uptake_facts,
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
+            configs=configs,
         ) as pinned:
             yield pinned if population == "assigned" else pinned.triggered_source()
 
@@ -1030,12 +1044,33 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             values = scoped.group_by("unit_id").agg(**{name: scoped.value.max()})
         return values
 
+    def _resolve_covariate_binding(
+        self, covariate: CupedCovariate, metric: Metric
+    ) -> CupedCovariate:
+        if isinstance(covariate, CupedCovariateBinding):
+            return covariate
+        binding = self._experiment.bindings.get(metric.name)
+        if binding is not None:
+            methods = (
+                () if binding.decision_method is None else (binding.decision_method,)
+            ) + binding.sensitivity_methods
+            for method in methods:
+                for declared in method.covariates or ():
+                    if declared.name == covariate.name and isinstance(
+                        declared, CupedCovariateBinding
+                    ):
+                        return declared.model_copy(
+                            update={"kind": covariate.kind, "missing": covariate.missing}
+                        )
+        return covariate
+
     def _bound_scalar_covariate_pre_stats(
         self,
         covariate: Any,
         exposures: Table,
         metric: Metric,
     ) -> Table:
+        covariate = self._resolve_covariate_binding(covariate, metric)
         measure = getattr(covariate, "measure", None)
         if measure is not None:
             values = self._pre_period_measure_covariate(measure, covariate.name, exposures)
@@ -2354,7 +2389,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         if population == "triggered":
             self._validate_trigger_capability(operation="moments")
-        self._note_reduction()
+        if not self._reduction_batch_depth:
+            self._note_reduction()
         # Build exposure events once (shared across all metrics)
         exposures = (
             self._get_trigger_population(operation="moments")
@@ -2390,7 +2426,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
             pre_stats_override = (
                 self._bound_scalar_covariate_pre_stats(covariate, exposures, metric)
-                if isinstance(covariate, CupedCovariateBinding)
+                if covariate is not None
                 else None
             )
             want_cuped = resolved_cuped if narrow_cuped else True
@@ -2409,9 +2445,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 warn_on_censoring=True,
                 want_cuped=want_cuped,
                 pre_stats_override=pre_stats_override,
-                covariate_missing=(
-                    covariate.missing if isinstance(covariate, CupedCovariateBinding) else None
-                ),
+                covariate_missing=covariate.missing if covariate is not None else None,
             )
             tables.append(summary.to_pyarrow())
 
@@ -2759,6 +2793,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> BreakoutMomentsSource:
         """One declared `Breakout`'s totals-grain moments, served as a
         `MomentSource` scoped to exactly this breakout.
@@ -2797,6 +2832,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._experiment.cluster, operation="breakout_moments"
         )
 
+        configs = self._context.configs if configs is None else configs
         rows: list[dict[str, object]] = []
         for metric in metrics:
             _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
@@ -2807,7 +2843,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     population=population,
                 )
             )
-            config = next(item for item in self._context.configs if item.metric.name == metric.name)
+            config = next(item for item in configs if item.metric.name == metric.name)
             scalar_covariate = next(
                 (
                     covariate
@@ -2837,6 +2873,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 warn_on_censoring=True,
                 by=by,
                 properties_table=properties_table,
+                want_cuped=any(
+                    method.variance_reduction == "cuped"
+                    for method in effective_methods(config, design=self.context.design)
+                ),
                 pre_stats_override=pre_stats_override,
                 covariate_missing=(
                     getattr(scalar_covariate, "missing", None)
@@ -2856,7 +2896,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             source_name=breakout_source.name,
             design=self._context.design,
             plan=self._context.plan,
-            configs=self._context.configs,
+            configs=configs,
             _source=self,
             population=population,
         )
@@ -3052,12 +3092,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> BreakoutMomentsSource:
         """Return one breakout-scoped moments source."""
         self._refuse_quantile_metrics(metrics, operation="breakout_source")
         self._preflight_breakout(breakout, operation="breakout_source")
         with self._reduction_batch():
-            return self._breakout_moments_source(breakout, metrics=metrics, population=population)
+            return self._breakout_moments_source(
+                breakout, metrics=metrics, population=population, configs=configs
+            )
 
     def breakout_sources(
         self,
@@ -3065,6 +3108,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> tuple[BreakoutMomentsSource, ...]:
         """Return every breakout view in one reduction batch."""
         self._refuse_quantile_metrics(metrics, operation="breakout_sources")
@@ -3073,7 +3117,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._preflight_breakout(breakout, operation="breakout_sources")
         with self._reduction_batch():
             return tuple(
-                self._breakout_moments_source(breakout, metrics=metrics, population=population)
+                self._breakout_moments_source(
+                    breakout, metrics=metrics, population=population, configs=configs
+                )
                 for breakout in ordered
             )
 
@@ -3650,6 +3696,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         method: Any,
         *,
         by: Sequence[str] = (),
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> list[dict[str, Any]]:
         """Materialize the scalar family for exactly one method request."""
         if by:
@@ -3663,6 +3710,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             methods=[method],
             selected=[metric],
             narrow_cuped=True,
+            population=population,
         )
         return cast("list[dict[str, Any]]", combined.to_pylist())
 

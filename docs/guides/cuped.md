@@ -255,8 +255,15 @@ contribute less precision.
 and the covariate is not queried until a CUPED method is requested. Add CUPED
 to the decision or sensitivity method. The unused-covariate advisory follows
 the same eligibility and defaulted-decision conditions as on the dataframe
-path. A CUPED request with `n_pre_periods == 0` raises `ValueError`.
-Call-wide methods override per-metric bindings.
+path. Implicit scalar CUPED requires `n_pre_periods > 0`; an explicit
+pre-exposure property binding does not. A covariate declaration with only
+`name`, `kind`, and its missing policy resolves the property with that name.
+Use `property` and `source` when an alias or source disambiguation is needed.
+Call-wide methods override per-metric methods while retaining a declared
+alias's property or measure binding. Each scalar family is acquired separately,
+including when the decision and sensitivity families differ. A scalar breakout
+override acquires the effective requested family; requests retaining several
+distinct scalar families are refused before reading data.
 
 ### Per-metric method bindings
 

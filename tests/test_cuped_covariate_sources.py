@@ -1214,3 +1214,249 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
     )
     assert treatment.lift is None
     assert treatment.failure_code == "estimation.cuped_linear.nonfinite"
+
+
+def _scalar_native_case(tmp_path, *, bare=False, mixed=False):
+    import json
+
+    from increment import Method
+    from increment.semantics.models import CupedCovariate, CupedCovariateBinding
+    from tests.covariate_cases import covariate_defs_and_con
+
+    path, con, tenure, groups, revenue = covariate_defs_and_con(tmp_path)
+    con.raw_sql("ALTER TABLE cov_events ADD COLUMN history_b DOUBLE")
+    con.raw_sql("ALTER TABLE cov_events ADD COLUMN segment VARCHAR")
+    con.raw_sql(
+        "UPDATE cov_events SET history_b = (CAST(tenure AS INTEGER) * 7) % 11, "
+        "segment = 'all' WHERE tenure IS NOT NULL"
+    )
+    first = (
+        CupedCovariate(name="tenure", kind="continuous", missing="zero")
+        if bare
+        else CupedCovariateBinding(
+            name="history_a", kind="continuous", missing="zero", property="tenure", source="events"
+        )
+    )
+    second = (
+        CupedCovariate(name="history_b", kind="continuous", missing="refuse")
+        if bare
+        else CupedCovariateBinding(
+            name="history_b",
+            kind="continuous",
+            missing="refuse",
+            property="history_b",
+            source="events",
+        )
+    )
+    methods = (
+        Method.cuped(name="scalar_a", covariates=first),
+        (Method.cuped_multicovariate if mixed else Method.cuped)(
+            name="companion_b", covariates=second
+        ),
+    )
+    plan = {
+        "primary": {
+            "metric": "revenue",
+            "decision_method": methods[0].model_dump(mode="json", exclude_none=True),
+            "sensitivity_methods": [methods[1].model_dump(mode="json", exclude_none=True)],
+        }
+    }
+    path.write_text(
+        path.read_text()
+        .replace(
+            "exposures:\n",
+            "      - {name: history_b, column: history_b, dtype: float, as_of: pre_exposure}\n"
+            "      - {name: segment, column: segment, dtype: string, as_of: pre_exposure}\n"
+            "exposures:\n",
+        )
+        .replace("    plan: {secondaries: [revenue]}", "    plan: " + json.dumps(plan))
+    )
+    return path, con, methods, tenure, groups, revenue
+
+
+@pytest.mark.parametrize("bare", [False, True])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed):
+    import pyarrow as pa
+
+    from increment import Method, MetricSpec
+    from increment.frame import CupedCovariate
+
+    path, con, methods, tenure, groups, revenue = _scalar_native_case(
+        tmp_path, bare=bare, mixed=mixed
+    )
+    table = pa.Table.from_pylist(
+        [
+            {
+                "unit": unit,
+                "group": groups[unit],
+                "revenue": revenue[unit],
+                methods[0].covariates[0].name: tenure[unit],
+                "history_b": (int(tenure[unit]) * 7) % 11,
+            }
+            for unit in groups
+        ]
+    )
+    try:
+        with Analysis.from_definitions("cov_test", path, con) as native:
+            joint = {row.method: row for row in native.run() if isinstance(row, LiftEstimate)}
+            for method in methods:
+                (alone,) = native.run(decision_method=method, sensitivity_methods=())
+                assert isinstance(alone, LiftEstimate)
+                factory = (
+                    Method.cuped
+                    if method.variance_reduction == "cuped"
+                    else Method.cuped_multicovariate
+                )
+                with Analysis.from_unit_summary(
+                    table,
+                    unit="unit",
+                    group="group",
+                    control="control",
+                    metrics=[
+                        MetricSpec(
+                            name="revenue",
+                            decision_method=factory(
+                                name=method.name,
+                                covariates=CupedCovariate(
+                                    name=method.covariates[0].name,
+                                    kind="continuous",
+                                    missing=method.covariates[0].missing,
+                                ),
+                            ),
+                        )
+                    ],
+                ) as frame:
+                    (expected,) = frame.run()
+                assert isinstance(expected, LiftEstimate)
+                for actual in (joint[method.name], alone):
+                    assert actual.require_lift().value == pytest.approx(
+                        expected.require_lift().value, rel=1e-10
+                    )
+                    assert actual.require_lift().log_se == pytest.approx(
+                        expected.require_lift().log_se, rel=1e-10
+                    )
+    finally:
+        con.disconnect()
+
+
+def test_native_breakout_uses_effective_scalar_family(tmp_path):
+    path, con, methods, *_ = _scalar_native_case(tmp_path)
+    path.write_text(
+        path.read_text().replace(
+            "    start:", "    breakouts: [{property: segment, source: events}]\n    start:"
+        )
+    )
+    try:
+        with Analysis.from_definitions("cov_test", path, con) as analysis:
+            (expected,) = analysis.run(decision_method=methods[1], sensitivity_methods=())
+            assert isinstance(expected, LiftEstimate)
+            (actual,) = analysis.run_breakout(decision_method=methods[1], sensitivity_methods=())
+            assert actual.dimension_value == "all"
+            assert actual.require_lift().value == pytest.approx(
+                expected.require_lift().value, rel=1e-10
+            )
+            assert actual.require_lift().log_se == pytest.approx(
+                expected.require_lift().log_se, rel=1e-10
+            )
+    finally:
+        con.disconnect()
+
+
+def test_direct_native_readout_does_not_acquire_removed_scalar_binding(tmp_path):
+    from increment import Method, readouts
+    from increment.plan import compile_decision_plan
+    from increment.query.native_source import DefinitionsMomentSource
+    from increment.query.session import WarehouseSession
+
+    path, con, *_ = _scalar_native_case(tmp_path)
+    definitions = load(path)
+    experiment = definitions.experiment("cov_test")
+    assert experiment is not None
+    design = experiment.resolved_design()
+    source = DefinitionsMomentSource(
+        WarehouseSession(con, definitions),
+        experiment,
+        definitions.metrics,
+        store="none",
+        on_mixed_assignment="error",
+        design=design,
+        plan=compile_decision_plan(
+            experiment.plan, definitions.metrics, path="warehouse", design=design
+        ),
+    )
+    try:
+        con.raw_sql("ALTER TABLE cov_events DROP COLUMN tenure")
+        con.raw_sql("ALTER TABLE cov_events DROP COLUMN history_b")
+        (row,) = readouts.run(source, decision_method=Method.unadjusted(), sensitivity_methods=())
+        assert row.method == "naive"
+        assert row.require_lift().value is not None
+    finally:
+        con.disconnect()
+
+
+def test_native_scalar_measure_binding_runs_end_to_end(tmp_path):
+    import pyarrow as pa
+
+    from increment import Method, MetricSpec
+    from increment.frame import CupedCovariate
+    from tests.covariate_cases import covariate_defs_and_con
+
+    path, con, tenure, groups, revenue = covariate_defs_and_con(tmp_path)
+    con.raw_sql(
+        "INSERT INTO cov_events SELECT user_id, TIMESTAMP '2025-07-25', 'purchase', "
+        "NULL, NULL, tenure, NULL FROM cov_events WHERE tenure IS NOT NULL"
+    )
+    path.write_text(
+        path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    n_pre_periods: 30\n"
+            "    plan: {primary: {metric: revenue, decision_method: {name: scalar, "
+            "variance_reduction: cuped, covariates: [{name: pre_revenue, kind: continuous, "
+            "missing: refuse, measure: {fact: purchase, aggregation: sum}}]}}}",
+        )
+    )
+    table = pa.Table.from_pylist(
+        [
+            {
+                "unit": unit,
+                "group": groups[unit],
+                "revenue": revenue[unit],
+                "pre_revenue": tenure[unit],
+            }
+            for unit in groups
+        ]
+    )
+    try:
+        with (
+            Analysis.from_definitions("cov_test", path, con) as native,
+            Analysis.from_unit_summary(
+                table,
+                unit="unit",
+                group="group",
+                control="control",
+                metrics=[
+                    MetricSpec(
+                        name="revenue",
+                        decision_method=Method.cuped(
+                            name="scalar",
+                            covariates=CupedCovariate(
+                                name="pre_revenue", kind="continuous", missing="refuse"
+                            ),
+                        ),
+                    )
+                ],
+            ) as frame,
+        ):
+            (actual,) = native.run()
+            (expected,) = frame.run()
+            assert isinstance(actual, LiftEstimate)
+            assert isinstance(expected, LiftEstimate)
+            assert actual.require_lift().value == pytest.approx(
+                expected.require_lift().value, rel=1e-10
+            )
+            assert actual.require_lift().log_se == pytest.approx(
+                expected.require_lift().log_se, rel=1e-10
+            )
+    finally:
+        con.disconnect()

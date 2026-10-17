@@ -29,7 +29,6 @@ from increment._analysis_config import (
     UNSET,
     ResolvedMetricConfig,
     _Unset,
-    effective_methods,
     normalize_display_correction,
     overlay_configs,
     select_exploratory_metrics,
@@ -2214,131 +2213,20 @@ class Analysis:
         self,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-        selected: Sequence[Metric] | None = None,
-        design_summary_only: bool = False,
-        decision_method: Method | _Unset = UNSET,
-        sensitivity_methods: Sequence[Method] | _Unset = UNSET,
     ) -> MomentSource:
-        """The source `readouts` should read this readout from.
-
-        Normally the moments cube: one warehouse reduction serves every
-        metric. Design-level compliance, clustered, quantile and pooled-percentile
-        analyses use the warehouse source directly. A triggered population uses
-        the source-owned population view on that direct path.
-        """
-        if classify_source(self._src) == "artifact":
-            if population == "triggered":
-                return (self._src).triggered_source()
+        """Keep source-owned evidence acquisition intact for the requested population."""
+        if population == "assigned":
             return self._src
-        multifamily_scalar = False
-        for metric in selected or self._metrics:
-            config = next(
-                config for config in self._src.context.configs if config.metric.name == metric.name
-            )
-            base_methods = effective_methods(config, design=self._src.context.design)
-            methods = (
-                (
-                    cast(Method, decision_method)
-                    if decision_method is not UNSET
-                    else base_methods[0]
-                ),
-                *(
-                    tuple(cast("Sequence[Method]", sensitivity_methods))
-                    if sensitivity_methods is not UNSET
-                    else base_methods[1:]
-                ),
-            )
-            if (
-                len(
-                    {
-                        method.covariates
-                        for method in methods
-                        if method.variance_reduction == "cuped"
-                    }
-                )
-                > 1
-            ):
-                multifamily_scalar = True
-                break
-        # Compliance and per-unit methods need the original source.
-        needs_direct_source = (
-            design_summary_only
-            or multifamily_scalar
-            or self._experiment.cluster is not None
-            or any(
-                getattr(m, "type", None) == "quantile"
-                or getattr(getattr(m, "winsorization", None), "has_percentile", False)
-                for m in (selected or self._metrics)
-            )
-        )
-        if needs_direct_source:
-            if population == "assigned":
-                return self._src
-            triggered = _require_analysis_operation(
-                self._src,
-                "triggered_source",
-                TriggeredPopulationOperation,
-                message=(
-                    "_readout_source(population='triggered') needs a native "
-                    "Analysis.from_definitions instance -- a frame/warehouse/"
-                    "moments-backed analysis retains no raw event stream to "
-                    "narrow to a triggered population."
-                ),
-            )
-            return triggered.triggered_source()
-        src = _require_analysis_operation(
+        triggered = _require_analysis_operation(
             self._src,
-            "moments_source",
-            NativeCoreSource,
+            "triggered_source",
+            TriggeredPopulationOperation,
             message=(
-                "moments_source() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has "
-                "nothing beyond what you already hold to re-serve."
+                "A triggered readout requires a source retaining the raw event stream "
+                "and its declared trigger."
             ),
         )
-        source_methods = None
-        if decision_method is not UNSET or sensitivity_methods is not UNSET:
-            source_methods = []
-            seen_method_names: set[str] = set()
-            for metric in selected or self._metrics:
-                config = next(
-                    config
-                    for config in self._src.context.configs
-                    if config.metric.name == metric.name
-                )
-                base_methods = effective_methods(config, design=self._src.context.design)
-                effective = (
-                    (
-                        cast(Method, decision_method)
-                        if decision_method is not UNSET
-                        else base_methods[0]
-                    ),
-                    *(
-                        tuple(cast("Sequence[Method]", sensitivity_methods))
-                        if sensitivity_methods is not UNSET
-                        else base_methods[1:]
-                    ),
-                )
-                for method in effective:
-                    if method.name not in seen_method_names:
-                        seen_method_names.add(method.name)
-                        source_methods.append(method)
-                    elif method.variance_reduction == "cuped":
-                        # Native reduction accepts one global method catalog;
-                        # retain the capability union when metrics reuse a
-                        # label with different variance-reduction settings.
-                        index = next(
-                            i
-                            for i, existing in enumerate(source_methods)
-                            if existing.name == method.name
-                        )
-                        source_methods[index] = method
-        return src.moments_source(
-            metrics=selected or self._metrics,
-            methods=source_methods,
-            population=population,
-            narrow_cuped=True,
-        )
+        return triggered.triggered_source()
 
     # Properties
 

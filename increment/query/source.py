@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     from ibis.backends.duckdb import Backend
     from ibis.backends.sql import SQLBackend
 
+    from increment._analysis_config import ResolvedMetricConfig
     from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Encouragement, Observational, Randomized
@@ -1756,12 +1757,13 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> BreakoutMomentsSource:
         if population == "triggered" and self._population_units is None:
             return cast(
                 "_ArtifactFacadeSource",
                 self.triggered_source(),
-            ).breakout_source(breakout, metrics=metrics)
+            ).breakout_source(breakout, metrics=metrics, configs=configs)
         extension = self._extension(
             {
                 "kind": "breakout_dimension",
@@ -1770,9 +1772,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             }
         )
         source_name = extension.source_name
+        configs = self.context.configs if configs is None else configs
         cuped_names = {
             config.metric.name
-            for config in self.context.configs
+            for config in configs
             if any(
                 method.variance_reduction == "cuped"
                 for method in effective_methods(config, design=self.context.design)
@@ -1797,7 +1800,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             source_name=source_name,
             design=self.context.design,
             plan=self.context.plan,
-            configs=self.context.configs,
+            configs=configs,
             _source=self,
             population=population,
         )
@@ -1808,10 +1811,11 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         *,
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"] = "assigned",
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> tuple[BreakoutMomentsSource, ...]:
         self._require_extension_coverage("breakout_dimension")
         return tuple(
-            self.breakout_source(breakout, metrics=metrics, population=population)
+            self.breakout_source(breakout, metrics=metrics, population=population, configs=configs)
             for breakout in breakouts
         )
 

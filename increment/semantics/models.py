@@ -2572,17 +2572,10 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                         metric_name=name,
                     )
                 for covariate in method.covariates:
-                    if not isinstance(covariate, CupedCovariateBinding) or (
-                        covariate.property is None and covariate.measure is None
+                    if (
+                        isinstance(covariate, CupedCovariateBinding)
+                        and covariate.measure is not None
                     ):
-                        _definition_refusal(
-                            "definition.experiment.metric_declares_cuped",
-                            f"experiment '{self.name}': metric '{name}' requires a bound "
-                            "property or measure when n_pre_periods=0",
-                            experiment_name=self.name,
-                            metric_name=name,
-                        )
-                    if covariate.measure is not None:
                         _definition_refusal(
                             "definition.experiment.metric_declares_cuped",
                             f"experiment '{self.name}': metric '{name}' uses a pre-period "

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset, effective_methods
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
+from increment._source_operations import ReadoutExecutionOperation, ReadoutSnapshotOperation
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.estimation.adjust import observational_evidence
 from increment.estimation.engine import Method
@@ -137,46 +139,42 @@ def run(
     # unit frames and moments that must be one execution. An empty selection reads nothing, so
     # it never opens a snapshot (a definitions-backed capture writes TEMP tables). Metadata/
     # request validation above is intentionally complete before capture.
-    needs_snapshot = bool(selected) and (
+    needs_live_evidence = bool(selected) and not isinstance(
+        src.context.plan.inference, SEQUENTIAL_POLICIES
+    )
+    needs_snapshot = needs_live_evidence and (
         design.mechanism == "observational"
         or any(
             getattr(getattr(metric, "winsorization", None), "has_percentile", False)
             for metric in selected
         )
     )
-    if needs_snapshot:
-        from increment._source_operations import ReadoutSnapshotOperation
-
-        if isinstance(src, ReadoutSnapshotOperation):
+    with ExitStack() as execution:
+        if needs_snapshot and isinstance(src, ReadoutSnapshotOperation):
             uptake = getattr(design, "uptake", None)
             uptake_facts = () if uptake is None else (uptake.fact,)
-            with src.readout_snapshot(
-                metrics=selected, population=_population, uptake_facts=uptake_facts
-            ) as pinned:
-                return _as_collection(
-                    _run_prepared(
-                        pinned,
-                        selected,
-                        configs,
-                        prior=prior,
-                        by=by,
-                        estimands=estimands,
-                        value_scale=value_scale,
-                        population=_population,
-                    )
+            src = execution.enter_context(
+                src.readout_snapshot(
+                    metrics=selected,
+                    population=_population,
+                    uptake_facts=uptake_facts,
+                    configs=configs,
                 )
-    return _as_collection(
-        _run_prepared(
-            src,
-            selected,
-            configs,
-            prior=prior,
-            by=by,
-            estimands=estimands,
-            value_scale=value_scale,
-            population=_population,
+            )
+        if needs_live_evidence and isinstance(src, ReadoutExecutionOperation):
+            execution.enter_context(src.readout_execution())
+        return _as_collection(
+            _run_prepared(
+                src,
+                selected,
+                configs,
+                prior=prior,
+                by=by,
+                estimands=estimands,
+                value_scale=value_scale,
+                population=_population,
+            )
         )
-    )
 
 
 def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:

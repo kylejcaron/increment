@@ -1443,7 +1443,9 @@ class MomentsSource(SequentialSourceMixin):
         return getattr(self._source, "population", "assigned")
 
     @contextmanager
-    def readout_snapshot(self, *, metrics, population, uptake_facts=(), include_breakouts=False):
+    def readout_snapshot(
+        self, *, metrics, population, uptake_facts=(), include_breakouts=False, configs=None
+    ):
         snapshot = getattr(self._source, "readout_snapshot", None)
         if snapshot is None:
             yield self
@@ -1453,6 +1455,7 @@ class MomentsSource(SequentialSourceMixin):
             population=self.population,
             uptake_facts=uptake_facts,
             include_breakouts=include_breakouts,
+            configs=configs,
         ) as pinned:
             yield pinned
 

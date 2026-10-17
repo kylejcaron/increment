@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from increment._analysis_config import overlay_configs
+from increment._source_operations import ReadoutSnapshotOperation
 from increment._source_types import ScalarMethodMomentSource
 from increment.readouts._common import _raise, _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
@@ -103,11 +105,16 @@ def _load_metric_rows(
     has_linear = any(
         getattr(method, "variance_reduction", None) == "cuped_multicovariate" for method in methods
     )
-    if has_linear and not _snapshot_active:
-        snapshot = getattr(src, "readout_snapshot", None)
-        if snapshot is not None:
+    has_scalar = any(method.variance_reduction == "cuped" for method in methods)
+    if (has_linear or has_scalar) and not _snapshot_active:
+        if isinstance(src, ReadoutSnapshotOperation):
             population = getattr(src, "population", "assigned")
-            with snapshot(metrics=(metric,), population=population) as pinned:
+            configs = overlay_configs(
+                (metric,), src.context.configs, methods=list(methods), prior=None
+            )
+            with src.readout_snapshot(
+                metrics=(metric,), population=population, configs=configs
+            ) as pinned:
                 return _load_metric_rows(
                     pinned,
                     metric,
