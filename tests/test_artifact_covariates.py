@@ -338,11 +338,6 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
     )
     artifact, _ = _publish_and_reopen(path, con, request_covariate=False)
     try:
-        if missing == "refuse":
-            with pytest.raises(CodedError) as raised:
-                artifact.run()
-            assert raised.value.code == "frame.validation.metric_covariate_column"
-            return
         native = Analysis.from_definitions("cov_test", path, con)
 
         def make_frame():
@@ -363,6 +358,15 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
                     )
                 ],
             )
+
+        if missing == "refuse":
+            with native, make_frame() as frame:
+                for result in (native.run(), frame.run(), artifact.run()):
+                    (row,) = result
+                    assert isinstance(row, LiftEstimate)
+                    assert row.lift is None
+                    assert row.failure_code == "frame.validation.metric_covariate_column"
+            return
 
         with pytest.warns(IncrementWarning):
             frame = make_frame()

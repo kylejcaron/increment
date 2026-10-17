@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
 from increment.errors import InvalidRequestError
@@ -26,6 +27,7 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
+from increment.readouts._passes import _append_lift_cell_failure
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
 
@@ -149,6 +151,51 @@ def _encouragement_cell_groups(
     return groups
 
 
+def _group_method_evidence(
+    group: _EncouragementCellGroup,
+    evidence_by_metric: Mapping[str, MetricRows],
+    *,
+    control_group: str,
+    estimands: Sequence[str],
+):
+    method = group.methods[0]
+    available = []
+    summary = []
+    failed_rows: list[LiftEstimate] = []
+    failures: list[DecisionComputation[LiftEstimate]] = []
+    for metric in group.metrics:
+        evidence = evidence_by_metric[metric.name]
+        try:
+            rows = (
+                evidence.rows_for_method(method)
+                if method.variance_reduction == "cuped"
+                else evidence.rows
+            )
+        except InvalidRequestError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            for arm in sorted(evidence.observed_arms - {control_group}):
+                for estimand in ("itt", "late"):
+                    if estimand not in estimands:
+                        continue
+                    _append_lift_cell_failure(
+                        results=failed_rows,
+                        computations=failures,
+                        metric=metric,
+                        group_id=arm,
+                        method=method,
+                        method_roles={method.name: group.method_role},
+                        alternative=group.alternative,
+                        code=exc.code,
+                        context=exc.context,
+                        estimand=estimand,
+                    )
+            continue
+        available.append(metric)
+        summary.extend(rows)
+    return group._replace(metrics=available), summary, failed_rows, failures
+
+
 def _compliance_only_rows(src, design, wanted, plan, capture):
     if set(wanted) != {"compliance"}:
         return None
@@ -257,19 +304,35 @@ def encouragement_rows(
     computations: list[DecisionComputation[LiftEstimate]] = []
     family_refusal_deferred = False
     for group in groups:
-        scalar_method = next(
-            (method for method in group.methods if method.variance_reduction == "cuped"),
-            None,
+        group, summary, failed_rows, failures = _group_method_evidence(
+            group,
+            evidence_by_metric,
+            control_group=design.control_group,
+            estimands=wanted,
         )
-        summary = [
-            row
-            for metric in group.metrics
-            for row in (
-                evidence_by_metric[metric.name].rows_for_method(scalar_method)
-                if scalar_method is not None
-                else rows_by_metric[metric.name]
+        computations.extend(failures)
+        results.extend(
+            row.model_copy(
+                update={
+                    "role": role_by_metric.get(row.metric),
+                    "preferred_direction": next(
+                        metric.declared_preferred_direction
+                        for metric in metrics
+                        if metric.name == row.metric
+                    ),
+                    "null_lift": group.null_lift,
+                    "null_abs": group.null_abs,
+                    "posterior_available": False if group.prior is not None else None,
+                    "posterior_reason_code": row.failure_code if group.prior is not None else None,
+                    "posterior_reason_context": row.failure_context
+                    if group.prior is not None
+                    else None,
+                }
             )
-        ]
+            for row in failed_rows
+        )
+        if not group.metrics:
+            continue
         method_roles = {group.methods[0].name: group.method_role}
         try:
             computation = _estimate_encouragement(

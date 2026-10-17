@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._analysis_config import overlay_configs
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._source_operations import ReadoutSnapshotOperation
 from increment._source_types import ScalarMethodMomentSource
+from increment.errors import CodedError, refuse
 from increment.readouts._common import _raise, _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
 
@@ -13,6 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._source_types import RawOutcomeSource
+    from increment.errors import RefusalSpec
     from increment.semantics.models import Metric
     from increment.sources import MomentSource
 
@@ -31,12 +34,16 @@ class MetricRows:
     evidence_components: tuple[tuple[str, str, int], ...] = ()
     covariate_columns: tuple[tuple[str, str], ...] = ()
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
+    method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
 
     def rows_for_method(self, method: Any) -> tuple[Mapping[str, Any], ...]:
         """Return rows produced for an effective scalar method or fail loudly."""
         for name, rows in self.method_rows:
             if name == method.name:
                 return rows
+        for name, spec, context in self.method_refusals:
+            if name == method.name:
+                refuse(spec, **context)
         raise AssertionError(f"Scalar evidence for method {method.name!r} was not acquired.")
 
 
@@ -84,6 +91,33 @@ def _rows_digest(rows):
     for row in rows:
         digest.update(input_evidence(row))
     return digest.hexdigest(), digest.count
+
+
+def _scalar_method_rows(src, metric, methods, *, by):
+    if not isinstance(src, ScalarMethodMomentSource):
+        _raise(
+            "readout.scalar_method_evidence",
+            route=type(src).__name__,
+            method=methods[0].name,
+        )
+    families = []
+    refusals = []
+    for method in methods:
+        try:
+            family_rows = tuple(src.moments_for_method(metric, method, by=by))
+        except CodedError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            refusals.append((method.name, SCALAR_COVARIATE_REFUSALS[exc.code], exc.context))
+        else:
+            families.append((method.name, family_rows))
+    if families:
+        rows = list(families[0][1])
+    else:
+        from increment.estimation.engine import Method
+
+        rows = list(src.moments_for_method(metric, Method.unadjusted(), by=by))
+    return rows, tuple(families), tuple(refusals)
 
 
 def _load_metric_rows(
@@ -191,18 +225,9 @@ def _load_metric_rows(
         method for method in methods if getattr(method, "variance_reduction", None) == "cuped"
     ]
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
+    method_refusals = ()
     if scalar_methods:
-        if not isinstance(src, ScalarMethodMomentSource):
-            _raise(
-                "readout.scalar_method_evidence",
-                route=type(src).__name__,
-                method=scalar_methods[0].name,
-            )
-        method_rows = tuple(
-            (method.name, tuple(src.moments_for_method(metric, method, by=by)))
-            for method in scalar_methods
-        )
-        rows = list(method_rows[0][1])
+        rows, method_rows, method_refusals = _scalar_method_rows(src, metric, scalar_methods, by=by)
     elif methods and isinstance(src, ScalarMethodMomentSource):
         rows = list(src.moments_for_method(metric, methods[0], by=by))
     else:
@@ -214,6 +239,15 @@ def _load_metric_rows(
         (f"scalar_method:{name}", *_rows_raw_digest_and_arms(family_rows)[1:])
         for name, family_rows in method_rows
         if any(method.name == name and method.covariates for method in scalar_methods)
+    )
+    method_components += tuple(
+        (
+            f"scalar_method:{name}",
+            *_rows_raw_digest_and_arms(
+                ({"failure_code": spec.code, "failure_context": dict(context)},)
+            )[1:],
+        )
+        for name, spec, context in method_refusals
     )
     if not has_linear:
         return MetricRows(
@@ -229,6 +263,7 @@ def _load_metric_rows(
                 *method_components,
             ),
             method_rows=method_rows,
+            method_refusals=tuple(method_refusals),
         )
 
     import narwhals as nw
@@ -254,5 +289,6 @@ def _load_metric_rows(
             *method_components,
         ),
         method_rows=method_rows,
+        method_refusals=tuple(method_refusals),
         covariate_columns=tuple(acquired_columns.items()),
     )

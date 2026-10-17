@@ -993,29 +993,30 @@ def test_covariate_imputation_computed_before_outcome_drop() -> None:
 
 
 def test_cuped_covariate_missing_error_escape_hatch() -> None:
-    with pytest.raises(InvalidRequestError) as exc_info:
-        from_unit_summary(
-            _cuped_null_covariate_frame(),
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="y",
-                    decision_method=Method.cuped(
-                        covariates=CupedCovariate(name="x", kind="continuous", missing="refuse")
-                    ),
-                )
-            ],
-        )
-    assert exc_info.value.code == "frame.validation.metric_covariate_column"
-    assert exc_info.value.context["n_missing"] == 50
-    assert exc_info.value.context["covariate"] == "x"
+    src = from_unit_summary(
+        _cuped_null_covariate_frame(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="y",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="x", kind="continuous", missing="refuse")
+                ),
+            )
+        ],
+    )
+    (row,) = readouts.run(src)
+    assert row.lift is None
+    assert row.failure_code == "frame.validation.metric_covariate_column"
+    assert row.failure_context is not None
+    assert row.failure_context["n_missing"] == 50
+    assert row.failure_context["covariate"] == "x"
 
 
 def test_enforce_missing_policy_all_null_impute_covariate_refuses() -> None:
-    """A covariate with no observed values refuses by code through the
-    public summary constructor."""
+    """An all-null covariate fails only its method's public readout cell."""
     table = pa.table(
         {
             "user_id": ["u1", "u2"],
@@ -1024,28 +1025,30 @@ def test_enforce_missing_policy_all_null_impute_covariate_refuses() -> None:
             "x": pa.array([None, None], type=pa.float64()),
         }
     )
-    with pytest.raises(InvalidRequestError) as exc_info:
-        from_unit_summary(
-            table,
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="y",
-                    decision_method=Method.cuped(
-                        covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
-                    ),
-                )
-            ],
-        )
-    assert exc_info.value.code == "frame.validation.metric_covariate_impute_all_null"
-    assert exc_info.value.context["metric"] == "y"
-    assert exc_info.value.context["covariate"] == "x"
+    src = from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="y",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
+                ),
+            )
+        ],
+    )
+    (row,) = readouts.run(src)
+    assert row.lift is None
+    assert row.failure_code == "frame.validation.metric_covariate_impute_all_null"
+    assert row.failure_context is not None
+    assert row.failure_context["metric"] == "y"
+    assert row.failure_context["covariate"] == "x"
 
 
 def test_all_null_covariate_entry_points_share_canonical_refusal_code() -> None:
-    """The moment reducer and public summary constructor expose one hazard."""
+    """The moment reducer and public summary readout expose one hazard."""
     import narwhals as nw
 
     from increment.frame import _apply_spec_missing
@@ -1059,32 +1062,24 @@ def test_all_null_covariate_entry_points_share_canonical_refusal_code() -> None:
     with pytest.raises(InvalidRequestError) as via_moments:
         _apply_spec_missing(long, spec, has_x=True, has_den=False, covariate=covariate)
 
-    with pytest.raises(InvalidRequestError) as via_validation:
-        from_unit_summary(
-            pa.table(
-                {
-                    "user_id": ["u1", "u2"],
-                    "variant": ["control", "treatment"],
-                    "y": [1.0, 2.0],
-                    "x": pa.array([None, None], type=pa.float64()),
-                }
-            ),
-            unit="user_id",
-            group="variant",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="y",
-                    decision_method=Method.cuped(
-                        covariates=CupedCovariate(name="x", kind="continuous", missing="impute")
-                    ),
-                )
-            ],
-        )
-
+    src = from_unit_summary(
+        pa.table(
+            {
+                "user_id": ["u1", "u2"],
+                "variant": ["control", "treatment"],
+                "y": [1.0, 2.0],
+                "x": pa.array([None, None], type=pa.float64()),
+            }
+        ),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[spec],
+    )
+    (row,) = readouts.run(src)
     assert (
         via_moments.value.code
-        == via_validation.value.code
+        == row.failure_code
         == "frame.validation.metric_covariate_impute_all_null"
     )
 

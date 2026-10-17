@@ -3,6 +3,7 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import PreferredDirection, Role
 from increment.errors import CodedError
 from increment.estimation.engine import (
@@ -142,13 +143,14 @@ def _append_lift_cell_failure(
     alternative: str,
     code: str,
     context: Mapping[str, object],
+    estimand: Literal["itt", "late"] = "itt",
 ) -> None:
     from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
 
     method_role = (method_roles or {}).get(method.name, "decision")
     failure_context = {**context, "method": method.name}
     if method_role == "decision":
-        hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
+        hypothesis = ArmHypothesisKey(metric.name, group_id, estimand)
         computations.append(
             DecisionComputation(
                 results=(),
@@ -164,8 +166,8 @@ def _append_lift_cell_failure(
                 metric=metric.name,
                 group_id=group_id,
                 method=method.name,
-                estimand="itt",
-                value_scale="relative",
+                estimand=estimand,
+                value_scale="absolute" if estimand == "late" else "relative",
                 alternative=alternative,
                 method_role="sensitivity",
                 failure_code=code,
@@ -388,7 +390,7 @@ def _raise_if_all_lift_cells_refused(
     _raise("readout.estimate_lift_every", failures=failures)
 
 
-def _estimate_pass(  # noqa: PLR0913, PLR0915
+def _estimate_pass(  # noqa: PLR0913
     src: MomentSource,
     metric: Metric,
     evidence: Any,
@@ -405,6 +407,95 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
     family_member: bool = False,
     route_tail: float | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
+    method_roles = _runtime_method_roles(methods)
+    available = []
+    failed_rows: list[LiftEstimate] = []
+    failures: list[DecisionComputation[LiftEstimate]] = []
+    for method in methods:
+        if method.variance_reduction == "cuped":
+            if not isinstance(evidence, MetricRows):
+                raise AssertionError(
+                    "Scalar estimation requires method-scoped MetricRows evidence."
+                )
+            try:
+                evidence.rows_for_method(method)
+            except CodedError as exc:
+                if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                    raise
+                for arm in sorted(evidence.observed_arms - {design.control_group}):
+                    _append_lift_cell_failure(
+                        results=failed_rows,
+                        computations=failures,
+                        metric=metric,
+                        group_id=arm,
+                        method=method,
+                        method_roles=method_roles,
+                        alternative=test.alternative,
+                        code=exc.code,
+                        context=exc.context,
+                    )
+                continue
+        available.append(method)
+    rows, refused, computation = _estimate_available_pass(
+        src,
+        metric,
+        evidence,
+        test,
+        config,
+        design,
+        alpha_for=alpha_for,
+        role=role,
+        inference=inference,
+        advisory_seen=advisory_seen,
+        retry=retry,
+        methods=available,
+        method_roles=method_roles,
+        family_member=family_member,
+        route_tail=route_tail,
+    )
+    if not failures and not failed_rows:
+        return rows, refused, computation
+    failed_rows = [
+        row.model_copy(
+            update={
+                "role": role,
+                "preferred_direction": metric.declared_preferred_direction,
+                "null_lift": getattr(test, "null_lift", 0.0),
+                "null_abs": getattr(test, "null_abs", None),
+                "posterior_available": False if config.prior is not None else None,
+                "posterior_reason_code": row.failure_code if config.prior is not None else None,
+                "posterior_reason_context": row.failure_context
+                if config.prior is not None
+                else None,
+            }
+        )
+        for row in failed_rows
+    ]
+    return (
+        [*failed_rows, *rows],
+        refused,
+        _merge_decision_computations([*failures, computation]),
+    )
+
+
+def _estimate_available_pass(  # noqa: PLR0913, PLR0915
+    src: MomentSource,
+    metric: Metric,
+    evidence: Any,
+    test: Any,
+    config: ResolvedMetricConfig,
+    design: Randomized | Encouragement,
+    *,
+    alpha_for: float,
+    role: Role | None,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
+    advisory_seen: set[tuple[object, ...]] | None,
+    retry: Literal["cells", "family", "whole", "whole_asof"] = "cells",
+    methods: list[Method],
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]],
+    family_member: bool = False,
+    route_tail: float | None = None,
+) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Run one randomized estimation pass with role, alpha, and retry policy.
 
     ``family_member`` marks the metric's decision rows as members of the plan's BH family,
@@ -414,15 +505,6 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
     `evidence` is what the caller already read for this metric: total moment
     rows for a moments metric, the native unit frame for a quantile metric.
     """
-    method_roles = _runtime_method_roles(methods)
-
-    for method in methods:
-        if method.variance_reduction == "cuped":
-            if not isinstance(evidence, MetricRows):
-                raise AssertionError(
-                    "Scalar estimation requires method-scoped MetricRows evidence."
-                )
-            evidence.rows_for_method(method)
     rows_summary = list(evidence.rows) if isinstance(evidence, MetricRows) else evidence
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         from increment.winsor import winsor_refuse

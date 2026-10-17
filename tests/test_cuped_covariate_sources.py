@@ -241,6 +241,7 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
 
 def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_path):
     import pyarrow as pa
+    import pyarrow.parquet as pq
 
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
@@ -263,11 +264,9 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
     )
     defs_path.write_text(text)
     analysis = Analysis.from_definitions("cat_test", defs_path, con)
-    from increment.semantics.models import CupedCovariateBinding
-
-    (bound_covariate,) = analysis._src.context.configs[0].decision_method.covariates
-    assert isinstance(bound_covariate, CupedCovariateBinding)
-    raw_moments = analysis._src.moments(analysis._src.context.metrics[0])
+    exported = tmp_path / "scalar.parquet"
+    analysis.export(exported)
+    raw_moments = pq.read_table(exported).to_pylist()
     assert raw_moments[0]["ref_x"] is not None
     native = analysis.run()[0]
     oracle_frame = pa.table(
@@ -303,7 +302,7 @@ def test_scalar_cuped_uses_definition_property_binding_without_preperiods(tmp_pa
 def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
     import pyarrow as pa
 
-    from increment.errors import CodedError, IncrementWarning
+    from increment.errors import IncrementWarning
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate, MetricSpec
 
@@ -337,28 +336,28 @@ def test_scalar_definition_covariate_applies_missing_policy(tmp_path, missing):
         }
     )
     if missing == "refuse":
-        with pytest.raises(CodedError) as frame_error:
-            Analysis.from_unit_summary(
-                oracle_frame,
-                unit="unit",
-                group="group",
-                control="control",
-                metrics=[
-                    MetricSpec(
-                        name="revenue",
-                        decision_method=Method.cuped(
-                            name="scalar",
-                            covariates=CupedCovariate(
-                                name="pre_tenure", kind="continuous", missing=missing
-                            ),
+        oracle = Analysis.from_unit_summary(
+            oracle_frame,
+            unit="unit",
+            group="group",
+            control="control",
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        name="scalar",
+                        covariates=CupedCovariate(
+                            name="pre_tenure", kind="continuous", missing=missing
                         ),
-                    )
-                ],
-            )
-        with pytest.raises(CodedError) as native_error:
-            native.run()
-        assert native_error.value.code == "frame.validation.metric_covariate_column"
-        assert frame_error.value.code == native_error.value.code
+                    ),
+                )
+            ],
+        )
+        for result in (oracle.run(), native.run()):
+            (row,) = result
+            assert isinstance(row, LiftEstimate)
+            assert row.lift is None
+            assert row.failure_code == "frame.validation.metric_covariate_column"
         return
 
     with pytest.warns() as imputation_warnings:

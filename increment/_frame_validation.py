@@ -521,6 +521,9 @@ def validate_moments_control(rows: Sequence[Mapping[str, object]], control: str)
 
 COVARIATE_IMPUTE_ALL_NULL = _REFUSALS["frame.validation.metric_covariate_impute_all_null"]
 COVARIATE_COLUMN_MISSING = _REFUSALS["frame.validation.metric_covariate_column"]
+SCALAR_COVARIATE_REFUSALS = MappingProxyType(
+    {spec.code: spec for spec in (COVARIATE_COLUMN_MISSING, COVARIATE_IMPUTE_ALL_NULL)}
+)
 
 
 _NULL_BREAKOUT = "__null__"
@@ -1350,6 +1353,7 @@ def _enforce_missing_policy(
     *,
     shape: Literal["summary", "panel"],
     emit_warnings: bool = True,
+    defer_scalar_failures: bool = False,
 ) -> nw.DataFrame[Any]:
     """Validate every spec's declared null/NaN policy against the data.
 
@@ -1411,7 +1415,7 @@ def _enforce_missing_policy(
                 if n_missing == 0 or covariate.missing == "impute-indicator":
                     continue
                 if covariate.missing == "refuse":
-                    if method.variance_reduction == "cuped_multicovariate":
+                    if method.variance_reduction == "cuped_multicovariate" or defer_scalar_failures:
                         continue
                     _raise(
                         "frame.validation.metric_covariate_column",
@@ -1421,6 +1425,8 @@ def _enforce_missing_policy(
                     )
                 n_observed = frame.shape[0] - n_missing
                 if covariate.missing == "impute" and n_observed == 0:
+                    if defer_scalar_failures and method.variance_reduction == "cuped":
+                        continue
                     _raise(
                         "frame.validation.metric_covariate_impute_all_null",
                         metric=spec.name,

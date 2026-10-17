@@ -21,7 +21,11 @@ from increment._frame_panel import (
     _uptake_day_elapsed,
     _with_day_index,
 )
-from increment._frame_validation import COVARIATE_IMPUTE_ALL_NULL
+from increment._frame_validation import (
+    COVARIATE_COLUMN_MISSING,
+    COVARIATE_IMPUTE_ALL_NULL,
+    SCALAR_COVARIATE_REFUSALS,
+)
 from increment._moment_plan import (
     CLUSTER_SIZE_GRAIN,
     CLUSTER_UPTAKE_GRAIN,
@@ -267,6 +271,13 @@ def _apply_spec_missing(
         )
         if x_missing:
             assert covariate is not None
+            if covariate.missing == "refuse":
+                refuse(
+                    COVARIATE_COLUMN_MISSING,
+                    metric=spec.name,
+                    covariate=covariate.name,
+                    n_missing=x_missing,
+                )
             if covariate.missing == "zero":
                 fill = 0.0
             else:
@@ -460,6 +471,8 @@ def _moment_rows(
     outcome_column: str | None = None,
     denominator_column: str | None = None,
     covariate_columns: Mapping[str, str] | None = None,
+    covariate_means: Mapping[str, float | None] | None = None,
+    covariate_failures: dict[str, _DeferredRefusal] | None = None,
 ) -> list[dict[str, Any]]:
     """Build centered moments after each metric's pooled unit transform."""
     rows: list[dict[str, Any]] = []
@@ -549,7 +562,20 @@ def _moment_rows(
             nw.col(group).alias("group_id"),
             *exprs,
         )
-        long = _apply_spec_missing(long, spec, has_x=has_x, has_den=has_den, covariate=covariate)
+        if has_x and covariate.missing == "impute" and covariate_means is not None:
+            mean = covariate_means[covariate.name]
+            if mean is not None:
+                long = long.with_columns(nw.col("x").fill_nan(None).fill_null(mean).alias("x"))
+        try:
+            long = _apply_spec_missing(
+                long, spec, has_x=has_x, has_den=has_den, covariate=covariate
+            )
+        except InvalidRequestError as exc:
+            if covariate_failures is None or exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            covariate_failures[spec.name] = (SCALAR_COVARIATE_REFUSALS[exc.code], exc.context)
+            has_x = False
+            long = _apply_spec_missing(long.drop("x"), spec, has_x=False, has_den=has_den)
         long, winsor_metadata = _apply_winsorization(long, spec, key_cols=key_cols)
         columns = {"y": "y"}
         if has_x:
@@ -1501,8 +1527,21 @@ def _total_moment_rows(
         # Join caller-resolved per-unit covariates onto the collapsed totals that
         # `from_unit_summary` also uses, so one moment implementation serves both.
         covariate_aliases: dict[str, str] = {}
+        covariate_means: dict[str, float | None] = {}
+        imputed_names = {
+            covariate.name
+            for spec in plain
+            for method in spec._methods
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
+            if covariate.missing == "impute"
+        }
         for name, per_unit in (covariates or {}).items():
             covariate_aliases[name] = _scratch_name(collapsed, f"__covariate__{name}")
+            if name in imputed_names:
+                covariate_means[covariate_aliases[name]] = per_unit.select(
+                    nw.col(name).fill_nan(None).mean()
+                ).item()
             collapsed = collapsed.join(
                 per_unit.rename({name: covariate_aliases[name]}), on="unit_id", how="left"
             )
@@ -1557,6 +1596,8 @@ def _total_moment_rows(
             experiment_id=experiment_id,
             uptake=uptake,
             by=by,
+            covariate_means=covariate_means,
+            covariate_failures=failures,
         )
     if windowed:
         assert exposure is not None  # enforced by _validate_exposure_date

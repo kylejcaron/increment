@@ -229,16 +229,23 @@ def test_selected_scalar_secondary_with_override_matches_standalone(mixed):
 
 
 @pytest.mark.parametrize("panel", [False, True])
-def test_encouragement_scalar_override_rechecks_missing_policy(panel):
-    from increment.errors import InvalidRequestError
+@pytest.mark.parametrize("role", ["decision", "sensitivity"])
+@pytest.mark.parametrize("missing", ["refuse", "impute"])
+def test_encouragement_scalar_override_rechecks_missing_policy(panel, role, missing):
+    from contextlib import nullcontext
+
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
     frame = _two_family_frame()
-    frame.loc[0, "a"] = np.nan
+    if missing == "refuse":
+        frame.loc[0, "a"] = np.nan
+    else:
+        frame["a"] = np.nan
     constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
     from increment.errors import IncrementWarning
 
-    with pytest.warns(IncrementWarning) as caught:
+    capture = pytest.warns(IncrementWarning) if missing == "refuse" else nullcontext()
+    with capture as caught:
         analysis = constructor(
             frame,
             unit="unit",
@@ -254,13 +261,38 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel):
             uptake="uptake",
             **({"date": "day"} if panel else {}),
         )
-    assert {
-        warning.message.code for warning in caught if isinstance(warning.message, IncrementWarning)
-    } == {"frame.validation.metric_covariate_missing_imputed"}
+    if missing == "refuse":
+        assert caught is not None
+        assert {
+            warning.message.code
+            for warning in caught
+            if isinstance(warning.message, IncrementWarning)
+        } == {"frame.validation.metric_covariate_missing_imputed"}
     try:
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run(decision_method=_scalar("a"), estimands=("itt", "late"))
-        assert raised.value.code == "frame.validation.metric_covariate_column"
+        bad, good, naive = _scalar("a", missing=missing), _scalar("b"), Method.unadjusted()
+        methods = (bad, naive, good) if role == "decision" else (naive, bad, good)
+        rows = analysis.run(
+            decision_method=methods[0], sensitivity_methods=methods[1:], estimands=("itt", "late")
+        )
+        failed = [row for row in rows if isinstance(row, LiftEstimate) and row.method == bad.name]
+        assert {row.estimand for row in failed} == {"itt", "late"}
+        assert all(row.lift is None for row in failed)
+        expected_code = (
+            "frame.validation.metric_covariate_column"
+            if missing == "refuse"
+            else "frame.validation.metric_covariate_impute_all_null"
+        )
+        assert {row.failure_code for row in failed} == {expected_code}
+        assert {row.method_role for row in failed} == {role}
+        valid = [
+            row
+            for row in rows
+            if isinstance(row, LiftEstimate) and row.method in (good.name, naive.name)
+        ]
+        assert {(row.method, row.estimand) for row in valid} == {
+            (method.name, estimand) for method in (good, naive) for estimand in ("itt", "late")
+        }
+        assert all(row.lift is not None for row in valid)
     finally:
         analysis.close()
 

@@ -9,7 +9,7 @@ import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
 from increment.breakout.estimates import BreakoutEstimates
-from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
+from increment.errors import IncrementWarning, UnsupportedRequestError
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.readout_types import ReadoutResults
@@ -642,7 +642,7 @@ def test_moments_provenance_must_cover_each_requested_scalar_family():
     assert raised.value.code == "facade.analysis_config.cuped_scalar_moments"
 
 
-def test_scalar_sensitivity_refuse_rejects_missing_covariate_at_construction():
+def test_scalar_sensitivity_refuse_fails_only_its_estimate():
     rows = [
         {
             "unit": f"{group}-{index}",
@@ -653,72 +653,71 @@ def test_scalar_sensitivity_refuse_rejects_missing_covariate_at_construction():
         for group in ("control", "treatment")
         for index in range(20)
     ]
-
-    with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
-            pa.Table.from_pylist(rows),
-            unit="unit",
-            group="group",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="revenue",
-                    decision_method=Method(name="unadjusted"),
-                    sensitivity_methods=(
-                        Method.cuped(
-                            name="scalar_sensitivity",
-                            covariates=CupedCovariate(
-                                name="history", kind="continuous", missing="refuse"
-                            ),
-                        ),
-                    ),
-                )
-            ],
-        )
-
-    assert raised.value.code == "frame.validation.metric_covariate_column"
-
-
-def test_multicov_refusal_does_not_skip_shared_scalar_refusal():
-    rows = [
-        {
-            "unit": f"{group}-{index}",
-            "group": group,
-            "history": None if index % 4 == 0 else float(index % 5),
-            "revenue": float(index + (group == "treatment") * 3),
-        }
-        for group in ("control", "treatment")
-        for index in range(20)
-    ]
-
-    with pytest.raises(InvalidRequestError) as raised:
-        Analysis.from_unit_summary(
-            pa.Table.from_pylist(rows),
-            unit="unit",
-            group="group",
-            control="control",
-            metrics=[
-                MetricSpec(
-                    name="revenue",
-                    decision_method=Method.cuped_multicovariate(
-                        name="mixed",
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method(name="unadjusted"),
+                sensitivity_methods=(
+                    Method.cuped(
+                        name="scalar_sensitivity",
                         covariates=CupedCovariate(
                             name="history", kind="continuous", missing="refuse"
                         ),
                     ),
-                    sensitivity_methods=(
-                        Method.cuped(
-                            name="scalar",
-                            covariates=CupedCovariate(
-                                name="history", kind="continuous", missing="refuse"
-                            ),
+                ),
+            )
+        ],
+    )
+    results = {row.method: row for row in analysis.run() if isinstance(row, LiftEstimate)}
+    assert results["unadjusted"].lift is not None
+    assert results["scalar_sensitivity"].lift is None
+    assert results["scalar_sensitivity"].failure_code == "frame.validation.metric_covariate_column"
+
+
+def test_multicov_and_scalar_missing_refusals_remain_method_specific():
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "history": None if index % 4 == 0 else float(index % 5),
+            "revenue": float(index + (group == "treatment") * 3),
+        }
+        for group in ("control", "treatment")
+        for index in range(20)
+    ]
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped_multicovariate(
+                    name="mixed",
+                    covariates=CupedCovariate(name="history", kind="continuous", missing="refuse"),
+                ),
+                sensitivity_methods=(
+                    Method.cuped(
+                        name="scalar",
+                        covariates=CupedCovariate(
+                            name="history", kind="continuous", missing="refuse"
                         ),
                     ),
-                )
-            ],
-        )
-
-    assert raised.value.code == "frame.validation.metric_covariate_column"
+                ),
+            )
+        ],
+    )
+    results = {row.method: row for row in analysis.run() if isinstance(row, LiftEstimate)}
+    assert results["mixed"].lift is None
+    assert results["mixed"].failure_code == "estimation.cuped_linear.missing_refused"
+    assert results["scalar"].lift is None
+    assert results["scalar"].failure_code == "frame.validation.metric_covariate_column"
 
 
 def test_scalar_missing_refusal_is_rechecked_for_call_time_override():
@@ -755,10 +754,11 @@ def test_scalar_missing_refusal_is_rechecked_for_call_time_override():
         covariates=CupedCovariate(name="history", kind="continuous", missing="refuse"),
     )
 
-    with pytest.raises(InvalidRequestError) as raised:
-        analysis.run(decision_method=override)
-
-    assert raised.value.code == "frame.validation.metric_covariate_column"
+    (row,) = analysis.run(decision_method=override)
+    assert isinstance(row, LiftEstimate)
+    assert row.lift is None
+    assert row.method == override.name and row.method_role == "decision"
+    assert row.failure_code == "frame.validation.metric_covariate_column"
 
 
 def test_multicovariate_refuse_fails_only_its_estimate():

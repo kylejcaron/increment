@@ -167,9 +167,18 @@ For scalar CUPED, choose the missing-value policy on its covariate:
 `CupedCovariate(name="pre_revenue", kind="continuous", missing="impute")`
 fills missing values with the pooled observed mean and warns with the count;
 `missing="zero"` treats null as no pre-period activity, and `missing="refuse"`
-rejects missing values. The policy belongs to the method, so decision and
-sensitivity methods can make different choices without changing the raw
-covariate binding.
+rejects missing values. Such a refusal makes only that method's cell unavailable,
+with `frame.validation.metric_covariate_column`; it does not impute that input
+or prevent sibling methods and metrics from returning. An all-missing
+`missing="impute"` input similarly yields
+`frame.validation.metric_covariate_impute_all_null`. These codes and cell-local
+semantics apply to frame, definitions, and artifact readouts in either method
+role. A requested column that does not exist is instead a request incompatibility
+and is rejected before evidence acquisition.
+
+The policy belongs to each metric's method, never to the shared covariate table.
+The pooled mean uses the full per-unit covariate population before an outcome's
+`missing="drop"` removes rows, including when that summary is broken out.
 
 ### Ratio metrics
 

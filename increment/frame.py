@@ -344,6 +344,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         exposure_date: str | None = None,
         synthesised_metrics: Sequence[Metric] | None = None,
         segment_columns: Mapping[str, str] | None = None,
+        moment_failures: Mapping[str, _DeferredRefusal] | None = None,
     ) -> None:
         if intervention_grain == "cluster" and cluster is None:
             refuse(_FRAME_INTERVENTION_GRAIN, intervention_grain=intervention_grain)
@@ -375,6 +376,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         self._moments: tuple[Mapping[str, Any], ...] = tuple(
             MappingProxyType(dict(row)) for row in moments
         )
+        self._moment_failures = MappingProxyType(dict(moment_failures or {}))
         self._specs: tuple[MetricSpec, ...] = tuple(metrics)
         self._specs_by_name: Mapping[str, MetricSpec] = MappingProxyType(
             {s.name: s for s in self._specs}
@@ -499,6 +501,10 @@ class FrameTotalsSource(SequentialSourceMixin):
                 dimensions=tuple(by),
                 route="request an unbroken total or use a panel source with declared breakouts",
             )
+        failure = self._moment_failures.get(metric.name)
+        if failure is not None:
+            failure_spec, context = failure
+            refuse(failure_spec, **context)
         return [dict(r) for r in self._moments if r["metric"] == metric.name]
 
     @property
@@ -512,14 +518,16 @@ class FrameTotalsSource(SequentialSourceMixin):
         *,
         by: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Recompute one scalar CUPED family from its own covariate input."""
-        if method.variance_reduction != "cuped" or method.covariates is None:
+        """Reduce the effective scalar input or reuse compatible outcome moments."""
+        if method.variance_reduction == "cuped" and method.covariates is None:
+            return self.moments(metric, by=by)
+        spec = self._spec_for(metric)
+        if method.variance_reduction != "cuped" and not any(
+            declared.variance_reduction == "cuped" for declared in spec._methods
+        ):
             return self.moments(metric, by=by)
         if by:
             refuse(_FRAME_GRAIN, grain="breakout", offered=self.capabilities)
-        spec = self._specs_by_name.get(metric.name)
-        if spec is None:
-            return []
         method_spec = MetricSpec.model_validate(
             {
                 **spec.model_dump(),
@@ -527,7 +535,10 @@ class FrameTotalsSource(SequentialSourceMixin):
                 "sensitivity_methods": (),
             }
         )
-        _enforce_missing_policy(self._frame, (method_spec,), shape="summary", emit_warnings=False)
+        if method.variance_reduction == "cuped":
+            _enforce_missing_policy(
+                self._frame, (method_spec,), shape="summary", emit_warnings=False
+            )
         if self._cluster is not None:
             _reject_cluster_request(
                 (method_spec,), cluster=self._cluster, design=self.design, uptake=self._uptake
@@ -538,6 +549,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             metrics=(method_spec,),
             experiment_id=self._experiment_id,
             uptake=self._uptake,
+            cluster=self._cluster,
         )
 
     def _spec_for(self, metric: Metric) -> MetricSpec:
@@ -910,7 +922,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             _validate_control(nwf, group, control)
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
-        nwf = _enforce_missing_policy(nwf, specs, shape="summary")
+        nwf = _enforce_missing_policy(nwf, specs, shape="summary", defer_scalar_failures=True)
         _validate_conversion_binary(nwf, specs)
         if cluster is not None:
             # A declared cluster-randomization (or encouragement) requires
@@ -923,6 +935,7 @@ class FrameTotalsSource(SequentialSourceMixin):
                 enforce_purity=getattr(design, "mechanism", None) != "observational",
             )
 
+        moment_failures: dict[str, _DeferredRefusal] = {}
         moments = (
             []
             if registration is not None
@@ -933,6 +946,7 @@ class FrameTotalsSource(SequentialSourceMixin):
                 experiment_id=experiment_id,
                 uptake=uptake,
                 cluster=cluster,
+                covariate_failures=moment_failures,
             )
         )
         return cls(
@@ -940,6 +954,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             unit=unit,
             group=group,
             moments=moments,
+            moment_failures=moment_failures,
             metrics=specs,
             control=control,
             experiment_id=experiment_id,
@@ -1527,17 +1542,6 @@ class FramePanelSource(SequentialSourceMixin):
                     else []
                 )
                 covariates, covariate_failures = self._total_covariates(specs)
-                for name in {
-                    covariate.name
-                    for spec in specs
-                    for method in spec._methods
-                    if method.variance_reduction == "cuped"
-                    for covariate in method.covariates or ()
-                    if covariate.missing == "impute"
-                } & covariates.keys():
-                    covariates[name] = covariates[name].with_columns(
-                        nw.col(name).fill_null(nw.col(name).mean()).alias(name)
-                    )
                 if self._summary_reducer and specs[0].missing == "drop":
                     missing = nw.col(specs[0].y_column).is_null()
                     if total_panel.schema[specs[0].y_column] in (nw.Float32, nw.Float64):
@@ -1638,6 +1642,22 @@ class FramePanelSource(SequentialSourceMixin):
             _raise("frame.frame_totals.metric_was_declared", name=metric.name)
         return spec
 
+    def _unit_total_spec(self, metric: Metric) -> MetricSpec:
+        spec = self._spec_for(metric)
+        if spec.window_days is not None or spec.type == "retention":
+            refuse(
+                FRAME_UNIT_FRAME_PANEL,
+                metric=metric.name,
+                shape="a unit panel",
+                route=(
+                    "compute each unit's windowed value upstream and declare it as an "
+                    "unwindowed metric on from_unit_summary"
+                    if spec.window_days is not None
+                    else "no frame source serves unit-grain estimators for a retention metric"
+                ),
+            )
+        return spec
+
     def moments_for_method(
         self,
         metric: Metric,
@@ -1645,8 +1665,32 @@ class FramePanelSource(SequentialSourceMixin):
         *,
         by: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
-        """Build scalar CUPED moments from the requested panel covariate."""
-        if method.variance_reduction != "cuped" or method.covariates is None:
+        """Reduce the effective scalar input or reuse compatible outcome moments."""
+        if method.variance_reduction != "cuped":
+            spec = self._spec_for(metric)
+            if not any(declared.variance_reduction == "cuped" for declared in spec._methods):
+                return self.moments(metric, by=by)
+            method_spec = spec.model_copy(
+                update={"decision_method": method, "sensitivity_methods": ()}
+            )
+            rows, failures = _total_moment_rows(
+                self._sparse_panel,
+                (method_spec,),
+                synthesised=(metric,),
+                experiment_id=self._experiment_id,
+                uptake=self._uptake,
+                uptake_window_days=self._window_days,
+                first_exposure=self._first_exposure,
+                exposure=self._exposure,
+                observation_end=self._observation_end,
+                fact_max_ds=self._fact_max_ds,
+                by=by,
+            )
+            if metric.name in failures:
+                failure_spec, context = failures[metric.name]
+                refuse(failure_spec, **context)
+            return rows
+        if method.covariates is None:
             return self.moments(metric, by=by)
         if by:
             refuse(
@@ -1654,7 +1698,7 @@ class FramePanelSource(SequentialSourceMixin):
                 grain="breakout",
                 offered=self.capabilities,
             )
-        spec = self._spec_for(metric)
+        spec = self._unit_total_spec(metric)
         method_spec = MetricSpec.model_validate(
             {
                 **spec.model_dump(),
@@ -1663,7 +1707,9 @@ class FramePanelSource(SequentialSourceMixin):
             }
         )
         if self._source_frame is not None:
-            _enforce_missing_policy(self._source_frame, (method_spec,), shape="panel")
+            _enforce_missing_policy(
+                self._source_frame, (method_spec,), shape="panel", emit_warnings=False
+            )
         covariate_names = tuple(item.name for item in method.covariates or ())
         acquired_columns = unit_frame_covariate_columns(covariate_names)
         admitted = _admit_panel_totals(
@@ -1745,21 +1791,7 @@ class FramePanelSource(SequentialSourceMixin):
             winsor_refuse(
                 "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
             )
-        spec = self._spec_for(metric)
-        # This collapse has no per-unit window or censoring, so windowed metrics
-        # refuse; retention also needs its band over the full day axis.
-        if spec.window_days is not None or spec.type == "retention":
-            refuse(
-                FRAME_UNIT_FRAME_PANEL,
-                metric=metric.name,
-                shape="a unit panel",
-                route=(
-                    "compute each unit's windowed value upstream and declare it as an "
-                    "unwindowed metric on from_unit_summary"
-                    if spec.window_days is not None
-                    else "no frame source serves unit-grain estimators for a retention metric"
-                ),
-            )
+        spec = self._unit_total_spec(metric)
         admitted = _admit_panel_totals(
             self._sparse_panel,
             self._exposure,
@@ -2071,7 +2103,7 @@ class FramePanelSource(SequentialSourceMixin):
         if uptake is not None:
             _validate_uptake_binary(nwf, uptake)
         if not _summary_reducer:
-            nwf = _enforce_missing_policy(nwf, specs, shape="panel")
+            nwf = _enforce_missing_policy(nwf, specs, shape="panel", defer_scalar_failures=True)
         _validate_conversion_binary(nwf, specs)
         identity = _unit_identity(nwf, unit=unit, group=group, breakouts=breakouts)
 

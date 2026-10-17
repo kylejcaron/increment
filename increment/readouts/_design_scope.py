@@ -17,7 +17,7 @@ from increment.breakout.estimates import LiftEstimates
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
-from increment.estimation.decision_types import PValueEvidence
+from increment.estimation.decision_types import DecisionFailure, PValueEvidence
 from increment.estimation.engine import _is_unadjusted_method
 from increment.estimation.readout_types import (
     CellFailure,
@@ -133,7 +133,14 @@ def _collect_expected_cells(
                 break
         if matched:
             for row in matched:
-                cell_rows.setdefault(population_cell(row), row)
+                cell = population_cell(row)
+                cell_rows.setdefault(cell, row)
+                if row.failure_code is not None:
+                    failures[cell] = CellFailure(
+                        hypothesis=cell.hypothesis(),
+                        code=row.failure_code,
+                        context=row.failure_context or {},
+                    )
             continue
         cell = CellKey(
             kind="arm",
@@ -470,6 +477,42 @@ def _config_snapshot(config, design):
         refuse_readout("readout.scope.request_not_canonical", fields=["configs"])
 
 
+def _project_scoped_row(row, failure, scope):
+    if failure is None and row.failure_code is not None:
+        failure = DecisionFailure(
+            hypothesis=CellKey.from_row(row).hypothesis(),
+            code=row.failure_code,
+            context=row.failure_context or {},
+        )
+    return row.model_copy(
+        update={
+            **scope,
+            "sampling_available": failure is None,
+            "sampling_reason_code": None if failure is None else failure.code,
+            "sampling_reason_context": None if failure is None else freeze(failure.context),
+            "failure_code": None if failure is None else failure.code,
+            "failure_context": None if failure is None else freeze(failure.context),
+            **weight_diagnostics_projection(row.method, row=row, failure=failure),
+        }
+    )
+
+
+def _indexed_advisories(computations):
+    result = {}
+    for computation in computations:
+        for hypothesis, advisories in computation.advisories.items():
+            identity = (
+                hypothesis.metric,
+                getattr(hypothesis, "group_id", None),
+                hypothesis.estimand,
+                getattr(hypothesis, "dimension", None),
+                getattr(hypothesis, "dimension_value", None),
+            )
+            values = result.setdefault(identity, {})
+            values.update({item.model_dump_json(): item for item in advisories})
+    return result
+
+
 def scope_design_results(  # noqa: PLR0913
     src: Any,
     design: Any,
@@ -590,18 +633,7 @@ def scope_design_results(  # noqa: PLR0913
                 )
             ] = failure
 
-    advisories_by_identity = {}
-    for computation in computations:
-        for hypothesis, advisories in computation.advisories.items():
-            identity = (
-                hypothesis.metric,
-                getattr(hypothesis, "group_id", None),
-                hypothesis.estimand,
-                getattr(hypothesis, "dimension", None),
-                getattr(hypothesis, "dimension_value", None),
-            )
-            values = advisories_by_identity.setdefault(identity, {})
-            values.update({item.model_dump_json(): item for item in advisories})
+    advisories_by_identity = _indexed_advisories(computations)
 
     cell_rows, failures = _collect_expected_cells(
         expected,
@@ -627,29 +659,22 @@ def scope_design_results(  # noqa: PLR0913
     )
     configs_by_metric = {config.metric.name: config for config in configs}
 
+    projection = {
+        "source_snapshot_id": snapshot_id,
+        "analysis_population": population,
+        "decision_scope_complete": complete,
+        "decision_scope_reason_code": None if complete else "readout.scope.decision_incomplete",
+        "decision_scope_reason_context": freeze(reason_context),
+    }
+
     def project(row, failure):
-        return row.model_copy(
-            update={
-                "source_snapshot_id": snapshot_id,
-                "analysis_population": population,
-                "sampling_available": failure is None,
-                "sampling_reason_code": None if failure is None else failure.code,
-                "sampling_reason_context": None if failure is None else freeze(failure.context),
-                "failure_code": None if failure is None else failure.code,
-                "failure_context": None if failure is None else freeze(failure.context),
-                "decision_scope_complete": complete,
-                "decision_scope_reason_code": None
-                if complete
-                else "readout.scope.decision_incomplete",
-                "decision_scope_reason_context": freeze(reason_context),
-                **weight_diagnostics_projection(row.method, row=row, failure=failure),
-            }
-        )
+        return _project_scoped_row(row, failure, projection)
 
     output = [project(row, None) for row in rows]
     records = []
     for cell in ordered:
         config = configs_by_metric.get(cell.metric)
+        procedure = plan.procedures.get(cell.metric)
         row = cell_rows[cell]
         failure = failures.get(cell)
         if row is None:
@@ -682,6 +707,12 @@ def scope_design_results(  # noqa: PLR0913
                     value_scale=cell.value_scale,
                     alternative=cell.alternative,
                     inference=cell.inference,
+                    role=procedure.role if procedure is not None and plan.declared else None,
+                    preferred_direction=config.metric.declared_preferred_direction
+                    if config is not None
+                    else None,
+                    null_lift=getattr(procedure, "null_lift", 0.0),
+                    null_abs=getattr(procedure, "null_abs", None),
                     lift=None,
                     failure_code=failure.code,
                     failure_context=failure.context,

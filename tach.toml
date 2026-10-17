@@ -485,6 +485,7 @@ path = "increment.readouts"
 depends_on = [
   "increment._literals",
   "increment._frame_panel",
+  "increment._frame_validation",
   "increment._source_types", "increment._labels", "increment._canonical",
   "increment._source_operations",
   "increment.winsor",
