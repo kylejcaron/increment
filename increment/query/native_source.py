@@ -710,9 +710,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             uptake_facts=uptake_facts,
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
         ) as pinned:
-            with self._session.compiled_query_cache():
-                with self._session.arrow_result_cache():
-                    yield pinned if population == "assigned" else pinned.triggered_source()
+            yield pinned if population == "assigned" else pinned.triggered_source()
 
     def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
         """A sibling source over the declared metrics plus *metrics*, in this session.
@@ -1683,7 +1681,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             end_date=compliance_event_horizon(exposures, uptake, self._experiment),
         )
         days = spine.filter(spine.ds.notnull()).select("ds").distinct().order_by("ds")
-        return [row["ds"] for row in self._con.to_pyarrow(days).to_pylist()]
+        return [row["ds"] for row in self._session.fetch_arrow(days).to_pylist()]
 
     def triggered_compliance_dates(self) -> Sequence[object]:
         """Dense trigger-entry history through the observed uptake horizon."""
@@ -1707,7 +1705,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 last=trigger_days.ds.max(),
             )
         )
-        bounds = self._con.to_pyarrow(trigger_bounds).to_pylist()[0]
+        bounds = self._session.fetch_arrow(trigger_bounds).to_pylist()[0]
         if bounds["first"] is None:
             return []
         assignment_exposures = self._get_exposures()
@@ -1716,7 +1714,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_events = self._uptake_source_events(uptake_table, design.uptake.fact)
         horizon = compliance_event_horizon(assignment_exposures, uptake_events, self._experiment)
         horizon_table = ibis.literal(1).name("_one").as_table().select(edge=horizon)
-        horizon_day = self._con.to_pyarrow(horizon_table).to_pylist()[0]["edge"]
+        horizon_day = self._session.fetch_arrow(horizon_table).to_pylist()[0]["edge"]
         snapshot_edge = None
         evidence = self._session.source_snapshot_evidence
         if evidence is not None:
@@ -1846,7 +1844,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     if isinstance(metric, RetentionMetric)
                     else (0, resolve_window_days(metric))
                 )
-                for record in self._con.to_pyarrow(result).to_pylist():
+                for record in self._session.fetch_arrow(result).to_pylist():
                     rows.append(
                         _observed_dashboard_group(metric, record, window, population=population)
                     )
@@ -1940,7 +1938,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         totals = _attach_uptake_flag(exposures, uptake_exposures, uptake_events, window_days)
         totals = totals.mutate(y=totals.d, metric=ibis.literal("uptake"))
-        base_rows = self._con.to_pyarrow(
+        base_rows = self._session.fetch_arrow(
             totals.group_by("group_id").agg(
                 n_units=totals.count(),
                 uptake_total=totals.d.sum(),
@@ -1955,7 +1953,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             for r in base_rows
         }
         if cluster is not None:
-            cluster_rows = self._con.to_pyarrow(
+            cluster_rows = self._session.fetch_arrow(
                 group_summary(totals, cluster=cluster, uptake=True)
             ).to_pylist()
             for r in cluster_rows:
@@ -2320,7 +2318,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 warn_on_censoring=True,
                 want_cuped=want_cuped,
             )
-            tables.append(summary.to_pyarrow())
+            tables.append(self._session.fetch_arrow(summary))
 
         return pa.concat_tables(tables)
 
@@ -2372,10 +2370,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             den_fs, den_fact_def = _find_fact_source(self._defs, metric.denominator.fact)
             den_fact_tbl = self._get_fact_table(den_fs)
             den_value_col = _resolve_value_column(den_fs, den_fact_def)
-            num_row = self._con.to_pyarrow(
+            num_row = self._session.fetch_arrow(
                 self._windowed_metric_sum(num_fact_tbl, metric, num_value_col, "numerator")
             ).to_pylist()[0]
-            den_row = self._con.to_pyarrow(
+            den_row = self._session.fetch_arrow(
                 self._windowed_metric_sum(den_fact_tbl, metric, den_value_col, "denominator")
             ).to_pylist()[0]
             return {"metric": metric.name, "y": num_row["y"], "y_den": den_row["y"]}
@@ -2389,7 +2387,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             value_column=value_col,
             observation_cutoff=self._site_observation_cutoff(),
         )
-        return self._con.to_pyarrow(volume).to_pylist()[0]
+        return self._session.fetch_arrow(volume).to_pylist()[0]
 
     def sitewide_evidence(
         self,
@@ -2447,7 +2445,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         unit_counts: dict[str, int] | None = None
         if cluster is not None:
             self._validate_cluster_labels(exposures, cluster)
-            count_rows = self._con.to_pyarrow(
+            count_rows = self._session.fetch_arrow(
                 cluster_exposure_counts(exposures, self._experiment)
             ).to_pylist()
             cluster_counts = {str(r["group_id"]): int(r["n_clusters"]) for r in count_rows}
@@ -2483,10 +2481,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         from increment.estimation.engine import _df_to_arms
 
         row = self._site_volume_row(metric)
-        arm_stats = tuple(_df_to_arms(summary.to_pyarrow()))
+        arm_stats = tuple(_df_to_arms(self._session.fetch_arrow(summary)))
         assigned_counts: dict[str, int] = {}
         all_exposures = self._get_exposures()
-        count_rows = self._con.to_pyarrow(
+        count_rows = self._session.fetch_arrow(
             all_exposures.group_by("group_id").aggregate(n_units=all_exposures.unit_id.nunique())
         ).to_pylist()
         for count_row in count_rows:
@@ -2494,7 +2492,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if group_id is not None:
                 assigned_counts[str(group_id)] = int(count_row["n_units"])
         population_counts: dict[str, int] = {}
-        population_count_rows = self._con.to_pyarrow(
+        population_count_rows = self._session.fetch_arrow(
             exposures.group_by("group_id").aggregate(n_units=exposures.unit_id.nunique())
         ).to_pylist()
         for count_row in population_count_rows:
@@ -2649,6 +2647,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             breakouts=tuple(sorted({b.property for b in self._experiment.breakouts})),
             triggered_observation_edges=self.triggered_observation_edges,
             build_breakout_properties=self._build_breakout_properties_table,
+            fetch_arrow=self._session.fetch_arrow,
             defs=self._defs,
             preflight_breakout=self._preflight_breakout,
             legacy_facade=_legacy_facade,
@@ -2732,7 +2731,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
             # Row dicts, never pa.concat_tables: differently winsorized metrics get
             # different winsor-column dtypes (null vs double), which it rejects.
-            rows.extend(summary_by.to_pyarrow().to_pylist())
+            rows.extend(self._session.fetch_arrow(summary_by).to_pylist())
 
         return BreakoutMomentsSource(
             rows,
@@ -2860,8 +2859,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     )
                 key = f"{metric.name}:{breakout.property}:{fs.name}"
                 results[key] = {
-                    "group_summary": summary_by.to_pyarrow(),
-                    "daily_group_summary": daily_by.to_pyarrow(),
+                    "group_summary": self._session.fetch_arrow(summary_by),
+                    "daily_group_summary": self._session.fetch_arrow(daily_by),
                 }
         return results
 
@@ -2912,7 +2911,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     properties_table=properties_table,
                 )
                 key = f"{metric.name}:{factor.property}:{fs.name}"
-                results[key] = summary_by.to_pyarrow()
+                results[key] = self._session.fetch_arrow(summary_by)
         return results
 
     def assigned_breakout_values(
@@ -2927,7 +2926,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             fact_source, breakout.property, exposures
         )
         joined = join_breakout_dimension(exposures, properties, [breakout.property])
-        values = self._con.to_pyarrow(joined.select(breakout.property).distinct()).to_pylist()
+        values = self._session.fetch_arrow(joined.select(breakout.property).distinct()).to_pylist()
         return sorted(
             {str(row[breakout.property]) for row in values if row[breakout.property] is not None}
         )
@@ -3436,7 +3435,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             grain: Literal["unit", "cluster"] = "unit"
         else:
             self._validate_cluster_labels(exposures, cluster)
-            rows = self._con.to_pyarrow(
+            rows = self._session.fetch_arrow(
                 cluster_exposure_counts(exposures, self._experiment)
             ).to_pylist()
             counts = {str(r["group_id"]): int(r["n_clusters"]) for r in rows}
@@ -3486,7 +3485,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         history = daily_exposure_counts(exposures, self._experiment).order_by(["ds", "group_id"])
         import pyarrow as pa
 
-        result = self._con.to_pyarrow(history)
+        result = self._session.fetch_arrow(history)
         return cast(
             "pa.Table",
             result.append_column("analysis_population", pa.array([population] * result.num_rows)),
@@ -3740,7 +3739,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         properties = self._build_breakout_properties_table(
             fact_source, breakout.property, exposures
         )
-        dimensions = self._con.to_pyarrow(
+        dimensions = self._session.fetch_arrow(
             properties.select(
                 "unit_id",
                 **{breakout_dimension_column(covariates): properties[breakout.property]},
@@ -3892,7 +3891,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 select_cols[name] = totals[name]
             if cluster is not None:
                 select_cols["cluster_id"] = totals[cluster].cast("string")
-            return cast("pa.Table", self._con.to_pyarrow(totals.select(**select_cols)))
+            return cast("pa.Table", self._session.fetch_arrow(totals.select(**select_cols)))
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         if grain != "total":
@@ -3928,7 +3927,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         exposures = self._get_exposures()
         self._validate_cluster_labels(exposures, cluster)
-        rows = self._con.to_pyarrow(
+        rows = self._session.fetch_arrow(
             cluster_exposure_counts(exposures, self._experiment)
         ).to_pylist()
         return {str(r["group_id"]): int(r["n_clusters"]) for r in rows}

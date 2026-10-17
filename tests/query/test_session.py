@@ -7,7 +7,7 @@ import time
 import warnings
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import ibis
@@ -34,15 +34,65 @@ from tests.warning_codes import warning_codes
 def _session():
     con = ibis.duckdb.connect()
     con.create_table("t", ibis.memtable({"x": [1, 2, 3]}))
-    # Definitions not needed for temp-table mechanics; fact_table tests
-    # build real Definitions via tests.test_analysis helpers.
-    return con, WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
+    # This minimal dialect supports source_sql; fact_table tests use real Definitions.
+    return con, WarehouseSession(
+        con,
+        defs=SimpleNamespace(dialect="duckdb"),  # type: ignore[ty:invalid-argument-type]
+    )
+
+
+def _readout_source(session, snapshots):
+    from contextlib import contextmanager
+
+    from increment.query.native_source import DefinitionsMomentSource
+
+    source = cast(Any, object.__new__(DefinitionsMomentSource))
+    source._session = session
+    pending = iter(snapshots)
+
+    @contextmanager
+    def pinned_execution(**_kwargs):
+        snapshot = next(pending)
+        try:
+            yield snapshot
+        finally:
+            snapshot.drop_materialized()
+
+    source._pinned_source_execution = pinned_execution
+    return source
 
 
 @pytest.mark.integration
-def test_compiled_query_cache_reuses_only_compilation_and_restores_backend(monkeypatch):
+def test_snapshot_arrow_cache_reuses_only_captured_relation_results(monkeypatch):
     con, session = _session()
-    expression = con.table("t").filter(lambda row: row.x > 1)
+    sql = "select x from t"
+    snapshot = session.pin_sources((sql,))
+    expression = snapshot.source_sql(sql).filter(lambda row: row.x > 1)
+    original_to_pyarrow = con.to_pyarrow
+    executions = 0
+
+    def counted_to_pyarrow(expr, *args, **kwargs):
+        nonlocal executions
+        executions += 1
+        return original_to_pyarrow(expr, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", counted_to_pyarrow)
+    try:
+        first = snapshot.fetch_arrow(expression)
+        second = snapshot.fetch_arrow(expression)
+        assert first.equals(second)
+        assert first.to_pylist() == [{"x": 2}, {"x": 3}]
+        assert executions == 1
+    finally:
+        snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_snapshot_compile_cache_reuses_only_captured_relation_compilation(monkeypatch):
+    con, session = _session()
+    snapshot = session.pin_sources(("select x from t",))
+    expression = snapshot.source_sql("select x from t").filter(lambda row: row.x > 1)
     original_compile = con.compile
     compile_calls = 0
 
@@ -53,41 +103,119 @@ def test_compiled_query_cache_reuses_only_compilation_and_restores_backend(monke
 
     monkeypatch.setattr(con, "compile", counted_compile)
     try:
-        with session.compiled_query_cache():
-            first = con.to_pyarrow(expression)
-            second = con.to_pyarrow(expression)
-        assert first.equals(second)
-        assert first.to_pylist() == [{"x": 2}, {"x": 3}]
+        first = snapshot.compile(expression)
+        second = snapshot.compile(expression)
+        assert first == second
         assert compile_calls == 1
         con.compile(expression)
         assert compile_calls == 2
+        live = con.table("t")
+        snapshot.compile(live)
+        snapshot.compile(live)
+        assert compile_calls == 4
     finally:
+        snapshot.drop_materialized()
         con.disconnect()
 
 
 @pytest.mark.integration
-def test_arrow_result_cache_reuses_exact_table_and_restores_backend(monkeypatch):
+def test_snapshot_arrow_cache_does_not_cache_mutable_live_relations():
     con, session = _session()
-    expression = con.table("t").filter(lambda row: row.x > 1)
-    original_to_pyarrow = con.to_pyarrow
-    arrow_calls = 0
-
-    def counted_to_pyarrow(expr, *args, **kwargs):
-        nonlocal arrow_calls
-        arrow_calls += 1
-        return original_to_pyarrow(expr, *args, **kwargs)
-
-    monkeypatch.setattr(con, "to_pyarrow", counted_to_pyarrow)
+    snapshot = session.pin_sources(("select x from t",))
+    live = con.table("t")
     try:
-        with session.arrow_result_cache():
-            first = con.to_pyarrow(expression)
-            second = con.to_pyarrow(expression)
-        assert first.equals(second)
-        assert first.to_pylist() == [{"x": 2}, {"x": 3}]
-        assert arrow_calls == 1
-        con.to_pyarrow(expression)
-        assert arrow_calls == 2
+        assert snapshot.fetch_arrow(live).to_pylist() == [{"x": 1}, {"x": 2}, {"x": 3}]
+        con.insert("t", ibis.memtable({"x": [4]}))
+        assert snapshot.fetch_arrow(live).to_pylist() == [
+            {"x": 1},
+            {"x": 2},
+            {"x": 3},
+            {"x": 4},
+        ]
     finally:
+        snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_overlapping_non_lifo_readouts_leave_no_connection_cache():
+    con, session = _session()
+    first_snapshot = session.pin_sources(("select x from t",))
+    second_snapshot = session.pin_sources(("select x from t",))
+    source = _readout_source(session, (first_snapshot, second_snapshot))
+    first_readout = source.readout_snapshot(metrics=(), population="assigned")
+    first = first_readout.__enter__()
+    second_readout = source.readout_snapshot(metrics=(), population="assigned")
+    second = second_readout.__enter__()
+    first_expression = first.source_sql("select x from t")
+    second_expression = second.source_sql("select x from t")
+    try:
+        assert first.fetch_arrow(first_expression).to_pylist() == [
+            {"x": 1},
+            {"x": 2},
+            {"x": 3},
+        ]
+        assert second.fetch_arrow(second_expression).to_pylist() == [
+            {"x": 1},
+            {"x": 2},
+            {"x": 3},
+        ]
+        first_readout.__exit__(None, None, None)
+        con.insert("t", ibis.memtable({"x": [4]}))
+        assert second.fetch_arrow(con.table("t")).to_pylist()[-1] == {"x": 4}
+        second_readout.__exit__(None, None, None)
+        con.insert("t", ibis.memtable({"x": [5]}))
+        assert session.fetch_arrow(con.table("t")).to_pylist()[-1] == {"x": 5}
+    finally:
+        first_snapshot.drop_materialized()
+        second_snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_dropped_generation_refusal_stays_visible_during_pinned_snapshot():
+    con = ibis.duckdb.connect()
+    con.create_table("t", ibis.memtable({"x": [1]}))
+    store = WarehouseArtifactStore(con)
+    ref, _measure = _publish_in(store, unit_id="tombstone-during-snapshot")
+    session = WarehouseSession(
+        con,
+        defs=SimpleNamespace(dialect="duckdb"),  # type: ignore[ty:invalid-argument-type]
+    )
+    snapshot = session.pin_sources(("select x from t",))
+    dropped = con.table("ud_manifest_dropped").filter(
+        lambda row: (
+            (row.artifact_id == str(ref.artifact_id))
+            & (row.generation_id == str(ref.generation_id))
+        )
+    )
+    try:
+        assert snapshot.fetch_arrow(dropped).to_pylist() == []
+        store.drop_generation(ref.artifact_id, ref.generation_id)
+        with pytest.raises(ArtifactContractError) as refusal:
+            with store.open_snapshot(ref):
+                pass
+        assert refusal.value.code == "artifact.generation.dropped"
+    finally:
+        snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_snapshot_exception_leaves_no_arrow_cache_state():
+    con, session = _session()
+    snapshot = session.pin_sources(("select x from t",))
+    source = _readout_source(session, (snapshot,))
+    expression = snapshot.source_sql("select x from t")
+    try:
+        with pytest.raises(RuntimeError, match="readout failed"):
+            with source.readout_snapshot(metrics=(), population="assigned") as readout:
+                readout.fetch_arrow(expression)
+                raise RuntimeError("readout failed")
+        con.insert("t", ibis.memtable({"x": [4]}))
+        assert session.fetch_arrow(con.table("t")).to_pylist()[-1] == {"x": 4}
+    finally:
+        snapshot.drop_materialized()
         con.disconnect()
 
 

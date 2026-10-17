@@ -202,6 +202,7 @@ class _DaySource:
         *,
         triggered_observation_edges: Callable[[Metric], tuple[dt.date, dt.date | None]],
         build_breakout_properties: Callable[[FactSource, str, ir.Table], ir.Table],
+        fetch_arrow: Callable[[ir.Expr], Any],
         defs: Definitions,
         preflight_breakout: Callable[..., FactSource],
         preflight_day_request: Callable[..., None],
@@ -221,6 +222,7 @@ class _DaySource:
         self._horizon_metrics = horizon_metrics
         self.breakouts: tuple[str, ...] = breakouts
         self._build_breakout_properties = build_breakout_properties
+        self._fetch_arrow = fetch_arrow
         self._defs = defs
         self._preflight_breakout = preflight_breakout
         self._preflight_day_request = preflight_day_request
@@ -462,7 +464,7 @@ class _DaySource:
                 completed_windows_only=completed_windows_only,
                 _outcome_observation_end=outcome_edge,
             )
-            return cast("list[dict[str, Any]]", asof.to_pyarrow().to_pylist())
+            return cast("list[dict[str, Any]]", self._fetch_arrow(asof).to_pylist())
 
         if isinstance(metric, RetentionMetric):
             _panel, spine, stats, _events, _den_events, fact_tbl, value_col, data_as_of = (
@@ -483,7 +485,7 @@ class _DaySource:
                 pre_stats=pre_stats,
                 data_as_of=data_as_of,
             )
-            return cast("list[dict[str, Any]]", cohorts.to_pyarrow().to_pylist())
+            return cast("list[dict[str, Any]]", self._fetch_arrow(cohorts).to_pylist())
 
         panel, den_panel, _uptake_panel, _uptake_window_days, _edge, _uptake_edge = (
             self._cached_asof_panel(exposures, metric, include_covariate)
@@ -492,7 +494,7 @@ class _DaySource:
         if den_panel is not None:
             den_panel = window_bound_stats(den_panel, metric)
         daily = daily_group_summary(panel, metric=metric, den_panel=den_panel)
-        return cast("list[dict[str, Any]]", daily.to_pyarrow().to_pylist())
+        return cast("list[dict[str, Any]]", self._fetch_arrow(daily).to_pylist())
 
     def breakout_moments(
         self,
@@ -556,7 +558,7 @@ class _DaySource:
             )
             return DimensionedDayEvidence(
                 source_name=fs.name,
-                rows=cast("list[dict[str, Any]]", asof.to_pyarrow().to_pylist()),
+                rows=cast("list[dict[str, Any]]", self._fetch_arrow(asof).to_pylist()),
             )
 
         if isinstance(metric, RetentionMetric):
@@ -582,7 +584,7 @@ class _DaySource:
             )
             return DimensionedDayEvidence(
                 source_name=fs.name,
-                rows=cast("list[dict[str, Any]]", cohorts.to_pyarrow().to_pylist()),
+                rows=cast("list[dict[str, Any]]", self._fetch_arrow(cohorts).to_pylist()),
             )
 
         panel, den_panel, _uptake_panel, _uptake_window_days, _edge, _uptake_edge = (
@@ -595,7 +597,7 @@ class _DaySource:
         daily = daily_group_summary(dim_panel, metric=metric, by=by, den_panel=den_panel)
         return DimensionedDayEvidence(
             source_name=fs.name,
-            rows=cast("list[dict[str, Any]]", daily.to_pyarrow().to_pylist()),
+            rows=cast("list[dict[str, Any]]", self._fetch_arrow(daily).to_pylist()),
         )
 
     def unit_frame(

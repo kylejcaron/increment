@@ -22,6 +22,7 @@ import ibis.expr.types as ir
 import sqlglot
 from ibis import Table
 from ibis.backends.sql import SQLBackend
+from ibis.expr import operations as ops
 
 from increment.errors import (
     CapabilityError,
@@ -1328,6 +1329,9 @@ class WarehouseSession:
         # CREATE TEMP TABLE, where a forced overwrite can drop an unrelated permanent table.
         self._suffix = uuid.uuid4().hex[:12]
         self._source_snapshot_evidence = source_snapshot_evidence
+        self._compiled_queries: dict[Any, str] = {}
+        self._arrow_results: dict[Any, Any] = {}
+        self._captured_relations: frozenset[Any] | None = None
 
     @property
     def con(self) -> SQLBackend:
@@ -1341,75 +1345,75 @@ class WarehouseSession:
     def source_snapshot_evidence(self) -> SourceSnapshotEvidence | None:
         return self._source_snapshot_evidence
 
-    @contextmanager
-    def compiled_query_cache(self) -> Iterator[None]:
-        """Reuse identical SQL compilation within one pinned readout operation."""
-        con = self._con
-        dynamic_con = cast(Any, con)
-        had_instance_compile = "compile" in con.__dict__
-        previous_instance_compile = con.__dict__.get("compile")
-        original_compile = con.compile
-        compiled: dict[Any, str] = {}
+    def _is_captured_expression(self, expression: ir.Expr) -> bool:
+        if self._captured_relations is None:
+            return False
+        relation_ops = tuple(cast(Any, node) for node in expression.op().find(ops.Relation))
 
-        def compile_cached(expr, *args, **kwargs):
-            cacheable = (
-                not args
-                and set(kwargs) <= {"params", "limit"}
-                and kwargs.get("params") is None
-                and kwargs.get("limit") is None
+        def contains_relation(value: Any) -> bool:
+            if isinstance(value, ops.Relation):
+                return True
+            if isinstance(value, (tuple, list)):
+                return any(contains_relation(item) for item in value)
+            if isinstance(value, dict):
+                return any(contains_relation(item) for item in value.values())
+            return False
+
+        leaves = tuple(
+            operation
+            for operation in relation_ops
+            if not any(contains_relation(argument) for argument in operation.args)
+        )
+        return bool(leaves) and all(relation in self._captured_relations for relation in leaves)
+
+    def compile(self, expression: ir.Expr, *args: Any, **kwargs: Any) -> str:
+        """Compile a pinned query, memoizing only expressions over captured relations."""
+        cacheable = (
+            self._is_captured_expression(expression)
+            and not args
+            and set(kwargs) <= {"params", "limit"}
+            and kwargs.get("params") is None
+            and kwargs.get("limit") is None
+        )
+        if not cacheable:
+            return self._con.compile(expression, *args, **kwargs)
+        operation = expression.op()
+        compiled = self._compiled_queries.get(operation)
+        if compiled is None:
+            compiled = self._con.compile(expression, *args, **kwargs)
+            self._compiled_queries[operation] = compiled
+        return compiled
+
+    def fetch_arrow(
+        self,
+        expression: ir.Expr,
+        *,
+        params: Any = None,
+        limit: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Execute a query, caching only immutable Arrow results over captured inputs.
+
+        Arrow tables and their buffers are immutable. The readout consumers either
+        convert to Python records or derive a new Arrow table; pandas writes replace
+        or copy Arrow-backed columns rather than mutating cached buffers in place.
+        """
+        cacheable = (
+            self._is_captured_expression(expression)
+            and params is None
+            and limit is None
+            and not kwargs
+        )
+        if not cacheable:
+            return cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
+        operation = expression.op()
+        result = self._arrow_results.get(operation)
+        if result is None:
+            result = cast(Any, self._con).to_pyarrow(
+                expression, params=params, limit=limit, **kwargs
             )
-            if not cacheable:
-                return original_compile(expr, *args, **kwargs)
-            op = expr.op()
-            sql = compiled.get(op)
-            if sql is None:
-                sql = original_compile(expr, *args, **kwargs)
-                compiled[op] = sql
-            return sql
-
-        dynamic_con.compile = compile_cached
-        try:
-            yield
-        finally:
-            if had_instance_compile:
-                dynamic_con.compile = previous_instance_compile
-            else:
-                delattr(con, "compile")
-
-    @contextmanager
-    def arrow_result_cache(self) -> Iterator[None]:
-        """Reuse identical Arrow results within one pinned readout operation."""
-        con = self._con
-        dynamic_con = cast(Any, con)
-        had_instance_to_pyarrow = "to_pyarrow" in con.__dict__
-        previous_instance_to_pyarrow = con.__dict__.get("to_pyarrow")
-        original_to_pyarrow = con.to_pyarrow
-        cached: dict[tuple[type[Any], Any], Any] = {}
-
-        def to_pyarrow_cached(expr, *args, **kwargs):
-            cacheable = (
-                not args
-                and set(kwargs) <= {"params", "limit"}
-                and kwargs.get("params") is None
-                and kwargs.get("limit") is None
-            )
-            if not cacheable:
-                return original_to_pyarrow(expr, *args, **kwargs)
-            key = (type(expr), expr.op())
-            if key in cached:
-                return cached[key]
-            result = original_to_pyarrow(expr, *args, **kwargs)
-            cached[key] = result
-            return result
-
-        dynamic_con.to_pyarrow = to_pyarrow_cached
-        try:
-            yield
-        finally:
-            if had_instance_to_pyarrow:
-                dynamic_con.to_pyarrow = previous_instance_to_pyarrow
-            else:
-                delattr(con, "to_pyarrow")
+            self._arrow_results[operation] = result
+        return result
 
     def source_sql(self, sql: str) -> Table:
         """Resolve source SQL against this operation's captured inputs, if any."""
@@ -1493,6 +1497,11 @@ class WarehouseSession:
             pinned._source_tables[sql] = stream.select(
                 **{name: stream[alias] for owner, name, alias, _dtype in fields if owner == index}
             )
+        pinned._captured_relations = frozenset(
+            relation
+            for table in pinned._source_tables.values()
+            for relation in table.op().find(ops.DatabaseTable)
+        )
         return pinned
 
     def fact_table(
@@ -1629,6 +1638,9 @@ class WarehouseSession:
                 pass
         self._materialized = []
         self._suffix = uuid.uuid4().hex[:12]
+        self._compiled_queries.clear()
+        self._arrow_results.clear()
+        self._captured_relations = None
 
     @property
     def materialized_names(self) -> list[str]:
