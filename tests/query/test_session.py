@@ -39,6 +39,58 @@ def _session():
     return con, WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
 
 
+@pytest.mark.integration
+def test_compiled_query_cache_reuses_only_compilation_and_restores_backend(monkeypatch):
+    con, session = _session()
+    expression = con.table("t").filter(lambda row: row.x > 1)
+    original_compile = con.compile
+    compile_calls = 0
+
+    def counted_compile(expr, *args, **kwargs):
+        nonlocal compile_calls
+        compile_calls += 1
+        return original_compile(expr, *args, **kwargs)
+
+    monkeypatch.setattr(con, "compile", counted_compile)
+    try:
+        with session.compiled_query_cache():
+            first = con.to_pyarrow(expression)
+            second = con.to_pyarrow(expression)
+        assert first.equals(second)
+        assert first.to_pylist() == [{"x": 2}, {"x": 3}]
+        assert compile_calls == 1
+        con.compile(expression)
+        assert compile_calls == 2
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_arrow_result_cache_reuses_exact_table_and_restores_backend(monkeypatch):
+    con, session = _session()
+    expression = con.table("t").filter(lambda row: row.x > 1)
+    original_to_pyarrow = con.to_pyarrow
+    arrow_calls = 0
+
+    def counted_to_pyarrow(expr, *args, **kwargs):
+        nonlocal arrow_calls
+        arrow_calls += 1
+        return original_to_pyarrow(expr, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", counted_to_pyarrow)
+    try:
+        with session.arrow_result_cache():
+            first = con.to_pyarrow(expression)
+            second = con.to_pyarrow(expression)
+        assert first.equals(second)
+        assert first.to_pylist() == [{"x": 2}, {"x": 3}]
+        assert arrow_calls == 1
+        con.to_pyarrow(expression)
+        assert arrow_calls == 2
+    finally:
+        con.disconnect()
+
+
 def test_pin_sources_interprets_naive_boundary_cutoff_without_host_timezone(monkeypatch):
     con = ibis.duckdb.connect()
     try:

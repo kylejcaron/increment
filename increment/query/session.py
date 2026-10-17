@@ -1341,6 +1341,76 @@ class WarehouseSession:
     def source_snapshot_evidence(self) -> SourceSnapshotEvidence | None:
         return self._source_snapshot_evidence
 
+    @contextmanager
+    def compiled_query_cache(self) -> Iterator[None]:
+        """Reuse identical SQL compilation within one pinned readout operation."""
+        con = self._con
+        dynamic_con = cast(Any, con)
+        had_instance_compile = "compile" in con.__dict__
+        previous_instance_compile = con.__dict__.get("compile")
+        original_compile = con.compile
+        compiled: dict[Any, str] = {}
+
+        def compile_cached(expr, *args, **kwargs):
+            cacheable = (
+                not args
+                and set(kwargs) <= {"params", "limit"}
+                and kwargs.get("params") is None
+                and kwargs.get("limit") is None
+            )
+            if not cacheable:
+                return original_compile(expr, *args, **kwargs)
+            op = expr.op()
+            sql = compiled.get(op)
+            if sql is None:
+                sql = original_compile(expr, *args, **kwargs)
+                compiled[op] = sql
+            return sql
+
+        dynamic_con.compile = compile_cached
+        try:
+            yield
+        finally:
+            if had_instance_compile:
+                dynamic_con.compile = previous_instance_compile
+            else:
+                delattr(con, "compile")
+
+    @contextmanager
+    def arrow_result_cache(self) -> Iterator[None]:
+        """Reuse identical Arrow results within one pinned readout operation."""
+        con = self._con
+        dynamic_con = cast(Any, con)
+        had_instance_to_pyarrow = "to_pyarrow" in con.__dict__
+        previous_instance_to_pyarrow = con.__dict__.get("to_pyarrow")
+        original_to_pyarrow = con.to_pyarrow
+        cached: dict[tuple[type[Any], Any], Any] = {}
+
+        def to_pyarrow_cached(expr, *args, **kwargs):
+            cacheable = (
+                not args
+                and set(kwargs) <= {"params", "limit"}
+                and kwargs.get("params") is None
+                and kwargs.get("limit") is None
+            )
+            if not cacheable:
+                return original_to_pyarrow(expr, *args, **kwargs)
+            key = (type(expr), expr.op())
+            if key in cached:
+                return cached[key]
+            result = original_to_pyarrow(expr, *args, **kwargs)
+            cached[key] = result
+            return result
+
+        dynamic_con.to_pyarrow = to_pyarrow_cached
+        try:
+            yield
+        finally:
+            if had_instance_to_pyarrow:
+                dynamic_con.to_pyarrow = previous_instance_to_pyarrow
+            else:
+                delattr(con, "to_pyarrow")
+
     def source_sql(self, sql: str) -> Table:
         """Resolve source SQL against this operation's captured inputs, if any."""
         if self._source_tables is not None:

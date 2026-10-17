@@ -710,7 +710,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             uptake_facts=uptake_facts,
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
         ) as pinned:
-            yield pinned if population == "assigned" else pinned.triggered_source()
+            with self._session.compiled_query_cache():
+                with self._session.arrow_result_cache():
+                    yield pinned if population == "assigned" else pinned.triggered_source()
 
     def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
         """A sibling source over the declared metrics plus *metrics*, in this session.
