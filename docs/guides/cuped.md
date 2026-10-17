@@ -93,6 +93,8 @@ decision method is predeclared scalar CUPED; multicovariate HC2/BM is reported
 as a sensitivity. Scalar CUPED fits each treatment/control pair separately.
 The multicovariate procedure fits all eligible arms together, so even with the
 same covariate its coefficients and interval can differ.
+Under a randomized design, adding a multicovariate sensitivity does not change
+the scalar decision fit.
 
 ```python
 import numpy as np
@@ -264,6 +266,14 @@ alias's property or measure binding. Each scalar family is acquired separately,
 including when the decision and sensitivity families differ. A scalar breakout
 override acquires the effective requested family; requests retaining several
 distinct scalar families are refused before reading data.
+
+Artifact publication retains raw named property and measure covariates, with
+numeric NaNs represented as missing values. Replay applies each method's own
+missing policy. Implicit scalar CUPED additionally needs its `cuped_preperiod`
+extension selected at publication. Named scalar breakouts are not supported
+by the artifact route: `from_unit_day_artifact.run_breakout` refuses with
+`artifact.cuped.scalar_breakout` before reading evidence. Use definitions or
+frame input for those breakouts, or run the artifact's scalar headline.
 
 ### Per-metric method bindings
 
@@ -447,8 +457,9 @@ $$
 Decision and sensitivity scalar methods may name different covariates. Each
 ITT and LATE fit uses that method's own prepared covariate and its joint
 moments with outcome and uptake. Selected secondary intervals reuse the same
-method-specific evidence at the family's corrected level; a multicovariate
-sensitivity does not change the scalar decision fit.
+method-specific evidence at the family's corrected level. Multicovariate CUPED
+is not supported under encouragement, including as a sensitivity method; such
+a request refuses with `estimation.engine.cuped_linear_encouragement`.
 
 <!-- invisible-code-block: python
 rng = np.random.default_rng(3)

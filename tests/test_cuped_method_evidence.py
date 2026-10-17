@@ -263,3 +263,72 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel):
         assert raised.value.code == "frame.validation.metric_covariate_column"
     finally:
         analysis.close()
+
+
+@pytest.mark.parametrize("panel", [False, True])
+def test_encouragement_scalar_families_share_one_weak_stage_diagnostic(panel):
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = _two_family_frame()
+    frame["uptake"] = 0
+    methods = (_scalar("a"), _scalar("b"))
+    constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+    with constructor(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=[
+            MetricSpec(name="outcome", decision_method=methods[0], sensitivity_methods=methods[1:])
+        ],
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="uptake"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment affects outcomes through uptake"
+            ),
+        ),
+        uptake="uptake",
+        **({"date": "day"} if panel else {}),
+    ) as analysis:
+        results = analysis.run(estimands=("itt", "late"))
+    itt = [row for row in results if isinstance(row, LiftEstimate) and row.estimand == "itt"]
+    late = [row for row in results if isinstance(row, LiftEstimate) and row.estimand == "late"]
+    diagnostics = [
+        row for row in results if isinstance(row, LiftEstimate) and row.estimand == "compliance"
+    ]
+    assert {row.method for row in itt} == {"a", "b"}
+    assert all(row.lift is not None for row in itt)
+    assert {row.method for row in late} == {"a", "b"}
+    assert all(row.lift is None for row in late)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].metric == "outcome"
+
+
+def test_encouragement_refuses_multicovariate_sensitivity():
+    from increment.errors import UnsupportedRequestError
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    with Analysis.from_unit_summary(
+        _two_family_frame(),
+        unit="unit",
+        group="arm",
+        metrics=[MetricSpec(name="outcome", decision_method=_scalar("a"))],
+        uptake="uptake",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="uptake"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment affects outcomes through uptake"
+            ),
+        ),
+    ) as analysis:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            analysis.run(
+                sensitivity_methods=(
+                    Method.cuped_multicovariate(
+                        name="mixed",
+                        covariates=CupedCovariate(name="b", kind="continuous"),
+                    ),
+                )
+            )
+    assert raised.value.code == "estimation.engine.cuped_linear_encouragement"

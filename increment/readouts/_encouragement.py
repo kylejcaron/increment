@@ -253,6 +253,7 @@ def encouragement_rows(
         _validated_compliance_summary(src, design) if "compliance" in wanted else None
     )
     results: list[LiftEstimate] = []
+    outcome_compliance: dict[tuple[str, str], LiftEstimate] = {}
     computations: list[DecisionComputation[LiftEstimate]] = []
     family_refusal_deferred = False
     for group in groups:
@@ -314,15 +315,18 @@ def encouragement_rows(
                 results=(), evidence={}, failures=failures
             )
         computations.append(computation)
-        results.extend(
-            r.model_copy(
+        for row in computation.results:
+            stamped = row.model_copy(
                 update={
-                    "role": role_by_metric.get(r.metric),
-                    "method_role": method_roles.get(r.method, "decision"),
+                    "role": role_by_metric.get(row.metric),
+                    "method_role": method_roles.get(row.method, "decision"),
                 }
             )
-            for r in computation.results
-        )
+            if row.estimand == "compliance":
+                outcome_compliance.setdefault((row.metric, row.group_id), stamped)
+            else:
+                results.append(stamped)
+    results.extend(outcome_compliance.values())
 
     # Compliance is design-level: estimate it once at the plan alpha from the
     # declared uptake cohort, never outcome-filtered moments, so it cannot depend

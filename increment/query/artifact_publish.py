@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import warnings
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
@@ -932,6 +933,8 @@ class ArtifactPublisher:
         rows: list[dict[str, object]] = []
         for exposure in exposure_rows:
             value = values.get(str(exposure["unit_id"]))
+            if field == "value" and value is not None and math.isnan(float(value)):
+                value = None
             rows.append(
                 {
                     "experiment_id": self._experiment.name,
@@ -1004,6 +1007,8 @@ class ArtifactPublisher:
             unit_id = str(exposure["unit_id"])
             has_preperiod_events = unit_id in values
             value = values.get(unit_id)
+            if value is not None and math.isnan(float(value)):
+                value = None
             rows.append(
                 {
                     "experiment_id": self._experiment.name,

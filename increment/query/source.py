@@ -1379,16 +1379,22 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         method: Any,
         *,
         by: Sequence[str] = (),
-    ) -> list[dict[str, Any]] | None:
+    ) -> list[dict[str, Any]]:
         """Build one scalar family from the method's declared artifact covariate."""
         if by:
             raise ArtifactContractError(
                 "artifact.extension.missing",
                 "artifact base has no breakout evidence extension",
             )
-        if method.variance_reduction != "cuped":
-            return self.moments(metric, grain="total")
         trusted = self.validated_metric(metric)
+        if method.variance_reduction != "cuped":
+            return self._reduce(
+                trusted,
+                "total",
+                cluster=self.context.cluster,
+                cluster_table=self._cluster_table(),
+                population_units=self._population_units,
+            )
         covariates = method.covariates or ()
         if not covariates:
             return self.moments(metric, grain="total", include_covariate=True)
@@ -1759,6 +1765,23 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         population: Literal["assigned", "triggered"] = "assigned",
         configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> BreakoutMomentsSource:
+        configs = self.context.configs if configs is None else configs
+        for config in configs:
+            if config.metric not in metrics:
+                continue
+            for method in effective_methods(config, design=self.context.design):
+                if method.variance_reduction == "cuped" and method.covariates:
+                    raise ArtifactContractError(
+                        "artifact.cuped.scalar_breakout",
+                        "Named scalar CUPED breakout evidence is unavailable from this artifact "
+                        "route. Run the scalar headline, or use definitions or frame input "
+                        "for the breakout.",
+                        context={
+                            "metric": config.metric.name,
+                            "method": method.name,
+                            "route": "from_unit_day_artifact.run_breakout",
+                        },
+                    )
         if population == "triggered" and self._population_units is None:
             return cast(
                 "_ArtifactFacadeSource",
@@ -1772,7 +1795,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             }
         )
         source_name = extension.source_name
-        configs = self.context.configs if configs is None else configs
         cuped_names = {
             config.metric.name
             for config in configs

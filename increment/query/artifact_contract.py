@@ -214,6 +214,7 @@ _REFUSAL_CODES = (
     "artifact.extension.invalid",
     "artifact.evidence.unavailable",
     "artifact.metric.binding_mismatch",
+    "artifact.cuped.scalar_breakout",
     "artifact.generation.dropped",
     "artifact.manifest.unreferenced_relation",
     "artifact_contract.encouragement_uptake_conflict",
@@ -904,7 +905,10 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
             request,
             {
                 "kind": kind,
-                "property": _dump(declaration),
+                "property": {
+                    **cast("Mapping[str, object]", _dump(declaration)),
+                    "property": property_name,
+                },
                 "property_definition": _dump(prop),
             },
             {
@@ -1020,7 +1024,7 @@ def _cuped_catalog_entries(
                     "fact_source": _fact_source_recipe(definitions, measure.fact, experiment.unit),
                 },
             )
-        if not binding.wants_cuped:
+        if not binding.wants_cuped or experiment.n_pre_periods == 0:
             continue
         request = _model("CupedPreperiodRequest").model_validate(
             {"kind": "cuped_preperiod", "metric_name": metric_name}
