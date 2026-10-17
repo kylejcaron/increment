@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from increment._canonical import canonical_json_bytes
+from increment._immutable import _FrozenMapping
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._moment_plan import X_SLOT_ROLES
 from increment._source_identity import (
@@ -1437,6 +1438,27 @@ class MomentsSource(SequentialSourceMixin):
             cluster=self._compliance.cluster if self._compliance is not None else None,
             trigger_name=trigger_name,
         )
+        self._restore_checkpoint(rows, stored_plan)
+
+    def _restore_checkpoint(
+        self,
+        rows: Sequence[Mapping[str, object]],
+        stored_plan: CompiledDecisionPlan | None,
+    ) -> None:
+        compiled = self.context.plan
+        base_configs = self.context.configs
+        design = self.context.design
+
+        if getattr(compiled.inference, "registration", None) is not None:
+            from increment._analysis_config import validate_scalar_route
+
+            validate_scalar_route(
+                base_configs,
+                route="sequential.checkpoint_adoption",
+                representation="registered",
+                registered_plan=stored_plan if stored_plan is not None else compiled,
+                design=design,
+            )
 
         from increment.sequential_state import sequential_refuse, snapshot_from_json
 
@@ -1807,6 +1829,8 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         configs: Sequence[ResolvedMetricConfig] | None = None,
         _source: Any | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        scalar_refusals: Mapping[str, Sequence[tuple[str, str, _RefusalSpec, Mapping[str, object]]]]
+        | None = None,
     ) -> None:
         self._source = _source
         self._dimension = dimension
@@ -1836,6 +1860,15 @@ class BreakoutMomentsSource(SequentialSourceMixin):
             design=design,
         )
         self._rows = [dict(row) for row in rows]
+        self._scalar_refusals = _FrozenMapping(
+            {
+                metric: tuple(
+                    (dimension, value, spec, _FrozenMapping(context))
+                    for dimension, value, spec, context in failures
+                )
+                for metric, failures in (scalar_refusals or {}).items()
+            }
+        )
         validate_compiled_encouragement_plan(compiled, design)
         self._context = SourceContext(
             study_id=study_id,
@@ -1890,7 +1923,12 @@ class BreakoutMomentsSource(SequentialSourceMixin):
             design=self.context.design,
             retained_configs=self.context.configs,
         )
-        return ScalarBreakoutRows(tuple(self.moments(metric, by=by)))
+        return ScalarBreakoutRows(
+            tuple(self.moments(metric, by=by)),
+            self._scalar_refusals.get(metric.name, ())
+            if method.variance_reduction == "cuped"
+            else (),
+        )
 
     def unit_frame(
         self,

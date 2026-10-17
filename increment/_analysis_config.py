@@ -44,6 +44,7 @@ from increment.semantics.models import (
 if TYPE_CHECKING:
     from increment._literals import MultiplicityCorrection
     from increment._readout_request import Correction, ReadoutRequest
+    from increment.decision import CompiledDecisionPlan
     from increment.frame import MetricSpec
 
 
@@ -228,6 +229,7 @@ def validate_scalar_route(
     ] = "unit",
     design: Randomized | Encouragement | Observational | None = None,
     retained_configs: Sequence[ResolvedMetricConfig] = (),
+    registered_plan: CompiledDecisionPlan | None = None,
     bindings: Mapping[str, Sequence[CupedCovariate]] | None = None,
 ) -> None:
     """Admit effective scalar inputs against a route's retained representation.
@@ -260,6 +262,20 @@ def validate_scalar_route(
                 if declared is not None
                 else set()
             )
+            if representation == "registered" and registered_plan is not None:
+                from increment.estimation.decision_types import ContrastDecisionProcedure
+
+                procedure = registered_plan.procedures.get(config.metric.name)
+                expected = (
+                    {
+                        method.covariates
+                        for method in (procedure.decision_method, *procedure.sensitivity_methods)
+                        if method.variance_reduction == "cuped"
+                    }
+                    if procedure is not None
+                    and not isinstance(procedure, ContrastDecisionProcedure)
+                    else set()
+                )
             if representation == "registered" and (len(families) > 1 or families != expected):
                 from increment.sequential_state import sequential_refuse
 
@@ -394,6 +410,7 @@ def method_from_spec(spec: MethodSpec) -> Method:
         variance_reduction=spec.variance_reduction,
         conversion_inference=spec.conversion_inference,
         covariates=spec.covariates,
+        procedure=spec.procedure,
     )
 
 

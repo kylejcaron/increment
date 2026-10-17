@@ -1524,6 +1524,27 @@ class DayAxisReadouts:
         prior: Prior | None | _Unset,
     ) -> DailyLiftEstimates:
         route = self._route()
+        from increment._analysis_config import validate_scalar_route
+
+        opts = LiftOptions.resolve(
+            self._src,
+            req.metrics,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            alpha=self._plan.alpha,
+        )
+        validate_scalar_route(
+            opts.configs,
+            route=f"Analysis.{req.caller}",
+            representation=(
+                "registered"
+                if getattr(self._plan.inference, "registration", None) is not None
+                else "implicit"
+            ),
+            registered_plan=self._plan,
+            design=self._design,
+        )
         _, requested_estimands, encouragement_design = _validate_lift_request(
             req,
             src=self._src,
@@ -1566,14 +1587,6 @@ class DayAxisReadouts:
                 configs=self._src.context.configs,
                 design=self._design,
             )
-        opts = LiftOptions.resolve(
-            self._src,
-            req.metrics,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-            alpha=self._plan.alpha,
-        )
         for roles in opts.by_metric.values():
             _validate_methods(list(roles.methods))
         if req.caller == "run_asof_lift":

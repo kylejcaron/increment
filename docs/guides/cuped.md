@@ -188,6 +188,8 @@ and is rejected before evidence acquisition.
 The policy belongs to each metric's method, never to the shared covariate table.
 The pooled mean uses the full per-unit covariate population before an outcome's
 `missing="drop"` removes rows, including when that summary is broken out.
+Refusing-policy validation also uses that full eligible population: a missing
+covariate is not hidden by dropping the same unit's missing outcome.
 
 ### Ratio metrics
 
@@ -285,7 +287,7 @@ including when the decision and sensitivity families differ. A scalar breakout
 override acquires the effective requested family; requests retaining several
 distinct scalar families are refused before reading data.
 
-Frame breakouts apply the effective scalar recipe separately for each method
+Frame and native breakouts apply the effective scalar recipe for each method
 and segment. A missing-policy refusal withholds that scalar cell, not an
 unadjusted sibling or a healthy segment. In a corrected family the unavailable
 decision cell remains a conservative non-rejection; its original refusal code
@@ -298,6 +300,8 @@ writing evidence. Provenance-free legacy `from_moments` inputs still accept a
 single scalar request, but several distinct requests refuse with
 `facade.analysis_config.cuped_scalar_moments`; a recorded covariate-name
 mismatch is never treated as anonymous evidence.
+Artifact moment exports acquire the requested named scalar family rather than
+exporting outcome-only moments under its declaration.
 
 Artifact publication retains raw named property and measure covariates, with
 numeric NaNs represented as missing values. Replay applies each method's own
@@ -314,23 +318,33 @@ Supported missing-value preparation is applied to the retained raw values for
 the requested method.
 
 Direct `readouts.asof_lift` retains method identity for the implicit pre-period
-scalar family at every date. Its fixed-horizon moments interface cannot select
-a named scalar binding: these requests refuse with
+scalar family at every date. Fixed-horizon day-axis moments cannot select a
+named scalar binding: direct requests refuse with
 `readout.scalar_method_evidence`, route `readouts.asof_lift`, before reading
-outcome or compliance evidence. Registered sequential inputs are validated at
-construction; a refusing covariate policy retains the
-`frame.validation.metric_covariate_column` refusal rather than deferring that
-invalid input to capture.
+outcome or compliance evidence. The facade applies the same admission rule to
+`Analysis.run_asof_lift` and `Analysis.run_daily_lift`, including dimensioned
+reads, and reports the corresponding facade route. Registered sequential
+inputs are validated at construction; a refusing covariate policy retains
+`frame.validation.metric_covariate_column` rather than deferring that invalid
+input to capture.
 
-A sequential continuation must retain the registered scalar covariate and
-missing-value preparation. A changed recipe refuses with
-`sequential.source.invalid` before checkpoint capture; a display-name change
+A sequential continuation, including adoption of a saved checkpoint, must
+retain the registered scalar covariate and missing-value preparation. The saved
+registration, not replacement declarations, identifies the original recipe.
+A changed recipe refuses with `sequential.source.invalid` before checkpoint
+capture or adoption; a display-name change
 with the same recipe is allowed and emitted under that declared name. No
 separate sequential state is created for a sensitivity display of the same
 registered input. Native sequential capture supports the implicit outcome
 pre-period covariate (`covariates=None`), not explicit property or measure
 bindings; those requests also refuse before data access. Use a unit-summary
 frame containing the explicit covariate to register that input.
+
+Sequential dispatch recognizes `Method.unadjusted(name="companion")` by its
+serialized `procedure="unadjusted"` declaration. Decision-plan, YAML, and pickle
+round trips preserve that procedure and the declared label. A bare
+`Method(name="m2")` has no such declaration and remains unsupported. This does
+not change the fixed-horizon registry of unadjusted method names.
 
 ### Per-metric method bindings
 

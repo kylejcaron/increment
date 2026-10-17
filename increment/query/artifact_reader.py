@@ -1913,8 +1913,42 @@ class ArtifactMomentSource(SequentialSourceMixin):
     ):
         import pyarrow as pa
 
+        from increment._analysis_config import (
+            effective_methods,
+            overlay_configs,
+            validate_scalar_route,
+        )
+        from increment._source_types import ScalarMethodMomentSource
+        from increment.estimation.engine import Method
+
         selected = tuple(selected or self.context.metrics)
-        rows = [row for metric in selected for row in self.moments(metric)]
+        configs = overlay_configs(selected, self.context.configs, methods=methods, prior=prior)
+        validate_scalar_route(
+            configs,
+            route="artifact.moments",
+            representation="export",
+            design=self.context.design,
+        )
+        rows = []
+        for config in configs:
+            scalar = next(
+                (
+                    method
+                    for method in effective_methods(config, design=self.context.design)
+                    if method.variance_reduction == "cuped"
+                ),
+                None,
+            )
+            if isinstance(self, ScalarMethodMomentSource):
+                rows.extend(self.moments_for_method(config.metric, scalar or Method.unadjusted()))
+            else:
+                validate_scalar_route(
+                    (config,),
+                    route="artifact.moments",
+                    representation="implicit",
+                    design=self.context.design,
+                )
+                rows.extend(self.moments(config.metric, include_covariate=scalar is not None))
         return pa.Table.from_pylist(rows) if rows else pa.table({})
 
     def day_source(

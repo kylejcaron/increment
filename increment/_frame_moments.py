@@ -487,13 +487,19 @@ def _partitioned_moment_rows(
     assert len(by) == 1 and covariates.cell_failures is not None
     rows = []
     for key, partition in frame.group_by(list(by)):
+        label = "__null__" if key[0] is None else str(key[0])
+        admitted = tuple(
+            spec for spec in metrics if (spec.name, by[0], label) not in covariates.cell_failures
+        )
+        if not admitted:
+            continue
         failures: dict[str, _DeferredRefusal] = {}
         try:
             rows.extend(
                 _moment_rows(
                     partition,
                     group=group,
-                    metrics=metrics,
+                    metrics=admitted,
                     experiment_id=experiment_id,
                     uptake=uptake,
                     cluster=cluster,
@@ -510,7 +516,6 @@ def _partitioned_moment_rows(
                 SCALAR_COVARIATE_REFUSALS[exc.code],
                 exc.context,
             )
-        label = "__null__" if key[0] is None else str(key[0])
         for metric, failure in failures.items():
             covariates.cell_failures[(metric, by[0], label)] = failure
     return rows

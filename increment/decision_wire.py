@@ -84,6 +84,9 @@ class WireMethod(_WireBase):
     variance_reduction: str = "none"
     conversion_inference: ConversionInference
     covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
+    procedure: Literal["unadjusted"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class WireFixedInference(_WireBase):
@@ -403,6 +406,7 @@ def _method_to_wire(method: Method, *, metric: str, role: str) -> WireMethod:
         conversion_inference=method.conversion_inference,
         variance_reduction=method.variance_reduction,
         covariates=method.covariates,
+        procedure=method.procedure,
     )
 
 
@@ -413,6 +417,7 @@ def _method_from_wire(method: WireMethod, *, metric: str, role: str) -> Method:
             conversion_inference=method.conversion_inference,
             variance_reduction=method.variance_reduction,
             covariates=method.covariates,
+            procedure=method.procedure,
         )
     except (TypeError, ValueError) as exc:
         _raise(

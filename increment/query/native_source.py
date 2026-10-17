@@ -11,7 +11,7 @@ import datetime as dt
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -33,10 +33,11 @@ from increment._frame_validation import (
 from increment._frame_validation import (
     COVARIATE_IMPUTE_ALL_NULL as _NATIVE_COVARIATE_IMPUTE_ALL_NULL,
 )
+from increment._immutable import _FrozenMapping
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
-from increment.errors import CodedError
+from increment.errors import CodedError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query._native_dashboard import (
@@ -78,6 +79,7 @@ from increment.query.builders import (
     _utc_timestamp_literal,
     _windowed_fact_sum,
     breakout_property_table,
+    canonical_dimension_value,
     cluster_exposure_counts,
     cohort_group_summary,
     compliance_event_horizon,
@@ -166,6 +168,13 @@ if TYPE_CHECKING:
     from increment.semantics.design import Observational, Randomized
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import Grain, MomentSource
+
+
+@dataclass(frozen=True, slots=True)
+class _ScalarBreakoutPreparation:
+    dimension: str
+    properties: Table
+    refusals: dict[str, list[tuple[str, str, RefusalSpec, Mapping[str, object]]]]
 
 
 class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin):
@@ -1079,6 +1088,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         covariate: Any,
         exposures: Table,
         metric: Metric,
+        *,
+        breakout: _ScalarBreakoutPreparation | None = None,
     ) -> Table:
         covariate = self._resolve_covariate_binding(covariate, metric)
         measure = getattr(covariate, "measure", None)
@@ -1104,25 +1115,41 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         normalized = ibis.ifelse(value.isnan(), ibis.null().cast("float64"), value)
         values = values.select("unit_id", **{covariate.name: normalized})
         if covariate.missing in ("refuse", "impute"):
+            population = values
+            if breakout is not None:
+                population = values.left_join(breakout.properties, "unit_id")
+                label = ibis.coalesce(
+                    canonical_dimension_value(breakout.properties[breakout.dimension]), "__null__"
+                ).name("__cuped_dimension__")
+                grouped = population.group_by(label)
+            else:
+                grouped = population
             counts = self._con.to_pyarrow(
-                values.aggregate(
-                    n_missing=values[covariate.name].isnull().cast("int64").sum(),
-                    n_observed=values[covariate.name].count(),
+                grouped.aggregate(
+                    n_missing=population[covariate.name].isnull().cast("int64").sum(),
+                    n_observed=population[covariate.name].count(),
                 )
-            ).to_pylist()[0]
-            n_missing = int(counts["n_missing"] or 0)
-            if covariate.missing == "refuse" and n_missing:
-                _refuse(
-                    _NATIVE_COVARIATE_MISSING,
-                    metric=metric.name,
-                    covariate=covariate.name,
-                    n_missing=n_missing,
-                )
-            if covariate.missing == "impute" and not counts["n_observed"]:
-                _refuse(
-                    _NATIVE_COVARIATE_IMPUTE_ALL_NULL,
-                    metric=metric.name,
-                    covariate=covariate.name,
+            ).to_pylist()
+            all_missing = not any(row["n_observed"] for row in counts)
+            for row in counts:
+                n_missing = int(row["n_missing"] or 0)
+                context: dict[str, object] = {"metric": metric.name, "covariate": covariate.name}
+                if covariate.missing == "refuse" and n_missing:
+                    spec = _NATIVE_COVARIATE_MISSING
+                    context["n_missing"] = n_missing
+                elif covariate.missing == "impute" and all_missing:
+                    spec = _NATIVE_COVARIATE_IMPUTE_ALL_NULL
+                else:
+                    continue
+                if breakout is None:
+                    _refuse(spec, **context)
+                breakout.refusals.setdefault(metric.name, []).append(
+                    (
+                        breakout.dimension,
+                        str(row["__cuped_dimension__"]),
+                        spec,
+                        _FrozenMapping(context),
+                    )
                 )
         return values.select("unit_id", sum_value=values[covariate.name])
 
@@ -2861,6 +2888,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
 
         rows: list[dict[str, object]] = []
+        scalar_preparation = _ScalarBreakoutPreparation(breakout.property, properties_table, {})
         for metric in metrics:
             _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
                 self._build_panel_for_metric(
@@ -2881,7 +2909,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 None,
             )
             pre_stats_override = (
-                self._bound_scalar_covariate_pre_stats(scalar_covariate, exposures, metric)
+                self._bound_scalar_covariate_pre_stats(
+                    scalar_covariate, exposures, metric, breakout=scalar_preparation
+                )
                 if scalar_covariate is not None
                 else None
             )
@@ -2926,6 +2956,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             configs=configs,
             _source=self,
             population=population,
+            scalar_refusals=scalar_preparation.refusals,
         )
 
     def breakout_summaries(

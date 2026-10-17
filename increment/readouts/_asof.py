@@ -20,6 +20,7 @@ from increment.estimation.encouragement import (
     estimate_encouragement,
 )
 from increment.estimation.engine import Method
+from increment.estimation.readout_types import serialize_day_axis
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.readouts._common import (
@@ -50,7 +51,9 @@ if TYPE_CHECKING:
 def _asof_metric_rows(rows, methods, control_group) -> MetricRows:
     """Identify the methods sharing one acquired implicit pre-period family."""
     rows = tuple(rows)
-    observed, digest, count = _rows_digest_and_arms(rows)
+    observed, digest, count = _rows_digest_and_arms(
+        {**row, "ds": serialize_day_axis(row["ds"])} for row in rows
+    )
     component = ("moments_rows", digest, count)
     return MetricRows(
         rows=rows,

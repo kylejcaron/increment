@@ -269,28 +269,6 @@ SOURCE_CONTEXT_DESIGN_DISAGREES_ARM = _REFUSALS[
 _raise = raiser(_REFUSALS)
 
 
-def _refuse_legacy_boolean_registration(
-    frame: Any, group: str, control: object | None, design: Any, plan: Any
-) -> None:
-    registration = getattr(
-        getattr(getattr(plan, "inference", None), "registration", None), "control_group", None
-    )
-    candidate = control if control is not None else getattr(design, "control_group", None)
-    if registration not in {"True", "False"} or candidate is None:
-        return
-    from increment._frame_validation import canonical_control_for_frame
-    from increment.sequential_state import sequential_refuse
-
-    canonical = canonical_control_for_frame(frame, group, candidate)
-    if (registration, canonical) in {("True", "true"), ("False", "false")}:
-        sequential_refuse(
-            "source.invalid",
-            "pandas Boolean group labels changed from 'True'/'False' to canonical "
-            "'true'/'false'; retain the saved record for replay with its original "
-            "protocol, or create a new sequential registration for canonical labels",
-        )
-
-
 if TYPE_CHECKING:
     import pyarrow as pa
     from ibis.expr.types import Table
@@ -1014,28 +992,17 @@ class Analysis:
         ``run_breakout`` reads. This source remains total-only: it does not
         expose daily or as-of methods, or a synthetic day axis.
         """
-        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
-        from increment._frame_validation import (
-            canonical_control_for_frame,
-            canonical_design_for_frame,
-        )
-
-        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_summary")
         if control is None:
             assert design is not None
             control = str(design.control_group)
-        else:
-            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_summary as _make_source
-        from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
             group=group,
-            control=design.control_group,
+            control=cast(str, control),
             metrics=metrics,
             experiment_id=experiment_id,
             uptake=uptake,
@@ -1047,7 +1014,7 @@ class Analysis:
             exposure_date=exposure_date,
             breakouts=breakouts,
         )
-        return cls._from_source(src, design)
+        return cls._from_source(src, src.context.design)
 
     @classmethod
     # Public factory signature is the API for panel-backed analysis.
@@ -1111,29 +1078,18 @@ class Analysis:
         refuses; ``"exclude"`` drops those units, with the count
         surfaced in ``unit_counts()`` and :meth:`srm`.
         """
-        _refuse_legacy_boolean_registration(frame, group, control, design, plan)
-        from increment._frame_validation import (
-            canonical_control_for_frame,
-            canonical_design_for_frame,
-        )
-
-        design = canonical_design_for_frame(frame, group, design)
         _require_design(control, design, constructor="Analysis.from_unit_panel")
         if control is None:
             assert design is not None
             control = str(design.control_group)
-        else:
-            control = canonical_control_for_frame(frame, group, control)
         from increment.frame import from_unit_panel as _make_source
-        from increment.semantics.design import Randomized
 
-        design = design or Randomized(control_group=control)
         src = _make_source(
             frame,
             unit=unit,
             group=group,
             date=date,
-            control=design.control_group,
+            control=cast(str, control),
             metrics=metrics,
             experiment_id=experiment_id,
             uptake=uptake,
@@ -1145,7 +1101,7 @@ class Analysis:
             on_unassigned=on_unassigned,
             cluster=cluster,
         )
-        return cls._from_source(src, design)
+        return cls._from_source(src, src.context.design)
 
     @classmethod
     def from_moments(

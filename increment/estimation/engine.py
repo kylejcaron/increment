@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment._finite_sample_refusals import (
     refuse_finite_sample_cuped,
@@ -387,6 +387,9 @@ class Method(CodedModel, BaseModel):
     variance_reduction: str = "none"  # "none" | "cuped" | "cuped_multicovariate"
     conversion_inference: ConversionInference = "auto"
     covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
+    procedure: Literal["unadjusted"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     propensity_learner: Callable[[], Any] | None = None
     outcome_learner: Callable[[], Any] | None = None
     folds: int | None = None
@@ -412,15 +415,22 @@ class Method(CodedModel, BaseModel):
         return self
 
     @property
-    def is_unadjusted(self) -> bool:
-        """Whether the procedure is raw rather than an observational dispatch key."""
-        return _is_unadjusted_method(self)
+    def is_observational(self) -> bool:
+        """Whether the name selects a registered observational adjustment."""
+        from increment.estimation.adjust import ADJUSTMENTS
+
+        return self.name in ADJUSTMENTS
 
     @classmethod
     def unadjusted(
         cls, *, name: str = "naive", conversion_inference: ConversionInference = "auto"
     ) -> Method:
-        return cls(name=name, variance_reduction="none", conversion_inference=conversion_inference)
+        return cls(
+            name=name,
+            variance_reduction="none",
+            conversion_inference=conversion_inference,
+            procedure="unadjusted" if name not in {"naive", "unadjusted"} else None,
+        )
 
     @classmethod
     def cuped(
@@ -758,10 +768,8 @@ def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _Win
 
 
 def _is_unadjusted_method(method: Method) -> bool:
-    """Whether a method represents the raw, unadjusted estimator."""
-    from increment.estimation.adjust import ADJUSTMENTS
-
-    return method.variance_reduction == "none" and method.name not in ADJUSTMENTS
+    """Whether a method uses a registered unadjusted dispatch name."""
+    return method.variance_reduction == "none" and method.name in {"naive", "unadjusted"}
 
 
 def _validate_unique_method_names(

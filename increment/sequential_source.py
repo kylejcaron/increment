@@ -1285,6 +1285,15 @@ def validate_frame_registration(
     """Validate the observation mapping before a dataframe adapter reads it."""
     if registration is None:
         return
+    from increment._analysis_config import validate_scalar_route
+
+    validate_scalar_route(
+        configs,
+        route="sequential.registration",
+        representation="registered",
+        retained_configs=configs,
+        design=design,
+    )
     validate_scalar_mean_design(registration, design)
     if (registration.control_group, str(design.control_group)) in {
         ("True", "true"),
@@ -1562,6 +1571,15 @@ class SequentialSourceMixin:
     def sequential_snapshot(
         self, *, previous: SequentialSnapshot | None = None
     ) -> SequentialSnapshot:
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            self.context.configs,
+            route="sequential.snapshot",
+            representation="registered",
+            registered_plan=self.context.plan,
+            design=self.context.design,
+        )
         snapshot = getattr(self, "_sequential_snapshot", None)
         if snapshot is None:
             sequential_refuse(
@@ -1581,6 +1599,15 @@ class SequentialSourceMixin:
         The producer must already have captured actual finalized source records.
         This method does not turn ordinary rounded moment exports into evidence.
         """
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            self.context.configs,
+            route="sequential.checkpoint_adoption",
+            representation="registered",
+            registered_plan=self.context.plan,
+            design=self.context.design,
+        )
         inference = self.context.plan.inference
         registration = getattr(inference, "registration", None)
         if registration is None or snapshot.registration_id != registration_id(registration):

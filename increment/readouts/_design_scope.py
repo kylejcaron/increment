@@ -418,10 +418,14 @@ def _request_snapshot(value: Any, *, field: str = "request") -> Any:
             refuse_readout("readout.scope.request_not_canonical", fields=[field])
         return {"kind": "callable", "module": module, "qualname": qualname}
     if isinstance(value, dict):
-        # Optional method-owned CUPED inputs are absent in legacy request
-        # identities when unconfigured. Keep that representation stable.
-        if {"name", "variance_reduction"} <= value.keys() and value.get("covariates") is None:
-            value = {key: item for key, item in value.items() if key != "covariates"}
+        # Empty covariates and sequential procedure tags are not fixed-horizon
+        # estimator inputs; preserve the established request identity.
+        if {"name", "variance_reduction"} <= value.keys():
+            value = {
+                key: item
+                for key, item in value.items()
+                if key != "procedure" and (key != "covariates" or item is not None)
+            }
         return {key: _request_snapshot(item, field=f"{field}.{key}") for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [

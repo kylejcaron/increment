@@ -1920,6 +1920,9 @@ class MethodSpec(_Base):
     variance_reduction: Literal["none", "cuped", "cuped_multicovariate"] = "none"
     conversion_inference: ConversionInference = "auto"
     covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
+    procedure: Literal["unadjusted"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("covariates", mode="before")
     @classmethod

@@ -2345,7 +2345,12 @@ def _sequential_missing_zero_mean_ratio_case(
                 native,
                 first_path,
                 [
-                    revenue_spec.model_copy(update={"window_days": None}),
+                    revenue_spec.model_copy(
+                        update={
+                            "window_days": None,
+                            "decision_method": Method.cuped() if messy else None,
+                        }
+                    ),
                     secondary_spec.model_copy(update={"window_days": None}),
                 ],
                 design,
@@ -2360,7 +2365,12 @@ def _sequential_missing_zero_mean_ratio_case(
                 native,
                 second_path,
                 [
-                    revenue_spec.model_copy(update={"window_days": None}),
+                    revenue_spec.model_copy(
+                        update={
+                            "window_days": None,
+                            "decision_method": Method.cuped() if messy else None,
+                        }
+                    ),
                     secondary_spec.model_copy(update={"window_days": None}),
                 ],
                 design,

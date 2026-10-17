@@ -514,6 +514,18 @@ class FrameTotalsSource(SequentialSourceMixin):
     def available_covariates(self) -> frozenset[str]:
         return frozenset(self._frame.columns)
 
+    def breakout_moments_for_method(
+        self, metric: Metric, method: Any, *, by: Sequence[str]
+    ) -> ScalarBreakoutRows:
+        """Delegate the effective input to the summary's segment reducer."""
+        if self._summary_breakout_source is None:
+            refuse(
+                _FRAME_BREAKOUTS_UNSUPPORTED,
+                dimensions=tuple(by),
+                route="request an unbroken total or use a panel source with declared breakouts",
+            )
+        return self._summary_breakout_source.breakout_moments_for_method(metric, method, by=by)
+
     def moments_for_method(
         self,
         metric: Metric,
@@ -825,7 +837,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         specs = _apply_plan_methods(_coerce_source_metrics(metrics, design=design), plan)
         _reject_windowed_specs(specs)
         synthesised_metrics = [synthesise_metric(s) for s in specs]
-        from increment._analysis_config import resolve_configs
+        from increment._analysis_config import resolve_configs, validate_scalar_route
 
         frame_configs = resolve_configs(
             synthesised_metrics,
@@ -833,6 +845,14 @@ class FrameTotalsSource(SequentialSourceMixin):
             specs={s.name: s for s in specs},
             methods=None,
             prior=None,
+        )
+        sequential = plan is not None and plan.inference is not None
+        validate_scalar_route(
+            frame_configs,
+            route="sequential.registration" if sequential else "from_unit_summary",
+            representation="registered" if sequential else "unit",
+            retained_configs=frame_configs,
+            design=design,
         )
         from increment.sequential_source import (
             frame_observation_mapping,
@@ -1711,6 +1731,32 @@ class FramePanelSource(SequentialSourceMixin):
         prepared._moment_rows_cache = {}
         prepared._moment_failures_cache = {}
         prepared._scalar_cell_failures = {}
+        refusing = tuple(
+            covariate for covariate in method.covariates or () if covariate.missing == "refuse"
+        )
+        if self._summary_reducer and by and refusing:
+            from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
+
+            prepared._breakout_key(by)
+            population = self._sparse_panel
+            for covariate in refusing:
+                if covariate.name not in population.columns:
+                    population = population.join(
+                        self._resolve_panel_covariate(covariate.name), on="unit_id", how="left"
+                    )
+            for key, partition in population.group_by(list(by)):
+                try:
+                    _enforce_missing_policy(
+                        partition, (method_spec,), shape="summary", emit_warnings=False
+                    )
+                except InvalidRequestError as exc:
+                    if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                        raise
+                    label = "__null__" if key[0] is None else str(key[0])
+                    prepared._scalar_cell_failures[(metric.name, by[0], label)] = (
+                        SCALAR_COVARIATE_REFUSALS[exc.code],
+                        exc.context,
+                    )
         rows = tuple(prepared.moments(metric, by=by))
         return ScalarBreakoutRows(
             rows,
@@ -2055,7 +2101,7 @@ class FramePanelSource(SequentialSourceMixin):
                 refuse(RETENTION_UNDER_ENCOURAGEMENT, names=retention)
         _reject_covariates(specs)
         synthesised_metrics = [synthesise_metric(s) for s in specs]
-        from increment._analysis_config import resolve_configs
+        from increment._analysis_config import resolve_configs, validate_scalar_route
 
         frame_configs = resolve_configs(
             synthesised_metrics,
@@ -2063,6 +2109,14 @@ class FramePanelSource(SequentialSourceMixin):
             specs={s.name: s for s in specs},
             methods=None,
             prior=None,
+        )
+        sequential = plan is not None and plan.inference is not None
+        validate_scalar_route(
+            frame_configs,
+            route="sequential.registration" if sequential else "from_unit_panel",
+            representation="registered" if sequential else "unit",
+            retained_configs=frame_configs,
+            design=design,
         )
         from increment.sequential_source import (
             frame_observation_mapping,
