@@ -1244,7 +1244,7 @@ class WarehouseArtifactStore:
 
 _MAX_IDENTIFIER_LEN = 63  # Postgres's limit - the tightest among supported backends
 
-# Bound per-result and per-snapshot retention so long readouts cannot pin unbounded Arrow memory.
+# Admission budgets on cached Arrow payload bytes (``nbytes``), per result and per snapshot.
 _MAX_ARROW_RESULT_BYTES = 16 * 1024 * 1024
 _MAX_ARROW_CACHE_BYTES = 128 * 1024 * 1024
 _OPAQUE_SQL_OPS = (ops.SQLStringView, ops.SQLQueryResult)
