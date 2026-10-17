@@ -166,7 +166,7 @@ def tests(session: nox.Session) -> None:
 
 @nox.session(python=PYTHON_VERSIONS)
 def tests_full(session: nox.Session) -> None:
-    """Weekly: slow + examples against locked dependencies, across every
+    """Nightly: slow + examples against locked dependencies, across every
     supported Python version. Mirrors ``make test-all`` minus both scientific
     campaigns, which run once in the scientific shard job below. Previously
     covered exact-mass and capacity cases remain in this matrix.

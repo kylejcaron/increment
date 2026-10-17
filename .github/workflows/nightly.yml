@@ -1,0 +1,142 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # Daily, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+  INCREMENT_PARITY_MATRIX: full
+
+jobs:
+  test-all:
+    name: full suite (locked dependencies, slow + examples, ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
+      - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
+      - name: Record fast-test durations
+        id: record-fast-durations
+        if: matrix.python-version == '3.12'
+        run: |
+          uv sync --group dev --extra demo --extra tables --extra dashboard
+          make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
+      - name: Upload fast-test durations
+        if: matrix.python-version == '3.12' && steps.record-fast-durations.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fast-test-durations
+          path: .github/fast-test-durations.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain full-suite JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-suite-junit-${{ matrix.python-version }}-${{ github.run_attempt }}
+          path: |
+            junit.xml
+            junit-numerical.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  test-scientific:
+    name: scientific tiers, shard ${{ matrix.group }}/4
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv run --with nox nox -s tests_scientific -- --splits 4 --group ${{ matrix.group }} --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
+      - name: Retain scientific JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scientific-junit-shard-${{ matrix.group }}-${{ github.run_attempt }}
+          path: junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  randomized-fast:
+    name: randomized-order fast tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Log randomized-order seed
+        run: echo "pytest-randomly seed=20261017"
+      - run: make test-fast WORKERS=auto PYTEST_ARGS="-p randomly --randomly-seed=20261017 --durations=25 --junitxml=random-fast-junit.xml"
+      - name: Retain randomized fast JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-random-fast-junit-${{ github.run_attempt }}
+          path: random-fast-junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  report-failure:
+    name: report a failed nightly gate
+    runs-on: ubuntu-latest
+    needs: [test-all, test-scientific, randomized-fast]
+    if: failure()
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Ensure the tracking label exists
+        run: |
+          gh label create nightly-failure \
+            --repo "$REPOSITORY" \
+            --color B60205 \
+            --description "Opened automatically when a nightly validation gate fails" \
+            --force
+        env: {REPOSITORY: "${{ github.repository }}"}
+      - name: File or update the tracking issue
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list \
+            --repo "$REPOSITORY" \
+            --label nightly-failure \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" \
+              --repo "$REPOSITORY" \
+              --body "Nightly validation failed again: $RUN_URL"
+          else
+            gh issue create \
+              --repo "$REPOSITORY" \
+              --title "Nightly validation failed: $RUN_URL" \
+              --label nightly-failure \
+              --body "A nightly test suite failed. See $RUN_URL for logs and retained evidence artifacts."
+          fi
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

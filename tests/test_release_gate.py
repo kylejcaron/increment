@@ -31,11 +31,17 @@ def _check(name="ci-ok", *, status="completed", conclusion="success", **fields):
     }
 
 
-def _gate(tmp_path: Path, checks: list[list[dict]], statuses=None):
+def _nightly(*, head_sha=SHA, status="completed", conclusion="success"):
+    return {"head_sha": head_sha, "status": status, "conclusion": conclusion}
+
+
+def _gate(tmp_path: Path, checks: list[list[dict]], statuses=None, nightlies=None):
     checks_file = tmp_path / "checks.json"
     checks_file.write_text(json.dumps([{"check_runs": page} for page in checks]))
     statuses_file = tmp_path / "statuses.json"
     statuses_file.write_text(json.dumps(statuses or [{"state": "pending", "statuses": []}]))
+    nightlies_file = tmp_path / "nightlies.json"
+    nightlies_file.write_text(json.dumps(nightlies or [{"workflow_runs": [_nightly()]}]))
     gh = tmp_path / "gh"
     gh.write_text(
         f"#!{sys.executable}\n"
@@ -43,7 +49,8 @@ def _gate(tmp_path: Path, checks: list[list[dict]], statuses=None):
         "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
         "path = next(a for a in args if a.startswith('repos/'))\n"
-        "key = 'CHECKS_FILE' if '/check-runs' in path else 'STATUSES_FILE'\n"
+        "key = ('CHECKS_FILE' if '/check-runs' in path else\n"
+        "       'NIGHTLIES_FILE' if '/workflows/nightly.yml/runs' in path else 'STATUSES_FILE')\n"
         "pages = json.loads(Path(os.environ[key]).read_text())\n"
         "data = pages if '--slurp' in args else pages[0]\n"
         "if '--jq' in args:\n"
@@ -64,6 +71,7 @@ def _gate(tmp_path: Path, checks: list[list[dict]], statuses=None):
             "RUN_URL": RUN_URL,
             "CHECKS_FILE": str(checks_file),
             "STATUSES_FILE": str(statuses_file),
+            "NIGHTLIES_FILE": str(nightlies_file),
         },
         capture_output=True,
         text=True,
@@ -102,6 +110,20 @@ def test_required_ci_must_succeed_on_this_commit(tmp_path, fields):
 def test_successful_ci_and_optional_skips_allow_release(tmp_path):
     result = _gate(tmp_path, [[_check(), _check("optional", conclusion="skipped")]])
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "nightlies",
+    [
+        [{"workflow_runs": []}],
+        [{"workflow_runs": [_nightly(head_sha="b" * 40)]}],
+        [{"workflow_runs": [_nightly(conclusion="failure")]}],
+    ],
+)
+def test_release_requires_a_successful_nightly_on_this_commit(tmp_path, nightlies):
+    result = _gate(tmp_path, [[_check()]], nightlies=nightlies)
+    assert result.returncode != 0
+    assert f"run `gh workflow run nightly.yml --ref main` while main is at {SHA}" in result.stdout
 
 
 def test_bump_does_not_deadlock_on_its_own_running_check(tmp_path):

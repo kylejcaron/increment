@@ -54,7 +54,7 @@ test-parameter-recovery:
 # Required deterministic numerical certification; not a Monte-Carlo campaign.
 test-numerical-certification:
 	$(PYTEST) -m 'numerical_certification' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
-# Union selector for weekly scientific coverage; split shards retain both purposes.
+# Union selector for nightly scientific coverage; split shards retain both purposes.
 test-scientific:
 	@if [ -z "$(SPLITS)" ] || [ -z "$(GROUP)" ]; then \
 		echo "usage: make test-scientific SPLITS=<n> GROUP=<1..n>" >&2; \

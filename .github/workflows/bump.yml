@@ -108,6 +108,15 @@ jobs:
             exit 1
           fi
 
+          nightlies=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?head_sha=${SHA}&status=completed&per_page=100")
+          if ! printf '%s' "$nightlies" | jq -e --arg sha "$SHA" \
+            '[.[] | .workflow_runs[] | select(.head_sha == $sha and .status == "completed" and .conclusion == "success")] | length > 0' >/dev/null; then
+            echo "::error::a successful nightly run is required on $SHA before release"
+            printf '::error::run `gh workflow run nightly.yml --ref main` while main is at %s, or wait for the scheduled run\n' "$SHA"
+            exit 1
+          fi
+
           bad=$(printf '%s' "$runs" | jq -r \
             '.[] | select(.status != "completed" or
               (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")) | .name')

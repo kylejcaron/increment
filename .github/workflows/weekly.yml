@@ -12,48 +12,6 @@ env:
   UV_LOCKED: "1"
 
 jobs:
-  # Slow and notebook examples are outside CI's fast suite. Exercise locked
-  # dependencies and floors on each interpreter; scientific union runs once below.
-  test-all:
-    name: full suite (locked dependencies, slow + examples, ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-        with: {enable-cache: true, python-version: "${{ matrix.python-version }}"}
-      - run: uv run --with nox nox -s "tests_full-${{ matrix.python-version }}" -- --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
-      - name: Record fast-test durations
-        id: record-fast-durations
-        if: matrix.python-version == '3.12'
-        run: |
-          uv sync --group dev --extra demo --extra tables --extra dashboard
-          make test-fast WORKERS=4 PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
-      - name: Upload fast-test durations
-        if: matrix.python-version == '3.12' && steps.record-fast-durations.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fast-test-durations
-          path: .github/fast-test-durations.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Retain full-suite JUnit report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: full-suite-junit-${{ matrix.python-version }}-${{ github.run_attempt }}
-          path: |
-            junit.xml
-            junit-numerical.xml
-          if-no-files-found: warn
-          retention-days: 30
-
   test-all-floor:
     name: full suite at dependency floors (${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -79,29 +37,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # One Python/locked-dependency run, split four ways across scientific purposes.
-  test-scientific:
-    name: scientific tiers, shard ${{ matrix.group }}/4
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
-        with: {enable-cache: true, python-version: "3.12"}
-      - run: uv run --with nox nox -s tests_scientific -- --splits 4 --group ${{ matrix.group }} --durations=25 --junitxml=junit.xml -n auto --dist loadgroup
-      - name: Retain scientific JUnit report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: scientific-junit-shard-${{ matrix.group }}-${{ github.run_attempt }}
-          path: junit.xml
-          if-no-files-found: warn
-          retention-days: 30
 
   warehouse-backends:
     name: warehouse backends
@@ -112,7 +47,7 @@ jobs:
   report-failure:
     name: report a failed weekly gate
     runs-on: ubuntu-latest
-    needs: [test-all, test-all-floor, test-scientific, warehouse-backends]
+    needs: [test-all-floor, warehouse-backends]
     if: failure()
     timeout-minutes: 10
     permissions:
