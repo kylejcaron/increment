@@ -45,7 +45,7 @@ test-integration-fast:
 	$(MAKE) test-tier TIER=integration-fast
 # Fast tiers stop at the first failure; long tiers report every failure.
 test-tier:
-	$(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
 # Functional tests exclude Monte-Carlo calibration and notebook subprocesses.
 test-slow:
 	$(MAKE) test-tier TIER=slow
@@ -57,7 +57,7 @@ test-parameter-recovery:
 		echo "usage: make test-parameter-recovery SPLITS=<n> GROUP=<1..n>" >&2; \
 		exit 1; \
 	fi
-	$(MAKE) test-tier TIER=parameter-recovery PYTEST_ARGS="$(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)"
+	$(MAKE) test-tier TIER=parameter-recovery SHARD_ARGS='--splits $(SPLITS) --group $(GROUP)'
 
 # Required deterministic numerical certification; not a Monte-Carlo campaign.
 test-numerical-certification:
@@ -68,7 +68,7 @@ test-scientific:
 		echo "usage: make test-scientific SPLITS=<n> GROUP=<1..n>" >&2; \
 		exit 1; \
 	fi
-	$(MAKE) test-tier TIER=scientific PYTEST_ARGS="$(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)"
+	$(MAKE) test-tier TIER=scientific SHARD_ARGS='--splits $(SPLITS) --group $(GROUP)'
 test-all:
 	$(MAKE) test-tier TIER=all
 test-versions:
