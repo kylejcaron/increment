@@ -184,9 +184,6 @@ def _secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_recor
 
 def _secondary_source_rows(metric_rows, is_quantile, control_group):
     observed_arms = set(metric_rows.observed_arms)
-    evidence_components = metric_rows.evidence_components or (
-        (metric_rows.evidence_kind, metric_rows.evidence_sha256, metric_rows.evidence_count),
-    )
     if is_quantile:
         rows = metric_rows.unit_frame
         family_groups = None
@@ -195,7 +192,7 @@ def _secondary_source_rows(metric_rows, is_quantile, control_group):
         family_groups = {
             str(row["group_id"]) for row in rows if str(row["group_id"]) != str(control_group)
         }
-    return rows, observed_arms, evidence_components, family_groups
+    return rows, observed_arms, family_groups
 
 
 def _secondary_group_ids(nominal, computation, observed_groups, is_quantile):
@@ -302,7 +299,7 @@ def _estimate_randomized_secondary_family(
     observed_arms: set[str],
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
-    evidence_components: dict[str, tuple[tuple[str, str, int], ...]],
+    evidence_by_metric: dict[str, MetricRows],
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]]]:
     """Run nominal, selection, and FCR passes for randomized secondaries."""
     if not secondary_entries:
@@ -312,16 +309,14 @@ def _estimate_randomized_secondary_family(
     family_groups_by_metric: dict[str, set[str]] = {}
     # Evidence read for the nominal pass (moment rows or a quantile unit
     # frame), reused by the FCR pass instead of re-querying the source.
-    evidence_by_metric: dict[str, Any] = {}
     refused_cells: list[tuple[str, str, str, str]] = []
     loaded = _load_family_rows(src, secondary_entries, design, plan, by=by)
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
         metric_rows = loaded[metric.name]
-        rows, metric_observed, evidence_component, observed_groups = _secondary_source_rows(
+        rows, metric_observed, observed_groups = _secondary_source_rows(
             metric_rows, is_quantile, design.control_group
         )
         observed_by_metric[metric.name] = metric_observed
-        evidence_components[metric.name] = evidence_component
         evidence_by_metric[metric.name] = metric_rows
         observed_arms |= metric_observed
         if is_quantile and not metric_rows.n_treatment_arms:
@@ -489,7 +484,7 @@ def _estimate_randomized_non_secondary(
     observed_arms: set[str],
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
-    evidence_components: dict[str, tuple[tuple[str, str, int], ...]],
+    evidence_by_metric: dict[str, MetricRows],
 ) -> tuple[
     list[LiftEstimate],
     list[tuple[str, str, str, str]],
@@ -520,15 +515,9 @@ def _estimate_randomized_non_secondary(
             methods=metric_methods,
             covariates=config.covariates,
         )
+        evidence_by_metric[metric.name] = metric_rows
         if is_quantile:
             _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
-            evidence_components[metric.name] = metric_rows.evidence_components or (
-                (
-                    metric_rows.evidence_kind,
-                    metric_rows.evidence_sha256,
-                    metric_rows.evidence_count,
-                ),
-            )
             observed_arms |= metric_rows.observed_arms
             observed_by_metric[metric.name] = set(metric_rows.observed_arms)
             if metric_rows.n_treatment_arms == 0:
@@ -555,13 +544,6 @@ def _estimate_randomized_non_secondary(
                     methods=metric_methods,
                 )
         else:
-            evidence_components[metric.name] = metric_rows.evidence_components or (
-                (
-                    metric_rows.evidence_kind,
-                    metric_rows.evidence_sha256,
-                    metric_rows.evidence_count,
-                ),
-            )
             observed_arms |= metric_rows.observed_arms
             observed_by_metric[metric.name] = set(metric_rows.observed_arms)
             if test.role == "primary" and metric_rows.n_treatment_arms == 0:

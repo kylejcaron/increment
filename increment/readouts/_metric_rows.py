@@ -31,6 +31,7 @@ class MetricRows:
     evidence_kind: str
     evidence_sha256: str
     evidence_count: int
+    decision_evidence_components: tuple[tuple[str, str, int], ...]
     evidence_components: tuple[tuple[str, str, int], ...] = ()
     covariate_columns: tuple[tuple[str, str], ...] = ()
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
@@ -93,7 +94,7 @@ def _rows_digest(rows):
     return digest.hexdigest(), digest.count
 
 
-def _scalar_method_rows(src, metric, methods, *, by):
+def _scalar_method_rows(src, metric, methods, decision, *, by):
     if not isinstance(src, ScalarMethodMomentSource):
         _raise(
             "readout.scalar_method_evidence",
@@ -111,13 +112,32 @@ def _scalar_method_rows(src, metric, methods, *, by):
             refusals.append((method.name, SCALAR_COVARIATE_REFUSALS[exc.code], exc.context))
         else:
             families.append((method.name, family_rows))
-    if families:
-        rows = list(families[0][1])
+    selected = next((rows for name, rows in families if name == decision.name), None)
+    if selected is not None:
+        rows = list(selected)
+    elif decision.variance_reduction != "cuped":
+        rows = list(src.moments_for_method(metric, decision, by=by))
     else:
         from increment.estimation.engine import Method
 
+        assert any(name == decision.name for name, _spec, _context in refusals)
         rows = list(src.moments_for_method(metric, Method.unadjusted(), by=by))
     return rows, tuple(families), tuple(refusals)
+
+
+def _decision_unit_component(frame, method, acquired_columns):
+    import narwhals as nw
+
+    from increment._source_types import unit_frame_covariate_columns
+
+    names = tuple(covariate.name for covariate in method.covariates)
+    canonical = unit_frame_covariate_columns(names)
+    acquired = set(acquired_columns.values())
+    projected = frame.select(
+        *(nw.col(column) for column in frame.columns if column not in acquired),
+        *(nw.col(acquired_columns[name]).alias(canonical[name]) for name in names),
+    )
+    return ("unit_evidence_rows", *_frame_digest_and_arms(projected)[1:])
 
 
 def _load_metric_rows(
@@ -179,6 +199,9 @@ def _load_metric_rows(
                 evidence_kind="unit_evidence_rows",
                 evidence_sha256=evidence_sha256,
                 evidence_count=evidence_count,
+                decision_evidence_components=(
+                    ("unit_evidence_rows", evidence_sha256, evidence_count),
+                ),
             )
         raw = _raw_state_from_source(src, metric, native=native)
         from increment.estimation.winsor import build_winsor_references
@@ -204,6 +227,7 @@ def _load_metric_rows(
             evidence_kind="unit_evidence_rows",
             evidence_sha256=evidence_sha256,
             evidence_count=evidence_count,
+            decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
         )
     if getattr(metric, "type", None) == "quantile":
         import narwhals as nw
@@ -219,6 +243,7 @@ def _load_metric_rows(
             evidence_kind="unit_evidence_rows",
             evidence_sha256=evidence_sha256,
             evidence_count=evidence_count,
+            decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
         )
     _refuse_unsupported_by(metric, by)
     scalar_methods = [
@@ -227,12 +252,15 @@ def _load_metric_rows(
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals = ()
     if scalar_methods:
-        rows, method_rows, method_refusals = _scalar_method_rows(src, metric, scalar_methods, by=by)
+        rows, method_rows, method_refusals = _scalar_method_rows(
+            src, metric, scalar_methods, methods[0], by=by
+        )
     elif methods and isinstance(src, ScalarMethodMomentSource):
         rows = list(src.moments_for_method(metric, methods[0], by=by))
     else:
         rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
+    ordinary_component = ("moments_rows", moments_sha256, moments_count)
     if has_linear:
         observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
     method_components = tuple(
@@ -249,6 +277,17 @@ def _load_metric_rows(
         )
         for name, spec, context in method_refusals
     )
+    decision_is_linear = bool(methods and methods[0].variance_reduction == "cuped_multicovariate")
+    decision_components = (
+        ("moments_rows", moments_sha256, moments_count)
+        if decision_is_linear
+        else ordinary_component,
+        *(
+            item
+            for item in method_components
+            if methods and item[0] == f"scalar_method:{methods[0].name}"
+        ),
+    )
     if not has_linear:
         return MetricRows(
             rows=tuple(rows),
@@ -258,6 +297,7 @@ def _load_metric_rows(
             evidence_kind="moments_rows",
             evidence_sha256=moments_sha256,
             evidence_count=moments_count,
+            decision_evidence_components=decision_components,
             evidence_components=(
                 ("moments_rows", moments_sha256, moments_count),
                 *method_components,
@@ -275,6 +315,8 @@ def _load_metric_rows(
     native = src.unit_frame(metric, covariates=covariate_names)
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
+    if decision_is_linear:
+        decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
     return MetricRows(
         rows=tuple(rows),
         unit_frame=native,
@@ -283,6 +325,7 @@ def _load_metric_rows(
         evidence_kind="mixed_rows",
         evidence_sha256="",
         evidence_count=moments_count + unit_count,
+        decision_evidence_components=decision_components,
         evidence_components=(
             ("moments_rows", moments_sha256, moments_count),
             ("unit_evidence_rows", unit_sha256, unit_count),

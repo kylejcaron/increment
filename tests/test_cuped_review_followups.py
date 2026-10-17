@@ -557,6 +557,7 @@ def test_scalar_companion_evidence_changes_snapshot_without_changing_decision_es
             unit="unit",
             group="group",
             control="control",
+            plan=AnalysisPlan(primary="revenue"),
             metrics=[
                 MetricSpec(
                     name="revenue",
@@ -583,8 +584,11 @@ def test_scalar_companion_evidence_changes_snapshot_without_changing_decision_es
     )
     assert first.metadata is not None and changed.metadata is not None
     assert first.metadata.scope.snapshot_id != changed.metadata.scope.snapshot_id
-    assert first_a.require_lift().value == pytest.approx(changed_a.require_lift().value)
-    assert first_a.require_lift().log_se == pytest.approx(changed_a.require_lift().log_se)
+    assert first_a.require_lift().value == pytest.approx(changed_a.require_lift().value, rel=1e-10)
+    assert first_a.require_lift().log_se == pytest.approx(
+        changed_a.require_lift().log_se, rel=1e-10
+    )
+    assert first_a.family_id is not None and first_a.family_id == changed_a.family_id
 
 
 def test_call_time_scalar_override_accepts_provenance_free_legacy_x():

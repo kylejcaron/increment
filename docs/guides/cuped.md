@@ -96,6 +96,15 @@ same covariate its coefficients and interval can differ.
 Under a randomized design, adding a multicovariate sensitivity does not change
 the scalar decision fit.
 
+The whole-readout snapshot includes every requested method's evidence, so a
+changed sensitivity covariate changes that snapshot even if its fitted effect
+is unchanged. Decision evidence and multiplicity-family identity instead use
+the effective decision inputs: changing a companion's covariate does not rename
+the decision family. `FamilyScope.decision_snapshot_id` records the separate
+decision-input snapshot when needed; `source_snapshot_id` still identifies the
+whole readout. Requests without method-owned covariates keep their existing
+identity encoding.
+
 ```python
 import numpy as np
 import polars as pl

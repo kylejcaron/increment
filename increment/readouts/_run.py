@@ -422,6 +422,7 @@ def _run_prepared(
                 cluster=cluster,
             ),
             evidence_rows=rows_by_metric,
+            method_evidence=evidence_by_metric,
             observed_by_metric=observed,
             compliance_summary=summary,
             base_roster=preflight_roster,
@@ -497,7 +498,7 @@ def _run_prepared(
     advisory_seen: set[tuple[object, ...]] = set()
     observed_arms: set[str] = set()
     observed_by_metric: dict[str, set[str]] = {}
-    evidence_components: dict[str, tuple[tuple[str, str, int], ...]] = {}
+    evidence_by_metric = {}
     computations: list[Any] = []
     out, refused_cells, secondary_entries, computations = _estimate_randomized_non_secondary(
         src,
@@ -511,7 +512,7 @@ def _run_prepared(
         observed_arms=observed_arms,
         computations=computations,
         observed_by_metric=observed_by_metric,
-        evidence_components=evidence_components,
+        evidence_by_metric=evidence_by_metric,
     )
     secondary_out, secondary_refused = _estimate_randomized_secondary_family(
         src,
@@ -524,7 +525,7 @@ def _run_prepared(
         observed_arms=observed_arms,
         computations=computations,
         observed_by_metric=observed_by_metric,
-        evidence_components=evidence_components,
+        evidence_by_metric=evidence_by_metric,
     )
     out.extend(secondary_out)
     refused_cells.extend(secondary_refused)
@@ -543,7 +544,7 @@ def _run_prepared(
         out,
         computations,
         observed_by_metric,
-        evidence_components,
+        evidence_by_metric,
         population,
         preflight_roster,
     )
