@@ -86,7 +86,7 @@ jobs:
           retention-days: 30
 
   slow:
-    name: functional slow (3.12, shard ${{ matrix.group }}/4)
+    name: functional slow (3.12, shard ${{ matrix.group }}/3)
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 60
@@ -95,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -104,7 +104,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration"
+      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 3 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
       - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -199,25 +199,29 @@ jobs:
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
 
   numerical-certification:
-    name: numerical certification
+    name: numerical certification (shard ${{ matrix.group }}/2)
     needs: [lint, changes]
     if: ${{ needs.changes.outputs.certification_required == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml"
+      - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/certification-test-durations.json"
       - name: Retain certification JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: numerical-certification-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          name: numerical-certification-junit-shard-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: junit.xml
           if-no-files-found: warn
           retention-days: 30
