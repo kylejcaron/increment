@@ -930,6 +930,7 @@ def test_count_roster_marks_known_but_unobserved_metric_arm_as_missing_observati
     )
 
 
+@pytest.mark.integration
 def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_triggered():
     from datetime import date
 
@@ -974,6 +975,7 @@ def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_trig
     assert results.sequential_snapshot == snapshot
 
 
+@pytest.mark.integration
 def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_counts(monkeypatch):
     from datetime import date
 

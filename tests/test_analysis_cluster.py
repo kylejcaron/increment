@@ -944,3 +944,6 @@ def test_quantile_run_loads_unit_frame_once_per_metric(quantile_source_factory):
         assert estimates[0].require_lift().value > 0
     finally:
         analysis.close()
+
+
+pytestmark = pytest.mark.integration

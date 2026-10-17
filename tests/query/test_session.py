@@ -870,6 +870,7 @@ def test_publish_manifest_rejects_a_relation_the_publication_never_wrote() -> No
         )
 
 
+@pytest.mark.integration
 def test_drop_generation_is_idempotent_in_qualified_namespace() -> None:
     con = ibis.duckdb.connect()
     catalog = con.current_catalog

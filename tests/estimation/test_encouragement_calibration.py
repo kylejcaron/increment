@@ -160,6 +160,7 @@ def _run_late(con, table_name: str, rows: list[dict]) -> tuple[float, float, flo
     return lift.value, se, lift.lb, lift.ub
 
 
+@pytest.mark.integration
 def test_encouragement_pipeline_smoke_duckdb():
     """Single seeded replication straight through real DuckDB: the full
     query -> estimation -> readout chain returns a finite additive LATE

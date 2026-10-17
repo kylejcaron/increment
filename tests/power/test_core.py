@@ -4832,3 +4832,6 @@ class TestQuantilePlanningMatchesReadoutRefusals:
                 0.05, baseline, ArmPlanningProcedure.standard("quantile", alternative="greater")
             )
         assert planning.value.code == readout.value.code
+
+
+pytestmark = pytest.mark.integration

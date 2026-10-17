@@ -1522,3 +1522,6 @@ class TestScanFiles:
         self._write(path, [10, 13], {0.01: [1.0, 1.0]})
         assert cr.main(["required", str(path)]) == 2
         assert str(path) in capsys.readouterr().err
+
+
+pytestmark = pytest.mark.integration

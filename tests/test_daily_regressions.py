@@ -8,6 +8,7 @@ from tests.analysis_factory import make_analysis_like
 
 
 @pytest.mark.parametrize("cuped_first", [True, False])
+@pytest.mark.integration
 def test_native_daily_mixed_order_requests_cuped_only_for_declared_metric(
     seeded_pre_period_con, seeded_defs, cuped_first
 ):
@@ -45,6 +46,7 @@ def test_native_daily_mixed_order_requests_cuped_only_for_declared_metric(
     assert any(row.lift is not None for row in results if row.metric == "purchase_rate")
 
 
+@pytest.mark.integration
 def test_native_daily_inherited_methods_and_roles_reach_estimator(
     seeded_pre_period_con, seeded_defs
 ):

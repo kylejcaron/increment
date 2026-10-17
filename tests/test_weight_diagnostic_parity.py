@@ -173,6 +173,7 @@ def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
         analysis.close()
 
 
+@pytest.mark.integration
 def test_definitions_cluster_weight_diagnostics_are_retained_at_cluster_grain(tmp_path):
     """The public Definitions reader projects IPTW diagnostics over the
     declared store grain, not the underlying user count."""

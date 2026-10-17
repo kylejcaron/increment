@@ -128,3 +128,6 @@ def test_workflow_and_build_configuration_changes_require_both(repository, path)
 def test_unknown_base_fails_closed(repository):
     repo, _ = repository
     assert _run_decision(repo, "missing-base") == {"snippets": True, "strict_docs": True}
+
+
+pytestmark = pytest.mark.integration

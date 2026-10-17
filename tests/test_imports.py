@@ -13,6 +13,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 import increment
 
 EXPECTED_RESULT_EXPORTS = [
@@ -308,3 +310,6 @@ def test_estimation_import_leaves_decision_core_unloaded():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+pytestmark = pytest.mark.integration

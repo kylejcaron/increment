@@ -158,6 +158,7 @@ def _analysis_from_defs(defs_path, con):
     return inc.Analysis.from_definitions("exp", defs_path, con)
 
 
+@pytest.mark.integration
 def test_quantile_metric_estimates_on_the_definitions_path(tmp_path):
     """The load-time refusal is gone and the metric produces a real,
     ordered interval with a positive lift for a positive shift."""
@@ -220,6 +221,7 @@ def test_quantile_default_assignment_policy_rejects_null_unit(tmp_path, mixed):
     )
 
 
+@pytest.mark.integration
 def test_sparse_metric_refuses_rather_than_reporting_a_zero_quantile(tmp_path):
     """The spine zero-fills units with no events, so a sparse metric's p90
     is 0 and has no log. Refuse by name - a silent 0 would read as a real
@@ -245,6 +247,7 @@ def test_sparse_metric_refuses_rather_than_reporting_a_zero_quantile(tmp_path):
     assert raised.value.context["metric"] == "p90_latency"
 
 
+@pytest.mark.integration
 def test_warehouse_quantile_matches_the_frame_path(tmp_path):
     """Same units, same quantile, two substrates. The order statistic is
     computed from identical per-unit values, so this is tighter than the
@@ -335,6 +338,7 @@ def test_factor_summaries_refuses_a_quantile_metric(tmp_path):
     assert raised.value.code == "breakout.quantile"
 
 
+@pytest.mark.integration
 def test_warehouse_quantile_refuses_call_time_inference(tmp_path):
     """Quantile readouts now route through the shared readout pipeline
     (Task 3), which reads its epistemic policy exclusively from the
@@ -377,6 +381,7 @@ def test_native_encouragement_refuses_a_quantile_metric(tmp_path):
     assert raised.value.code == "breakout.quantile"
 
 
+@pytest.mark.integration
 def test_quantile_primary_splits_alpha_by_treatment_arm_count(tmp_path):
     """2 primaries (one quantile) x 2 treatment arms: cell_alpha =
     (plan.alpha/2)/2 = 0.0125 -> level 0.9875 on both primaries' rows -
@@ -427,6 +432,7 @@ def test_quantile_primary_splits_alpha_by_treatment_arm_count(tmp_path):
     assert rows_by_metric["mean_latency"].role == "primary"
 
 
+@pytest.mark.integration
 def test_quantile_primary_casts_int_group_id_before_arm_counting(tmp_path):
     """Same regression `test_execute_path_casts_int_group_id_before_arm_counting`
     pins for the mean-metric (`combined`-based) arm count, but for the
@@ -542,6 +548,7 @@ def test_quantile_family_discovery_is_independent_of_display_alpha():
             assert result.discovery is discovery
 
 
+@pytest.mark.integration
 def test_quantile_joint_metric_arm_family_uses_inversion_at_every_display_alpha():
     import pyarrow as pa
 

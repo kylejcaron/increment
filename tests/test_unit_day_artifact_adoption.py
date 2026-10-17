@@ -1837,3 +1837,6 @@ def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
             analysis.close()
     finally:
         connection.disconnect()
+
+
+pytestmark = pytest.mark.integration

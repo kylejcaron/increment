@@ -1121,6 +1121,7 @@ def _arrow_rows(con, expr) -> tuple[pa.Table, list[dict]]:
     return table, table.to_pylist()
 
 
+@pytest.mark.integration
 def test_group_summary_successes_is_exact_integer_for_declared_binary(
     con, exposures, purchase_events, experiment, conversion_metric
 ):
@@ -1139,6 +1140,7 @@ def test_group_summary_successes_is_exact_integer_for_declared_binary(
     assert all(isinstance(row["n"], int) for row in rows)
 
 
+@pytest.mark.integration
 def test_group_summary_successes_null_without_binary_declaration(
     con, exposures, purchase_events, experiment, conversion_metric, totals, mean_metric
 ):
@@ -1376,6 +1378,7 @@ def test_unit_totals_data_as_of_none_applies_no_cap(con):
     assert totals["y"].iloc[0] == 1.0
 
 
+@pytest.mark.integration
 def test_observation_end_admits_a_unit_whose_window_closes_after_the_experiment(con):
     """A late enrollee is scored when observation is declared to run past `end`.
 
@@ -1656,6 +1659,7 @@ def test_unit_totals_warns_running_experiment_does_not_suggest_observation_end(c
     assert "running" in message, message
 
 
+@pytest.mark.integration
 def test_unit_totals_running_ratio_warning_names_denominator_lag(con):
     """Running experiment + RatioMetric: the censoring warning must flag
     a lagging denominator fact as another possible cause.
@@ -2634,6 +2638,7 @@ def test_daily_group_summary_min_max_count_distinct_kept_at_zero_event_day(con):
     )
 
 
+@pytest.mark.integration
 def test_breakout_dedup_and_dimensioned_query_renders_snowflake_sql(
     exposures, purchase_metric_events, mean_metric, experiment, con
 ):
@@ -2659,6 +2664,7 @@ def test_breakout_dedup_and_dimensioned_query_renders_snowflake_sql(
     ibis.to_sql(summary, dialect="snowflake")
 
 
+@pytest.mark.integration
 def test_unit_totals_by_with_ratio_metric_no_unit_id_collision(exposures, experiment, con):
     """Regression: unit_totals's ratio-metric branch already performs one
     "unit_id"-keyed left_join (numerator x denominator) before the
@@ -2743,6 +2749,7 @@ def test_unit_totals_by_with_ratio_metric_no_unit_id_collision(exposures, experi
 # scope both require strict `ts > first_exposure_ts`, never `>=`.
 
 
+@pytest.mark.integration
 def test_unit_day_panel_excludes_event_at_exact_exposure_timestamp(exposures, experiment, con):
     """Regression: unit_day_panel's event join used an inclusive
     ``events.ts >= spine.first_exposure_ts``. The join itself has no
@@ -2804,6 +2811,7 @@ def test_unit_day_panel_excludes_event_at_exact_exposure_timestamp(exposures, ex
     assert totals.loc["u1", "y"] == 7.0
 
 
+@pytest.mark.integration
 def test_unit_totals_ratio_denominator_excludes_event_at_exact_exposure_timestamp(
     exposures, experiment, con
 ):
@@ -2868,6 +2876,7 @@ def test_unit_totals_ratio_denominator_excludes_event_at_exact_exposure_timestam
     assert totals.loc["u1", "y_den"] == 5.0
 
 
+@pytest.mark.integration
 def test_unit_day_panel_retention_fact_collision_no_phantom_day_zero(exposures, experiment, con):
     """Regression, panel layer: proves unit_day_panel itself no longer
     contains a phantom day-0 event when a RetentionMetric's fact is the same
@@ -3046,6 +3055,7 @@ def _analysis_with_cross_source_breakouts(con):
     return analysis
 
 
+@pytest.mark.integration
 def test_panel_sql_keys_dont_collide_across_breakout_sources(con):
     """Two breakouts sharing a ``property`` name but resolving to
     different fact sources must each get their own ``panel_sql`` key.
@@ -3061,6 +3071,7 @@ def test_panel_sql_keys_dont_collide_across_breakout_sources(con):
     assert result["visit_rate:country:src_a"] != result["visit_rate:country:src_b"]
 
 
+@pytest.mark.integration
 def test_summary_sql_keys_dont_collide_across_breakout_sources(con):
     """Same collision regression as above, for ``summary_sql``."""
     analysis = _analysis_with_cross_source_breakouts(con)
@@ -3072,6 +3083,7 @@ def test_summary_sql_keys_dont_collide_across_breakout_sources(con):
     assert result["checkout:country:src_a"] != result["checkout:country:src_b"]
 
 
+@pytest.mark.integration
 def test_breakout_summaries_keys_dont_collide_across_breakout_sources(con):
     """Same collision regression as above, for ``breakout_summaries``
     all 2 metrics x 2 breakout-sources combinations must be present, not
@@ -3401,6 +3413,7 @@ def test_bounded_retention_right_edge_is_exclusive_at_the_semantic_level(con, ex
     assert totals[totals["unit_id"] == "u1"]["y"].iloc[0] == 0.0
 
 
+@pytest.mark.integration
 def test_retention_band_case_table_pins_every_boundary(con):
     """Six units, one band, both shapes - the per-unit ratchet table from
     the design doc (Decision 5), pinned directly.
@@ -3481,6 +3494,7 @@ def test_retention_band_case_table_pins_every_boundary(con):
         assert results[unbounded.name].loc[unit_id] == y_unbounded, unit_id
 
 
+@pytest.mark.integration
 def test_bounded_and_unbounded_retention_disagree_on_a_late_return(con, experiment):
     """Discrimination guard: the band's right edge must actually apply.
 
@@ -3602,6 +3616,7 @@ def test_retention_censors_immature_units_when_experiment_end_is_none(
     assert totals[totals["unit_id"] == "early"]["y"].iloc[0] == 1.0
 
 
+@pytest.mark.integration
 def test_retention_end_none_agrees_with_end_pinned_to_last_event(
     con, retention_metric, running_tables
 ):
@@ -4066,6 +4081,7 @@ def test_asof_group_summary_by_groups_by_dimension(
         assert agg["total_y"] == pytest.approx(_total(c))
 
 
+@pytest.mark.integration
 def test_asof_group_summary_at_scale_freezes_after_window_close(con):
     """On a fixture sized closer to the
     real investigation (hundreds of units, multi-week window, staggered
@@ -4184,6 +4200,7 @@ def test_asof_group_summary_at_scale_freezes_after_window_close(con):
     assert tail_date not in set(bounded_tail["ds"])
 
 
+@pytest.mark.integration
 def test_asof_group_summary_includes_late_enrollee_unit_totals_censors(con):
     """unit_totals's late-enrollee
     censoring (any unit whose window would extend past experiment.end is
@@ -4480,6 +4497,7 @@ def test_day_axis_conversion_successes_are_exact_integers(
     }
 
 
+@pytest.mark.integration
 def test_day_axis_retention_successes_are_exact_integers(
     con, exposures, page_view_events, experiment, bounded_retention_metric
 ):
@@ -5172,6 +5190,7 @@ def test_asof_retention_gate_comparison_band_start_starts_earlier_same_final_day
             assert final_m.loc[group_id, field] == final_d.loc[group_id, field]
 
 
+@pytest.mark.integration
 def test_asof_cumulative_series_diverges_from_run_under_arm_dependent_return_timing(con):
     """Property test (Decision 6 / spec Blocker 1's failure mode (b)), not a
     bug test: the cumulative as-of series equals the whole-window ``run()``
@@ -5315,6 +5334,7 @@ def test_asof_retention_y_is_binary_not_a_running_sum(con, experiment, bounded_r
     assert set(asof["cy2"].tolist()) == {0.0}
 
 
+@pytest.mark.integration
 def test_asof_retention_converges_to_whole_window_estimate(
     exposures, page_view_events, experiment, bounded_retention_metric
 ):
@@ -5371,6 +5391,7 @@ def test_cohort_group_summary_keys_on_exposure_date(
     assert _total(aug1_treatment.iloc[0]) == 1.0  # u1 returned Aug 3, in band
 
 
+@pytest.mark.integration
 def test_cohort_group_summary_omits_immature_cohorts(
     con, page_view_events, bounded_retention_metric
 ):
@@ -5419,6 +5440,7 @@ def test_cohort_group_summary_omits_immature_cohorts(
     assert cohorts["ds"].dt.date.tolist() == [dt.date(2025, 8, 1)]
 
 
+@pytest.mark.integration
 def test_cohort_group_summary_totals_match_whole_window(
     exposures, page_view_events, experiment, bounded_retention_metric
 ):
@@ -6822,6 +6844,7 @@ def test_panel_row_key_is_null_safe_but_not_a_wildcard(con):
         ("avg_calendar_day", {"u1": 5.0, "u2": 10.0}),
     ],
 )
+@pytest.mark.integration
 def test_panel_spine_keeps_units_enrolled_after_the_event_horizon(aggregation, expected):
     """A running experiment whose fact table lags enrollment must not drop the
     units enrolled since the last loaded event: an empty per-unit day range
@@ -7519,6 +7542,7 @@ def test_artifact_reader_refuses_missing_day_boundary_with_field_context():
         source.close()
 
 
+@pytest.mark.integration
 def test_artifact_round_trip_never_dates_a_late_enrollee_by_its_own_enrollment():
     """`manifest.last_ds` is `max(outcome ds, exposure first_exposure_date)`
     (native_source.py's manifest assembly): a late enrollee's own
@@ -7579,6 +7603,7 @@ def test_artifact_round_trip_never_dates_a_late_enrollee_by_its_own_enrollment()
     source.close()
 
 
+@pytest.mark.integration
 def test_artifact_round_trip_with_a_stale_freshness_watermark_censors_everyone():
     """Zero measure_stats rows and a freshness watermark BEFORE either
     unit's own enrollment date: outcome data genuinely has not loaded far
@@ -7764,6 +7789,7 @@ def _custom_artifact_reader_source(
     )
 
 
+@pytest.mark.integration
 def test_artifact_reader_retention_cohort_gates_on_its_own_watermark_not_a_declared_end():
     """A declared observation end (Jan 31) legitimately sizes the spine
     for a mid-flight artifact, but a retention cohort must still gate
@@ -7825,6 +7851,7 @@ def test_artifact_reader_retention_cohort_gates_on_its_own_watermark_not_a_decla
     source.close()
 
 
+@pytest.mark.integration
 def test_artifact_total_grain_avg_calendar_day_uses_the_freshest_sibling_measures_spine():
     """The spine's day-axis edge is shared across every metric this reader
     session reduces (mirrors native_source.py's `_union_event_horizon`,
@@ -7900,6 +7927,7 @@ def test_artifact_total_grain_avg_calendar_day_uses_the_freshest_sibling_measure
     source.close()
 
 
+@pytest.mark.integration
 def test_artifact_reader_honours_fact_freshness_beyond_the_enrollment_edge():
     """A fact's own freshness watermark can legitimately exceed
     `manifest.last_ds` -- native scans the WHOLE fact table for this
@@ -7956,6 +7984,7 @@ def test_artifact_reader_honours_fact_freshness_beyond_the_enrollment_edge():
     source.close()
 
 
+@pytest.mark.integration
 def test_artifact_reader_sentinel_freshness_falls_back_instead_of_exploding_the_spine():
     """A measure with literally zero matching rows reports its freshness
     as native's far-future 'no data' sentinel -- the shared spine edge
@@ -8000,6 +8029,7 @@ def test_artifact_reader_sentinel_freshness_falls_back_instead_of_exploding_the_
     source.close()
 
 
+@pytest.mark.integration
 def test_artifact_reader_ratio_spine_uses_the_denominator_watermark_when_freshest():
     """native's `_union_event_horizon_for` appends a `RatioMetric`'s
     denominator events after its numerator's own, so the shared spine
@@ -8079,6 +8109,7 @@ def test_artifact_reader_ratio_spine_uses_the_denominator_watermark_when_freshes
     source.close()
 
 
+@pytest.mark.integration
 def test_artifact_reader_daily_ratio_denominator_respects_the_numerator_window_bound():
     """Expired units cannot contaminate another unit's active daily denominator."""
     from increment.frame import MetricSpec

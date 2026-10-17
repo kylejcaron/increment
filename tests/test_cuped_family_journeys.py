@@ -125,6 +125,7 @@ def test_mixed_cuped_family_and_json_replay(ingress):
 
 
 @pytest.mark.parametrize("ingress", ["from_unit_summary", "from_unit_panel"])
+@pytest.mark.integration
 def test_secondary_cuped_fcr_reintervalizes_without_refitting(ingress):
     q05 = {row.metric: row for row in _family_analysis(ingress, 0.05).run()}["secondary_mean"]
     q20 = {row.metric: row for row in _family_analysis(ingress, 0.2).run()}["secondary_mean"]

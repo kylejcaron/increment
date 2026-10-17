@@ -179,6 +179,7 @@ def test_pinned_health_report_repeats_with_identical_source_evidence(tmp_path) -
     assert reports[0].source_snapshot_id == reports[1].source_snapshot_id
 
 
+@pytest.mark.integration
 def test_health_preserves_assigned_failure_beside_triggered_balance(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
@@ -331,14 +332,17 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
     assert restored.source_cutoff == first.source_cutoff
 
 
+@pytest.mark.integration
 def test_health_checks_share_one_snapshot(tmp_path, monkeypatch) -> None:
     _health_snapshot_scenario(tmp_path, monkeypatch)
 
 
+@pytest.mark.integration
 def test_health_second_call_sees_new_rows(tmp_path, monkeypatch) -> None:
     _health_snapshot_scenario(tmp_path, monkeypatch)
 
 
+@pytest.mark.integration
 def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) -> None:
     """Matched native/artifact diagnostics; portable shapes do not retain trigger evidence."""
     import datetime as dt
@@ -457,6 +461,7 @@ def test_health_models_round_trip_pickle_deepcopy_and_nested_immutability() -> N
             cast(MutableMapping[str, float], restored.checks[1].rates).update({"C": 0.5})
 
 
+@pytest.mark.integration
 def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> None:
     import datetime as dt
 
@@ -490,6 +495,7 @@ def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> 
         assert check.code is not None
 
 
+@pytest.mark.integration
 def test_triggered_health_without_declared_allocation_is_unavailable_for_native_and_artifact(
     tmp_path,
 ) -> None:
@@ -991,6 +997,7 @@ def test_health_srm_report_supports_pickle_and_deepcopy() -> None:
         assert restored_srm.observed == assigned.srm.observed
 
 
+@pytest.mark.integration
 def test_health_assumption_discloses_triggered_family_guarantee(tmp_path) -> None:
     from tests.test_triggered_sequential import _FAMILY_PLAN, _analysis, _events
 

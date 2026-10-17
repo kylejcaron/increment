@@ -149,6 +149,7 @@ class TestSitewide:
     """``Analysis.sitewide()`` - native-only whole-window ship-to-all
     impact, one metric at a time."""
 
+    @pytest.mark.integration
     def test_sum_metric_includes_non_exposed_site_noise(self, pricing_site_noise_con):
         """A MeanMetric(aggregation='sum') sitewide() reads the WHOLE
         site's purchase revenue in the window, not just enrolled units'
@@ -200,6 +201,7 @@ class TestSitewide:
             a.sitewide("revenue_per_user", alpha=0.0)
         assert raised.value.code == "estimation.sitewide.alpha"
 
+    @pytest.mark.integration
     def test_ratio_metric_includes_non_exposed_site_noise(self, pricing_site_noise_con):
         """An unwindowed ``revenue_per_session`` (purchase-revenue sum /
         session_end count) sums BOTH parts over the whole site: the noise
@@ -270,6 +272,7 @@ class TestSitewide:
         assert raised.value.code == "facade.analysis.sitewide_winsorized_metric"
         assert raised.value.context["metric"] == "revenue_per_user"
 
+    @pytest.mark.integration
     def test_ratio_evidence_without_its_denominator_refuses(
         self, pricing_site_noise_con, monkeypatch
     ):
@@ -307,6 +310,7 @@ class TestSitewide:
             a.sitewide("not_a_real_metric")
         assert raised.value.code == "facade.analysis.unknown_metric"
 
+    @pytest.mark.integration
     def test_multi_arm_requires_an_explicit_arm(self, pricing_three_arm_con):
         """With a third enrolled arm, ``sitewide()`` will not pick one for
         you - the refusal names both candidates."""
@@ -316,6 +320,7 @@ class TestSitewide:
         assert raised.value.code == "facade.analysis.sitewide_arm_required"
         assert set(raised.value.context["arms"]) == {"treatment", "treatment_b"}  # ty: ignore[invalid-argument-type]
 
+    @pytest.mark.integration
     def test_multi_arm_baseline_nets_out_every_arm(self, pricing_three_arm_con):
         """The counterfactual baseline must subtract BOTH treatment arms'
         contributions, and the ship-to-all population must count every
@@ -345,6 +350,7 @@ class TestSitewide:
         assert result.absolute_impact == pytest.approx(18.0 * 44)
         assert result.relative_impact == pytest.approx(792.0 / 563.45)
 
+    @pytest.mark.integration
     def test_multi_arm_second_arm_reuses_the_same_baseline(self, pricing_three_arm_con):
         """Scoring ``treatment_b`` answers the same question about a
         different arm: identical all-control baseline, its own lift scaled
@@ -361,6 +367,7 @@ class TestSitewide:
         assert result.absolute_impact == pytest.approx(5.0 * 44)
         assert result.relative_impact == pytest.approx(220.0 / 563.45)
 
+    @pytest.mark.integration
     def test_unknown_arm_raises_value_error(self, pricing_three_arm_con):
         """An arm that is not enrolled (here the control group itself) gets
         a named ValueError listing what is available."""
@@ -369,6 +376,7 @@ class TestSitewide:
             a.sitewide("revenue_per_user", arm="control")
         assert raised.value.code == "facade.analysis.sitewide_arm_not_enrolled"
 
+    @pytest.mark.integration
     def test_naming_the_only_arm_matches_omitting_it(self, pricing_site_noise_con):
         """Two-arm backward compatibility at the facade: ``arm=`` is
         optional with one treatment arm, and naming it changes nothing."""

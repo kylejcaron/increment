@@ -514,3 +514,6 @@ def test_gate_declarations_agree_with_the_composition_matrix() -> None:
                     assert cell.code == declared, (capability, metric_type, view, option)
                 else:
                     assert declared == _ACCEPTED, (capability, metric_type, view, option)
+
+
+pytestmark = pytest.mark.integration

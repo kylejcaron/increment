@@ -166,6 +166,7 @@ def _summary():
     )
 
 
+@pytest.mark.integration
 def test_unit_summary_runs_the_composition_end_to_end():
     analysis = _summary()
     rows = analysis.run(estimands=("itt", "compliance"))
@@ -202,6 +203,7 @@ def test_compiled_plan_round_trips_the_wire():
     assert restored.inference == compiled.inference
 
 
+@pytest.mark.integration
 def test_from_moments_replays_the_composed_checkpoint_exactly(tmp_path):
     import pyarrow.parquet as pq
 
@@ -248,6 +250,7 @@ def _panel():
     return pd.DataFrame(rows)
 
 
+@pytest.mark.integration
 def test_unit_panel_runs_the_composition_end_to_end():
     analysis = Analysis.from_unit_panel(
         _panel(),

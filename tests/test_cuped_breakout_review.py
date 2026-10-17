@@ -175,6 +175,7 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
     assert all(row.lift is not None for row in result)
 
 
+@pytest.mark.integration
 def test_definitions_and_artifact_breakouts_supply_cuped_unit_evidence(tmp_path) -> None:
     import yaml
 
@@ -351,6 +352,7 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
     assert refused.sampling_available is False
 
 
+@pytest.mark.integration
 def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch):
     from tests.analysis_factory import _native_source
     from tests.covariate_cases import _CATEGORICAL_DESIGN, categorical_defs_and_con
@@ -617,6 +619,7 @@ def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
     assert calls == 2
 
 
+@pytest.mark.integration
 def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tmp_path):
     import datetime as dt
     import warnings

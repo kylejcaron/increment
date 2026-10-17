@@ -1088,6 +1088,7 @@ def _republish(con, path, analysis, extensions):
 
 
 class TestPlanningBaselineOnWarehouseRoutes:
+    @pytest.mark.integration
     def test_declared_trigger_reads_the_triggered_population(self, tmp_path):
         """The solvers read mean/var as the analyzed population and inflate
         assigned n by 1/trigger_rate, so under a declared trigger every field
@@ -1111,6 +1112,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
         finally:
             con.disconnect()
 
+    @pytest.mark.integration
     def test_artifact_with_trigger_evidence_matches_definitions(self, tmp_path):
         from increment.semantics.artifact import (
             AssignmentCountsRequest,
@@ -1529,6 +1531,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 reopened.close()
             con.disconnect()
 
+    @pytest.mark.integration
     def test_artifact_without_trigger_evidence_refuses_by_name(self, tmp_path):
         """A declared trigger the artifact carries no evidence for refuses by
         SOURCE, naming the missing extensions, instead of planning the
@@ -1547,6 +1550,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
         finally:
             con.disconnect()
 
+    @pytest.mark.integration
     def test_untriggered_metric_keeps_the_default_trigger_rate(self, tmp_path):
         """No trigger declared -> trigger_rate stays at Baseline's default
         of 1.0, even though this metric's own analyzed count falls short of
@@ -1918,6 +1922,7 @@ class TestPlanningBaselineOnSwitchback:
                         )
         return pl.DataFrame(rows)
 
+    @pytest.mark.integration
     def test_delegates_to_the_switchback_source_and_feeds_its_planner(self):
         """Analysis.from_switchback_panel's planning_baseline is the source's
         own pilot-fitted SwitchbackBaseline, which the switchback planner

@@ -985,3 +985,6 @@ class TestEvalResultValidationAndImmutability:
 
         with pytest.raises(TypeError):
             getattr(result, field)["new"] = 1  # type: ignore[index]
+
+
+pytestmark = pytest.mark.integration

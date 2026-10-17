@@ -657,6 +657,7 @@ def test_asof_identity_survives_standalone_wire(as_of):
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 @pytest.mark.parametrize("path", ["analysis", "readouts"])
 @pytest.mark.parametrize("explicit_anchor", [False, True])
+@pytest.mark.integration
 def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
     labels, backend, path, explicit_anchor
 ):

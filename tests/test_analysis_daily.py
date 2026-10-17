@@ -2136,3 +2136,6 @@ def test_native_daily_value_readout_does_not_build_pre_period_stats(
     monkeypatch.setattr(_native_day_source, "pre_period_stats", fail)
     analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
     assert analysis.run_daily(metrics=["purchase_rate"])
+
+
+pytestmark = pytest.mark.integration

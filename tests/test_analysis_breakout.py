@@ -1384,3 +1384,6 @@ def test_retention_breakout_reports_censoring_once():
         analysis.close()
         for connection in getattr(analysis, "_parity_connections", ()):
             connection.disconnect()
+
+
+pytestmark = pytest.mark.integration

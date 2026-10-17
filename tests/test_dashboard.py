@@ -2642,3 +2642,6 @@ def test_clustered_overview_fallback_preserves_each_metric_collection(
         assert any("p90_revenue" in note and refusal[2].code in note for note in notes)
     finally:
         analysis.close()
+
+
+pytestmark = pytest.mark.integration

@@ -43,6 +43,7 @@ def _node_or_gate() -> str:
     return node_path
 
 
+@pytest.mark.integration
 def test_dashboard_shell_scripts_parse(tmp_path):
     node_path = _node_or_gate()
     html = files("increment.dashboard").joinpath("_shell.html").read_text()
@@ -51,6 +52,7 @@ def test_dashboard_shell_scripts_parse(tmp_path):
     assert _syntax_errors(node_path, scripts, tmp_path) == []
 
 
+@pytest.mark.integration
 def test_syntax_gate_rejects_an_unclosed_function(tmp_path):
     node_path = _node_or_gate()
     broken = "<script>(function () {\n  function render() {\n    if (x) {}\n})();</script>"

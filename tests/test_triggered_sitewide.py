@@ -1334,3 +1334,6 @@ def test_count_metric_sitewide_counts_events_alike_on_both_ingresses(tmp_path):
             analysis.close()
         else:
             _close_parity_analysis(adopted)
+
+
+pytestmark = pytest.mark.integration

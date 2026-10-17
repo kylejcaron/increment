@@ -16,6 +16,7 @@ def test_explicit_slow_test_target() -> None:
     assert Path(__file__).parent == ROOT / "tests"
 
 
+@pytest.mark.integration
 def test_make_test_runs_explicit_slow_selector() -> None:
     environment = os.environ.copy()
     for name in ("MAKEFLAGS", "MAKELEVEL", "MFLAGS", "PYTEST_ARGS", "PYTEST_ADDOPTS"):

@@ -245,6 +245,7 @@ class TestFactorSummaries:
     ``_resolve_breakout_props``/``_build_breakout_properties_table``.
     """
 
+    @pytest.mark.integration
     def test_emits_one_row_per_level_and_arm(self, con):
         """factor_summaries(con) materialises one ``group_summary`` row per
         (factor level x arm) for every declared factor - the
@@ -320,6 +321,7 @@ class TestFactorSummaries:
             a.factor_summaries()
         assert raised.value.code == "facade.analysis.operation"
 
+    @pytest.mark.integration
     def test_pre_exposure_factor_ignores_post_exposure_value(self, con):
         """The pre-exposure dispatch wired into
         ``_build_breakout_properties_table`` is shared between breakouts
@@ -442,6 +444,7 @@ class TestFactorSummaries:
     @pytest.mark.filterwarnings(
         "ignore:factor .* levels survived absorption, below 40:RuntimeWarning"
     )
+    @pytest.mark.integration
     def test_absorb_factor_end_to_end(self, con):
         """absorb_factor pivots a real factor_summaries table into
         absorb_one_way's per-level arrays and returns a sharpened ATE

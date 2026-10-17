@@ -204,6 +204,7 @@ def test_installed_hooks_run_in_linked_worktrees_without_project_environment(
         parked.rename(unavailable)
 
 
+@pytest.mark.integration
 def test_install_refuses_conflicting_existing_legacy_ownership(
     tmp_path: Path, stable_tool: tuple[Path, str]
 ) -> None:
@@ -228,6 +229,7 @@ def test_install_refuses_conflicting_existing_legacy_ownership(
 
 
 @pytest.mark.parametrize("dangling_entry", ["pre-commit", "pre-commit.legacy"])
+@pytest.mark.integration
 def test_install_preserves_dangling_hook_symlinks(
     tmp_path: Path, stable_tool: tuple[Path, str], dangling_entry: str
 ) -> None:
@@ -258,6 +260,7 @@ def test_install_preserves_dangling_hook_symlinks(
         assert hook.read_bytes() == custom_content
 
 
+@pytest.mark.integration
 def test_install_rejects_project_environment_executable(
     tmp_path: Path, stable_tool: tuple[Path, str]
 ) -> None:
@@ -271,6 +274,7 @@ def test_install_rejects_project_environment_executable(
         install_dev_hooks.install_hooks(repo, prek=local_tool)
 
 
+@pytest.mark.integration
 def test_main_discovers_windows_user_tool_filename(
     tmp_path: Path, stable_tool: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

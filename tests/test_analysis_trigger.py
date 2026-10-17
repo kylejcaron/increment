@@ -3837,3 +3837,6 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
     finally:
         analysis.close()
         con.disconnect()
+
+
+pytestmark = pytest.mark.integration

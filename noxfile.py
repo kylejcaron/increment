@@ -77,7 +77,9 @@ DUCKDB_FLOORS: dict[str, str] = {
 # buys nothing and costs worker startup.
 PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup")
 TIER_MARKERS = {
-    "fast": "not slow and not parameter_recovery and not numerical_certification",
+    "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
+    "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress",
+    "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress",
     "slow": ("slow and not parameter_recovery and not numerical_certification and not examples"),
     "parameter-recovery": "parameter_recovery",
     "numerical-certification": "numerical_certification",

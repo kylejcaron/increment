@@ -173,3 +173,6 @@ def test_successful_legacy_statuses_and_ci_allow_release(tmp_path):
 def test_a_status_without_required_ci_cannot_release(tmp_path):
     statuses = [{"state": "success", "statuses": [{"context": "external", "state": "success"}]}]
     assert _gate(tmp_path, [[]], statuses).returncode != 0
+
+
+pytestmark = pytest.mark.integration

@@ -3138,3 +3138,6 @@ def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path)
     finally:
         adopted.close()
         native.close()
+
+
+pytestmark = pytest.mark.integration

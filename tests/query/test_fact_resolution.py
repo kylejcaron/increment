@@ -287,6 +287,7 @@ def test_fact_source_missing_event_refuses_before_data_query_and_survives_transp
 
 @pytest.mark.parametrize("missing_source", ["exposure", "metric"])
 @pytest.mark.parametrize("operation", ["run", "publish"])
+@pytest.mark.integration
 def test_missing_fact_source_event_refuses_before_public_data_query(
     tmp_path, monkeypatch: pytest.MonkeyPatch, missing_source: str, operation: str
 ) -> None:

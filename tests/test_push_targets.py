@@ -31,6 +31,7 @@ def _update(local_ref: str, local_oid: str, remote_ref: str = "refs/heads/main")
     return PushUpdate(local_ref, local_oid, remote_ref, "0" * 40)
 
 
+@pytest.mark.integration
 def test_push_of_non_head_ref_refuses(tmp_path: Path) -> None:
     repo, _ = _repository(tmp_path / "repo")
     _run("git", "-C", str(repo), "switch", "--quiet", "-c", "other")
@@ -42,6 +43,7 @@ def test_push_of_non_head_ref_refuses(tmp_path: Path) -> None:
         checked_push_commits(repo, (_update("refs/heads/other", other),))
 
 
+@pytest.mark.integration
 def test_second_ref_is_not_ignored(tmp_path: Path) -> None:
     repo, head = _repository(tmp_path / "repo")
     _run("git", "-C", str(repo), "switch", "--quiet", "-c", "other")
@@ -59,6 +61,7 @@ def test_second_ref_is_not_ignored(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.integration
 def test_annotated_tag_resolves_to_checked_commit(tmp_path: Path) -> None:
     repo, head = _repository(tmp_path / "repo")
     _run("git", "-C", str(repo), "tag", "-a", "release", "-m", "release")
@@ -67,6 +70,7 @@ def test_annotated_tag_resolves_to_checked_commit(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("object_kind", ["missing", "blob"])
+@pytest.mark.integration
 def test_non_commit_object_refuses(tmp_path: Path, object_kind: str) -> None:
     repo, _ = _repository(tmp_path / "repo")
     oid = (
@@ -78,6 +82,7 @@ def test_non_commit_object_refuses(tmp_path: Path, object_kind: str) -> None:
         checked_push_commits(repo, (_update("refs/heads/main", oid),))
 
 
+@pytest.mark.integration
 def test_duplicate_candidate_commits_keep_first_input_order(tmp_path: Path) -> None:
     repo, head = _repository(tmp_path / "repo")
     updates = (
@@ -87,6 +92,7 @@ def test_duplicate_candidate_commits_keep_first_input_order(tmp_path: Path) -> N
     assert checked_push_commits(repo, updates) == (head,)
 
 
+@pytest.mark.integration
 def test_dirty_candidate_refuses(tmp_path: Path) -> None:
     repo, head = _repository(tmp_path / "repo")
     (repo / "tracked.py").write_text("VALUE = 2\n", encoding="utf-8")
@@ -94,6 +100,7 @@ def test_dirty_candidate_refuses(tmp_path: Path) -> None:
         checked_push_commits(repo, (_update("refs/heads/main", head),))
 
 
+@pytest.mark.integration
 def test_deletion_only_has_no_candidate(tmp_path: Path) -> None:
     repo, _ = _repository(tmp_path / "repo")
     assert checked_push_commits(repo, (_update("(delete)", "0" * 40),)) == ()
