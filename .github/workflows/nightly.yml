@@ -88,7 +88,8 @@ jobs:
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - name: Log randomized-order seed
         run: echo "pytest-randomly seed=20261017"
-      - run: make test-fast WORKERS=auto PYTEST_ARGS="-p randomly --randomly-seed=20261017 --durations=25 --junitxml=random-fast-junit.xml"
+      # pytest-randomly is installed only for this job, so every other run keeps declaration order.
+      - run: make test-fast WORKERS=auto PYTEST="uv run --with pytest-randomly --extra demo --extra tables --extra dashboard pytest" PYTEST_ARGS="-p randomly --randomly-seed=20261017 --durations=25 --junitxml=random-fast-junit.xml"
       - name: Retain randomized fast JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
