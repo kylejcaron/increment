@@ -76,9 +76,16 @@ checkout's `.venv`. Inspect existing custom/legacy ownership before installation
 never force-replace shared hooks while active worktrees are unprepared.
 
 The pre-push checks run lint, type-checking and the affected fast tier.
-`make check` is an optional broader local check; CI remains the full-suite
-gate. The numerical-certification decision and result are enforced by `ci-ok`;
-hosted branch-protection activation is an owner gate.
+`make check` is an optional broader local check; CI remains the PR test gate.
+Numerical certification is selected from the certified modules' transitive
+`tach.toml` import graph, certification-test changes and CI/build configuration;
+unrelated module changes such as `increment/dashboard/_html.py` do not select it.
+The parity-harness certification case runs nightly; its facade is not a
+certification root because the other harness cases exercise those ingress paths
+on every PR.
+Tagging requires successful `ci-ok` and a successful nightly run on the exact
+tagged SHA. The existing `force` input bypasses both checks; hosted
+branch-protection activation is an owner gate.
 
 The Python 3.12 fast shards upload optional executed-code coverage artifacts.
 After the required jobs, `ci-ok` combines matching shard artifacts and
@@ -110,9 +117,9 @@ do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
 | Unit/small regression | No category mark | Focused/affected feedback and ordinary fast CI |
 | Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and required CI |
 | Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
-| Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Monte Carlo-only target remains available; included in scientific union shards and relevant inference validation |
-| Deterministic inferential certification | `numerical_certification` and `slow` | Dedicated relevant-change CI decision/job; also included in weekly scientific union shards |
-| Runnable notebook exports | `examples` and `slow` | Notebook acceptance/documentation and weekly full-functional jobs |
+| Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Nightly required gate and relevant inference validation |
+| Deterministic inferential certification | `numerical_certification` and `slow` | Required for relevant changes and in the nightly gate |
+| Runnable notebook exports | `examples` and `slow` | Nightly required gate and notebook acceptance/documentation |
 
 `slow` describes cost, not purpose. A solver regression at ordinary inputs
 does not become stress merely because it is slow: investigate production
@@ -126,9 +133,10 @@ certification. Moving it outside routine CI requires an executable,
 required gate for relevant changes and a scheduled/release route, with
 failure evidence retained; a label or proposed workflow is insufficient.
 Monte Carlo and deterministic numerical certification are excluded from fast
-and functional-slow. The dedicated certification job requires relevant changes;
-weekly scientific-union shards execute both scientific purposes. Full and
-dependency-floor matrices retain their previously covered numerical cases:
+and functional-slow. The certification job requires relevant changes selected
+from the `tach.toml` module graph, while the nightly runs both scientific
+purposes, examples, full fast and slow tiers, and a randomized-order fast tier.
+Weekly retains dependency-floor matrices and live warehouse backends.
 `TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass[central]`
 and `[rare]`, plus `test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]`.
 Weekly execution does not replace required scientific validation before merging
@@ -245,7 +253,7 @@ reports and prints the duration summary for test jobs.
 
 Monte Carlo-only shards use
 `make test-parameter-recovery SPLITS=4 GROUP=1`; deterministic certification
-uses `make test-numerical-certification`. Weekly scientific-union shards use
+uses `make test-numerical-certification`. Nightly scientific-union shards use
 `make test-scientific SPLITS=4 GROUP=1`; without local timing data,
 pytest-split distributes tests evenly.
 
@@ -269,7 +277,7 @@ need those services for ordinary changes.
 The checked-in CI candidate requires lint, fast tests, functional slow tests,
 package builds, and live PostgreSQL 16 probes through `ci-ok`; hosted
 enforcement and required-check activation remain owner gates. PR fast tests run
-on Python 3.12 and 3.14; 3.13 remains in main pushes and weekly full/floor
+on Python 3.12 and 3.14; 3.13 remains in main pushes and nightly full/weekly floor
 matrices. `ci-ok` validates every selected fast shard and required conditional
 gate. It combines Python 3.12 fast-shard coverage advisory; cross-platform wheel
 smoke runs for packaging-related PR changes and on pushes.
@@ -329,17 +337,19 @@ average weight. To refresh weights, run the complete suite with
 Do not run workers against a shared warehouse namespace.
 
 The
+[nightly workflow](.github/workflows/nightly.yml) runs daily at 06:00 UTC or
+on dispatch on any ref. It runs the full fast and slow tiers with the full
+parity matrix, numerical certification, parameter recovery, examples, and a
+randomized-order fast run with its seed logged. A failure creates or updates a
+GitHub issue labelled `nightly-failure`; tagging also requires a successful
+nightly run on the exact release SHA.
+
+The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
-on manual dispatch: full slow/examples suites at locked dependencies and
-floors on all three Python versions, four scientific-union shards on Python
-3.12, and all three warehouse backends. Fast, full and scientific jobs upload
-JUnit reports and print duration summaries. The full-suite jobs
-allow 90 minutes: prior completed jobs needed up to 55 minutes of pytest time,
-with roughly one minute for session startup and dependency setup, so the limit
-leaves about 34 minutes of margin without adding shard/configuration overhead.
-Live warehouse timings stay in the job logs, where GitHub masks secrets; raw
-cloud tracebacks are not uploaded as artifacts. Weekly failures create or
-update a GitHub issue labelled `weekly-failure`.
+on manual dispatch. It retains full test runs at dependency floors on all
+three Python versions, which nightly does not cover, plus all three live
+warehouse backends. Weekly failures create or update a GitHub issue labelled
+`weekly-failure`.
 
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based

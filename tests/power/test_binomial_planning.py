@@ -122,6 +122,7 @@ class TestExactRouteMatchesRuntime:
         assert result.power == pytest.approx(expected, abs=1e-11)
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     @pytest.mark.parametrize(
         ("n_c", "n_t", "null_ratio", "alpha", "tail", "alternative"),
         [
@@ -183,6 +184,7 @@ class TestConversionExample:
     _PROCEDURE = ArmPlanningProcedure.standard("conversion", conversion_inference="finite_sample")
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_achieved_power_is_the_runtime_rejection_probability(self):
         result = achieved_power(701, 0.5, self._BASELINE, self._PROCEDURE)
         assert result.power_basis == "exact"
@@ -193,6 +195,7 @@ class TestConversionExample:
         assert at_mde.power >= PowerDesign().power
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_required_sample_size_reaches_target_at_its_integer_size(self):
         sized = required_sample_size(0.5, self._BASELINE, self._PROCEDURE)
         assert sized.power_basis == "exact"
@@ -557,6 +560,7 @@ class TestATailLevelTheSolverRefuses:
         assert effect.value.code == "power.binomial_tail_level_unrepresentable"
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_the_first_alpha_the_solver_admits_is_sized_and_decided(self):
         alpha = 4e-8
         binomial_rr.confidence_interval(
@@ -623,6 +627,7 @@ class TestAShiftedNullTheControlArmAloneRejects:
     @pytest.mark.parametrize("alternative", ["less", "two-sided"])
     @pytest.mark.parametrize("route", ["exact", "approximate"])
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_a_window_of_structural_counts_has_the_runtime_power_without_a_replay(
         self, monkeypatch, alternative, route
     ):
@@ -1048,7 +1053,11 @@ class TestLargeArmsDecideAsTheRuntime:
         [
             (10_000_000, 0.5007),
             (100_000_000, 0.55),
-            pytest.param(1_000_000_000, 0.65, marks=pytest.mark.slow),
+            pytest.param(
+                1_000_000_000,
+                0.65,
+                marks=[pytest.mark.slow, pytest.mark.numerical_certification],
+            ),
         ],
     )
     def test_a_point_mass_treatment_tail_at_the_control_median_equals_the_runtime(self, n, level):
@@ -1071,6 +1080,7 @@ class TestLargeArmsDecideAsTheRuntime:
         assert bool(plus[0, 0]) is False
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_achieved_power_at_a_huge_rare_arm_is_the_runtime_rejection_probability(self):
         """Through the public path: 1e8 units per arm expecting 5 and 12.5 events. The power is
         the sum over every retained count pair of the binomial weights where the unchanged
@@ -1216,6 +1226,7 @@ class TestPlanningNumericalEnclosure:
         assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_large_arm_point_admission_does_not_require_a_certified_mde(self):
         """Numerical PMF allowance is bounded internally rather than subtracted from power."""
         target = PowerDesign().power
@@ -1645,6 +1656,7 @@ class TestApproximateRoute:
         assert plus[0].tolist() == [False, False, True, True]
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_a_plan_beyond_the_replay_budget_leaves_its_lightest_pairs_ambiguous(self, monkeypatch):
         """Budgeted mass remains diagnostic when the remaining probability is material."""
         n, p_c, p_t = 300, 0.1, 0.2
@@ -1960,6 +1972,7 @@ class TestACellsDecisionIsTheSameWhateverRequestDecidesIt:
             assert np.array_equal(got, expected)
 
     @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_the_companion_effect_is_the_direct_effect_whatever_the_supplied_lift(self):
         """The effect search after a supplied effect starts from that effect's decided cells;
         its answer is the direct search's, below, near and above the effect it finds."""
@@ -2047,6 +2060,7 @@ _SIZING_CASES = [
 
 
 @pytest.mark.slow
+@pytest.mark.numerical_certification
 @pytest.mark.parametrize(("baseline", "overrides", "design", "lift"), _SIZING_CASES)
 def test_size_is_a_verified_crossing_with_the_companion_of_its_own_size(
     baseline, overrides, design, lift

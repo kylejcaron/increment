@@ -69,8 +69,8 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   checks also use `@pytest.mark.parameter_recovery`, while deterministic
   inferential certification uses `@pytest.mark.numerical_certification`.
   Keep exact designs, seeds, repetitions, thresholds and tolerances in both
-  classes; the required certification gate covers relevant changes, while
-  weekly scientific shards retain the union. Full calibration grids live in
+  classes; the required certification gate covers relevant changes, and the
+  nightly runs both scientific categories. Full calibration grids live in
   `calibration/` and run before releases or covered-inference changes; retain
   representative slow sentinels and a fast smoke.
 - Assert consumer-visible behavior: codes, numerical tolerances, boundaries,
@@ -85,18 +85,23 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   [CONTRIBUTING.md](CONTRIBUTING.md#tests-and-quality-checks). It is local
   feedback, may select no tests, and does not waive slow, parity, fixtures,
   public smokes, documentation, scientific or full-suite gates. CI is the
-  authoritative full-suite gate.
+  authoritative PR gate; a required nightly covers the full test union.
+  Numerical certification is selected from certified modules' transitive
+  `tach.toml` dependencies, certification-test changes and CI/build config.
 - Test targets use plain pytest marker expressions: fast excludes `slow`,
   `parameter_recovery` and `numerical_certification`; slow selects `slow`
   excluding those scientific markers and `examples`; scientific is the union
-  of `parameter_recovery` and `numerical_certification`; all uses
-  `slow or not slow`. Each test has the configured 300-second timeout.
+  of `parameter_recovery` and `numerical_certification` and runs nightly; all
+  uses `slow or not slow`. Tags require successful `ci-ok` and a successful
+  nightly run on the exact SHA unless the explicit `force` input is used. Each
+  test has the configured 300-second timeout.
 - The default local worker count is `max(1, CPU count // 3)`; CI passes
   `WORKERS=auto`. Tests MUST remain xdist-independent. The ignored
   `.test_durations` cache controls stable longest-first ordering.
 - The pre-push hook runs lint, type-checking and the affected fast tier.
-  `make check` is an optional broader local check; full-suite and required
-  scientific gates remain CI responsibilities.
+  `make check` is an optional broader local check; the required full-suite
+  and scientific gates run nightly. Tagging requires both `ci-ok` and a green
+  nightly on the exact tagged SHA unless `force` is supplied.
 - Use `make fmt`; build docs with `nox -s docs`, not bare MkDocs.
 
 ## Coordination and review

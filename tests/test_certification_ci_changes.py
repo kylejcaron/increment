@@ -29,9 +29,32 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
-    (repo / "README.md").write_text("base\n")
+    (repo / "tach.toml").write_text(
+        "exact = true\n"
+        '[[modules]]\npath = "increment.power._binomial"\ndepends_on = ["increment.power.core"]\n'
+        '[[modules]]\npath = "increment.power.core"\ndepends_on = ["increment.errors"]\n'
+        '[[modules]]\npath = "increment.estimation"\ndepends_on = ["increment.errors"]\n'
+        '[[modules]]\npath = "increment.analysis"\ndepends_on = ["increment.estimation", "increment.errors"]\n'
+        '[[modules]]\npath = "increment.dashboard"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment.errors"\ndepends_on = []\n'
+        '[[modules]]\npath = "increment.future_engine"\ndepends_on = ["increment.errors"]\n'
+    )
+    for path, imports in {
+        "tests/power/test_binomial_planning.py": (
+            "from increment.power._binomial import RejectionGeometry\n"
+        ),
+        "tests/estimation/test_conversion_route_calibration.py": (
+            "from increment.estimation import binomial_rr\n"
+        ),
+        "tests/calibration/test_cuped_linear.py": (
+            "from increment.estimation.cuped import fit_cuped\n"
+        ),
+    }.items():
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(imports)
     _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", "base")
+    _git(repo, "commit", "-qm", "module graph")
     base = _git(repo, "rev-parse", "HEAD")
     return repo, base
 
@@ -83,8 +106,13 @@ def _commit_change(repo: Path, path: str) -> None:
         "noxfile.py",
         "pyproject.toml",
         "uv.lock",
+        "tach.toml",
+        "tests/power/test_binomial_planning.py",
+        "tests/calibration/test_cuped_linear.py",
+        "tests/parity_harness/cases.py",
         ".github/workflows/ci.yml",
         ".github/workflows/weekly.yml",
+        ".github/workflows/nightly.yml",
     ],
 )
 def test_relevant_change_requires_certification(repository, path: str):
@@ -98,6 +126,35 @@ def test_unrelated_docs_only_pr_does_not_require_certification(repository, path:
     repo, base = repository
     _commit_change(repo, path)
     assert not _required(repo, base)
+
+
+def test_transitive_dependency_of_certified_module_requires_certification(repository):
+    repo, base = repository
+    _commit_change(repo, "increment/errors.py")
+    assert _required(repo, base)
+
+
+def test_dashboard_only_change_does_not_require_certification(repository):
+    repo, base = repository
+    _commit_change(repo, "increment/dashboard/_html.py")
+    assert not _required(repo, base)
+
+
+def test_facade_only_change_does_not_require_certification(repository):
+    repo, base = repository
+    _commit_change(repo, "increment/analysis.py")
+    assert not _required(repo, base)
+
+
+def test_new_import_in_a_certification_test_adds_a_graph_root(repository):
+    from scripts.certification_ci_changes import _certified_modules
+
+    repo, _ = repository
+    roots = _certified_modules(repo)
+    assert "increment.future_engine" not in roots
+    test_module = repo / "tests/power/test_binomial_planning.py"
+    test_module.write_text(test_module.read_text() + "\nimport increment.future_engine\n")
+    assert "increment.future_engine" in _certified_modules(repo)
 
 
 def test_mixed_docs_and_source_requires_certification(repository):
