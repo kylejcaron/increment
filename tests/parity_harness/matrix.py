@@ -52,6 +52,7 @@ No I/O at import; builders live in ``matrix_cases``.
 from __future__ import annotations
 
 import itertools
+import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -77,6 +78,15 @@ OPTIONS = (
 )
 DAY_BOUNDARIES = ("utc", "fixed_offset")
 MISSING = ("error", "zero", "drop", "impute")
+
+
+def parity_matrix_scope() -> Literal["cover", "full"]:
+    """Return the selected parity scope, defaulting to the PR covering array."""
+    scope = os.environ.get("INCREMENT_PARITY_MATRIX", "cover")
+    if scope not in ("cover", "full"):
+        raise ValueError("INCREMENT_PARITY_MATRIX must be 'cover' or 'full'")
+    return scope
+
 
 Status = Literal[
     "supported",
@@ -1293,6 +1303,59 @@ def classify(cell: Cell) -> Disposition:
             )
         legs[method] = _reconcile_hazards(verdicts)
     return Disposition(legs)
+
+
+def _disposition_signature(disposition: Disposition) -> tuple[object, ...]:
+    verdicts = tuple(
+        (method, ingress, verdict.status)
+        for method, leg in disposition.legs.items()
+        for ingress, verdict in leg.items()
+    )
+    refusal_codes = tuple(
+        (method, ingress, verdict.outcome.code)
+        for method, leg in disposition.legs.items()
+        for ingress, verdict in leg.items()
+        if isinstance(verdict.outcome, Refuses)
+    )
+    waived_ingresses = frozenset(
+        ingress
+        for leg in disposition.legs.values()
+        for ingress, verdict in leg.items()
+        if not isinstance(verdict.outcome, Runs)
+    )
+    return verdicts, refusal_codes, waived_ingresses
+
+
+def parity_matrix_cells() -> tuple[Cell, ...]:
+    """Return the selected primary matrix cells, including disposition sentinels."""
+    cells = tuple(iter_cells())
+    if parity_matrix_scope() == "full":
+        return cells
+
+    from tests.parity_harness.covering import _covering_subset
+
+    covered = set(
+        _covering_subset(
+            tuple(
+                (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing)
+                for cell in cells
+            ),
+            strength=3,
+        )
+    )
+    sentinels: dict[tuple[object, ...], Cell] = {}
+    for cell in cells:
+        sentinels.setdefault(_disposition_signature(classify(cell)), cell)
+    selected = covered
+    selected.update(
+        (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing)
+        for cell in sentinels.values()
+    )
+    return tuple(
+        cell
+        for cell in cells
+        if (cell.metric, cell.view, cell.option, cell.day_boundary, cell.missing) in selected
+    )
 
 
 def _hazard_codes(verdicts: Mapping[str, Verdict]) -> dict[str, set[str]]:
