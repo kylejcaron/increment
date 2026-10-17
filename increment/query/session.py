@@ -1244,6 +1244,11 @@ class WarehouseArtifactStore:
 
 _MAX_IDENTIFIER_LEN = 63  # Postgres's limit - the tightest among supported backends
 
+# Bound per-result and per-snapshot retention so long readouts cannot pin unbounded Arrow memory.
+_MAX_ARROW_RESULT_BYTES = 16 * 1024 * 1024
+_MAX_ARROW_CACHE_BYTES = 128 * 1024 * 1024
+_OPAQUE_SQL_OPS = (ops.SQLStringView, ops.SQLQueryResult)
+
 
 @dataclass(frozen=True, slots=True)
 class SourceScope:
@@ -1329,8 +1334,8 @@ class WarehouseSession:
         # CREATE TEMP TABLE, where a forced overwrite can drop an unrelated permanent table.
         self._suffix = uuid.uuid4().hex[:12]
         self._source_snapshot_evidence = source_snapshot_evidence
-        self._compiled_queries: dict[Any, str] = {}
         self._arrow_results: dict[Any, Any] = {}
+        self._arrow_cache_bytes = 0
         self._captured_relations: frozenset[Any] | None = None
 
     @property
@@ -1348,7 +1353,10 @@ class WarehouseSession:
     def _is_captured_expression(self, expression: ir.Expr) -> bool:
         if self._captured_relations is None:
             return False
-        relation_ops = tuple(cast(Any, node) for node in expression.op().find(ops.Relation))
+        operation = expression.op()
+        if any(operation.find(opaque_sql_op) for opaque_sql_op in _OPAQUE_SQL_OPS):
+            return False
+        relation_ops = tuple(cast(Any, node) for node in operation.find(ops.Relation))
 
         def contains_relation(value: Any) -> bool:
             if isinstance(value, ops.Relation):
@@ -1360,29 +1368,11 @@ class WarehouseSession:
             return False
 
         leaves = tuple(
-            operation
-            for operation in relation_ops
-            if not any(contains_relation(argument) for argument in operation.args)
+            relation
+            for relation in relation_ops
+            if not any(contains_relation(argument) for argument in relation.args)
         )
         return bool(leaves) and all(relation in self._captured_relations for relation in leaves)
-
-    def compile(self, expression: ir.Expr, *args: Any, **kwargs: Any) -> str:
-        """Compile a pinned query, memoizing only expressions over captured relations."""
-        cacheable = (
-            self._is_captured_expression(expression)
-            and not args
-            and set(kwargs) <= {"params", "limit"}
-            and kwargs.get("params") is None
-            and kwargs.get("limit") is None
-        )
-        if not cacheable:
-            return self._con.compile(expression, *args, **kwargs)
-        operation = expression.op()
-        compiled = self._compiled_queries.get(operation)
-        if compiled is None:
-            compiled = self._con.compile(expression, *args, **kwargs)
-            self._compiled_queries[operation] = compiled
-        return compiled
 
     def fetch_arrow(
         self,
@@ -1398,21 +1388,27 @@ class WarehouseSession:
         convert to Python records or derive a new Arrow table; pandas writes replace
         or copy Arrow-backed columns rather than mutating cached buffers in place.
         """
-        cacheable = (
-            self._is_captured_expression(expression)
-            and params is None
-            and limit is None
-            and not kwargs
-        )
-        if not cacheable:
+        if (
+            not self._is_captured_expression(expression)
+            or params is not None
+            or limit is not None
+            or kwargs
+        ):
             return cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
         operation = expression.op()
         result = self._arrow_results.get(operation)
-        if result is None:
-            result = cast(Any, self._con).to_pyarrow(
-                expression, params=params, limit=limit, **kwargs
-            )
+        if result is not None:
+            return result
+        result = cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
+        result_size = getattr(result, "nbytes", None)
+        if (
+            isinstance(result_size, int)
+            and result_size <= _MAX_ARROW_RESULT_BYTES
+            and self._arrow_cache_bytes < _MAX_ARROW_CACHE_BYTES
+            and result_size <= _MAX_ARROW_CACHE_BYTES - self._arrow_cache_bytes
+        ):
             self._arrow_results[operation] = result
+            self._arrow_cache_bytes += result_size
         return result
 
     def source_sql(self, sql: str) -> Table:
@@ -1638,8 +1634,8 @@ class WarehouseSession:
                 pass
         self._materialized = []
         self._suffix = uuid.uuid4().hex[:12]
-        self._compiled_queries.clear()
         self._arrow_results.clear()
+        self._arrow_cache_bytes = 0
         self._captured_relations = None
 
     @property

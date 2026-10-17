@@ -7,7 +7,7 @@ import time
 import warnings
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import ibis
@@ -41,25 +41,22 @@ def _session():
     )
 
 
-def _readout_source(session, snapshots):
+def _readout_source(snapshots):
     from contextlib import contextmanager
 
-    from increment.query.native_source import DefinitionsMomentSource
+    class ReadoutSource:
+        def __init__(self):
+            self.snapshots = iter(snapshots)
 
-    source = cast(Any, object.__new__(DefinitionsMomentSource))
-    source._session = session
-    pending = iter(snapshots)
+        @contextmanager
+        def readout_snapshot(self, **_kwargs):
+            snapshot = next(self.snapshots)
+            try:
+                yield snapshot
+            finally:
+                snapshot.drop_materialized()
 
-    @contextmanager
-    def pinned_execution(**_kwargs):
-        snapshot = next(pending)
-        try:
-            yield snapshot
-        finally:
-            snapshot.drop_materialized()
-
-    source._pinned_source_execution = pinned_execution
-    return source
+    return ReadoutSource()
 
 
 @pytest.mark.integration
@@ -89,36 +86,6 @@ def test_snapshot_arrow_cache_reuses_only_captured_relation_results(monkeypatch)
 
 
 @pytest.mark.integration
-def test_snapshot_compile_cache_reuses_only_captured_relation_compilation(monkeypatch):
-    con, session = _session()
-    snapshot = session.pin_sources(("select x from t",))
-    expression = snapshot.source_sql("select x from t").filter(lambda row: row.x > 1)
-    original_compile = con.compile
-    compile_calls = 0
-
-    def counted_compile(expr, *args, **kwargs):
-        nonlocal compile_calls
-        compile_calls += 1
-        return original_compile(expr, *args, **kwargs)
-
-    monkeypatch.setattr(con, "compile", counted_compile)
-    try:
-        first = snapshot.compile(expression)
-        second = snapshot.compile(expression)
-        assert first == second
-        assert compile_calls == 1
-        con.compile(expression)
-        assert compile_calls == 2
-        live = con.table("t")
-        snapshot.compile(live)
-        snapshot.compile(live)
-        assert compile_calls == 4
-    finally:
-        snapshot.drop_materialized()
-        con.disconnect()
-
-
-@pytest.mark.integration
 def test_snapshot_arrow_cache_does_not_cache_mutable_live_relations():
     con, session = _session()
     snapshot = session.pin_sources(("select x from t",))
@@ -138,11 +105,97 @@ def test_snapshot_arrow_cache_does_not_cache_mutable_live_relations():
 
 
 @pytest.mark.integration
+def test_snapshot_arrow_cache_skips_raw_sql_views_over_captured_relations():
+    con, session = _session()
+    sql = "select x from t"
+    snapshot = session.pin_sources((sql,))
+    captured = snapshot.source_sql(sql)
+    opaque_query = captured.alias("captured").sql("select x from t")
+    try:
+        assert snapshot.fetch_arrow(opaque_query).to_pylist() == [
+            {"x": 1},
+            {"x": 2},
+            {"x": 3},
+        ]
+        con.insert("t", ibis.memtable({"x": [4]}))
+        assert snapshot.fetch_arrow(opaque_query).to_pylist() == [
+            {"x": 1},
+            {"x": 2},
+            {"x": 3},
+            {"x": 4},
+        ]
+    finally:
+        snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_snapshot_arrow_cache_skips_results_over_per_result_budget(monkeypatch):
+    from increment.query import session as session_module
+
+    monkeypatch.setattr(session_module, "_MAX_ARROW_RESULT_BYTES", 8, raising=False)
+    monkeypatch.setattr(session_module, "_MAX_ARROW_CACHE_BYTES", 128, raising=False)
+    con, session = _session()
+    snapshot = session.pin_sources(("select x from t",))
+    expression = snapshot.source_sql("select x from t")
+    original_to_pyarrow = con.to_pyarrow
+    executions = 0
+
+    def counted_to_pyarrow(expr, *args, **kwargs):
+        nonlocal executions
+        executions += 1
+        return original_to_pyarrow(expr, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", counted_to_pyarrow)
+    try:
+        first = snapshot.fetch_arrow(expression)
+        second = snapshot.fetch_arrow(expression)
+        assert first.nbytes > session_module._MAX_ARROW_RESULT_BYTES
+        assert second.equals(first)
+        assert executions == 2
+    finally:
+        snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_snapshot_arrow_cache_stops_at_total_byte_budget(monkeypatch):
+    from increment.query import session as session_module
+
+    monkeypatch.setattr(session_module, "_MAX_ARROW_RESULT_BYTES", 128, raising=False)
+    monkeypatch.setattr(session_module, "_MAX_ARROW_CACHE_BYTES", 9, raising=False)
+    con, session = _session()
+    snapshot = session.pin_sources(("select x from t",))
+    captured = snapshot.source_sql("select x from t")
+    small = captured.filter(captured.x == 1).select("x")
+    original_to_pyarrow = con.to_pyarrow
+    executions = 0
+
+    def counted_to_pyarrow(expr, *args, **kwargs):
+        nonlocal executions
+        executions += 1
+        return original_to_pyarrow(expr, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", counted_to_pyarrow)
+    try:
+        first_small = snapshot.fetch_arrow(small)
+        assert first_small.nbytes == session_module._MAX_ARROW_CACHE_BYTES
+        assert snapshot.fetch_arrow(small).equals(first_small)
+        large = snapshot.fetch_arrow(captured)
+        assert large.nbytes > session_module._MAX_ARROW_CACHE_BYTES
+        assert snapshot.fetch_arrow(captured).equals(large)
+        assert executions == 3
+    finally:
+        snapshot.drop_materialized()
+        con.disconnect()
+
+
+@pytest.mark.integration
 def test_overlapping_non_lifo_readouts_leave_no_connection_cache():
     con, session = _session()
     first_snapshot = session.pin_sources(("select x from t",))
     second_snapshot = session.pin_sources(("select x from t",))
-    source = _readout_source(session, (first_snapshot, second_snapshot))
+    source = _readout_source((first_snapshot, second_snapshot))
     first_readout = source.readout_snapshot(metrics=(), population="assigned")
     first = first_readout.__enter__()
     second_readout = source.readout_snapshot(metrics=(), population="assigned")
@@ -189,13 +242,15 @@ def test_dropped_generation_refusal_stays_visible_during_pinned_snapshot():
             & (row.generation_id == str(ref.generation_id))
         )
     )
+    source = _readout_source((snapshot,))
     try:
-        assert snapshot.fetch_arrow(dropped).to_pylist() == []
-        store.drop_generation(ref.artifact_id, ref.generation_id)
-        with pytest.raises(ArtifactContractError) as refusal:
-            with store.open_snapshot(ref):
-                pass
-        assert refusal.value.code == "artifact.generation.dropped"
+        with source.readout_snapshot(metrics=(), population="assigned") as readout:
+            assert readout.fetch_arrow(dropped).to_pylist() == []
+            store.abandon_generation(ref.artifact_id, ref.generation_id)
+            with pytest.raises(ArtifactContractError) as refusal:
+                with store.open_snapshot(ref):
+                    pass
+            assert refusal.value.code == "artifact.generation.dropped"
     finally:
         snapshot.drop_materialized()
         con.disconnect()
@@ -205,7 +260,7 @@ def test_dropped_generation_refusal_stays_visible_during_pinned_snapshot():
 def test_snapshot_exception_leaves_no_arrow_cache_state():
     con, session = _session()
     snapshot = session.pin_sources(("select x from t",))
-    source = _readout_source(session, (snapshot,))
+    source = _readout_source((snapshot,))
     expression = snapshot.source_sql("select x from t")
     try:
         with pytest.raises(RuntimeError, match="readout failed"):
