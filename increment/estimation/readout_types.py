@@ -719,6 +719,84 @@ class ReadoutMetadata(_ReadoutModel):
         )
 
 
+def _digest_mapping_rows(rows: Iterable[Mapping[str, object]]) -> tuple[int, int]:
+    layouts: dict[tuple[str, ...], tuple[tuple[str, ...], tuple[bytes, ...]]] = {}
+    total = 0
+    count = 0
+    for row in rows:
+        payload = None
+        if isinstance(row, dict) and type(row) is dict:
+            order = tuple(row)
+            layout = layouts.get(order)
+            if layout is None:
+                keys = tuple(sorted(order, key=lambda key: canonical_json_bytes(key)))
+                prefixes = tuple(
+                    b"[" + json.dumps(key, ensure_ascii=False).encode("utf-8") + b","
+                    for key in keys
+                )
+                layout = layouts[order] = (keys, prefixes)
+            keys, prefixes = layout
+            parts = []
+            for key, prefix in zip(keys, prefixes, strict=True):
+                scalar = _digest_scalar_bytes(row[key])
+                if scalar is None:
+                    break
+                parts.append(prefix + scalar + b"]")
+            else:
+                payload = b'["mapping",[' + b",".join(parts) + b"]]"
+        if payload is None:
+            payload = _digest_json_bytes(row)
+        total += int.from_bytes(sha256(payload).digest(), "big")
+        count += 1
+    return total, count
+
+
+def _digest_positional_rows(
+    rows: Iterable[tuple[object, ...]],
+    columns: tuple[str, ...],
+    *,
+    normalize_frame_floats: bool,
+) -> tuple[int, int]:
+    keys = tuple(sorted(columns, key=lambda key: canonical_json_bytes(key)))
+    indices = tuple(columns.index(key) for key in keys)
+    prefixes = tuple(
+        b"[" + json.dumps(key, ensure_ascii=False).encode("utf-8") + b"," for key in keys
+    )
+    total = 0
+    count = 0
+    for row in rows:
+        parts = []
+        generic_row = None
+        for key, prefix, index in zip(keys, prefixes, indices, strict=True):
+            value = row[index]
+            if normalize_frame_floats and isinstance(value, float):
+                if value != value:
+                    value = None
+                elif value == float("inf") or value == float("-inf"):
+                    generic_row = dict(zip(columns, row, strict=True))
+                    generic_row[key] = {"__float__": "+inf" if value > 0 else "-inf"}
+                    break
+            scalar = _digest_scalar_bytes(value)
+            if scalar is None:
+                generic_row = dict(zip(columns, row, strict=True))
+                break
+            parts.append(prefix + scalar + b"]")
+        if generic_row is not None:
+            if normalize_frame_floats:
+                for name, value in generic_row.items():
+                    if isinstance(value, float):
+                        if value != value:
+                            generic_row[name] = None
+                        elif value == float("inf") or value == float("-inf"):
+                            generic_row[name] = {"__float__": "+inf" if value > 0 else "-inf"}
+            payload = _digest_json_bytes(generic_row)
+        else:
+            payload = b'["mapping",[' + b",".join(parts) + b"]]"
+        total += int.from_bytes(sha256(payload).digest(), "big")
+        count += 1
+    return total, count
+
+
 class StreamingDigest:
     """Order-independent row multiset digest with constant additional state."""
 
@@ -735,39 +813,22 @@ class StreamingDigest:
         self.count += 1
 
     def update_rows(self, rows: Iterable[Mapping[str, object]]) -> None:
-        """Digest many rows, equal to one ``update`` call per row.
+        """Digest a batch of mapping rows."""
+        total, count = _digest_mapping_rows(rows)
+        self.accumulator = (self.accumulator + total) % (1 << 256)
+        self.count += count
 
-        A dict row of plain scalars is encoded directly in the digest's
-        canonical layout; any other row goes through the generic encoder.
-        """
-        layouts: dict[tuple[str, ...], tuple[tuple[str, ...], tuple[bytes, ...]]] = {}
-        total = 0
-        count = 0
-        for row in rows:
-            payload = None
-            if type(row) is dict:
-                order = tuple(row)
-                layout = layouts.get(order)
-                if layout is None:
-                    keys = tuple(sorted(order, key=lambda key: canonical_json_bytes(key)))
-                    prefixes = tuple(
-                        b"[" + json.dumps(key, ensure_ascii=False).encode("utf-8") + b","
-                        for key in keys
-                    )
-                    layout = layouts[order] = (keys, prefixes)
-                keys, prefixes = layout
-                parts = []
-                for key, prefix in zip(keys, prefixes, strict=True):
-                    scalar = _digest_scalar_bytes(row[key])
-                    if scalar is None:
-                        break
-                    parts.append(prefix + scalar + b"]")
-                else:
-                    payload = b'["mapping",[' + b",".join(parts) + b"]]"
-            if payload is None:
-                payload = _digest_json_bytes(row)
-            total += int.from_bytes(sha256(payload).digest(), "big")
-            count += 1
+    def update_positional_rows(
+        self,
+        rows: Iterable[tuple[object, ...]],
+        *,
+        columns: tuple[str, ...],
+        normalize_frame_floats: bool = False,
+    ) -> None:
+        """Digest frame rows without constructing one mapping per row."""
+        total, count = _digest_positional_rows(
+            rows, columns, normalize_frame_floats=normalize_frame_floats
+        )
         self.accumulator = (self.accumulator + total) % (1 << 256)
         self.count += count
 
