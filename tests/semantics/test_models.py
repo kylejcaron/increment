@@ -2750,7 +2750,10 @@ def test_one_hazard_has_one_code_and_context_across_every_layer():
         Definitions.model_validate(_finite_sample_definitions("mean"))
     assert definition_metric.value.context == {"metric_type": "mean", "metric": "orders"}
     with pytest.raises(InvalidRequestError) as frame_metric:
-        MetricSpec(name="m", decision_method=Method(name="unadjusted", **finite))
+        MetricSpec(
+            name="m",
+            decision_method=Method(name="unadjusted", conversion_inference="finite_sample"),
+        )
     with pytest.raises(InvalidRequestError) as plan_metric:
         ArmPlanningProcedure.standard("mean", **finite)  # ty: ignore[invalid-argument-type]
     metric_errors = (definition_metric.value, frame_metric.value, plan_metric.value)

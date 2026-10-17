@@ -126,6 +126,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NoReturn
 
 from increment.errors import InvalidRequestError, raiser, refusals
 from increment.estimation.armstats import (
@@ -139,7 +140,7 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "estimation.cuped.pooled_theta_least": "pooled_theta requires at least 2 arms (control + treatment)",
-        "estimation.cuped.arm_no_covariate": "Arm {arm_group}/{arm_metric} has no covariate data (ref_x/cx1/cx2/cxy is None). The covariate must be materialised before requesting cuped: from a definitions path, set n_pre_periods > 0 on the experiment; from from_unit_summary, pass MetricSpec(name=..., covariate='<pre-period column>').",
+        "estimation.cuped.arm_no_covariate": "Arm {arm_group}/{arm_metric} has no covariate data (ref_x/cx1/cx2/cxy is None). The covariate must be materialised before requesting cuped: from a definitions path, set n_pre_periods > 0 on the experiment; from from_unit_summary, declare the column with Method.cuped(covariates=...).",
         "estimation.cuped.covariate_zero_variance": "Covariate has zero variance (inverse-n weighted within-arm variance={weighted_var_x}). Cannot compute CUPED theta. Ensure the covariate is not constant; if it varies but sits at a large offset (|mean| >> spread), floating-point cancellation destroyed its variance before this seam -- centre the covariate (subtract a constant) before aggregation.",
         "estimation.cuped.cuped_adjusted_variance": "CUPED-adjusted variance for arm {arm_group!r}/{arm_metric!r} is {naive_var:.6g}, negative beyond floating-point rounding -- the slope implies an impossible {pair} correlation for this arm (Cauchy-Schwarz: {cross_label} cannot exceed sqrt(Var(Y)*Var(X))); the moments are corrupt or were not produced together",
         "estimation.cuped.ratio_arm_no_denominator_cross": "Arm {arm_group}/{arm_metric} carries a covariate and a ratio denominator but no cross moment between them (cxden is None), so the denominator's CUPED slope is not identified. Ratio CUPED needs Cov(covariate, denominator); supply moments in the centered (format-2) shape, which carries cxden, rather than the raw-sum (format-1) shape, which has no column for it.",
@@ -147,6 +148,11 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def refuse_unmaterialized_covariate(*, group_id: object, metric: str) -> NoReturn:
+    """Refuse scalar adjustment when the source has no covariate moments."""
+    _raise("estimation.cuped.arm_no_covariate", arm_group=group_id, arm_metric=metric)
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,11 +315,7 @@ def _within_arm_theta(arms: list[ArmStats], family: _OutcomeFamily = NUMERATOR) 
 
     for arm in arms:
         if arm.ref_x is None or arm.cx1 is None or arm.cx2 is None or arm.cxy is None:
-            _raise(
-                "estimation.cuped.arm_no_covariate",
-                arm_group=arm.group_id,
-                arm_metric=arm.metric,
-            )
+            refuse_unmaterialized_covariate(group_id=arm.group_id, metric=arm.metric)
 
     # Within-arm moments weighted by 1/n minimize the additive contrast variance, so no
     # cross-arm delta enters theta. Use corrected ddof=1 moments, not raw cxy/cx2 centered on a

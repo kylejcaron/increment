@@ -249,9 +249,7 @@ class WholeWindowReadouts:
             and req.population in (None, "triggered")
         ):
             self._validate_trigger()
-        if route != "native":
-            return self._run_seam_family(req)
-        return self._run_native_family(req, design_summary_only=design_summary_only)
+        return self._run_seam_family(req)
 
     def _run_seam_family(self, req: WholeWindowRequest) -> LiftEstimates:
         metric_names = [m.name for m in req.metrics]
@@ -268,12 +266,7 @@ class WholeWindowReadouts:
                         route=_day_axis_source_route(self._src),
                         supported_sources=("from_definitions", "from_unit_day_artifact"),
                     )
-                source = self._readout_source(
-                    population="triggered",
-                    selected=req.metrics,
-                    decision_method=req.decision_method,
-                    sensitivity_methods=req.sensitivity_methods,
-                )
+                source = self._readout_source(population="triggered")
             return _as_lift_estimates(
                 self._arm_moments(
                     source,
@@ -295,62 +288,6 @@ class WholeWindowReadouts:
         if self._experiment.trigger is None:
             return assigned
         return assigned.concat(_read("triggered"))
-
-    def _run_native_family(
-        self, req: WholeWindowRequest, *, design_summary_only: bool
-    ) -> LiftEstimates:
-        if self._experiment is None:
-            _refuse(
-                _TRIGGER_UNSUPPORTED,
-                method="run",
-                experiment="<unknown>",
-                trigger=None,
-                route="native",
-                supported_sources=("from_definitions", "from_unit_day_artifact"),
-            )
-        metric_names = [m.name for m in req.metrics]
-
-        def _run_arm(
-            source: MomentSource, population: Literal["assigned", "triggered"]
-        ) -> LiftEstimates:
-            return _as_lift_estimates(
-                self._arm_moments(
-                    source,
-                    decision_method=req.decision_method,
-                    sensitivity_methods=req.sensitivity_methods,
-                    prior=req.prior,
-                    metrics=metric_names,
-                    estimands=req.estimands,
-                    population=population,
-                )
-            )
-
-        if req.population == "triggered":
-            source = self._readout_source(
-                population="triggered",
-                selected=req.metrics,
-                design_summary_only=design_summary_only,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-            )
-            return _run_arm(source, "triggered")
-        source = self._readout_source(
-            selected=req.metrics,
-            design_summary_only=design_summary_only,
-            decision_method=req.decision_method,
-            sensitivity_methods=req.sensitivity_methods,
-        )
-        assigned = _run_arm(source, "assigned")
-        if req.population == "assigned" or self._experiment.trigger is None:
-            return assigned
-        triggered = self._readout_source(
-            population="triggered",
-            selected=req.metrics,
-            design_summary_only=design_summary_only,
-            decision_method=req.decision_method,
-            sensitivity_methods=req.sensitivity_methods,
-        )
-        return assigned.concat(_run_arm(triggered, "triggered"))
 
 
 __all__ = [

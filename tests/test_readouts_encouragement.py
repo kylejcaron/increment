@@ -1792,11 +1792,41 @@ def test_encouragement_missing_control_defers_to_family_gate(con):
     rows_by_metric["revenue"] = [
         row for row in rows_by_metric["revenue"] if str(row["group_id"]) != "control"
     ]
+    from dataclasses import replace
+
+    from increment._analysis_config import effective_methods
+    from increment.readouts._metric_rows import _load_metric_rows
+
+    evidence_by_metric = {}
+    for metric, config in zip(metrics, src.context.configs, strict=True):
+        evidence = _load_metric_rows(
+            src,
+            metric,
+            by=(),
+            control_group="control",
+            methods=effective_methods(config, design=src.context.design),
+        )
+        evidence_by_metric[metric.name] = replace(
+            evidence,
+            rows=tuple(rows_by_metric[metric.name]),
+            method_rows=tuple(
+                (
+                    name,
+                    tuple(
+                        row
+                        for row in family
+                        if metric.name != "revenue" or str(row["group_id"]) != "control"
+                    ),
+                )
+                for name, family in evidence.method_rows
+            ),
+        )
     with pytest.raises(CapabilityError) as raised:
         encouragement_rows(
             src=src,
             metrics=metrics,
             rows_by_metric=rows_by_metric,
+            evidence_by_metric=evidence_by_metric,
             configs=src.context.configs,
             design=cast("Encouragement", src.context.design),
             plan=src.context.plan,

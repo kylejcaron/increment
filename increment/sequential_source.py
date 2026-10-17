@@ -102,6 +102,87 @@ def native_observation_mapping(definitions, experiment, *, on_mixed_assignment="
     return {"source_mapping_format": 2, "recipe_sha256": canonical_id(raw_mapping)}
 
 
+def _legacy_metric_transformations(transformations):
+    """Return the former metric-owned CUPED shape when the method set maps exactly."""
+    legacy = []
+    for transformation in transformations:
+        dump = transformation.model_dump(mode="json")
+        if not isinstance(dump, dict) or "decision_method" not in dump:
+            return None
+        scalar: list[tuple[str, str]] = []
+        multicovariate: list[tuple[dict[str, object], ...]] = []
+        for key in ("decision_method", "sensitivity_methods"):
+            entries = dump.get(key)
+            methods = (
+                entries if key == "sensitivity_methods" else (() if entries is None else (entries,))
+            )
+            normalized = []
+            for method in methods:
+                if not isinstance(method, dict):
+                    return None
+                procedure = method.get("variance_reduction", "none")
+                covariates = method.get("covariates") or ()
+                if procedure == "cuped":
+                    if len(covariates) != 1:
+                        return None
+                    covariate = covariates[0]
+                    if not isinstance(covariate, dict) or covariate.get("kind") != "continuous":
+                        return None
+                    if set(covariate) - {"name", "kind", "missing"}:
+                        return None
+                    missing = {"refuse": "error"}.get(
+                        covariate.get("missing"), covariate.get("missing")
+                    )
+                    scalar.append((covariate.get("name"), missing))
+                elif procedure == "cuped_multicovariate":
+                    normalized_covariates = []
+                    for covariate in covariates:
+                        if not isinstance(covariate, dict) or set(covariate) - {
+                            "name",
+                            "kind",
+                            "missing",
+                        }:
+                            return None
+                        normalized_covariates.append(
+                            {
+                                **covariate,
+                                "missing": {"refuse": "error"}.get(
+                                    covariate.get("missing"), covariate.get("missing")
+                                ),
+                            }
+                        )
+                    if not normalized_covariates:
+                        return None
+                    multicovariate.append(tuple(normalized_covariates))
+                method = dict(method)
+                method.pop("covariates", None)
+                normalized.append(method)
+            dump[key] = (
+                normalized
+                if key == "sensitivity_methods"
+                else (normalized[0] if normalized else None)
+            )
+
+        if scalar and len(set(scalar)) != 1:
+            return None
+        if multicovariate and any(
+            canonical_id(value) != canonical_id(multicovariate[0]) for value in multicovariate[1:]
+        ):
+            return None
+        scalar_name, scalar_missing = scalar[0] if scalar else (None, "impute")
+        dump["covariate"] = scalar_name
+        dump["covariate_missing"] = scalar_missing
+        if multicovariate:
+            old_covariates = multicovariate[0]
+            if scalar_name is not None and scalar_name not in {
+                value["name"] for value in old_covariates
+            }:
+                return None
+            dump["covariates"] = list(old_covariates)
+        legacy.append(dump)
+    return legacy
+
+
 def sequential_definition_id(
     metrics,
     design,
@@ -117,19 +198,26 @@ def sequential_definition_id(
     population binds the same declarations under its own anchor, so the two
     populations' registrations never share an identity.
     """
-    return canonical_id(
-        {
-            "metrics": sorted(
-                (m.model_dump(mode="json") for m in metrics), key=lambda m: m["name"]
-            ),
-            "design": design.model_dump(mode="json") if design is not None else None,
-            "transformations": sorted(
-                (t.model_dump(mode="json") for t in transformations), key=canonical_id
-            ),
-            "population": population,
-            "source_mapping": dict(source_mapping),
-        }
+    metric_rows = sorted(
+        (metric.model_dump(mode="json") for metric in metrics), key=lambda metric: metric["name"]
     )
+    design_row = design.model_dump(mode="json") if design is not None else None
+    transform_rows = sorted(
+        (transformation.model_dump(mode="json") for transformation in transformations),
+        key=canonical_id,
+    )
+    common = {
+        "metrics": metric_rows,
+        "design": design_row,
+        "population": population,
+        "source_mapping": dict(source_mapping),
+    }
+    legacy_transform_rows = _legacy_metric_transformations(transformations)
+    if legacy_transform_rows is not None:
+        return canonical_id(
+            {**common, "transformations": sorted(legacy_transform_rows, key=canonical_id)}
+        )
+    return canonical_id({**common, "transformations": transform_rows})
 
 
 def population_policy(inference, population: Literal["assigned", "triggered"]):
@@ -177,7 +265,7 @@ def _automatic_law(metric, *, wants_cuped: bool, covariate: bool, adjustment) ->
             "route.unsupported",
             f"metric {metric.name!r}: CUPED under asymptotic sequential inference retains the "
             "per-unit pre-period covariate alongside the outcome; declare one with "
-            "MetricSpec(covariate=...) on a unit-summary frame or n_pre_periods > 0 on a "
+            "Method.cuped(covariates=...) on a unit-summary frame or n_pre_periods > 0 on a "
             "definitions experiment",
         )
     return "adjusted_ratio_mean" if ratio else "adjusted_mean"
@@ -194,9 +282,27 @@ def _law_inputs(metric, spec, binding, *, pre_period_covariate: bool) -> tuple[b
     metric declares methods on its plan binding and its covariate through the
     experiment's pre-period.
     """
+    from increment._analysis_config import resolve_configs, validate_scalar_route
+
+    configs = resolve_configs(
+        (metric,),
+        bindings={metric.name: binding} if binding is not None else None,
+        specs={metric.name: spec} if spec is not None else None,
+        methods=None,
+        prior=None,
+    )
+    validate_scalar_route(
+        configs,
+        route="sequential.registration",
+        representation="registered",
+        retained_configs=configs,
+    )
     if spec is not None:
         methods = (spec.decision_method, *spec.sensitivity_methods)
-        return _declared_cuped(methods), spec.covariate is not None
+        return _declared_cuped(methods), any(
+            method is not None and method.variance_reduction == "cuped" and method.covariates
+            for method in methods
+        )
     methods = () if binding is None else (binding.decision_method, *binding.sensitivity_methods)
     return _declared_cuped(methods), pre_period_covariate
 
@@ -882,6 +988,19 @@ def validate_scalar_mean_design(registration, design):
             )
 
 
+def _validate_control_labels(registration, design):
+    if (registration.control_group, str(design.control_group)) in {
+        ("True", "true"),
+        ("False", "false"),
+    }:
+        sequential_refuse(
+            "source.invalid",
+            "pandas Boolean group labels changed from 'True'/'False' to canonical "
+            "'true'/'false'; retain the saved record for replay with its original "
+            "protocol, or create a new sequential registration for canonical labels",
+        )
+
+
 def validate_sequential_plan(plan, metrics, design):
     """Check the complete registered decision before any producer reads data."""
     from fractions import Fraction
@@ -911,6 +1030,7 @@ def validate_sequential_plan(plan, metrics, design):
                 + fixed_horizon_alternative(metrics, "an observational design", "observational")
             ),
         )
+    _validate_control_labels(registration, design)
     if str(design.control_group) != registration.control_group:
         sequential_refuse(
             "source.invalid", "registered control differs from the declared assignment"
@@ -1043,7 +1163,7 @@ def _validate_request_breakout(request, registration):
 
 def _has_cuped_linear_method(request) -> bool:
     return any(
-        method.variance_reduction == "cuped_linear"
+        method.variance_reduction == "cuped_multicovariate"
         for methods in request.estimation_methods
         for method in methods
     )
@@ -1179,24 +1299,27 @@ def validate_frame_registration(
     """Validate the observation mapping before a dataframe adapter reads it."""
     if registration is None:
         return
+    from increment._analysis_config import validate_scalar_route
+
+    validate_scalar_route(
+        configs,
+        route="sequential.registration",
+        representation="registered",
+        retained_configs=configs,
+        design=design,
+    )
     validate_scalar_mean_design(registration, design)
-    if (registration.control_group, str(design.control_group)) in {
-        ("True", "true"),
-        ("False", "false"),
-    }:
-        sequential_refuse(
-            "source.invalid",
-            "pandas Boolean group labels changed from 'True'/'False' to canonical "
-            "'true'/'false'; retain the saved record for replay with its original "
-            "protocol, or create a new sequential registration for canonical labels",
-        )
+    _validate_control_labels(registration, design)
     require_public_laws(registration.models, "frame registration")
     expected = sequential_definition_id(
         metrics, design, transformations=specs, source_mapping=source_mapping
     )
     if registration.source_id != source_id or registration.definitions_id != expected:
         sequential_refuse(
-            "source.invalid", "registered source/definitions differ before frame access"
+            "source.invalid",
+            "registered source/definitions differ before frame access; if this legacy "
+            "registration cannot be mapped unambiguously to the declared method covariates "
+            "and preparation, explicitly re-register the sequential analysis before capture",
         )
     if cluster is not None or getattr(design, "mechanism", None) == "observational":
         sequential_refuse(
@@ -1243,11 +1366,14 @@ def validate_frame_registration(
                 "outcome-dependent missing-row deletion breaks joint reveal; use error or a declared zero outcome",
             )
         validate_sequential_transform(spec)
-        if adjustment_kind(registration, model.metric) is not None and spec.covariate is None:
+        if adjustment_kind(registration, model.metric) is not None and not any(
+            method is not None and method.variance_reduction == "cuped" and method.covariates
+            for method in (spec.decision_method, *spec.sensitivity_methods)
+        ):
             sequential_refuse(
                 "source.invalid",
                 f"metric {model.metric!r}: the registered covariate adjustment needs the "
-                "frame's covariate column (MetricSpec.covariate)",
+                "frame's scalar Method.cuped(covariates=...) input",
             )
         if (spec.type == "ratio") != (model.law in ("gaussian_ratio", *RATIO_LAWS)):
             sequential_refuse(
@@ -1450,6 +1576,15 @@ class SequentialSourceMixin:
     def sequential_snapshot(
         self, *, previous: SequentialSnapshot | None = None
     ) -> SequentialSnapshot:
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            self.context.configs,
+            route="sequential.snapshot",
+            representation="registered",
+            registered_plan=self.context.plan,
+            design=self.context.design,
+        )
         snapshot = getattr(self, "_sequential_snapshot", None)
         if snapshot is None:
             sequential_refuse(
@@ -1469,6 +1604,15 @@ class SequentialSourceMixin:
         The producer must already have captured actual finalized source records.
         This method does not turn ordinary rounded moment exports into evidence.
         """
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            self.context.configs,
+            route="sequential.checkpoint_adoption",
+            representation="registered",
+            registered_plan=self.context.plan,
+            design=self.context.design,
+        )
         inference = self.context.plan.inference
         registration = getattr(inference, "registration", None)
         if registration is None or snapshot.registration_id != registration_id(registration):

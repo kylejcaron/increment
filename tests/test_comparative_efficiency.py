@@ -119,7 +119,7 @@ def test_real_public_inference_path_flags_inflated_and_rounded_intervals():
 
 
 def test_public_readout_detects_disabled_useful_cuped():
-    from increment import Analysis, Method, MetricSpec
+    from increment import Analysis, CupedCovariate, Method, MetricSpec
     from tests.analysis_factory import lift_rows
 
     rng = np.random.default_rng(175)
@@ -143,15 +143,19 @@ def test_public_readout_detects_disabled_useful_cuped():
         unit="unit_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="y", type="mean", covariate="x")],
+        metrics=[
+            MetricSpec(
+                name="y",
+                type="mean",
+                decision_method=Method(name="unadjusted"),
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+                ),
+            )
+        ],
     )
     try:
-        rows = lift_rows(
-            analysis.run(
-                decision_method=Method(name="unadjusted"),
-                sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
-            )
-        )
+        rows = lift_rows(analysis.run())
     finally:
         analysis.close()
     widths = {

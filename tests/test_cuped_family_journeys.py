@@ -55,14 +55,14 @@ def _family_analysis(ingress: str, q: float):
     else:
         frame = pa.table(data)
 
-    method = Method(name="linear", variance_reduction="cuped_linear")
     covariates = (
         CupedCovariate(name="history", kind="continuous", missing="impute-indicator"),
         CupedCovariate(name="region", kind="categorical"),
     )
+    method = Method.cuped_multicovariate(name="linear", covariates=covariates)
     metrics = [
-        MetricSpec(name="primary_mean", decision_method=method, covariates=covariates),
-        MetricSpec(name="secondary_mean", decision_method=method, covariates=covariates),
+        MetricSpec(name="primary_mean", decision_method=method),
+        MetricSpec(name="secondary_mean", decision_method=method),
         MetricSpec(
             name="guardrail_ratio",
             type="ratio",
@@ -70,7 +70,6 @@ def _family_analysis(ingress: str, q: float):
             denominator="guard_den",
             preferred_direction="decrease",
             decision_method=method,
-            covariates=covariates,
         ),
         MetricSpec(
             name="secondary_ratio",
@@ -78,7 +77,6 @@ def _family_analysis(ingress: str, q: float):
             numerator="secondary_num",
             denominator="secondary_den",
             decision_method=method,
-            covariates=covariates,
         ),
     ]
     plan = AnalysisPlan(

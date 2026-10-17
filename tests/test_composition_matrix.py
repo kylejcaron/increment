@@ -46,7 +46,7 @@ import pytest
 from increment import readouts
 from increment.errors import CapabilityError, DefinitionError, InvalidRequestError
 from increment.estimation.engine import Method
-from increment.frame import MetricSpec, from_unit_panel, from_unit_summary
+from increment.frame import CupedCovariate, MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics import models as semantic_models
 from increment.semantics.design import (
     AdjustmentSet,
@@ -172,8 +172,13 @@ def _panel_table(n: int = 8, days: int = 3) -> pa.Table:
     return pa.table(rows)
 
 
-def _frame_spec(metric_type: str, **kw: Any) -> MetricSpec:
+def _frame_spec(metric_type: str, *, covariate: str | None = None, **kw: Any) -> MetricSpec:
     """The smallest MetricSpec of *metric_type* over ``_unit_table`` columns."""
+    if covariate is not None:
+        kw.setdefault(
+            "decision_method",
+            Method.cuped(covariates=CupedCovariate(name=covariate, kind="continuous")),
+        )
     if metric_type == "mean":
         return MetricSpec(name="revenue", **kw)
     if metric_type == "conversion":
@@ -709,7 +714,7 @@ def test_cuped(metric_type, native):
     if cell.status == "na":
         _assert_report_layer_unreachable(metric_type)
         return
-    cuped_method = [Method(name="cuped", variance_reduction="cuped")]
+    cuped_method = [Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"))]
     if metric_type == "quantile":
         _expect_refusal(cell, lambda: _frame_spec("quantile", covariate="pre"))
         return
@@ -1122,6 +1127,7 @@ def test_capability_pairs(pair, native):
     cell = PAIRS[pair]
     mean = _frame_spec("mean")
     bernoulli = _frame_spec("conversion")
+    cuped_method = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"))
     from increment.frame import synthesise_metric
     from tests.sequential_cases import declared_plan
 
@@ -1203,14 +1209,16 @@ def test_capability_pairs(pair, native):
             _summary_source(
                 _frame_spec("mean", covariate="pre"), uptake="uptake", design=_ENCOURAGEMENT
             ),
-            decision_method=Method(name="cuped", variance_reduction="cuped"),
+            decision_method=cuped_method,
         ),
         ("sequential", "cuped"): lambda: readouts.run(
             _summary_source(
                 _frame_spec(
                     "mean",
                     covariate="pre",
-                    decision_method=Method(name="cuped", variance_reduction="cuped"),
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="pre", kind="continuous")
+                    ),
                 ),
                 design=Randomized(
                     control_group="control", allocation={"control": 0.5, "treatment": 0.5}

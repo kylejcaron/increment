@@ -9,6 +9,7 @@ from increment._analysis_config import (
     overlay_configs,
     select_metrics,
 )
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import Correction
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._source_types import classify_source
@@ -19,6 +20,7 @@ from increment.breakout.estimates import (
     _breakout_estimate_row,
     run_breakout,
 )
+from increment.errors import CodedError
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import Method, _validate_methods
 from increment.estimation.multiplicity import stamp_multiplicity_status
@@ -32,6 +34,8 @@ from increment.readouts._common import (
     _warn,
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
+from increment.readouts._metric_rows import _load_breakout_metric_rows
+from increment.readouts._passes import _append_lift_cell_failure
 from increment.sources import MomentSource
 
 if TYPE_CHECKING:
@@ -39,6 +43,7 @@ if TYPE_CHECKING:
 
     from increment._literals import ValueScale
     from increment.estimation.inference import Prior
+    from increment.readouts._metric_rows import MetricRows
     from increment.semantics.design import Encouragement
     from increment.semantics.models import Metric
 
@@ -92,7 +97,6 @@ def _missing_encouragement_observation(
 
 
 def _encouragement_breakout_rows(
-    src: MomentSource,
     selected: Sequence[Metric],
     *,
     dimension: str,
@@ -103,6 +107,7 @@ def _encouragement_breakout_rows(
     roles_by_metric: Mapping[str, Any],
     estimands: Sequence[str],
     alpha: float,
+    method_evidence: Mapping[str, MetricRows],
 ) -> list[BreakoutEstimate]:
     for metric_methods in methods_by_metric.values():
         _validate_methods(metric_methods)
@@ -113,10 +118,12 @@ def _encouragement_breakout_rows(
     }
     for metric in selected:
         metric_methods = methods_by_metric[metric.name]
-        rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=[dimension]))
+        evidence = method_evidence[metric.name]
+        rows = evidence.rows
         segments: dict[str, list[Mapping[str, Any]]] = {}
         for row in rows:
-            segments.setdefault(str(row[dimension]), []).append(row)
+            value = "__null__" if row[dimension] is None else str(row[dimension])
+            segments.setdefault(value, []).append(row)
         for value in sorted(segments):
             segment_rows = segments[value]
             n_by_group = {
@@ -158,16 +165,52 @@ def _encouragement_breakout_rows(
                 )
                 continue
             n_control_arm = n_by_group.get(design.control_group)
-            for lift_estimate in estimate_encouragement(
-                [metric],
-                usable_rows,
-                design,
-                estimands=estimands,
-                methods=metric_methods,
-                prior=configs[metric.name].prior,
-                alpha=alpha,
-                method_roles=roles_by_metric[metric.name],
-            ).results:
+            lift_estimates = []
+            diagnostic_keys = set()
+            for method in metric_methods:
+                try:
+                    method_rows = (
+                        evidence.rows_for_method(method, dimension=dimension, dimension_value=value)
+                        if method.variance_reduction == "cuped"
+                        else usable_rows
+                    )
+                except CodedError as exc:
+                    if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                        raise
+                    for arm in sorted(n_by_group.keys() - {design.control_group}):
+                        for estimand in ("itt", "late"):
+                            if estimand in estimands:
+                                _append_lift_cell_failure(
+                                    results=lift_estimates,
+                                    computations=[],
+                                    metric=metric,
+                                    group_id=arm,
+                                    method=method,
+                                    method_roles=roles_by_metric[metric.name],
+                                    alternative="two-sided",
+                                    code=exc.code,
+                                    context=exc.context,
+                                    estimand=estimand,
+                                )
+                    continue
+                computation = estimate_encouragement(
+                    [metric],
+                    [row for row in method_rows if str(row["group_id"]) not in empty_groups],
+                    design,
+                    estimands=estimands,
+                    methods=[method],
+                    prior=configs[metric.name].prior,
+                    alpha=alpha,
+                    method_roles=roles_by_metric[metric.name],
+                )
+                for estimate in computation.results:
+                    if estimate.estimand == "compliance":
+                        key = (estimate.group_id, estimate.method, estimate.value_scale)
+                        if key in diagnostic_keys:
+                            continue
+                        diagnostic_keys.add(key)
+                    lift_estimates.append(estimate)
+            for lift_estimate in lift_estimates:
                 if lift_estimate.estimand == "compliance":
                     compliance_scales_by_metric[metric.name].add(lift_estimate.value_scale)
                 if lift_estimate.metric != metric.name:
@@ -315,7 +358,10 @@ def _load_cuped_breakout_frames(
 
     for config in configs:
         name = config.metric.name
-        if any(method.variance_reduction == "cuped_linear" for method in methods_by_metric[name]):
+        if any(
+            method.variance_reduction == "cuped_multicovariate"
+            for method in methods_by_metric[name]
+        ):
             names = tuple(item.name for item in config.covariates)
             column = breakout_dimension_column(names)
             if isinstance(src, BreakoutMomentsSource):
@@ -518,7 +564,9 @@ def breakout(
         from increment.sequential_source import source_snapshot
         from increment.sequential_state import sequential_refuse
 
-        rows = sequential_readout(src, metrics=selected, estimands=estimands)
+        rows = sequential_readout(
+            src, metrics=selected, estimands=estimands, configs=resolved_configs
+        )
         output = []
         for row in rows:
             cp = row.require_sequential_result().checkpoint
@@ -543,6 +591,16 @@ def breakout(
             )
         return scoped(stamp_multiplicity_status(output), sequential_snapshot=source_snapshot(src))
 
+    method_evidence = {
+        metric.name: _load_breakout_metric_rows(
+            src,
+            metric,
+            methods_by_metric[metric.name],
+            dimension=dimension,
+            control_group=design.control_group,
+        )
+        for metric in selected
+    }
     if design.mechanism == "encouragement":
         requested_estimands = estimands if estimands is not None else ESTIMANDS
         unknown = set(requested_estimands) - set(ESTIMANDS)
@@ -553,7 +611,6 @@ def breakout(
                 unknown=sorted(unknown),
             )
         encouragement_rows = _encouragement_breakout_rows(
-            src,
             selected,
             dimension=dimension,
             source_name=source_name,
@@ -563,6 +620,7 @@ def breakout(
             roles_by_metric=roles_by_metric,
             estimands=requested_estimands,
             alpha=alpha,
+            method_evidence=method_evidence,
         )
         return scoped(stamp_multiplicity_status(encouragement_rows))
     results: list[BreakoutEstimate] = []
@@ -571,13 +629,7 @@ def breakout(
         # call produces: a single run_breakout call over every selected
         # metric together, not one call per metric (which would scope
         # the family to one metric at a time).
-        combined_rows = [
-            row
-            for metric in selected
-            for row in cast(
-                "list[Mapping[str, Any]]", src.moments(metric, grain="total", by=[dimension])
-            )
-        ]
+        combined_rows = None
         results.extend(
             run_breakout(
                 combined_rows,
@@ -588,6 +640,7 @@ def breakout(
                 methods=None,
                 prior=None,
                 _prior_by_metric={name: config.prior for name, config in configs.items()},
+                _method_evidence_by_metric=method_evidence,
                 alpha=alpha,
                 correction=correction,
                 q=q,
@@ -601,9 +654,7 @@ def breakout(
         )
     else:
         for metric in selected:
-            rows = cast(
-                "list[Mapping[str, Any]]", src.moments(metric, grain="total", by=[dimension])
-            )
+            rows = None
             metric_methods = methods_by_metric[metric.name]
             results.extend(
                 run_breakout(
@@ -614,6 +665,7 @@ def breakout(
                     dimension=dimension,
                     methods=metric_methods,
                     prior=configs[metric.name].prior,
+                    _method_evidence_by_metric=method_evidence,
                     alpha=alpha,
                     correction=correction,
                     inference=inference,

@@ -16,7 +16,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, Definitions, Method, MetricSpec
+from increment import Analysis, CupedCovariate, Definitions, Method, MetricSpec
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
@@ -24,7 +24,7 @@ from increment.semantics.design import Randomized
 from increment.semantics.loader import load
 from increment.semantics.models import AnalysisPlan, InferenceSpec
 
-CUPED = Method(name="cuped", variance_reduction="cuped")
+CUPED = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous", missing="impute"))
 UNADJUSTED = Method(name="unadjusted")
 DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 AS_OF = dt.date(2025, 1, 14)
@@ -117,14 +117,19 @@ experiments:
 
 
 def _spec(metric: str, *, cuped: bool) -> MetricSpec:
-    spec = (
-        MetricSpec(name="rpo", type="ratio", numerator="revenue", denominator="orders")
+    covariate = CupedCovariate(name="pre", kind="continuous", missing="impute")
+    method = Method.cuped(covariates=covariate) if cuped else None
+    return (
+        MetricSpec(
+            name="rpo",
+            type="ratio",
+            numerator="revenue",
+            denominator="orders",
+            decision_method=method,
+        )
         if metric == "rpo"
-        else MetricSpec(name="revenue", type="mean")
+        else MetricSpec(name="revenue", type="mean", decision_method=method)
     )
-    if cuped:
-        spec = spec.model_copy(update={"covariate": "pre", "decision_method": CUPED})
-    return spec
 
 
 def frame_fixed(units, metric: str):
@@ -133,10 +138,10 @@ def frame_fixed(units, metric: str):
         pa.Table.from_pylist(units),
         unit="user_id",
         group="variant",
-        metrics=[_spec(metric, cuped=True).model_copy(update={"decision_method": None})],
+        metrics=[_spec(metric, cuped=True)],
         design=DESIGN,
     )
-    return analysis.run(decision_method=UNADJUSTED)[0], analysis.run(decision_method=CUPED)[0]
+    return analysis.run(decision_method=UNADJUSTED)[0], analysis.run()[0]
 
 
 def frame_sequential(units, metric: str, *, cuped: bool):
@@ -466,11 +471,10 @@ def mixed_cuped_definitions_yaml(
         "{name: device, kind: categorical, property: device, source: events}",
         "{name: new_user, kind: categorical, property: new_user, source: events}",
     )
-    covariates = "\n        covariates:\n          - " + "\n          - ".join(entries) + "\n"
-    nested_covariates = (
-        "\n          covariates:\n            - " + "\n            - ".join(entries) + "\n"
+    method = (
+        "decision_method: {name: linear, variance_reduction: cuped_multicovariate, "
+        "covariates: [" + ", ".join(entries) + "]}"
     )
-    method = "decision_method: {name: linear, variance_reduction: cuped_linear}"
     scalar_sensitivity = (
         "        sensitivity_methods: [{name: cuped, variance_reduction: cuped}]\n"
         if scalar_cuped
@@ -534,9 +538,10 @@ experiments:
       primary:
         metric: revenue
         {method}
-{scalar_sensitivity}{covariates}      guardrails:
+{scalar_sensitivity}      guardrails:
         - metric: rpo
-          {method}{nested_covariates}      secondaries:
+          {method}
+      secondaries:
         - metric: signups
-          {method}{nested_covariates}
+          {method}
 """

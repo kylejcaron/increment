@@ -198,7 +198,7 @@ def _resolve_compile_configs(
 
     if configs is None:
         bindings: Mapping[str, ExperimentMetric] | None = None
-        if plan is not None and path == "warehouse":
+        if plan is not None:
             bindings = {
                 entry.metric: entry
                 for entry in plan.entries()

@@ -31,6 +31,7 @@ import pyarrow.parquet as pq
 
 from increment import Analysis, Method, MetricSpec
 from increment._metric_specs import MetricSpecType
+from increment.frame import CupedCovariate
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactRef
 from increment.semantics.design import Randomized
@@ -198,9 +199,10 @@ def _primary_spec(axes: dict[str, object]) -> MetricSpec:
         name="purchase",
         type=metric_type,
         quantile=0.5 if metric_type == "quantile" else None,
-        covariate="pre_purchase" if axes.get("cuped") else None,
         decision_method=(
-            Method(name="cuped", variance_reduction="cuped") if axes.get("cuped") else None
+            Method.cuped(covariates=CupedCovariate(name="pre_purchase", kind="continuous"))
+            if axes.get("cuped")
+            else None
         ),
         winsorization=(
             Winsorization(upper_percentile=float(cast("float", percentile)))

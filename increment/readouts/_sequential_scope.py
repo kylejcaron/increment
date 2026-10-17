@@ -281,6 +281,7 @@ def scope_sequential_results(
     metrics: Sequence[str] | None,
     estimands: Sequence[str] | None,
     base_roster=None,
+    configs: Sequence[Any] | None = None,
 ) -> LiftEstimates:
     """Attach both retained populations and account for every unavailable decision."""
     from increment._sequential_readouts import sequential_readout
@@ -308,7 +309,12 @@ def scope_sequential_results(
     else:
         integrity_counts = None
     if snapshot.triggered is not None:
-        rows = [*rows, *sequential_readout(src, population="triggered", _include_unrequested=True)]
+        rows = [
+            *rows,
+            *sequential_readout(
+                src, population="triggered", _include_unrequested=True, configs=configs
+            ),
+        ]
     snapshot_id, source = _snapshot_identity(
         plan,
         snapshot,

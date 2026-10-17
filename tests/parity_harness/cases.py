@@ -37,9 +37,10 @@ from increment.analysis import Analysis
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.conversion_delta import delta_interval
 from increment.estimation.conversion_route import dense_min_count
+from increment.estimation.engine import Method
 from increment.estimation.inference import Normal, Prior
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.frame import MetricSpec
+from increment.frame import CupedCovariate, MetricSpec
 from increment.plan import bind_automatic_sequential_plan
 from increment.query.artifact_contract import ArtifactStore, unit_day_artifact_extension_catalog
 from increment.query.session import WarehouseArtifactStore
@@ -56,6 +57,7 @@ from increment.semantics.models import (
     Definitions,
     ExperimentMetric,
     InferenceSpec,
+    MethodSpec,
     NormalPriorSpec,
 )
 from increment.semantics.sequential import SequentialCompliancePolicy
@@ -634,10 +636,19 @@ def _ratio_cuped_parity_spec(*, replay: bool = False) -> MetricSpec:
         type="ratio",
         numerator="revenue",
         denominator="sessions",
-        covariate=None if replay else "pre_revenue",
         missing="zero",
         preferred_direction="increase",
-        sensitivity_methods=() if replay else ({"name": "cuped", "variance_reduction": "cuped"},),
+        sensitivity_methods=(
+            ()
+            if replay
+            else (
+                Method.cuped(
+                    covariates=CupedCovariate(
+                        name="pre_revenue", kind="continuous", missing="impute"
+                    )
+                ),
+            )
+        ),
     )
 
 
@@ -779,10 +790,15 @@ def _fixed_horizon_frame_metrics(
                 name="revenue_cuped",
                 type="mean",
                 value_column="revenue",
-                covariate="pre_revenue",
                 missing="zero",
                 preferred_direction="increase",
-                sensitivity_methods=({"name": "cuped", "variance_reduction": "cuped"},),
+                sensitivity_methods=(
+                    Method.cuped(
+                        covariates=CupedCovariate(
+                            name="pre_revenue", kind="continuous", missing="impute"
+                        )
+                    ),
+                ),
             )
         )
 
@@ -1865,11 +1881,20 @@ def _ratio_component_horizon_case(
 
 def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
     """Retain the same pooled-anchor denominator state on every reachable source."""
-    method = {"name": "cuped", "variance_reduction": "cuped"}
+    method = Method.cuped(
+        covariates=CupedCovariate(name="pre_y", kind="continuous", missing="impute")
+    )
+    native_method = MethodSpec(
+        name=method.name,
+        variance_reduction="cuped",
+        conversion_inference=method.conversion_inference,
+        covariates=None,
+    )
     inference = InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=100)
     frame_plan = AnalysisPlan(primary="ratio", inference=inference)
     native_plan = AnalysisPlan(
-        primary=ExperimentMetric(metric="ratio", decision_method=method), inference=inference
+        primary=ExperimentMetric(metric="ratio", decision_method=native_method),
+        inference=inference,
     )
     allocation = {"control": 0.5, "treatment": 0.5}
     design = Randomized(control_group="control", allocation=allocation)
@@ -1878,7 +1903,6 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
         type="ratio",
         numerator="y",
         denominator="den",
-        covariate="x",
         decision_method=method,
     )
     events: list[dict[str, Any]] = []
@@ -1908,7 +1932,7 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
                     "day": ds._EXPOSURE_AT.date(),
                     "y": numerator,
                     "den": denominator,
-                    "x": covariate,
+                    "pre_y": covariate,
                 }
             )
     events.extend(
@@ -2136,8 +2160,10 @@ def _m3_unit_panel(
     secondary: MetricSpec,
 ) -> Analysis:
     columns = ["user_id", "variant", "exposure_date", "revenue", "sessions"]
-    if primary.covariate is not None:
-        columns.append(primary.covariate)
+
+    primary_method = primary.decision_method
+    if primary_method is not None:
+        columns.extend(covariate.name for covariate in (primary_method.covariates or ()))
     if secondary.type == "conversion":
         columns.append(secondary.name)
     panel = summary[columns].copy()
@@ -2149,7 +2175,7 @@ def _m3_unit_panel(
         date="date",
         design=design,
         metrics=[
-            primary.model_copy(update={"window_days": 1 if primary.covariate is None else None}),
+            primary.model_copy(update={"window_days": 1 if primary_method is None else None}),
             secondary.model_copy(update={"window_days": 1}),
         ],
         plan=plan,
@@ -2160,15 +2186,29 @@ def _m3_unit_panel(
     return analysis
 
 
-def _m3_plan_pair(secondary: str, messy: bool) -> tuple[AnalysisPlan, AnalysisPlan, dict[str, str]]:
+def _m3_plan_pair(secondary: str, messy: bool) -> tuple[AnalysisPlan, AnalysisPlan, Method]:
     sequential = AnalysisPlan(
         primary="revenue",
         secondaries=(secondary,),
         inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
     )
-    cuped = {"name": "cuped", "variance_reduction": "cuped"}
+    cuped = Method.cuped(
+        covariates=CupedCovariate(name="pre_revenue", kind="continuous", missing="zero")
+    )
     native = AnalysisPlan(
-        primary=ExperimentMetric(metric="revenue", decision_method=cuped) if messy else "revenue",
+        primary=(
+            ExperimentMetric(
+                metric="revenue",
+                decision_method=MethodSpec(
+                    name=cuped.name,
+                    variance_reduction="cuped",
+                    conversion_inference=cuped.conversion_inference,
+                    covariates=None,
+                ),
+            )
+            if messy
+            else "revenue"
+        ),
         secondaries=(secondary,),
         inference=sequential.inference,
     )
@@ -2246,8 +2286,6 @@ def _sequential_missing_zero_mean_ratio_case(
         type="mean",
         missing="zero",
         preferred_direction="increase",
-        covariate="pre_revenue" if messy else None,
-        covariate_missing="zero" if messy else "impute",
         decision_method=cuped if messy else None,
     )
     summary_metrics = [revenue_spec, secondary_spec]
@@ -2307,7 +2345,12 @@ def _sequential_missing_zero_mean_ratio_case(
                 native,
                 first_path,
                 [
-                    revenue_spec.model_copy(update={"window_days": None}),
+                    revenue_spec.model_copy(
+                        update={
+                            "window_days": None,
+                            "decision_method": Method.cuped() if messy else None,
+                        }
+                    ),
                     secondary_spec.model_copy(update={"window_days": None}),
                 ],
                 design,
@@ -2322,7 +2365,12 @@ def _sequential_missing_zero_mean_ratio_case(
                 native,
                 second_path,
                 [
-                    revenue_spec.model_copy(update={"window_days": None}),
+                    revenue_spec.model_copy(
+                        update={
+                            "window_days": None,
+                            "decision_method": Method.cuped() if messy else None,
+                        }
+                    ),
                     secondary_spec.model_copy(update={"window_days": None}),
                 ],
                 design,
@@ -9024,7 +9072,7 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
     )
 
 
-def _mixed_cuped_linear_case() -> ParityCase:
+def _mixed_cuped_multicovariate_case() -> ParityCase:
     """Mixed-covariate CUPED parity on four unit ingresses and two source refusals."""
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate
@@ -9058,16 +9106,20 @@ def _mixed_cuped_linear_case() -> ParityCase:
     def source_limited_moments() -> Analysis:
         spec = MetricSpec(
             name="revenue",
-            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-            covariates=(CupedCovariate(name="prior", kind="continuous"),),
+            decision_method=Method.cuped_multicovariate(
+                name="linear",
+                covariates=CupedCovariate(name="prior", kind="continuous"),
+            ),
         )
         return Analysis.from_moments([], metrics=[spec], control="control")
 
     def different_design_switchback() -> Analysis:
         spec = MetricSpec(
             name="revenue",
-            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-            covariates=(CupedCovariate(name="prior", kind="continuous"),),
+            decision_method=Method.cuped_multicovariate(
+                name="linear",
+                covariates=CupedCovariate(name="prior", kind="continuous"),
+            ),
         )
         from increment.semantics.design import Randomized
 
@@ -9090,7 +9142,7 @@ def _mixed_cuped_linear_case() -> ParityCase:
         )
 
     return ParityCase(
-        id="mixed-cuped-linear-fixed-horizon",
+        id="mixed-cuped-multicovariate-fixed-horizon",
         build={
             "from_definitions": lambda: definition_analysis(artifact=False),
             "from_unit_day_artifact": lambda: definition_analysis(artifact=True),
@@ -9227,5 +9279,5 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _winsor_three_arm_case(),
     _winsor_zero_inclusive_case(1),
     _winsor_size_routed_case(),
-    _mixed_cuped_linear_case(),
+    _mixed_cuped_multicovariate_case(),
 ) + capability_cases()

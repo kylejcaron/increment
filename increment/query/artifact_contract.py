@@ -214,6 +214,7 @@ _REFUSAL_CODES = (
     "artifact.extension.invalid",
     "artifact.evidence.unavailable",
     "artifact.metric.binding_mismatch",
+    "artifact.cuped.scalar_breakout",
     "artifact.generation.dropped",
     "artifact.manifest.unreferenced_relation",
     "artifact_contract.encouragement_uptake_conflict",
@@ -375,6 +376,20 @@ def _dump_context_plan(plan: Any) -> dict[str, Any]:
     checkpoint identity.
     """
     result = cast("dict[str, Any]", _dump(plan))
+
+    def omit_undeclared_covariates(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: omit_undeclared_covariates(item)
+                for key, item in value.items()
+                if not (key == "covariates" and item is None)
+            }
+        if isinstance(value, (list, tuple)):
+            items = (omit_undeclared_covariates(item) for item in value)
+            return tuple(items) if isinstance(value, tuple) else list(items)
+        return value
+
+    result = cast("dict[str, Any]", omit_undeclared_covariates(result))
     result.setdefault("q", plan.q)
     inference = result.get("inference")
     if isinstance(inference, dict):
@@ -857,13 +872,20 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
     if design is not None and design.mechanism == "observational":
         declarations.extend(design.covariates)
     for binding in experiment.bindings.values():
-        declarations.extend(c for c in binding.covariates if c.property is not None)
+        methods = (
+            () if binding.decision_method is None else (binding.decision_method,)
+        ) + binding.sensitivity_methods
+        declarations.extend(
+            covariate for method in methods for covariate in method.covariates or ()
+        )
 
     entries: list[Any] = []
     seen_sources: set[tuple[str, str]] = set()
     for declaration in declarations:
-        property_name = declaration.property
-        source_name = declaration.source
+        if getattr(declaration, "measure", None) is not None:
+            continue
+        property_name = getattr(declaration, "property", None) or declaration.name
+        source_name = getattr(declaration, "source", None)
         source = _source_for(definitions, property_name, source_name, unit=experiment.unit)
         source_key = (property_name, source.name)
         if source_key in seen_sources:
@@ -883,7 +905,10 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
             request,
             {
                 "kind": kind,
-                "property": _dump(declaration),
+                "property": {
+                    **cast("Mapping[str, object]", _dump(declaration)),
+                    "property": property_name,
+                },
                 "property_definition": _dump(prop),
             },
             {
@@ -965,8 +990,11 @@ def _cuped_catalog_entries(
         binding = experiment.bindings.get(metric_name)
         if binding is None:
             continue
-        for covariate in binding.covariates:
-            measure = covariate.measure
+        methods = (
+            () if binding.decision_method is None else (binding.decision_method,)
+        ) + binding.sensitivity_methods
+        for covariate in (covariate for method in methods for covariate in method.covariates or ()):
+            measure = getattr(covariate, "measure", None)
             if measure is None:
                 continue
             request = _model("CupedMeasureCovariateRequest").model_validate(
@@ -996,7 +1024,7 @@ def _cuped_catalog_entries(
                     "fact_source": _fact_source_recipe(definitions, measure.fact, experiment.unit),
                 },
             )
-        if not binding.wants_cuped:
+        if not binding.wants_cuped or experiment.n_pre_periods == 0:
             continue
         request = _model("CupedPreperiodRequest").model_validate(
             {"kind": "cuped_preperiod", "metric_name": metric_name}

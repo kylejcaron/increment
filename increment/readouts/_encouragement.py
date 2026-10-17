@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
 from increment.errors import InvalidRequestError
@@ -23,10 +24,10 @@ from increment.estimation.results import (
 from increment.readouts._common import (
     _joint_relative_rows,
     _refuse_if_no_treatment_arm,
-    _runtime_method_roles,
     _runtime_methods,
     _sequential_inference,
 )
+from increment.readouts._passes import _append_lift_cell_failure
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
 
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.inference import Prior
+    from increment.readouts._metric_rows import MetricRows
     from increment.semantics.models import Metric
 
 
@@ -97,6 +99,7 @@ class _EncouragementCellGroup(NamedTuple):
     null_abs: float | None
     family_member: bool
     metrics: list[Metric]
+    method_role: Literal["decision", "sensitivity"]
 
 
 def _encouragement_cell_groups(
@@ -116,33 +119,81 @@ def _encouragement_cell_groups(
         null_lift = null_lift_by_metric[metric.name]
         null_abs = null_abs_by_metric[metric.name]
         family_member = metric.name in family_metric_names
-        metric_methods = _runtime_methods(config, design)
-        for group in groups:
-            if (
-                group.methods == metric_methods
-                and group.prior == config.prior
-                and group.alternative == alternative
-                and group.alpha == alpha
-                and group.null_lift == null_lift
-                and group.null_abs == null_abs
-                and group.family_member == family_member
-            ):
-                group.metrics.append(metric)
-                break
-        else:
-            groups.append(
-                _EncouragementCellGroup(
-                    metric_methods,
-                    config.prior,
-                    alternative,
-                    alpha,
-                    null_lift,
-                    null_abs,
-                    family_member,
-                    [metric],
+        for index, method in enumerate(_runtime_methods(config, design)):
+            role: Literal["decision", "sensitivity"] = "decision" if index == 0 else "sensitivity"
+            for group in groups:
+                if (
+                    group.methods == [method]
+                    and group.method_role == role
+                    and group.prior == config.prior
+                    and group.alternative == alternative
+                    and group.alpha == alpha
+                    and group.null_lift == null_lift
+                    and group.null_abs == null_abs
+                    and group.family_member == family_member
+                ):
+                    group.metrics.append(metric)
+                    break
+            else:
+                groups.append(
+                    _EncouragementCellGroup(
+                        [method],
+                        config.prior,
+                        alternative,
+                        alpha,
+                        null_lift,
+                        null_abs,
+                        family_member,
+                        [metric],
+                        role,
+                    )
                 )
-            )
     return groups
+
+
+def _group_method_evidence(
+    group: _EncouragementCellGroup,
+    evidence_by_metric: Mapping[str, MetricRows],
+    *,
+    control_group: str,
+    estimands: Sequence[str],
+):
+    method = group.methods[0]
+    available = []
+    summary = []
+    failed_rows: list[LiftEstimate] = []
+    failures: list[DecisionComputation[LiftEstimate]] = []
+    for metric in group.metrics:
+        evidence = evidence_by_metric[metric.name]
+        try:
+            rows = (
+                evidence.rows_for_method(method)
+                if method.variance_reduction == "cuped"
+                else evidence.rows
+            )
+        except InvalidRequestError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            for arm in sorted(evidence.observed_arms - {control_group}):
+                for estimand in ("itt", "late"):
+                    if estimand not in estimands:
+                        continue
+                    _append_lift_cell_failure(
+                        results=failed_rows,
+                        computations=failures,
+                        metric=metric,
+                        group_id=arm,
+                        method=method,
+                        method_roles={method.name: group.method_role},
+                        alternative=group.alternative,
+                        code=exc.code,
+                        context=exc.context,
+                        estimand=estimand,
+                    )
+            continue
+        available.append(metric)
+        summary.extend(rows)
+    return group._replace(metrics=available), summary, failed_rows, failures
 
 
 def _compliance_only_rows(src, design, wanted, plan, capture):
@@ -204,6 +255,7 @@ def encouragement_rows(
     src: MomentSource,
     metrics: Sequence[Metric],
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
+    evidence_by_metric: Mapping[str, MetricRows],
     configs: Sequence[ResolvedMetricConfig],
     design: Encouragement,
     plan: CompiledDecisionPlan,
@@ -248,11 +300,40 @@ def encouragement_rows(
         _validated_compliance_summary(src, design) if "compliance" in wanted else None
     )
     results: list[LiftEstimate] = []
+    outcome_compliance: dict[tuple[str, str], LiftEstimate] = {}
     computations: list[DecisionComputation[LiftEstimate]] = []
     family_refusal_deferred = False
     for group in groups:
-        summary = [row for m in group.metrics for row in rows_by_metric[m.name]]
-        method_roles = _runtime_method_roles(group.methods)
+        group, summary, failed_rows, failures = _group_method_evidence(
+            group,
+            evidence_by_metric,
+            control_group=design.control_group,
+            estimands=wanted,
+        )
+        computations.extend(failures)
+        results.extend(
+            row.model_copy(
+                update={
+                    "role": role_by_metric.get(row.metric),
+                    "preferred_direction": next(
+                        metric.declared_preferred_direction
+                        for metric in metrics
+                        if metric.name == row.metric
+                    ),
+                    "null_lift": group.null_lift,
+                    "null_abs": group.null_abs,
+                    "posterior_available": False if group.prior is not None else None,
+                    "posterior_reason_code": row.failure_code if group.prior is not None else None,
+                    "posterior_reason_context": row.failure_context
+                    if group.prior is not None
+                    else None,
+                }
+            )
+            for row in failed_rows
+        )
+        if not group.metrics:
+            continue
+        method_roles = {group.methods[0].name: group.method_role}
         try:
             computation = _estimate_encouragement(
                 metrics=group.metrics,
@@ -297,15 +378,18 @@ def encouragement_rows(
                 results=(), evidence={}, failures=failures
             )
         computations.append(computation)
-        results.extend(
-            r.model_copy(
+        for row in computation.results:
+            stamped = row.model_copy(
                 update={
-                    "role": role_by_metric.get(r.metric),
-                    "method_role": method_roles.get(r.method, "decision"),
+                    "role": role_by_metric.get(row.metric),
+                    "method_role": method_roles.get(row.method, "decision"),
                 }
             )
-            for r in computation.results
-        )
+            if row.estimand == "compliance":
+                outcome_compliance.setdefault((row.metric, row.group_id), stamped)
+            else:
+                results.append(stamped)
+    results.extend(outcome_compliance.values())
 
     # Compliance is design-level: estimate it once at the plan alpha from the
     # declared uptake cohort, never outcome-filtered moments, so it cannot depend
@@ -332,6 +416,7 @@ def encouragement_rows(
             plan=plan,
             design=design,
             rows_by_metric=rows_by_metric,
+            evidence_by_metric=evidence_by_metric,
             estimands=estimands,
             cluster=cluster,
             computations=computations,
@@ -388,6 +473,7 @@ def _select_encouragement_family(
     plan: CompiledDecisionPlan,
     design: Encouragement,
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
+    evidence_by_metric: Mapping[str, MetricRows],
     estimands: Sequence[str] | None,
     cluster: str | None,
     computations: list[DecisionComputation[LiftEstimate]],
@@ -483,7 +569,11 @@ def _select_encouragement_family(
             )
             pass_computation = _estimate_encouragement(
                 metrics=[metric],
-                summary=rows_by_metric[name],
+                summary=(
+                    evidence_by_metric[name].rows_for_method(config.decision_method)
+                    if config.decision_method.variance_reduction == "cuped"
+                    else rows_by_metric[name]
+                ),
                 design=design,
                 estimands=estimands if estimands is not None else ESTIMANDS,
                 methods=[config.decision_method],

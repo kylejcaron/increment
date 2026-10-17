@@ -197,7 +197,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
 
     import polars as pl
 
-    from increment import Analysis
+    from increment import Analysis, CupedCovariate, Method
     from increment.frame import MetricSpec
     from increment.plan import bind_automatic_sequential_plan
     from increment.semantics.assignment import (
@@ -206,7 +206,13 @@ def _sequential_mean_cuped_case() -> ParityCase:
         SwitchbackWindow,
     )
     from increment.semantics.design import Randomized
-    from increment.semantics.models import AnalysisPlan, Definitions, Experiment, ExperimentMetric
+    from increment.semantics.models import (
+        AnalysisPlan,
+        Definitions,
+        Experiment,
+        ExperimentMetric,
+        MethodSpec,
+    )
     from increment.sequential_source import native_observation_mapping
     from tests.analysis_factory import make_analysis
     from tests.parity_harness import dataset as ds
@@ -217,7 +223,8 @@ def _sequential_mean_cuped_case() -> ParityCase:
         _track_connection,
     )
 
-    cuped = {"name": "cuped", "variance_reduction": "cuped"}
+    cuped = MethodSpec(name="cuped", variance_reduction="cuped", covariates=None)
+    cuped_frame = Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
     rows = ds.event_rows()
     inference = {"kind": "asymptotic_mean", "expected_decision_sample_size": 100}
     # The warehouse plan binds the CUPED decision on the plan entry; a frame declares it
@@ -268,8 +275,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
             name="revenue",
             type="mean",
             missing="zero",
-            covariate="pre_revenue",
-            decision_method=cuped,
+            decision_method=cuped_frame,
             window_days=window_days,
         )
 

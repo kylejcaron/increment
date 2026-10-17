@@ -47,11 +47,17 @@ def test_scalar_requires_a_validated_relative_procedure() -> None:
     assert exc_info.value.code == "power.procedure_armplanningprocedure"
 
 
-def test_fixed_horizon_planning_refuses_cuped_linear_before_using_scalar_rho() -> None:
-    from increment.semantics.models import MethodSpec
+def test_fixed_horizon_planning_refuses_multicovariate_before_using_scalar_rho() -> None:
+    from increment.semantics.models import CupedCovariate, MethodSpec
 
     procedure = make_procedure().model_copy(
-        update={"decision_method": MethodSpec(name="linear", variance_reduction="cuped_linear")}
+        update={
+            "decision_method": MethodSpec(
+                name="linear",
+                variance_reduction="cuped_multicovariate",
+                covariates=(CupedCovariate(name="prior", kind="continuous"),),
+            )
+        }
     )
 
     with pytest.raises(InvalidRequestError) as raised:

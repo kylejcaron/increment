@@ -759,20 +759,12 @@ def _resolve_declaration(
     if path in ("frame", "frame/contrast"):
         for entry in (*primary_entries, *(explicit_secondary_entries or []), *guardrail_entries):
             binding = _entry_binding(entry)
-            if binding is not None:
-                unsupported = []
-                if binding.decision_method is not None:
-                    unsupported.append("decision_method")
-                if binding.sensitivity_methods:
-                    unsupported.append("sensitivity_methods")
-                if binding.prior is not None:
-                    unsupported.append("prior")
-                if unsupported:
-                    _raise(
-                        "plan.frame.override",
-                        metric=binding.metric,
-                        field=unsupported[0] if len(unsupported) == 1 else None,
-                    )
+            if binding is not None and binding.prior is not None:
+                _raise(
+                    "plan.frame.override",
+                    metric=binding.metric,
+                    field="prior",
+                )
 
         declared = set(metrics_by_name)
         default_secondary_names = declared - set(primary_names) - set(guardrail_names)

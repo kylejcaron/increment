@@ -34,6 +34,7 @@ from increment.estimation.engine import (
     Method,
     _df_to_arms,
     _estimate_lift,
+    _is_unadjusted_method,
     _validate_unique_method_names,
     _winsorization_result_fields,
 )
@@ -61,6 +62,8 @@ if TYPE_CHECKING:
 ADJUSTMENTS: Registry[AdjustmentFn] = Registry("adjustment")
 
 _BUILTIN_ADJUSTMENTS = frozenset(("iptw", "dml", "aipw"))
+
+
 from increment.estimation._adjust import aipw as _aipw  # noqa: E402,F401
 from increment.estimation._adjust import dml as _dml  # noqa: E402,F401
 from increment.estimation._adjust import iptw as _iptw  # noqa: E402,F401
@@ -376,8 +379,8 @@ def _validate_prior_method_scales(
     """Refuse one informative prior spanning incompatible method scales."""
     if prior is None:
         return
-    has_log_rr = any(method.name == "unadjusted" for method in methods)
-    has_linear_relative = any(method.name != "unadjusted" for method in methods)
+    has_log_rr = any(_is_unadjusted_method(method) for method in methods)
+    has_linear_relative = any(not _is_unadjusted_method(method) for method in methods)
     if has_log_rr and has_linear_relative:
         _refuse("estimation.adjust.prior.method_scale")
 
@@ -398,9 +401,9 @@ def _validate_global_prior_method_scales(
             method
             for method in methods
             if (
-                method.name == "unadjusted"
+                _is_unadjusted_method(method)
                 and metric_type != "quantile"
-                or method.name != "unadjusted"
+                or not _is_unadjusted_method(method)
                 and not (
                     method.name in _BUILTIN_ADJUSTMENTS and metric_type in ("quantile", "ratio")
                 )
@@ -540,7 +543,7 @@ def _resolve_value_scales(
     absolute_requested = [
         n for n, s in (value_scale or {}).items() if s == "absolute" and n in selected_names
     ]
-    if absolute_requested and any(m.name == "unadjusted" for m in methods):
+    if absolute_requested and any(_is_unadjusted_method(method) for method in methods):
         _refuse("estimation.adjust.method_name_unadjusted")
 
     scales: dict[str, ValueScale] = {
@@ -679,7 +682,7 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
                 _refuse("readout.observational.prior")
             _validate_prior_method_scales(methods, prior)
             if value_scale.get(metric.name) == "absolute" and any(
-                method.name == "unadjusted" for method in methods
+                _is_unadjusted_method(method) for method in methods
             ):
                 _refuse("readout.adjustment.absolute_unadjusted")
         _validate_global_prior_method_scales(configs, method_catalog)
@@ -817,7 +820,7 @@ def estimate_ate(  # noqa: PLR0913
 
 def _validate_adjustment_methods(methods: Sequence[Method]) -> None:
     for method in methods:
-        if method.name == "unadjusted":
+        if _is_unadjusted_method(method):
             continue
         ADJUSTMENTS.get(method.name)
         if method.variance_reduction != "none":
@@ -867,7 +870,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         from increment.estimation.engine import resolve_method_roles
 
         resolved_method_roles = resolve_method_roles(
-            methods, prefer=lambda m: m.name != "unadjusted"
+            methods, prefer=lambda m: not _is_unadjusted_method(m)
         )
     selected = list(src.context.metrics) if metrics is None else list(metrics)
     if methods == []:
@@ -910,7 +913,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     _validate_adjustment_methods(methods)
     if evidence is None:
         moment_metrics = selected
-        if cluster is not None and all(method.name == "unadjusted" for method in methods):
+        if cluster is not None and all(_is_unadjusted_method(method) for method in methods):
             # Joint clustered inference consumes unit frames; only winsor diagnostics need moments.
             moment_metrics = [
                 metric for metric in selected if getattr(metric, "winsorization", None) is not None
@@ -931,7 +934,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     refused_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
     for method in methods:
-        if method.name == "unadjusted":
+        if _is_unadjusted_method(method):
             any_attempted = True
             for metric in selected:
                 if cluster is not None:

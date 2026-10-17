@@ -93,6 +93,28 @@ def test_artifact_context_round_trips_declared_allocation_scheme() -> None:
     assert definitions.experiment(_EXPERIMENT).resolved_design().allocation_scheme == "independent"
 
 
+def test_method_without_covariates_keeps_baseline_artifact_context_bytes() -> None:
+    from increment.semantics.models import ExperimentMetric, MethodSpec
+
+    definitions = _definitions()
+    experiment = definitions.experiment(_EXPERIMENT)
+    assert experiment is not None
+    plan = experiment.plan.model_copy(
+        update={
+            "secondaries": (
+                ExperimentMetric(metric="revenue", decision_method=MethodSpec(name="naive")),
+            )
+        }
+    )
+    definitions = definitions.model_copy(
+        update={"experiments": (experiment.model_copy(update={"plan": plan}),)}
+    )
+
+    context = ac.compile_unit_day_artifact_context(_EXPERIMENT, definitions)
+
+    assert context.sha256 == "eeeaddb434350e2a2d4f84932a63edb0aab55599e5a9e571e562496970408209"
+
+
 def test_compile_context_rejects_non_date_site_volume_coverage() -> None:
     with pytest.raises(InvalidRequestError) as exc_info:
         ac.compile_unit_day_artifact_context(

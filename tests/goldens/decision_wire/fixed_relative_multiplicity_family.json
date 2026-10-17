@@ -13,6 +13,7 @@
       "axis": "relative",
       "decision_method": {
         "conversion_inference": "auto",
+        "covariates": null,
         "name": "cuped",
         "variance_reduction": "cuped"
       },
@@ -47,6 +48,7 @@
       "sensitivity_methods": [
         {
           "conversion_inference": "auto",
+          "covariates": null,
           "name": "unadjusted",
           "variance_reduction": "none"
         }
@@ -89,5 +91,5 @@
       "q": 0.1
     }
   },
-  "wire_version": 2
+  "wire_version": 4
 }

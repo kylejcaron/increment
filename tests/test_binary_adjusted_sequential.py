@@ -7,7 +7,7 @@ from fractions import Fraction as F
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, InferenceSpec, Method, MetricSpec
+from increment import Analysis, CupedCovariate, InferenceSpec, Method, MetricSpec
 from increment.semantics.models import AnalysisPlan
 from tests.binary_sequential_cases import DESIGN, frame_analysis, unit_rows
 
@@ -35,8 +35,9 @@ def _fixed_horizon_cuped(units):
             MetricSpec(
                 name="purchase",
                 type="conversion",
-                covariate="pre_purchase",
-                decision_method=Method(name="cuped", variance_reduction="cuped"),
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_purchase", kind="continuous")
+                ),
             )
         ],
         design=DESIGN,

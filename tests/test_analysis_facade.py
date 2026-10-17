@@ -1288,6 +1288,7 @@ def informative_prior_summary_frame():
 
 
 def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
+    from increment import CupedCovariate
     from increment.estimation import Normal
 
     analysis = Analysis.from_unit_summary(
@@ -1295,20 +1296,25 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
         unit="user_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="revenue", type="mean", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
+                ),
+            )
+        ],
     )
-    cuped_method = [Method(name="cuped", variance_reduction="cuped")]
-
-    with pytest.warns(IncrementWarning) as caught:
-        unadjusted = _lift_rows(analysis.run())[0]
-    assert warning_codes(caught) == ["analysis.cuped.covariate_unused"]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        cuped = _lift_rows(analysis.run(decision_method=cuped_method[0]))[0]
-        shrunk = _lift_rows(
-            analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
-        )[0]
+        unadjusted, cuped = _lift_rows(analysis.run())
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        shrunk_rows = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))
+    assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
+    shrunk = next(row for row in shrunk_rows if row.method == "cuped")
 
     assert cuped.require_lift().value < unadjusted.require_lift().value
     assert shrunk.require_lift() == cuped.require_lift()

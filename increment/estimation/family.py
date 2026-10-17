@@ -320,6 +320,8 @@ _CONSERVATIVE_NONREJECTION_CODES = frozenset(
         "estimation.cuped_linear.nonfinite_projection",
         "estimation.cuped_linear.missing_refused",
         "estimation.cuped_linear.support_region",
+        "frame.validation.metric_covariate_column",
+        "frame.validation.metric_covariate_impute_all_null",
         "readout.cell.missing_metric_observations",
     }
 )

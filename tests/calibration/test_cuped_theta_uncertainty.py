@@ -167,14 +167,13 @@ def moment_row(group_id: str, y: np.ndarray, x: np.ndarray) -> dict[str, object]
 
 def _assert_public_entry_agrees(direct, y: np.ndarray, x: np.ndarray) -> None:
     """``Analysis.from_unit_summary`` on the same units yields the same row."""
-    from increment import Analysis, Method, MetricSpec
+    from increment import Analysis, CupedCovariate, Method, MetricSpec
     from tests.analysis_factory import lift_rows
 
     spec = MetricSpec(
         name="y",
         type="mean",
-        covariate="x",
-        decision_method=Method(name="cuped", variance_reduction="cuped"),
+        decision_method=Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
     )
     (public,) = lift_rows(
         Analysis.from_unit_summary(
