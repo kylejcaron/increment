@@ -195,6 +195,7 @@ def test_class_selector_requires_collected_descendant_tests(tmp_path: Path) -> N
     assert all("TestWithTests" not in error for error in errors)
 
 
+@pytest.mark.integration
 def test_collection_loads_configured_plugins_without_executing_cited_or_other_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -224,6 +225,7 @@ def test_collection_loads_configured_plugins_without_executing_cited_or_other_fi
 
 
 @pytest.mark.parametrize("through_local_base", [False, True])
+@pytest.mark.integration
 def test_module_qualified_inherited_selector_is_resolved_by_collection(
     tmp_path: Path, through_local_base: bool
 ) -> None:

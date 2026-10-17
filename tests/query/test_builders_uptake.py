@@ -139,6 +139,7 @@ def uptake_pipeline_kwargs(
 # Tests
 
 
+@pytest.mark.integration
 def test_group_summary_uptake_moments_windowed(con, uptake_pipeline_kwargs, uptake_click_events):
     """``window_days=7`` - u1's day-1 click counts, u2's day-9 click doesn't."""
     click_events = uptake_click_events.filter(uptake_click_events.event == "click")
@@ -190,6 +191,7 @@ def test_group_summary_uptake_moments_ever(con, uptake_pipeline_kwargs, uptake_c
 
 
 @pytest.mark.creates_tables
+@pytest.mark.integration
 def test_group_summary_covariate_uptake_cross_moment(
     con, uptake_experiment, uptake_exposure_events, uptake_click_events, mean_metric
 ):
@@ -254,6 +256,7 @@ def test_group_summary_covariate_uptake_cross_moment(
     assert rows["control"]["cxd"] == pytest.approx(0.0)
 
 
+@pytest.mark.integration
 def test_no_uptake_fact_leaves_moments_null(con, uptake_pipeline_kwargs):
     """No ``uptake_events`` passed - ``d``/``sum_d``/``cyd``/``cy2d``
     are NULL (absent), not zero - distinguishing "no encouragement design
@@ -271,6 +274,7 @@ def test_no_uptake_fact_leaves_moments_null(con, uptake_pipeline_kwargs):
         assert all(r.get(field) is None for r in rows)
 
 
+@pytest.mark.integration
 def test_ratio_metric_with_uptake_events_builds_and_scores(con, uptake_experiment):
     """RatioMetric + ``uptake_events`` must build and execute: the ratio
     branch's numerator/denominator join used to leave a dangling

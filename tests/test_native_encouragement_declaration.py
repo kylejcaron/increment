@@ -773,3 +773,6 @@ def test_compile_unit_day_artifact_context_refuses_conflicting_encouragement_upt
             "exp", defs, on_mixed_assignment="error", encouragement_uptake=conflicting
         )
     assert exc.value.code == "artifact_contract.encouragement_uptake_conflict"
+
+
+pytestmark = pytest.mark.integration

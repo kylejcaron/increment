@@ -181,3 +181,6 @@ def test_missing_base_requires_certification(repository):
 def test_non_pr_events_require_certification(repository, event: str):
     repo, _ = repository
     assert _required(repo, "missing-base", event)
+
+
+pytestmark = pytest.mark.integration

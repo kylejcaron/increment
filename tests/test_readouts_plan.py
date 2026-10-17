@@ -940,6 +940,7 @@ def test_guardrail_one_sided_without_margin():
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.integration
 def test_av_plan_uses_e_bh_and_keeps_nominal_cs():
     """Full registered e-BH selection and same-checkpoint selected inversion."""
     n = 1500
@@ -1366,6 +1367,7 @@ def test_secondary_family_dedups_by_method_not_by_method_x_arm():
         assert r.require_lift().alpha == pytest.approx(plan.alpha)
 
 
+@pytest.mark.integration
 def test_always_valid_margin_bearing_secondary_discovery_matches_stat_sig():
     """A margin-bearing secondary (declared ``margin=0.05``, so
     ``null_lift=-0.05``) under an AlwaysValid plan: `discovery` must be
@@ -1498,6 +1500,7 @@ def test_welch_mean_posterior_favorable_uses_declared_null():
     assert row.posterior_prob_favorable != pytest.approx(row.chance_to_beat())
 
 
+@pytest.mark.integration
 def test_dense_conversion_posterior_favorable_uses_declared_null():
     n = 6000
     table = pd.DataFrame(
@@ -1954,6 +1957,7 @@ def test_breakout_rows_keep_their_source_on_every_branch(mechanism, correction):
     assert {row.source for row in segment_heterogeneity(estimates).summary} == {"src_a", "src_b"}
 
 
+@pytest.mark.integration
 def test_registered_sequential_breakout_tests_a_plan_bound_margin_against_its_registered_null():
     """Only fixed-horizon breakouts refuse a margin: they build no shifted
     null. A registered sequential breakout registers the plan-bound margin's
@@ -2513,6 +2517,7 @@ def test_breakout_correction_none_uses_compiled_policy_q():
 @pytest.mark.filterwarnings("ignore:metric .* is open-ended:UserWarning")
 @pytest.mark.parametrize("kind", ["fixed", "always_valid"])
 @pytest.mark.parametrize("alternative", ["greater", "less"])
+@pytest.mark.integration
 def test_directional_secondary_fcr_dispatches_on_returned_inference(kind, alternative):
     import math
 

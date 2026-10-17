@@ -937,3 +937,6 @@ def test_sequential_rows_compare_every_public_field_except_route_identifiers():
     )
     assert renamed.sequential_result.checkpoint.prefix_id != result.checkpoint.prefix_id
     _assert_lift_rows_equal(row, renamed)
+
+
+pytestmark = pytest.mark.integration

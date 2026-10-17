@@ -101,6 +101,7 @@ def test_each_adapter_advertises_a_complete_moment_source_contract(
 
 
 @pytest.mark.parametrize("adapter_index", range(len(_ADAPTER_NAMES)), ids=_ADAPTER_NAMES)
+@pytest.mark.integration
 def test_absent_grains_and_extensions_are_stable_coded_refusals(
     tmp_path: Path, adapter_index: int
 ) -> None:
@@ -239,6 +240,7 @@ def test_definitions_operations_are_callable(tmp_path: Path) -> None:
         source.close()
 
 
+@pytest.mark.integration
 def test_definitions_trigger_operations_are_callable(tmp_path: Path) -> None:
     source, _breakout = definitions_source(tmp_path, trigger=True)
     metric = source.context.metrics[0]

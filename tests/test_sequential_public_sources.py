@@ -2167,3 +2167,6 @@ def test_encouragement_sequential_allocation_keeps_its_design_and_recovers():
     rows = corrected.run(estimands=("itt",))
     assert len(rows) == 1
     assert rows[0].metric == "outcome"
+
+
+pytestmark = pytest.mark.integration

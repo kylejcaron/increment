@@ -508,6 +508,7 @@ def test_encouragement_summary_breakout_partitions_empty_arms(
 
 
 @pytest.mark.parametrize("include_valid_metric", [False, True])
+@pytest.mark.integration
 def test_encouragement_summary_breakout_keeps_metric_empty_in_every_segment(
     encouragement_summary_breakout_frame, include_valid_metric
 ):
@@ -1715,6 +1716,7 @@ def test_from_unit_panel_asof_one_sided_control_uptake_still_raises():
     assert raised.value.code == "estimation.encouragement.one_sided_encouragement"
 
 
+@pytest.mark.integration
 def test_from_unit_panel_asof_two_sided_allows_control_uptake():
     analysis = _make_windowed_encouragement_panel_analysis(control_uptake=True, one_sided=False)
     results = analysis.run_asof_lift()

@@ -1719,6 +1719,7 @@ def test_unadjusted_source_consumes_only_canonical_cluster_metadata():
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.parametrize("spanning", [False, True])
+@pytest.mark.integration
 def test_unadjusted_definitions_source_uses_cluster_metadata_without_covariates(tmp_path, spanning):
     from tests.analysis_factory import _native_source, make_analysis_like
     from tests.test_analysis_cluster import _analysis, _event_rows

@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 
+@pytest.mark.integration
 def test_sources_module_imports_no_engine():
     code = (
         "import sys; import increment.sources; "

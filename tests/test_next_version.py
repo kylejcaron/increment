@@ -159,3 +159,6 @@ def test_invalid_commit_ref_is_refused_before_any_version_is_emitted(repo):
     result = _resolve(repo, "--ref", "missing-ref")
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+pytestmark = pytest.mark.integration

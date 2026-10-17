@@ -1728,3 +1728,6 @@ class TestDegenerateRatioIsRefusedWhereColumnsAreRead:
         # from_moments carries these as labels, not columns.
         spec = MetricSpec(name="r", type="ratio", numerator="order", denominator="order")
         assert spec.numerator == spec.denominator
+
+
+pytestmark = pytest.mark.integration

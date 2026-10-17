@@ -198,6 +198,7 @@ def _drop_uptake_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in row.items() if k not in _UPTAKE_FIELDS} for row in rows]
 
 
+@pytest.mark.integration
 def test_metric_summary_pipeline_matches_pinned_baseline(tmp_path):
     analysis = _encouragement_breakout_analysis()
     try:
@@ -212,6 +213,7 @@ def test_metric_summary_pipeline_matches_pinned_baseline(tmp_path):
     assert actual_factor == expected_factor
 
 
+@pytest.mark.integration
 def test_factor_summaries_resolves_uptake_like_breakout_summaries():
     """factor_summaries must resolve and pass uptake_events/
     uptake_window_days exactly as breakout_summaries does."""
@@ -340,6 +342,7 @@ def _clustered_encouragement_analysis():
     return make_analysis(con, defs, experiment="native_late", _design=DESIGN)
 
 
+@pytest.mark.integration
 def test_clustered_total_grain_summary_binds_uptake_not_cluster_size(tmp_path):
     """A clustered Encouragement experiment's TOTAL-grain exported moments
     row must keep the ``x`` family bound to per-cluster uptake totals.

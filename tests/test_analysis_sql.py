@@ -1111,3 +1111,6 @@ def test_public_facade_uses_experiment_unit_when_entities_are_reordered():
 
     result = _srm_result(analysis.srm(expected={"control": 0.5, "treatment": 0.5}))
     assert result.observed == {"control": 1, "treatment": 1}
+
+
+pytestmark = pytest.mark.integration

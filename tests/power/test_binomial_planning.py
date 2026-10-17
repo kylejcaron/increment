@@ -2171,3 +2171,6 @@ class TestPowerBasisSurvivesSerialization:
                 direct.mde_relative,
             )
             assert math.isfinite(point.power)
+
+
+pytestmark = pytest.mark.integration

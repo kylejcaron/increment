@@ -1981,3 +1981,6 @@ def test_publication_never_persists_or_returns_source_sql(tmp_path: Path) -> Non
                 assert secret not in output
     finally:
         native.close()
+
+
+pytestmark = pytest.mark.integration

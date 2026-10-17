@@ -746,3 +746,6 @@ def test_quantile_secondary_family_includes_prior_bound_sampling_member():
     assert posterior_estimate != pytest.approx(by_metric["q_prior"].require_lift().value)
     for name in ("q_b", "q_c", "q_d"):
         assert by_metric[name].require_lift().alpha == pytest.approx(PLAN_ALPHA)
+
+
+pytestmark = pytest.mark.integration

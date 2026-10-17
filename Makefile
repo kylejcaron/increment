@@ -1,10 +1,11 @@
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 PYTEST = uv run --extra demo --extra tables --extra dashboard pytest
 WORKERS ?= $(shell python3 -c 'import os; print(max(1, (os.cpu_count() or 1) // 3))')
 PYTEST_XDIST_ARGS ?= -n $(WORKERS) --dist loadgroup
 PYTEST_ARGS ?=
+TIER_MARKER = $(shell uv run python -c "from noxfile import TIER_MARKERS; print(TIER_MARKERS['$(TIER)'])")
 unexport \
 	GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
 	GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE \
@@ -36,11 +37,18 @@ typecheck-sync:
 	uv sync --group dev --extra demo --extra tables --extra dashboard
 typecheck: typecheck-sync
 	uv run ty check
+test-unit:
+	$(MAKE) test-tier TIER=unit
 test-fast:
-	$(PYTEST) -m 'not slow and not parameter_recovery and not numerical_certification' -x -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(MAKE) test-tier TIER=fast
+test-integration-fast:
+	$(MAKE) test-tier TIER=integration-fast
+# Fast tiers stop at the first failure; long tiers report every failure.
+test-tier:
+	$(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
 # Functional tests exclude Monte-Carlo calibration and notebook subprocesses.
 test-slow:
-	$(PYTEST) -m 'slow and not parameter_recovery and not numerical_certification and not examples' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(MAKE) test-tier TIER=slow
 # One optional shard of the Monte-Carlo tier. Without machine-specific timing
 # data, pytest-split distributes collected tests evenly.
 # Example: `make test-parameter-recovery SPLITS=4 GROUP=1`.
@@ -49,24 +57,24 @@ test-parameter-recovery:
 		echo "usage: make test-parameter-recovery SPLITS=<n> GROUP=<1..n>" >&2; \
 		exit 1; \
 	fi
-	$(PYTEST) -m 'parameter_recovery' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)
+	$(MAKE) test-tier TIER=parameter-recovery PYTEST_ARGS="$(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)"
 
 # Required deterministic numerical certification; not a Monte-Carlo campaign.
 test-numerical-certification:
-	$(PYTEST) -m 'numerical_certification' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(MAKE) test-tier TIER=numerical-certification
 # Union selector for nightly scientific coverage; split shards retain both purposes.
 test-scientific:
 	@if [ -z "$(SPLITS)" ] || [ -z "$(GROUP)" ]; then \
 		echo "usage: make test-scientific SPLITS=<n> GROUP=<1..n>" >&2; \
 		exit 1; \
 	fi
-	$(PYTEST) -m '(parameter_recovery or numerical_certification)' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)
+	$(MAKE) test-tier TIER=scientific PYTEST_ARGS="$(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)"
 test-all:
-	$(PYTEST) -m 'slow or not slow' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(MAKE) test-tier TIER=all
 test-versions:
 	uv run --with nox nox -s tests
 test-examples:
-	$(PYTEST) -m 'examples' -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(MAKE) test-tier TIER=examples
 test-doc-snippets:
 	uv run --with nox nox -s docs_snippets
 prek:
@@ -75,7 +83,7 @@ test:
 ifneq ($(strip $(TESTS)),)
 	$(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_ARGS)
 else
-	$(MAKE) test-fast
+	$(MAKE) test-unit
 
 endif
 

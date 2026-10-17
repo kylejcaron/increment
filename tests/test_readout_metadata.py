@@ -3,6 +3,8 @@
 import pickle
 from copy import deepcopy
 
+import pytest
+
 from increment.estimation.decision_types import EValueEvidence
 from increment.estimation.readout_types import CellKey, IntegrityResult, StreamingDigest
 
@@ -197,6 +199,7 @@ def test_sampling_inference_accepts_zero_likelihood_evidence():
     assert restored.evidence.log_e == -inf
 
 
+@pytest.mark.integration
 def test_triggered_sequential_scope_reports_and_replays_both_chains(tmp_path):
     from datetime import date
 

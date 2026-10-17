@@ -182,6 +182,7 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
         analysis.close()
 
 
+@pytest.mark.integration
 def test_dashboard_without_trigger_is_assigned_only(tmp_path):
     analysis = _assigned_dashboard(tmp_path)
     try:
@@ -347,6 +348,7 @@ def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_pa
         analysis.close()
 
 
+@pytest.mark.integration
 def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp_path):
     from increment.estimation.readout_types import ReadoutResults
 

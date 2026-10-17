@@ -114,7 +114,8 @@ do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
 
 | Purpose | Marks | Execution |
 | --- | --- | --- |
-| Unit/small regression | No category mark | Focused/affected feedback and ordinary fast CI |
+| Unit/small regression | No category mark | `make test-unit`; ordinary local `make test` |
+| Local integration boundary | `integration` | `make test-integration-fast` and `make test-fast`; PR CI |
 | Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and required CI |
 | Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
 | Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Nightly required gate and relevant inference validation |
@@ -127,11 +128,12 @@ performance or redundant test work. Category checks refuse recovery,
 numerical certification, examples or stress tests lacking an effective `slow` mark before execution,
 including CI; module, class and parameter inheritance count.
 
-Integration does not change selection. Stress alone remains in the
-functional-slow tier; an inferential capacity campaign also carries numerical
-certification. Moving it outside routine CI requires an executable,
-required gate for relevant changes and a scheduled/release route, with
-failure evidence retained; a label or proposed workflow is insufficient.
+Integration tests remain in the fast tier and PR CI. `make test-unit` excludes
+them for a smaller local loop; `make test-fast` runs unit plus integration-fast.
+Stress alone remains in the functional-slow tier; an inferential capacity
+campaign also carries numerical certification. Moving tests outside routine CI
+requires an executable, required gate for relevant changes and a scheduled/release
+route, with failure evidence retained; a label or proposed workflow is insufficient.
 Monte Carlo and deterministic numerical certification are excluded from fast
 and functional-slow. The certification job requires relevant changes selected
 from the `tach.toml` module graph, while the nightly runs both scientific
@@ -151,12 +153,14 @@ The thresholds are not single-run, hardware-sensitive CI failures. Contended,
 partial or older-source runs identify candidates but cannot establish current
 wall-time improvements or complete acceptance.
 
-Test execution uses ordinary pytest options and markers. The configured default
-selection is fast. The Make targets define the supported tiers:
+Test execution uses ordinary pytest options and markers. `make test-fast` is the
+default CI selection; the Make targets define supported tiers:
 
 | Target | Marker expression |
 | --- | --- |
-| `make test-fast` | `not slow and not parameter_recovery and not numerical_certification` |
+| `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress` |
+| `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress` |
+| `make test-fast` | Unit plus integration-fast |
 | `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples` |
 | `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery` |
 | `make test-numerical-certification` | `numerical_certification` |
@@ -237,7 +241,8 @@ broader local check. Use `make fmt` to apply formatting and safe lint fixes.
 
 Additional commands:
 
-- `make test-fast` runs the ordinary test tier.
+- `make test-unit` runs the local unit tier; `make test` aliases it.
+- `make test-fast` runs unit plus fast integration tests for PR CI.
 - `make test-slow` runs functional slow tests, excluding Monte Carlo recovery,
   deterministic certification and notebook examples.
 - `make test-versions` runs the supported-Python Nox sessions.

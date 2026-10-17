@@ -189,6 +189,7 @@ def test_first_exposures_refuses_missing_cluster_column(cl_exposure_events):
     assert raised.value.code == "query.builders.cluster_column_missing"
 
 
+@pytest.mark.integration
 def test_unit_totals_retains_cluster_column(cl_exposure_events, cl_purchase_events):
     totals = _totals(cl_exposure_events, cl_purchase_events, _experiment("store_id"))
     df = totals.execute().set_index("unit_id")
@@ -211,6 +212,7 @@ def test_unit_totals_refuses_breakout_with_cluster(cl_con, cl_exposure_events, c
 # ── the two-stage collapse ───────────────────────────────────────────────
 
 
+@pytest.mark.integration
 def test_group_summary_two_stage_collapse_matches_hand_computed(
     cl_exposure_events, cl_purchase_events
 ):
@@ -259,6 +261,7 @@ def test_group_summary_two_stage_collapse_matches_hand_computed(
     assert _cluster_mean(trt) == pytest.approx((40 + 50 + 0) / 3)
 
 
+@pytest.mark.integration
 def test_group_summary_two_stage_collapse_carries_uptake_in_x_family(
     cl_exposure_events, cl_purchase_events, cl_click_events
 ):
@@ -299,6 +302,7 @@ def test_group_summary_two_stage_collapse_carries_uptake_in_x_family(
             assert value is None or (isinstance(value, float) and np.isnan(value)), field
 
 
+@pytest.mark.integration
 def test_singleton_clusters_reproduce_unclustered_moments(cl_exposure_events, cl_purchase_events):
     """Every cluster a singleton: g_j = y_j, m_j = 1, so the clustered row's
     n and y family must equal the unclustered row's exactly, and the size
@@ -323,6 +327,7 @@ def test_singleton_clusters_reproduce_unclustered_moments(cl_exposure_events, cl
         assert c["n"] * c["ref_den"] + c["cden1"] == pytest.approx(float(f["n"]))
 
 
+@pytest.mark.integration
 def test_group_summary_clustered_ratio_carries_the_metrics_own_denominator(
     cl_exposure_events, cl_purchase_events, cl_session_events
 ):
@@ -364,6 +369,7 @@ def test_group_summary_clustered_ratio_carries_the_metrics_own_denominator(
     assert _cluster_mean(trt) == pytest.approx(90.0 / 10.0)
 
 
+@pytest.mark.integration
 def test_group_summary_clustered_ratio_keeps_cluster_size_in_the_x_family(
     cl_exposure_events, cl_purchase_events, cl_session_events
 ):
@@ -405,6 +411,7 @@ def test_group_summary_clustered_ratio_keeps_cluster_size_in_the_x_family(
     assert _cluster_size_mean(trt, "ref_den", "cden1") == pytest.approx(10.0 / 3.0)
 
 
+@pytest.mark.integration
 def test_group_summary_clustered_mean_family_carries_cluster_size_in_the_x_family(
     cl_exposure_events, cl_purchase_events
 ):
@@ -466,6 +473,7 @@ def test_group_summary_refuses_ratio_metrics_without_a_y_den_column(cl_con, cl_e
     assert exc_info.value.context["ratio_names"] == ("revenue",)
 
 
+@pytest.mark.integration
 def test_group_summary_without_ratio_metrics_keeps_cluster_sizes(
     cl_exposure_events, cl_purchase_events, cl_session_events
 ):
@@ -494,6 +502,7 @@ def test_group_summary_columns_match_the_declared_contract(cl_exposure_events, c
     assert set(group_summary(totals, cluster="store_id").columns) == GROUP_SUMMARY
 
 
+@pytest.mark.integration
 def test_group_summary_cluster_rows_never_carry_a_success_count(
     cl_exposure_events, cl_purchase_events
 ):

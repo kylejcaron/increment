@@ -1630,3 +1630,6 @@ def _lift_rows(results: LiftEstimates) -> list[LiftEstimate]:
         assert isinstance(row, LiftEstimate)
         rows.append(row)
     return rows
+
+
+pytestmark = pytest.mark.integration

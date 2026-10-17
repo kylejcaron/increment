@@ -485,6 +485,7 @@ class TestRatioWindowAlignment:
 # Tests: denominator event horizon (running experiments)
 
 
+@pytest.mark.integration
 def test_running_experiment_denominator_events_past_numerator_horizon_count(tmp_path):
     """On a RUNNING experiment (no declared end), the spine's right edge
     falls back to observed event dates. That union must include a ratio's
@@ -628,6 +629,7 @@ experiments:
     assert _total(moments["control"], "ref_y", "cy1") == 4.0
 
 
+@pytest.mark.integration
 def test_ratio_totals_honor_numerator_avg_event_and_denominator_count(con, experiment):
     """Unequal event counts must not turn the declared +25% lift into -37.5%."""
     import datetime as dt

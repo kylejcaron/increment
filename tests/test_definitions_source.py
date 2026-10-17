@@ -740,3 +740,6 @@ def test_direct_daily_readout_covariate_request_is_method_scoped(
     readouts.daily(source, metrics=["avg_session_duration"])
     readouts.daily(source, metrics=["avg_session_duration"], include_covariate=True)
     assert calls == [False, True]
+
+
+pytestmark = pytest.mark.integration

@@ -1987,3 +1987,6 @@ def test_public_cluster_complete_pattern_ard_precision(weighting, replication):
         atol=1e-10,
     )
     assert repeated.se_unadjusted == pytest.approx(original.se_unadjusted)
+
+
+pytestmark = pytest.mark.integration

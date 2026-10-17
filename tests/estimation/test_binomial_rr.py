@@ -2082,3 +2082,6 @@ class TestMeasurementScriptPortability:
         monkeypatch.setattr(measure, "os", SimpleNamespace(name="nt"))
         with pytest.raises(SystemExit, match="POSIX"):
             measure.main(["latency", "--out", "unused.jsonl"])
+
+
+pytestmark = pytest.mark.integration

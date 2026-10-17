@@ -153,3 +153,6 @@ def test_empty_diff_requires_postgres(repository):
 def test_non_pr_events_always_require_postgres(repository, event):
     repo, _ = repository
     assert _required(repo, "missing-base", event)
+
+
+pytestmark = pytest.mark.integration

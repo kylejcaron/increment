@@ -3404,3 +3404,6 @@ def test_encouragement_switchback_identification_is_refused():
         raised.value,
         stage="construction",
     )
+
+
+pytestmark = pytest.mark.integration

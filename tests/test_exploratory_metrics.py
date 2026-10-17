@@ -912,3 +912,6 @@ def test_every_new_refusal_survives_pickle_and_deepcopy(warehouse):
             assert clone.code == refusal.code
             assert dict(clone.context) == dict(refusal.context)
             assert str(clone) == str(refusal)
+
+
+pytestmark = pytest.mark.integration

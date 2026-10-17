@@ -207,6 +207,7 @@ experiments:
     assert exc_info.value.code == "source.native.operation"
 
 
+@pytest.mark.integration
 def test_sitewide_evidence_ratio_metric_coalesces_empty_window_to_zero(tmp_path):
     """VERIFIED repro pattern (jkvr, native-source side): a RatioMetric's
     denominator fact has zero rows in the experiment window, so the

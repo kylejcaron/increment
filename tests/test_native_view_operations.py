@@ -652,3 +652,6 @@ def test_day_source_subset_plan_is_frozen(pricing_analysis):
     assert set(day.context.plan.procedures) == {metric.name}
     with pytest.raises(TypeError):
         day.context.plan.procedures["new"] = day.context.plan.procedures[metric.name]  # type: ignore[index]  # ty: ignore[invalid-assignment]
+
+
+pytestmark = pytest.mark.integration

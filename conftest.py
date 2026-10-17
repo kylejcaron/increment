@@ -13,6 +13,7 @@ import json
 import os
 import re
 import tempfile
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -223,10 +224,15 @@ pytest_collect_file = Sybil(
 ).pytest()
 
 
-def _markdown_path(item: pytest.Item) -> str | None:
-    """Return the source file for a Sybil item, if it is Markdown."""
-    path = Path(str(item.location[0]))
-    return path.as_posix() if path.suffix == ".md" else None
+@cache
+def _markdown_path(path: str) -> str | None:
+    """Return the source file for a Sybil path, if it is Markdown."""
+    markdown_path = Path(path)
+    return markdown_path.as_posix() if markdown_path.suffix == ".md" else None
+
+
+def _markdown_item_path(item: pytest.Item) -> str | None:
+    return _markdown_path(str(item.location[0]))
 
 
 def _recorded_duration(item: pytest.Item, durations: dict[str, float]) -> float:
@@ -255,13 +261,13 @@ def _order_by_recorded_duration(
         for _, item in sorted(
             indexed,
             key=lambda pair: (
-                _markdown_path(pair[1]) is not None,
+                _markdown_item_path(pair[1]) is not None,
                 (
                     markdown_order.get(id(pair[1]), pair[0])
                     if markdown_order is not None
                     else pair[0]
                 )
-                if _markdown_path(pair[1]) is not None
+                if _markdown_item_path(pair[1]) is not None
                 else -_recorded_duration(pair[1], durations),
                 pair[0],
             ),
@@ -272,7 +278,7 @@ def _order_by_recorded_duration(
 def _group_markdown_items(items: list[pytest.Item]) -> None:
     """Keep each Sybil file's snippets in one xdist worker."""
     for item in items:
-        path = _markdown_path(item)
+        path = _markdown_item_path(item)
         if path is not None:
             item.add_marker(pytest.mark.xdist_group(f"docs:{path}"))
 
