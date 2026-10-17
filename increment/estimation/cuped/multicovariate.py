@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -33,11 +34,21 @@ from increment.estimation.cuped.encoding import (
     _encode_covariates,
     _normalized_offset_difference,
 )
-from increment.estimation.cuped.inference import _bm, _bm_terms, _mean_covariance
+from increment.estimation.cuped.inference import (
+    _bm,
+    _bm_reductions,
+    _bm_terms,
+    _bm_u_gram,
+    _mean_covariance,
+    finalize_fit,
+)
 from increment.estimation.cuped.projections import _cache_projections, _interval
 from increment.estimation.cuped.types import (
+    FitState,
+    InferenceSummary,
     MulticovariateCupedFit,
     MulticovariateCupedProjection,
+    ProjectionSpec,
 )
 from increment.estimation.variance import ratio_denominator_precision
 
@@ -77,6 +88,7 @@ class _LinearCupedCalculator:
     _design: np.ndarray
     _design_factor: np.ndarray
     _design_q: np.ndarray
+    _bm_u_gram: np.ndarray
     _means: tuple[tuple[float, ...], ...]
     _row_exponents: tuple[tuple[int, ...], ...]
 
@@ -263,11 +275,18 @@ class _LinearCupedCalculator:
         size: int, terms: tuple[tuple[int, _ScaledMean, float], ...]
     ) -> np.ndarray:
         """Jacobian ``weight / mean`` per entry, scaled by the smallest mean so no reciprocal forms."""
+        return _LinearCupedCalculator._scaled_jacobian_details(size, terms)[0]
+
+    @staticmethod
+    def _scaled_jacobian_details(
+        size: int, terms: tuple[tuple[int, _ScaledMean, float], ...]
+    ) -> tuple[np.ndarray, float, float, int]:
+        """Return a stable Jacobian and its reciprocal reference-scale metadata."""
         reference = min((mean[2], mean[0]) for _, mean, _ in terms)
-        jac = np.zeros(size)
-        for index, (hi, _, exponent), weight in terms:
-            jac[index] = math.ldexp(reference[1] / hi, reference[0] - exponent) * weight
-        return jac
+        jacobian = np.zeros(size)
+        for index, (high, _, exponent), weight in terms:
+            jacobian[index] = math.ldexp(reference[1] / high, reference[0] - exponent) * weight
+        return jacobian, 1.0, reference[1], -reference[0]
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
         try:
@@ -332,6 +351,7 @@ class _LinearCupedCalculator:
             self._design_factor,
             np.concatenate([j, -d]),
             q_design=self._design_q,
+            u_gram=self._bm_u_gram,
         )
 
     def _stacked_bm(self, jac: np.ndarray) -> float:
@@ -351,6 +371,7 @@ class _LinearCupedCalculator:
                 contrast,
                 scale=scale,
                 q_design=self._design_q,
+                u_gram=self._bm_u_gram,
             )
             for contrast in contrasts
         ]
@@ -396,45 +417,326 @@ def fit_cuped_multicovariate(
         groups, order, counts, outcomes, x, layout, control, coordinate_offsets
     )
     del x
-    public_anchor = tuple(
+    return _finalize_local_fit(
+        groups,
+        order,
+        indices,
+        counts,
+        outcomes,
+        covariates,
+        layout,
+        offsets,
+        scales,
+        control,
+        calculator,
+        leverage,
+    )
+
+
+def _finalize_local_fit(
+    groups,
+    order,
+    indices,
+    counts,
+    outcomes,
+    covariates,
+    layout,
+    offsets,
+    scales,
+    control,
+    calculator,
+    leverage,
+):
+    anchor = tuple(
         math.fsum(
             [calculator.anchor[i] * scales[i]]
             + [counts[a] / sum(counts) * offsets[i][a] for a in range(len(order))]
         )
         for i in range(len(scales))
     )
-    public_theta = (
+    theta = (
         tuple(value / scales[i % len(scales)] for i, value in enumerate(calculator.theta))
         if scales
         else ()
     )
-    covariance = _mean_covariance(calculator)
-    object.__setattr__(
-        calculator, "covariance", tuple(tuple(float(v) for v in row) for row in covariance)
-    )
-    contrast = np.zeros(len(order))
-    contrast[order.index(next(a for a in order if a != control))] = 1
-    contrast[order.index(control)] = -1
-    object.__setattr__(calculator, "dof", calculator._bm_dof(contrast))
     cached = _cache_projections(calculator, outcomes, order)
-    return MulticovariateCupedFit(
-        order,
+    identity = (
+        "local-cuped-fit-v1",
+        tuple(order),
         control,
-        counts,
-        calculator.adjusted_means,
-        public_theta,
-        public_anchor,
-        layout,
-        calculator.covariance,
-        calculator.dof,
-        min(counts),
-        calculator.p,
-        float(leverage.max()),
-        float(leverage.mean()),
-        float(leverage.sum()),
-        len(outcomes) == 2,
-        cached,
+        tuple(counts),
+        layout.names,
+        layout.kinds,
+        layout.encoded_columns,
+        anchor,
+        theta,
+        tuple(calculator.adjusted_means),
+        _input_identity(groups, outcomes, covariates),
     )
+    state = _make_fit_state(
+        identity,
+        order,
+        indices,
+        counts,
+        outcomes,
+        layout,
+        offsets,
+        scales,
+        control,
+        calculator,
+        anchor,
+        theta,
+    )
+    summary = _make_inference_summary(
+        identity, cached, calculator, outcomes, order, leverage, _mean_covariance(calculator)
+    )
+    return finalize_fit(state, summary)
+
+
+def _make_fit_state(
+    identity,
+    order,
+    indices,
+    counts,
+    outcomes,
+    layout,
+    offsets,
+    scales,
+    control,
+    calculator,
+    anchor,
+    theta,
+):
+    sqrt_weights = np.sqrt(calculator._weights)
+    transformed_rhs = []
+    for component in calculator._components:
+        centered = np.empty(sum(counts), dtype=float)
+        for arm_index, arm_rows in enumerate(indices):
+            centered[arm_rows] = component[arm_index]
+        transformed_rhs.append(
+            tuple(float(value) for value in calculator._design_q.T @ (sqrt_weights * centered))
+        )
+    denominator_support = (
+        tuple(
+            (
+                order[arm_index],
+                _raw_denominator_precision(outcomes[0][rows], outcomes[1][rows], order[arm_index]),
+            )
+            for arm_index, rows in enumerate(indices)
+        )
+        if len(outcomes) == 2
+        else ()
+    )
+    return FitState(
+        identity=identity,
+        eligible_arms=tuple(order),
+        withheld_arms=(),
+        refusal_contexts=(),
+        counts=tuple(counts),
+        layout=layout,
+        offsets=tuple(tuple(float(value) for value in row) for row in offsets),
+        scales=tuple(float(value) for value in scales),
+        centered_means=tuple(tuple(float(value) for value in row) for row in calculator._x_means),
+        anchor=anchor,
+        triangular_factor=tuple(
+            tuple(float(value) for value in row) for row in calculator._design_factor
+        ),
+        transformed_rhs=tuple(transformed_rhs),
+        slopes=tuple(tuple(float(value) for value in row) for row in calculator._slopes),
+        adjusted_means=calculator.adjusted_means,
+        theta=theta,
+        n_min=min(counts),
+        p=calculator.p,
+        is_ratio=len(outcomes) == 2,
+        denominator_support=denominator_support,
+        control=control,
+    )
+
+
+def _make_inference_summary(identity, cached, calculator, outcomes, order, leverage, covariance):
+    u_gram = calculator._bm_u_gram
+    projected_scores, s2_rows, s4_rows, g_rows, g2_rows = [], [], [], [], []
+    for projection in cached:
+        kind, treatment, comparison, projection_scale, estimate, se, _ = projection
+        projected_scores.append((kind, treatment, comparison, projection_scale, estimate, se, 1.0))
+        component_contrasts = _projection_bm_contrasts(calculator, projection)
+        reductions = (
+            tuple(
+                (
+                    0.0,
+                    0.0,
+                    np.zeros((2 * calculator._design.shape[1],) * 2),
+                    np.zeros((2 * calculator._design.shape[1],) * 2),
+                    u_gram,
+                )
+                for _ in outcomes
+            )
+            if component_contrasts is None
+            else tuple(
+                _bm_reductions(
+                    calculator._design,
+                    calculator._weights,
+                    calculator._design_factor,
+                    contrast,
+                    scale=common_scale,
+                    q_design=calculator._design_q,
+                    u_gram=u_gram,
+                )
+                for contrast, common_scale in component_contrasts
+            )
+        )
+        s2_rows.append(tuple(item[0] for item in reductions))
+        s4_rows.append(tuple(item[1] for item in reductions))
+        g_rows.append(
+            tuple(
+                tuple(tuple(float(value) for value in row) for row in item[2])
+                for item in reductions
+            )
+        )
+        g2_rows.append(
+            tuple(
+                tuple(tuple(float(value) for value in row) for row in item[3])
+                for item in reductions
+            )
+        )
+    specs = _projection_specs(identity, cached, calculator, order)
+    return InferenceSummary(
+        fit_identity=identity,
+        projection_identity=identity + ("all-pairs-v1",),
+        max_leverage=float(leverage.max()),
+        sum_leverage=float(leverage.sum()),
+        refusal_witness=(),
+        adjusted_component_covariance=tuple(
+            tuple(float(value) for value in row) for row in covariance
+        ),
+        scaled_projected_score_squares=tuple(projected_scores),
+        s2=tuple(s2_rows),
+        s4=tuple(s4_rows),
+        g=tuple(g_rows),
+        g2=tuple(g2_rows),
+        u=tuple(tuple(float(value) for value in row) for row in u_gram),
+        projection_specs=specs,
+        evidence_identity=identity,
+    )
+
+
+def _projection_specs(identity, cached, calculator, order):
+    specs = []
+    narm = len(order)
+    for kind, arm, control, projection_scale, estimate, se, dof in cached:
+        available = bool(np.isfinite((estimate, se, dof)).all())
+        scale_metadata, divisor_metadata, exponent_metadata = 1.0, 1.0, 0
+        if not available:
+            jacobian = [0.0] * (2 * narm if kind == "ratio" else narm)
+        elif kind == "absolute":
+            jacobian = [0.0] * narm
+            jacobian[order.index(arm)] = 1.0
+            jacobian[order.index(control)] = -1.0
+        elif kind == "relative":
+            ti, ci = order.index(arm), order.index(control)
+            treatment_mean = calculator._usable(0, ti, arm, "outcome")
+            control_mean = calculator._usable(0, ci, control, "outcome")
+            (
+                jacobian,
+                scale_metadata,
+                divisor_metadata,
+                exponent_metadata,
+            ) = calculator._scaled_jacobian_details(
+                narm,
+                ((ti, treatment_mean, 1.0), (ci, control_mean, -1.0)),
+            )
+        else:
+            ti, ci = order.index(arm), order.index(control)
+            nt = calculator._usable(0, ti, arm, "numerator")
+            nd = calculator._usable(1, ti, arm, "denominator")
+            nc = calculator._usable(0, ci, control, "numerator")
+            cd = calculator._usable(1, ci, control, "denominator")
+            if projection_scale == "log":
+                terms = ((ti, nt, 1.0), (ci, nc, -1.0), (narm + ti, nd, -1.0), (narm + ci, cd, 1.0))
+            else:
+                rt, rc = _rounded_ratio(nt, nd), _rounded_ratio(nc, cd)
+                terms = ((ti, nd, 1.0), (ci, cd, -1.0), (narm + ti, nd, -rt), (narm + ci, cd, rc))
+            (
+                jacobian,
+                scale_metadata,
+                divisor_metadata,
+                exponent_metadata,
+            ) = calculator._scaled_jacobian_details(2 * narm, terms)
+        specs.append(
+            ProjectionSpec(
+                identity=identity + (kind, arm, control, projection_scale),
+                kind=kind,
+                jacobian=tuple(float(value) for value in jacobian),
+                scale=scale_metadata,
+                divisor=divisor_metadata,
+                exponent=exponent_metadata,
+                arm=arm,
+                control=control,
+                available=available and bool(np.isfinite(jacobian).all()),
+            )
+        )
+    return tuple(specs)
+
+
+def _input_identity(groups, outcomes, covariates) -> str:
+    digest = hashlib.sha256()
+
+    def update(name, values):
+        array = np.asarray(values)
+        digest.update(name.encode("utf-8"))
+        digest.update(array.dtype.str.encode("ascii"))
+        digest.update(repr(array.shape).encode("ascii"))
+        if array.dtype.kind in "biufc":
+            digest.update(np.ascontiguousarray(array).tobytes())
+        else:
+            for value in array:
+                encoded = (
+                    type(value).__module__ + "." + type(value).__qualname__ + ":" + repr(value)
+                ).encode("utf-8", errors="backslashreplace")
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+
+    update("arms", groups)
+    for index, outcome in enumerate(outcomes):
+        update(f"outcome:{index}", outcome)
+    for name, values in covariates.items():
+        update(f"covariate:{name}", values)
+    return digest.hexdigest()
+
+
+def _projection_bm_contrasts(calculator, row):
+    kind, arm, control, scale, estimate, se, dof = row
+    if not np.isfinite((estimate, se, dof)).all():
+        return None
+    ti, ci = calculator._pair(arm, control)
+    narm = len(calculator.arm_order)
+    if kind == "absolute":
+        jacobians = (calculator._contrast(arm, control),)
+    elif kind == "relative":
+        mt = calculator._usable(0, ti, arm, "outcome")
+        mc = calculator._usable(0, ci, control, "outcome")
+        jacobians = (calculator._scaled_jacobian(narm, ((ti, mt, 1.0), (ci, mc, -1.0))),)
+    else:
+        nd = calculator._usable(1, ti, arm, "denominator")
+        cd = calculator._usable(1, ci, control, "denominator")
+        nt = calculator._usable(0, ti, arm, "numerator")
+        nc = calculator._usable(0, ci, control, "numerator")
+        if scale == "log":
+            terms = ((ti, nt, 1.0), (ci, nc, -1.0), (narm + ti, nd, -1.0), (narm + ci, cd, 1.0))
+        else:
+            terms = (
+                (ti, nd, 1.0),
+                (ci, cd, -1.0),
+                (narm + ti, nd, -_rounded_ratio(nt, nd)),
+                (narm + ci, cd, _rounded_ratio(nc, cd)),
+            )
+        jacobian = calculator._scaled_jacobian(2 * narm, terms)
+        jacobians = (jacobian[:narm], jacobian[narm:])
+    contrasts = tuple(
+        np.concatenate((jacobian, -calculator._contrast_x(jacobian))) for jacobian in jacobians
+    )
+    common_scale = max(float(np.max(np.abs(value), initial=0.0)) for value in contrasts)
+    return tuple((contrast, common_scale) for contrast in contrasts)
 
 
 def _validate_request(
@@ -444,7 +746,7 @@ def _validate_request(
     order = tuple(arm_order)
     if groups.ndim != 1:
         _fail("estimation.cuped_linear.input_shape", name="arms", n=len(groups), shape=groups.shape)
-    observed = tuple(dict.fromkeys(groups.tolist()))
+    observed = tuple(dict.fromkeys(groups))
     if (
         len(order) < 2
         or len(set(order)) != len(order)
@@ -698,6 +1000,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         for arm, idx in enumerate(indices):
             r_design[arm, arm] = math.sqrt(1 / (len(idx) - 1))
         r_design[arm_count:, arm_count:] = gram_factor
+    bm_u_gram = _bm_u_gram(q_design, weights)
     for idx in indices:
         leverage[idx] = 1 / len(idx) + np.sum(q_covariate[idx] ** 2, axis=1)
     df = n - len(order) - p
@@ -783,6 +1086,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         _readonly(design),
         _readonly(r_design),
         _readonly(q_design),
+        _readonly(bm_u_gram),
         tuple(parts for family in mean_parts for parts in family),
         tuple(
             tuple(

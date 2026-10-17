@@ -260,7 +260,7 @@ def _encode_category(
             "estimation.cuped_linear.level_support",
             column=name,
             level=shown,
-            counts=dict(zip(order, per_arm[code].tolist(), strict=True)),
+            counts=dict(zip(order, per_arm[code], strict=True)),
         )
     for code, level in enumerate(full_levels):
         if code == ref_code:
