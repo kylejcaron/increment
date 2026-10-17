@@ -485,3 +485,63 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
     finally:
         artifact.close()
         con.disconnect()
+
+
+@pytest.mark.parametrize("missing", ["zero", "impute", "refuse"])
+def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path, missing):
+    from increment import Method
+    from increment.estimation.results import LiftEstimate
+    from increment.semantics.models import CupedCovariateBinding
+
+    path, con, *_ = covariate_defs_and_con(tmp_path)
+    path.write_text(
+        path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: scalar, variance_reduction: cuped, covariates: "
+            "[{name: pre_tenure, kind: continuous, missing: impute, "
+            "property: tenure, source: events}]}}}",
+        )
+    )
+    con.raw_sql("UPDATE cov_events SET tenure = NULL WHERE user_id IN ('u1', 'u12')")
+    artifact, _ = _publish_and_reopen(path, con, request_covariate=False)
+    requested = Method.cuped(
+        name="scalar",
+        covariates=CupedCovariateBinding(
+            name="pre_tenure",
+            kind="continuous",
+            missing=missing,
+            property="tenure",
+            source="events",
+        ),
+    )
+    path.write_text(path.read_text().replace("missing: impute", f"missing: {missing}"))
+    try:
+        with Analysis.from_definitions("cov_test", path, con) as standalone:
+            (expected,) = standalone.run()
+            (actual,) = artifact.run(decision_method=requested, sensitivity_methods=())
+        assert isinstance(expected, LiftEstimate)
+        assert isinstance(actual, LiftEstimate)
+        if missing == "refuse":
+            assert actual.lift is expected.lift is None
+            assert (
+                actual.failure_code
+                == expected.failure_code
+                == "frame.validation.metric_covariate_column"
+            )
+        else:
+            assert actual.require_lift().value == pytest.approx(
+                expected.require_lift().value, rel=1e-10
+            )
+            assert actual.require_lift().log_se == pytest.approx(
+                expected.require_lift().log_se, rel=1e-10
+            )
+            if missing == "zero":
+                (published,) = artifact.run()
+                assert isinstance(published, LiftEstimate)
+                assert actual.require_lift().log_se != pytest.approx(
+                    published.require_lift().log_se, rel=1e-10
+                )
+    finally:
+        artifact.close()
+        con.disconnect()

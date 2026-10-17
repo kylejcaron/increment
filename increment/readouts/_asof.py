@@ -249,6 +249,7 @@ def _sequential_asof_rows(
     metrics: Sequence[Metric],
     estimands: Sequence[str] | None,
     population: Literal["assigned", "triggered"],
+    configs: Sequence[Any],
 ) -> list[LiftEstimate]:
     """One population's current checkpoint rows, labelled with that chain's reveal cursor.
 
@@ -267,10 +268,11 @@ def _sequential_asof_rows(
         )
     rows = scope_sequential_results(
         src,
-        sequential_readout(src, _include_unrequested=True),
+        sequential_readout(src, _include_unrequested=True, configs=configs),
         snapshot,
         metrics=[metric.name for metric in metrics],
         estimands=estimands,
+        configs=configs,
     )
     chain = snapshot.chain(population) if snapshot.triggered is not None else snapshot
     return [
@@ -349,7 +351,11 @@ def asof_lift(
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         _refuse_segmented_registration(plan.inference)
         return _sequential_asof_rows(
-            src, metrics=selected, estimands=estimands, population=_population
+            src,
+            metrics=selected,
+            estimands=estimands,
+            population=_population,
+            configs=resolved_configs,
         )
     if design.mechanism == "encouragement":
         declared = _declared_margin_names(selected)
@@ -366,14 +372,6 @@ def asof_lift(
     methods_by_metric = {
         metric.name: _runtime_methods(configs[metric.name], design) for metric in outcome_metrics
     }
-    for methods in methods_by_metric.values():
-        for method in methods:
-            if method.variance_reduction == "cuped" and method.covariates:
-                _raise(
-                    "readout.scalar_method_evidence",
-                    route="readouts.asof_lift",
-                    method=method.name,
-                )
     from increment._frame_panel import _day_axis_label_order
     from increment._source_types import compliance_summary_series
 

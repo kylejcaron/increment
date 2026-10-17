@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from copy import copy
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -34,6 +36,7 @@ from increment._frame_moments import (
     _collapse_to_unit_totals,
     _compliance_arm_rows_panel,
     _compliance_arm_rows_totals,
+    _CovariateReduction,
     _daily_moment_rows,
     _DeferredRefusal,
     _moment_rows,
@@ -88,7 +91,7 @@ from increment._metric_specs import (
     coerce_metrics,
     synthesise_metric,
 )
-from increment._source_types import unit_frame_covariate_columns
+from increment._source_types import ScalarBreakoutRows, unit_frame_covariate_columns
 from increment._window import (
     maturity_days as _maturity_days,  # noqa: F401 - retained as the private parity alias
 )
@@ -954,7 +957,7 @@ class FrameTotalsSource(SequentialSourceMixin):
                 experiment_id=experiment_id,
                 uptake=uptake,
                 cluster=cluster,
-                covariate_failures=moment_failures,
+                covariates=_CovariateReduction(failures=moment_failures),
             )
         )
         return cls(
@@ -1172,7 +1175,7 @@ def from_unit_summary(  # noqa: PLR0913
             _summary_reducer=True,
         )
         source.breakouts = panel.breakouts
-        source._summary_breakout_source = _RestrictedSummaryBreakoutSource(panel)
+        source._summary_breakout_source = _RestrictedSummaryBreakoutSource(panel, remapped_columns)
     return source
 
 
@@ -1182,10 +1185,22 @@ class _RestrictedSummaryBreakoutSource:
     shape: Literal["unit_panel"] = "unit_panel"
     capabilities: frozenset[Grain] = frozenset({"total"})
 
-    def __init__(self, source: FramePanelSource) -> None:
+    def __init__(self, source: FramePanelSource, covariate_columns: Mapping[str, str]) -> None:
         self._source = source
         self.operations = source.operations
         self.breakouts = source.breakouts
+        self._covariate_columns = MappingProxyType(dict(covariate_columns))
+
+    @property
+    def available_covariates(self) -> frozenset[str]:
+        return self._source.available_covariates | self._covariate_columns.keys()
+
+    def breakout_moments_for_method(
+        self, metric: Metric, method: Any, *, by: Sequence[str]
+    ) -> ScalarBreakoutRows:
+        return self._source.breakout_moments_for_method(
+            metric, _remap_method_covariates(method, self._covariate_columns), by=by
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._source, name)
@@ -1342,6 +1357,7 @@ class FramePanelSource(SequentialSourceMixin):
         self._moment_failures_cache: dict[
             tuple[Grain, str | None, bool, str | None], dict[str, _DeferredRefusal]
         ] = {}
+        self._scalar_cell_failures: dict[tuple[str, str, str], _DeferredRefusal] | None = None
         metric_catalog = tuple(
             synthesised_metrics
             if synthesised_metrics is not None
@@ -1588,7 +1604,9 @@ class FramePanelSource(SequentialSourceMixin):
                     observation_end=self._observation_end,
                     fact_max_ds=self._fact_max_ds,
                     by=reducer_by,
-                    covariates=covariates,
+                    covariates=_CovariateReduction(
+                        tables=covariates, cell_failures=self._scalar_cell_failures
+                    ),
                 )
                 if summary_roster and breakout is not None:
                     _preserve_empty_summary_segments(
@@ -1665,6 +1683,45 @@ class FramePanelSource(SequentialSourceMixin):
                 ),
             )
         return spec
+
+    def breakout_moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str],
+    ) -> ScalarBreakoutRows:
+        """Reduce one effective input while retaining segment-local refusals."""
+        from increment._analysis_config import overlay_configs
+
+        spec = (
+            self._unit_total_spec(metric)
+            if method.variance_reduction == "cuped" and method.covariates
+            else self._spec_for(metric)
+        )
+        method_spec = spec.model_copy(update={"decision_method": method, "sensitivity_methods": ()})
+        prepared = copy(self)
+        prepared._specs = (method_spec,)
+        prepared._specs_by_name = {metric.name: method_spec}
+        prepared._context = replace(
+            self.context,
+            metrics=(metric,),
+            configs=overlay_configs((metric,), self.context.configs, methods=[method], prior=None),
+        )
+        prepared._moment_rows_cache = {}
+        prepared._moment_failures_cache = {}
+        prepared._scalar_cell_failures = {}
+        rows = tuple(prepared.moments(metric, by=by))
+        return ScalarBreakoutRows(
+            rows,
+            tuple(
+                (dimension, value, failure_spec, context)
+                for (_metric, dimension, value), (
+                    failure_spec,
+                    context,
+                ) in prepared._scalar_cell_failures.items()
+            ),
+        )
 
     def moments_for_method(
         self,
@@ -1762,7 +1819,7 @@ class FramePanelSource(SequentialSourceMixin):
             group="group_id",
             experiment_id=self._experiment_id,
             uptake=self._uptake,
-            covariate_columns=acquired_columns,
+            covariates=_CovariateReduction(columns=acquired_columns),
             outcome_column="y",
             denominator_column="y_den",
         )

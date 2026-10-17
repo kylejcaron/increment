@@ -95,6 +95,12 @@ def test_source_without_method_evidence_refuses_before_reading():
         def unit_frame(self, *args, **kwargs):
             pytest.fail("unsupported route read unit rows")
 
+        def assignment_counts(self, *args, **kwargs):
+            pytest.fail("unsupported route read assignment counts")
+
+        def unit_counts(self, *args, **kwargs):
+            pytest.fail("unsupported route read unit counts")
+
     with pytest.raises(UnsupportedRequestError) as raised:
         run(cast(Any, AggregateOnlySource()))
     assert raised.value.code == "readout.scalar_method_evidence"

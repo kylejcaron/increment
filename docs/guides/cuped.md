@@ -285,6 +285,20 @@ including when the decision and sensitivity families differ. A scalar breakout
 override acquires the effective requested family; requests retaining several
 distinct scalar families are refused before reading data.
 
+Frame breakouts apply the effective scalar recipe separately for each method
+and segment. A missing-policy refusal withholds that scalar cell, not an
+unadjusted sibling or a healthy segment. In a corrected family the unavailable
+decision cell remains a conservative non-rejection; its original refusal code
+and context are retained.
+
+Moment exports and direct `moments_source` transports retain one scalar family
+per metric. Native and artifact routes reject several distinct scalar families
+with `facade.analysis_config.multifamily_scalar_export` before reading or
+writing evidence. Provenance-free legacy `from_moments` inputs still accept a
+single scalar request, but several distinct requests refuse with
+`facade.analysis_config.cuped_scalar_moments`; a recorded covariate-name
+mismatch is never treated as anonymous evidence.
+
 Artifact publication retains raw named property and measure covariates, with
 numeric NaNs represented as missing values. Replay applies each method's own
 missing policy. Implicit scalar CUPED additionally needs its `cuped_preperiod`
@@ -292,6 +306,12 @@ extension selected at publication. Named scalar breakouts are not supported
 by the artifact route: `from_unit_day_artifact.run_breakout` refuses with
 `artifact.cuped.scalar_breakout` before reading evidence. Use definitions or
 frame input for those breakouts, or run the artifact's scalar headline.
+
+An artifact override must match the published property/source or measure
+binding, not merely its alias. A conflicting explicit recipe refuses with
+`readout.scalar_method_evidence`, naming the route and method, before evidence is read.
+Supported missing-value preparation is applied to the retained raw values for
+the requested method.
 
 Direct `readouts.asof_lift` retains method identity for the implicit pre-period
 scalar family at every date. Its fixed-horizon moments interface cannot select
@@ -301,6 +321,16 @@ outcome or compliance evidence. Registered sequential inputs are validated at
 construction; a refusing covariate policy retains the
 `frame.validation.metric_covariate_column` refusal rather than deferring that
 invalid input to capture.
+
+A sequential continuation must retain the registered scalar covariate and
+missing-value preparation. A changed recipe refuses with
+`sequential.source.invalid` before checkpoint capture; a display-name change
+with the same recipe is allowed and emitted under that declared name. No
+separate sequential state is created for a sensitivity display of the same
+registered input. Native sequential capture supports the implicit outcome
+pre-period covariate (`covariates=None`), not explicit property or measure
+bindings; those requests also refuse before data access. Use a unit-summary
+frame containing the explicit covariate to register that input.
 
 ### Per-metric method bindings
 

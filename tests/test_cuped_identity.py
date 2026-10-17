@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import pickle
+from copy import deepcopy
+from pathlib import Path
 from typing import Any, Literal
 
 import pyarrow as pa
@@ -303,3 +306,39 @@ def test_no_covariate_snapshot_and_family_identities_stay_pinned(
     assert result.metadata is not None
     assert result.metadata.scope.snapshot_id == f"sha256:{snapshot}"
     assert {item.family_id for item in result.metadata.scope.families} == {f"sha256:{family}"}
+
+
+def test_prechange_schema_two_saved_result_loads_without_identity_changes():
+    text = (
+        Path(__file__).parent / "fixtures" / "readout_schema2_e8949261_prechange.json"
+    ).read_text()
+    payload = json.loads(text)
+    assert payload["schema_version"] == 2
+    assert all(
+        "decision_snapshot_id" not in family for family in payload["metadata"]["scope"]["families"]
+    )
+    result = ReadoutResults.model_validate_json(text)
+    assert json.loads(result.model_dump_json()) == payload
+    assert result.metadata is not None
+    assert result.metadata.scope.snapshot_id == (
+        "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f"
+    )
+    family = result.metadata.scope.families[0]
+    assert family.decision_snapshot_id is None
+    assert family.family_id == (
+        "sha256:91c648d63721c68775efd37ff934f16468c9b09b9e7aebb49f1f87c7ca516374"
+    )
+    assert family.complete
+
+
+@pytest.mark.parametrize("copy_kind", ["pickle", "deepcopy"])
+def test_family_scope_copy_preserves_nonempty_decision_snapshot(copy_kind):
+    result = _frame_readout("scalar", "scalar", panel=False, role="primary")
+    assert result.metadata is not None
+    family = result.metadata.scope.families[0]
+    assert family.decision_snapshot_id is not None
+    copied = pickle.loads(pickle.dumps(family)) if copy_kind == "pickle" else deepcopy(family)
+    assert copied == family
+    assert copied.family_id == family.family_id
+    assert copied.decision_snapshot_id == family.decision_snapshot_id
+    assert copied.model_dump_json() == family.model_dump_json()

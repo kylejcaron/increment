@@ -157,16 +157,16 @@ def validate_sequential_methods(registration, metric: str, methods, *, prior=Non
     model = next((m for m in registration.models if m.metric == metric), None)
 
     for method in methods:
-        if method.variance_reduction == "none" and method.name in {"unadjusted", "naive"}:
+        if method.is_unadjusted:
             if adjustment is not None:
                 sequential_refuse(
                     "source.invalid",
                     f"metric {metric!r}: the registration retains a CUPED adjustment "
                     f"({adjustment} coefficient), so its decision method must be "
-                    "Method(name='cuped', variance_reduction='cuped')",
+                    "a scalar CUPED method",
                 )
             continue
-        if method.name == "cuped" and method.variance_reduction == "cuped":
+        if method.variance_reduction == "cuped":
             if adjustment is not None:
                 continue
             if model is not None and model.law in ("scalar_mean", "ratio_mean"):

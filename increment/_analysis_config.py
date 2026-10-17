@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from increment.errors import (
     InvalidRequestError,
@@ -94,6 +94,15 @@ _REFUSALS = refusals(
             keys=frozenset({"metric"}),
         ),
         "facade.analysis_config.covariate_binding_conflict": "covariate alias {covariate!r} has incompatible source binding or kind across methods",
+        "readout.scalar_method_evidence": RefusalSpec(
+            "readout.scalar_method_evidence",
+            UnsupportedRequestError,
+            template=(
+                "source route {route!r} cannot produce scalar evidence for method {method!r}; "
+                "use a unit-bearing source or a source that preserves method-scoped moments"
+            ),
+            keys=frozenset({"route", "method"}),
+        ),
     },
 )
 _raise = raiser(_REFUSALS)
@@ -202,36 +211,104 @@ def effective_methods(
     return methods
 
 
-def refuse_unrepresentable_scalar_export(
+def validate_scalar_route(
     configs: Sequence[ResolvedMetricConfig],
     *,
+    route: str,
+    representation: Literal[
+        "unit",
+        "moments",
+        "export",
+        "breakout",
+        "implicit",
+        "native_sequential",
+        "registered",
+        "unavailable",
+        "prepared",
+    ] = "unit",
     design: Randomized | Encouragement | Observational | None = None,
+    retained_configs: Sequence[ResolvedMetricConfig] = (),
+    bindings: Mapping[str, Sequence[CupedCovariate]] | None = None,
 ) -> None:
-    """Guard format-12 export against multiple method-scoped scalar x families."""
+    """Admit effective scalar inputs against a route's retained representation.
+
+    The input family includes its missing-value preparation, not its display
+    label. This check uses declarations only and precedes evidence acquisition.
+    Raw published bindings can apply each supported missing policy at reduction.
+    """
+    retained = {config.metric.name: config for config in retained_configs}
     for config in configs:
-        families = {
-            method.covariates
-            for method in effective_methods(config, design=design)
-            if method.variance_reduction == "cuped"
-        }
-        if len(families) > 1:
-            _raise(
-                "facade.analysis_config.multifamily_scalar_export",
-                metric=config.metric.name,
+        methods = effective_methods(config, design=design)
+        scalar = tuple(method for method in methods if method.variance_reduction == "cuped")
+        families = {method.covariates for method in scalar}
+        if representation in {"moments", "export", "breakout"} and len(families) > 1:
+            code = {
+                "moments": "facade.analysis_config.cuped_scalar_moments",
+                "export": "facade.analysis_config.multifamily_scalar_export",
+                "breakout": "facade.analysis_config.multifamily_scalar_breakout",
+            }[representation]
+            _raise(code, metric=config.metric.name, route=route)
+        expected = set()
+        if representation in {"registered", "prepared"}:
+            declared = retained.get(config.metric.name)
+            expected = (
+                {
+                    method.covariates
+                    for method in effective_methods(declared, design=design)
+                    if method.variance_reduction == "cuped"
+                }
+                if declared is not None
+                else set()
             )
+            if representation == "registered" and (len(families) > 1 or families != expected):
+                from increment.sequential_state import sequential_refuse
 
+                sequential_refuse(
+                    "source.invalid",
+                    "effective scalar inputs and missing-value preparation must match "
+                    "the registered input; construct a new analysis for a different recipe",
+                    metric=config.metric.name,
+                    route=route,
+                )
+        for method in scalar:
+            if representation == "prepared" and method.covariates not in expected:
+                if expected or method.covariates is not None:
+                    _raise("readout.scalar_method_evidence", route=route, method=method.name)
+            if representation == "unavailable" or (
+                representation == "implicit" and method.covariates
+            ):
+                _raise("readout.scalar_method_evidence", route=route, method=method.name)
+            if representation == "native_sequential" and method.covariates:
+                from increment.sequential_state import sequential_refuse
 
-def refuse_multifamily_scalar_breakout(request: ReadoutRequest) -> None:
-    """Reject breakout rows that would silently reuse one scalar x family."""
-    if request.view != "breakout":
-        return
-    for config, methods in zip(request.configs, request.estimation_methods, strict=True):
-        families = {method.covariates for method in methods if method.variance_reduction == "cuped"}
-        if len(families) > 1:
-            _raise(
-                "facade.analysis_config.multifamily_scalar_breakout",
-                metric=config.metric.name,
-            )
+                sequential_refuse(
+                    "source.invalid",
+                    "native sequential capture retains the outcome pre-period input, not "
+                    "explicit property or measure bindings; use the implicit registered "
+                    "input or a unit-summary frame with the bound covariate",
+                    metric=config.metric.name,
+                    route=route,
+                )
+            if bindings is None:
+                continue
+            for covariate in method.covariates or ():
+                candidates = bindings.get(config.metric.name, ())
+                matching = False
+                for candidate in candidates:
+                    if candidate.name != covariate.name:
+                        continue
+                    try:
+                        ensure_covariate_binding_compatible(candidate, covariate)
+                    except InvalidRequestError:
+                        continue
+                    matching = True
+                    break
+                if not matching:
+                    _raise(
+                        "readout.scalar_method_evidence",
+                        method=method.name,
+                        route=route,
+                    )
 
 
 def validate_readout_covariates(request: ReadoutRequest) -> None:

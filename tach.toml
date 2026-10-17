@@ -240,7 +240,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._analysis_config"
-depends_on = ["increment.estimation", "increment.semantics", "increment.errors"]
+depends_on = ["increment.estimation", "increment.semantics", "increment.errors", "increment.sequential_state"]
 
 [[modules]]
 path = "increment._moment_plan"
@@ -332,7 +332,7 @@ depends_on = [
   "increment.winsor",
   "increment.breakout.estimates",
   "increment._window", "increment.decision", "increment.decision_wire", "increment.errors",
-  "increment.estimation", "increment.plan", "increment.semantics", "increment.sources",
+  "increment.estimation", "increment.estimation.sequential", "increment.plan", "increment.semantics", "increment.sources",
   "increment._source_identity", "increment.sequential_source", "increment.sequential_state",
   "increment._artifact_identity",
 ]
@@ -412,6 +412,7 @@ depends_on = [
   "increment._literals", "increment._moment_plan", "increment._canonical", "increment._immutable",
   "increment._display", "increment._analysis_config",
   "increment._source_types",
+  "increment._frame_validation",
   "increment.winsor", "increment._policy_alpha", "increment.compatibility", "increment.decision", "increment.errors",
   "increment.estimation", "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_source", "increment.sequential_state",
@@ -478,7 +479,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._sequential_readouts"
-depends_on = ["increment.estimation", "increment.sequential_source", "increment.sequential_state"]
+depends_on = ["increment.estimation", "increment.sequential_source", "increment.sequential_state", "increment._analysis_config"]
 
 [[modules]]
 path = "increment.readouts"

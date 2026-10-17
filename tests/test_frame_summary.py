@@ -690,6 +690,7 @@ def test_run_does_not_recommend_cuped_for_observational_default(
     assert decision.group_id == "treatment"
     assert decision.method == "iptw"
     assert decision.estimand == "ate"
+    assert decision.require_lift().value is not None
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 

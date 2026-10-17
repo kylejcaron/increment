@@ -2068,6 +2068,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
     ) -> ArtifactMomentSource:
+        from increment._analysis_config import overlay_configs, validate_scalar_route
+
+        validate_scalar_route(
+            overlay_configs(metrics, self.context.configs, methods=methods, prior=prior),
+            route="artifact.moments_source",
+            representation="export",
+            design=self.context.design,
+        )
         if population != "assigned":
             _relation_refuse(
                 "artifact.evidence.unavailable", "artifact base does not carry triggered evidence"
@@ -2386,6 +2394,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
         refuse_observational_quantile(metric, source=self)
 
     def export_moments(self, path: str | Path) -> None:
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            self.context.configs,
+            route="artifact.export_moments",
+            representation="export",
+            design=self.context.design,
+        )
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 

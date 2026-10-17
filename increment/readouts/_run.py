@@ -319,7 +319,7 @@ def _run_prepared(
 
         _refuse_segmented_registration(plan.inference)
         rows = sequential_readout(
-            src, metrics=selected, estimands=estimands, _include_unrequested=True
+            src, metrics=selected, estimands=estimands, _include_unrequested=True, configs=configs
         )
         return scope_sequential_results(
             src,
@@ -328,6 +328,7 @@ def _run_prepared(
             base_roster=preflight_roster,
             metrics=[metric.name for metric in selected],
             estimands=estimands,
+            configs=configs,
         )
     call_prior = cast("Prior | None", None if prior is UNSET else prior)
     cluster = src.context.cluster

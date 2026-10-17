@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 import narwhals as nw
@@ -78,6 +78,18 @@ _raise = raiser(_REFUSALS)
 
 # A data-dependent refusal is retained until its metric is requested.
 _DeferredRefusal = tuple[RefusalSpec, Mapping[str, object]]
+
+
+@dataclass(frozen=True, slots=True)
+class _CovariateReduction:
+    """Method-scoped covariate preparation and retained reduction failures."""
+
+    tables: Mapping[str, nw.DataFrame[Any]] | None = None
+    columns: Mapping[str, str] | None = None
+    means: Mapping[str, float | None] | None = None
+    failures: dict[str, _DeferredRefusal] | None = None
+    cell_failures: dict[tuple[str, str, str], _DeferredRefusal] | None = None
+
 
 if TYPE_CHECKING:
     from increment.frame import MetricSpec
@@ -459,6 +471,51 @@ def _day_moment_records(
             yield record, _winsor_metadata_for_record(record, metadata, key_cols=key_cols)
 
 
+def _partitioned_moment_rows(
+    frame: nw.DataFrame[Any],
+    *,
+    group: str,
+    metrics: Sequence[MetricSpec],
+    experiment_id: str,
+    uptake: str | None,
+    cluster: str | None,
+    by: Sequence[str],
+    outcome_column: str | None,
+    denominator_column: str | None,
+    covariates: _CovariateReduction,
+) -> list[dict[str, Any]]:
+    assert len(by) == 1 and covariates.cell_failures is not None
+    rows = []
+    for key, partition in frame.group_by(list(by)):
+        failures: dict[str, _DeferredRefusal] = {}
+        try:
+            rows.extend(
+                _moment_rows(
+                    partition,
+                    group=group,
+                    metrics=metrics,
+                    experiment_id=experiment_id,
+                    uptake=uptake,
+                    cluster=cluster,
+                    by=by,
+                    outcome_column=outcome_column,
+                    denominator_column=denominator_column,
+                    covariates=replace(covariates, failures=failures, cell_failures=None),
+                )
+            )
+        except InvalidRequestError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            failures[str(exc.context["metric"])] = (
+                SCALAR_COVARIATE_REFUSALS[exc.code],
+                exc.context,
+            )
+        label = "__null__" if key[0] is None else str(key[0])
+        for metric, failure in failures.items():
+            covariates.cell_failures[(metric, by[0], label)] = failure
+    return rows
+
+
 def _moment_rows(
     frame: nw.DataFrame[Any],
     *,
@@ -470,11 +527,25 @@ def _moment_rows(
     by: Sequence[str] = (),
     outcome_column: str | None = None,
     denominator_column: str | None = None,
-    covariate_columns: Mapping[str, str] | None = None,
-    covariate_means: Mapping[str, float | None] | None = None,
-    covariate_failures: dict[str, _DeferredRefusal] | None = None,
+    covariates: _CovariateReduction | None = None,
 ) -> list[dict[str, Any]]:
     """Build centered moments after each metric's pooled unit transform."""
+    if covariates is not None and covariates.cell_failures is not None and by:
+        return _partitioned_moment_rows(
+            frame,
+            group=group,
+            metrics=metrics,
+            experiment_id=experiment_id,
+            uptake=uptake,
+            cluster=cluster,
+            by=by,
+            outcome_column=outcome_column,
+            denominator_column=denominator_column,
+            covariates=covariates,
+        )
+    covariate_columns = None if covariates is None else covariates.columns
+    covariate_means = None if covariates is None else covariates.means
+    covariate_failures = None if covariates is None else covariates.failures
     rows: list[dict[str, Any]] = []
     has_d = uptake is not None
 
@@ -1488,7 +1559,7 @@ def _total_moment_rows(
     observation_end: dt.date | dt.datetime | str | int | float | None,
     fact_max_ds: Mapping[str, Any],
     by: Sequence[str] = (),
-    covariates: Mapping[str, nw.DataFrame[Any]] | None = None,
+    covariates: _CovariateReduction | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, _DeferredRefusal]]:
     """``"total"`` grain moments, split into the unwindowed fast path (one
     shared collapse + group_by) and the per-spec windowed/retention path
@@ -1536,7 +1607,7 @@ def _total_moment_rows(
             for covariate in method.covariates or ()
             if covariate.missing == "impute"
         }
-        for name, per_unit in (covariates or {}).items():
+        for name, per_unit in ((None if covariates is None else covariates.tables) or {}).items():
             covariate_aliases[name] = _scratch_name(collapsed, f"__covariate__{name}")
             if name in imputed_names:
                 covariate_means[covariate_aliases[name]] = per_unit.select(
@@ -1596,8 +1667,11 @@ def _total_moment_rows(
             experiment_id=experiment_id,
             uptake=uptake,
             by=by,
-            covariate_means=covariate_means,
-            covariate_failures=failures,
+            covariates=_CovariateReduction(
+                means=covariate_means,
+                failures=failures,
+                cell_failures=None if covariates is None else covariates.cell_failures,
+            ),
         )
     if windowed:
         assert exposure is not None  # enforced by _validate_exposure_date

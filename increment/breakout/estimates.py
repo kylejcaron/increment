@@ -43,14 +43,16 @@ from pydantic import (
 )
 from scipy.stats import norm as _norm
 
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import Alternative, Correction, Role, RowRole, ValueScale
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
-from increment._source_types import unit_frame_covariate_columns
+from increment._source_types import MethodMomentEvidence, unit_frame_covariate_columns
 from increment.breakout.projection import Backend
 from increment.compatibility import _conservative_divide
 from increment.errors import (
     CapabilityError,
+    CodedError,
     CodedModel,
     IncrementWarning,
     InvalidRequestError,
@@ -2669,6 +2671,11 @@ def _breakout_estimate_row(
             dimension=dimension,
             dimension_value=dimension_value,
             source=source,
+            excluded=(
+                "estimation_failed"
+                if lift_estimate.failure_code is not None and lift_estimate.lift is None
+                else None
+            ),
             prior_shrunk=lift_estimate.prior_shrunk or lift_estimate.prior_spec is not None,
             # BreakoutEstimate-only sidecar: _copy_common_fields doesn't
             # carry it (DailyLiftEstimate has no winsor_* fields).
@@ -2840,6 +2847,7 @@ class _BreakoutContext(NamedTuple):
     # Whether the cells form a ``correction="bh"`` family, whose decision rows are read below
     # their own level and so report the composite conversion p-value.
     family_member: bool
+    method_evidence: Mapping[str, MethodMomentEvidence] | None = None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -3198,12 +3206,94 @@ def _record_failed_method_rows(
     return failed
 
 
+def _method_input_groups(
+    configured: Sequence[Method],
+    mixed_groups: Sequence[list[Method]] | None,
+    *,
+    method_scoped: bool,
+) -> list[list[Method]]:
+    groups = (
+        (
+            [
+                method
+                for method in configured
+                if method.variance_reduction != "cuped_multicovariate"
+            ],
+            [
+                method
+                for method in configured
+                if method.variance_reduction == "cuped_multicovariate"
+            ],
+        )
+        if mixed_groups is None
+        else mixed_groups
+    )
+    result = []
+    for group in groups:
+        if method_scoped and any(method.variance_reduction == "cuped" for method in group):
+            result.extend([method] for method in group)
+        elif group:
+            result.append(group)
+    return result
+
+
+def _scalar_breakout_input(
+    evidence: MethodMomentEvidence,
+    method: Method,
+    rows: Sequence[Mapping[str, Any]],
+    context: _BreakoutContext,
+    metric_name: str,
+    method_role: Literal["decision", "sensitivity"],
+):
+    """Retain a scalar input or its own immutable cell failure evidence."""
+    from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
+
+    try:
+        return (
+            list(
+                evidence.rows_for_method(
+                    method,
+                    dimension=context.dimension,
+                    dimension_value=context.segment_value,
+                )
+            ),
+            {},
+            None,
+        )
+    except CodedError as exc:
+        if exc.code not in SCALAR_COVARIATE_REFUSALS:
+            raise
+        failures = {
+            (metric_name, str(row["group_id"]), method.name): DecisionFailure(
+                ArmHypothesisKey(metric_name, str(row["group_id"]), "itt"),
+                exc.code,
+                exc.context,
+            )
+            for row in rows
+            if str(row["group_id"]) != context.control_group
+        }
+    computation = (
+        _rekey_segment_computation(
+            DecisionComputation(
+                results=(),
+                evidence={},
+                failures={failure.hypothesis: failure for failure in failures.values()},
+            ),
+            dimension=context.dimension,
+            dimension_value=context.segment_value,
+        )
+        if method_role == "decision"
+        else None
+    )
+    return None, failures, computation
+
+
 def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     prepared: _PreparedLiftSlice,
     context: _BreakoutContext,
 ) -> _BreakoutMetricPass:
     """Estimate each live breakout metric and retain immutable cell outcomes."""
-    from increment.decision import ArmHypothesisKey
+    from increment.decision import ArmHypothesisKey, DecisionComputation
 
     declared_names = {m.name for m in context.metrics}
     unknown_metrics = {str(r["metric"]) for r in prepared.live_rows} - declared_names
@@ -3254,11 +3344,10 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                 inference=context.inference,
                 prior=metric_prior,
             )
-            groups = [group for group in mixed_groups if group] if mixed_groups is not None else []
-            if mixed_groups is None:
-                ordinary = [m for m in configured if m.variance_reduction != "cuped_multicovariate"]
-                linear = [m for m in configured if m.variance_reduction == "cuped_multicovariate"]
-                groups = [group for group in (ordinary, linear) if group]
+            metric_evidence = (context.method_evidence or {}).get(metric.name)
+            groups = _method_input_groups(
+                configured, mixed_groups, method_scoped=metric_evidence is not None
+            )
             for method_group in groups:
                 legacy_lane = method_group[0].variance_reduction == "cuped"
                 exact_lane = method_group[0].variance_reduction not in (
@@ -3266,11 +3355,26 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     "cuped_multicovariate",
                 )
                 method_rows = rows
+                if metric_evidence is not None and legacy_lane:
+                    method_rows, failed_inputs, failed_computation = _scalar_breakout_input(
+                        metric_evidence,
+                        method_group[0],
+                        rows,
+                        context,
+                        metric.name,
+                        resolved_roles[method_group[0].name],
+                    )
+                    method_failures.update(failed_inputs)
+                    method_unestimable.update(dict.fromkeys(failed_inputs, "estimation_failed"))
+                    if failed_computation is not None:
+                        computations[(context.segment_value, metric.name)] = failed_computation
+                    if method_rows is None:
+                        continue
                 if mixed_groups is not None and exact_lane:
                     method_rows = _unadjusted_binomial_rows(rows)
                 elif mixed_groups is not None and legacy_lane:
                     legacy_prepared = _prepare_lift_slice(
-                        rows,
+                        method_rows,
                         control_group=context.control_group,
                         metric_types={metric.name: metric.type},
                         binomial_gate_exempt_metrics=frozenset(),
@@ -3597,6 +3701,7 @@ class _BreakoutFamilyContext(NamedTuple):
     alternative: str
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
+    method_evidence: Mapping[str, MethodMomentEvidence] | None = None
 
 
 def _breakout_family_cells(
@@ -3709,6 +3814,14 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
             metric_methods[0] if metric_methods else Method(name="unadjusted"),
         )
         decision_method_by_metric[metric_name] = decision_method
+        if decision_method.variance_reduction == "cuped" and context.method_evidence is not None:
+            metric_rows = list(
+                context.method_evidence[metric_name].rows_for_method(
+                    decision_method,
+                    dimension=dimension,
+                    dimension_value=segment_value,
+                )
+            )
         if decision_method.variance_reduction == "cuped_multicovariate":
             # Only a selected cell is rebuilt at the FCR level; an unselected
             # sibling keeps its nominal row, so its wider interval is never built.
@@ -3907,7 +4020,7 @@ def _snapshot_breakout(
 
 
 def run_breakout(  # noqa: PLR0913
-    summary: SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]],
+    summary: SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]] | None,
     metrics: Sequence[Metric],
     *,
     control_group: str,
@@ -3926,6 +4039,7 @@ def run_breakout(  # noqa: PLR0913
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
     _prior_by_metric: Mapping[str, Prior | None] | None = None,
+    _method_evidence_by_metric: Mapping[str, MethodMomentEvidence] | None = None,
     unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None = None,
     covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
@@ -3937,8 +4051,9 @@ def run_breakout(  # noqa: PLR0913
 
     Parameters
     ----------
-    summary : IntoDataFrame | Iterable[Mapping[str, Any]]
-        ``group_summary`` rows with an extra ``dimension`` column.
+    summary : SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]] | None
+        ``group_summary`` rows with an extra ``dimension`` column, or a retained
+        sequential snapshot. May be ``None`` when method-scoped evidence is supplied.
     metrics, control_group, methods, prior, alternative
         Forwarded to ``estimate_lift`` unchanged, once per segment.
         ``methods`` defaults to unadjusted; an explicit ``[]`` raises.
@@ -3972,17 +4087,19 @@ def run_breakout(  # noqa: PLR0913
         covariates alongside the unit outcome columns.
     covariates_by_metric : Mapping[str, Sequence[Any]] | None
         Declared covariates corresponding to ``unit_frames_by_metric``.
+    _method_evidence_by_metric : Mapping[str, MethodMomentEvidence] | None
+        Method-scoped moments and cell refusals. Each scalar fit, including selected
+        interval reinversion, selects its own input through ``rows_for_method``.
 
     Raises
     ------
     ValueError
         Invalid ``correction``, or an explicit ``methods=[]``.
     CapabilityError
-        Under ``correction="bh"``, a family member carrying failed, missing,
-        or invalid typed evidence (code ``family.evidence.incomplete``) --
-        which includes a cell present in a segment that could not be
-        estimated. Only a metric ABSENT from a segment contributes no cell
-        and cannot trigger this.
+        Under ``correction="bh"``, missing or invalid typed family evidence, or a
+        failure outside the conservative non-rejection policy (code
+        ``family.evidence.incomplete``). Eligible unavailable cells remain in the
+        family as non-rejections, with their original coded failure retained.
 
     Returns
     -------
@@ -4036,16 +4153,24 @@ def run_breakout(  # noqa: PLR0913
         prior=prior,
         prior_by_metric=_prior_by_metric,
     )
-    frame = nw.from_native(summary, eager_only=True, pass_through=True)
-    if isinstance(frame, nw.DataFrame):
-        if dimension not in frame.columns:
-            _refuse("breakout.run_breakout_dimension", dimension=dimension, columns=frame.columns)
-        missing = [c for c in _REQUIRED_BREAKOUT_COLUMNS if c not in frame.columns]
-        if missing:
-            _refuse("breakout.run_breakout_group", missing=missing)
-        rows: Iterable[Mapping[str, Any]] = frame.iter_rows(named=True)
+    if summary is None:
+        assert _method_evidence_by_metric is not None
+        rows: Iterable[Mapping[str, Any]] = (
+            row for metric in metrics for row in _method_evidence_by_metric[metric.name].rows
+        )
     else:
-        rows = cast("Iterable[Mapping[str, Any]]", summary)
+        frame = nw.from_native(summary, eager_only=True, pass_through=True)
+        if isinstance(frame, nw.DataFrame):
+            if dimension not in frame.columns:
+                _refuse(
+                    "breakout.run_breakout_dimension", dimension=dimension, columns=frame.columns
+                )
+            missing = [c for c in _REQUIRED_BREAKOUT_COLUMNS if c not in frame.columns]
+            if missing:
+                _refuse("breakout.run_breakout_group", missing=missing)
+            rows = frame.iter_rows(named=True)
+        else:
+            rows = cast("Iterable[Mapping[str, Any]]", summary)
     segments, all_pairs = _partition_breakout_summary(
         rows,
         dimension=dimension,
@@ -4087,6 +4212,7 @@ def run_breakout(  # noqa: PLR0913
             unit_frames_by_metric,
             covariates_by_metric,
             correction == "bh",
+            _method_evidence_by_metric,
         )
         prepared = _prepare_lift_slice(
             segment_rows,
@@ -4121,6 +4247,7 @@ def run_breakout(  # noqa: PLR0913
         alternative,
         method_roles,
         method_roles_by_metric,
+        _method_evidence_by_metric,
     )
     results = _apply_breakout_family_correction(results, family_context)
     if policy_name != "default_exploratory":

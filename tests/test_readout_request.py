@@ -514,9 +514,7 @@ def test_sequential_unproved_sensitivity_refuses_before_frame_access():
     from tests.test_sequential_public_sources import gaussian_plan
 
     specs = [
-        MetricSpec(
-            name="metric", type="conversion", sensitivity_methods=(Method(name="sensitivity"),)
-        )
+        MetricSpec(name="metric", type="conversion", sensitivity_methods=(Method(name="iptw"),))
     ]
     plan = gaussian_plan(specs, law="bernoulli")
 

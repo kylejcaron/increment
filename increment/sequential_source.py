@@ -282,6 +282,21 @@ def _law_inputs(metric, spec, binding, *, pre_period_covariate: bool) -> tuple[b
     metric declares methods on its plan binding and its covariate through the
     experiment's pre-period.
     """
+    from increment._analysis_config import resolve_configs, validate_scalar_route
+
+    configs = resolve_configs(
+        (metric,),
+        bindings={metric.name: binding} if binding is not None else None,
+        specs={metric.name: spec} if spec is not None else None,
+        methods=None,
+        prior=None,
+    )
+    validate_scalar_route(
+        configs,
+        route="sequential.registration",
+        representation="registered",
+        retained_configs=configs,
+    )
     if spec is not None:
         methods = (spec.decision_method, *spec.sensitivity_methods)
         return _declared_cuped(methods), any(

@@ -54,11 +54,9 @@ from increment.semantics.design import (
 )
 from increment.semantics.models import (
     AnalysisPlan,
-    CupedCovariateBinding,
     Definitions,
     ExperimentMetric,
     InferenceSpec,
-    Measure,
     MethodSpec,
     NormalPriorSpec,
 )
@@ -1890,14 +1888,7 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
         name=method.name,
         variance_reduction="cuped",
         conversion_inference=method.conversion_inference,
-        covariates=(
-            CupedCovariateBinding(
-                name="pre_y",
-                kind="continuous",
-                missing="impute",
-                measure=Measure(fact="purchase", aggregation="sum"),
-            ),
-        ),
+        covariates=None,
     )
     inference = InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=100)
     frame_plan = AnalysisPlan(primary="ratio", inference=inference)
@@ -2212,14 +2203,7 @@ def _m3_plan_pair(secondary: str, messy: bool) -> tuple[AnalysisPlan, AnalysisPl
                     name=cuped.name,
                     variance_reduction="cuped",
                     conversion_inference=cuped.conversion_inference,
-                    covariates=(
-                        CupedCovariateBinding(
-                            name="pre_revenue",
-                            kind="continuous",
-                            missing="zero",
-                            measure=Measure(fact="purchase", aggregation="sum"),
-                        ),
-                    ),
+                    covariates=None,
                 ),
             )
             if messy

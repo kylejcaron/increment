@@ -1,0 +1,353 @@
+{
+  "kind": "increment.readout",
+  "schema_version": 2,
+  "collection": "LiftEstimates",
+  "row_model": "LiftEstimate",
+  "snapshot_id": "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f",
+  "source": {
+    "kind": "composite",
+    "sha256": "9124bc5ede7c98f19542c0797f484bbe359b08da15a3d9f5be23d5cb6ba46359",
+    "components": [
+      {
+        "kind": "assignment_counts",
+        "metric": null,
+        "population": "assigned",
+        "source": null,
+        "dimension": null,
+        "sha256": "ac7b660839472b1075a8f6dc2c592f5a7f4b7fb8df0a958310dd66274a522697"
+      },
+      {
+        "kind": "moments_rows",
+        "metric": "outcome",
+        "population": "assigned",
+        "source": null,
+        "dimension": null,
+        "sha256": "3ec2bdf36427b8c6834c47b30e05a63260befd24b9bee4ed27cae76778d96dc8",
+        "count": 2
+      }
+    ]
+  },
+  "metadata": {
+    "scope": {
+      "snapshot_id": "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f",
+      "cells": [
+        {
+          "kind": "arm",
+          "metric": "outcome",
+          "method": "unadjusted",
+          "method_role": "decision",
+          "estimand": "itt",
+          "aggregation": null,
+          "analysis_population": "assigned",
+          "value_scale": "relative",
+          "inference": "fixed",
+          "alternative": "two-sided",
+          "group_id": "treat",
+          "control_group": null,
+          "treatment_group": null,
+          "dimension": null,
+          "dimension_value": null,
+          "source": null,
+          "ds": null,
+          "ds_basis": null
+        }
+      ],
+      "decision_cells": [
+        {
+          "kind": "arm",
+          "metric": "outcome",
+          "method": "unadjusted",
+          "method_role": "decision",
+          "estimand": "itt",
+          "aggregation": null,
+          "analysis_population": "assigned",
+          "value_scale": "relative",
+          "inference": "fixed",
+          "alternative": "two-sided",
+          "group_id": "treat",
+          "control_group": null,
+          "treatment_group": null,
+          "dimension": null,
+          "dimension_value": null,
+          "source": null,
+          "ds": null,
+          "ds_basis": null
+        }
+      ],
+      "populations": [
+        "assigned"
+      ],
+      "families": [
+        {
+          "family_id": "sha256:91c648d63721c68775efd37ff934f16468c9b09b9e7aebb49f1f87c7ca516374",
+          "analysis_population": "assigned",
+          "source_snapshot_id": "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f",
+          "view": "run",
+          "dimension": null,
+          "source": null,
+          "name": "primary",
+          "family": null,
+          "members": [
+            {
+              "kind": "arm",
+              "metric": "outcome",
+              "method": "unadjusted",
+              "method_role": "decision",
+              "estimand": "itt",
+              "aggregation": null,
+              "analysis_population": "assigned",
+              "value_scale": "relative",
+              "inference": "fixed",
+              "alternative": "two-sided",
+              "group_id": "treat",
+              "control_group": null,
+              "treatment_group": null,
+              "dimension": null,
+              "dimension_value": null,
+              "source": null,
+              "ds": null,
+              "ds_basis": null
+            }
+          ],
+          "complete": true
+        }
+      ],
+      "by_source": {
+        "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f": {
+          "source_snapshot_id": "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f",
+          "source": null,
+          "cells": [
+            {
+              "kind": "arm",
+              "metric": "outcome",
+              "method": "unadjusted",
+              "method_role": "decision",
+              "estimand": "itt",
+              "aggregation": null,
+              "analysis_population": "assigned",
+              "value_scale": "relative",
+              "inference": "fixed",
+              "alternative": "two-sided",
+              "group_id": "treat",
+              "control_group": null,
+              "treatment_group": null,
+              "dimension": null,
+              "dimension_value": null,
+              "source": null,
+              "ds": null,
+              "ds_basis": null
+            }
+          ],
+          "decision_cells": [
+            {
+              "kind": "arm",
+              "metric": "outcome",
+              "method": "unadjusted",
+              "method_role": "decision",
+              "estimand": "itt",
+              "aggregation": null,
+              "analysis_population": "assigned",
+              "value_scale": "relative",
+              "inference": "fixed",
+              "alternative": "two-sided",
+              "group_id": "treat",
+              "control_group": null,
+              "treatment_group": null,
+              "dimension": null,
+              "dimension_value": null,
+              "source": null,
+              "ds": null,
+              "ds_basis": null
+            }
+          ],
+          "rosters": [
+            {
+              "analysis_population": "assigned",
+              "arms": [
+                "control",
+                "treat"
+              ],
+              "source": "experiment_counts",
+              "complete": true,
+              "control_group": "control"
+            }
+          ],
+          "decision_complete_by_population": {
+            "assigned": true
+          },
+          "integrity": [
+            {
+              "status": "not_checked_missing_declaration",
+              "analysis_population": "assigned",
+              "construction": "none",
+              "alpha": null,
+              "observed": {
+                "control": 48,
+                "treat": 48
+              },
+              "expected": null,
+              "randomization_grain": "unit",
+              "code": "integrity.allocation_scheme_missing",
+              "context": {
+                "allocation_scheme": null
+              }
+            }
+          ]
+        }
+      }
+    },
+    "cells": [
+      {
+        "cell": {
+          "kind": "arm",
+          "metric": "outcome",
+          "method": "unadjusted",
+          "method_role": "decision",
+          "estimand": "itt",
+          "aggregation": null,
+          "analysis_population": "assigned",
+          "value_scale": "relative",
+          "inference": "fixed",
+          "alternative": "two-sided",
+          "group_id": "treat",
+          "control_group": null,
+          "treatment_group": null,
+          "dimension": null,
+          "dimension_value": null,
+          "source": null,
+          "ds": null,
+          "ds_basis": null
+        },
+        "source_snapshot_id": "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f",
+        "failure": null,
+        "sampling": {
+          "available": true,
+          "evidence": {
+            "hypothesis": {
+              "metric": "outcome",
+              "group_id": "treat",
+              "estimand": "itt"
+            },
+            "method": "unadjusted",
+            "p_value": 0.14397092243791237,
+            "reference": "t"
+          },
+          "reason_code": null,
+          "reason_context": null
+        },
+        "posterior": null,
+        "advisories": []
+      }
+    ],
+    "partial": false,
+    "partial_reason": []
+  },
+  "sequential_snapshot": null,
+  "rows": [
+    {
+      "metric": "outcome",
+      "group_id": "treat",
+      "method": "unadjusted",
+      "method_role": "decision",
+      "inference": "fixed",
+      "alternative": "two-sided",
+      "sampling_available": true,
+      "sampling_reason_code": null,
+      "sampling_reason_context": null,
+      "posterior_available": null,
+      "posterior_components": null,
+      "posterior_reason_code": null,
+      "posterior_reason_context": null,
+      "posterior_model": null,
+      "posterior_scale": null,
+      "posterior_estimate": null,
+      "posterior_lb": null,
+      "posterior_ub": null,
+      "posterior_level": null,
+      "posterior_alpha": null,
+      "posterior_latent_mean": null,
+      "posterior_latent_sd": null,
+      "posterior_prob_favorable": null,
+      "absolute_error_code": null,
+      "absolute_error_context": null,
+      "relative_error_code": null,
+      "relative_error_context": null,
+      "failure_code": null,
+      "failure_context": null,
+      "source_snapshot_id": "sha256:835b937b88aedfe9f17f8b132b63f5962c195eb478a9140a5467148c6384434f",
+      "decision_scope_complete": true,
+      "decision_scope_reason_code": null,
+      "decision_scope_reason_context": null,
+      "family_id": "sha256:91c648d63721c68775efd37ff934f16468c9b09b9e7aebb49f1f87c7ca516374",
+      "multiplicity_status": "declared_plan",
+      "weight_diagnostics_available": null,
+      "weight_diagnostics_reason_code": null,
+      "weight_diagnostics_reason_context": null,
+      "weight_definition": null,
+      "weight_grain": null,
+      "control_weight_ess": null,
+      "treatment_weight_ess": null,
+      "control_weight_max_share": null,
+      "treatment_weight_max_share": null,
+      "control_weight_n": null,
+      "treatment_weight_n": null,
+      "null_lift": 0.0,
+      "preferred_direction": null,
+      "lift": {
+        "value": 0.04637681159420283,
+        "lb": -0.01563208484799065,
+        "ub": 0.11229187277296729,
+        "open_side": null,
+        "level": 0.95,
+        "alpha": 0.05,
+        "log_mean": 0.04533354130152114,
+        "log_se": 0.030766426535759613
+      },
+      "estimand": "itt",
+      "analysis_population": "assigned",
+      "value_scale": "relative",
+      "note": null,
+      "abs_diff": 0.5999999999999996,
+      "abs_se": 0.40695689997801526,
+      "null_abs": null,
+      "abs_lb": -0.20802246473571262,
+      "abs_ub": 1.408022464735712,
+      "abs_reference_kind": "t",
+      "abs_reference_df": 94.0,
+      "abs_alpha": 0.05,
+      "winsor_lower_percentile": null,
+      "winsor_upper_percentile": null,
+      "winsor_lower_bound": null,
+      "winsor_upper_bound": null,
+      "winsor_control_n": null,
+      "winsor_control_n_lower": null,
+      "winsor_control_n_upper": null,
+      "winsor_treatment_n": null,
+      "winsor_treatment_n_lower": null,
+      "winsor_treatment_n_upper": null,
+      "n_clusters": null,
+      "dof": null,
+      "reference_kind": "t",
+      "reference_df": 93.80747726935412,
+      "population": null,
+      "relative_confidence_set": null,
+      "relative_unavailable_reason": null,
+      "quantile_p_value": null,
+      "sequential_result": null,
+      "binomial_set": null,
+      "ds": null,
+      "scale": "log",
+      "prior_spec": null,
+      "prior_shrunk": false,
+      "role": "primary",
+      "discovery": null,
+      "family_axes": null,
+      "family_q": null,
+      "family_threshold": null,
+      "family_procedure": null,
+      "family_guarantee": null,
+      "family_nominal_alpha": null,
+      "family_size": null
+    }
+  ]
+}

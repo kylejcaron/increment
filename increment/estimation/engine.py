@@ -411,6 +411,11 @@ class Method(CodedModel, BaseModel):
             _refuse("estimation.engine.method.name_iptw_does")
         return self
 
+    @property
+    def is_unadjusted(self) -> bool:
+        """Whether the procedure is raw rather than an observational dispatch key."""
+        return _is_unadjusted_method(self)
+
     @classmethod
     def unadjusted(
         cls, *, name: str = "naive", conversion_inference: ConversionInference = "auto"
@@ -754,7 +759,9 @@ def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _Win
 
 def _is_unadjusted_method(method: Method) -> bool:
     """Whether a method represents the raw, unadjusted estimator."""
-    return method.variance_reduction == "none" and method.name in {"unadjusted", "naive"}
+    from increment.estimation.adjust import ADJUSTMENTS
+
+    return method.variance_reduction == "none" and method.name not in ADJUSTMENTS
 
 
 def _validate_unique_method_names(

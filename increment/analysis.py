@@ -1278,6 +1278,14 @@ class Analysis:
             methods=None,
             prior=None,
         )
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            configs,
+            route="Analysis.from_moments",
+            representation="moments",
+            design=design,
+        )
         if experiment_id is None:
             experiment_id = (
                 str(rows[0].get("experiment_id", "moments"))

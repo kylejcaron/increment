@@ -79,6 +79,14 @@ def validate_relational_capture(
     )
     if registration is None:
         sequential_refuse("source.invalid", "register the likelihood before capturing source data")
+    from increment._analysis_config import validate_scalar_route
+
+    validate_scalar_route(
+        source.context.configs,
+        route="native.sequential_capture",
+        representation="native_sequential",
+        design=source.context.design,
+    )
     require_public_laws(registration.models, "relational sequential capture")
     from increment.sequential_source import validate_scalar_mean_design
 

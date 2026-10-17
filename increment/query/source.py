@@ -1375,6 +1375,18 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return frame.to_native()
 
+    @property
+    def scalar_bindings(self):
+        """Published raw covariate recipes, independent of runtime method labels."""
+        return {
+            config.metric.name: tuple(
+                covariate
+                for method in effective_methods(config, design=self.context.design)
+                for covariate in method.covariates or ()
+            )
+            for config in self.context.configs
+        }
+
     def moments_for_method(
         self,
         metric: Metric,
@@ -1388,6 +1400,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 "artifact.extension.missing",
                 "artifact base has no breakout evidence extension",
             )
+        from increment._analysis_config import overlay_configs, validate_scalar_route
+
+        validate_scalar_route(
+            overlay_configs((metric,), self.context.configs, methods=[method], prior=None),
+            route="artifact.moments_for_method",
+            design=self.context.design,
+            bindings=self.scalar_bindings,
+        )
         trusted = self.validated_metric(metric)
         if method.variance_reduction != "cuped":
             return self._reduce(
@@ -1852,6 +1872,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
     ) -> _ArtifactFacadeSource:
+        from increment._analysis_config import overlay_configs, validate_scalar_route
+
+        validate_scalar_route(
+            overlay_configs(metrics, self.context.configs, methods=methods, prior=prior),
+            route="artifact.moments_source",
+            representation="export",
+            design=self.context.design,
+        )
         if population == "triggered":
             return cast("_ArtifactFacadeSource", self.triggered_source())
         return self

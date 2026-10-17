@@ -208,11 +208,9 @@ def _sequential_mean_cuped_case() -> ParityCase:
     from increment.semantics.design import Randomized
     from increment.semantics.models import (
         AnalysisPlan,
-        CupedCovariateBinding,
         Definitions,
         Experiment,
         ExperimentMetric,
-        Measure,
         MethodSpec,
     )
     from increment.sequential_source import native_observation_mapping
@@ -225,17 +223,7 @@ def _sequential_mean_cuped_case() -> ParityCase:
         _track_connection,
     )
 
-    cuped = MethodSpec(
-        name="cuped",
-        variance_reduction="cuped",
-        covariates=(
-            CupedCovariateBinding(
-                name="pre_revenue",
-                kind="continuous",
-                measure=Measure(fact="purchase", aggregation="sum"),
-            ),
-        ),
-    )
+    cuped = MethodSpec(name="cuped", variance_reduction="cuped", covariates=None)
     cuped_frame = Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))
     rows = ds.event_rows()
     inference = {"kind": "asymptotic_mean", "expected_decision_sample_size": 100}

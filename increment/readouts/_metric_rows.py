@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from increment._analysis_config import overlay_configs
+from increment._analysis_config import overlay_configs, validate_scalar_route
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._source_operations import ReadoutSnapshotOperation
-from increment._source_types import ScalarMethodMomentSource
+from increment._source_types import ScalarBreakoutMomentSource, ScalarMethodMomentSource
 from increment.errors import CodedError, refuse
-from increment.readouts._common import _raise, _refuse_unsupported_by
+from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
 
 if TYPE_CHECKING:
@@ -36,15 +36,36 @@ class MetricRows:
     covariate_columns: tuple[tuple[str, str], ...] = ()
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
+    method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
 
-    def rows_for_method(self, method: Any) -> tuple[Mapping[str, Any], ...]:
-        """Return rows produced for an effective scalar method or fail loudly."""
-        for name, rows in self.method_rows:
-            if name == method.name:
-                return rows
+    def rows_for_method(
+        self,
+        method: Any,
+        *,
+        dimension: str | None = None,
+        dimension_value: str | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Return the produced input family, replaying only its own cell refusal."""
         for name, spec, context in self.method_refusals:
             if name == method.name:
                 refuse(spec, **context)
+        for name, cell_dimension, value, spec, context in self.method_cell_refusals:
+            if name != method.name:
+                continue
+            if dimension is None:
+                raise AssertionError("Partitioned scalar evidence requires a segment.")
+            if cell_dimension == dimension and value == dimension_value:
+                refuse(spec, **context)
+        for name, rows in self.method_rows:
+            if name == method.name:
+                if dimension is None:
+                    return rows
+                return tuple(
+                    row
+                    for row in rows
+                    if ("__null__" if row.get(dimension) is None else str(row[dimension]))
+                    == dimension_value
+                )
         raise AssertionError(f"Scalar evidence for method {method.name!r} was not acquired.")
 
 
@@ -96,11 +117,14 @@ def _rows_digest(rows):
 
 def _scalar_method_rows(src, metric, methods, decision, *, by):
     if not isinstance(src, ScalarMethodMomentSource):
-        _raise(
-            "readout.scalar_method_evidence",
+        validate_scalar_route(
+            overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
             route=type(src).__name__,
-            method=methods[0].name,
+            representation="implicit",
+            design=src.context.design,
         )
+        rows = tuple(src.moments(metric, grain="total", by=by))
+        return list(rows), tuple((method.name, rows) for method in methods), ()
     families = []
     refusals = []
     for method in methods:
@@ -334,4 +358,91 @@ def _load_metric_rows(
         method_rows=method_rows,
         method_refusals=tuple(method_refusals),
         covariate_columns=tuple(acquired_columns.items()),
+    )
+
+
+def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group) -> MetricRows:
+    """Acquire effective scalar inputs without promoting a segment failure."""
+    if any(method.variance_reduction == "cuped" for method in methods) and not isinstance(
+        src, ScalarBreakoutMomentSource
+    ):
+        validate_scalar_route(
+            overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
+            route=f"{type(src).__name__}.breakout",
+            representation="implicit",
+            design=src.context.design,
+        )
+    from increment.estimation.engine import Method
+
+    base = (
+        src.breakout_moments_for_method(metric, Method.unadjusted(), by=(dimension,)).rows
+        if isinstance(src, ScalarBreakoutMomentSource)
+        else tuple(src.moments(metric, grain="total", by=(dimension,)))
+    )
+    families = []
+    failures = []
+    cell_failures = []
+    for method in methods:
+        if method.variance_reduction != "cuped":
+            continue
+        if not isinstance(src, ScalarBreakoutMomentSource):
+            families.append((method.name, base))
+            continue
+        try:
+            acquired = src.breakout_moments_for_method(metric, method, by=(dimension,))
+        except CodedError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            failures.append((method.name, SCALAR_COVARIATE_REFUSALS[exc.code], exc.context))
+        else:
+            families.append((method.name, acquired.rows))
+            cell_failures.extend((method.name, *failure) for failure in acquired.refusals)
+    observed, digest, count = _rows_digest_and_arms(base)
+    ordinary_component = ("moments_rows", digest, count)
+    method_components = []
+    for method in methods:
+        if method.variance_reduction != "cuped":
+            continue
+        records = (
+            tuple(row for name, rows in families if name == method.name for row in rows)
+            + tuple(
+                {"failure_code": spec.code, "failure_context": dict(context)}
+                for name, spec, context in failures
+                if name == method.name
+            )
+            + tuple(
+                {
+                    "dimension": cell_dimension,
+                    "dimension_value": value,
+                    "failure_code": spec.code,
+                    "failure_context": dict(context),
+                }
+                for name, cell_dimension, value, spec, context in cell_failures
+                if name == method.name
+            )
+        )
+        method_components.append(
+            (f"scalar_method:{method.name}", *_rows_raw_digest_and_arms(records)[1:])
+        )
+    components = (ordinary_component, *method_components)
+    return MetricRows(
+        rows=base,
+        unit_frame=None,
+        observed_arms=observed,
+        n_treatment_arms=len(observed - {control_group}),
+        evidence_kind="moments_rows",
+        evidence_sha256=digest,
+        evidence_count=count,
+        decision_evidence_components=(
+            ordinary_component,
+            *(
+                item
+                for item in method_components
+                if methods and item[0] == f"scalar_method:{methods[0].name}"
+            ),
+        ),
+        evidence_components=components,
+        method_rows=tuple(families),
+        method_refusals=tuple(failures),
+        method_cell_refusals=tuple(cell_failures),
     )

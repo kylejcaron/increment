@@ -260,6 +260,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             intervention_grain=self._experiment.intervention_grain,
             trigger_name=self._experiment.trigger,
         )
+        from increment._analysis_config import validate_scalar_route
+        from increment.estimation.sequential import SEQUENTIAL_POLICIES
+
+        if isinstance(plan.inference, SEQUENTIAL_POLICIES):
+            validate_scalar_route(
+                self.context.configs,
+                route="native.sequential_capture",
+                representation="native_sequential",
+                design=design,
+            )
         self._exposures_cache: Table | None = None
         from increment.sequential_source import validate_source_mapping
 
@@ -2387,6 +2397,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             methods=methods,
             prior=prior,
         )
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            configs,
+            route="native.moments",
+            representation="export",
+            design=self._context.design,
+        )
         if population == "triggered":
             self._validate_trigger_capability(operation="moments")
         if not self._reduction_batch_depth:
@@ -2811,6 +2829,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         the declared uptake fact is joined at unit grain before this
         breakout-scoped reduction so its additive moments stay available.
         """
+        from increment._analysis_config import validate_scalar_route
+
+        configs = self._context.configs if configs is None else configs
+        names = {metric.name for metric in metrics}
+        validate_scalar_route(
+            tuple(config for config in configs if config.metric.name in names),
+            route="native.breakout_source",
+            representation="breakout",
+            design=self.context.design,
+        )
         exposures = (
             self._get_trigger_population(operation="breakout_moments")
             if population == "triggered"
@@ -2832,7 +2860,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._experiment.cluster, operation="breakout_moments"
         )
 
-        configs = self._context.configs if configs is None else configs
         rows: list[dict[str, object]] = []
         for metric in metrics:
             _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
@@ -3474,6 +3501,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         decision-plan payloads are refused; supported inference variants and
         view policies round-trip without fallback.
         """
+        from increment._analysis_config import validate_scalar_route
+
+        validate_scalar_route(
+            self.context.configs,
+            route="native.export_moments",
+            representation="export",
+            design=self.context.design,
+        )
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
