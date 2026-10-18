@@ -509,6 +509,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
+        snapshot_horizon_sql: str | None = None,
     ) -> DefinitionsMomentSource:
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
@@ -627,6 +628,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
+        if snapshot_horizon_sql is not None:
+            queries.append(snapshot_horizon_sql)
+            column_hints[snapshot_horizon_sql] = (None, None)
         for source in sources.values():
             validate_fact_source_schema(
                 self._session.source_sql(source.sql),
@@ -711,6 +715,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
+        snapshot_horizon_sql: str | None = None,
     ):
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         pinned = self._pinned_source(
@@ -719,6 +724,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             uptake_facts=uptake_facts,
             site_volume_metrics=site_volume_metrics,
             configs=configs,
+            snapshot_horizon_sql=snapshot_horizon_sql,
         )
         try:
             yield pinned
@@ -763,28 +769,39 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         segment or dimensioned readout of the pinned source reads the same execution snapshot
         as the headline instead of failing on, or silently re-reading, an unpinned stream.
         """
-        fixed_horizon = None
         use_shared_horizon = (
             bool(metrics)
             and self._experiment.observation_horizon is None
             and self._session.source_snapshot_evidence is None
+            and self._session._source_tables is None
         )
+        snapshot_horizon_sql = None
         if use_shared_horizon:
-            horizon = self._union_event_horizon()
-            horizon_row = self._session.fetch_arrow(
-                ibis.literal(1).name("_one").as_table().select(edge=horizon)
-            ).to_pylist()[0]
-            fixed_horizon = horizon_row["edge"]
+            horizon = self._union_event_horizon(metrics)
+            horizon_relation = (
+                ibis.literal(1).name("_one").as_table().select(edge=horizon.cast("date"))
+            )
+            snapshot_horizon_sql = ibis_to_sql(
+                horizon_relation, dialect=self._backend or self._con.name
+            )
         with self._pinned_source_execution(
             metrics=metrics,
             uptake_facts=uptake_facts,
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
             configs=configs,
+            snapshot_horizon_sql=snapshot_horizon_sql,
         ) as pinned:
             previous_horizon = pinned._fixed_event_horizon
             previous_override = pinned._has_fixed_event_horizon_override
             if use_shared_horizon:
-                pinned._fixed_event_horizon = fixed_horizon
+                assert snapshot_horizon_sql is not None
+                horizon_row = pinned._session.fetch_arrow(
+                    pinned._session.source_sql(snapshot_horizon_sql)
+                ).to_pylist()[0]
+                horizon_edge = horizon_row["edge"]
+                if isinstance(horizon_edge, dt.datetime):
+                    horizon_edge = horizon_edge.date()
+                pinned._fixed_event_horizon = horizon_edge
                 pinned._has_fixed_event_horizon_override = True
                 pinned._union_horizon_cache = None
                 pinned._union_horizon_metric_cache = {}

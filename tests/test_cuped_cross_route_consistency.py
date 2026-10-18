@@ -717,7 +717,7 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
         con.disconnect()
 
 
-def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path):
+def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monkeypatch):
     from datetime import datetime
 
     import yaml
@@ -775,8 +775,8 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path):
             + [
                 {
                     "user_id": "outside_the_cohort",
-                    "ts": datetime(2025, 8, 30),
                     "event": "observed",
+                    "ts": datetime(2025, 8, 30),
                     "value": 1.0,
                 }
             ]
@@ -837,6 +837,51 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path):
                     )
                 )
             )
+
+            from increment.query.session import WarehouseSession
+
+            pin_sources = WarehouseSession.pin_sources
+            inserted = False
+
+            def advance_before_capture(session, queries, **kwargs):
+                nonlocal inserted
+                if not inserted:
+                    inserted = True
+                    con.raw_sql(
+                        "UPDATE cov_events SET ts = TIMESTAMP '2025-08-25' "
+                        "WHERE event = 'exposure' AND user_id = 'u9'"
+                    )
+                    con.raw_sql(
+                        "INSERT INTO cov_events (user_id, ts, event, experiment_id, group_id, "
+                        "revenue, tenure, history_b, segment) VALUES ('u9', "
+                        "TIMESTAMP '2025-09-01', 'purchase', NULL, NULL, 500.0, 42.0, "
+                        "0.0, 'qualifying')"
+                    )
+                return pin_sources(session, queries, **kwargs)
+
+            monkeypatch.setattr(WarehouseSession, "pin_sources", advance_before_capture)
+
+            def read_pinned(isolated):
+                return next(
+                    iter(
+                        isolated.run(
+                            metrics=selected,
+                            decision_method=Method.unadjusted(),
+                            sensitivity_methods=(),
+                        )
+                    )
+                )
+
+            captured = native.dashboard_snapshot(read_pinned, metrics=native.metrics)
+            after_capture = next(
+                iter(
+                    native.run(
+                        metrics=selected,
+                        decision_method=Method.unadjusted(),
+                        sensitivity_methods=(),
+                    )
+                )
+            )
         assert isinstance(baseline, LiftEstimate)
         assert isinstance(with_companion, LiftEstimate)
         assert isinstance(full_run["revenue"], LiftEstimate)
@@ -844,6 +889,10 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path):
             assert baseline.require_lift().value == pytest.approx(row.require_lift().value)
             assert baseline.require_lift().log_se == pytest.approx(row.require_lift().log_se)
             assert baseline.sampling_available is row.sampling_available is True
+        assert isinstance(captured, LiftEstimate)
+        assert isinstance(after_capture, LiftEstimate)
+        assert captured.require_lift().value == pytest.approx(after_capture.require_lift().value)
+        assert captured.require_lift().log_se == pytest.approx(after_capture.require_lift().log_se)
     finally:
         con.disconnect()
 
