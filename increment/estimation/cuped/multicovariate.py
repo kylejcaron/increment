@@ -91,6 +91,8 @@ class _LinearCupedCalculator:
     _bm_u_gram: np.ndarray
     _means: tuple[tuple[float, ...], ...]
     _row_exponents: tuple[tuple[int, ...], ...]
+    _multiplicities: np.ndarray | None = None
+    _scatter_factor: np.ndarray | None = None
 
     def _contrast_x(self, j: np.ndarray) -> np.ndarray:
         jsum = math.fsum(float(value) for value in j)
@@ -340,7 +342,24 @@ class _LinearCupedCalculator:
                 mask
             ] + share * np.ldexp(fitted, -exponent)
             score[mask] = np.ldexp(contribution / divisor[0], exponent - divisor[2])
-        return score * scale
+        if self._multiplicities is None:
+            return score * scale
+        assert self._scatter_factor is not None
+        scatter_score = (
+            influence[:, None] * self._scatter_factor[:, family, :] / leverage_factor[:, None]
+        )
+        if divisor is not None:
+            for a in range(len(self.arm_order)):
+                mask = self._arm_index == a
+                exponent = self._row_exponents[family][a]
+                scatter_score[mask] = np.ldexp(
+                    np.ldexp(scatter_score[mask], -exponent) / divisor[0],
+                    exponent - divisor[2],
+                )
+        return (
+            np.concatenate((score * np.sqrt(self._multiplicities), scatter_score.reshape(-1)))
+            * scale
+        )
 
     def _bm_dof(self, j: np.ndarray) -> float:
         d = self._contrast_x(j)
@@ -352,6 +371,7 @@ class _LinearCupedCalculator:
             np.concatenate([j, -d]),
             q_design=self._design_q,
             u_gram=self._bm_u_gram,
+            multiplicities=self._multiplicities,
         )
 
     def _stacked_bm(self, jac: np.ndarray) -> float:
@@ -372,6 +392,7 @@ class _LinearCupedCalculator:
                 scale=scale,
                 q_design=self._design_q,
                 u_gram=self._bm_u_gram,
+                multiplicities=self._multiplicities,
             )
             for contrast in contrasts
         ]
@@ -581,6 +602,7 @@ def _make_inference_summary(identity, cached, calculator, outcomes, order, lever
                     scale=common_scale,
                     q_design=calculator._design_q,
                     u_gram=u_gram,
+                    multiplicities=calculator._multiplicities,
                 )
                 for contrast, common_scale in component_contrasts
             )
@@ -604,7 +626,11 @@ def _make_inference_summary(identity, cached, calculator, outcomes, order, lever
         fit_identity=identity,
         projection_identity=identity + ("all-pairs-v1",),
         max_leverage=float(leverage.max()),
-        sum_leverage=float(leverage.sum()),
+        sum_leverage=float(
+            leverage.sum()
+            if calculator._multiplicities is None
+            else leverage @ calculator._multiplicities
+        ),
         refusal_witness=(),
         adjusted_component_covariance=tuple(
             tuple(float(value) for value in row) for row in covariance
@@ -740,7 +766,17 @@ def _projection_bm_contrasts(calculator, row):
 
 
 def _validate_request(
-    y, arms, control, arm_order, covariates, kinds, missing, numerator, denominator
+    y,
+    arms,
+    control,
+    arm_order,
+    covariates,
+    kinds,
+    missing,
+    numerator,
+    denominator,
+    *,
+    require_arm_support=True,
 ):
     groups = np.asarray(arms, dtype=object)
     order = tuple(arm_order)
@@ -751,7 +787,8 @@ def _validate_request(
         len(order) < 2
         or len(set(order)) != len(order)
         or control not in order
-        or set(observed) != set(order)
+        or not set(observed).issubset(order)
+        or (require_arm_support and set(observed) != set(order))
     ):
         _fail(
             "estimation.cuped_linear.invalid_arms",
@@ -761,7 +798,7 @@ def _validate_request(
         )
     indices = tuple(np.flatnonzero(groups == arm) for arm in order)
     counts = tuple(len(idx) for idx in indices)
-    if min(counts, default=0) < 2:
+    if require_arm_support and min(counts, default=0) < 2:
         _fail("estimation.cuped_linear.arm_counts", counts=dict(zip(order, counts, strict=True)))
     if numerator is not None or denominator is not None:
         if numerator is None or denominator is None or y is not None:
@@ -812,14 +849,30 @@ def _center_outcomes(outcomes, indices):
     return tuple(centered_outcomes), tuple(offsets)
 
 
-def _fit_covariate_slopes(x, indices, centered_outcomes, local_means, layout):
+def _fit_covariate_slopes(
+    x,
+    indices,
+    centered_outcomes,
+    local_means,
+    layout,
+    multiplicities=None,
+):
     n = len(x)
-    means = tuple(x[idx].mean(axis=0) for idx in indices)
+    counts = tuple(
+        len(idx) if multiplicities is None else int(multiplicities[idx].sum()) for idx in indices
+    )
+    total = sum(counts)
+    means = tuple(
+        x[idx].mean(axis=0)
+        if multiplicities is None
+        else np.average(x[idx], axis=0, weights=multiplicities[idx])
+        for idx in indices
+    )
     weights = np.empty(n, dtype=float)
-    for idx, mean in zip(indices, means, strict=True):
+    for idx, mean, count in zip(indices, means, counts, strict=True):
         x[idx] -= mean
-        weights[idx] = 1 / (len(idx) * (len(idx) - 1))
-    sqrt_weights = np.sqrt(weights)
+        weights[idx] = 1 / (count * (count - 1))
+    sqrt_weights = np.sqrt(weights if multiplicities is None else weights * multiplicities)
     p = x.shape[1]
     if p:
         np.multiply(x, sqrt_weights[:, None], out=x)
@@ -862,7 +915,7 @@ def _fit_covariate_slopes(x, indices, centered_outcomes, local_means, layout):
         scales = np.empty(0)
         gram_factor = np.empty((0, 0))
     anchor = (
-        sum((len(idx) / n) * mean for idx, mean in zip(indices, means, strict=True))
+        sum((count / total) * mean for count, mean in zip(counts, means, strict=True))
         if p
         else np.empty(0)
     )
@@ -932,15 +985,36 @@ def _raw_denominator_precision(numerator, denominator, arm):
     return ratio_denominator_precision(stats)
 
 
-def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordinate_offsets):
+def _fit_calculator(
+    groups,
+    order,
+    counts,
+    outcomes,
+    x,
+    layout,
+    control,
+    coordinate_offsets,
+    *,
+    multiplicities=None,
+    scatter_factor=None,
+    denominator_support=None,
+    outcome_references=None,
+):
     n = len(groups)
+    total = sum(counts)
     indices = tuple(np.flatnonzero(groups == arm) for arm in order)
     centered_outcomes, outcome_offsets = _center_outcomes(outcomes, indices)
     local_means = tuple(
-        tuple(_arm_mean(outcome[idx]) for idx in indices) for outcome in centered_outcomes
+        tuple(
+            _arm_mean(outcome[idx])
+            if multiplicities is None
+            else float(np.average(outcome[idx], weights=multiplicities[idx]))
+            for idx in indices
+        )
+        for outcome in centered_outcomes
     )
     means, weights, sqrt_weights, q_covariate, r_scaled, scales, gram_factor, slopes, anchor = (
-        _fit_covariate_slopes(x, indices, centered_outcomes, local_means, layout)
+        _fit_covariate_slopes(x, indices, centered_outcomes, local_means, layout, multiplicities)
     )
     p = x.shape[1]
     arm_count = len(order)
@@ -955,7 +1029,9 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         x *= scales
         x /= sqrt_weights[:, None]
     offset_anchor = (
-        sum((counts[a] / n) * coordinate_offsets[a] for a in range(arm_count)) if p else np.empty(0)
+        sum((counts[a] / total) * coordinate_offsets[a] for a in range(arm_count))
+        if p
+        else np.empty(0)
     )
     arm_differences = tuple(
         np.fromiter(
@@ -981,6 +1057,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
                 local_means[f][a],
                 -float(slopes[f] @ arm_differences[a]),
                 outcome_offsets[f][a],
+                *((float(outcome_references[f][a]),) if outcome_references is not None else ()),
             )
             for a in range(arm_count)
         )
@@ -988,7 +1065,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
     )
     rounded_means = tuple(tuple(_exact_sum(parts) for parts in family) for family in mean_parts)
     leverage = np.empty(n)
-    if n <= 1024:
+    if n <= 1024 or multiplicities is not None:
         q_design, r_design = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")
     else:
         q_design = np.empty_like(design)
@@ -1000,10 +1077,15 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         for arm, idx in enumerate(indices):
             r_design[arm, arm] = math.sqrt(1 / (len(idx) - 1))
         r_design[arm_count:, arm_count:] = gram_factor
-    bm_u_gram = _bm_u_gram(q_design, weights)
-    for idx in indices:
-        leverage[idx] = 1 / len(idx) + np.sum(q_covariate[idx] ** 2, axis=1)
-    df = n - len(order) - p
+    if multiplicities is not None:
+        q_design /= np.sqrt(multiplicities[:, None])
+    bm_u_gram = _bm_u_gram(q_design, weights, multiplicities)
+    for a, idx in enumerate(indices):
+        covariate_leverage = np.sum(q_covariate[idx] ** 2, axis=1)
+        if multiplicities is not None:
+            covariate_leverage /= multiplicities[idx]
+        leverage[idx] = 1 / counts[a] + covariate_leverage
+    df = total - len(order) - p
     if df <= 0:
         _fail("estimation.cuped_linear.residual_df", df=df)
     if leverage.max() >= 1 - 1e-8:
@@ -1030,9 +1112,13 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         if value > bound:
             violations.append((observable, value, bound))
     if len(outcomes) == 2:
-        precision = max(
-            _raw_denominator_precision(outcomes[0][idx], outcomes[1][idx], order[a])
-            for a, idx in enumerate(indices)
+        precision = (
+            max(denominator_support)
+            if denominator_support is not None
+            else max(
+                _raw_denominator_precision(outcomes[0][idx], outcomes[1][idx], order[a])
+                for a, idx in enumerate(indices)
+            )
         )
         if precision > M1_MAX_RATIO_DENOMINATOR_PRECISION:
             violations.append(
@@ -1071,7 +1157,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         min(counts),
         p,
         float(leverage.max()),
-        float(leverage.mean()),
+        float(leverage.mean() if multiplicities is None else leverage @ multiplicities / total),
         _readonly(leverage),
         _readonly(x),
         _readonly(arm_index),
@@ -1095,6 +1181,8 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
             )
             for f in range(len(outcomes))
         ),
+        multiplicities,
+        scatter_factor,
     )
     return calculator, leverage
 

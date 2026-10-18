@@ -254,6 +254,7 @@ def _bm(
     *,
     q_design: np.ndarray | None = None,
     u_gram: np.ndarray | None = None,
+    multiplicities=None,
 ) -> float:
     scale = float(np.max(np.abs(contrast), initial=0.0))
     if scale == 0:
@@ -267,11 +268,35 @@ def _bm(
         scale=scale,
         q_design=q_design,
         u_gram=u_gram,
+        multiplicities=multiplicities,
     )
     return trace * trace / trace_square if trace_square > 0 else 1.0
 
 
-def _bm_terms(design, weights, leverage, factor, contrast, *, scale, q_design=None, u_gram=None):
+def _bm_terms(
+    design,
+    weights,
+    leverage,
+    factor,
+    contrast,
+    *,
+    scale,
+    q_design=None,
+    u_gram=None,
+    multiplicities=None,
+):
+    if multiplicities is not None:
+        reductions = _bm_reductions(
+            design,
+            weights,
+            factor,
+            contrast,
+            scale=scale,
+            q_design=q_design,
+            u_gram=u_gram,
+            multiplicities=multiplicities,
+        )
+        return _bm_trace_reductions(*reductions)
     sqrt_weights = np.sqrt(weights)
     if q_design is None:
         weighted_design = np.empty_like(design)
@@ -332,23 +357,36 @@ def _bm_terms(design, weights, leverage, factor, contrast, *, scale, q_design=No
     return trace, trace_square
 
 
-def _bm_u_gram(q_design, weights):
+def _bm_u_gram(q_design, weights, multiplicities=None):
     result = np.zeros((q_design.shape[1], q_design.shape[1]))
     for start in range(0, len(weights), 65_536):
         stop = min(start + 65_536, len(weights))
         weighted_q = q_design[start:stop] * np.sqrt(weights[start:stop, None])
+        if multiplicities is not None:
+            weighted_q *= np.sqrt(multiplicities[start:stop, None])
         result += weighted_q.T @ weighted_q
     return result
 
 
-def _bm_reductions(design, weights, factor, contrast, *, scale, q_design, u_gram):
+def _bm_reductions(
+    design,
+    weights,
+    factor,
+    contrast,
+    *,
+    scale,
+    q_design,
+    u_gram,
+    multiplicities=None,
+):
     """Accumulate the exact compact S2/S4/G/G2 reductions for one component."""
     sqrt_weights = np.sqrt(weights)
     coefficients = np.linalg.solve(factor.T, contrast / scale)
     leverage = np.einsum("ij,ij->i", q_design, q_design)
     t = sqrt_weights * (q_design @ coefficients) / np.sqrt(1.0 - leverage)
-    s2 = float(t @ t)
-    s4 = float((t * t) @ (t * t))
+    t2_all = t * t
+    s2 = float(t @ t if multiplicities is None else t2_all @ multiplicities)
+    s4 = float(t2_all @ t2_all if multiplicities is None else (t2_all * t2_all) @ multiplicities)
     parameter_count = design.shape[1]
     gram = np.zeros((2 * parameter_count, 2 * parameter_count))
     weighted_gram = np.zeros_like(gram)
@@ -362,6 +400,8 @@ def _bm_reductions(design, weights, factor, contrast, *, scale, q_design, u_gram
         feature[:, :parameter_count] = q_block * (root_block * t_block)[:, None]
         feature[:, parameter_count:] = q_block * (t_block / root_block)[:, None]
         t2 = t_block * t_block
+        if multiplicities is not None:
+            feature *= np.sqrt(multiplicities[start:stop, None])
         gram += feature.T @ feature
         weighted_gram += feature.T @ (feature * t2[:, None])
     return s2, s4, gram, weighted_gram, u_gram

@@ -991,6 +991,37 @@ four projection fields alongside the usable estimate.
 Declared priors do not change sampling inference; a posterior unsupported
 by the retained HC2/BM statistics is explicitly unavailable.
 
+### Joint categorical evidence
+
+The estimation layer can also fit categorical-only designs from joint
+arm-by-pattern counts and centered outcome moments. Separate marginal
+category tables are not sufficient: the joint pattern determines the
+design row, leverage, and fitted-slope uncertainty. Mean evidence retains
+one outcome component; ratio evidence retains both components and their
+within-cell cross scatter.
+
+For a cell with multiplicity $m_g$, factor rows
+$\sqrt{m_g w_a}\,z_g$, where $w_a=1/[n_a(n_a-1)]$. Dividing its compressed
+QR row by $\sqrt{m_g}$ recovers the original-unit row $q_g$ and leverage
+$h_g=q_g^\top q_g$. Treating a cell as one observation would instead
+change the estimator's uncertainty and degrees of freedom.
+
+If a projected score in the cell is $A_g(Y_i-\bar Y_g)+b_g$, its summed
+outer product is
+$A_g C_g A_g^\top + m_g b_g b_g^\top$, with $C_g$ the centered outcome
+cross scatter. This preserves the anchor contribution and the joint
+numerator/denominator covariance. Bell–McCaffrey reductions likewise
+weight each original-unit cell contribution by $m_g$ before the shared
+finalizer forms its component-stacked trace ratio.
+
+These cells are parameter-independent and merge using centered-moment
+formulas only when source, preparation, arm ordering, and covariate
+identities agree. Null categories remain distinct from string labels.
+The usual level-support, rank, leverage, and denominator-precision rules
+still apply to the combined observations; individual partitions need
+not satisfy fitting support. This estimation representation does not by
+itself establish that a warehouse cell is safe to transfer.
+
 ## The math
 
     The coefficient minimizes the variance of the additive contrast
