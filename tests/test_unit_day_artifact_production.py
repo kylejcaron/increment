@@ -1804,3 +1804,46 @@ def test_refresh_against_a_different_context_names_the_artifact() -> None:
         store.begin_publication(expected_context=other, refresh_of=ref)
     assert refusal.value.code == "artifact.refresh.context_mismatch"
     assert dict(refusal.value.context) == {"artifact_id": str(ref.artifact_id)}
+
+
+def test_publication_keeps_exposures_and_unit_stats_in_relations(monkeypatch) -> None:
+    con = ibis.duckdb.connect()
+    seed_event_log(con, n_units=200)
+    analysis = Analysis.from_definitions("new_onboarding_v2", "examples/definitions", con)
+    store = WarehouseArtifactStore(con, schema_name="artifact")
+    real_to_arrow = con.to_pyarrow
+    real_to_batches = con.to_pyarrow_batches
+
+    def reject_unit_rows(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            if {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"} <= names:
+                raise AssertionError("publication exported full exposure rows")
+            if {"unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"} <= names:
+                raise AssertionError("publication exported unit-day statistics")
+            if {"experiment_id", "unit_id", "value_is_missing"} <= names and (
+                {"dimension_value", "factor_value"} & names
+            ):
+                raise AssertionError("publication exported unit dimension rows")
+            if {"experiment_id", "unit_id", "x"} <= names:
+                raise AssertionError("publication exported CUPED rows")
+            if {"experiment_id", "unit_id", "cluster_id"} <= names:
+                raise AssertionError("publication exported cluster rows")
+            if {"experiment_id", "unit_id", "first_trigger_ts"} <= names:
+                raise AssertionError("publication exported trigger population rows")
+        return real_to_arrow(table, *args, **kwargs)
+
+    def reject_unit_batches(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            if {"unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"} <= names:
+                raise AssertionError("publication streamed unit-day statistics")
+        return real_to_batches(table, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", reject_unit_rows)
+    monkeypatch.setattr(con, "to_pyarrow_batches", reject_unit_batches)
+    try:
+        analysis.publish_unit_day_artifact(store)
+    finally:
+        analysis.close()
+        con.disconnect()

@@ -2478,7 +2478,7 @@ def test_publish_and_open_complete_under_a_tight_duckdb_memory_limit(
 
 
 @pytest.mark.slow
-def test_streaming_publication_validates_batches_without_full_stats_fetch(monkeypatch):
+def test_publication_validates_statistics_with_bounded_sql_reduction(monkeypatch):
     from increment.query import artifact_publish as module
     from increment.query.artifact_digest import digest_relation_sql_v2
 
@@ -2486,30 +2486,30 @@ def test_streaming_publication_validates_batches_without_full_stats_fetch(monkey
         definitions=Path(__file__).resolve().parents[1] / "examples" / "definitions"
     )
     arrow = con.to_pyarrow
-    validate = module.validate_unit_day_aggregate_rows
-    batch_sizes = []
+    validated_columns = []
 
     def guarded(expression, **kwargs):
-        # Scalar aggregates (counts) have no columns and are always allowed.
         columns = getattr(expression, "columns", ())
-        assert "n_events" not in columns, "statistics fetched in full"
+        assert "unit_id" not in columns, "unit statistics fetched in full"
+        assert "measure_key" not in columns, "unit statistics fetched in full"
         return arrow(expression, **kwargs)
 
-    def checked(rows):
-        assert len(rows) <= 128
-        batch_sizes.append(len(rows))
-        validate(rows)
+    original = module.ArtifactPublisher._validate_stats_relation
+
+    def checked(self, stats):
+        validated_columns.append(tuple(stats.schema().names))
+        return original(self, stats)
 
     monkeypatch.setattr(con, "to_pyarrow", guarded)
-    monkeypatch.setattr(module, "_DIGEST_BATCH_ROWS", 128)
-    monkeypatch.setattr(module, "validate_unit_day_aggregate_rows", checked)
+    monkeypatch.setattr(module.ArtifactPublisher, "_validate_stats_relation", checked)
     try:
         ref = native.publish_unit_day_artifact(store)
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         measure = manifest.base.measure_stats
-        assert len(batch_sizes) > 1
-        assert sum(batch_sizes) == measure.row_count
+        assert validated_columns
+        monkeypatch.setattr(con, "to_pyarrow", arrow)
+        assert all("unit_id" in columns for columns in validated_columns)
         stored = con.table(measure.relation.name, database="artifacts")
         rows = arrow(stored).to_pylist()
         recomputed = digest_relation_sql_v2(
@@ -2549,7 +2549,7 @@ def test_publication_keeps_validated_stats_when_source_changes(
         )
         baseline_rows = con.to_pyarrow(baseline_stats).to_pylist()
     baseline = Analysis.from_unit_day_artifact(store, baseline_ref, expected_context=context)
-    validate = ArtifactPublisher._validate_stats_batches
+    validate = ArtifactPublisher._validate_stats_relation
     validated_rows = []
     columns = ["unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"]
 
@@ -2562,7 +2562,7 @@ def test_publication_keeps_validated_stats_when_source_changes(
         )
         return last_ds
 
-    monkeypatch.setattr(ArtifactPublisher, "_validate_stats_batches", validate_then_change)
+    monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", validate_then_change)
     adopted = None
     try:
         ref = native.publish_unit_day_artifact(store)
@@ -2623,7 +2623,7 @@ def test_publication_cleans_materialized_inputs_and_stats(monkeypatch, tmp_path,
 
     monkeypatch.setattr(con, "create_table", tracked)
     if failure == "validation":
-        monkeypatch.setattr(ArtifactPublisher, "_validate_stats_batches", broken)
+        monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", broken)
     elif failure == "publication":
         monkeypatch.setattr(store, "_write_relation", broken)
     try:

@@ -1313,7 +1313,7 @@ def test_publication_pins_uptake_before_metric_validation(monkeypatch, separate_
     con, analysis, context, store, _panel = native_fixture(
         ("full",), separate_uptake=separate_uptake, open_ended=open_ended
     )
-    original = ArtifactPublisher._validate_stats_batches
+    original = ArtifactPublisher._validate_stats_relation
     mutated = False
 
     def mutate_after_validation(self, stats):
@@ -1328,7 +1328,7 @@ def test_publication_pins_uptake_before_metric_validation(monkeypatch, separate_
     try:
         expected = _native_source(analysis).compliance_summary(design(7))
         expected_dates = _native_source(analysis).compliance_dates()
-        monkeypatch.setattr(ArtifactPublisher, "_validate_stats_batches", mutate_after_validation)
+        monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", mutate_after_validation)
         ref = analysis.publish_unit_day_artifact(store)
         assert mutated
         with open_artifact(store, ref, expected_context=context) as artifact:
@@ -2207,7 +2207,7 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
         )
         metric = _native_source(analysis).context.metrics[0]
         expected = _native_source(analysis).moments(metric)
-        validate = ArtifactPublisher._validate_stats_batches
+        validate = ArtifactPublisher._validate_stats_relation
 
         def mutate_after_validation(self, stats):
             result = validate(self, stats)
@@ -2216,7 +2216,7 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
 
         if mutate:
             monkeypatch.setattr(
-                ArtifactPublisher, "_validate_stats_batches", mutate_after_validation
+                ArtifactPublisher, "_validate_stats_relation", mutate_after_validation
             )
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as artifact:
