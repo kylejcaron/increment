@@ -286,6 +286,10 @@ class ArtifactStore(Protocol):
         generation_id: UUID,
         role: RelationRole | Literal["manifest"],
     ) -> None: ...
+    def preflight_publication(self) -> None:
+        """Refuse before source assembly unless publication can verify its writes."""
+        ...
+
     def begin_publication(
         self,
         *,

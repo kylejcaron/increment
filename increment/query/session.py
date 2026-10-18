@@ -356,6 +356,22 @@ class WarehouseArtifactStore:
         self._ensure_metadata_table()
         self._ensure_dropped_table()
 
+    def preflight_publication(self) -> None:
+        """Require warehouse-side digest verification before source assembly."""
+        self._require_warehouse_digest_verifier(
+            relation="<publication>", digest_format=BUCKETED_DIGEST_FORMAT
+        )
+
+    def _require_warehouse_digest_verifier(self, *, relation: str, digest_format: int) -> None:
+        if self._con.name in _SQL_DIGEST_BACKENDS:
+            return
+        _raise(
+            "query.session.warehouse_artifact.verification_unavailable",
+            relation=relation,
+            digest_format=digest_format,
+            route="republish from trusted definitions with warehouse-side integrity enabled",
+        )
+
     def _validate_namespace(self) -> None:
         try:
             RelationLocator(
@@ -835,10 +851,9 @@ class WarehouseArtifactStore:
         )
 
     def _digest_table_for_write(self, table: ir.Table, role: str):
-        """Select a supported write codec and retain its own format identifier."""
-        if self._con.name in _SQL_DIGEST_BACKENDS:
-            return self._digest_table(table, role, digest_format=SQL_DIGEST_FORMAT)
-        return self._digest_table(table, role, digest_format=BUCKETED_DIGEST_FORMAT)
+        """Write only the warehouse-verifiable format-2 codec."""
+        self._require_warehouse_digest_verifier(relation=role, digest_format=BUCKETED_DIGEST_FORMAT)
+        return self._digest_table(table, role, digest_format=SQL_DIGEST_FORMAT)
 
     def _write_relation(
         self, generation: _StoredGeneration, role: str, table: ir.Table

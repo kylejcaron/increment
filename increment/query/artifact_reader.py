@@ -160,12 +160,13 @@ def _rows(value: object) -> list[dict[str, Any]]:
     _raise("query.artifact_reader.snapshot_execution_returned", type_name=type(value).__name__)
 
 
-def restrict_to_units(table: ir.Table, units: frozenset[str]) -> ir.Table:
-    """Keep the rows of *table* whose ``unit_id`` is in *units*.
-
-    The population travels as a relation the warehouse joins against, not as
-    one string literal per unit in the query text.
-    """
+def restrict_to_units(table: ir.Table, units: frozenset[str] | ir.Table) -> ir.Table:
+    """Keep the rows of *table* whose ``unit_id`` belongs to a population."""
+    if isinstance(units, ir.Table):
+        return table.semi_join(
+            units.select("experiment_id", "unit_id").distinct(),
+            ["experiment_id", "unit_id"],
+        )
     schema = ibis.schema({"unit_id": "string"})
     members = ibis.memtable({"unit_id": sorted(units)}, schema=schema)
     return table.filter(table.unit_id.isin(members.unit_id))
@@ -803,8 +804,8 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         self._snapshot = snapshot
         self._manifest = manifest
-        self._population_units: frozenset[str] | None = None
-        self._trigger_anchors: dict[str, dt.datetime] = {}
+        self._population_units: frozenset[str] | ir.Table | None = None
+        self._trigger_anchors: ir.Table | None = None
         self._verified_tables: dict[str, ir.Table] = {}
         self._metrics_arg = metrics
         self._aggregation_by_metric: dict[str, str] = {}
@@ -1035,7 +1036,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         cluster: str | None = None,
         cluster_table: ir.Table | None = None,
         pre_stats: ir.Table | None = None,
-        population_units: frozenset[str] | None = None,
+        population_units: frozenset[str] | ir.Table | None = None,
         completed_windows_only: bool = False,
         calendar_end: dt.date | None = None,
     ) -> list[dict[str, Any]]:
@@ -1064,7 +1065,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         cluster: str | None = None,
         cluster_table: ir.Table | None = None,
         pre_stats: ir.Table | None = None,
-        population_units: frozenset[str] | None = None,
+        population_units: frozenset[str] | ir.Table | None = None,
         completed_windows_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Reduce one metric with trigger-local relations without changing reader state."""
@@ -1088,9 +1089,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         *,
         cluster: str | None,
         resolve_cluster: Callable[[], ir.Table | None],
-        population_units: frozenset[str] | None = None,
+        population_units: frozenset[str] | ir.Table | None = None,
         outcome_stage: Literal["transformed", "raw"] = "transformed",
         trigger_inputs: _TriggeredReductionInputs | None = None,
+        covariate_tables: Mapping[str, tuple[ir.Table, str, str | None]] | None = None,
     ) -> IntoDataFrame:
         """Resolve, project, and execute a unit frame on the pinned snapshot."""
         if outcome_stage not in ("raw", "transformed"):
@@ -1105,6 +1107,25 @@ class ArtifactMomentSource(SequentialSourceMixin):
             population_units=population_units,
             trigger_inputs=trigger_inputs,
         )
+        if covariate_tables:
+            for name, (relation, field, availability_field) in covariate_tables.items():
+                covariate = relation.select(
+                    "unit_id",
+                    value=relation[field],
+                    available=(
+                        relation[availability_field]
+                        if availability_field is not None
+                        else ibis.literal(True)
+                    ),
+                )
+                joined = totals.left_join(covariate, "unit_id")
+                value = ibis.ifelse(
+                    covariate.available, covariate.value, ibis.null().cast(covariate.value.type())
+                ).name(name)
+                totals = joined.select(
+                    *[totals[column] for column in totals.columns],
+                    **{name: value},
+                )
         columns = {name: totals[name] for name in ("unit_id", "group_id", "y")}
         if (
             outcome_stage == "raw"
@@ -1122,6 +1143,8 @@ class ArtifactMomentSource(SequentialSourceMixin):
             columns["y_den"] = totals.y_den
         if cluster is not None:
             columns["cluster_id"] = totals[cluster].cast("string")
+        if covariate_tables:
+            columns.update({name: totals[name] for name in covariate_tables})
         return self._snapshot.execute(totals.select(**columns))
 
     def _observation_spine_edge(
@@ -1212,7 +1235,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         cluster: str | None = None,
         cluster_table: ir.Table | None = None,
         pre_stats: ir.Table | None = None,
-        population_units: frozenset[str] | None = None,
+        population_units: frozenset[str] | ir.Table | None = None,
         completed_windows_only: bool = False,
         trigger_inputs: _TriggeredReductionInputs | None = None,
         finalized_as_of: dt.date | None = None,
@@ -2233,13 +2256,13 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         if self._population_units is not None:
             offset = day_boundary_offset(self._manifest.day_boundary)
+            assert self._trigger_anchors is not None
+            trigger_days_relation = self._trigger_anchors.select(
+                trigger_day=_local_date_at_offset(self._trigger_anchors.first_trigger_ts, offset)
+            ).distinct()
             trigger_days = sorted(
-                {
-                    (timestamp.astimezone(dt.UTC) + offset).date()
-                    if timestamp.tzinfo is not None
-                    else (timestamp + offset).date()
-                    for timestamp in self._trigger_anchors.values()
-                }
+                cast(dt.date, row["trigger_day"])
+                for row in _rows(self._snapshot.execute(trigger_days_relation))
             )
             if not trigger_days:
                 return []
@@ -2315,17 +2338,12 @@ class ArtifactMomentSource(SequentialSourceMixin):
             offset = day_boundary_offset(self._manifest.day_boundary)
             as_of_date = cast(dt.date, as_of)
             if self._population_units is not None:
-                trigger_units = {
-                    unit_id
-                    for unit_id, timestamp in self._trigger_anchors.items()
-                    if (
-                        timestamp.astimezone(dt.UTC) + offset
-                        if timestamp.tzinfo is not None
-                        else timestamp + offset
-                    ).date()
+                assert self._trigger_anchors is not None
+                trigger_units = self._trigger_anchors.filter(
+                    _local_date_at_offset(self._trigger_anchors.first_trigger_ts, offset)
                     <= as_of_date
-                }
-                exposures = restrict_to_units(exposures, frozenset(trigger_units))
+                ).select("experiment_id", "unit_id")
+                exposures = restrict_to_units(exposures, trigger_units)
             else:
                 exposures = exposures.filter(exposures.first_exposure_date <= ibis.literal(as_of))
             uptake = uptake.filter(

@@ -1368,6 +1368,19 @@ def _validate_noop_exposure_coverage(
     return
 
 
+_EXACT_EXPOSURE_COVERAGE_KINDS = frozenset(
+    {
+        "breakout_dimension",
+        "factor_dimension",
+        "cluster_identity",
+        "unit_covariate",
+        "unit_covariate_level",
+        "cuped_preperiod",
+        "cuped_measure_covariate",
+    }
+)
+
+
 def _verify_extension_relation_sql(
     snapshot: ArtifactSnapshot,
     extension: Any,
@@ -1399,6 +1412,17 @@ def _verify_extension_relation_sql(
     ]
     if outside_count:
         _reject("artifact.extension.invalid", "extension/exposure join-key mismatch")
+    if kind in _EXACT_EXPOSURE_COVERAGE_KINDS:
+        missing = (
+            exposure_relation.select(*key_columns)
+            .distinct()
+            .anti_join(relation.select(*key_columns).distinct(), list(key_columns))
+        )
+        missing_count = _rows(snapshot.execute(missing.aggregate(n_missing=missing.count())))[0][
+            "n_missing"
+        ]
+        if missing_count:
+            _reject("artifact.extension.invalid", "extension/exposure join-key coverage mismatch")
 
 
 def validate_extension(
