@@ -1140,11 +1140,13 @@ def test_v3_trigger_population_count_mismatch_is_refused(
 
     monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
     source = _artifact_source(store, reference, context)
+    triggered = source.triggered_source()
     try:
         with pytest.raises(ArtifactContractError) as raised:
-            source.triggered_counts()
+            triggered.assignment_counts()
         assert raised.value.code == "artifact.extension.invalid"
     finally:
+        triggered.close()
         source.close()
         native.close()
 
@@ -1175,6 +1177,8 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
     )
     original_open_snapshot = store.open_snapshot
 
+    verified_roles: list[str] = []
+
     class OutOfRangeSiteVolumeSnapshot:
         def __init__(self, snapshot: Any) -> None:
             self.snapshot = snapshot
@@ -1183,10 +1187,11 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
             return getattr(self.snapshot, name)
 
         def verify_relation(self, relation: Any, *, expected_role: str) -> Any:
-            table = self.snapshot.verify_relation(relation, expected_role=expected_role)
+            verified_roles.append(expected_role)
+            verified = self.snapshot.verify_relation(relation, expected_role=expected_role)
             if expected_role == "site_volume":
-                return table.mutate(ds=ibis.literal(date(2035, 1, 1)))
-            return table
+                return verified.mutate(ds=verified.ds + ibis.interval(days=1000))
+            return verified
 
     @contextmanager
     def open_snapshot_with_tampering(ref: Any):
@@ -1194,13 +1199,17 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
             yield OutOfRangeSiteVolumeSnapshot(snapshot)
 
     monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
-    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    source = _artifact_source(store, reference, context)
+    triggered = source.triggered_source()
+    metric = next(metric for metric in native.metrics if metric.name == "purchase_count")
     try:
         with pytest.raises(ArtifactContractError) as raised:
-            adopted.sitewide("purchase_count", population="triggered")
-        assert raised.value.code == "artifact.extension.invalid"
+            triggered.sitewide_evidence(metric, population="triggered")
+        assert "out-of-range date/measure coverage" in str(raised.value)
+        assert "site_volume" in verified_roles
     finally:
-        adopted.close()
+        triggered.close()
+        source.close()
         native.close()
 
 
