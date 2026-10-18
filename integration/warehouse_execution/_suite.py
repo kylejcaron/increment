@@ -445,6 +445,33 @@ def _assert_boolean_dimension_labels(
         assert labels == {"true", "false", "__null__"}, (name, labels)
 
 
+def _assert_artifact_extension_integrity(con, manifest, *, clustered: bool) -> None:
+    import ibis
+
+    exposure_locator = manifest.base.exposures.relation
+    exposure_ids = con.table(exposure_locator.name, database=exposure_locator.schema_name).select(
+        "unit_id"
+    )
+    for extension in manifest.extensions:
+        if extension.kind not in ("breakout_dimension", "factor_dimension"):
+            continue
+        locator = extension.relation.relation
+        dimension = con.table(locator.name, database=locator.schema_name)
+        assert int(dimension.count().execute()) == extension.relation.row_count
+        duplicates = dimension.group_by("unit_id").aggregate(n=ibis._.count()).filter(ibis._.n > 1)
+        assert int(duplicates.count().execute()) == 0
+        assert int(dimension.join(exposure_ids, "unit_id", how="anti").count().execute()) == 0
+        assert int(exposure_ids.join(dimension, "unit_id", how="anti").count().execute()) == 0
+        assert int(dimension.filter(ibis._.unit_id == "ghost").count().execute()) == 0
+        if not clustered:
+            missing_count = (
+                dimension.filter((ibis._.unit_id == "c0") & ibis._.value_is_missing)
+                .count()
+                .execute()
+            )
+            assert int(missing_count) == 1
+
+
 def run_artifact_publish_adopt_probe(con, dialect: str, *, clustered: bool = True) -> None:
     """Publish and adopt a unit-day artifact on the live backend.
 
@@ -601,37 +628,9 @@ experiments:
                         database=relation_ref.relation.schema_name,
                     )
                     assert int(stored.count().execute()) == relation_ref.row_count
-                exposure_locator = manifest.base.exposures.relation
-                exposure_ids = {
-                    row["unit_id"]
-                    for row in con.table(
-                        exposure_locator.name, database=exposure_locator.schema_name
-                    )
-                    .select("unit_id")
-                    .to_pyarrow()
-                    .to_pylist()
-                }
                 extension_kinds = {extension.kind for extension in manifest.extensions}
                 assert requested_kinds <= extension_kinds
-                for extension in manifest.extensions:
-                    if extension.kind not in ("breakout_dimension", "factor_dimension"):
-                        continue
-                    locator = extension.relation.relation
-                    dimension_rows = (
-                        con.table(locator.name, database=locator.schema_name)
-                        .select("unit_id", "value_is_missing")
-                        .to_pyarrow()
-                        .to_pylist()
-                    )
-                    keys = [row["unit_id"] for row in dimension_rows]
-                    assert len(keys) == len(set(keys))
-                    assert set(keys) == exposure_ids
-                    assert "ghost" not in keys
-                    if not clustered:
-                        missing = {
-                            row["unit_id"] for row in dimension_rows if row["value_is_missing"]
-                        }
-                        assert "c0" in missing
+                _assert_artifact_extension_integrity(con, manifest, clustered=clustered)
                 _assert_artifact_output_confidential(
                     con, store, ref, context, _MAIN_PROBE_SECRETS, planted_in=yaml
                 )

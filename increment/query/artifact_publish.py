@@ -902,8 +902,11 @@ class ArtifactPublisher:
         field = "level" if request.kind == "unit_covariate_level" else "value"
         value = joined[request.property_name]
         if field == "value":
+            numeric_value = value.cast("float64")
             value = ibis.ifelse(
-                value.isnull() | value.isnan(), ibis.null().cast("float64"), value.cast("float64")
+                value.isnull() | numeric_value.isnan(),
+                ibis.null().cast("float64"),
+                numeric_value,
             )
         table = joined.select(
             experiment_id=joined.experiment_id.cast("string"),

@@ -1166,26 +1166,45 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return rows
 
-    def _validate_trigger_population_counts(
-        self, count_rows: Sequence[Mapping[str, Any]], trigger_rows: Sequence[Mapping[str, Any]]
-    ) -> None:
-        exposures_by_unit = {
-            str(row["unit_id"]): str(row["group_id"]) for row in self._exposure_rows()
+    def _verify_trigger_population(self, *, operation: str) -> ir.Table:
+        extension = self._extension(
+            {"kind": "trigger_population", "trigger_name": self._artifact_experiment.trigger}
+        )
+        relation = self._verified_extension_relation(
+            extension, request=_artifact_request(extension)
+        )
+        after_cutoff = relation.first_trigger_ts > extension.observation_cutoff_ts
+        invalid_count = _artifact_rows(
+            self._snapshot.execute(relation.aggregate(n_invalid=after_cutoff.cast("int64").sum()))
+        )[0]["n_invalid"]
+        if invalid_count:
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger membership contains an event after the pinned observation cutoff",
+                context={
+                    "extension_kind": "trigger_population",
+                    "operation": operation,
+                    "route": "republish from trusted definitions with matching trigger evidence",
+                },
+            )
+        return relation
+
+    def _trigger_group_counts(self, *, operation: str) -> dict[str, int]:
+        membership = self._verify_trigger_population(operation=operation)
+        exposures = self._ensure("exposures")
+        joined = membership.join(
+            exposures.select("experiment_id", "unit_id", "group_id"),
+            ["experiment_id", "unit_id"],
+        )
+        summary = joined.group_by("group_id").aggregate(n_units=joined.unit_id.count())
+        return {
+            str(row["group_id"]): int(row["n_units"])
+            for row in _artifact_rows(self._snapshot.execute(summary))
         }
-        observed: dict[str, int] = {}
-        for row in trigger_rows:
-            group_id = exposures_by_unit.get(str(row["unit_id"]))
-            if group_id is None:
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "trigger membership is not contained in the assigned population",
-                    context={
-                        "extension_kind": "trigger_population",
-                        "operation": "triggered_counts",
-                        "route": "republish from trusted definitions with matching trigger evidence",
-                    },
-                )
-            observed[group_id] = observed.get(group_id, 0) + 1
+
+    def _validate_trigger_population_counts(
+        self, count_rows: Sequence[Mapping[str, Any]], observed: Mapping[str, int]
+    ) -> None:
         declared = {
             str(row["group_id"]): int(row["n_units"])
             for row in count_rows
@@ -1889,7 +1908,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     ) -> None:
         """Validate requested populations against the pinned artifact evidence."""
         if "triggered" in populations and self._population_units is None:
-            self._trigger_population_rows(operation=operation)
+            self._verify_trigger_population(operation=operation)
 
     def breakout_summaries(
         self,
@@ -2074,8 +2093,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
         )
         rows = self._read_extension(extension, request=_artifact_request(extension))
-        trigger_rows = self._trigger_population_rows()
-        self._validate_trigger_population_counts(rows, trigger_rows)
+        observed = self._trigger_group_counts(operation="triggered_counts")
+        self._validate_trigger_population_counts(rows, observed)
         counts = {
             str(row["group_id"]): int(row["n_randomization_units"])
             for row in rows
@@ -2285,11 +2304,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
             membership_cutoff = trigger_extension.observation_cutoff_ts
             trigger_rows = self._trigger_population_rows(operation="sitewide_evidence")
-            self._validate_trigger_population_counts(count_rows, trigger_rows)
             member_ids = frozenset(str(row["unit_id"]) for row in trigger_rows)
-            population_counts = dict(
+            trigger_counts = dict(
                 Counter(group_by_unit[unit] for unit in member_ids if unit in group_by_unit)
             )
+            self._validate_trigger_population_counts(count_rows, trigger_counts)
+            population_counts = trigger_counts
             for group_id in assigned_counts:
                 population_counts.setdefault(group_id, 0)
             # Artifact relation/generation checks bind base and extension relations to

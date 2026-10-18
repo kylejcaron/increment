@@ -498,7 +498,20 @@ def test_previous_writer_relations_refuse_without_warehouse_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(session_module, "_SQL_DIGEST_BACKENDS", frozenset())
-    _con, native, _context, store, ref = _published()
+    con, native, _context, store, ref = _published()
+
+    real_to_pyarrow = con.to_pyarrow
+
+    def guarded_to_pyarrow(table, *args, **kwargs):
+        names = set(table.schema().names) if hasattr(table, "schema") else set()
+        assert not {"unit_id", "ds", "first_exposure_ts"} <= names
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    def unexpected_batch_transfer(*_args, **_kwargs):
+        raise AssertionError("legacy refusal started relation digest transfer")
+
+    monkeypatch.setattr(con, "to_pyarrow", guarded_to_pyarrow)
+    monkeypatch.setattr(con, "to_pyarrow_batches", unexpected_batch_transfer)
     try:
         with pytest.raises(CodedError) as refused:
             with store.open_snapshot(ref):
@@ -509,6 +522,7 @@ def test_previous_writer_relations_refuse_without_warehouse_verification(
         assert "republish from trusted definitions" in str(refused.value.context["route"])
     finally:
         native.close()
+        con.disconnect()
 
 
 @pytest.mark.integration
@@ -784,6 +798,70 @@ def test_non_canonical_stored_rows_refuse() -> None:
     with pytest.raises(ArtifactDigestError) as raised:
         lift_rows(adopted.run(metrics=["purchase_rate"]))
     assert raised.value.code == "artifact.digest.type"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
+    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    forbidden_columns = (
+        {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"},
+        {"unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"},
+        {"experiment_id", "unit_id", "x"},
+        {"experiment_id", "unit_id", "value_is_missing", "dimension_value"},
+    )
+    real_to_pyarrow = con.to_pyarrow
+    real_to_batches = con.to_pyarrow_batches
+    digest_batch_sizes = []
+
+    def guarded_to_pyarrow(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit rows crossed the Python materialization boundary"
+            )
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    def bounded_digest_batches(table, *args, **kwargs):
+        digest_batch_sizes.append(kwargs.get("chunk_size"))
+        return real_to_batches(table, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", guarded_to_pyarrow)
+    monkeypatch.setattr(con, "to_pyarrow_batches", bounded_digest_batches)
+    adopted = None
+    try:
+        requests = _extensions(
+            context, "cuped_preperiod", "assignment_counts", "breakout_dimension"
+        )
+        ref = native.publish_unit_day_artifact(store, extensions=requests)
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        assert rows
+        assert {row.analysis_population for row in rows} == {"assigned"}
+        assert any(row.method == "cuped" for row in rows)
+        assert adopted.run_breakout(metrics=["purchase_rate"], population="assigned")
+        assert digest_batch_sizes == []
+
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+        covariate = next(
+            extension for extension in manifest.extensions if extension.kind == "cuped_preperiod"
+        )
+        relation = covariate.relation.relation
+        con.raw_sql(f'UPDATE "{relation.schema_name}"."{relation.name}" SET x = x + 1.0')
+        adopted.close()
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        with pytest.raises(ArtifactContractError) as raised:
+            adopted.run(metrics=["purchase_rate"])
+        assert raised.value.code == "artifact.snapshot.mixed"
+    finally:
+        if adopted is not None:
+            adopted.close()
+        native.close()
+        con.disconnect()
 
 
 @pytest.mark.integration

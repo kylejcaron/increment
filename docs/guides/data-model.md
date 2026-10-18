@@ -659,7 +659,7 @@ Definitions-backed analysis has two persistence boundaries:
 | Call | What it does |
 |---|---|
 | `analysis.materialize()` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
-| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable format-1 artifact generation through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
+| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-1 context and format-2 relation digests through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
 A refresh keeps `artifact_id` but creates a new `generation_id`, and must use
 the same compiled context as the pinned prior generation. Completeness is only
@@ -706,19 +706,22 @@ publication time, and experiment end are not completeness proofs.
     and semantic role.
 
     The warehouse store persists each relation before hashing the persisted
-    rows. Digesting uses bounded Arrow batches and a disk-backed canonical
-    merge sort, so hashes do not depend on warehouse collation and remain
-    byte-identical to buffered digests. Streaming `RelationDigests.rows_bytes`
-    is `None`; buffered `digest_relation()` still includes the canonical row
-    bytes. These bounds apply to Python digest batches, not total process
-    memory: exposure metadata still uses one row per unit, warehouse query
-    buffers may grow, and `unit_frame()` materializes the requested row-level
-    data.
+    rows. Format-2 relations use the SQL digest codec, whose row processing and
+    result transfer remain warehouse-side; unsupported historical relation
+    formats are refused before unit transfer when the backend cannot verify
+    them. Streaming `RelationDigests.rows_bytes` is `None`; buffered
+    `digest_relation()` still includes the canonical row bytes.
 
-    Adoption verifies a private temporary copy of each relation and keeps
+    Exposure metadata and integrity checks use SQL reductions, joins, and
+    anti-joins rather than per-unit Python collections. Explicit row APIs such
+    as `unit_frame()` still materialize the requested row-level data, and
+    backend-owned query buffers may grow with relation size.
+
+    Adoption verifies each relation against the pinned snapshot and keeps
     reductions warehouse-backed. Later external writes to a published table
     cannot alter that verified copy; closing the read handle removes its
     private tables.
+
 
 ??? info "Recovering from a failed publication"
     If an exception is raised after the manifest is published, the publication
