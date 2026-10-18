@@ -107,6 +107,9 @@ def _normalized_manifest_bytes(manifest: UnitDayArtifactManifest) -> str:
     body = manifest.model_dump(mode="json")
     body["created_at"] = "CREATED_AT"
     body["manifest_sha256"] = "MANIFEST_SHA256"
+    for extension in body["extensions"]:
+        extension["relation"]["digest_format"] = "DIGEST_FORMAT"
+        extension["relation"]["content_sha256"] = "CONTENT_SHA256"
     return canonical_json(body)
 
 
@@ -115,6 +118,9 @@ def _normalized_saved_bytes(payload: str) -> str:
     body = json.loads(payload)
     body["created_at"] = "CREATED_AT"
     body["manifest_sha256"] = "MANIFEST_SHA256"
+    for extension in body["extensions"]:
+        extension["relation"]["digest_format"] = "DIGEST_FORMAT"
+        extension["relation"]["content_sha256"] = "CONTENT_SHA256"
     return canonical_json(body)
 
 
@@ -367,6 +373,7 @@ def test_representative_publication_matches_golden_manifest(
     ref = native.publish_unit_day_artifact(store, extensions=extensions)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+    assert all(extension.relation.digest_format == 2 for extension in manifest.extensions)
     assert _normalized_manifest_bytes(manifest) == _normalized_saved_bytes(
         expected["manifest_bytes"]
     )
@@ -419,33 +426,8 @@ def test_format_two_golden_changes_only_by_the_bound_window_days() -> None:
 
 
 @pytest.mark.slow
-def test_previous_writer_relations_match_the_saved_digests_and_its_context_is_refused(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_previous_manifest_context_is_refused() -> None:
     saved = json.loads(_PUBLICATION_GOLDEN_FORMAT_1.read_text())
-    monkeypatch.setattr(session_module, "uuid", _FixedUUID())
-    # With no roles on format 2, the writer publishes the previous writer's relations.
-    monkeypatch.setattr(session_module, "ARTIFACT_BASE_RELATION_ROLES", ())
-    definitions = _definitions(tmp_path, breakouts=[{"property": "country"}])
-    _con, native, context, store = _native(definitions=definitions)
-    extensions = _extensions(context, "breakout_dimension", "assignment_counts")
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    monkeypatch.undo()
-    with store.open_snapshot(ref) as snapshot:
-        manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    native.close()
-    assert manifest.base.exposures.digest_format == manifest.base.measure_stats.digest_format == 1
-    assert [
-        {
-            "role": role,
-            "schema_sha256": getattr(manifest.base, role).schema_sha256,
-            "content_sha256": getattr(manifest.base, role).content_sha256,
-            "row_count": getattr(manifest.base, role).row_count,
-        }
-        for role in ("exposures", "measure_stats")
-    ] == saved["relation_digests"]
-
-    # The saved manifest embeds a format-1 context, which admission refuses by name.
     old_context = ArtifactContext.model_validate(json.loads(saved["manifest_bytes"])["context"])
     assert old_context.context_format == 1
     with pytest.raises(CodedError) as refused:
@@ -455,30 +437,77 @@ def test_previous_writer_relations_match_the_saved_digests_and_its_context_is_re
     assert refused.value.context["supported"] == 2
 
 
-# Guards the reader from recomputing a stored digest with any codec other than
-# the one its digest_format names: the previous writer's format-1 base
-# relations must verify on a backend that now publishes the fast format.
+@pytest.mark.slow
+def test_format_one_local_codec_matches_saved_previous_writer_relation_digests(
+    tmp_path: Path,
+) -> None:
+    """Keep the explicit historical local codec's format-1 meaning pinned."""
+    import shutil
+    from contextlib import closing
+
+    from increment.query.artifact_digest import digest_relation_stream, stream_canonical_rows
+    from increment.query.schemas import ARTIFACT_RELATION_PRIMARY_KEYS, ARTIFACT_RELATION_SCHEMAS
+
+    saved = json.loads(_PUBLICATION_GOLDEN_FORMAT_1.read_text())
+    con, native, _context, store, ref = _published(
+        definitions=_definitions(tmp_path, breakouts=[{"property": "country"}])
+    )
+    try:
+        observed = []
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+            for role in ("exposures", "measure_stats"):
+                relation_ref = getattr(manifest.base, role)
+                relation = snapshot.verify_relation(relation_ref, expected_role=role)
+                rows, row_count, tmpdir = stream_canonical_rows(
+                    relation,
+                    ARTIFACT_RELATION_SCHEMAS[role],
+                    con,
+                    primary_key=ARTIFACT_RELATION_PRIMARY_KEYS[role],
+                )
+                try:
+                    with closing(rows):
+                        digest = digest_relation_stream(
+                            role,
+                            ARTIFACT_RELATION_SCHEMAS[role],
+                            rows,
+                            primary_key=ARTIFACT_RELATION_PRIMARY_KEYS[role],
+                            row_count=row_count,
+                        )
+                finally:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                observed.append(
+                    {
+                        "role": role,
+                        "schema_sha256": digest.schema_sha256,
+                        "content_sha256": digest.content_sha256,
+                        "row_count": digest.row_count,
+                    }
+                )
+        assert observed == saved["relation_digests"]
+    finally:
+        native.close()
+        con.disconnect()
+
+
+# Legacy relation digests have no warehouse-side verifier and must refuse before
+# a snapshot can transfer relation rows for client-side hashing.
 @pytest.mark.integration
 @pytest.mark.slow
-def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(session_module, "ARTIFACT_BASE_RELATION_ROLES", ())
-    _con, native, context, store, ref = _published()
-    monkeypatch.undo()
-    with store.open_snapshot(ref) as snapshot:
-        manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    assert manifest.base.exposures.digest_format == manifest.base.measure_stats.digest_format == 1
-    from increment.estimation.engine import Method
-
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    unadjusted = Method(name="unadjusted")
+def test_previous_writer_relations_refuse_without_warehouse_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "_SQL_DIGEST_BACKENDS", frozenset())
+    _con, native, _context, store, ref = _published()
     try:
-        adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
-        native_rows = lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))
-        assert [row.require_lift().value for row in adopted_rows] == pytest.approx(
-            [row.require_lift().value for row in native_rows]
-        )
+        with pytest.raises(CodedError) as refused:
+            with store.open_snapshot(ref):
+                pass
+        assert refused.value.code == "query.session.warehouse_artifact.verification_unavailable"
+        assert str(refused.value.context["relation"]).endswith("_exposures")
+        assert refused.value.context["digest_format"] == 3
+        assert "republish from trusted definitions" in str(refused.value.context["route"])
     finally:
-        adopted.close()
         native.close()
 
 

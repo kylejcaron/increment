@@ -40,7 +40,6 @@ from increment.query.artifact_contract import (
 )
 from increment.query.artifact_digest import (
     canonical_json,
-    content_sha256,
     extension_source_provenance_sha256,
     schema_sha256,
 )
@@ -1359,14 +1358,6 @@ def validate_extension(
     handler.validate_result(ext, result)
     if relation.row_count != len(result):
         _reject("artifact.extension.invalid", "extension relation row_count mismatch")
-    expected_content = content_sha256(
-        kind,
-        ARTIFACT_RELATION_SCHEMAS[kind],
-        result,
-        primary_key=ARTIFACT_RELATION_PRIMARY_KEYS[kind],
-    )
-    if relation.content_sha256 != expected_content:
-        _reject("artifact.extension.invalid", "extension relation content digest mismatch")
     if exposure_keys is not None:
         handler.validate_exposure(result, exposure_keys)
     return result
