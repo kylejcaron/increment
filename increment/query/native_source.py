@@ -290,6 +290,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._mixed_assignment_warned = False
         self._union_horizon_cache: ir.Scalar | None = None
         self._union_horizon_metric_cache: dict[tuple[Metric, ...], ir.Scalar] = {}
+        self._fixed_event_horizon: dt.date | None = None
+        self._has_fixed_event_horizon_override = False
         self._panel_cache: dict[
             tuple[str, Metric] | tuple[str, Metric, tuple[Metric, ...]],
             tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar],
@@ -761,13 +763,41 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         segment or dimensioned readout of the pinned source reads the same execution snapshot
         as the headline instead of failing on, or silently re-reading, an unpinned stream.
         """
+        fixed_horizon = None
+        use_shared_horizon = (
+            bool(metrics)
+            and self._experiment.observation_horizon is None
+            and self._session.source_snapshot_evidence is None
+        )
+        if use_shared_horizon:
+            horizon = self._union_event_horizon()
+            horizon_row = self._session.fetch_arrow(
+                ibis.literal(1).name("_one").as_table().select(edge=horizon)
+            ).to_pylist()[0]
+            fixed_horizon = horizon_row["edge"]
         with self._pinned_source_execution(
             metrics=metrics,
             uptake_facts=uptake_facts,
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
             configs=configs,
         ) as pinned:
-            yield pinned if population == "assigned" else pinned.triggered_source()
+            previous_horizon = pinned._fixed_event_horizon
+            previous_override = pinned._has_fixed_event_horizon_override
+            if use_shared_horizon:
+                pinned._fixed_event_horizon = fixed_horizon
+                pinned._has_fixed_event_horizon_override = True
+                pinned._union_horizon_cache = None
+                pinned._union_horizon_metric_cache = {}
+                pinned._panel_cache = {}
+            try:
+                yield pinned if population == "assigned" else pinned.triggered_source()
+            finally:
+                if use_shared_horizon:
+                    pinned._fixed_event_horizon = previous_horizon
+                    pinned._has_fixed_event_horizon_override = previous_override
+                    pinned._union_horizon_cache = None
+                    pinned._union_horizon_metric_cache = {}
+                    pinned._panel_cache = {}
 
     def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
         """A sibling source over the declared metrics plus *metrics*, in this session.
@@ -824,6 +854,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         selected streams must still extend the shared spine, or late events
         silently disappear from daily/as-of reductions.
         """
+        if self._has_fixed_event_horizon_override:
+            if self._fixed_event_horizon is None:
+                return cast("ir.Scalar", ibis.null().cast("date"))
+            return ibis.literal(self._fixed_event_horizon)
         if metrics is None:
             horizon_metrics = self._horizon_metrics
         else:

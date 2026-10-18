@@ -717,22 +717,14 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
         con.disconnect()
 
 
-def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
+def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path):
     from datetime import datetime
 
     import yaml
 
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
-    path, con, _methods, _tenure, groups, revenue = _scalar_native_case(tmp_path)
-    orthogonal_x = {
-        "u0": -49.0,
-        "u1": 92.0,
-        "u2": -43.0,
-        "u10": 179.0,
-        "u11": -100.0,
-        "u12": -79.0,
-    }
+    path, con, methods, _tenure, groups, _revenue = _scalar_native_case(tmp_path)
     con.raw_sql(
         "UPDATE cov_events SET segment = 'qualifying', "
         "tenure = 10 + CAST(substr(user_id, 2) AS INTEGER) "
@@ -743,9 +735,24 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
         "WHERE event = 'purchase' AND ts > TIMESTAMP '2025-08-10'"
     )
     con.raw_sql(
-        "UPDATE cov_events SET ts = TIMESTAMP '2025-08-10' "
+        "UPDATE cov_events SET ts = TIMESTAMP '2025-08-15' "
         "WHERE event = 'exposure' AND experiment_id IS NOT NULL "
         "AND user_id IN ('u9', 'u19')"
+    )
+    con.raw_sql(
+        "UPDATE cov_events SET revenue = CASE user_id WHEN 'u9' THEN 50.0 "
+        "WHEN 'u19' THEN 500.0 END WHERE event = 'purchase' "
+        "AND ts < TIMESTAMP '2025-08-10' AND user_id IN ('u9', 'u19')"
+    )
+    con.raw_sql(
+        "INSERT INTO cov_events (user_id, ts, event, experiment_id, group_id, revenue, "
+        "tenure, history_b, segment) VALUES ('outside_revenue', TIMESTAMP '2025-08-16', "
+        "'purchase', NULL, NULL, 0.0, 0.0, 0.0, 'qualifying')"
+    )
+    con.raw_sql(
+        "INSERT INTO cov_events (user_id, ts, event, experiment_id, group_id, revenue, "
+        "tenure, history_b, segment) VALUES ('freshness_only', TIMESTAMP '2025-08-30', "
+        "'purchase', NULL, NULL, 0.0, 0.0, 0.0, 'freshness_only')"
     )
     con.raw_sql(
         "UPDATE cov_events SET tenure = CASE user_id "
@@ -768,7 +775,7 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
             + [
                 {
                     "user_id": "outside_the_cohort",
-                    "ts": datetime(2025, 8, 20),
+                    "ts": datetime(2025, 8, 30),
                     "event": "observed",
                     "value": 1.0,
                 }
@@ -802,50 +809,41 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
     definitions["experiments"][0]["plan"]["primary"]["sensitivity_methods"] = []
     definitions["experiments"][0]["plan"]["secondaries"] = ["coverage"]
     path.write_text(yaml.safe_dump(definitions))
-    frame = Analysis.from_unit_summary(
-        pa.Table.from_pylist(
-            [
-                {
-                    "unit": unit,
-                    "arm": groups[unit],
-                    "revenue": 0.0 if unit in {"u9", "u19"} else revenue[unit],
-                    "history_a": orthogonal_x.get(unit, 0.0),
-                }
-                for unit in groups
-            ]
-        ),
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics=[MetricSpec(name="revenue", decision_method=_scalar("scalar_a", "history_a"))],
-    )
-    (expected,) = frame.run()
     try:
         with Analysis.from_definitions("cov_test", path, con) as native:
-            selected = ["revenue", "coverage"]
-            unadjusted = {
+            selected = ["revenue"]
+            baseline = next(
+                iter(
+                    native.run(
+                        metrics=selected,
+                        decision_method=Method.unadjusted(),
+                        sensitivity_methods=(),
+                    )
+                )
+            )
+            full_run = {
                 row.metric: row
                 for row in native.run(
-                    metrics=selected,
                     decision_method=Method.unadjusted(),
                     sensitivity_methods=(),
                 )
-            }["revenue"]
-            actual = {row.metric: row for row in native.run(metrics=selected)}["revenue"]
-        assert isinstance(actual, LiftEstimate) and isinstance(expected, LiftEstimate)
-        assert isinstance(unadjusted, LiftEstimate)
-        assert actual.require_lift().value == pytest.approx(
-            expected.require_lift().value, rel=1e-10
-        )
-        assert actual.require_lift().log_se == pytest.approx(
-            expected.require_lift().log_se, rel=1e-10
-        )
-        assert actual.require_lift().value == pytest.approx(
-            unadjusted.require_lift().value, rel=1e-10
-        )
-        assert actual.require_lift().log_se == pytest.approx(
-            unadjusted.require_lift().log_se, rel=1e-10
-        )
+            }
+            with_companion = next(
+                iter(
+                    native.run(
+                        metrics=selected,
+                        decision_method=Method.unadjusted(),
+                        sensitivity_methods=(methods[0],),
+                    )
+                )
+            )
+        assert isinstance(baseline, LiftEstimate)
+        assert isinstance(with_companion, LiftEstimate)
+        assert isinstance(full_run["revenue"], LiftEstimate)
+        for row in (with_companion, full_run["revenue"]):
+            assert baseline.require_lift().value == pytest.approx(row.require_lift().value)
+            assert baseline.require_lift().log_se == pytest.approx(row.require_lift().log_se)
+            assert baseline.sampling_available is row.sampling_available is True
     finally:
         con.disconnect()
 

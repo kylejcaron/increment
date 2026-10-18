@@ -1356,6 +1356,33 @@ class TestRunBreakoutBHCorrection:
         assert all(r.role == "exploratory" for r in real)
         assert all(r.discovery is not None for r in real)
 
+    def test_bh_stamps_zero_variance_nonrejection_as_family_member(self):
+        rows = [
+            _make_arm_row(500, 10.0, 0.0, country="US", group_id="control"),
+            _make_arm_row(500, 11.0, 0.0, country="US", group_id="treatment"),
+            _make_arm_row(500, 10.0, 4.0, country="CA", group_id="control"),
+            _make_arm_row(500, 12.0, 4.0, country="CA", group_id="treatment"),
+        ]
+
+        with pytest.warns(IncrementWarning):
+            result = run_breakout(
+                summary=pd.DataFrame(rows),
+                metrics=[_mean_metric()],
+                control_group="control",
+                dimension="country",
+                correction="bh",
+                q=0.05,
+            )
+
+        zero_variance = next(row for row in result if row.dimension_value == "US")
+        selected = next(row for row in result if row.dimension_value == "CA")
+        assert zero_variance.excluded == "zero_variance"
+        assert zero_variance.lift is None
+        assert zero_variance.discovery is False
+        assert zero_variance.family_threshold == pytest.approx(0.025)
+        assert selected.discovery is True
+        assert selected.family_threshold == zero_variance.family_threshold
+
 
 class TestRunBreakoutBHRoutesEachCellAtItsOwnLevel:
     """A flat BH family reads each cell's p-value at a threshold as small as ``q / m`` (``m``
