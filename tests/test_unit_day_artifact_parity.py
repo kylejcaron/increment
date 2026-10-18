@@ -1114,24 +1114,93 @@ def test_v3_trigger_population_count_mismatch_is_refused(
     reference = native.publish_unit_day_artifact(
         store, extensions=_extensions(context, "assignment_counts", "trigger_population")
     )
+    original_open_snapshot = store.open_snapshot
+
+    class TamperedAssignmentSnapshot:
+        def __init__(self, snapshot: Any) -> None:
+            self.snapshot = snapshot
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.snapshot, name)
+
+        def verify_relation(self, relation: Any, *, expected_role: str) -> Any:
+            table = self.snapshot.verify_relation(relation, expected_role=expected_role)
+            if expected_role == "assignment_counts":
+                return table.mutate(
+                    n_units=ibis.ifelse(
+                        table.population == "assigned", table.n_units + 1, table.n_units
+                    )
+                )
+            return table
+
+    @contextmanager
+    def open_snapshot_with_tampering(reference: Any):
+        with original_open_snapshot(reference) as snapshot:
+            yield TamperedAssignmentSnapshot(snapshot)
+
+    monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
     source = _artifact_source(store, reference, context)
     try:
-        original_read = source._read_extension
-
-        def corrupted_read(extension: Any, *, request: Any) -> list[dict[str, Any]]:
-            rows = original_read(extension, request=request)
-            if extension.kind == "assignment_counts":
-                for row in rows:
-                    if row["population"] == "triggered":
-                        row["n_units"] += 1
-            return rows
-
-        monkeypatch.setattr(source, "_read_extension", corrupted_read)
         with pytest.raises(ArtifactContractError) as raised:
             source.triggered_counts()
         assert raised.value.code == "artifact.extension.invalid"
     finally:
         source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.slow
+def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definitions = _definitions(
+        tmp_path, trigger="session_start", site_volume_only=True, sitewide_count=True
+    )
+    _connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
+    reference = native.publish_unit_day_artifact(
+        store,
+        extensions=_extensions(
+            context,
+            "site_volume",
+            "trigger_population",
+            "trigger_measure_stats",
+            "assignment_counts",
+        ),
+    )
+    original_open_snapshot = store.open_snapshot
+
+    class OutOfRangeSiteVolumeSnapshot:
+        def __init__(self, snapshot: Any) -> None:
+            self.snapshot = snapshot
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.snapshot, name)
+
+        def verify_relation(self, relation: Any, *, expected_role: str) -> Any:
+            table = self.snapshot.verify_relation(relation, expected_role=expected_role)
+            if expected_role == "site_volume":
+                return table.mutate(ds=ibis.literal(date(2035, 1, 1)))
+            return table
+
+    @contextmanager
+    def open_snapshot_with_tampering(ref: Any):
+        with original_open_snapshot(ref) as snapshot:
+            yield OutOfRangeSiteVolumeSnapshot(snapshot)
+
+    monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
+    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    try:
+        with pytest.raises(ArtifactContractError) as raised:
+            adopted.sitewide("purchase_count", population="triggered")
+        assert raised.value.code == "artifact.extension.invalid"
+    finally:
+        adopted.close()
         native.close()
 
 
