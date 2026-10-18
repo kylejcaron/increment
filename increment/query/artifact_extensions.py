@@ -489,10 +489,7 @@ def _source_rows(
 
 def _wire_table(value: Any, kind: str) -> tuple[Any, list[Mapping[str, Any]]]:
     if hasattr(value, "schema") and hasattr(value, "execute"):
-        try:
-            return value, _rows(value.to_pyarrow().to_pylist())
-        except (AttributeError, TypeError):
-            return value, _rows(value.execute())
+        return value, []
     rows = _rows(value)
     type_names = {
         "STRING": "string",
@@ -507,11 +504,90 @@ def _wire_table(value: Any, kind: str) -> tuple[Any, list[Mapping[str, Any]]]:
     )
     if rows:
         return ibis.memtable(rows, schema=schema), rows
-    # ibis<=10.x drops every declared column when a memtable is built from
-    # an empty Python list -- `schema` is accepted at expression build time
-    # but ignored once materialised (ibis-project/ibis#10940, fixed in
-    # ibis 11). An already-typed empty pyarrow table keeps the columns.
     return ibis.memtable(schema.to_pyarrow().empty_table(), schema=schema), rows
+
+
+def _validate_relation_table(
+    table: Any,
+    kind: str,
+    *,
+    experiment_id: str,
+    execute: Callable[[Any], Any],
+) -> int:
+    fields = ARTIFACT_RELATION_SCHEMAS[kind]
+    expected = tuple(name for name, _tag, _nullable in fields)
+    if tuple(table.schema().names) != expected:
+        _reject(
+            "artifact.extension.invalid",
+            "extension relation schema mismatch",
+            kind=kind,
+            fields=tuple(table.schema().names),
+        )
+    checks: dict[str, Any] = {"n_rows": table.count()}
+    for name, tag, nullable in fields:
+        column = table[name]
+        if not nullable:
+            checks[f"null_{name}"] = column.isnull().any()
+        if tag == "FLOAT64":
+            bad_float = column.isnan() | column.isinf()
+            if not nullable:
+                bad_float = bad_float | column.isnull()
+            checks[f"bad_float_{name}"] = bad_float.any()
+    if "experiment_id" in expected:
+        checks["bad_experiment_id"] = (table.experiment_id != experiment_id).any()
+    if {"n_events", "sum_value", "min_value", "max_value"} <= set(expected):
+        stats_valid = _aggregate_sum_within_extrema(
+            table.sum_value,
+            table.n_events,
+            table.min_value,
+            table.max_value,
+            choose=ibis.ifelse,
+        )
+        checks["bad_stats"] = (~stats_valid).any()
+    if "population" in expected:
+        checks["bad_population"] = (~table.population.isin(["assigned", "triggered"])).any()
+    if "n_events" in expected and kind in {"site_volume", "trigger_measure_stats"}:
+        checks["bad_event_count"] = (
+            table.n_events.isnull() | (table.n_events < 1) | (table.n_events > 2**53)
+        ).any()
+    if kind == "encouragement_uptake":
+        checks["bad_uptake_timestamp"] = (table.uptake != table.first_uptake_ts.notnull()).any()
+    query = table.aggregate(**checks)
+    distinct_keys = table.select(*ARTIFACT_RELATION_PRIMARY_KEYS[kind]).distinct()
+    unique_count = distinct_keys.aggregate(n_distinct=distinct_keys.count())
+    row = _rows(execute(query.cross_join(unique_count)))[0]
+    if row["n_rows"] != row["n_distinct"]:
+        _reject("artifact.extension.invalid", "extension relation contains duplicate primary key")
+    for name, tag, nullable in fields:
+        if not nullable and row[f"null_{name}"]:
+            _reject(
+                "artifact.extension.invalid",
+                "extension relation contains NULL in a non-nullable field",
+                kind=kind,
+                field=name,
+            )
+        if tag == "FLOAT64" and row[f"bad_float_{name}"]:
+            _reject(
+                "artifact.extension.invalid",
+                "extension relation physical domain mismatch",
+                kind=kind,
+                field=name,
+            )
+    if row.get("bad_experiment_id"):
+        _reject(
+            "artifact.extension.invalid",
+            "extension foreign key experiment_id mismatch",
+            kind=kind,
+        )
+    for name, message in (
+        ("bad_stats", "extension aggregate bounds are invalid"),
+        ("bad_population", "assignment population is outside closed domain"),
+        ("bad_event_count", "event count domain is invalid"),
+        ("bad_uptake_timestamp", "uptake flag and first timestamp disagree"),
+    ):
+        if row.get(name):
+            _reject("artifact.extension.invalid", message, kind=kind)
+    return int(row["n_rows"])
 
 
 def _catalog_entry(context: Any, request: Any) -> ArtifactExtensionCatalogEntry:
@@ -1069,10 +1145,11 @@ def encode_extension(
     publication: ArtifactPublication,
     *,
     context: Any,
-    rows: Sequence[Mapping[str, Any]] | None = None,
+    rows: Any | None = None,
     definition: Mapping[str, Any] | None = None,
     source_recipe: Mapping[str, Any] | None = None,
     experiment_id: str | None = None,
+    execute: Callable[[Any], Any] | None = None,
 ) -> ArtifactExtensionRef:
     """Encode one exact catalog request and write it via ``publication``."""
     selected = cast(
@@ -1108,9 +1185,20 @@ def encode_extension(
         )
     )
     raw_evidence, audit_counts = handler.prepare_evidence(raw_evidence)
+    table_backed = hasattr(raw_evidence, "schema") and hasattr(raw_evidence, "execute")
     table, evidence = _wire_table(raw_evidence, kind)
-    _validate_rows(kind, evidence, experiment_id=trusted_experiment_id)
-    handler.validate_coverage(evidence, cast(Any, entry.request))
+    if table_backed:
+        if execute is None:
+            _reject("artifact.extension.invalid", "relation publication requires a SQL executor")
+        _validate_relation_table(
+            table,
+            kind,
+            experiment_id=cast(str, trusted_experiment_id),
+            execute=cast(Callable[[Any], Any], execute),
+        )
+    else:
+        _validate_rows(kind, evidence, experiment_id=trusted_experiment_id)
+        handler.validate_coverage(evidence, cast(Any, entry.request))
     relation = publication.write_relation(cast(Any, handler.role), table)
     if not isinstance(relation, ArtifactRelationRef):
         relation = ArtifactRelationRef.model_validate(relation)
@@ -1280,6 +1368,39 @@ def _validate_noop_exposure_coverage(
     return
 
 
+def _verify_extension_relation_sql(
+    snapshot: ArtifactSnapshot,
+    extension: Any,
+    relation: Any,
+    kind: str,
+    experiment_id: str | None,
+    exposure_relation: Any | None,
+) -> None:
+    if experiment_id is not None:
+        row_count = _validate_relation_table(
+            relation, kind, experiment_id=experiment_id, execute=snapshot.execute
+        )
+        if row_count != extension.relation.row_count:
+            _reject("artifact.extension.invalid", "extension relation row_count mismatch")
+    if exposure_relation is None:
+        return
+    key_columns = tuple(
+        name
+        for name in ARTIFACT_RELATION_PRIMARY_KEYS[kind]
+        if name in ARTIFACT_RELATION_PRIMARY_KEYS["exposures"]
+    )
+    if not key_columns:
+        return
+    outside = relation.anti_join(
+        exposure_relation.select(*key_columns).distinct(), list(key_columns)
+    )
+    outside_count = _rows(snapshot.execute(outside.aggregate(n_outside=outside.count())))[0][
+        "n_outside"
+    ]
+    if outside_count:
+        _reject("artifact.extension.invalid", "extension/exposure join-key mismatch")
+
+
 def validate_extension(
     snapshot: ArtifactSnapshot,
     extension: ArtifactExtensionRef | None,
@@ -1288,7 +1409,9 @@ def validate_extension(
     context: Any | None = None,
     experiment_id: str | None = None,
     exposure_keys: Iterable[tuple[Any, ...]] | None = None,
-) -> list[Mapping[str, Any]]:
+    exposure_relation: Any | None = None,
+    _relation_only: bool = False,
+) -> Any:
     """Verify one extension relation and return rows from the same snapshot."""
     if extension is None:
         _reject("artifact.extension.missing", "requested artifact extension is absent")
@@ -1352,6 +1475,17 @@ def validate_extension(
             "artifact.extension.invalid", "extension identity does not match selected catalog entry"
         )
     raw = _validate_relation_ref(snapshot, ext, expected_role=handler.role)
+    if hasattr(raw, "schema") and hasattr(raw, "execute"):
+        _verify_extension_relation_sql(snapshot, ext, raw, kind, experiment_id, exposure_relation)
+    elif _relation_only:
+        _reject("artifact.extension.invalid", "relation-only verification requires a SQL relation")
+    if _relation_only:
+        if exposure_keys is not None and exposure_relation is None:
+            _reject(
+                "artifact.extension.invalid",
+                "relation verification requires an exposure relation",
+            )
+        return raw
     result = _rows(snapshot.execute(raw))
     _validate_rows(kind, result, experiment_id=experiment_id)
     relation = ext.relation
@@ -1361,6 +1495,27 @@ def validate_extension(
     if exposure_keys is not None:
         handler.validate_exposure(result, exposure_keys)
     return result
+
+
+def verify_extension_relation(
+    snapshot: ArtifactSnapshot,
+    extension: ArtifactExtensionRef,
+    *,
+    request: ArtifactExtensionRequest | Mapping[str, Any] | None = None,
+    context: Any | None = None,
+    experiment_id: str,
+    exposure_relation: Any,
+) -> Any:
+    """Verify extension integrity in SQL and return its pinned relation."""
+    return validate_extension(
+        snapshot,
+        extension,
+        request=request,
+        context=context,
+        experiment_id=experiment_id,
+        exposure_relation=exposure_relation,
+        _relation_only=True,
+    )
 
 
 def _request_cuped(extension: Any) -> dict[str, Any]:
@@ -1394,6 +1549,7 @@ def read_site_volume_extension(
     context: Any | None = None,
     experiment_id: str | None = None,
     exposure_keys: Iterable[tuple[Any, ...]] | None = None,
+    exposure_relation: Any | None = None,
 ) -> list[Mapping[str, Any]]:
     """Read site volume, densifying a genuinely empty complete relation to zero."""
     if extension is not None and extension.freshness.loaded_through < extension.last_ds:
@@ -1407,6 +1563,7 @@ def read_site_volume_extension(
         context=context,
         experiment_id=experiment_id,
         exposure_keys=exposure_keys,
+        exposure_relation=exposure_relation,
     )
     assert extension is not None
     if rows:

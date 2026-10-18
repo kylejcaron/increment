@@ -44,7 +44,11 @@ from increment.query.artifact_contract import (
     open_trusted_manifest_snapshot,
     unit_day_artifact_extension_catalog,
 )
-from increment.query.artifact_extensions import read_extension, read_unit_covariate
+from increment.query.artifact_extensions import (
+    read_extension,
+    read_unit_covariate,
+    verify_extension_relation,
+)
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
@@ -1104,7 +1108,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         self, extension: Any, *, request: Mapping[str, Any] | None = None
     ) -> list[Mapping[str, Any]]:
         exposures = self._ensure("exposures")
-        exposure_rows = _artifact_rows(self._snapshot.execute(exposures))
         result = list(
             read_extension(
                 self._snapshot,
@@ -1112,7 +1115,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 request=request,
                 context=self._manifest.context,
                 experiment_id=self._manifest.experiment_id,
-                exposure_keys={(row["experiment_id"], row["unit_id"]) for row in exposure_rows},
+                exposure_relation=exposures,
             )
         )
         if extension.kind == "trigger_measure_stats" and self._population_units is not None:
@@ -1128,6 +1131,21 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         }:
             result = [row for row in result if str(row.get("unit_id")) in self._population_units]
         return result
+
+    def _verified_extension_relation(
+        self, extension: Any, *, request: Mapping[str, Any] | None = None
+    ) -> ir.Table:
+        return cast(
+            ir.Table,
+            verify_extension_relation(
+                self._snapshot,
+                extension,
+                request=request,
+                context=self._manifest.context,
+                experiment_id=self._manifest.experiment_id,
+                exposure_relation=self._ensure("exposures"),
+            ),
+        )
 
     def _trigger_population_rows(
         self, *, operation: str = "triggered_counts"
@@ -1186,20 +1204,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
 
     def _dimension_table(self, extension: Any, request: Mapping[str, Any]) -> Any:
-        rows = self._read_extension(extension, request=request)
+        relation = self._verified_extension_relation(extension, request=request)
         kind = extension.kind
         value_field = "factor_value" if kind == "factor_dimension" else "dimension_value"
         name = request["property_name"]
-        return ibis.memtable(
-            [
-                {
-                    "unit_id": row["unit_id"],
-                    name: None if row.get("value_is_missing") else row[value_field],
-                }
-                for row in rows
-            ],
-            schema={"unit_id": "string", name: "string"},
-        )
+        value = ibis.ifelse(
+            relation.value_is_missing, ibis.null().cast("string"), relation[value_field]
+        ).name(name)
+        return relation.select("unit_id", value)
 
     def _cluster_table(self) -> ir.Table | None:
         """Resolve declared cluster identities for total-grain reductions."""
@@ -1208,31 +1220,16 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         cluster_extension = self._extension(
             {"kind": "cluster_identity", "cluster_name": self.context.cluster}
         )
-        cluster_rows = self._read_extension(
+        relation = self._verified_extension_relation(
             cluster_extension, request=_artifact_request(cluster_extension)
         )
-        return ibis.memtable(
-            [
-                {"unit_id": row["unit_id"], self.context.cluster: row["cluster_id"]}
-                for row in cluster_rows
-            ],
-            schema={"unit_id": "string", self.context.cluster: "string"},
-        )
+        return relation.select("unit_id", relation.cluster_id.name(self.context.cluster))
 
     def _cuped_pre_stats(self, metric: Metric) -> Any:
         """Resolve *metric*'s `cuped_preperiod` extension into a covariate table."""
         cuped = self._extension({"kind": "cuped_preperiod", "metric_name": metric.name})
-        pre_rows = self._read_extension(cuped, request=_artifact_request(cuped))
-        return self._covariate_table(
-            [
-                {
-                    "experiment_id": row["experiment_id"],
-                    "unit_id": row["unit_id"],
-                    "sum_value": row["x"],
-                }
-                for row in pre_rows
-            ]
-        )
+        relation = self._verified_extension_relation(cuped, request=_artifact_request(cuped))
+        return relation.select("experiment_id", "unit_id", sum_value=relation.x)
 
     def _preflight_cluster_grain(self, grain: Grain, *, operation: str) -> None:
         if self.context.cluster is not None and grain != "total":

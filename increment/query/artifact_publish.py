@@ -5,14 +5,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import math
-import warnings
-from contextlib import ExitStack, closing
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import ibis
 
+from increment.errors import CapabilityError
 from increment.errors import refuse as _refuse
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
@@ -21,11 +20,12 @@ from increment.query.artifact_contract import (
     ArtifactContractError,
     _measure_recipe_key,
     _request_key,
+    _with_sum_within_extrema_sql,
     compile_unit_day_artifact_context,
     open_trusted_snapshot,
     unit_day_artifact_extension_catalog,
 )
-from increment.query.artifact_digest import _DIGEST_BATCH_ROWS, canonical_json, manifest_sha256
+from increment.query.artifact_digest import canonical_json, manifest_sha256
 from increment.query.builders import (
     _local_date,
     _utc_timestamp_literal,
@@ -37,7 +37,6 @@ from increment.query.builders import (
     resolved_measure_key,
     union_event_horizon,
     unit_day_stats,
-    validate_unit_day_aggregate_rows,
 )
 from increment.query.fact_resolution import _find_fact_source, _resolve_value_column
 from increment.query.schemas import ARTIFACT_RELATION_SCHEMAS
@@ -111,6 +110,12 @@ def _relation_table(rows: list[dict[str, object]], role: str) -> ir.Table:
     return ibis.memtable(schema.to_pyarrow().empty_table(), schema=schema)
 
 
+def _extension_table(rows: list[dict[str, object]] | ir.Table, role: str) -> ir.Table:
+    if hasattr(rows, "schema") and hasattr(rows, "execute"):
+        return cast(Any, rows)
+    return _relation_table(cast(list[dict[str, object]], rows), role)
+
+
 @dataclass(frozen=True, slots=True)
 class _PublicationExtensionSpec:
     entry: Any
@@ -165,7 +170,7 @@ def _record_snapshot_edges(
 @dataclass(frozen=True, slots=True)
 class _PublicationAssembly:
     exposures: ir.Table
-    exposure_rows: list[dict[str, object]]
+    exposure_relation: ir.Table
     stats: ir.Table
     freshness: dict[str, dt.date]
     event_horizons: dict[str, dt.date | None]
@@ -455,38 +460,42 @@ class ArtifactPublisher:
                 ],
             )
             extension_specs = publisher._assemble_extension_specs(
-                context, requested, assembly.exposures, assembly.exposure_rows
+                context, requested, assembly.exposures
             )
             return publisher._publish_artifact(
                 store, context, assembly, extension_specs, pinned, refresh_of=refresh_of
             )
 
-    def _validate_stats_batches(self, stats: ir.Table) -> dt.date | None:
-        last_ds = None
-        arrow_schema = stats.schema().to_pyarrow()
-        with (
-            warnings.catch_warnings(),
-            closing(
-                self._con.to_pyarrow_batches(
-                    stats.order_by(["unit_id", "ds"]), chunk_size=_DIGEST_BATCH_ROWS
-                )
-            ) as batches,
-        ):
-            warnings.filterwarnings(
-                "ignore",
-                message=r"fetch_record_batch\(\) is deprecated.*",
-                category=DeprecationWarning,
-                module=r"ibis\.backends\.duckdb",
+    def _validate_stats_relation(self, stats: ir.Table) -> dt.date | None:
+        validated = _with_sum_within_extrema_sql(stats, "_sum_within_extrema")
+        invalid = (
+            validated.n_events.isnull()
+            | (validated.n_events < 1)
+            | (validated.n_events > 2**53)
+            | validated.ds.isnull()
+            | validated.sum_value.isnull()
+            | validated.sum_value.isnan()
+            | validated.sum_value.isinf()
+            | validated.min_value.isnull()
+            | validated.min_value.isnan()
+            | validated.min_value.isinf()
+            | validated.max_value.isnull()
+            | validated.max_value.isnan()
+            | validated.max_value.isinf()
+            | ~validated._sum_within_extrema
+        )
+        summary = validated.aggregate(
+            last_ds=validated.ds.max(),
+            invalid_count=validated.count(where=invalid),
+        )
+        result = self._con.to_pyarrow(summary).to_pylist()[0]
+        if result["invalid_count"]:
+            raise CapabilityError(
+                "unit-day aggregate statistics are impossible",
+                code="artifact.aggregate.impossible",
+                context={"invalid_rows": result["invalid_count"]},
             )
-            for batch in batches:
-                for start in range(0, batch.num_rows, _DIGEST_BATCH_ROWS):
-                    rows = batch.slice(start, _DIGEST_BATCH_ROWS).cast(arrow_schema).to_pylist()
-                    validate_unit_day_aggregate_rows(rows)
-                    for row in rows:
-                        if last_ds is None or row["ds"] > last_ds:
-                            last_ds = row["ds"]
-                    del rows
-        return last_ds
+        return result["last_ds"]
 
     def _relevant_events(
         self, events: ir.Table, exposures: ir.Table, *, site_volume: bool = False
@@ -618,29 +627,25 @@ class ArtifactPublisher:
         exposures = materializations.enter_context(self._con._cached_table(exposures))
         if self._experiment.cluster is not None:
             self._validate_cluster_labels(exposures, self._experiment.cluster)
-        exposure_rows = [
-            {
-                "experiment_id": str(row["experiment_id"]),
-                "unit_id": str(row["unit_id"]),
-                "group_id": str(row["group_id"]),
-                "first_exposure_ts": (
-                    row["first_exposure_ts"].replace(tzinfo=dt.UTC)
-                    if isinstance(row["first_exposure_ts"], dt.datetime)
-                    and row["first_exposure_ts"].tzinfo is None
-                    else row["first_exposure_ts"]
-                ),
-                "first_exposure_date": row["first_exposure_date"],
-            }
-            # Preserve the local date and elapsed-window certification at the
-            # artifact's UTC-microsecond wire scale; SQL stats retain source precision.
-            for row in self._con.to_pyarrow(
-                exposures.mutate(
-                    first_exposure_ts=_wire_uptake_timestamp(
-                        exposures.first_exposure_ts, self._experiment
-                    )
-                )
-            ).to_pylist()
-        ]
+        # Preserve the local date and elapsed-window certification at the
+        # artifact's UTC-microsecond wire scale; keep all unit rows relational.
+        exposure_relation = exposures.select(
+            experiment_id=exposures.experiment_id.cast("string"),
+            unit_id=exposures.unit_id.cast("string"),
+            group_id=exposures.group_id.cast("string"),
+            first_exposure_ts=_wire_uptake_timestamp(
+                exposures.first_exposure_ts, self._experiment
+            ).cast("timestamp('UTC')"),
+            first_exposure_date=exposures.first_exposure_date,
+        )
+        exposure_bounds = self._con.to_pyarrow(
+            exposures.aggregate(
+                first_ds=exposures.first_exposure_date.min(),
+                last_ds=exposures.first_exposure_date.max(),
+            )
+        ).to_pylist()[0]
+        first_ds = exposure_bounds["first_ds"] or dt.date.max
+        last_exposure_ds = exposure_bounds["last_ds"] or first_ds
         measure_specs: dict[str, tuple[Any, Metric, str | None, str, tuple[Any, ...]]] = {}
         physical_specs: dict[tuple[Any, ...], tuple[Any, Metric, str | None, str]] = {}
         site_volume_keys: set[tuple[Any, ...]] = set()
@@ -688,7 +693,7 @@ class ArtifactPublisher:
             )
             # Validation, coverage, and publication must read the same execution.
             stats = materializations.enter_context(self._con._cached_table(stats))
-            stats_last_ds = self._validate_stats_batches(stats)
+            stats_last_ds = self._validate_stats_relation(stats)
             if stats_last_ds is not None:
                 last_stat_ds = max(last_stat_ds or stats_last_ds, stats_last_ds)
             coverage = self._con.to_pyarrow(
@@ -720,13 +725,7 @@ class ArtifactPublisher:
                         max_value=stats.max_value.cast("float64"),
                     )
                 )
-        first_ds = min((row["first_exposure_date"] for row in exposure_rows), default=dt.date.max)
-        last_ds = max(
-            (cast("dt.date", row["first_exposure_date"]) for row in exposure_rows),
-            default=cast("dt.date", first_ds),
-        )
-        if last_stat_ds is not None:
-            last_ds = max(last_ds, last_stat_ds)
+        last_ds = max(last_exposure_ds, last_stat_ds or last_exposure_ds)
         stats_table = (
             ibis.union(*stats_tables, distinct=False)
             if stats_tables
@@ -755,7 +754,7 @@ class ArtifactPublisher:
         )
         return _PublicationAssembly(
             exposures=exposures,
-            exposure_rows=exposure_rows,
+            exposure_relation=exposure_relation,
             stats=stats_table,
             freshness=freshness,
             event_horizons=event_horizons,
@@ -772,7 +771,6 @@ class ArtifactPublisher:
         context: Any,
         extensions: Sequence[Any],
         exposures: ir.Table,
-        exposure_rows: list[dict[str, object]],
     ) -> tuple[_PublicationExtensionSpec, ...]:
         catalog_entries = {
             entry.request: entry for entry in unit_day_artifact_extension_catalog(context)
@@ -790,25 +788,21 @@ class ArtifactPublisher:
                     reason=reason,
                     message=f"artifact extension {kind!r} is invalid: {reason}",
                 )
-            specs.append(self._extension_spec(entry, request, exposures, exposure_rows))
+            specs.append(self._extension_spec(entry, request, exposures))
         specs.sort(key=lambda spec: _request_key(spec.entry.request))
         return tuple(specs)
 
     def _extension_spec(
-        self,
-        entry: Any,
-        request: Any,
-        exposures: ir.Table,
-        exposure_rows: list[dict[str, object]],
+        self, entry: Any, request: Any, exposures: ir.Table
     ) -> _PublicationExtensionSpec:
         kind = cast(str, request.kind)
         match kind:
             case "breakout_dimension" | "factor_dimension":
                 return self._dimension_extension_spec(entry, request, exposures, kind)
             case "cuped_preperiod":
-                return self._cuped_extension_spec(entry, request, exposures, exposure_rows)
+                return self._cuped_extension_spec(entry, request, exposures)
             case "cuped_measure_covariate":
-                return self._cuped_measure_covariate_spec(entry, request, exposures, exposure_rows)
+                return self._cuped_measure_covariate_spec(entry, request, exposures)
             case "assignment_counts":
                 return self._assignment_extension_spec(entry, request)
             case "trigger_population":
@@ -822,7 +816,7 @@ class ArtifactPublisher:
             case "site_volume":
                 return self._site_volume_extension_spec(entry, request)
             case "unit_covariate" | "unit_covariate_level":
-                return self._covariate_extension_spec(entry, request, exposures, exposure_rows)
+                return self._covariate_extension_spec(entry, request, exposures)
             case _:
                 raise ArtifactContractError(
                     "artifact.extension.invalid",
@@ -840,30 +834,23 @@ class ArtifactPublisher:
             source for source in self._defs.fact_sources if source.name == request.source_name
         )
         properties = self._build_breakout_properties_table(source, request.property_name, exposures)
-        joined = exposures.select("unit_id").left_join(
+        joined = exposures.select("experiment_id", "unit_id").left_join(
             properties, "unit_id", rname="{name}_dimension"
         )
-        properties = joined.select(
-            "unit_id",
-            canonical_dimension_value(joined[request.property_name]).name(request.property_name),
-        )
+        value = canonical_dimension_value(joined[request.property_name])
+        missing = joined[request.property_name].isnull()
         value_field = "factor_value" if kind == "factor_dimension" else "dimension_value"
-        rows: list[dict[str, object]] = [
-            {
-                "experiment_id": self._experiment.name,
-                "unit_id": str(row["unit_id"]),
-                "value_is_missing": row.get(request.property_name) is None,
-                value_field: (
-                    row[request.property_name] if row.get(request.property_name) is not None else ""
-                ),
-            }
-            for row in self._con.to_pyarrow(properties).to_pylist()
-        ]
+        table = joined.select(
+            experiment_id=joined.experiment_id.cast("string"),
+            unit_id=joined.unit_id.cast("string"),
+            value_is_missing=missing,
+            **{value_field: ibis.ifelse(missing, "", value)},
+        )
         identity_field = "dimension_name" if kind == "breakout_dimension" else "factor_name"
         return _PublicationExtensionSpec(
             entry,
             kind,
-            rows,
+            table,
             {identity_field: request.property_name, "source_name": request.source_name},
         )
 
@@ -872,11 +859,8 @@ class ArtifactPublisher:
         entry: Any,
         request: Any,
         exposures: ir.Table,
-        exposure_rows: list[dict[str, object]],
     ) -> _PublicationExtensionSpec:
         metric = next(metric for metric in self._metrics if metric.name == request.metric_name)
-        # A ratio metric's covariate is its numerator's pre-period total, the
-        # same one covariate the definitions path feeds both component slopes.
         measure = metric.numerator if isinstance(metric, RatioMetric) else metric
         fs, fact_def = _find_fact_source(self._defs, measure.fact)
         value_col = _resolve_value_column(fs, fact_def)
@@ -894,62 +878,45 @@ class ArtifactPublisher:
         pre = pre_period_stats(
             pre_events, exposures, self._experiment, source_key=f"{metric.name}:pre"
         )
-        values_by_unit: dict[str, float] = {}
-        for row in self._con.to_pyarrow(pre).to_pylist():
-            unit_id = str(row["unit_id"])
-            values_by_unit[unit_id] = values_by_unit.get(unit_id, 0.0) + float(
-                row.get("x", row.get("sum_value", 0.0))
-            )
-        for exposure in exposure_rows:
-            values_by_unit.setdefault(str(exposure["unit_id"]), 0.0)
-        rows: list[dict[str, object]] = [
-            {"experiment_id": self._experiment.name, "unit_id": unit_id, "x": value}
-            for unit_id, value in values_by_unit.items()
-        ]
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+        totals = pre.group_by("unit_id").agg(x=pre.sum_value.sum())
+        joined = exposures.select("experiment_id", "unit_id").left_join(totals, "unit_id")
+        table = joined.select(
+            experiment_id=joined.experiment_id.cast("string"),
+            unit_id=joined.unit_id.cast("string"),
+            x=ibis.coalesce(joined.x, 0.0).cast("float64"),
+        )
+        return _PublicationExtensionSpec(entry, request.kind, table, {})
 
     def _covariate_extension_spec(
         self,
         entry: Any,
         request: Any,
         exposures: ir.Table,
-        exposure_rows: list[dict[str, object]],
     ) -> _PublicationExtensionSpec:
-        """Persist one declared covariate for every enrolled unit, NULL where
-        the unit has no pre-exposure value: a numeric property's `value` on
-        the `unit_covariate` relation, a string property's `level` on the
-        `unit_covariate_level` relation."""
+        """Persist each selected covariate with its declared missingness."""
         source = next(
             source for source in self._defs.fact_sources if source.name == request.source_name
         )
         properties = self._build_breakout_properties_table(source, request.property_name, exposures)
-        values = {
-            str(row["unit_id"]): row[request.property_name]
-            for row in self._con.to_pyarrow(properties).to_pylist()
-        }
-        field, encode = (
-            ("level", str) if request.kind == "unit_covariate_level" else ("value", float)
-        )
-        rows: list[dict[str, object]] = []
-        for exposure in exposure_rows:
-            value = values.get(str(exposure["unit_id"]))
-            if field == "value" and value is not None and math.isnan(float(value)):
-                value = None
-            rows.append(
-                {
-                    "experiment_id": self._experiment.name,
-                    "unit_id": str(exposure["unit_id"]),
-                    field: None if value is None else encode(value),
-                }
+        joined = exposures.select("experiment_id", "unit_id").left_join(properties, "unit_id")
+        field = "level" if request.kind == "unit_covariate_level" else "value"
+        value = joined[request.property_name]
+        if field == "value":
+            value = ibis.ifelse(
+                value.isnull() | value.isnan(), ibis.null().cast("float64"), value.cast("float64")
             )
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+        table = joined.select(
+            experiment_id=joined.experiment_id.cast("string"),
+            unit_id=joined.unit_id.cast("string"),
+            **{field: value},
+        )
+        return _PublicationExtensionSpec(entry, request.kind, table, {})
 
     def _cuped_measure_covariate_spec(
         self,
         entry: Any,
         request: Any,
         exposures: ir.Table,
-        exposure_rows: list[dict[str, object]],
     ) -> _PublicationExtensionSpec:
         binding = self._experiment.bindings[request.metric_name]
         covariate = next(
@@ -999,25 +966,17 @@ class ArtifactPublisher:
             grouped = scoped.group_by("unit_id").agg(value=scoped.value.min())
         else:
             grouped = scoped.group_by("unit_id").agg(value=scoped.value.max())
-        values = {
-            str(row["unit_id"]): row["value"] for row in self._con.to_pyarrow(grouped).to_pylist()
-        }
-        rows: list[dict[str, object]] = []
-        for exposure in exposure_rows:
-            unit_id = str(exposure["unit_id"])
-            has_preperiod_events = unit_id in values
-            value = values.get(unit_id)
-            if value is not None and math.isnan(float(value)):
-                value = None
-            rows.append(
-                {
-                    "experiment_id": self._experiment.name,
-                    "unit_id": unit_id,
-                    "value": value,
-                    "has_preperiod_events": has_preperiod_events,
-                }
-            )
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+        enrolled = exposures.select("experiment_id", "unit_id").left_join(grouped, "unit_id")
+        value = enrolled.value
+        table = enrolled.select(
+            experiment_id=enrolled.experiment_id.cast("string"),
+            unit_id=enrolled.unit_id.cast("string"),
+            value=ibis.ifelse(
+                value.isnull() | value.isnan(), ibis.null().cast("float64"), value.cast("float64")
+            ),
+            has_preperiod_events=enrolled.value.notnull(),
+        )
+        return _PublicationExtensionSpec(entry, request.kind, table, {})
 
     def _assignment_extension_spec(self, entry: Any, request: Any) -> _PublicationExtensionSpec:
         rows: list[dict[str, object]] = []
@@ -1038,23 +997,13 @@ class ArtifactPublisher:
         return _PublicationExtensionSpec(entry, request.kind, rows, {})
 
     def _trigger_extension_spec(self, entry: Any, request: Any) -> _PublicationExtensionSpec:
-        rows: list[dict[str, object]] = []
         population = self._get_trigger_population()
         population = population.mutate(first_trigger_ts=population.first_trigger_ts.truncate("us"))
-        for row in self._con.to_pyarrow(population).to_pylist():
-            timestamp = row["first_trigger_ts"]
-            timestamp = (
-                timestamp.replace(tzinfo=dt.UTC)
-                if timestamp.tzinfo is None
-                else timestamp.astimezone(dt.UTC)
-            )
-            rows.append(
-                {
-                    "experiment_id": self._experiment.name,
-                    "unit_id": str(row["unit_id"]),
-                    "first_trigger_ts": timestamp,
-                }
-            )
+        table = population.select(
+            experiment_id=ibis.literal(self._experiment.name),
+            unit_id=population.unit_id.cast("string"),
+            first_trigger_ts=population.first_trigger_ts.cast("timestamp('UTC')"),
+        )
         evidence = self._source_snapshot_evidence
         trigger = next(
             exposure for exposure in self._defs.exposures if exposure.name == request.trigger_name
@@ -1067,7 +1016,7 @@ class ArtifactPublisher:
         return _PublicationExtensionSpec(
             entry,
             request.kind,
-            rows,
+            table,
             {
                 "observation_cutoff_ts": evidence.observation_cutoff_ts,
                 "complete_through_ts": complete_through_ts,
@@ -1087,7 +1036,7 @@ class ArtifactPublisher:
             if isinstance(metric, RatioMetric)
             else ((metric, "numerator"),)
         )
-        rows: list[dict[str, object]] = []
+        tables: list[ir.Table] = []
         feed_names: list[str] = []
         for measure, part in parts:
             fact_source, fact = _find_fact_source(self._defs, measure.fact)
@@ -1124,18 +1073,17 @@ class ArtifactPublisher:
                 min_value=joined.value.min(),
                 max_value=joined.value.max(),
             )
-            rows.extend(
-                {
-                    "experiment_id": self._experiment.name,
-                    "unit_id": str(row["unit_id"]),
-                    "ds": row["ds"],
-                    "measure_key": measure_key,
-                    "n_events": int(row["n_events"]),
-                    "sum_value": float(row["sum_value"]),
-                    "min_value": float(row["min_value"]),
-                    "max_value": float(row["max_value"]),
-                }
-                for row in self._con.to_pyarrow(daily).to_pylist()
+            tables.append(
+                daily.select(
+                    experiment_id=ibis.literal(self._experiment.name),
+                    unit_id=daily.unit_id.cast("string"),
+                    ds=daily.ds,
+                    measure_key=ibis.literal(measure_key),
+                    n_events=daily.n_events.cast("int64"),
+                    sum_value=daily.sum_value.cast("float64"),
+                    min_value=daily.min_value.cast("float64"),
+                    max_value=daily.max_value.cast("float64"),
+                )
             )
             feed_names.append(fact_source.name)
         watermarks = [
@@ -1146,10 +1094,15 @@ class ArtifactPublisher:
             if watermarks and all(value is not None for value in watermarks)
             else None
         )
+        table = (
+            ibis.union(*tables, distinct=False)
+            if tables
+            else _relation_table([], "trigger_measure_stats")
+        )
         return _PublicationExtensionSpec(
             entry,
             request.kind,
-            rows,
+            table,
             {
                 "observation_cutoff_ts": self._source_snapshot_evidence.observation_cutoff_ts,
                 "complete_through_ts": complete_through,
@@ -1166,16 +1119,12 @@ class ArtifactPublisher:
                 "cluster identity extension requires a declared cluster",
             )
         self._validate_cluster_labels(exposures, cluster)
-        rows: list[dict[str, object]] = [
-            {
-                "experiment_id": self._experiment.name,
-                "unit_id": str(row["unit_id"]),
-                "cluster_id": str(row[cluster]),
-            }
-            for row in self._con.to_pyarrow(exposures).to_pylist()
-            if row.get(cluster) is not None
-        ]
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+        table = exposures.filter(exposures[cluster].notnull()).select(
+            experiment_id=exposures.experiment_id.cast("string"),
+            unit_id=exposures.unit_id.cast("string"),
+            cluster_id=exposures[cluster].cast("string"),
+        )
+        return _PublicationExtensionSpec(entry, request.kind, table, {})
 
     def _uptake_extension_spec(
         self, entry: Any, request: Any, exposures: ir.Table
@@ -1223,7 +1172,7 @@ class ArtifactPublisher:
         )
 
     def _site_volume_extension_spec(self, entry: Any, request: Any) -> _PublicationExtensionSpec:
-        rows: list[dict[str, object]] = []
+        tables: list[ir.Table] = []
         emitted_recipe_keys: set[str] = set()
         for metric_name in request.metric_names:
             metric = next(metric for metric in self._metrics if metric.name == metric_name)
@@ -1250,32 +1199,27 @@ class ArtifactPublisher:
                     source_key=measure_key,
                     experiment=self._experiment,
                 )
-                grouped: dict[Any, dict[str, Any]] = {}
-                for row in self._con.to_pyarrow(stats).to_pylist():
-                    key = row["ds"]
-                    item = grouped.setdefault(
-                        key,
-                        {
-                            "n_events": 0,
-                            "sum_value": 0.0,
-                            "min_value": float("inf"),
-                            "max_value": float("-inf"),
-                        },
-                    )
-                    item["n_events"] += int(row["n_events"])
-                    item["sum_value"] += float(row["sum_value"])
-                    item["min_value"] = min(item["min_value"], float(row["min_value"]))
-                    item["max_value"] = max(item["max_value"], float(row["max_value"]))
-                rows.extend(
-                    {
-                        "experiment_id": self._experiment.name,
-                        "ds": day,
-                        "measure_key": measure_key,
-                        **item,
-                    }
-                    for day, item in grouped.items()
+                daily = stats.group_by("ds").agg(
+                    n_events=stats.n_events.sum(),
+                    sum_value=stats.sum_value.sum(),
+                    min_value=stats.min_value.min(),
+                    max_value=stats.max_value.max(),
                 )
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+                tables.append(
+                    daily.select(
+                        experiment_id=ibis.literal(self._experiment.name),
+                        ds=daily.ds,
+                        measure_key=ibis.literal(measure_key),
+                        n_events=daily.n_events.cast("int64"),
+                        sum_value=daily.sum_value.cast("float64"),
+                        min_value=daily.min_value.cast("float64"),
+                        max_value=daily.max_value.cast("float64"),
+                    )
+                )
+        table = (
+            ibis.union(*tables, distinct=False) if tables else _relation_table([], "site_volume")
+        )
+        return _PublicationExtensionSpec(entry, request.kind, table, {})
 
     def _encode_publication_extensions(
         self,
@@ -1292,7 +1236,7 @@ class ArtifactPublisher:
         for spec in specs:
             if spec.kind == "trigger_population":
                 relation = publication.write_relation(
-                    "trigger_population", _relation_table(spec.rows, "trigger_population")
+                    "trigger_population", _extension_table(spec.rows, "trigger_population")
                 )
                 extension_refs.append(
                     TriggerPopulationExtension(
@@ -1329,8 +1273,7 @@ class ArtifactPublisher:
                         route="republish with the matching trigger_population extension",
                     )
                 relation = publication.write_relation(
-                    "trigger_measure_stats",
-                    _relation_table(spec.rows, "trigger_measure_stats"),
+                    "trigger_measure_stats", _extension_table(spec.rows, "trigger_measure_stats")
                 )
                 extension_refs.append(
                     TriggerMeasureStatsExtension(
@@ -1391,6 +1334,7 @@ class ArtifactPublisher:
                     definition=json.loads(spec.entry.canonical_definition_json),
                     source_recipe=json.loads(spec.entry.canonical_source_recipe_json),
                     experiment_id=self._experiment.name,
+                    execute=self._con.to_pyarrow,
                 )
             )
         extension_refs.sort(
@@ -1415,9 +1359,7 @@ class ArtifactPublisher:
         with store.begin_publication(
             expected_context=context, refresh_of=refresh_of
         ) as publication:
-            exposure_ref = publication.write_relation(
-                "exposures", _relation_table(assembly.exposure_rows, "exposures")
-            )
+            exposure_ref = publication.write_relation("exposures", assembly.exposure_relation)
             measure_ref = publication.write_relation("measure_stats", assembly.stats)
             extension_refs = self._encode_publication_extensions(
                 publication, context, extension_specs, source
