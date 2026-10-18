@@ -618,3 +618,189 @@ def test_ratio_projection_spec_retains_scaled_jacobian_for_tiny_units(monkeypatc
     )
     expected_jacobian = np.array([-1.0 / dc, 1.0 / dt, nc / dc / dc, -nt / dt / dt])
     assert reconstructed == pytest.approx(expected_jacobian, rel=2e-10, abs=1e-11)
+
+
+def _crossed_category_case(is_ratio=False):
+    order = ("c", "t", "u")
+    patterns = (("A", "desktop"), ("A", "mobile"), ("B", "desktop"), ("B", "mobile"))
+    counts = ((17, 8, 11, 6), (7, 19, 9, 13), (12, 6, 21, 10))
+    arms, country, device, numerator, denominator = [], [], [], [], []
+    for a, arm in enumerate(order):
+        for k, (segment, platform) in enumerate(patterns):
+            for row in range(counts[a][k]):
+                noise = math.sin(0.71 * row + 0.3 * k + a)
+                arms.append(arm)
+                country.append(segment)
+                device.append(platform)
+                numerator.append(8.0 + a * 0.6 + k * 0.4 + noise)
+                denominator.append(3.0 + a * 0.1 + k * 0.2 + 0.2 * noise + 0.1 * math.cos(row))
+    values = {
+        "y": None if is_ratio else np.array(numerator),
+        "arms": np.array(arms),
+        "control": "c",
+        "arm_order": order,
+        "covariates": {"segment": np.array(country), "device": np.array(device)},
+    }
+    if is_ratio:
+        values.update(numerator=np.array(numerator), denominator=np.array(denominator))
+    return values
+
+
+def _assert_cell_fit_parity(actual, expected):
+    for name in (
+        "adjusted_means",
+        "theta",
+        "anchor",
+        "covariance",
+        "dof",
+        "max_leverage",
+        "mean_leverage",
+        "leverage_trace",
+    ):
+        assert np.asarray(getattr(actual, name)) == pytest.approx(
+            np.asarray(getattr(expected, name)), rel=1e-10, abs=1e-12
+        )
+    assert actual.layout == expected.layout
+    assert actual.n_by_arm == expected.n_by_arm
+    assert len(actual._projections) == len(expected._projections)
+    for left, right in zip(actual._projections, expected._projections, strict=True):
+        assert left[:4] == right[:4]
+        assert left[4:] == pytest.approx(right[4:], rel=1e-10, abs=1e-12, nan_ok=True)
+        kind, arm, control, scale = right[:4]
+        if actual.is_ratio and kind == "relative":
+            for fit in (actual, expected):
+                with pytest.raises(InvalidRequestError) as raised:
+                    fit.relative(arm, control=control)
+                assert raised.value.code == "estimation.cuped_linear.projection_kind"
+            continue
+        for alpha in (0.01, 0.2):
+            kwargs = {"control": control, "alpha": alpha}
+            if kind == "ratio":
+                kwargs["scale"] = scale
+            left_interval = getattr(actual, kind)(arm, **kwargs)
+            right_interval = getattr(expected, kind)(arm, **kwargs)
+            for field in ("estimate", "se", "dof", "lower", "upper"):
+                assert getattr(left_interval, field) == pytest.approx(
+                    getattr(right_interval, field), rel=1e-10, abs=1e-12
+                )
+
+
+@pytest.mark.parametrize("is_ratio", [False, True])
+def test_joint_categorical_cells_match_unit_hc2_bm_and_all_projections(is_ratio):
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    values = _crossed_category_case(is_ratio)
+    expected = fit_cuped_multicovariate(
+        **values, kinds={"segment": "categorical", "device": "categorical"}
+    )
+    cells = categorical_cells(**values, identity=("snapshot", "metric", "population"))
+    assert len(cells.patterns) == 4
+    assert cells.counts == ((17, 8, 11, 6), (7, 19, 9, 13), (12, 6, 21, 10))
+    actual = fit_categorical_cells(cells, control="c")
+    _assert_cell_fit_parity(actual, expected)
+
+
+@pytest.mark.parametrize("is_ratio", [False, True])
+def test_joint_categorical_partition_merge_refits_with_centered_moments(is_ratio):
+    import json
+    from dataclasses import asdict
+
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    values = _crossed_category_case(is_ratio)
+    if not is_ratio:
+        values["y"] += 1e8
+    parts = []
+    for remainder in range(3):
+        mask = np.arange(len(values["arms"])) % 3 == remainder
+        partition = {
+            name: (
+                {key: column[mask] for key, column in value.items()}
+                if name == "covariates"
+                else value[mask]
+                if isinstance(value, np.ndarray)
+                else value
+            )
+            for name, value in values.items()
+        }
+        part = categorical_cells(**partition, identity=("same-snapshot",))
+        parts.append(CategoricalCells(**json.loads(json.dumps(asdict(part)))))
+    merged = parts[2].merge(parts[0]).merge(parts[1])
+    complete = categorical_cells(**values, identity=("same-snapshot",))
+    _assert_cell_fit_parity(
+        fit_categorical_cells(merged, control="c"), fit_categorical_cells(complete, control="c")
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        complete.merge(replace(complete, identity=("different-snapshot",)))
+    assert raised.value.code == "estimation.cuped_linear.incompatible_evidence"
+
+
+def test_marginal_categorical_payload_cannot_be_consumed_as_joint_cells():
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    complete = categorical_cells(**_crossed_category_case(), identity=("joint",))
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_categorical_cells(
+            replace(complete, patterns=(("A",), ("B",), ("desktop",), ("mobile",))),
+            control="c",
+        )
+    assert raised.value.code == "estimation.cuped_linear.invalid_evidence"
+
+
+def test_joint_cells_preserve_null_category_and_serialized_failure_context():
+    import json
+    from dataclasses import asdict
+
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    values = _crossed_category_case()
+    segment = values["covariates"]["segment"].astype(object)
+    segment[segment == "B"] = None
+    values["covariates"]["segment"] = segment
+    values["missing"] = {"segment": "impute-indicator"}
+    complete = categorical_cells(**values, identity=("nullable",))
+    restored = CategoricalCells(**json.loads(json.dumps(asdict(complete))))
+    _assert_cell_fit_parity(
+        fit_categorical_cells(restored, control="c"),
+        fit_cuped_multicovariate(
+            **values, kinds={"segment": "categorical", "device": "categorical"}
+        ),
+    )
+    arms = np.array(["c"] * 16 + ["t"] * 16)
+    category = np.array(["rare"] + ["common"] * 15 + ["rare"] * 8 + ["common"] * 8)
+    evidence = categorical_cells(
+        np.arange(len(arms), dtype=float),
+        arms,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"segment": category},
+        identity=("rare",),
+    )
+    for payload in (evidence, CategoricalCells(**json.loads(json.dumps(asdict(evidence))))):
+        with pytest.raises(InvalidRequestError) as raised:
+            fit_categorical_cells(payload, control="c")
+        failure = pickle.loads(pickle.dumps(raised.value))
+        assert failure.code == "estimation.cuped_linear.level_support"
+        assert failure.context["column"] == "segment"
+        assert failure.context["level"] == "rare"
+        assert failure.context["counts"] == {"c": 1, "t": 8}
+
+
+def test_categorical_cells_merge_singleton_partitions_without_changing_support():
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    values = _crossed_category_case()
+    parts = []
+    for mask in (np.arange(len(values["arms"])) == 0, np.arange(len(values["arms"])) != 0):
+        partition = {
+            **values,
+            "y": values["y"][mask],
+            "arms": values["arms"][mask],
+            "covariates": {name: column[mask] for name, column in values["covariates"].items()},
+        }
+        parts.append(categorical_cells(**partition, identity=("partitioned",)))
+    complete = categorical_cells(**values, identity=("partitioned",))
+    _assert_cell_fit_parity(
+        fit_categorical_cells(parts[0].merge(parts[1]), control="c"),
+        fit_categorical_cells(complete, control="c"),
+    )

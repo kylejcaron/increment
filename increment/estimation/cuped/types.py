@@ -343,7 +343,11 @@ class InferenceSummary:
 
 @dataclass(frozen=True, slots=True)
 class CategoricalCells:
-    """Ordered joint categorical cells with exact count and outcome moments."""
+    """Joint cells: arm-referenced first sums and within-cell centered cross sums.
+
+    References are component × arm; first sums are arm × component × pattern;
+    cross sums are arm × component × component × pattern. Null levels use None.
+    """
 
     identity: tuple[object, ...]
     arms: tuple[object, ...]
@@ -354,6 +358,7 @@ class CategoricalCells:
     outcome_references: tuple[tuple[float, ...], ...]
     centered_first_moments: tuple[tuple[tuple[float, ...], ...], ...]
     symmetric_cross_moments: tuple[tuple[tuple[tuple[float, ...], ...], ...], ...]
+    covariate_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -366,6 +371,7 @@ class CategoricalCells:
             "outcome_references",
             "centered_first_moments",
             "symmetric_cross_moments",
+            "covariate_names",
         ):
             object.__setattr__(self, name, _freeze_payload(getattr(self, name)))
         cells = len(self.patterns)
@@ -393,3 +399,59 @@ class CategoricalCells:
             _invalid_evidence("CategoricalCells first moments do not match joint cells")
         if len(self.symmetric_cross_moments) != len(self.arms):
             _invalid_evidence("CategoricalCells cross-moments do not match arms")
+        components = len(self.outcome_references)
+        if any(len(row) != len(self.arms) for row in self.outcome_references):
+            _invalid_evidence("CategoricalCells outcome references do not match arms")
+        if any(
+            len(arm) != components
+            or any(
+                len(row) != components or any(len(values) != cells for values in row) for row in arm
+            )
+            for arm in self.symmetric_cross_moments
+        ):
+            _invalid_evidence("CategoricalCells cross-moments do not match outcome components")
+        if len(set(self.arms)) != len(self.arms):
+            _invalid_evidence("CategoricalCells arms must be unique")
+        if any(len(pattern) != len(self.levels) for pattern in self.patterns):
+            _invalid_evidence("CategoricalCells requires complete joint categorical patterns")
+        if self.covariate_names and (
+            len(self.covariate_names) != len(self.levels)
+            or len(set(self.covariate_names)) != len(self.covariate_names)
+        ):
+            _invalid_evidence("CategoricalCells covariate names do not match categorical columns")
+        for column, levels in enumerate(self.levels):
+            if len(set(levels)) != len(levels) or any(
+                value is not None and not isinstance(value, str) for value in levels
+            ):
+                _invalid_evidence("CategoricalCells levels must be unique strings or null")
+            if any(pattern[column] not in levels for pattern in self.patterns):
+                _invalid_evidence("CategoricalCells joint pattern contains an unknown level")
+        self._validate_outcome_values()
+
+    def _validate_outcome_values(self) -> None:
+        components = len(self.outcome_references)
+        for values in (
+            self.outcome_references,
+            self.centered_first_moments,
+            self.symmetric_cross_moments,
+        ):
+            if not np.isfinite(np.asarray(values, dtype=float)).all():
+                _invalid_evidence("CategoricalCells outcome moments must be finite")
+        cross = np.asarray(self.symmetric_cross_moments, dtype=float)
+        if components and not np.array_equal(cross, cross.swapaxes(1, 2)):
+            _invalid_evidence("CategoricalCells outcome cross-moments must be symmetric")
+        for arm, counts in enumerate(self.counts):
+            for pattern, count in enumerate(counts):
+                if not components:
+                    continue
+                first = np.asarray(self.centered_first_moments[arm])[:, pattern]
+                scatter = cross[arm, :, :, pattern]
+                if count == 0 and (np.any(first) or np.any(scatter)):
+                    _invalid_evidence("CategoricalCells empty cells must have zero moments")
+                if components and np.any(np.diag(scatter) < 0):
+                    _invalid_evidence("CategoricalCells outcome scatter must be nonnegative")
+
+    def merge(self, other: CategoricalCells) -> CategoricalCells:
+        from increment.estimation.cuped.cells import _merge_cells
+
+        return _merge_cells(self, other)
