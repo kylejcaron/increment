@@ -36,6 +36,7 @@ from increment._frame_moments import (
     _collapse_to_unit_totals,
     _compliance_arm_rows_panel,
     _compliance_arm_rows_totals,
+    _conversion_total_failures,
     _CovariateReduction,
     _daily_moment_rows,
     _DeferredRefusal,
@@ -1836,6 +1837,10 @@ class FramePanelSource(SequentialSourceMixin):
             window_days=self._window_days,
             first_exposure=self._first_exposure,
         )
+        failures = _conversion_total_failures(collapsed, (spec,))
+        if metric.name in failures:
+            failure_spec, context = failures[metric.name]
+            refuse(failure_spec, **context)
         expressions = [
             nw.col("unit_id"),
             nw.col("group_id"),

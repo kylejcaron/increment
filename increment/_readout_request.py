@@ -273,6 +273,8 @@ class ReadoutRequest:
     scalar_bindings: Mapping[str, tuple[CupedCovariate, ...]] | None = None
     scalar_moments_only: bool = False
     scalar_recipe_fixed: bool = False
+    scalar_recipe_configs: tuple[ResolvedMetricConfig, ...] = ()
+    scalar_anonymous_metrics: frozenset[str] = frozenset()
     scalar_method_evidence: bool = False
     scalar_breakout_evidence: bool = False
     capabilities: frozenset[str] = frozenset({"total"})
@@ -337,6 +339,14 @@ class ReadoutRequest:
                 source.scalar_recipe_fixed
                 if isinstance(source, SingleScalarFamilySource)
                 else False
+            ),
+            scalar_recipe_configs=(
+                source.scalar_recipe_configs if isinstance(source, SingleScalarFamilySource) else ()
+            ),
+            scalar_anonymous_metrics=(
+                source.scalar_anonymous_metrics
+                if isinstance(source, SingleScalarFamilySource)
+                else frozenset()
             ),
             scalar_method_evidence=isinstance(source, ScalarMethodMomentSource),
             scalar_breakout_evidence=isinstance(
@@ -465,12 +475,14 @@ def validate_request(request: ReadoutRequest) -> None:
         bindings=request.scalar_bindings,
     )
     if request.scalar_recipe_fixed:
+        recorded = {config.metric.name for config in request.scalar_recipe_configs}
         validate_scalar_route(
-            request.configs,
+            tuple(config for config in request.configs if config.metric.name in recorded),
             route=route,
             representation="prepared",
             design=request.design,
-            retained_configs=request.context.configs,
+            retained_configs=request.scalar_recipe_configs,
+            anonymous_metrics=request.scalar_anonymous_metrics,
         )
     if isinstance(request.plan.inference, SEQUENTIAL_POLICIES):
         validate_scalar_route(

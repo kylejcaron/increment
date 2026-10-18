@@ -135,7 +135,7 @@ def _lift_cells_missing_control(  # noqa: PLR0913
 def _append_lift_cell_failure(
     *,
     results: list[LiftEstimate],
-    computations: list[DecisionComputation[LiftEstimate]],
+    computations: list[DecisionComputation[LiftEstimate]] | None,
     metric: Metric,
     group_id: str,
     method: Method,
@@ -149,7 +149,7 @@ def _append_lift_cell_failure(
 
     method_role = (method_roles or {}).get(method.name, "decision")
     failure_context = {**context, "method": method.name}
-    if method_role == "decision":
+    if method_role == "decision" and computations is not None:
         hypothesis = ArmHypothesisKey(metric.name, group_id, estimand)
         computations.append(
             DecisionComputation(
@@ -169,7 +169,7 @@ def _append_lift_cell_failure(
                 estimand=estimand,
                 value_scale="absolute" if estimand == "late" else "relative",
                 alternative=alternative,
-                method_role="sensitivity",
+                method_role=method_role,
                 failure_code=code,
                 failure_context=failure_context,
             )

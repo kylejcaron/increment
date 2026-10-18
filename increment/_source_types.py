@@ -544,6 +544,12 @@ class SingleScalarFamilySource(Protocol):
     @property
     def scalar_recipe_fixed(self) -> bool: ...
 
+    @property
+    def scalar_recipe_configs(self) -> tuple[ResolvedMetricConfig, ...]: ...
+
+    @property
+    def scalar_anonymous_metrics(self) -> frozenset[str]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ScalarBreakoutRows:

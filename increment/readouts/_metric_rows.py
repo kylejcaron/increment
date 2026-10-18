@@ -10,6 +10,7 @@ from increment._source_types import ScalarBreakoutMomentSource, ScalarMethodMome
 from increment.errors import CodedError, refuse
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
+from increment.semantics.design import Encouragement
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -190,8 +191,16 @@ def _load_metric_rows(
             configs = overlay_configs(
                 (metric,), src.context.configs, methods=list(methods), prior=None
             )
+            uptake_facts = (
+                (src.context.design.uptake.fact,)
+                if isinstance(src.context.design, Encouragement)
+                else ()
+            )
             with src.readout_snapshot(
-                metrics=(metric,), population=population, configs=configs
+                metrics=(metric,),
+                population=population,
+                configs=configs,
+                uptake_facts=uptake_facts,
             ) as pinned:
                 return _load_metric_rows(
                     pinned,

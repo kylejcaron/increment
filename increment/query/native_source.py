@@ -533,8 +533,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # unit, so these never get the enrolled-units semi-join, unlike
         # other fact sources this snapshot also captures.
         freshness_source_names: set[str] = set()
+        # An explicit empty selection captures no outcome streams.
+        horizon_metrics = (
+            (
+                *self._horizon_metrics,
+                *(metric for metric in metrics or () if metric not in self._horizon_metrics),
+            )
+            if metrics is None or metrics
+            else ()
+        )
 
-        for metric in self._metrics if metrics is None else metrics:
+        for metric in horizon_metrics:
             if isinstance(metric, RatioMetric):
                 freshness_source_names.add(add_fact(metric.numerator.fact))
                 freshness_source_names.add(add_fact(metric.denominator.fact))
@@ -652,8 +661,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
-        # Preserve registration metadata, but derive freshness only from captured streams.
-        pinned._horizon_metrics = tuple(self._metrics if metrics is None else metrics)
+        # Preserve the observation horizon when narrowing estimator inputs.
+        pinned._horizon_metrics = horizon_metrics
         if configs is not None:
             pinned._context = replace(pinned._context, configs=tuple(configs))
         if self._sequential_snapshot is not None:
@@ -4016,21 +4025,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         cluster = self._experiment.cluster
         if "cluster_id" in covariates and cluster != "cluster_id":
             _refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)
-        metric_binding = self._experiment.bindings.get(metric.name)
-        metric_methods = (
-            ()
-            if metric_binding is None
-            else (
-                (
-                    ()
-                    if metric_binding.decision_method is None
-                    else (metric_binding.decision_method,)
-                )
-                + metric_binding.sensitivity_methods
-            )
+        metric_methods = tuple(
+            method
+            for config in self.context.configs
+            if config.metric.name == metric.name
+            for method in effective_methods(config, design=self.context.design)
         )
         declared_covariates = {
-            covariate.name: covariate
+            covariate.name: self._resolve_covariate_binding(covariate, metric)
             for method in metric_methods
             for covariate in method.covariates or ()
         }

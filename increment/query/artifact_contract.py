@@ -985,6 +985,8 @@ def _identity_catalog_entries(
 def _cuped_catalog_entries(
     definitions: Any, experiment: Any, metric_names: tuple[str, ...]
 ) -> list[Any]:
+    from increment._analysis_config import union_covariates
+
     entries: list[Any] = []
     for metric_name in metric_names:
         binding = experiment.bindings.get(metric_name)
@@ -993,7 +995,7 @@ def _cuped_catalog_entries(
         methods = (
             () if binding.decision_method is None else (binding.decision_method,)
         ) + binding.sensitivity_methods
-        for covariate in (covariate for method in methods for covariate in method.covariates or ()):
+        for covariate in union_covariates((binding,), (methods,)):
             measure = getattr(covariate, "measure", None)
             if measure is None:
                 continue

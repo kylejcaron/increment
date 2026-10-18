@@ -3350,10 +3350,6 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
             )
             for method_group in groups:
                 legacy_lane = method_group[0].variance_reduction == "cuped"
-                exact_lane = method_group[0].variance_reduction not in (
-                    "cuped",
-                    "cuped_multicovariate",
-                )
                 method_rows = rows
                 if metric_evidence is not None and legacy_lane:
                     method_rows, failed_inputs, failed_computation = _scalar_breakout_input(
@@ -3366,11 +3362,24 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                     )
                     method_failures.update(failed_inputs)
                     method_unestimable.update(dict.fromkeys(failed_inputs, "estimation_failed"))
+                    method_posteriors.update(
+                        {
+                            key: _PosteriorUnavailable(failure.code, failure.context)
+                            for key, failure in failed_inputs.items()
+                        }
+                        if metric_prior is not None
+                        else {}
+                    )
                     if failed_computation is not None:
                         computations[(context.segment_value, metric.name)] = failed_computation
+                        _record_failed_pairs(failed_computation.failures, unestimable)
+                        _keep_non_guard_failures(failed_computation.failures, original_failures)
                     if method_rows is None:
                         continue
-                if mixed_groups is not None and exact_lane:
+                if mixed_groups is not None and method_group[0].variance_reduction not in (
+                    "cuped",
+                    "cuped_multicovariate",
+                ):
                     method_rows = _unadjusted_binomial_rows(rows)
                 elif mixed_groups is not None and legacy_lane:
                     legacy_prepared = _prepare_lift_slice(
@@ -3770,6 +3779,17 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
     }
+    for index, row in enumerate(results):
+        if row.method_role != "decision" or row.lift is not None:
+            continue
+        key = SegmentHypothesisKey(row.metric, row.group_id, "itt", dimension, row.dimension_value)
+        results[index] = row.model_copy(
+            update={
+                **family_record,
+                "family_procedure": "bh",
+                "discovery": family_discovery(outcome, key),
+            }
+        )
     selected_keys = outcome.selected
     if outcome.fcr_alpha is None:
         for segment_value, estimate, idx in family_entries:

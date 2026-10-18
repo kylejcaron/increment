@@ -501,6 +501,18 @@ class FamilyScope(_ReadoutModel):
         return self
 
 
+def _same_family_scope(left: FamilyScope, right: FamilyScope) -> bool:
+    """Compare decision scopes independently of companion-dependent readout snapshots."""
+    if (left.decision_snapshot_id or left.source_snapshot_id) != (
+        right.decision_snapshot_id or right.source_snapshot_id
+    ):
+        return False
+    excluded = {"source_snapshot_id", "decision_snapshot_id", "members"}
+    return left.model_dump(exclude=excluded) == right.model_dump(exclude=excluded) and tuple(
+        member for member in left.members if member.method_role != "sensitivity"
+    ) == tuple(member for member in right.members if member.method_role != "sensitivity")
+
+
 def family_identity(
     source_snapshot_id,
     analysis_population,
@@ -596,14 +608,34 @@ class ReadoutScope(_ReadoutModel):
                 cell_key=None,
                 reason="scope union mismatch",
             )
-        if tuple(sorted(self.families, key=lambda family: family.family_id)) != self.families:
+        if (
+            tuple(
+                sorted(
+                    self.families, key=lambda family: (family.family_id, family.source_snapshot_id)
+                )
+            )
+            != self.families
+        ):
             refuse_readout("readout.serialization.noncanonical_order", section="families")
-        if len({family.family_id for family in self.families}) != len(self.families):
+        if len({(family.family_id, family.source_snapshot_id) for family in self.families}) != len(
+            self.families
+        ):
             refuse_readout(
                 "readout.serialization.duplicate_cell_key",
                 source_snapshot_id=self.snapshot_id,
                 cell_key="duplicate family id",
             )
+        families_by_id: dict[str, FamilyScope] = {}
+        for family in self.families:
+            previous = families_by_id.get(family.family_id)
+            if previous is not None and not _same_family_scope(previous, family):
+                refuse_readout(
+                    "readout.serialization.identity_mismatch",
+                    source_snapshot_id=self.snapshot_id,
+                    cell_key=None,
+                    reason="conflicting family scope",
+                )
+            families_by_id[family.family_id] = family
         return self
 
     def decision_complete(self, population: Population) -> bool:
@@ -774,7 +806,6 @@ def _digest_positional_rows(
     total = 0
     count = 0
     for row in rows:
-
         parts = []
         generic_row = None
         for key, prefix, index in zip(keys, prefixes, indices, strict=True):
@@ -1232,15 +1263,20 @@ def concat_collection(left, right):
     cross = a.scope.snapshot_id != b.scope.snapshot_id
     sources, result_source = _merge_source_scopes(left, right, ids)
     records, rows = _merge_cell_identities(left, right, ids)
-    families = {family.family_id: family for family in a.scope.families}
+    families = {
+        (family.family_id, family.source_snapshot_id): family for family in a.scope.families
+    }
+    families_by_id = {family.family_id: family for family in a.scope.families}
     for family in b.scope.families:
-        if family.family_id in families and families[family.family_id] != family:
+        previous = families_by_id.get(family.family_id)
+        if previous is not None and not _same_family_scope(previous, family):
             refuse_readout(
                 "readout.collection.concat_metadata_mismatch",
                 snapshot_ids=ids,
                 fields=("families",),
             )
-        families[family.family_id] = family
+        families_by_id[family.family_id] = family
+        families[family.family_id, family.source_snapshot_id] = family
     snapshot = (
         a.scope.snapshot_id
         if not cross

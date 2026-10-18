@@ -32,7 +32,8 @@ def sequential_readout(
         design=source.context.design,
         retained_configs=source.context.configs,
     )
-    by_metric = {config.metric.name: config for config in configs}
+    by_metric = {config.metric.name: config for config in source.context.configs}
+    by_metric.update({config.metric.name: config for config in configs})
     require_public_laws(registration.models, "sequential readout")
     snapshot = source_snapshot(source, previous=previous).chain(population)
     rows = selected_snapshot_results(

@@ -104,6 +104,9 @@ the decision family. `FamilyScope.decision_snapshot_id` records the separate
 decision-input snapshot when needed; `source_snapshot_id` still identifies the
 whole readout. Requests without method-owned covariates keep their existing
 identity encoding.
+Concatenating readouts with the same decision family but different companion
+evidence retains each whole-readout source snapshot. Their decision-family
+identity remains shared; conflicting decision scopes still refuse.
 
 ```python
 import numpy as np
@@ -188,6 +191,8 @@ and is rejected before evidence acquisition.
 The policy belongs to each metric's method, never to the shared covariate table.
 The pooled mean uses the full per-unit covariate population before an outcome's
 `missing="drop"` removes rows, including when that summary is broken out.
+Native outcome-window censoring likewise does not change the imputation
+population.
 Refusing-policy validation also uses that full eligible population: a missing
 covariate is not hidden by dropping the same unit's missing outcome.
 
@@ -300,6 +305,12 @@ writing evidence. Provenance-free legacy `from_moments` inputs still accept a
 single scalar request, but several distinct requests refuse with
 `facade.analysis_config.cuped_scalar_moments`; a recorded covariate-name
 mismatch is never treated as anonymous evidence.
+When a portable cube records its scalar recipe, the missing-value preparation
+is fixed too. A changed policy refuses with `readout.scalar_method_evidence`
+before the cube is read; reopening it with different defaults does not change
+its recorded preparation. Return to unit-bearing input to change the policy.
+Saved method declarations alone do not establish the input name of anonymous
+legacy `x`; only recorded input provenance can do that.
 Artifact moment exports acquire the requested named scalar family rather than
 exporting outcome-only moments under its declaration.
 
@@ -312,10 +323,11 @@ by the artifact route: `from_unit_day_artifact.run_breakout` refuses with
 frame input for those breakouts, or run the artifact's scalar headline.
 
 An artifact override must match the published property/source or measure
-binding, not merely its alias. A conflicting explicit recipe refuses with
-`readout.scalar_method_evidence`, naming the route and method, before evidence is read.
-Supported missing-value preparation is applied to the retained raw values for
-the requested method.
+binding and covariate kind, not merely its alias. A conflicting scalar recipe
+refuses with `readout.scalar_method_evidence`, naming the route and method,
+before evidence is read; a conflicting multicovariate binding refuses with
+`facade.analysis_config.covariate_binding_conflict`. Supported missing-value
+preparation is applied to the retained raw values for the requested method.
 
 Direct `readouts.asof_lift` retains method identity for the implicit pre-period
 scalar family at every date. Fixed-horizon day-axis moments cannot select a
@@ -943,9 +955,11 @@ An out-of-region fit emits an unavailable cell with
 violations, rather than an unadjusted substitute. Each violation is
 `(observable, value, bound)`; an observable that is not finite is kept as
 its text form (`"inf"`, `"nan"`) so the refusal survives JSON replay. The
-decision cell keeps this refusal whatever sensitivity methods accompany it,
-and a call-time `cuped_multicovariate` override on a metric without declared
-cells fit separately and may therefore be unavailable even when the
+decision cell keeps this refusal whatever sensitivity methods accompany it.
+A native call-time `cuped_multicovariate` request acquires its effective
+property/source or measure binding, rather than a construction-time binding
+for the same alias. Artifact replay requires matching published raw bindings.
+Breakout cells fit separately and may therefore be unavailable even when the
 whole-population fit is supported. Assigned and triggered results retain
 their own populations; aggregate and per-unit evidence share one source
 snapshot, including the resolved fact source of each breakout.

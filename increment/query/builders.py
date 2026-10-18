@@ -1214,7 +1214,8 @@ def join_pre_period_covariate(
     pre_totals = pre_stats.group_by("unit_id").agg(x=pre_stats.sum_value.sum())
     joined = table.left_join(pre_totals, "unit_id")
     if missing == "impute":
-        joined = joined.mutate(x=ibis.coalesce(joined.x, joined.x.mean().over(ibis.window())))
+        mean = pre_totals.aggregate(mean=pre_totals.x.mean()).as_scalar()
+        joined = joined.mutate(x=ibis.coalesce(joined.x, mean))
     else:
         fill = 0.0 if missing in (None, "zero") else None
         if fill is not None:

@@ -182,7 +182,7 @@ def _encouragement_breakout_rows(
                             if estimand in estimands:
                                 _append_lift_cell_failure(
                                     results=lift_estimates,
-                                    computations=[],
+                                    computations=None,
                                     metric=metric,
                                     group_id=arm,
                                     method=method,

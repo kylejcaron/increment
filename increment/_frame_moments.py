@@ -1551,6 +1551,23 @@ def _windowed_moment_rows(
     return rows
 
 
+def _conversion_total_failures(
+    collapsed: nw.DataFrame[Any], specs: Sequence[MetricSpec]
+) -> dict[str, _DeferredRefusal]:
+    """Reject day counts where total-grain conversion requires a binary value."""
+    failures: dict[str, _DeferredRefusal] = {}
+    for spec in specs:
+        if spec.type != "conversion":
+            continue
+        collapsed_max = collapsed[spec.y_column].max()
+        if collapsed_max is not None and float(collapsed_max) > 1.0:
+            failures[spec.name] = (
+                _REFUSALS["frame.moments.metric_type_conversion"],
+                {"metric": spec.name, "value": float(collapsed_max)},
+            )
+    return failures
+
+
 def _total_moment_rows(
     panel: nw.DataFrame[Any],
     specs: Sequence[MetricSpec],
@@ -1653,16 +1670,7 @@ def _total_moment_rows(
         # silently turn a multi-day converter into a day count - defer the
         # refusal until that metric is selected, while allowing valid siblings
         # to use this shared collapsed frame.
-        for conv_spec in plain:
-            if conv_spec.type != "conversion":
-                continue
-            collapsed_max = collapsed[conv_spec.y_column].max()
-            if collapsed_max is not None and float(collapsed_max) > 1.0:
-                value = float(collapsed_max)
-                failures[conv_spec.name] = (
-                    _REFUSALS["frame.moments.metric_type_conversion"],
-                    {"metric": conv_spec.name, "value": value},
-                )
+        failures.update(_conversion_total_failures(collapsed, plain))
         if failures:
             moment_specs = [spec for spec in moment_specs if spec.name not in failures]
         rows += _moment_rows(

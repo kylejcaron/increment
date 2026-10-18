@@ -1432,6 +1432,35 @@ class MomentsSource(SequentialSourceMixin):
             representation="moments",
             design=design,
         )
+        from increment._analysis_config import (
+            effective_methods,
+            resolve_configs,
+            validate_scalar_route,
+        )
+
+        self._scalar_recipe_configs: tuple[ResolvedMetricConfig, ...] = ()
+        if stored_plan is not None:
+            recorded_configs = _configs_from_compiled_plan(
+                metric_catalog,
+                stored_plan,
+                resolve_configs(
+                    metric_catalog, bindings=None, specs=None, methods=None, prior=None
+                ),
+            )
+            self._scalar_recipe_configs = tuple(
+                config
+                for config in recorded_configs
+                if any(
+                    method.variance_reduction == "cuped"
+                    for method in effective_methods(config, design=design)
+                )
+            )
+        named_metrics = {
+            str(row["metric"]) for row in self._rows if row.get("covariate_name") is not None
+        }
+        self._scalar_anonymous_metrics = frozenset(
+            metric.name for metric in metric_catalog if metric.name not in named_metrics
+        )
         validate_compiled_encouragement_plan(compiled, design)
         validate_sequential_plan(compiled, metric_catalog, design)
         self._context = SourceContext(
@@ -1443,6 +1472,16 @@ class MomentsSource(SequentialSourceMixin):
             cluster=self._compliance.cluster if self._compliance is not None else None,
             trigger_name=trigger_name,
         )
+        if self.scalar_recipe_fixed:
+            recorded = {config.metric.name for config in self.scalar_recipe_configs}
+            validate_scalar_route(
+                tuple(config for config in base_configs if config.metric.name in recorded),
+                route="MomentsSource",
+                representation="prepared",
+                design=design,
+                retained_configs=self.scalar_recipe_configs,
+                anonymous_metrics=self.scalar_anonymous_metrics,
+            )
         self._restore_checkpoint(rows, stored_plan)
 
     def _restore_checkpoint(
@@ -1532,7 +1571,20 @@ class MomentsSource(SequentialSourceMixin):
 
     @property
     def scalar_recipe_fixed(self) -> bool:
-        return False
+        return (
+            bool(self._scalar_recipe_configs)
+            and getattr(self.context.plan.inference, "registration", None) is None
+        )
+
+    @property
+    def scalar_recipe_configs(self) -> tuple[ResolvedMetricConfig, ...]:
+        """Scalar preparations recorded with the cube, independent of requested defaults."""
+        return self._scalar_recipe_configs
+
+    @property
+    def scalar_anonymous_metrics(self) -> frozenset[str]:
+        """Metrics without recorded input-name provenance, even when preparation is known."""
+        return self._scalar_anonymous_metrics
 
     def moments_for_method(
         self,
@@ -1820,6 +1872,14 @@ class BreakoutMomentsSource(SequentialSourceMixin):
     @property
     def scalar_recipe_fixed(self) -> bool:
         return True
+
+    @property
+    def scalar_recipe_configs(self) -> tuple[ResolvedMetricConfig, ...]:
+        return self.context.configs
+
+    @property
+    def scalar_anonymous_metrics(self) -> frozenset[str]:
+        return frozenset()
 
     def __init__(
         self,

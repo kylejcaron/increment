@@ -212,6 +212,14 @@ def effective_methods(
     return methods
 
 
+def _scalar_preparation(covariates: Sequence[CupedCovariate] | None) -> tuple[str, ...]:
+    return (
+        tuple(covariate.missing for covariate in covariates)
+        if covariates is not None
+        else ("zero",)
+    )
+
+
 def validate_scalar_route(
     configs: Sequence[ResolvedMetricConfig],
     *,
@@ -232,6 +240,7 @@ def validate_scalar_route(
     registered_plan: CompiledDecisionPlan | None = None,
     bindings: Mapping[str, Sequence[CupedCovariate]] | None = None,
     covariate_moments_available: bool | None = None,
+    anonymous_metrics: Collection[str] = (),
 ) -> None:
     """Admit effective scalar inputs against a route's retained representation.
 
@@ -291,7 +300,11 @@ def validate_scalar_route(
                 )
         for method in scalar:
             if representation == "prepared" and method.covariates not in expected:
-                if expected or method.covariates is not None:
+                preparation_matches = config.metric.name in anonymous_metrics and any(
+                    _scalar_preparation(method.covariates) == _scalar_preparation(family)
+                    for family in expected
+                )
+                if not preparation_matches and (expected or method.covariates is not None):
                     _raise("readout.scalar_method_evidence", route=route, method=method.name)
             if (
                 representation == "implicit"
@@ -350,6 +363,22 @@ def validate_readout_covariates(request: ReadoutRequest) -> None:
                 continue
             if not method.covariates:
                 continue
+            if (
+                method.variance_reduction == "cuped_multicovariate"
+                and request.scalar_bindings is not None
+            ):
+                published = {
+                    covariate.name: covariate
+                    for covariate in request.scalar_bindings.get(config.metric.name, ())
+                }
+                for covariate in method.covariates:
+                    previous = published.get(covariate.name)
+                    if previous is None:
+                        _raise(
+                            "facade.analysis_config.cuped_linear_covariates",
+                            metric=config.metric.name,
+                        )
+                    ensure_covariate_binding_compatible(previous, covariate)
             requested = frozenset(covariate.name for covariate in method.covariates)
             if request.available_covariates is not None:
                 if requested <= request.available_covariates:
