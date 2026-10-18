@@ -9,6 +9,39 @@ from increment.estimation.results import LiftEstimate
 from tests.test_cuped_route_evidence import _records, _scalar
 
 
+@pytest.mark.parametrize("mechanism", ["randomized", "observational"])
+def test_fixed_horizon_unadjusted_factory_preserves_custom_label(mechanism):
+    from increment.semantics.design import AdjustmentSet, Observational, Randomized
+
+    design = (
+        Observational(control_group="control", adjustment=AdjustmentSet(covariates=("history_a",)))
+        if mechanism == "observational"
+        else Randomized(control_group="control")
+    )
+    estimates = []
+    for label in ("naive", "comparison"):
+        method = Method.model_validate_json(Method.unadjusted(name=label).model_dump_json())
+        analysis = Analysis.from_unit_summary(
+            pa.Table.from_pylist(_records()),
+            unit="unit",
+            group="arm",
+            design=design,
+            metrics=[MetricSpec(name="outcome", decision_method=method)],
+        )
+        try:
+            (row,) = analysis.run()
+        finally:
+            analysis.close()
+        assert isinstance(row, LiftEstimate)
+        assert row.method == label
+        assert row.method_role == "decision"
+        assert row.estimand == "itt"
+        assert row.sampling_available is True
+        estimates.append(row.require_lift())
+    assert estimates[1].value == pytest.approx(estimates[0].value, rel=1e-10)
+    assert estimates[1].log_se == pytest.approx(estimates[0].log_se, rel=1e-10)
+
+
 @pytest.mark.parametrize("scalar", [False, True])
 def test_panel_repeated_conversion_refuses_before_scalar_inference(scalar):
     records = [
@@ -257,7 +290,14 @@ def _refusing_breakout_records():
     ]
 
 
-def test_encouragement_breakout_preserves_refused_scalar_decision_cells():
+@pytest.mark.integration
+@pytest.mark.parametrize("with_prior", [False, True])
+def test_encouragement_breakout_preserves_refused_scalar_decision_cells(with_prior):
+    import json
+
+    from increment import Normal
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.tables import estimates_to_readout, readout_table
     from tests.test_cuped_route_evidence import _frame
 
     scalar = _scalar("adjusted", "history_a", missing="refuse")
@@ -267,29 +307,82 @@ def test_encouragement_breakout_preserves_refused_scalar_decision_cells():
         panel=False,
         encouragement=True,
     )
-    result = analysis.run_breakout()
-    indexed = {(row.dimension_value, row.method, row.estimand): row for row in result}
-    for estimand in ("itt", "late"):
-        key = ("unavailable", "adjusted", estimand)
-        assert key in indexed
-        failed = indexed[key]
-        assert failed.method_role == "decision"
-        assert failed.lift is None
-        assert failed.failure_code == "frame.validation.metric_covariate_column"
-        assert failed.failure_context["covariate"] == "history_a"
-        assert indexed[("unavailable", "naive", estimand)].require_lift() is not None
-        assert indexed[("healthy", "adjusted", estimand)].require_lift() is not None
-    assert result.metadata is not None
-    failed_records = [
-        cell
-        for cell in result.metadata.cells
-        if cell.cell.dimension_value == "unavailable" and cell.cell.method == "adjusted"
+    try:
+        result = analysis.run_breakout(prior=Normal(mu=0.0, sigma=0.1) if with_prior else None)
+    finally:
+        analysis.close()
+    payload = json.loads(result.model_dump_json())
+    restored = ReadoutResults.model_validate_json(json.dumps(payload))
+    for collection in (result, restored):
+        indexed = {(row.dimension_value, row.method, row.estimand): row for row in collection}
+        for estimand in ("itt", "late"):
+            failed = indexed[("unavailable", "adjusted", estimand)]
+            assert failed.method_role == "decision"
+            assert failed.lift is None
+            assert failed.failure_code == "frame.validation.metric_covariate_column"
+            assert failed.failure_context["covariate"] == "history_a"
+            assert failed.posterior_available is (False if with_prior else None)
+            assert failed.posterior_reason_code == (failed.failure_code if with_prior else None)
+            assert failed.posterior_reason_context == (
+                failed.failure_context if with_prior else None
+            )
+            assert failed.sampling_available is False
+            assert failed.sampling_reason_code == failed.failure_code
+            assert failed.sampling_reason_context == failed.failure_context
+            assert indexed[("unavailable", "naive", estimand)].require_lift() is not None
+            assert indexed[("healthy", "adjusted", estimand)].require_lift() is not None
+        assert collection.metadata is not None
+        failed_records = [
+            cell
+            for cell in collection.metadata.cells
+            if cell.cell.dimension_value == "unavailable" and cell.cell.method == "adjusted"
+        ]
+        assert {cell.cell.estimand for cell in failed_records} == {"itt", "late"}
+        for record in failed_records:
+            failed = indexed[("unavailable", "adjusted", record.cell.estimand)]
+            assert record.failure is not None and record.failure.code == failed.failure_code
+            assert record.sampling is not None and record.sampling.available is False
+            assert record.sampling.reason_code == failed.failure_code
+            assert record.sampling.reason_context == failed.failure_context
+            if with_prior:
+                assert record.posterior is not None and record.posterior.available is False
+                assert record.posterior.reason_code == failed.failure_code
+                assert record.posterior.reason_context == failed.failure_context
+            else:
+                assert record.posterior is None
+        converted = [
+            row
+            for row in estimates_to_readout(collection)
+            if row["segment"] == "unavailable" and row["method"] == "adjusted"
+        ]
+        assert {row["estimand"] for row in converted} == {"itt", "late"}
+        assert all(row["sampling_available"] is False for row in converted)
+        assert all(row["point_available"] is False for row in converted)
+        assert all(row["unavailable_cell_count"] >= 2 for row in converted)
+        assert "frame.validation.metric_covariate_column" in (
+            readout_table(
+                collection.filter(lambda row: row.method == "adjusted"), nest_by="segment"
+            )
+            .gt()
+            .as_raw_html()
+        )
+    wire_failures = [
+        record
+        for record in payload["metadata"]["cells"]
+        if record["cell"]["dimension_value"] == "unavailable"
+        and record["cell"]["method"] == "adjusted"
     ]
-    assert {cell.cell.estimand for cell in failed_records} == {"itt", "late"}
-    assert all(
-        cell.failure is not None and cell.failure.code == "frame.validation.metric_covariate_column"
-        for cell in failed_records
-    )
+    assert {record["cell"]["estimand"] for record in wire_failures} == {"itt", "late"}
+    for record in wire_failures:
+        assert record["sampling"]["available"] is False
+        assert record["sampling"]["reason_code"] == record["failure"]["code"]
+        assert record["sampling"]["reason_context"] == record["failure"]["context"]
+        if with_prior:
+            assert record["posterior"]["available"] is False
+            assert record["posterior"]["reason_code"] == record["failure"]["code"]
+            assert record["posterior"]["reason_context"] == record["failure"]["context"]
+        else:
+            assert record["posterior"] is None
 
 
 @pytest.mark.parametrize("role", ["decision", "sensitivity"])
@@ -631,7 +724,15 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
 
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
-    path, con, methods, tenure, groups, revenue = _scalar_native_case(tmp_path)
+    path, con, _methods, _tenure, groups, revenue = _scalar_native_case(tmp_path)
+    orthogonal_x = {
+        "u0": -49.0,
+        "u1": 92.0,
+        "u2": -43.0,
+        "u10": 179.0,
+        "u11": -100.0,
+        "u12": -79.0,
+    }
     con.raw_sql(
         "UPDATE cov_events SET segment = 'qualifying', "
         "tenure = 10 + CAST(substr(user_id, 2) AS INTEGER) "
@@ -646,10 +747,25 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
         "WHERE event = 'exposure' AND experiment_id IS NOT NULL "
         "AND user_id IN ('u9', 'u19')"
     )
+    con.raw_sql(
+        "UPDATE cov_events SET tenure = CASE user_id "
+        "WHEN 'u0' THEN -49 WHEN 'u1' THEN 92 WHEN 'u2' THEN -43 "
+        "WHEN 'u10' THEN 179 WHEN 'u11' THEN -100 WHEN 'u12' THEN -79 "
+        "ELSE 0 END WHERE tenure IS NOT NULL"
+    )
     con.create_table(
         "coverage_events",
         obj=pa.Table.from_pylist(
             [
+                {
+                    "user_id": unit,
+                    "ts": datetime(2025, 8, 3),
+                    "event": "observed",
+                    "value": float(index % 3 + 1),
+                }
+                for index, unit in enumerate(groups)
+            ]
+            + [
                 {
                     "user_id": "outside_the_cohort",
                     "ts": datetime(2025, 8, 20),
@@ -693,7 +809,7 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
                     "unit": unit,
                     "arm": groups[unit],
                     "revenue": 0.0 if unit in {"u9", "u19"} else revenue[unit],
-                    "history_a": tenure[unit],
+                    "history_a": orthogonal_x.get(unit, 0.0),
                 }
                 for unit in groups
             ]
@@ -706,13 +822,29 @@ def test_native_single_metric_scalar_snapshot_retains_shared_horizon(tmp_path):
     (expected,) = frame.run()
     try:
         with Analysis.from_definitions("cov_test", path, con) as native:
-            (actual,) = native.run(metrics=["revenue"])
+            selected = ["revenue", "coverage"]
+            unadjusted = {
+                row.metric: row
+                for row in native.run(
+                    metrics=selected,
+                    decision_method=Method.unadjusted(),
+                    sensitivity_methods=(),
+                )
+            }["revenue"]
+            actual = {row.metric: row for row in native.run(metrics=selected)}["revenue"]
         assert isinstance(actual, LiftEstimate) and isinstance(expected, LiftEstimate)
+        assert isinstance(unadjusted, LiftEstimate)
         assert actual.require_lift().value == pytest.approx(
             expected.require_lift().value, rel=1e-10
         )
         assert actual.require_lift().log_se == pytest.approx(
             expected.require_lift().log_se, rel=1e-10
+        )
+        assert actual.require_lift().value == pytest.approx(
+            unadjusted.require_lift().value, rel=1e-10
+        )
+        assert actual.require_lift().log_se == pytest.approx(
+            unadjusted.require_lift().log_se, rel=1e-10
         )
     finally:
         con.disconnect()

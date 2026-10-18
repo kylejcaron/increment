@@ -3780,7 +3780,11 @@ def _apply_breakout_family_correction(  # noqa: PLR0915
         "family_threshold": outcome.realized_threshold,
     }
     for index, row in enumerate(results):
-        if row.method_role != "decision" or row.lift is not None:
+        if (
+            row.method_role != "decision"
+            or row.lift is not None
+            or row.failure_code not in SCALAR_COVARIATE_REFUSALS
+        ):
             continue
         key = SegmentHypothesisKey(row.metric, row.group_id, "itt", dimension, row.dimension_value)
         results[index] = row.model_copy(

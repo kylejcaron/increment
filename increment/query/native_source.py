@@ -528,21 +528,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 unscoped_queries.add(source.sql)
             return source.name
 
-        # Sources `_data_as_of` reads (declared/selected metrics' own
-        # numerator/denominator facts): freshness must see events for every
-        # unit, so these never get the enrolled-units semi-join, unlike
-        # other fact sources this snapshot also captures.
+        # Freshness sees every unit in each requested metric's fact stream,
+        # not just the enrolled units retained for outcome reduction.
         freshness_source_names: set[str] = set()
-        # An explicit empty selection captures no outcome streams.
-        horizon_metrics = (
-            (
-                *self._horizon_metrics,
-                *(metric for metric in metrics or () if metric not in self._horizon_metrics),
-            )
-            if metrics is None or metrics
-            else ()
-        )
-
+        horizon_metrics = self._horizon_metrics if metrics is None else tuple(metrics)
         for metric in horizon_metrics:
             if isinstance(metric, RatioMetric):
                 freshness_source_names.add(add_fact(metric.numerator.fact))
@@ -661,7 +650,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             design=self._context.design,
             plan=self._context.plan,
         )
-        # Preserve the observation horizon when narrowing estimator inputs.
+        # Internal narrowing keeps this enclosing readout's captured horizon.
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
             pinned._context = replace(pinned._context, configs=tuple(configs))

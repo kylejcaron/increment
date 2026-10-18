@@ -108,6 +108,11 @@ Concatenating readouts with the same decision family but different companion
 evidence retains each whole-readout source snapshot. Their decision-family
 identity remains shared; conflicting decision scopes still refuse.
 
+A warehouse readout snapshot captures the requested metric feeds and their
+declared input dependencies. That captured metric set defines its shared
+observation horizon; internal per-method or per-metric reductions retain the
+enclosing horizon. An unselected feed is not fetched just to extend a snapshot.
+
 ```python
 import numpy as np
 import polars as pl
@@ -297,6 +302,8 @@ and segment. A missing-policy refusal withholds that scalar cell, not an
 unadjusted sibling or a healthy segment. In a corrected family the unavailable
 decision cell remains a conservative non-rejection; its original refusal code
 and context are retained.
+A metric absent from a segment's queried evidence remains outside that segment's
+BH family and has no discovery verdict.
 
 Moment exports and direct `moments_source` transports retain one scalar family
 per metric. Native and artifact routes reject several distinct scalar families
@@ -358,11 +365,13 @@ pre-period covariate (`covariates=None`), not explicit property or measure
 bindings; those requests also refuse before data access. Use a unit-summary
 frame containing the explicit covariate to register that input.
 
-Sequential dispatch recognizes `Method.unadjusted(name="companion")` by its
-serialized `procedure="unadjusted"` declaration. Decision-plan, YAML, and pickle
-round trips preserve that procedure and the declared label. A bare
-`Method(name="m2")` has no such declaration and remains unsupported. This does
-not change the fixed-horizon registry of unadjusted method names.
+Fixed-horizon and sequential inference recognize
+`Method.unadjusted(name="companion")` by its serialized
+`procedure="unadjusted"` declaration. Decision-plan, YAML, and pickle round trips
+preserve that procedure and the declared label. Historical `naive` and
+`unadjusted` names remain supported. A bare `Method(name="m2")` has no such
+declaration and remains unsupported by sequential and observational adjustment
+dispatch. Registered observational names continue to select their adjustments.
 
 ### Per-metric method bindings
 
@@ -549,6 +558,12 @@ moments with outcome and uptake. Selected secondary intervals reuse the same
 method-specific evidence at the family's corrected level. Multicovariate CUPED
 is not supported under encouragement, including as a sensitivity method; such
 a request refuses with `estimation.engine.cuped_linear_encouragement`.
+
+In breakouts, a scalar missing-policy refusal withholds that method's affected
+ITT and LATE cells. Saved rows and collection metadata mark sampling unavailable
+with the original refusal code and context. If a prior was requested, posterior
+inference is unavailable for the same reason; an unrequested posterior stays
+unset. Healthy segments and other methods remain available.
 
 <!-- invisible-code-block: python
 rng = np.random.default_rng(3)

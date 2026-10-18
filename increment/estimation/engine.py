@@ -768,8 +768,12 @@ def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _Win
 
 
 def _is_unadjusted_method(method: Method) -> bool:
-    """Whether a method uses a registered unadjusted dispatch name."""
-    return method.variance_reduction == "none" and method.name in {"naive", "unadjusted"}
+    """Whether a declared procedure or historical label selects unadjusted inference."""
+    return method.variance_reduction == "none" and (
+        method.name in {"naive", "unadjusted"}
+        or method.procedure == "unadjusted"
+        and not method.is_observational
+    )
 
 
 def _validate_unique_method_names(

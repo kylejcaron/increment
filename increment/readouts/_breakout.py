@@ -190,6 +190,7 @@ def _encouragement_breakout_rows(
                                     alternative="two-sided",
                                     code=exc.code,
                                     context=exc.context,
+                                    prior=configs[metric.name].prior,
                                     estimand=estimand,
                                 )
                     continue

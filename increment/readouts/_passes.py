@@ -143,6 +143,7 @@ def _append_lift_cell_failure(
     alternative: str,
     code: str,
     context: Mapping[str, object],
+    prior: Prior | None,
     estimand: Literal["itt", "late"] = "itt",
 ) -> None:
     from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
@@ -172,6 +173,12 @@ def _append_lift_cell_failure(
                 method_role=method_role,
                 failure_code=code,
                 failure_context=failure_context,
+                sampling_available=False,
+                sampling_reason_code=code,
+                sampling_reason_context=failure_context,
+                posterior_available=False if prior is not None else None,
+                posterior_reason_code=code if prior is not None else None,
+                posterior_reason_context=failure_context if prior is not None else None,
             )
         )
 
@@ -309,6 +316,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
                         "reason": exc.reason,
                         "display": reason,
                     },
+                    prior=prior,
                 )
                 _warn(
                     "readouts.run.cell_refused",
@@ -334,6 +342,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
                     method_roles=method_roles,
                     code=exc.code,
                     context=exc.context,
+                    prior=prior,
                 )
                 _warn(
                     "readouts.run.cell_refused",
@@ -433,6 +442,7 @@ def _estimate_pass(  # noqa: PLR0913
                         alternative=test.alternative,
                         code=exc.code,
                         context=exc.context,
+                        prior=config.prior,
                     )
                 continue
         available.append(method)
@@ -462,11 +472,6 @@ def _estimate_pass(  # noqa: PLR0913
                 "preferred_direction": metric.declared_preferred_direction,
                 "null_lift": getattr(test, "null_lift", 0.0),
                 "null_abs": getattr(test, "null_abs", None),
-                "posterior_available": False if config.prior is not None else None,
-                "posterior_reason_code": row.failure_code if config.prior is not None else None,
-                "posterior_reason_context": row.failure_context
-                if config.prior is not None
-                else None,
             }
         )
         for row in failed_rows

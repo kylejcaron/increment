@@ -135,15 +135,22 @@ def run(
     # before any source snapshot or evidence read begins.
     for config in configs:
         _config_snapshot(config, design)
-    # Percentile readouts need the raw source snapshot, and an observational readout reads
-    # unit frames and moments that must be one execution. An empty selection reads nothing, so
-    # it never opens a snapshot (a definitions-backed capture writes TEMP tables). Metadata/
-    # request validation above is intentionally complete before capture.
+    # Raw frames and method-scoped covariates share one capture across the
+    # selected metrics, including their common observation horizon. An empty
+    # selection reads nothing. Request validation is complete before capture.
     needs_live_evidence = bool(selected) and not isinstance(
         src.context.plan.inference, SEQUENTIAL_POLICIES
     )
     needs_snapshot = needs_live_evidence and (
         design.mechanism == "observational"
+        or (
+            not _design_compliance_only(src, estimands)
+            and any(
+                method.variance_reduction in ("cuped", "cuped_multicovariate")
+                for config in configs
+                for method in effective_methods(config, design=design)
+            )
+        )
         or any(
             getattr(getattr(metric, "winsorization", None), "has_percentile", False)
             for metric in selected

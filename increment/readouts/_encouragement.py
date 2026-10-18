@@ -188,6 +188,7 @@ def _group_method_evidence(
                         alternative=group.alternative,
                         code=exc.code,
                         context=exc.context,
+                        prior=group.prior,
                         estimand=estimand,
                     )
             continue
@@ -322,11 +323,6 @@ def encouragement_rows(
                     ),
                     "null_lift": group.null_lift,
                     "null_abs": group.null_abs,
-                    "posterior_available": False if group.prior is not None else None,
-                    "posterior_reason_code": row.failure_code if group.prior is not None else None,
-                    "posterior_reason_context": row.failure_context
-                    if group.prior is not None
-                    else None,
                 }
             )
             for row in failed_rows
