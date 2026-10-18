@@ -1126,6 +1126,8 @@ def test_same_role_relations_keep_distinct_locators_and_snapshot_reads_second() 
                 ]
             ),
         )
+        assert first_dimension_ref.digest_format == 2
+        assert second_dimension_ref.digest_format == 2
         assert second_dimension_ref.relation.name.endswith("breakout_dimension_2")
         _, _, first_def_sha, first_src_sha = _breakout_definition_hashes("first_dim", "facts")
         _, _, second_def_sha, second_src_sha = _breakout_definition_hashes("second_dim", "facts")
@@ -1168,6 +1170,22 @@ def test_same_role_relations_keep_distinct_locators_and_snapshot_reads_second() 
         manifest_body["manifest_sha256"] = manifest_sha256(prototype)
         ref = publication.publish_manifest(UnitDayArtifactManifest(**manifest_body))
     with store.open_snapshot(ref) as snapshot:
+        from increment.query.artifact_extensions import validate_extension
+
+        request = {
+            "kind": "breakout_dimension",
+            "property_name": "first_dim",
+            "source_name": "facts",
+        }
+        assert (
+            validate_extension(
+                snapshot,
+                first_extension,
+                request=request,
+                experiment_id="demo",
+            )[0]["dimension_value"]
+            == "first"
+        )
         assert snapshot.verify_relation(
             second_dimension_ref, expected_role="breakout_dimension"
         ).execute()["dimension_value"].tolist() == ["second"]

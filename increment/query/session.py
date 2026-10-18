@@ -54,7 +54,6 @@ from increment.query.artifact_digest import (
 from increment.query.artifact_digest import REFUSALS as DIGEST_REFUSALS
 from increment.query.fact_resolution import _dim_joined_fact_table
 from increment.query.schemas import (
-    ARTIFACT_BASE_RELATION_ROLES,
     ARTIFACT_RELATION_PRIMARY_KEYS,
     ARTIFACT_RELATION_SCHEMAS,
 )
@@ -142,6 +141,15 @@ _REFUSALS = refusals(
                 "by name"
             ),
             keys=frozenset({"relations", "artifact_id", "generation_id", "route"}),
+        ),
+        "query.session.warehouse_artifact.verification_unavailable": RefusalSpec(
+            "query.session.warehouse_artifact.verification_unavailable",
+            InvalidRequestError,
+            template=(
+                "artifact relation {relation!r} uses digest format {digest_format}, which "
+                "cannot be verified warehouse-side; {route}"
+            ),
+            keys=frozenset({"relation", "digest_format", "route"}),
         ),
         "query.session.warehouse_artifact.unknown_digest_format": "unknown artifact relation digest format {digest_format!r}",
     },
@@ -827,10 +835,7 @@ class WarehouseArtifactStore:
         )
 
     def _digest_table_for_write(self, table: ir.Table, role: str):
-        """Pick the fastest digest this connection can compute for *role*
-        and stamp it with the exact format id that codec produced."""
-        if role not in ARTIFACT_BASE_RELATION_ROLES:
-            return self._digest_table(table, role, digest_format=1)
+        """Select a supported write codec and retain its own format identifier."""
         if self._con.name in _SQL_DIGEST_BACKENDS:
             return self._digest_table(table, role, digest_format=SQL_DIGEST_FORMAT)
         return self._digest_table(table, role, digest_format=BUCKETED_DIGEST_FORMAT)
@@ -870,10 +875,6 @@ class WarehouseArtifactStore:
                 overwrite=False,
             )
             persisted = self._con.table(locator.name, database=cast("Any", self._database))
-            # Only ARTIFACT_BASE_RELATION_ROLES use the fast digest (format 2 or 3,
-            # as the backend supports). Extension roles stay on format 1 because
-            # validate_extension always recomputes content_sha256(); a fast digest
-            # would make every later read refuse with artifact.extension.invalid.
             digest = self._digest_table_for_write(persisted, role)
         except BaseException:
             try:
@@ -1022,6 +1023,24 @@ class WarehouseArtifactStore:
                 )
         return generation
 
+    def _preflight_relation_formats(self, relation_refs: tuple[ArtifactRelationRef, ...]) -> None:
+        for relation_ref in relation_refs:
+            if relation_ref.digest_format not in {1, SQL_DIGEST_FORMAT, BUCKETED_DIGEST_FORMAT}:
+                _raise(
+                    "query.session.warehouse_artifact.unknown_digest_format",
+                    digest_format=relation_ref.digest_format,
+                )
+            if (
+                relation_ref.digest_format != SQL_DIGEST_FORMAT
+                or self._con.name not in _SQL_DIGEST_BACKENDS
+            ):
+                _raise(
+                    "query.session.warehouse_artifact.verification_unavailable",
+                    relation=relation_ref.relation.name,
+                    digest_format=relation_ref.digest_format,
+                    route="republish from trusted definitions with warehouse-side integrity enabled",
+                )
+
     @contextmanager
     def open_snapshot(self, ref: UnitDayArtifactRef):
         validate_trusted_ref(ref)
@@ -1037,6 +1056,13 @@ class WarehouseArtifactStore:
             )
         relations = copy.deepcopy(generation.relations)
         manifest = copy.deepcopy(generation.manifest)
+        self._preflight_relation_formats(
+            (
+                manifest.base.exposures,
+                manifest.base.measure_stats,
+                *(extension.relation for extension in manifest.extensions),
+            )
+        )
         created_snapshots: list[tuple[str, Any]] = []
 
         def drop_snapshot(name: str, database: Any) -> None:
