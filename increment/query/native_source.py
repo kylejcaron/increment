@@ -170,6 +170,9 @@ if TYPE_CHECKING:
     from increment.sources import Grain, MomentSource
 
 
+_SNAPSHOT_HORIZON_RELATION_KEY = "__increment_readout_snapshot_horizon__"
+
+
 @dataclass(frozen=True, slots=True)
 class _ScalarBreakoutPreparation:
     dimension: str
@@ -509,7 +512,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
-        snapshot_horizon_sql: str | None = None,
+        snapshot_horizon_relation: Table | None = None,
     ) -> DefinitionsMomentSource:
         """Capture the experiment's input streams before any data validation."""
         if self._session._source_tables is not None:
@@ -628,9 +631,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else:
                 unit_col = dim.entity if dim.entity == self._experiment.unit else None
                 column_hints[dim.sql] = (unit_col, None)
-        if snapshot_horizon_sql is not None:
-            queries.append(snapshot_horizon_sql)
-            column_hints[snapshot_horizon_sql] = (None, None)
         for source in sources.values():
             validate_fact_source_schema(
                 self._session.source_sql(source.sql),
@@ -647,7 +647,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         scope = SourceScope(enrolled_units=enrolled, window_start=window_start)
         pinned = DefinitionsMomentSource(
-            self._session.pin_sources(tuple(queries), column_hints=column_hints, scope=scope),
+            self._session.pin_sources(
+                tuple(queries),
+                column_hints=column_hints,
+                scope=scope,
+                extra_relations=(
+                    {}
+                    if snapshot_horizon_relation is None
+                    else {_SNAPSHOT_HORIZON_RELATION_KEY: snapshot_horizon_relation}
+                ),
+            ),
             self._experiment,
             self._metrics,
             store="none",
@@ -715,7 +724,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_facts: Sequence[str] = (),
         site_volume_metrics: frozenset[str] = frozenset(),
         configs: Sequence[ResolvedMetricConfig] | None = None,
-        snapshot_horizon_sql: str | None = None,
+        snapshot_horizon_relation: Table | None = None,
     ):
         """Bind assignment, outcomes, freshness and extensions to one execution."""
         pinned = self._pinned_source(
@@ -724,7 +733,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             uptake_facts=uptake_facts,
             site_volume_metrics=site_volume_metrics,
             configs=configs,
-            snapshot_horizon_sql=snapshot_horizon_sql,
+            snapshot_horizon_relation=snapshot_horizon_relation,
         )
         try:
             yield pinned
@@ -775,28 +784,24 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             and self._session.source_snapshot_evidence is None
             and self._session._source_tables is None
         )
-        snapshot_horizon_sql = None
+        snapshot_horizon_relation = None
         if use_shared_horizon:
             horizon = self._union_event_horizon(metrics)
-            horizon_relation = (
+            snapshot_horizon_relation = (
                 ibis.literal(1).name("_one").as_table().select(edge=horizon.cast("date"))
-            )
-            snapshot_horizon_sql = ibis_to_sql(
-                horizon_relation, dialect=self._backend or self._con.name
             )
         with self._pinned_source_execution(
             metrics=metrics,
             uptake_facts=uptake_facts,
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
             configs=configs,
-            snapshot_horizon_sql=snapshot_horizon_sql,
+            snapshot_horizon_relation=snapshot_horizon_relation,
         ) as pinned:
             previous_horizon = pinned._fixed_event_horizon
             previous_override = pinned._has_fixed_event_horizon_override
             if use_shared_horizon:
-                assert snapshot_horizon_sql is not None
                 horizon_row = pinned._session.fetch_arrow(
-                    pinned._session.source_sql(snapshot_horizon_sql)
+                    pinned._session.source_sql(_SNAPSHOT_HORIZON_RELATION_KEY)
                 ).to_pylist()[0]
                 horizon_edge = horizon_row["edge"]
                 if isinstance(horizon_edge, dt.datetime):

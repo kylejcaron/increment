@@ -717,6 +717,54 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
         con.disconnect()
 
 
+def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tmp_path):
+    from typing import Any
+
+    import yaml
+
+    from tests.test_cuped_covariate_sources import _scalar_native_case
+
+    path, con, _methods, _tenure, _groups, _revenue = _scalar_native_case(tmp_path)
+    definitions = yaml.safe_load(path.read_text())
+    definitions["experiments"][0]["end"] = None
+    path.write_text(yaml.safe_dump(definitions))
+
+    def read(backend):
+        with Analysis.from_definitions(
+            "cov_test", path, con, backend=backend, store="none"
+        ) as analysis:
+            direct = list(analysis.run())
+
+            def snapshot_read(isolated: Any) -> Any:
+                return list(isolated.run())
+
+            snapshotted = analysis.dashboard_snapshot(
+                snapshot_read,
+                metrics=analysis.metrics,
+            )
+        return direct, snapshotted
+
+    try:
+        duckdb_direct, duckdb_snapshot = read("duckdb")
+        bigquery_direct, bigquery_snapshot = read("bigquery")
+        for expected, actual in (
+            (duckdb_direct, bigquery_direct),
+            (duckdb_snapshot, bigquery_snapshot),
+        ):
+            assert [(row.metric, row.method, row.role) for row in actual] == [
+                (row.metric, row.method, row.role) for row in expected
+            ]
+            for expected_row, actual_row in zip(expected, actual, strict=True):
+                assert actual_row.require_lift().value == pytest.approx(
+                    expected_row.require_lift().value
+                )
+                assert actual_row.require_lift().log_se == pytest.approx(
+                    expected_row.require_lift().log_se
+                )
+    finally:
+        con.disconnect()
+
+
 def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monkeypatch):
     from datetime import datetime
 
