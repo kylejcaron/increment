@@ -1745,6 +1745,174 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
         native.close()
 
 
+def _triggered_scalar_covariate_case(
+    tmp_path: Path, *, binding: str, scenario: str
+) -> tuple[Any, Any, Any, str, str]:
+    """Publish a scalar covariate case whose assigned and triggered populations differ."""
+
+    definitions_path = _triggered_subset_definitions(tmp_path)
+    payload = yaml.safe_load(definitions_path.read_text(encoding="utf-8"))
+    source = next(source for source in payload["fact_sources"] if source["name"] == "event_log")
+    experiment = next(
+        experiment
+        for experiment in payload["experiments"]
+        if experiment["name"] == "new_onboarding_v2"
+    )
+    metric = "purchase_rate"
+    covariate_name = "tenure" if binding == "property" else "preperiod_page_views"
+    missing = {"outside": "refuse", "impute": "impute", "all_null": "impute"}[scenario]
+
+    if binding == "property":
+        if scenario == "outside":
+            value_sql = (
+                "CASE WHEN country_code = 'US' THEN "
+                "CAST(abs(hash(user_id)) % 100 AS DOUBLE) ELSE NULL END"
+            )
+        elif scenario == "impute":
+            seed = _seed_event_log_input(with_pre_period=True, with_late_returns=False)
+            missing_user = next(
+                row["user_id"] for row in seed.to_pylist() if row["country_code"] == "US"
+            )
+            value_sql = (
+                f"CASE WHEN user_id = '{missing_user}' THEN NULL ELSE "
+                "CAST(abs(hash(user_id)) % 100 AS DOUBLE) END"
+            )
+        else:
+            value_sql = (
+                "CASE WHEN country_code = 'US' THEN NULL ELSE "
+                "CAST(abs(hash(user_id)) % 100 AS DOUBLE) END"
+            )
+        source["sql"] = source["sql"].replace("SELECT *", f"SELECT *, {value_sql} AS tenure", 1)
+        source.setdefault("properties", []).append(
+            {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "static"}
+        )
+        covariate = {"name": covariate_name, "kind": "continuous", "missing": missing}
+        experiment["plan"]["secondaries"] = [
+            item
+            for item in experiment["plan"]["secondaries"]
+            if not (isinstance(item, dict) and item.get("metric") == metric)
+        ] + [
+            {
+                "metric": metric,
+                "decision_method": {
+                    "name": "cuped",
+                    "variance_reduction": "cuped",
+                    "covariates": [covariate],
+                },
+            }
+        ]
+    else:
+        filters = (
+            [{"property": "country", "op": "equals", "values": ["US"]}]
+            if scenario == "outside"
+            else (
+                [{"property": "country", "op": "not_equals", "values": ["US"]}]
+                if scenario == "all_null"
+                else []
+            )
+        )
+        covariate = {
+            "name": covariate_name,
+            "kind": "continuous",
+            "missing": missing,
+            "measure": {"fact": "page_view", "aggregation": "count", "filters": filters},
+        }
+        experiment["plan"]["secondaries"] = [
+            item
+            for item in experiment["plan"]["secondaries"]
+            if not (isinstance(item, dict) and item.get("metric") == metric)
+        ] + [
+            {
+                "metric": metric,
+                "decision_method": {
+                    "name": "cuped",
+                    "variance_reduction": "cuped",
+                    "covariates": [covariate],
+                },
+            }
+        ]
+
+    definitions_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    con, native, context, store = _native(
+        definitions=definitions_path,
+        with_pre_period=True,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=datetime(2030, 1, 1, tzinfo=UTC),
+            complete_through_by_feed={"event_log": datetime(2030, 1, 1, tzinfo=UTC)},
+        ),
+    )
+    extensions = _extensions(
+        context,
+        "trigger_population",
+        "trigger_measure_stats",
+        "assignment_counts",
+        "unit_covariate",
+        "cuped_measure_covariate",
+    )
+    published = native.publish_unit_day_artifact(store, extensions=extensions)
+    adopted = Analysis.from_unit_day_artifact(store, published, expected_context=context)
+    return con, native, adopted, metric, covariate_name
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_refuse_ignores_missing_outside_population(
+    tmp_path: Path, binding: str
+) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="outside"
+    )
+    try:
+        rows = lift_rows(adopted.run(metrics=[metric_name]))
+        assert rows
+        assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_imputation_uses_triggered_population_mean(
+    tmp_path: Path, binding: str
+) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="impute"
+    )
+    try:
+        expected = lift_rows(native.run(metrics=[metric_name]))
+        actual = lift_rows(adopted.run(metrics=[metric_name]))
+        expected_triggered = next(row for row in expected if row.analysis_population == "triggered")
+        actual_triggered = next(row for row in actual if row.analysis_population == "triggered")
+        expected_lift = expected_triggered.require_lift()
+        actual_lift = actual_triggered.require_lift()
+        assert actual_lift.value == pytest.approx(expected_lift.value, rel=1e-9)
+        assert actual_lift.log_se == pytest.approx(expected_lift.log_se, rel=1e-9)
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_all_null_within_population_refuses(tmp_path: Path, binding: str) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="all_null"
+    )
+    try:
+        rows = list(adopted.run(metrics=[metric_name]))
+        triggered_cuped = next(
+            row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
+        )
+        assert triggered_cuped.failure_code == "frame.validation.metric_covariate_impute_all_null"
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_artifact_run_breakout_supports_trigger_with_required_evidence(tmp_path: Path) -> None:

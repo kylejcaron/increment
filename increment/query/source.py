@@ -1110,6 +1110,17 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         self, extension: Any, *, request: Mapping[str, Any] | None = None
     ) -> list[Mapping[str, Any]]:
         if isinstance(self._population_units, ir.Table):
+            if extension.kind in {"assignment_counts", "site_volume"}:
+                return list(
+                    read_extension(
+                        self._snapshot,
+                        extension,
+                        request=request,
+                        context=self._manifest.context,
+                        experiment_id=self._manifest.experiment_id,
+                        exposure_relation=self._ensure("exposures"),
+                    )
+                )
             relation = self._verified_extension_relation(
                 extension, request=request or _artifact_request(extension)
             )
@@ -1458,6 +1469,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         covariate_relation = self._verified_extension_relation(
             extension, request=_artifact_request(extension)
         )
+        if self._population_units is not None:
+            covariate_relation = restrict_to_units(covariate_relation, self._population_units)
         is_missing = covariate_relation.value.isnull()
         if "value_is_missing" in covariate_relation.columns:
             is_missing = is_missing | covariate_relation.value_is_missing
