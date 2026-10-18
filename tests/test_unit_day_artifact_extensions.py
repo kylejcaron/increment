@@ -33,6 +33,7 @@ from increment.query.artifact_extensions import (
     read_site_volume_extension,
     validate_contrast_extension,
     validate_observational_extension,
+    verify_extension_relation,
 )
 from increment.query.artifact_publish import artifact_context
 from increment.query.native_contract import SitewideEvidence
@@ -1484,6 +1485,67 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
     finally:
         adopted.close()
         native.close()
+
+
+def test_dimension_relation_verifier_rejects_missing_and_empty_coverage(tmp_path) -> None:
+    import ibis
+
+    from tests.test_unit_day_artifact_facade import _extensions, _native
+
+    con, native, context, store = _native()
+    try:
+        ref = native.publish_unit_day_artifact(
+            store, extensions=_extensions(context, "breakout_dimension")
+        )
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+            extension = next(
+                item for item in manifest.extensions if item.kind == "breakout_dimension"
+            )
+            request = next(
+                entry.request
+                for entry in unit_day_artifact_extension_catalog(manifest.context)
+                if entry.request.kind == "breakout_dimension"
+            )
+            exposures = snapshot.verify_relation(manifest.base.exposures, expected_role="exposures")
+            first = exposures.limit(1).execute().to_dict("records")[0]
+            omitted_exposure = ibis.memtable(
+                [{**first, "unit_id": "omitted-unit"}], schema=exposures.schema()
+            )
+            extended_exposures = exposures.union(omitted_exposure)
+            empty_extension = extension.model_copy(
+                update={"relation": extension.relation.model_copy(update={"row_count": 0})}
+            )
+
+            class SnapshotWithEmptyDimension:
+                def verify_relation(self, relation, *, expected_role):
+                    if expected_role == "breakout_dimension":
+                        verified = snapshot.verify_relation(
+                            extension.relation, expected_role=expected_role
+                        )
+                        return verified.limit(0)
+                    return snapshot.verify_relation(relation, expected_role=expected_role)
+
+                def __getattr__(self, name):
+                    return getattr(snapshot, name)
+
+            for exposure_relation, candidate, candidate_snapshot in (
+                (extended_exposures, extension, snapshot),
+                (exposures, empty_extension, SnapshotWithEmptyDimension()),
+            ):
+                with pytest.raises(ArtifactContractError) as caught:
+                    verify_extension_relation(
+                        cast(ArtifactSnapshot, candidate_snapshot),
+                        candidate,
+                        request=request,
+                        context=manifest.context,
+                        experiment_id=manifest.experiment_id,
+                        exposure_relation=exposure_relation,
+                    )
+                assert caught.value.code == "artifact.extension.invalid"
+    finally:
+        native.close()
+        con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")

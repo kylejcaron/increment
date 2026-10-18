@@ -490,16 +490,15 @@ def test_format_one_local_codec_matches_saved_previous_writer_relation_digests(
         con.disconnect()
 
 
-# Legacy relation digests have no warehouse-side verifier and must refuse before
-# a snapshot can transfer relation rows for client-side hashing.
+# A warehouse without a SQL verifier refuses before publication can assemble,
+# persist, hash, or transfer any unit-level relation.
 @pytest.mark.integration
 @pytest.mark.slow
-def test_previous_writer_relations_refuse_without_warehouse_verification(
+def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(session_module, "_SQL_DIGEST_BACKENDS", frozenset())
-    con, native, _context, store, ref = _published()
-
+    con, native, _context, store = _native()
     real_to_pyarrow = con.to_pyarrow
 
     def guarded_to_pyarrow(table, *args, **kwargs):
@@ -508,18 +507,18 @@ def test_previous_writer_relations_refuse_without_warehouse_verification(
         return real_to_pyarrow(table, *args, **kwargs)
 
     def unexpected_batch_transfer(*_args, **_kwargs):
-        raise AssertionError("legacy refusal started relation digest transfer")
+        raise AssertionError("publication started relation digest transfer before preflight")
 
     monkeypatch.setattr(con, "to_pyarrow", guarded_to_pyarrow)
     monkeypatch.setattr(con, "to_pyarrow_batches", unexpected_batch_transfer)
     try:
         with pytest.raises(CodedError) as refused:
-            with store.open_snapshot(ref):
-                pass
+            native.publish_unit_day_artifact(store)
         assert refused.value.code == "query.session.warehouse_artifact.verification_unavailable"
-        assert str(refused.value.context["relation"]).endswith("_exposures")
+        assert refused.value.context["relation"] == "<publication>"
         assert refused.value.context["digest_format"] == 3
         assert "republish from trusted definitions" in str(refused.value.context["route"])
+        assert not store.visible_manifests
     finally:
         native.close()
         con.disconnect()
@@ -862,6 +861,172 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
             adopted.close()
         native.close()
         con.disconnect()
+
+
+@pytest.mark.integration
+def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_warehouse_only(  # noqa: PLR0915
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    definitions = _definitions(tmp_path, trigger="session_start")
+    payload = yaml.safe_load(Path(definitions).read_text())
+    event_source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    event_source["sql"] = event_source["sql"].replace(
+        "SELECT *",
+        "SELECT *, CASE WHEN user_id LIKE '%0' THEN 1.0 ELSE 2.0 END AS tenure",
+        1,
+    )
+    event_source["properties"].append(
+        {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "static"}
+    )
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["n_pre_periods"] = 0
+    experiment["end"] = date(2025, 3, 31)
+    experiment["plan"]["secondaries"] = [
+        {
+            "metric": "purchase_rate",
+            "decision_method": {
+                "name": "scalar",
+                "variance_reduction": "cuped",
+                "covariates": [
+                    {
+                        "name": "pre_tenure",
+                        "kind": "continuous",
+                        "property": "tenure",
+                        "source": "event_log",
+                        "missing": "zero",
+                    }
+                ],
+            },
+        }
+    ]
+    Path(definitions).write_text(yaml.safe_dump(payload))
+
+    def set_edge_exposure(con) -> str:
+        first_page_view = (
+            con.table("event_log", database="analytics")
+            .filter(ibis._.event == "page_view")
+            .order_by("event_at")
+            .select("user_id", "event_at")
+            .limit(1)
+            .execute()
+        )
+        unit_id = str(first_page_view.iloc[0]["user_id"])
+        original_ts = first_page_view.iloc[0]["event_at"].isoformat(sep=" ")
+        con.raw_sql(
+            "UPDATE analytics.event_log "
+            "SET event_at = TIMESTAMP '2025-03-06 23:00:00' "
+            f"WHERE event = 'page_view' AND user_id = '{unit_id}' "
+            f"AND event_at = TIMESTAMP '{original_ts}'"
+        )
+        return unit_id
+
+    evidence = SourceSnapshotEvidence(
+        datetime(2025, 3, 31, tzinfo=UTC), {"event_log": datetime(2025, 3, 31, tzinfo=UTC)}
+    )
+
+    con_utc, native_utc, _context_utc, _store_utc = _native(
+        definitions=definitions, source_snapshot_evidence=evidence
+    )
+    con_la, native_la, context_la, store_la = _native(
+        definitions=definitions, source_snapshot_evidence=evidence
+    )
+
+    real_to_pyarrow_batches = con_la.to_pyarrow_batches
+    real_to_pyarrow = con_la.to_pyarrow
+    forbidden_columns = (
+        {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"},
+        {"experiment_id", "unit_id", "value"},
+        {"experiment_id", "unit_id", "first_trigger_ts"},
+        {"experiment_id", "unit_id", "ds", "measure_key", "n_events", "sum_value"},
+    )
+
+    def guarded_to_pyarrow(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit-level artifact rows crossed the Python boundary"
+            )
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    def guarded_to_pyarrow_batches(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit-level artifact rows crossed the Python boundary"
+            )
+        return real_to_pyarrow_batches(table, *args, **kwargs)
+
+    monkeypatch.setattr(con_la, "to_pyarrow_batches", guarded_to_pyarrow_batches)
+
+    monkeypatch.setattr(con_la, "to_pyarrow", guarded_to_pyarrow)
+    adopted = None
+    try:
+        unit_id = set_edge_exposure(con_utc)
+        assert set_edge_exposure(con_la) == unit_id
+        con_utc.raw_sql("SET TimeZone='UTC'")
+        expected = lift_rows(native_utc.run(metrics=["purchase_rate"]))
+
+        con_la.raw_sql("SET TimeZone='America/Los_Angeles'")
+        ref = native_la.publish_unit_day_artifact(
+            store_la,
+            extensions=_extensions(
+                context_la,
+                "unit_covariate",
+                "trigger_population",
+                "trigger_measure_stats",
+                "assignment_counts",
+            ),
+        )
+        adopted = Analysis.from_unit_day_artifact(store_la, ref, expected_context=context_la)
+        actual = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        assert [(row.metric, row.group_id, row.method) for row in actual] == [
+            (row.metric, row.group_id, row.method) for row in expected
+        ]
+        for actual_row, expected_row in zip(actual, expected, strict=True):
+            assert actual_row.require_lift().value == pytest.approx(
+                expected_row.require_lift().value, rel=1e-12
+            )
+            assert actual_row.require_lift().lb == pytest.approx(
+                expected_row.require_lift().lb, rel=1e-12
+            )
+            assert actual_row.require_lift().ub == pytest.approx(
+                expected_row.require_lift().ub, rel=1e-12
+            )
+        with store_la.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+            exposure_relation = snapshot.verify_relation(
+                manifest.base.exposures, expected_role="exposures"
+            )
+            row = (
+                exposure_relation.filter(ibis._.unit_id == unit_id)
+                .select("first_exposure_ts", "first_exposure_date")
+                .execute()
+                .to_dict("records")[0]
+            )
+            trigger_ref = next(
+                item for item in manifest.extensions if item.kind == "trigger_population"
+            )
+            trigger_relation = snapshot.verify_relation(
+                trigger_ref.relation, expected_role="trigger_population"
+            )
+            trigger_row = (
+                trigger_relation.filter(ibis._.unit_id == unit_id)
+                .select("first_trigger_ts")
+                .execute()
+                .to_dict("records")[0]
+            )
+        assert row["first_exposure_ts"] == datetime(2025, 3, 6, 23, tzinfo=UTC)
+        assert row["first_exposure_date"].date() == date(2025, 3, 6)
+        assert trigger_row["first_trigger_ts"] == datetime(2025, 3, 6, 23, tzinfo=UTC)
+    finally:
+        if adopted is not None:
+            adopted.close()
+        native_utc.close()
+        native_la.close()
+        con_utc.disconnect()
+        con_la.disconnect()
 
 
 @pytest.mark.integration

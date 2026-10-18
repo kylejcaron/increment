@@ -86,6 +86,16 @@ def _wire_uptake_timestamp(ts: ir.TimestampColumn, experiment: Experiment) -> ir
     return advance.ifelse(ceiling, floor)
 
 
+def _as_utc_timestamp(value: ir.TimestampColumn) -> ir.TimestampValue:
+    """Interpret a naive timestamp as UTC while preserving explicit offsets."""
+    text = value.cast("string")
+    has_offset = text.re_search(r"(?:[+-]\d{2}(?::?\d{2})?|Z)$")
+    return ibis.timestamp(
+        ibis.ifelse(has_offset, text, text + "+00:00"),
+        timezone="UTC",
+    )
+
+
 def _relation_table(rows: list[dict[str, object]], role: str) -> ir.Table:
     type_names = {
         "STRING": "string",
@@ -356,6 +366,7 @@ class ArtifactPublisher:
         Verify visible manifests and backing relations or drop the generation before retrying.
         ``source`` must be the live DefinitionsMomentSource for extension protocol checks.
         """
+        store.preflight_publication()
         context = artifact_context(
             self._defs,
             self._experiment,
@@ -633,9 +644,9 @@ class ArtifactPublisher:
             experiment_id=exposures.experiment_id.cast("string"),
             unit_id=exposures.unit_id.cast("string"),
             group_id=exposures.group_id.cast("string"),
-            first_exposure_ts=_wire_uptake_timestamp(
-                exposures.first_exposure_ts, self._experiment
-            ).cast("timestamp('UTC')"),
+            first_exposure_ts=_as_utc_timestamp(
+                _wire_uptake_timestamp(exposures.first_exposure_ts, self._experiment)
+            ),
             first_exposure_date=exposures.first_exposure_date,
         )
         exposure_bounds = self._con.to_pyarrow(
@@ -1005,7 +1016,7 @@ class ArtifactPublisher:
         table = population.select(
             experiment_id=ibis.literal(self._experiment.name),
             unit_id=population.unit_id.cast("string"),
-            first_trigger_ts=population.first_trigger_ts.cast("timestamp('UTC')"),
+            first_trigger_ts=_as_utc_timestamp(population.first_trigger_ts),
         )
         evidence = self._source_snapshot_evidence
         trigger = next(
