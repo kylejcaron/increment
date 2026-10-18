@@ -1811,11 +1811,12 @@ def _triggered_scalar_covariate_case(
                 else []
             )
         )
+        measure_fact = "purchase" if scenario == "outside" else "page_view"
         covariate = {
             "name": covariate_name,
             "kind": "continuous",
             "missing": missing,
-            "measure": {"fact": "page_view", "aggregation": "count", "filters": filters},
+            "measure": {"fact": measure_fact, "aggregation": "count", "filters": filters},
         }
         experiment["plan"]["secondaries"] = [
             item
@@ -1841,6 +1842,30 @@ def _triggered_scalar_covariate_case(
             complete_through_by_feed={"event_log": datetime(2030, 1, 1, tzinfo=UTC)},
         ),
     )
+    if binding == "measure" and scenario == "outside":
+        con.raw_sql(
+            """
+            INSERT INTO analytics.event_log
+            SELECT
+                exposure.event_at - INTERVAL '1 day',
+                exposure.user_id,
+                exposure.session_id || '-m6-' || CAST(samples.i AS VARCHAR),
+                'purchase',
+                CAST(1.0 AS DOUBLE),
+                CAST(NULL AS DOUBLE),
+                exposure.country_code,
+                exposure.device_type,
+                exposure.plan,
+                CAST(NULL AS VARCHAR),
+                CAST(NULL AS VARCHAR)
+            FROM analytics.event_log AS exposure
+            CROSS JOIN range(3) AS samples(i)
+            WHERE exposure.experiment_id = 'new_onboarding_v2'
+              AND exposure.event = 'page_view'
+              AND exposure.country_code = 'US'
+              AND samples.i < abs(hash(exposure.user_id) % 3) + 1
+            """
+        )
     extensions = _extensions(
         context,
         "trigger_population",
@@ -1866,6 +1891,10 @@ def test_triggered_scalar_refuse_ignores_missing_outside_population(
         rows = lift_rows(adopted.run(metrics=[metric_name]))
         assert rows
         assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
+        triggered_cuped = next(
+            row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
+        )
+        assert triggered_cuped.lift is not None
     finally:
         adopted.close()
         native.close()
