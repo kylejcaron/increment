@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
@@ -1376,7 +1376,37 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         ):
             refuse_observational_quantile(metric)
 
+    @contextmanager
+    def cuped_relation(self, metric: Metric, request):
+        """Expose only a verified warehouse relation to compact CUPED reduction."""
+        if request.population != self._population:
+            if request.population == "triggered" and self._population == "assigned":
+                triggered = cast("_ArtifactFacadeSource", self.triggered_source())
+                with triggered.cuped_relation(metric, request) as evidence:
+                    yield evidence
+                return
+            from increment.query._cuped_cells import general_qr_required
+
+            general_qr_required(metric, "source_population")
+        relation = self._unit_relation_with_covariates(
+            metric, covariates=tuple(item.name for item in request.method.covariates or ())
+        )
+        yield relation, self._snapshot.execute
+
     def unit_frame(
+        self,
+        metric: Metric,
+        *,
+        covariates: Sequence[str] = (),
+        outcome_stage: Literal["transformed", "raw"] = "transformed",
+    ) -> Any:
+        return self._snapshot.execute(
+            self._unit_relation_with_covariates(
+                metric, covariates=covariates, outcome_stage=outcome_stage
+            )
+        )
+
+    def _unit_relation_with_covariates(
         self,
         metric: Metric,
         *,
@@ -1401,7 +1431,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
             covariate_tables[name] = (relation, field, available)
         if self._population_units is None:
-            return self._unit_frame(
+            return self._unit_relation(
                 metric,
                 cluster=cluster,
                 resolve_cluster=self._cluster_table,
@@ -1409,7 +1439,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 outcome_stage=outcome_stage,
                 covariate_tables=covariate_tables,
             )
-        return self._unit_frame(
+        return self._unit_relation(
             metric,
             cluster=cluster,
             resolve_cluster=self._cluster_table,

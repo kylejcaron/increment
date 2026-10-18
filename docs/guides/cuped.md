@@ -1022,6 +1022,29 @@ still apply to the combined observations; individual partitions need
 not satisfy fitting support. This estimation representation does not by
 itself establish that a warehouse cell is safe to transfer.
 
+The warehouse categorical producer checks eligibility inside the warehouse
+before transferring outcome cells: no more than 4096 arm-by-joint-pattern
+cells, an encoded upper bound of 8 MiB, and at least eightfold compression
+from the original unit count. Every retained outcome component needs at
+least three finite contributors and demonstrably positive within-cell
+scatter in every cell. Known discrete or bounded outcome domains require
+general warehouse QR instead.
+Transferred centering references are arm-level component means, not selected
+unit outcomes; any unit-valued numerical base remains inside the warehouse.
+
+Compression alone is not a disclosure guard. Two binary covariates with
+per-arm pattern counts `(999, 1, 1, 999)` reduce 4000 units to eight cells,
+yet four cells would directly reveal singleton outcomes. Two-contributor
+first/second moments reconstruct an unordered pair; zero scatter reveals
+the common component value even with many contributors. These cases do
+not transfer outcome cells. Until general warehouse QR is available,
+`query.cuped.general_qr_required` identifies the reason and the alternative
+of explicitly supplying local per-unit data through `from_unit_summary`
+or `from_unit_panel`. The producer never downloads units automatically,
+merges or suppresses categories, or changes the inferential procedure.
+The guards do not provide differential privacy or protection against
+arbitrary side information.
+
 ## The math
 
     The coefficient minimizes the variance of the additive contrast

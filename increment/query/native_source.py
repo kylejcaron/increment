@@ -4053,6 +4053,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return units.join(dimensions, keys="unit_id", join_type="left outer")
 
+    @contextmanager
+    def cuped_relation(self, metric: Metric, request):
+        """Keep the complete CUPED relation inside one pinned source execution."""
+        configs = overlay_configs(
+            (metric,), self.context.configs, methods=[request.method], prior=None
+        )
+        with self._pinned_source_execution(metrics=(metric,), configs=configs) as pinned:
+            with pinned._unit_relation(
+                metric,
+                covariates=tuple(item.name for item in request.method.covariates or ()),
+                population=request.population,
+            ) as evidence:
+                yield evidence
+
     def unit_frame(
         self,
         metric: Metric,
@@ -4061,6 +4075,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"] = "assigned",
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> pa.Table:
+        with self._unit_relation(
+            metric, covariates=covariates, population=population, outcome_stage=outcome_stage
+        ) as (relation, execute):
+            return cast("pa.Table", execute(relation))
+
+    @contextmanager
+    def _unit_relation(
+        self,
+        metric: Metric,
+        *,
+        covariates: Sequence[str] = (),
+        population: Literal["assigned", "triggered"] = "assigned",
+        outcome_stage: Literal["transformed", "raw"] = "transformed",
+    ):
         if outcome_stage not in ("raw", "transformed"):
             from increment.winsor import winsor_refuse
 
@@ -4139,12 +4167,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             with self._pinned_source_execution(
                 metrics=(metric,), extra_sources=extra_sources
             ) as pinned:
-                return pinned.unit_frame(
+                with pinned._unit_relation(
                     metric,
                     covariates=covariates,
                     population=population,
                     outcome_stage=outcome_stage,
-                )
+                ) as evidence:
+                    yield evidence
+                return
         with self._reduction_batch():
             exposures = (
                 self._get_trigger_population(operation="unit_frame")
@@ -4202,20 +4232,27 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                         unit_id=properties["unit_id"], **{name: properties[property_name]}
                     )
                 totals = join_unit_covariates(totals, properties, name, categorical=categorical)
-            select_cols: dict[str, Any] = {
-                "unit_id": totals["unit_id"],
-                "group_id": totals["group_id"],
-                "y": totals["y_raw"]
-                if outcome_stage == "raw" and "y_raw" in totals.columns
-                else totals["y"],
-            }
-            if isinstance(metric, RatioMetric):
-                select_cols["y_den"] = totals["y_den"]
-            for name in (*covariate_sources, *covariate_measures):
-                select_cols[name] = totals[name]
-            if cluster is not None:
-                select_cols["cluster_id"] = totals[cluster].cast("string")
-            return cast("pa.Table", self._session.fetch_arrow(totals.select(**select_cols)))
+            relation = self._project_unit_relation(
+                totals, metric, (*covariate_sources, *covariate_measures), cluster, outcome_stage
+            )
+            yield relation, self._session.fetch_arrow
+
+    @staticmethod
+    def _project_unit_relation(totals, metric, covariates, cluster, outcome_stage):
+        select_cols = {
+            "unit_id": totals["unit_id"],
+            "group_id": totals["group_id"],
+            "y": totals["y_raw"]
+            if outcome_stage == "raw" and "y_raw" in totals.columns
+            else totals["y"],
+        }
+        if isinstance(metric, RatioMetric):
+            select_cols["y_den"] = totals["y_den"]
+        for name in covariates:
+            select_cols[name] = totals[name]
+        if cluster is not None:
+            select_cols["cluster_id"] = totals[cluster].cast("string")
+        return totals.select(**select_cols)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         if grain != "total":

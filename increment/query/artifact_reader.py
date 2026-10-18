@@ -1083,7 +1083,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         return _rows(self._snapshot.execute(query))
 
-    def _unit_frame(
+    def _unit_frame(self, metric: Metric, **kwargs) -> IntoDataFrame:
+        return self._snapshot.execute(self._unit_relation(metric, **kwargs))
+
+    def _unit_relation(
         self,
         metric: Metric,
         *,
@@ -1093,8 +1096,8 @@ class ArtifactMomentSource(SequentialSourceMixin):
         outcome_stage: Literal["transformed", "raw"] = "transformed",
         trigger_inputs: _TriggeredReductionInputs | None = None,
         covariate_tables: Mapping[str, tuple[ir.Table, str, str | None]] | None = None,
-    ) -> IntoDataFrame:
-        """Resolve, project, and execute a unit frame on the pinned snapshot."""
+    ) -> ir.Table:
+        """Resolve and project a unit relation on the pinned snapshot."""
         if outcome_stage not in ("raw", "transformed"):
             from increment.winsor import winsor_refuse
 
@@ -1145,7 +1148,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             columns["cluster_id"] = totals[cluster].cast("string")
         if covariate_tables:
             columns.update({name: totals[name] for name in covariate_tables})
-        return self._snapshot.execute(totals.select(**columns))
+        return totals.select(**columns)
 
     def _observation_spine_edge(
         self,
