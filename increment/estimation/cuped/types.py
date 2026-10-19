@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Literal, NoReturn
 
@@ -349,6 +350,8 @@ class CategoricalCells:
     are arm × component × pattern, scaled by 2**outcome_exponents[component][arm].
     Cross sums are arm × component × component × pattern, scaled by both of
     the arm's component powers, so each arm keeps its own representable scale.
+    Outcome magnitudes are each arm's sum of absolute component values at the
+    same scale; merges use them to bound the precision of combined means.
     Null levels use None.
     """
 
@@ -362,6 +365,7 @@ class CategoricalCells:
     centered_first_moments: tuple[tuple[tuple[float, ...], ...], ...]
     symmetric_cross_moments: tuple[tuple[tuple[tuple[float, ...], ...], ...], ...]
     outcome_exponents: tuple[tuple[int, ...], ...]
+    outcome_magnitudes: tuple[tuple[float, ...], ...]
     covariate_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -376,6 +380,7 @@ class CategoricalCells:
             "centered_first_moments",
             "symmetric_cross_moments",
             "outcome_exponents",
+            "outcome_magnitudes",
             "covariate_names",
         ):
             object.__setattr__(self, name, _freeze_payload(getattr(self, name)))
@@ -466,6 +471,36 @@ class CategoricalCells:
                     _invalid_evidence("CategoricalCells empty cells must have zero moments")
                 if components and np.any(np.diag(scatter) < 0):
                     _invalid_evidence("CategoricalCells outcome scatter must be nonnegative")
+        self._validate_outcome_magnitudes()
+
+    def _validate_outcome_magnitudes(self) -> None:
+        components = len(self.outcome_references)
+        if len(self.outcome_magnitudes) != components or any(
+            len(row) != len(self.arms) for row in self.outcome_magnitudes
+        ):
+            _invalid_evidence("CategoricalCells outcome magnitudes must be component-by-arm")
+        for f, row in enumerate(self.outcome_magnitudes):
+            for a, magnitude in enumerate(row):
+                if not isinstance(magnitude, (int, float)) or isinstance(magnitude, bool):
+                    _invalid_evidence("CategoricalCells outcome magnitudes must be numbers")
+                if not math.isfinite(magnitude) or magnitude < 0:
+                    _invalid_evidence(
+                        "CategoricalCells outcome magnitudes must be finite and nonnegative"
+                    )
+                count = sum(self.counts[a])
+                reference = math.ldexp(self.outcome_references[f][a], -self.outcome_exponents[f][a])
+                total = math.fsum(
+                    (
+                        count * reference,
+                        *(self.centered_first_moments[a][f][k] for k in range(len(self.patterns))),
+                    )
+                )
+                if count == 0 and magnitude != 0:
+                    _invalid_evidence("CategoricalCells empty arms must have zero magnitude")
+                if abs(total) > magnitude * (1.0 + 2.0**-40):
+                    _invalid_evidence(
+                        "CategoricalCells outcome magnitude is below the arm's absolute sum"
+                    )
 
     def merge(self, other: CategoricalCells) -> CategoricalCells:
         from increment.estimation.cuped.cells import _merge_cells
