@@ -1762,7 +1762,7 @@ _REFUSALS = refusals(
         "estimation.armstats.summary_stats.var_finite": "var must be finite, got {var}",
         "estimation.armstats.arm_stats.skew_den_underflow": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: cden3 is zero while the centered second moment ({cden2!r}) is so small that cubed residuals underflow; rescale the denominator to check skew",
         "estimation.armstats.arm_stats.obsolete_armstats_fields": "obsolete ArmStats fields are not supported: {obsolete}; weighted estimands must use ScoreStats",
-        "estimation.armstats.arm_stats.group_summary_moment": "group_summary moment {name!r} is non-finite ({value!r}) for metric={metric!r} group={group_id!r}; {name} must be finite",
+        "estimation.armstats.arm_stats.group_summary_moment": "group_summary moment {name!r} is non-finite ({value!r}) for metric={metric!r} group={group_id!r}; {name} must be finite. Rescale the values (for example, change their units) so their centered moments are representable",
         "estimation.armstats.arm_stats.partial_family_missing": "partial {label} family: has {present} but is missing {missing}",
         "estimation.armstats.arm_stats.cross_field_finite": "{name} must be finite, got {value!r}",
         "estimation.armstats.arm_stats.x_role_one": "x_role must be one of 'covariate', 'cluster_size', or 'uptake_total'; got {x_role!r}",

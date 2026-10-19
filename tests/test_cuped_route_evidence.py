@@ -469,3 +469,127 @@ def test_encouragement_breakout_scalar_failure_keeps_naive_sibling(panel):
     assert indexed["naive"].require_lift() == expected.require_lift()
     assert indexed["unavailable"].lift is None
     assert indexed["unavailable"].failure_code == "frame.validation.metric_covariate_column"
+
+
+def _scaled_records(*, outcome=1.0, denominator=1.0):
+    """Positive outcomes and denominators whose centered powers overflow at large scales.
+
+    Treatment outcomes are exactly 1.1 times their control counterparts over the same
+    denominators, so every adjustment over the balanced covariates estimates a
+    relative lift of 0.1.
+    """
+    import math
+
+    records = []
+    for a, arm in enumerate(("control", "treatment")):
+        for i in range(40):
+            records.append(
+                {
+                    "unit": f"{arm}-{i}",
+                    "arm": arm,
+                    "day": 1,
+                    "outcome": outcome * (2.0 + math.sin(0.7 * i)) * (1.1 if a else 1.0),
+                    "den": denominator * (2.0 + (1.0 if i % 2 else -1.0) * (1.0 + 0.01 * i)),
+                    "history": float(i % 7),
+                    "segment": "A" if i % 4 < 2 else "B",
+                }
+            )
+    return records
+
+
+_SCALED_METHODS = {
+    "unadjusted": Method.unadjusted(),
+    "scalar": Method.cuped(
+        name="scalar", covariates=CupedCovariate(name="history", kind="continuous")
+    ),
+    "mixed": Method.cuped_multicovariate(
+        name="mixed", covariates=CupedCovariate(name="segment", kind="categorical")
+    ),
+}
+
+
+def _scaled_run(records, method, *, ratio, ingress, tmp_path):
+    import pyarrow.parquet as pq
+
+    spec = MetricSpec(
+        name="outcome",
+        type="ratio" if ratio else "mean",
+        numerator="outcome" if ratio else None,
+        denominator="den" if ratio else None,
+        decision_method=_SCALED_METHODS[method],
+    )
+    common: dict[str, Any] = {"unit": "unit", "group": "arm", "control": "control"}
+    table = pa.Table.from_pylist(records)
+    if ingress == "panel":
+        with Analysis.from_unit_panel(table, date="day", metrics=[spec], **common) as analysis:
+            return analysis.run()
+    with Analysis.from_unit_summary(table, metrics=[spec], **common) as analysis:
+        if ingress == "summary":
+            return analysis.run()
+        path = tmp_path / "moments.parquet"
+        analysis.export(path)
+    rows = pq.read_table(path).to_pylist()
+    with Analysis.from_moments(rows, metrics=[spec], control="control") as replay:
+        return replay.run()
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
+@pytest.mark.parametrize("ratio", [False, True])
+def test_overflowing_scalar_moments_refuse_with_the_moment_code(tmp_path, ingress, ratio):
+    with pytest.raises(CodedError) as raised:
+        _scaled_run(
+            _scaled_records(outcome=1e155),
+            "scalar",
+            ratio=ratio,
+            ingress=ingress,
+            tmp_path=tmp_path,
+        )
+    assert "Rescale the values" in str(raised.value)
+    assert raised.value.code == "estimation.armstats.arm_stats.group_summary_moment"
+    assert raised.value.context["name"] == "cy2"
+    assert raised.value.context["metric"] == "outcome"
+    assert raised.value.context["group_id"] in {"control", "treatment"}
+    assert raised.value.context["value"] == float("inf")
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
+@pytest.mark.parametrize("ratio", [False, True])
+def test_mixed_cuped_stays_available_when_ordinary_moments_overflow(tmp_path, ingress, ratio):
+    from increment.estimation.results import LiftEstimate
+
+    (row,) = (
+        row
+        for row in _scaled_run(
+            _scaled_records(outcome=1e155), "mixed", ratio=ratio, ingress=ingress, tmp_path=tmp_path
+        )
+        if isinstance(row, LiftEstimate)
+    )
+    assert row.require_lift().value == pytest.approx(0.1, rel=1e-9)
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
+@pytest.mark.parametrize("method", ["unadjusted", "scalar", "mixed"])
+def test_overflowing_denominator_third_moment_keeps_ratio_inference(tmp_path, ingress, method):
+    import math
+
+    import pyarrow.parquet as pq
+
+    from increment.estimation.results import LiftEstimate
+
+    records = _scaled_records(outcome=10.0, denominator=1e105)
+    with Analysis.from_unit_summary(
+        pa.Table.from_pylist(records),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="outcome", type="ratio", numerator="outcome", denominator="den")],
+    ) as plain:
+        plain.export(tmp_path / "plain.parquet")
+    third = [row["cden3"] for row in pq.read_table(tmp_path / "plain.parquet").to_pylist()]
+    assert any(not math.isfinite(value) for value in third)
+    (row,) = (
+        row
+        for row in _scaled_run(records, method, ratio=True, ingress=ingress, tmp_path=tmp_path)
+        if isinstance(row, LiftEstimate)
+    )
+    assert row.require_lift().value == pytest.approx(0.1, rel=1e-9)

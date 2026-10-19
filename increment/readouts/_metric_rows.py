@@ -113,8 +113,11 @@ def _rows_digest_and_arms(rows):
 def _rows_raw_digest_and_arms(rows):
     from increment.estimation.readout_types import StreamingDigest
 
+    # Moments may legitimately overflow (a third moment is then a diagnostic gap,
+    # and estimators that read an overflowed second moment refuse it), so
+    # non-finite values are digested with the frame-float encoding.
     digest = StreamingDigest()
-    digest.update_rows(rows)
+    digest.update_rows(rows, normalize_frame_floats=True)
     arms = frozenset(str(row["group_id"]) for row in rows if row.get("group_id") is not None)
     return arms, digest.hexdigest(), digest.count
 
