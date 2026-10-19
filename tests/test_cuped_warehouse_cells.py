@@ -306,6 +306,32 @@ def test_categorical_warehouse_magnitudes_match_local_evidence(ratio):
     )
 
 
+def test_categorical_warehouse_accepts_truthful_dominated_outcome_magnitudes():
+    values = np.concatenate(([1e15], np.full(100_000, 1e-5)))
+    frame = pd.DataFrame(
+        {
+            "group_id": ["c"] * len(values) + ["t"] * len(values),
+            "segment": ["A"] * (2 * len(values)),
+            "device": ["desktop"] * (2 * len(values)),
+            "y": np.concatenate((values, values)),
+        }
+    )
+    from increment.query._cuped_cells import categorical_cells_from_relation
+
+    con = ibis.duckdb.connect(threads=2)
+    con.create_table("units", obj=frame)
+    try:
+        cells = categorical_cells_from_relation(
+            con.table("units"),
+            lambda expression: con.to_pyarrow(expression),
+            metric=_metric(),
+            request=_request(),
+        )
+    finally:
+        con.disconnect()
+    assert cells.outcome_magnitudes[0][0] > 0
+
+
 @pytest.mark.parametrize(
     ("counts", "options", "reason"),
     [

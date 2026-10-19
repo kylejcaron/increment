@@ -165,6 +165,63 @@ def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, 
         analysis.close()
 
 
+def test_three_arm_envelopes_are_row_order_invariant(tmp_path):
+    records = [
+        {
+            "unit": f"{arm}-{index}",
+            "arm": arm,
+            "outcome": 10 + arm_index * 2 + index,
+            "den": 3 + index % 3,
+            "history_a": float(index),
+            "history_b": float(index * 2),
+            "segment": "A" if index % 2 else "B",
+            "device": "mobile" if index % 3 else "desktop",
+        }
+        for arm_index, arm in enumerate(("control", "treatment_a", "treatment_b"))
+        for index in range(24)
+    ]
+    spec = _spec(False, _methods("categorical"))
+    exports = []
+    snapshots = []
+    for index, source_rows in enumerate((records, list(reversed(records)))):
+        analysis = Analysis.from_unit_summary(
+            pa.Table.from_pylist(source_rows),
+            unit="unit",
+            group="arm",
+            control="control",
+            experiment_id="three-arm",
+            metrics=[spec],
+            plan=AnalysisPlan(),
+        )
+        try:
+            _, rows = _export_rows(analysis, tmp_path, f"three-arm-{index}.parquet")
+            exports.append(
+                sorted(
+                    row["cuped_evidence"]
+                    for row in rows
+                    if row.get("record_kind") == "cuped_evidence"
+                )
+            )
+            restored = Analysis.from_moments(
+                rows, metrics=[spec], control="control", experiment_id="three-arm"
+            )
+            try:
+                result = restored.run()
+                assert result.metadata is not None
+                snapshots.append(result.metadata.scope.snapshot_id)
+            finally:
+                restored.close()
+        finally:
+            analysis.close()
+    assert exports[0] == exports[1]
+    assert json.loads(exports[0][0])["evidence"]["arms"] == [
+        "control",
+        "treatment_a",
+        "treatment_b",
+    ]
+    assert snapshots[0] == snapshots[1]
+
+
 def test_single_scalar_family_export_remains_format_twelve(tmp_path):
     analysis, _ = _case(family="scalar", records=None)
     single = _spec(False, _methods("scalar")[:1])
@@ -256,6 +313,141 @@ def _replace_payload(rows, change):
     return [
         _rewrite(row, change) if position == index else row for position, row in enumerate(rows)
     ]
+
+
+def test_evidence_arm_roster_must_match_ordinary_metric_rows(tmp_path):
+    rows, spec = _categorical_rows(tmp_path)
+    scalar = next(
+        index
+        for index, row in enumerate(rows)
+        if row.get("record_kind") == "cuped_evidence"
+        and json.loads(row["cuped_evidence"])["kind"] == "scalar_moments"
+    )
+    rows[scalar] = _rewrite(
+        rows[scalar],
+        lambda payload: payload["evidence"]["rows"].pop(),
+    )
+    with pytest.raises(CodedError) as raised:
+        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
+def test_categorical_envelope_arm_roster_must_match_ordinary_rows(tmp_path):
+    rows, spec = _categorical_rows(tmp_path)
+    index = _first_envelope(rows, "categorical_cells")
+    rows[index] = _rewrite(
+        rows[index],
+        lambda payload: payload["evidence"]["arms"].__setitem__(0, "renamed"),
+    )
+    with pytest.raises(CodedError) as raised:
+        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
+@pytest.mark.parametrize("mismatch", ["scalar rows", "categorical covariate"])
+def test_evidence_payload_must_match_its_declared_method(tmp_path, mismatch):
+    rows, spec = _categorical_rows(tmp_path)
+    if mismatch == "scalar rows":
+        scalar_indexes = [
+            index
+            for index, row in enumerate(rows)
+            if row.get("record_kind") == "cuped_evidence"
+            and json.loads(row["cuped_evidence"])["kind"] == "scalar_moments"
+        ]
+        second = json.loads(rows[scalar_indexes[1]]["cuped_evidence"])
+        rows[scalar_indexes[0]] = _rewrite(
+            rows[scalar_indexes[0]], lambda payload: payload.update(evidence=second["evidence"])
+        )
+
+    else:
+        index = _first_envelope(rows, "categorical_cells")
+        rows[index] = _rewrite(
+            rows[index],
+            lambda payload: payload["evidence"]["covariate_names"].__setitem__(0, "different"),
+        )
+    with pytest.raises(CodedError) as raised:
+        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
+def test_cancellation_magnitude_underreport_is_rejected_on_envelope_import():
+    from increment._cuped_evidence import categorical_payload, parse_cuped_evidence
+    from increment.estimation.cuped.cells import categorical_cells
+
+    method = Method.cuped_multicovariate(
+        name="category", covariates=CupedCovariate(name="category", kind="categorical")
+    )
+    parts = []
+    for k in (2.0, 3.0):
+        outcomes = np.array([-1e100, 1e100, 1.0, -1e100, 1e100, k])
+        arms = np.array(["control"] * 3 + ["treatment"] * 3)
+        parts.append(
+            categorical_cells(
+                outcomes,
+                arms,
+                identity=("cancellation",),
+                control="control",
+                arm_order=("control", "treatment"),
+                covariates={"category": np.repeat("constant", 6)},
+            )
+        )
+    left, right = parts
+    payload = categorical_payload(
+        "outcome",
+        method,
+        left,
+        population="assigned",
+        source={"source": "counterexample"},
+    )
+    body = json.loads(payload)
+    for arm, _values in enumerate(body["evidence"]["outcome_magnitudes"][0]):
+        count = sum(body["evidence"]["counts"][arm])
+        reference = math.ldexp(
+            body["evidence"]["outcome_references"][0][arm],
+            -body["evidence"]["outcome_exponents"][0][arm],
+        )
+        total = math.fsum(
+            [
+                count * reference,
+                *body["evidence"]["centered_first_moments"][arm][0],
+            ]
+        )
+        body["evidence"]["outcome_magnitudes"][0][arm] = abs(total)
+    with pytest.raises(CodedError) as raised:
+        parse_cuped_evidence(canonical_json_bytes(body).decode())
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+    with pytest.raises(CodedError) as merged:
+        left.merge(right)
+    assert merged.value.code == "estimation.cuped_linear.merge_precision"
+
+
+def test_ratio_categorical_component_count_is_rejected_on_admission(tmp_path):
+    analysis, spec = _case(ratio=True, family="categorical")
+    try:
+        rows = _export_rows(analysis, tmp_path, "ratio-components.parquet")[1]
+    finally:
+        analysis.close()
+    index = _first_envelope(rows, "categorical_cells")
+
+    def drop_denominator(payload):
+        cells = payload["evidence"]
+        cells["outcome_references"] = [cells["outcome_references"][0]]
+        cells["centered_first_moments"] = [[arm[0]] for arm in cells["centered_first_moments"]]
+        cells["symmetric_cross_moments"] = [
+            [[arm[0][0]]] for arm in cells["symmetric_cross_moments"]
+        ]
+        cells["outcome_exponents"] = [cells["outcome_exponents"][0]]
+        cells["outcome_magnitudes"] = [cells["outcome_magnitudes"][0]]
+
+    rows[index] = _rewrite(rows[index], drop_denominator)
+    with pytest.raises(CodedError) as raised:
+        Analysis.from_moments(
+            rows,
+            metrics=[spec],
+            control="control",
+            experiment_id="compact",
+        )
+    assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
 @pytest.mark.parametrize("case", sorted(_MALFORMED))

@@ -32,7 +32,9 @@ _PAYLOAD_FIELDS = frozenset(
 )
 _POPULATIONS = ("assigned", "triggered")
 _COUNT_FIELDS = frozenset({"n", "successes", "winsor_n", "winsor_n_lower", "winsor_n_upper"})
-_TEXT_FIELDS = frozenset({"experiment_id", "metric", "group_id", "x_role", "covariate_name"})
+_TEXT_FIELDS = frozenset(
+    {"experiment_id", "metric", "group_id", "x_role", "covariate_name", "missing"}
+)
 _CELL_FLOAT_FIELDS = (
     "outcome_references",
     "centered_first_moments",
@@ -89,7 +91,10 @@ class CupedEvidence:
     cells: CategoricalCells | None = None
 
     def scalar_rows(self) -> list[dict[str, object]]:
-        return [dict(row) for row in self.rows]
+        return [
+            {key: value for key, value in row.items() if key not in {"covariate_name", "missing"}}
+            for row in self.rows
+        ]
 
 
 def method_key(method: Any) -> str:
@@ -147,14 +152,20 @@ def scalar_payload(
     *,
     population: str,
     source: Mapping[str, object],
-) -> str:
+):
+    declaration = tuple(method.covariates or ())
+    metadata = (
+        {"covariate_name": declaration[0].name, "missing": declaration[0].missing}
+        if len(declaration) == 1
+        else {}
+    )
     return _payload(
         "scalar_moments",
         metric,
         method,
         population=population,
         source=source,
-        evidence={"rows": [dict(row) for row in rows]},
+        evidence={"rows": [{**dict(row), **metadata} for row in rows]},
     )
 
 
@@ -234,6 +245,107 @@ def _cells(evidence: Mapping[str, object], identity: tuple[object, ...]) -> Cate
         invalid_evidence(f"categorical evidence is malformed: {exc}")
 
 
+def _method_identity(method: object, kind: EvidenceKind) -> tuple[str, list[dict[str, object]]]:
+    from increment.estimation.engine import Method
+
+    if not isinstance(method, dict):
+        invalid_evidence("payload method must be a CUPED method identity")
+    method_dict = cast("dict[str, object]", method)
+    if method_dict.get("variance_reduction") not in ("cuped", "cuped_multicovariate"):
+        invalid_evidence("payload method must be a CUPED method identity")
+    try:
+        normalized = Method.model_validate({"name": "wire", **method_dict}).model_dump(
+            mode="json", exclude={"name"}
+        )
+    except (TypeError, ValueError):
+        invalid_evidence("payload method is not a normalized method identity")
+    if canonical_json_bytes(normalized) != canonical_json_bytes(method_dict):
+        invalid_evidence("payload method is not a full normalized label-free identity")
+    raw_declarations = method_dict.get("covariates")
+    if raw_declarations is None:
+        declarations: list[dict[str, object]] = []
+    elif isinstance(raw_declarations, list):
+        declarations = cast("list[dict[str, object]]", raw_declarations)
+    else:
+        invalid_evidence("payload method covariates must be a normalized list")
+    expected = "cuped" if kind == "scalar_moments" else "cuped_multicovariate"
+    if method_dict["variance_reduction"] != expected:
+        invalid_evidence(f"{kind} evidence requires a {expected!r} method")
+    return canonical_json_bytes(method_dict).decode(), declarations
+
+
+def _decode_scalar_evidence(
+    evidence: Mapping[str, object],
+    body: Mapping[str, object],
+    declarations: list[dict[str, object]],
+    metric: str,
+    method_key_value: str,
+    population: str,
+    source: str,
+) -> CupedEvidence:
+    if (
+        set(evidence) != {"rows"}
+        or not isinstance(evidence["rows"], list)
+        or len(declarations) > 1
+        or (declarations and declarations[0]["kind"] != "continuous")
+    ):
+        invalid_evidence("scalar evidence must match at most one continuous covariate")
+    rows = tuple(_scalar_row(row) for row in evidence["rows"])
+    declaration = declarations[0] if declarations else None
+    if not rows or any(
+        row.get("metric") != metric
+        or (
+            declaration is not None
+            and (
+                row.get("covariate_name") != declaration["name"]
+                or row.get("missing") != declaration["missing"]
+            )
+        )
+        for row in rows
+    ):
+        invalid_evidence("scalar evidence rows do not match the declared method")
+    digest_body = {
+        **body,
+        "evidence": {
+            "rows": [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in ("covariate_name", "missing")
+                }
+                for row in rows
+            ]
+        },
+    }
+    digest = hashlib.sha256(canonical_json_bytes(digest_body)).hexdigest()
+    return CupedEvidence(
+        "scalar_moments", metric, method_key_value, population, source, digest, rows=rows
+    )
+
+
+def _decode_categorical_evidence(
+    evidence: Mapping[str, object],
+    declarations: list[dict[str, object]],
+    metric: str,
+    method_key_value: str,
+    population: str,
+    source: str,
+    digest: str,
+) -> CupedEvidence:
+    if not declarations or any(item["kind"] != "categorical" for item in declarations):
+        invalid_evidence("categorical evidence method must declare categorical covariates only")
+    cells = _cells(evidence, categorical_identity(metric, method_key_value, population))
+    names = tuple(item["name"] for item in declarations)
+    missing = tuple(item["missing"] for item in declarations)
+    if cells.covariate_names != names:
+        invalid_evidence("categorical evidence covariate names or order differ from the method")
+    if tuple(metadata[0] for metadata in cells.null_metadata) != missing:
+        invalid_evidence("categorical evidence missing policies differ from the method")
+    return CupedEvidence(
+        "categorical_cells", metric, method_key_value, population, source, digest, cells=cells
+    )
+
+
 def parse_cuped_evidence(payload: object) -> CupedEvidence:
     """Validate one envelope payload's grammar and decode its evidence."""
     if not isinstance(payload, str):
@@ -275,30 +387,17 @@ def parse_cuped_evidence(payload: object) -> CupedEvidence:
         or not set(source) <= set("0123456789abcdef")
     ):
         invalid_evidence("payload source_sha256 must be a lowercase SHA-256 digest")
-    method = body["method"]
-    if not isinstance(method, dict) or method.get("variance_reduction") not in (
-        "cuped",
-        "cuped_multicovariate",
-    ):
-        invalid_evidence("payload method must be a CUPED method identity")
-    expected = "cuped" if kind == "scalar_moments" else "cuped_multicovariate"
-    if method["variance_reduction"] != expected:
-        invalid_evidence(f"{kind} evidence requires a {expected!r} method")
-    key = canonical_json_bytes(method).decode()
+    key, declarations = _method_identity(body["method"], kind)
     evidence = body["evidence"]
     if not isinstance(evidence, dict):
         invalid_evidence("payload evidence must be an object")
     digest = hashlib.sha256(payload.encode()).hexdigest()
     if kind == "scalar_moments":
-        if set(evidence) != {"rows"} or not isinstance(evidence["rows"], list):
-            invalid_evidence("scalar evidence must hold exactly one rows list")
-        rows = tuple(_scalar_row(row) for row in evidence["rows"])
-        if not rows or any(row.get("metric") != metric for row in rows):
-            invalid_evidence(f"scalar evidence rows must belong to metric {metric!r}")
-        return CupedEvidence(kind, metric, key, population, source, digest, rows=rows)
-    cells = _cells(evidence, categorical_identity(metric, key, population))
-    return CupedEvidence(
-        cast("EvidenceKind", kind), metric, key, population, source, digest, cells=cells
+        return _decode_scalar_evidence(
+            evidence, body, declarations, metric, key, population, source
+        )
+    return _decode_categorical_evidence(
+        evidence, declarations, metric, key, population, source, digest
     )
 
 
@@ -314,9 +413,13 @@ def local_categorical_cells(source: Any, metric: Any, method: Any) -> Categorica
     names = tuple(item.name for item in declarations)
     columns = unit_frame_covariate_columns(names)
     frame = nw.from_native(source.unit_frame(metric, covariates=names), eager_only=True)
+    order_columns = ["group_id", *columns.values(), "y"]
+    if getattr(metric, "type", None) == "ratio":
+        order_columns.append("y_den")
+    frame = frame.sort(order_columns)
     control = str(source.context.design.control_group)
     groups = [str(group) for group in frame.get_column("group_id").to_list()]
-    arm_order = tuple(dict.fromkeys((control, *groups)))
+    arm_order = (control, *sorted(set(groups) - {control}))
     ratio = getattr(metric, "type", None) == "ratio"
     y = np.asarray(frame.get_column("y").to_list(), dtype=float)
     return categorical_cells(

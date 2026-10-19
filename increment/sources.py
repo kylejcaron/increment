@@ -1075,6 +1075,19 @@ def _cube_evidence(
         if key in seen:
             duplicate_evidence(*key)
         seen.add(key)
+        ordinary_arms = {
+            str(row.get("group_id")) for row in rows if str(row.get("metric")) == item.metric
+        }
+        if item.kind == "scalar_moments":
+            evidence_arms = {str(row.get("group_id")) for row in item.rows}
+        else:
+            if item.cells is None:
+                invalid_evidence("categorical envelope has no decoded cells")
+            evidence_arms = {str(arm) for arm in item.cells.arms}
+        if evidence_arms != ordinary_arms:
+            invalid_evidence(
+                f"envelope arm roster differs from ordinary rows for metric {item.metric!r}"
+            )
         _validate_moment_experiment_identity([*rows, *item.rows])
         arms: set[str] = set()
         for row in item.rows:
@@ -2052,15 +2065,15 @@ def write_moments_table(
     pq.write_table(table, str(path))
 
 
-def cuped_evidence_requests(
+def cuped_evidence_items(
     rows: Sequence[Mapping[str, object]], *, require_plan: bool
-) -> dict[str, dict[str, str]]:
-    """Evidence kind per metric and method identity, from a fully validated cube."""
+) -> dict[str, dict[str, CupedEvidence]]:
+    """Validated evidence by metric and method, retaining decoded cells for admission checks."""
     evidence = _check_moments_format(rows, require_plan=require_plan)[-1]
-    requests: dict[str, dict[str, str]] = {}
+    items: dict[str, dict[str, CupedEvidence]] = {}
     for item in evidence:
-        requests.setdefault(item.metric, {})[item.method_key] = item.kind
-    return requests
+        items.setdefault(item.metric, {})[item.method_key] = item
+    return items
 
 
 def _categorical_cells_for(source: Any) -> Callable[[Any, Any], Any]:
