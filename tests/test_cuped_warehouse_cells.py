@@ -141,6 +141,41 @@ def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(r
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
 
 
+def test_categorical_outcome_exponent_tracks_arm_l2_norm():
+    import math
+
+    from increment.estimation.cuped.cells import categorical_cells
+
+    per_pattern = np.asarray([0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17])
+    frame = _cells_frame((8, 8, 8, 8))
+    frame["y"] = np.tile(per_pattern, 8)
+    exponents = []
+    transfer_columns = []
+    for maximum in (1.1, 1.8, 1.95):
+        values = frame.y.to_numpy().copy()
+        values[0] = maximum
+        candidate = frame.assign(y=values)
+        local = categorical_cells(
+            values,
+            candidate.group_id.to_numpy(),
+            identity=("snapshot", "outcome", "assigned"),
+            control="c",
+            arm_order=("c", "t"),
+            covariates={name: candidate[name].to_numpy() for name in ("segment", "device")},
+        )
+        warehouse, transfers = _produce(candidate)
+        assert warehouse.outcome_exponents == local.outcome_exponents
+        exponent = warehouse.outcome_exponents[0][0]
+        norm = math.sqrt(math.fsum(float(value) ** 2 for value in values[:32]))
+        assert 0.5 <= math.ldexp(norm, -exponent) <= 1.0
+        exponents.append(exponent)
+        transfer_columns.extend(columns for columns, _rows in transfers)
+    assert exponents == [1, 1, 2]
+    assert all(
+        not any(name.startswith("_max_") for name in columns) for columns in transfer_columns
+    )
+
+
 def test_categorical_warehouse_reference_preserves_cancelling_extreme_outcomes():
     frame = pd.DataFrame(
         {
@@ -314,6 +349,7 @@ def test_categorical_warehouse_transfer_omits_absolute_outcome_sums():
         "exponent_1",
         "_centered_0",
         "_arm_count",
+        "_max_0",
         "_residual_0",
     ],
 )

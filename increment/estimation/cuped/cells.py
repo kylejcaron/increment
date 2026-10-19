@@ -107,7 +107,13 @@ def categorical_cells(
         shifts = []
         for f, values in enumerate(outcomes):
             arm_values = values[arm_rows]
-            exponents[f][a] = math.frexp(float(np.max(np.abs(arm_values))))[1]
+            maximum = float(np.max(np.abs(arm_values)))
+            if maximum:
+                max_exponent = math.frexp(maximum)[1]
+                scaled_maximum = math.ldexp(maximum, -max_exponent)
+                scaled_squares = math.fsum((float(value) / maximum) ** 2 for value in arm_values)
+                norm_scale = scaled_maximum * math.sqrt(scaled_squares)
+                exponents[f][a] = min(1024, max_exponent + math.frexp(norm_scale)[1])
             offset, centered = _arm_offset(arm_values)
             references[f, a] = offset + _arm_mean(centered)
             bases.append(offset)
