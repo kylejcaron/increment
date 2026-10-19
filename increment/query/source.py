@@ -51,6 +51,7 @@ from increment.query.artifact_extensions import (
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
+    _restore_raw_dimension_values,
     _TriggeredReductionInputs,
     restrict_to_units,
 )
@@ -1884,6 +1885,9 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             return []
         request = _artifact_request(extension)
         properties = self._dimension_table(extension, request)
+        properties = _restore_raw_dimension_values(properties, breakout.property)
+        if properties is None:
+            return []
         exposures = self._ensure("exposures")
         joined = join_breakout_dimension(exposures, properties, [breakout.property])
         rows = _artifact_rows(self._snapshot.execute(joined.select(breakout.property).distinct()))

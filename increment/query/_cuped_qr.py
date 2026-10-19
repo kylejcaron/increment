@@ -33,6 +33,7 @@ def _power_two_l2_scales(
     expressions: Sequence[Any],
     *,
     execute: Callable[[ir.Table], object],
+    zero_as_zero: bool = False,
 ) -> tuple[float, ...]:
     """Return power-of-two L2 scales, keeping all row maxima SQL-local."""
     from increment.query._cuped_cells import _component_exponent_parts
@@ -74,18 +75,27 @@ def _power_two_l2_scales(
         execute(
             bounded.select(
                 **{
-                    f"scale_{index}": ibis.ifelse(
-                        bounded[f"_qr_scale_valid_{index}"],
-                        bounded[f"_qr_scale_exponent_{index}"],
-                        0,
-                    )
-                    for index in range(len(expressions))
+                    **{
+                        f"scale_{index}": ibis.ifelse(
+                            bounded[f"_qr_scale_valid_{index}"],
+                            bounded[f"_qr_scale_exponent_{index}"],
+                            0,
+                        )
+                        for index in range(len(expressions))
+                    },
+                    **{
+                        f"zero_{index}": bounded[f"_qr_norm_max_{index}"] == 0
+                        for index in range(len(expressions))
+                    },
                 }
             )
         )
     )[0]
     scales = []
     for index in range(len(expressions)):
+        if zero_as_zero and bool(result[f"zero_{index}"]):
+            scales.append(0.0)
+            continue
         scale = math.ldexp(1.0, int(result[f"scale_{index}"]))
         scales.append(scale if scale else math.ldexp(1.0, -1074))
     return tuple(scales)
@@ -96,8 +106,11 @@ def _power_two_l2_scale(
     expression: Any,
     *,
     execute: Callable[[ir.Table], object],
+    zero_as_zero: bool = False,
 ) -> float:
-    return _power_two_l2_scales(relation, (expression,), execute=execute)[0]
+    return _power_two_l2_scales(
+        relation, (expression,), execute=execute, zero_as_zero=zero_as_zero
+    )[0]
 
 
 def _stable_arm_means(
@@ -404,6 +417,48 @@ def _product_ratio_parts(
     return mantissa, exponent + shift
 
 
+def _combine_projection_score_parts(terms):
+    nonzero = [part for part in terms if part[2] != 0.0]
+    if not nonzero:
+        return {}, 0.0
+    scale_exponent = max(exponent for _, _, _, exponent in nonzero)
+    scale_mantissa = max(
+        abs(mantissa) for _, _, mantissa, exponent in nonzero if exponent == scale_exponent
+    )
+    coefficients = {
+        (family, arm): math.ldexp(mantissa / scale_mantissa, exponent - scale_exponent)
+        for family, arm, mantissa, exponent in nonzero
+    }
+    try:
+        scale = math.ldexp(scale_mantissa, scale_exponent)
+    except OverflowError:
+        scale = float("inf")
+    return coefficients, scale
+
+
+def _relative_score_coefficients(state, spec, score_column_scales, arms):
+    means = np.asarray(state.adjusted_means, dtype=float)
+    treatment = arms.index(spec.arm)
+    control = arms.index(spec.control)
+    terms = (
+        (0, treatment, (1.0,), (float(means[treatment]),), 1.0),
+        (0, control, (1.0,), (float(means[control]),), -1.0),
+    )
+    parts = []
+    for family, arm, numerators, denominators, sign in terms:
+        score_scale = float(score_column_scales[f"_qr_hc2_{family}_{arm}"])
+        if score_scale == 0.0:
+            continue
+        parts.append(
+            (
+                family,
+                arm,
+                *_product_ratio_parts(numerators, denominators, sign * score_scale),
+            )
+        )
+    return _combine_projection_score_parts(parts)
+
+
 def _ratio_score_coefficients(state, spec, score_column_scales, arms):
     """Scale each ratio derivative together with its matching score L2 scale."""
     scale_name = str(spec.identity[-1])
@@ -428,6 +483,8 @@ def _ratio_score_coefficients(state, spec, score_column_scales, arms):
     parts = []
     for family, arm, numerators, denominators, sign in terms:
         score_scale = float(score_column_scales[f"_qr_hc2_{family}_{arm}"])
+        if score_scale == 0.0:
+            continue
         parts.append(
             (
                 family,
@@ -435,21 +492,7 @@ def _ratio_score_coefficients(state, spec, score_column_scales, arms):
                 *_product_ratio_parts(numerators, denominators, sign * score_scale),
             )
         )
-    if not any(mantissa for _, _, mantissa, _ in parts):
-        return {(family, arm): 0.0 for family, arm, *_ in parts}, 1.0
-    scale_exponent = max(exponent for _, _, _, exponent in parts)
-    scale_mantissa = max(
-        abs(mantissa) for _, _, mantissa, exponent in parts if exponent == scale_exponent
-    )
-    coefficients = {
-        (family, arm): math.ldexp(mantissa / scale_mantissa, exponent - scale_exponent)
-        for family, arm, mantissa, exponent in parts
-    }
-    try:
-        scale = math.ldexp(scale_mantissa, scale_exponent)
-    except OverflowError:
-        return dict.fromkeys(coefficients, 0.0), 1.0
-    return coefficients, scale
+    return _combine_projection_score_parts(parts)
 
 
 def _contrast_covariates(state: FitState, jacobian: np.ndarray) -> np.ndarray:
@@ -614,7 +657,7 @@ def _warehouse_bm_component(
     )
 
 
-def _warehouse_projection_reductions(
+def _warehouse_projection_reductions(  # noqa: PLR0915
     state: FitState,
     current: ir.Table,
     score_names: Sequence[Sequence[str]],
@@ -631,6 +674,7 @@ def _warehouse_projection_reductions(
     tuple[tuple[float, ...], ...],
     tuple[tuple[tuple[tuple[float, ...], ...], ...], ...],
     tuple[tuple[tuple[tuple[float, ...], ...], ...], ...],
+    tuple[bool, ...],
 ]:
     arms = tuple(state.eligible_arms)
     width = len(arms) + state.p
@@ -645,6 +689,7 @@ def _warehouse_projection_reductions(
     s4_rows = []
     g_rows = []
     g2_rows = []
+    unavailable_specs = []
     score_column_names = tuple(name for family in score_names for name in family)
     score_column_scales = dict(
         zip(
@@ -653,6 +698,7 @@ def _warehouse_projection_reductions(
                 current,
                 tuple(current[name] for name in score_column_names),
                 execute=execute,
+                zero_as_zero=True,
             ),
             strict=True,
         )
@@ -679,13 +725,38 @@ def _warehouse_projection_reductions(
             s4_rows.append(tuple(0.0 for _ in range(component_count)))
             g_rows.append(tuple(zero_matrix for _ in range(component_count)))
             g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
+            unavailable_specs.append(True)
             continue
-        ratio_coefficients = None
-        ratio_scale = 1.0
+        projection_coefficients = None
+        projection_scale = 1.0
         if spec.kind == "ratio":
-            ratio_coefficients, ratio_scale = _ratio_score_coefficients(
+            projection_coefficients, projection_scale = _ratio_score_coefficients(
                 state, spec, score_column_scales, arms
             )
+        elif spec.kind == "relative":
+            projection_coefficients, projection_scale = _relative_score_coefficients(
+                state, spec, score_column_scales, arms
+            )
+        if not math.isfinite(projection_scale):
+            zero_matrix = tuple(tuple(0.0 for _ in range(2 * width)) for _ in range(2 * width))
+            records.append(
+                (
+                    spec.kind,
+                    spec.arm,
+                    spec.control,
+                    scale_name,
+                    estimate,
+                    float("nan"),
+                    float("nan"),
+                )
+            )
+            s2_rows.append(tuple(0.0 for _ in range(component_count)))
+            s4_rows.append(tuple(0.0 for _ in range(component_count)))
+            g_rows.append(tuple(zero_matrix for _ in range(component_count)))
+            g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
+            unavailable_specs.append(True)
+            continue
+        unavailable_specs.append(False)
         score_terms = []
         for family in range(component_count):
             for arm in range(len(arms)):
@@ -693,7 +764,7 @@ def _warehouse_projection_reductions(
                 column_scale = score_column_scales[name]
                 if column_scale == 0.0:
                     continue
-                if ratio_coefficients is None:
+                if projection_coefficients is None:
                     coefficient = _stable_product_ratio(
                         (
                             float(jacobian[family * len(arms) + arm]),
@@ -704,18 +775,45 @@ def _warehouse_projection_reductions(
                         int(spec.exponent),
                     )
                 else:
-                    coefficient = ratio_coefficients.get((family, arm), 0.0)
+                    coefficient = projection_coefficients.get((family, arm), 0.0)
                 score_terms.append((current[name] / column_scale) * coefficient)
-        score = _sum_sql(score_terms)
-        normalized_score_scale = _power_two_l2_scale(current, score, execute=execute)
-        score_sum = _rows(
-            execute(
-                current.aggregate(
-                    _qr_scaled_score_square=(score / normalized_score_scale).pow(2).sum()
+        if score_terms:
+            score = _sum_sql(score_terms)
+            normalized_score_scale = _power_two_l2_scale(
+                current, score, execute=execute, zero_as_zero=True
+            )
+            safe_score_scale = normalized_score_scale if normalized_score_scale > 0.0 else 1.0
+            score_sum = _rows(
+                execute(
+                    current.aggregate(
+                        _qr_scaled_score_square=(score / safe_score_scale).pow(2).sum()
+                    )
+                )
+            )[0]
+            scaled_square_sum = float(score_sum["_qr_scaled_score_square"])
+        else:
+            normalized_score_scale = 0.0
+            scaled_square_sum = 0.0
+        score_scale = projection_scale * normalized_score_scale
+        if not math.isfinite(score_scale) or not math.isfinite(scaled_square_sum):
+            records.append(
+                (
+                    spec.kind,
+                    spec.arm,
+                    spec.control,
+                    scale_name,
+                    estimate,
+                    float("nan"),
+                    float("nan"),
                 )
             )
-        )[0]
-        score_scale = ratio_scale * normalized_score_scale
+            s2_rows.append(tuple(0.0 for _ in range(component_count)))
+            s4_rows.append(tuple(0.0 for _ in range(component_count)))
+            zero_matrix = tuple(tuple(0.0 for _ in range(2 * width)) for _ in range(2 * width))
+            g_rows.append(tuple(zero_matrix for _ in range(component_count)))
+            g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
+            unavailable_specs[-1] = True
+            continue
         records.append(
             (
                 spec.kind,
@@ -724,7 +822,7 @@ def _warehouse_projection_reductions(
                 scale_name,
                 estimate,
                 score_scale,
-                float(score_sum["_qr_scaled_score_square"]),
+                scaled_square_sum,
             )
         )
         contrasts = tuple(
@@ -765,6 +863,7 @@ def _warehouse_projection_reductions(
         tuple(s4_rows),
         tuple(g_rows),
         tuple(g2_rows),
+        tuple(unavailable_specs),
     )
 
 
@@ -781,7 +880,8 @@ def warehouse_inference_summary(
     execute: Callable[[ir.Table], object],
     scratch,
 ) -> InferenceSummary:
-    """Reduce exact HC2 and weighted-Q BM evidence inside the warehouse."""
+    from dataclasses import replace
+
     design_scale_array = np.asarray(design_scales, dtype=float)
     projection_specs = tuple(projection_specs)
     projection_estimates = tuple(float(value) for value in projection_estimates)
@@ -812,7 +912,7 @@ def warehouse_inference_summary(
             execute=execute,
         ),
     )
-    records, s2, s4, gram, weighted_gram = _warehouse_projection_reductions(
+    records, s2, s4, gram, weighted_gram, unavailable_specs = _warehouse_projection_reductions(
         state,
         scored,
         score_names,
@@ -823,6 +923,10 @@ def warehouse_inference_summary(
         sqrt_weight_column,
         execute,
         scratch,
+    )
+    projection_specs = tuple(
+        replace(spec, available=spec.available and not unavailable)
+        for spec, unavailable in zip(projection_specs, unavailable_specs, strict=True)
     )
     return InferenceSummary(
         fit_identity=state.identity,
@@ -1630,14 +1734,42 @@ def fit_warehouse_qr(  # noqa: PLR0915
             adjusted_means.append(component_means[component][arm_index] - adjustment)
     denominator_support = ()
     if metric.type == "ratio":
+        from increment.query._cuped_cells import (
+            _binary_normalize,
+            _component_exponent_parts,
+            _join_on,
+        )
+
         denominator = relation["y_den"].cast("float64")
-        denominator_scale = denominator.abs().max().over(group_by=[relation["group_id"]])
+        maxima = relation.group_by("group_id").aggregate(_qr_den_max=denominator.abs().max())
+        scaled = _join_on(relation, maxima, ("group_id",))
+        moments = scaled.group_by("group_id").aggregate(
+            _qr_den_max=scaled._qr_den_max.max(),
+            _qr_den_squares=(
+                denominator / ibis.ifelse(scaled._qr_den_max > 0, scaled._qr_den_max, 1.0)
+            )
+            .pow(2)
+            .sum(),
+        )
+        max_exponent, scaled_norm, valid = _component_exponent_parts(
+            moments._qr_den_max, moments._qr_den_squares
+        )
+        exponents = moments.mutate(
+            _qr_den_exponent=ibis.ifelse(
+                valid,
+                max_exponent + scaled_norm.log2().floor() + 1,
+                0,
+            ).cast("int64")
+        )
+        normalized_rows = _join_on(relation, exponents, ("group_id",))
         normalized = cast(
             ir.Table,
             scratch.materialize_next(
-                relation.mutate(
-                    _qr_den_norm=denominator
-                    / ibis.ifelse(denominator_scale > 0, denominator_scale, 1.0)
+                normalized_rows.select(
+                    group_id=normalized_rows["group_id"],
+                    _qr_den_norm=_binary_normalize(
+                        denominator, normalized_rows["_qr_den_exponent"]
+                    ),
                 )
             ),
         )
@@ -1645,18 +1777,15 @@ def fit_warehouse_qr(  # noqa: PLR0915
         centered_denominator = cast(
             ir.Table,
             scratch.materialize_next(
-                normalized.mutate(
-                    _qr_den_mean=normalized_mean,
-                    _qr_den_residual=normalized["_qr_den_norm"] - normalized_mean,
-                )
+                normalized.mutate(_qr_den_residual=normalized["_qr_den_norm"] - normalized_mean)
             ),
         )
         moments = _rows(
             execute(
                 centered_denominator.group_by("group_id").aggregate(
                     _qr_den_squares=centered_denominator["_qr_den_residual"].pow(2).sum(),
-                    _qr_den_mean=centered_denominator["_qr_den_mean"].mean(),
-                    _qr_den_positive=centered_denominator["_qr_den_mean"].mean() > 0,
+                    _qr_den_mean=centered_denominator["_qr_den_norm"].mean(),
+                    _qr_den_positive=centered_denominator["_qr_den_norm"].mean() > 0,
                     _qr_den_count=centered_denominator.count(),
                 )
             )

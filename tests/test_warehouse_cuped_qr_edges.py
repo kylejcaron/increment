@@ -44,6 +44,8 @@ def test_qr_extreme_scales_match_local_inference(case, tmp_path):  # noqa: PLR09
         for index in range(count):
             x = 0.0 if case == "cancelling_extremes" else index / 59
             y = 3.0 + 0.2 * arm_index + 0.4 * x + 0.05 * math.sin(index)
+            if case == "overflow_mean":
+                y = 1e308 * (0.9 + 0.05 * arm_index + 0.002 * index) + 1e305 * math.sin(index)
             if case == "cancelling_extremes":
                 magnitudes = (1e300, -1e300, *(1.0 for _ in range(8)))
                 y = (1.0 + arm_index) * magnitudes[index]
