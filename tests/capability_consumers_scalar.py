@@ -609,12 +609,23 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             ),
         ),
         _e(
-            "from_moments_source_limited",
-            "Analysis.run() mixed-covariate mean",
+            "from_moments_categorical_supported",
+            "Analysis.run() categorical-only mixed-covariate mean/ratio with scalar companions",
             "from_moments",
-            "aggregate moments contain no per-unit covariates",
+            "format-13 joint-cell evidence exported from a unit, definitions or artifact source",
+            "supported",
+            evidence=(
+                "tests/test_cuped_evidence.py::test_format13_method_scoped_export_reloads_exact_inference",
+                "tests/test_cuped_portable_journey.py::test_definitions_artifact_moments_journey_replays_companions_without_unit_transfer",
+            ),
+        ),
+        _e(
+            "from_moments_source_limited",
+            "Analysis.run() mixed-covariate mean with a continuous covariate",
+            "from_moments",
+            "aggregate moments contain no per-unit continuous covariates",
             "source_limited",
-            reason="the portable cube cannot supply per-unit covariates; use a unit source",
+            reason="portable moments carry joint cells only for categorical-only requests; use a unit source",
             stage="construction",
             evidence=(
                 "tests/test_cuped_covariate_sources.py::test_from_moments_refuses_multicovariate_with_unit_source_route",

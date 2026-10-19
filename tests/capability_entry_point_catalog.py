@@ -204,11 +204,11 @@ def _display_interaction(binding: InteractionBinding) -> CellDisplay:
         interaction = next(item for item in CUPED_LINEAR_INTERACTIONS if item.name == binding.name)
     except StopIteration as exc:
         raise KeyError(f"unknown CUPED interaction {binding.name!r}") from exc
-    if binding.ingress == M:
+    if binding.ingress == M and not any(name == M for name, _ in interaction.ingress_dispositions):
         return CellDisplay(
             "source_limited",
             ("facade.analysis_config.cuped_linear_moments",),
-            "Portable moments cannot supply per-unit covariates.",
+            "Portable moments carry joint cells only for categorical-only fixed-horizon requests.",
             stage="construction",
             classification="SOURCE",
         )
@@ -582,7 +582,10 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
             P: (_consumer("mixed-cuped-fixed-horizon", "from_unit_panel_supported"),),
             D: (_consumer("mixed-cuped-fixed-horizon", "from_definitions_supported"),),
             A: (_consumer("mixed-cuped-fixed-horizon", "from_unit_day_artifact_supported"),),
-            M: (_consumer("mixed-cuped-fixed-horizon", "from_moments_source_limited"),),
+            M: (
+                _consumer("mixed-cuped-fixed-horizon", "from_moments_categorical_supported"),
+                _consumer("mixed-cuped-fixed-horizon", "from_moments_source_limited"),
+            ),
             SB: (_consumer("mixed-cuped-fixed-horizon", "switchback_source_limited"),),
         },
     ),

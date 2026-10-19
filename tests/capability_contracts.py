@@ -138,6 +138,15 @@ class MethodInteraction:
         )
 
 
+_JOURNEY = "tests/test_cuped_portable_journey.py"
+_PORTABLE_CATEGORICAL = InteractionDisposition(
+    "supported",
+    route_forward="Categorical-only mixed requests replay from format-13 joint cells; continuous mixed covariates refuse with facade.analysis_config.cuped_linear_moments.",
+    stage="read",
+    evidence=f"{_JOURNEY}::test_definitions_artifact_moments_journey_replays_companions_without_unit_transfer",
+)
+
+
 CUPED_LINEAR_INTERACTIONS = (
     MethodInteraction(
         "scalar_cuped",
@@ -145,12 +154,24 @@ CUPED_LINEAR_INTERACTIONS = (
         None,
         "tests/test_warehouse_cuped_parity.py::test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses",
         "Frames declare scalar and mixed covariates on their respective Method.cuped(covariates=...) declarations; definitions derive the scalar covariate from n_pre_periods > 0 and bind mixed covariates separately. Publish the cuped_preperiod artifact extension.",
+        (("from_moments", _PORTABLE_CATEGORICAL),),
     ),
     MethodInteraction(
         "ratio",
         "supported",
         None,
         "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+        ingress_dispositions=(
+            (
+                "from_moments",
+                InteractionDisposition(
+                    "supported",
+                    route_forward=_PORTABLE_CATEGORICAL.route_forward,
+                    stage="read",
+                    evidence="tests/test_cuped_evidence.py::test_format13_method_scoped_export_reloads_exact_inference",
+                ),
+            ),
+        ),
     ),
     MethodInteraction(
         "clustering",
@@ -184,6 +205,18 @@ CUPED_LINEAR_INTERACTIONS = (
         None,
         "tests/test_warehouse_cuped_parity.py::test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses",
         "Fixed lower and upper value bounds are exercised on each supported unit ingress and compared with shared row and retained-scope normalization.",
+        (
+            (
+                "from_moments",
+                InteractionDisposition(
+                    "unfinished",
+                    "query.cuped.general_qr_required",
+                    "Warehouse exports of bounded outcomes need general warehouse QR, which is not implemented; supply per-unit data through from_unit_summary or from_unit_panel.",
+                    "construction",
+                    f"{_JOURNEY}::test_fixed_caps_route_the_portable_export_to_general_qr_without_transfer",
+                ),
+            ),
+        ),
     ),
     MethodInteraction(
         "winsorization_percentile",
@@ -215,6 +248,16 @@ CUPED_LINEAR_INTERACTIONS = (
                     evidence="tests/test_cuped_linear_acceptance.py::test_cuped_linear_breakout_emits_complete_per_cell_family_evidence",
                 ),
             ),
+            (
+                "from_moments",
+                InteractionDisposition(
+                    "source_limited",
+                    "facade.analysis.operation",
+                    "Portable moments retain no per-unit breakout dimension.",
+                    "read",
+                    f"{_JOURNEY}::test_definitions_artifact_moments_journey_replays_companions_without_unit_transfer",
+                ),
+            ),
         ),
     ),
     MethodInteraction(
@@ -222,6 +265,7 @@ CUPED_LINEAR_INTERACTIONS = (
         "supported",
         None,
         "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+        ingress_dispositions=(("from_moments", _PORTABLE_CATEGORICAL),),
     ),
     MethodInteraction(
         "triggered_population",

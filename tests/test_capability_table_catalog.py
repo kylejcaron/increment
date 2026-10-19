@@ -137,13 +137,35 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
             disposition = interaction.for_ingress(ingress)
             assert display.status == disposition.status
             assert display.codes == ((disposition.code,) if disposition.code else ())
-        for ingress, code in (
-            ("from_moments", "facade.analysis_config.cuped_linear_moments"),
-            ("from_switchback_panel", "source.frame.switchback.metric"),
-        ):
-            display = resolve_cell(row.bindings[ingress])[0][1]
-            assert display.status == "source_limited"
-            assert display.codes == (code,)
+        switchback = resolve_cell(row.bindings["from_switchback_panel"])[0][1]
+        assert (switchback.status, switchback.codes) == (
+            "source_limited",
+            ("source.frame.switchback.metric",),
+        )
+
+    moments = {
+        interaction.name: resolve_cell(
+            rows[f"cuped-linear-interaction-{interaction.name}"].bindings["from_moments"]
+        )[0][1]
+        for interaction in CUPED_LINEAR_INTERACTIONS
+    }
+    assert {name: (cell.status, cell.codes) for name, cell in moments.items()} == {
+        "scalar_cuped": ("supported", ()),
+        "ratio": ("supported", ()),
+        "clustering": ("source_limited", ("facade.analysis_config.cuped_linear_moments",)),
+        "sequential": ("source_limited", ("facade.analysis_config.cuped_linear_moments",)),
+        "winsorization_fixed_value": ("unfinished", ("query.cuped.general_qr_required",)),
+        "winsorization_percentile": (
+            "source_limited",
+            ("facade.analysis_config.cuped_linear_moments",),
+        ),
+        "breakouts": ("source_limited", ("facade.analysis.operation",)),
+        "multiplicity_roles": ("supported", ()),
+        "triggered_population": (
+            "source_limited",
+            ("facade.analysis_config.cuped_linear_moments",),
+        ),
+    }
 
     summary_breakout = resolve_cell(
         rows["cuped-linear-interaction-breakouts"].bindings["from_unit_summary"]
