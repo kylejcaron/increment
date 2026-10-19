@@ -579,13 +579,7 @@ def _load_breakout_metric_rows(
                     continue
                 arm_order = (control_group, *(arm for arm in arms if arm != control_group))
                 is_null = segment_value == "__null__"
-                request_value = (
-                    None
-                    if is_null
-                    else segment_value[1:]
-                    if segment_value.startswith("\\")
-                    else segment_value
-                )
+                request_value = None if is_null else segment_value
                 try:
                     identity, fit = fit_source.fit_cuped_multicovariate(
                         metric,

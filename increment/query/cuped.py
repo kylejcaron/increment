@@ -188,37 +188,18 @@ def fit_multicovariate_source(
             item.kind == "categorical" for item in request.method.covariates or ()
         )
         outcomes = ("y", "y_den") if metric.type == "ratio" else ("y",)
-        if categorical_only and not _known_cells_outcome_domain(source, metric, relation, outcomes):
-            try:
-                return fit_categorical_cells(
-                    categorical_cells_from_relation(
-                        relation, execute, metric=metric, request=request
-                    ),
-                    control=request.control,
-                )
-            except CodedError as exc:
-                if exc.code not in CELL_REFUSALS:
-                    raise
         from increment.estimation.variance import require_positive_denominator_mean
+        from increment.query._cuped_qr import _stable_arm_means
 
         withheld = {}
         fitted_request = request
         if metric.type == "ratio":
-            denominator_means = _rows(
-                execute(
-                    relation.group_by("group_id").aggregate(
-                        _qr_denominator_mean=relation["y_den"].cast("float64").mean()
-                    )
-                )
+            denominator_means = _stable_arm_means(
+                relation, relation["y_den"].cast("float64"), execute=execute
             )
-            for row in denominator_means:
-                arm = str(row["group_id"])
+            for arm, mean in denominator_means.items():
                 try:
-                    require_positive_denominator_mean(
-                        metric=metric.name,
-                        group_id=arm,
-                        d_bar=float(row["_qr_denominator_mean"]),
-                    )
+                    require_positive_denominator_mean(metric=metric.name, group_id=arm, d_bar=mean)
                 except CodedError as exc:
                     withheld[arm] = exc
             admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
@@ -230,9 +211,29 @@ def fit_multicovariate_source(
                 arm_order=admitted,
                 identity=request.identity + ("admitted_arms", admitted),
             )
+        if categorical_only and not _known_cells_outcome_domain(source, metric, relation, outcomes):
+            try:
+                fit = fit_categorical_cells(
+                    categorical_cells_from_relation(
+                        relation, execute, metric=metric, request=fitted_request
+                    ),
+                    control=fitted_request.control,
+                )
+                return (
+                    _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
+                    if withheld
+                    else fit
+                )
+            except CodedError as exc:
+                if exc.code not in CELL_REFUSALS:
+                    raise
         with scratch_factory() as scratch:
             fit = fit_warehouse_qr(
-                relation, metric=metric, request=fitted_request, execute=execute, scratch=scratch
+                relation,
+                metric=metric,
+                request=fitted_request,
+                execute=execute,
+                scratch=scratch,
             )
         return (
             _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))

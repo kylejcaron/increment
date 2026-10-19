@@ -84,6 +84,21 @@ def _produce(frame, metric=None, request=None):
     transfers = []
 
     def execute(expression):
+        import ibis
+        import sqlglot
+
+        sql = ibis.to_sql(expression, dialect="duckdb")
+        statement = sqlglot.parse_one(sql, read="duckdb")
+        assert statement.args.get("limit") is None
+        assert statement.args.get("order") is None
+        for projection in statement.expressions:
+            selected = projection.this if isinstance(projection, sqlglot.exp.Alias) else projection
+            if type(selected).__name__ in {"AnyValue", "First", "Max", "Median", "Min"}:
+                assert isinstance(projection, sqlglot.exp.Alias) and projection.alias in {
+                    "min_contributors",
+                    "range_arm_0",
+                    "range_arm_1",
+                }, sql
         result = con.to_pyarrow(expression)
         transfers.append((tuple(result.column_names), result.to_pylist()))
         return result

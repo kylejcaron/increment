@@ -45,6 +45,22 @@ def _guard_no_unit_keyed_transfers(monkeypatch):
     )
 
 
+def _assert_no_transferred_extreme(expression):
+    import ibis
+    import sqlglot
+
+    sql = ibis.to_sql(expression, dialect="duckdb")
+    statement = sqlglot.parse_one(sql, read="duckdb")
+    assert statement.args.get("limit") is None
+    assert statement.args.get("order") is None
+    for projection in statement.expressions:
+        selected = projection.this if isinstance(projection, sqlglot.exp.Alias) else projection
+        if type(selected).__name__ in {"AnyValue", "First", "Max", "Median", "Min"}:
+            assert (
+                isinstance(projection, sqlglot.exp.Alias) and projection.alias == "_qr_max_leverage"
+            ), sql
+
+
 def _positive_diagonal(r, rhs):
     signs = np.where(np.diag(r) < 0, -1.0, 1.0)
     return signs[:, None] * r, signs[:, None] * rhs
@@ -517,7 +533,8 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
     session = _scratch_session(connection, tmp_path)
 
     def guarded_execute(expression):
-        assert type(expression.op()).__name__ == "Aggregate"
+        assert type(expression.op()).__name__ in {"Aggregate", "Project"}
+        _assert_no_transferred_extreme(expression)
         result = connection.to_pyarrow(expression)
         assert result.num_rows <= 1
         assert "unit_id" not in result.column_names
@@ -818,7 +835,8 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
     session = _scratch_session(connection, tmp_path)
 
     def guarded_execute(expression):
-        assert type(expression.op()).__name__ == "Aggregate"
+        assert type(expression.op()).__name__ in {"Aggregate", "Project"}
+        _assert_no_transferred_extreme(expression)
         result = connection.to_pyarrow(expression)
         assert result.num_rows <= 1
         assert "unit_id" not in result.column_names
@@ -1740,13 +1758,20 @@ def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scal
     connection.create_table("near_zero_ratio", obj=rows)
     connection.create_table("scratch_source", obj=[{"x": 1.0}])
     session = _scratch_session(connection, tmp_path)
+
+    def guarded_execute(expression):
+        _assert_no_transferred_extreme(expression)
+        result = connection.to_pyarrow(expression)
+        assert "unit_id" not in result.column_names
+        return result
+
     try:
         with session.qr_scratch() as scratch:
             actual = fit_warehouse_qr(
                 connection.table("near_zero_ratio"),
                 metric=metric,
                 request=request,
-                execute=connection.to_pyarrow,
+                execute=guarded_execute,
                 scratch=scratch,
             )
         for name in ("theta", "adjusted_means", "covariance", "dof", "max_leverage"):
@@ -1830,6 +1855,13 @@ def test_qr_tiny_mean_large_denominator_spread_refuses_support_like_local_fit(tm
     connection.create_table("tiny_denominator_support", obj=rows)
     connection.create_table("scratch_source", obj=[{"x": 1.0}])
     session = _scratch_session(connection, tmp_path)
+
+    def guarded_execute(expression):
+        _assert_no_transferred_extreme(expression)
+        result = connection.to_pyarrow(expression)
+        assert "unit_id" not in result.column_names
+        return result
+
     try:
         with pytest.raises(CodedError) as actual_error:
             with session.qr_scratch() as scratch:
@@ -1837,7 +1869,7 @@ def test_qr_tiny_mean_large_denominator_spread_refuses_support_like_local_fit(tm
                     connection.table("tiny_denominator_support"),
                     metric=metric,
                     request=request,
-                    execute=connection.to_pyarrow,
+                    execute=guarded_execute,
                     scratch=scratch,
                 )
         assert actual_error.value.code == local_error.value.code
