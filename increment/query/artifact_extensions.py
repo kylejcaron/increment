@@ -36,6 +36,7 @@ from increment.query.artifact_contract import (
     ArtifactPublication,
     ArtifactSnapshot,
     _aggregate_sum_within_extrema,
+    _with_sum_within_extrema_sql,
     unit_day_artifact_extension_catalog,
 )
 from increment.query.artifact_digest import (
@@ -523,6 +524,8 @@ def _validate_relation_table(
             kind=kind,
             fields=tuple(table.schema().names),
         )
+    if {"n_events", "sum_value", "min_value", "max_value"} <= set(expected):
+        table = _with_sum_within_extrema_sql(table, "_sum_within_extrema")
     checks: dict[str, Any] = {"n_rows": table.count()}
     for name, tag, nullable in fields:
         column = table[name]
@@ -536,14 +539,7 @@ def _validate_relation_table(
     if "experiment_id" in expected:
         checks["bad_experiment_id"] = (table.experiment_id != experiment_id).any()
     if {"n_events", "sum_value", "min_value", "max_value"} <= set(expected):
-        stats_valid = _aggregate_sum_within_extrema(
-            table.sum_value,
-            table.n_events,
-            table.min_value,
-            table.max_value,
-            choose=ibis.ifelse,
-        )
-        checks["bad_stats"] = (~stats_valid).any()
+        checks["bad_stats"] = (~table._sum_within_extrema).any()
     if "population" in expected:
         checks["bad_population"] = (~table.population.isin(["assigned", "triggered"])).any()
     if "n_events" in expected and kind in {"site_volume", "trigger_measure_stats"}:

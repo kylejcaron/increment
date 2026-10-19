@@ -659,7 +659,7 @@ Definitions-backed analysis has two persistence boundaries:
 | Call | What it does |
 |---|---|
 | `analysis.materialize()` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
-| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-1 context and format-2 relation digests through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
+| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with context format 2 and the backend's relation-digest format. DuckDB uses digest format 2, which the warehouse reader verifies. PostgreSQL, Snowflake, and BigQuery use digest format 3 and are refused by this branch's reader with `query.session.warehouse_artifact.verification_unavailable`; use the definitions-backed route or republish after a reader supporting that backend's digest is available. |
 
 A refresh keeps `artifact_id` but creates a new `generation_id`, and must use
 the same compiled context as the pinned prior generation. Completeness is only
@@ -950,8 +950,14 @@ ref distribution and store authorization are the authenticity boundary.
     supported versions. Republish from trusted definitions to obtain a
     format-2 artifact; the refusal never upgrades an old context. Existing
     artifacts are not deleted and credentials are not rotated automatically.
-    Relation digest versions are independent of the context format and remain
-    readable.
+    Relation digest formats are independent of the context format. Warehouse
+    adoption in this branch verifies format 2 on DuckDB; formats 1 and 3, and
+    format 2 on other backends, are refused with
+    `query.session.warehouse_artifact.verification_unavailable` and structured
+    relation/format context. Format 1 remains available only to the explicit
+    historical local codec. Republish from trusted definitions on a supported
+    backend to produce a warehouse-verifiable artifact; this does not upgrade
+    an existing manifest or transfer its unverified rows.
 
     Relation schema/content and manifest digests use the same domain root,
     role-specific markers, schema bytes, row count, and rows sorted by primary

@@ -1648,7 +1648,9 @@ def test_scaled_binary64_enclosure_python_and_sql_decisions_match() -> None:
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
-def test_aggregate_integrity_predicate_fits_warehouse_statement_limits(dialect: str) -> None:
+def test_aggregate_integrity_predicate_fits_warehouse_statement_limits(
+    dialect: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Shared floating-point intermediates must not be re-inlined at every use: an
     exponentially expanded predicate exceeds BigQuery's 1,024K-character and Snowflake's
     1 MB statement limits, so artifact adoption would fail on those warehouses."""
@@ -1664,6 +1666,46 @@ def test_aggregate_integrity_predicate_fits_warehouse_statement_limits(dialect: 
     staged = _with_sum_within_extrema_sql(table, "accepted")
     sql = str(ibis.to_sql(staged.aggregate(bad=(~staged.accepted).any()), dialect=dialect))
     assert len(sql) < 100_000
+    from increment.query import artifact_extensions
+    from increment.query.schemas import ARTIFACT_RELATION_SCHEMAS
+
+    extension = ibis.table(
+        {
+            "experiment_id": "string",
+            "ds": "date",
+            "measure_key": "string",
+            "n_events": "int64",
+            "sum_value": "float64",
+            "min_value": "float64",
+            "max_value": "float64",
+        },
+        name="site_volume",
+    )
+    result = {"n_rows": 1, "n_distinct": 1}
+    for name, tag, nullable in ARTIFACT_RELATION_SCHEMAS["site_volume"]:
+        if not nullable:
+            result[f"null_{name}"] = False
+        if tag == "FLOAT64":
+            result[f"bad_float_{name}"] = False
+    result.update(
+        bad_experiment_id=False,
+        bad_stats=False,
+        bad_event_count=False,
+    )
+    statements: list[str] = []
+
+    def capture_query(expression):
+        statements.append(str(ibis.to_sql(expression, dialect=dialect)))
+        return [result]
+
+    monkeypatch.setattr(artifact_extensions, "_rows", capture_query)
+    assert (
+        artifact_extensions._validate_relation_table(
+            extension, "site_volume", experiment_id="exp", execute=lambda query: query
+        )
+        == 1
+    )
+    assert len(statements) == 1 and len(statements[0]) < 100_000
 
 
 def test_scaled_binary64_enclosure_accepts_reordered_and_partitioned_sums() -> None:

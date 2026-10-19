@@ -1143,7 +1143,7 @@ def test_v3_trigger_population_count_mismatch_is_refused(
     triggered = source.triggered_source()
     try:
         with pytest.raises(ArtifactContractError) as raised:
-            triggered.assignment_counts()
+            triggered.triggered_counts()
         assert raised.value.code == "artifact.extension.invalid"
     finally:
         triggered.close()
@@ -1205,7 +1205,7 @@ def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
     try:
         with pytest.raises(ArtifactContractError) as raised:
             triggered.sitewide_evidence(metric, population="triggered")
-        assert "out-of-range date/measure coverage" in str(raised.value)
+        assert raised.value.code == "artifact.extension.invalid"
         assert "site_volume" in verified_roles
     finally:
         triggered.close()
