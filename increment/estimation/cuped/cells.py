@@ -317,14 +317,15 @@ def fit_categorical_cells(cells: CategoricalCells, *, control) -> Multicovariate
         _invalid_evidence(
             "categorical fitting requires named joint covariates and one or two outcome components"
         )
-    if len(cells.arms) < 2 or control not in cells.arms:
+    counts = tuple(sum(row) for row in cells.counts)
+    observed = tuple(arm for arm, count in zip(cells.arms, counts, strict=True) if count)
+    if len(cells.arms) < 2 or control not in cells.arms or observed != cells.arms:
         _fail(
             "estimation.cuped_linear.invalid_arms",
             control=control,
             arm_order=cells.arms,
-            observed=cells.arms,
+            observed=observed,
         )
-    counts = tuple(sum(row) for row in cells.counts)
     if min(counts) < 2:
         _fail(
             "estimation.cuped_linear.arm_counts", counts=dict(zip(cells.arms, counts, strict=True))

@@ -1008,10 +1008,10 @@ Each arm is centered exactly as the per-unit fit centers it, on its upper
 median (or zero when that subtraction would overflow), so cancelling extreme
 outcomes round the same way. Cell sums of these centered values are then
 rebased once onto the arm-mean reference the evidence carries. Local
-reductions sum exactly; warehouse reductions use a compensated two-part sum
-whose error is far below the per-unit centering rounding, though survivors
-more than about $2^{53}$ times smaller than cancelling extremes in the same
-arm are not retained there.
+reductions sum exactly. Warehouse reductions split each centered value
+exactly into two grid-rounded parts, whose sums are exact in any order, and
+a final remainder; values far below cancelling extremes survive in those
+remainders.
 
 For a cell with multiplicity $m_g$, factor rows
 $\sqrt{m_g w_a}\,z_g$, where $w_a=1/[n_a(n_a-1)]$. Dividing its compressed
@@ -1041,7 +1041,11 @@ cells, an encoded upper bound of 8 MiB, and at least eightfold compression
 from the original unit count. Every retained outcome component needs at
 least three finite contributors and demonstrably positive within-cell
 scatter in every cell. Known discrete or bounded outcome domains require
-general warehouse QR instead.
+general warehouse QR instead. So does a cell or arm whose remainders could
+change its outcome sum by more than $2^{-36}$ of the arm or cell mean, which
+arises only when centered values cancel across several widely separated
+magnitudes; the refusal reason `component_range` names the arm and the
+outcome component.
 The discrete-domain check uses original source-column metadata, retained in
 artifact measure manifests, rather than the prepared floating-point outcomes.
 An older artifact without that metadata cannot establish categorical eligibility.

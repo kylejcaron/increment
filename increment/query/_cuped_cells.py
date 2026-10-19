@@ -21,6 +21,8 @@ MAX_CELLS = 4096
 MAX_ENCODED_BYTES = 8 * 1024 * 1024
 MIN_COMPRESSION = 8
 MIN_CONTRIBUTORS = 3
+_SUM_ERROR = 2.0**-52
+_MEAN_TOLERANCE = 2.0**-36
 
 _GENERAL_QR = RefusalSpec(
     "query.cuped.general_qr_required",
@@ -31,12 +33,13 @@ _GENERAL_QR = RefusalSpec(
 REFUSALS = {_GENERAL_QR.code: _GENERAL_QR}
 
 
-def general_qr_required(metric, reason: str) -> NoReturn:
+def general_qr_required(metric, reason: str, **detail: object) -> NoReturn:
     refuse(
         _GENERAL_QR,
         metric=metric.name,
         reason=reason,
         route="Use explicitly supplied local per-unit data with Analysis.from_unit_summary or Analysis.from_unit_panel; warehouse units are never downloaded automatically.",
+        **detail,
     )
 
 
@@ -53,10 +56,7 @@ def known_outcome_domain(metric):
 def _known_outcome_domain(metric, relation, outcomes):
     if known_outcome_domain(metric):
         return True
-    return any(
-        relation[name].type().is_integer() or relation[name].type().is_boolean()
-        for name in outcomes
-    )
+    return any(component_domain(None, relation[name].type()) != "continuous" for name in outcomes)
 
 
 def component_domain(measure, datatype):
@@ -78,17 +78,38 @@ def _binary_denormalize(value, exponent):
     return value * (2.0**half) * (2.0 ** (exponent - half))
 
 
-def _compensated_sum(value, sigma):
-    """Sum terms of magnitude at most two whose count is below ``sigma / 4``.
+def _split_terms(value, sigma):
+    """Split terms exactly into two grid-rounded parts and a final remainder.
 
-    Rounding each term to the float grid at ``sigma`` keeps every partial sum of
-    the rounded parts exact in any order; the exact remainders, each below
-    ``sigma * 2**-53``, are summed apart. The total error is therefore at most
-    about ``count**2 * sigma * 2**-106``: survivors much smaller than that beside
-    cancelling extremes are not retained, unlike the per-unit exact sum.
+    For ``count`` terms of magnitude at most two and ``sigma >= 4 * count``, every
+    partial sum of each rounded part is exact in any order: the first part lies on
+    the float grid at ``sigma``, the second on the grid at ``sigma**2 * 2**-53``.
+    Remainders of large terms land exactly on the second grid, so values far below
+    cancelling extremes survive in the final remainders.
     """
-    high = (value + sigma) - sigma
-    return high.sum() + (value - high).sum()
+    first = (value + sigma) - sigma
+    remainder = value - first
+    second_sigma = sigma * sigma * 2.0**-53
+    second = (remainder + second_sigma) - second_sigma
+    return first, second, remainder - second
+
+
+def _compensated(value, sigma):
+    """Compensated sum and the magnitude of the remainders it adds in any order."""
+    first, second, remainder = _split_terms(value, sigma)
+    return (first.sum() + second.sum()) + remainder.sum(), remainder.abs().sum()
+
+
+def _resolved(count, remainder_magnitude, scaled_mean):
+    """Whether the summation error bound is negligible beside the resulting mean.
+
+    Adding ``count`` remainders in any order errs by at most ``count * 2**-53`` of
+    their magnitude; with a factor two for combining the parts, that bound must
+    stay within ``2**-36`` of ``count`` times the mean, below the compact-versus-unit
+    parity tolerance. Ordinary rounding passes; remainders that cancel far above
+    the mean, which the split cannot resolve exactly, do not.
+    """
+    return count * remainder_magnitude * _SUM_ERROR <= _MEAN_TOLERANCE * scaled_mean.abs()
 
 
 def _median_overflows(centered, exponent):
@@ -160,28 +181,39 @@ def _cell_relation(relation, names, outcomes):
     )
     shifted = relation.mutate(
         **{
-            f"_offset_{f}": _binary_normalize(relation[name], relation[f"exponent_{f}"])
-            - _binary_normalize(relation[f"_base_{f}"], relation[f"exponent_{f}"])
+            f"_base_norm_{f}": _binary_normalize(relation[f"_base_{f}"], relation[f"exponent_{f}"])
+            for f in range(len(outcomes))
+        }
+    )
+    shifted = shifted.mutate(
+        **{
+            f"_offset_{f}": _binary_normalize(shifted[name], shifted[f"exponent_{f}"])
+            - shifted[f"_base_norm_{f}"]
             for f, name in enumerate(outcomes)
         }
     )
+    arm_sums = {
+        f: _compensated(shifted[f"_offset_{f}"], shifted["_sigma"]) for f in range(len(outcomes))
+    }
+    totals = shifted.group_by("group_id").aggregate(
+        **{f"_arm_sum_{f}": total for f, (total, _) in arm_sums.items()},
+        **{f"_arm_remainder_{f}": remainder for f, (_, remainder) in arm_sums.items()},
+    )
+    joined = _join_on(shifted, totals, ("group_id",))
     # Transferred references are arm means, never a selected unit's outcome.
-    references = shifted.group_by("group_id").aggregate(
+    referenced = joined.mutate(
         **{
-            f"ref_{f}": shifted[f"_base_{f}"].first()
+            f"ref_{f}": joined[f"_base_{f}"]
             + _binary_denormalize(
-                _compensated_sum(shifted[f"_offset_{f}"], shifted["_sigma"])
-                / shifted["_arm_count"].first(),
-                shifted[f"exponent_{f}"].first(),
+                joined[f"_arm_sum_{f}"] / joined["_arm_count"], joined[f"exponent_{f}"]
             )
             for f in range(len(outcomes))
         }
     )
-    referenced = _join_on(shifted, references, ("group_id",))
     centered = referenced.mutate(
         **{
             f"_shift_{f}": _binary_normalize(referenced[f"ref_{f}"], referenced[f"exponent_{f}"])
-            - _binary_normalize(referenced[f"_base_{f}"], referenced[f"exponent_{f}"])
+            - referenced[f"_base_norm_{f}"]
             for f in range(len(outcomes))
         }
     )
@@ -189,14 +221,23 @@ def _cell_relation(relation, names, outcomes):
     for f, name in enumerate(outcomes):
         value = centered[name].cast("float64")
         finite = value.notnull() & ~value.isnan() & ~value.isinf()
-        total = _compensated_sum(centered[f"_offset_{f}"], centered["_sigma"])
+        total, remainder = _compensated(centered[f"_offset_{f}"], centered["_sigma"])
+        count = centered.count()
+        arm_count = centered["_arm_count"].first()
+        base = centered[f"_base_norm_{f}"].first()
         aggregates.update(
             {
                 f"ref_{f}": centered[f"ref_{f}"].first(),
                 f"exponent_{f}": centered[f"exponent_{f}"].first(),
                 f"_sum_{f}": total,
                 # Rebase the exact cell sum once onto the transferred reference.
-                f"first_{f}": total - centered.count() * centered[f"_shift_{f}"].first(),
+                f"first_{f}": total - count * centered[f"_shift_{f}"].first(),
+                f"_precise_{f}": _resolved(count, remainder, count * base + total)
+                & _resolved(
+                    arm_count,
+                    centered[f"_arm_remainder_{f}"].first(),
+                    arm_count * base + centered[f"_arm_sum_{f}"].first(),
+                ),
                 f"contributors_{f}": finite.cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
                 f"max_centered_{f}": centered[f"_offset_{f}"].abs().max(),
@@ -267,6 +308,10 @@ def _preflight(cells, names, components, request, metric):
         ).all(),
         scatter_positive=cast(ir.BooleanColumn, ibis.and_(*positive)).all(),
         encoded_bytes=encoded_bytes,
+        **{
+            f"range_arm_{f}": cells.group_id.min(where=~cells[f"_precise_{f}"])
+            for f in range(components)
+        },
     )
 
 
@@ -297,6 +342,12 @@ def categorical_cells_from_relation(
         general_qr_required(metric, "component_contributors")
     if not preflight["scatter_positive"]:
         general_qr_required(metric, "component_scatter")
+    labels = ("numerator", "denominator") if metric.type == "ratio" else ("outcome",)
+    for f, label in enumerate(labels):
+        if preflight[f"range_arm_{f}"] is not None:
+            general_qr_required(
+                metric, "component_range", arm=preflight[f"range_arm_{f}"], component=label
+            )
     if preflight["encoded_bytes"] is None or preflight["encoded_bytes"] > MAX_ENCODED_BYTES:
         general_qr_required(metric, "encoded_bytes")
     fields = [*names, "group_id", "n"]

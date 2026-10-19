@@ -916,6 +916,25 @@ def test_categorical_reference_preserves_cancelling_extreme_outcomes():
     _assert_scale_free_parity(fit_categorical_cells(cells, control="c"), expected)
 
 
+def test_categorical_cells_refuse_empty_declared_arm_like_unit_fit():
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    values = _crossed_category_case()
+    values["arm_order"] = (*values["arm_order"], "empty")
+    with pytest.raises(InvalidRequestError) as unit:
+        fit_cuped_multicovariate(
+            **values, kinds={"segment": "categorical", "device": "categorical"}
+        )
+    with pytest.raises(InvalidRequestError) as compact:
+        fit_categorical_cells(categorical_cells(**values, identity=("empty",)), control="c")
+    assert compact.value.code == unit.value.code == "estimation.cuped_linear.invalid_arms"
+    assert compact.value.context["arm_order"] == unit.value.context["arm_order"]
+    compact_observed = compact.value.context["observed"]
+    unit_observed = unit.value.context["observed"]
+    assert isinstance(compact_observed, tuple) and isinstance(unit_observed, tuple)
+    assert set(compact_observed) == set(unit_observed)
+
+
 def test_categorical_singleton_merge_preserves_representable_large_scatter():
     import math
 
