@@ -137,3 +137,55 @@ def bigquery_con():
         yield con
     finally:
         con.disconnect()
+
+
+@pytest.fixture
+def snowflake_compile_con():
+    import snowflake.connector
+    from cryptography.hazmat.primitives import serialization
+
+    env = _require_env(
+        "INCREMENT_TEST_SNOWFLAKE_ACCOUNT",
+        "INCREMENT_TEST_SNOWFLAKE_USER",
+        "INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY",
+        "INCREMENT_TEST_SNOWFLAKE_DATABASE",
+        "INCREMENT_TEST_SNOWFLAKE_SCHEMA",
+    )
+    passphrase = os.environ.get("INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
+    parsed = serialization.load_pem_private_key(
+        env["INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY"].encode(),
+        password=passphrase.encode() if passphrase else None,
+    )
+    connection = snowflake.connector.connect(
+        account=env["INCREMENT_TEST_SNOWFLAKE_ACCOUNT"],
+        user=env["INCREMENT_TEST_SNOWFLAKE_USER"],
+        private_key=parsed.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ),
+        database=env["INCREMENT_TEST_SNOWFLAKE_DATABASE"],
+        schema=env["INCREMENT_TEST_SNOWFLAKE_SCHEMA"],
+    )
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+@pytest.fixture
+def bigquery_compile_session():
+    from google.cloud import bigquery
+
+    env = _require_env("INCREMENT_TEST_BIGQUERY_PROJECT", "INCREMENT_TEST_BIGQUERY_DATASET")
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        pytest.fail("missing GOOGLE_APPLICATION_CREDENTIALS for BigQuery compile test")
+    client = bigquery.Client(project=env["INCREMENT_TEST_BIGQUERY_PROJECT"])
+    dataset = client.dataset(
+        env["INCREMENT_TEST_BIGQUERY_DATASET"],
+        project=env["INCREMENT_TEST_BIGQUERY_PROJECT"],
+    )
+    try:
+        yield client, dataset
+    finally:
+        client.close()

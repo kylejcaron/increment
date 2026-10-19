@@ -441,7 +441,7 @@ def _inline_empty_ctes(statement: str, case: CompileCase) -> str:
     ctes = []
     for key, table_name in case.table_names.items():
         projections = [
-            exp.alias(
+            exp.alias_(
                 exp.Cast(
                     this=exp.Null(),
                     to=exp.DataType.build(
@@ -463,35 +463,54 @@ def _inline_empty_ctes(statement: str, case: CompileCase) -> str:
     return query.sql(dialect=case.dialect)
 
 
-def _create_schema_only(con, case: CompileCase, created: list[str]) -> None:
+def _execute_sql(connection, dialect: str, statement: str, *, dry_run: bool = False):
+    if dialect == "snowflake":
+        cursor = connection.cursor()
+        try:
+            return cursor.execute(statement)
+        finally:
+            cursor.close()
+    from google.cloud.bigquery import QueryJobConfig
+
+    client, dataset = connection
+    config = QueryJobConfig(
+        default_dataset=dataset,
+        dry_run=dry_run,
+        use_query_cache=False,
+    )
+    job = client.query(statement, job_config=config)
+    if not dry_run:
+        job.result()
+    return job
+
+
+def _create_schema_only(connection, case: CompileCase, created: list[str]) -> None:
     for key, table_name in case.table_names.items():
-        con.raw_sql(_schema_only_ddl(case, key, table_name))
+        _execute_sql(connection, case.dialect, _schema_only_ddl(case, key, table_name))
         created.append(table_name)
 
 
-def _drop_schema_only(con, table_names) -> None:
+def _drop_schema_only(connection, case: CompileCase, table_names) -> None:
     for table_name in reversed(table_names):
         try:
-            con.raw_sql(f"DROP TABLE IF EXISTS {table_name}")
+            _execute_sql(connection, case.dialect, f"DROP TABLE IF EXISTS {table_name}")
         except Exception:
             pass
 
 
-def _submit_compile(con, dialect: str, statement: str) -> None:
+def _submit_compile(connection, dialect: str, statement: str) -> None:
     if dialect == "snowflake":
-        con.raw_sql(f"EXPLAIN USING TEXT {statement}")
-        return
-    from google.cloud.bigquery import QueryJobConfig
-
-    con.con.query(statement, job_config=QueryJobConfig(dry_run=True, use_query_cache=False))
+        _execute_sql(connection, dialect, f"EXPLAIN USING TEXT {statement}")
+    else:
+        _execute_sql(connection, dialect, statement, dry_run=True)
 
 
-def run_compile_case(con, case: CompileCase) -> None:
+def run_compile_case(connection, case: CompileCase) -> str:
     """Compile one expression against empty typed relations; never execute a query."""
     created = []
     try:
         expression = case.build(case.table_names)
-        statement = con.compile(expression)
+        statement = case.compile(expression)
     except Exception as exc:
         raise AssertionError(
             f"{case.dialect} compile failed for statement {case.name}: {exc}"
@@ -499,15 +518,19 @@ def run_compile_case(con, case: CompileCase) -> None:
 
     try:
         try:
-            _create_schema_only(con, case, created)
+            _create_schema_only(connection, case, created)
+            route = "empty schema-only tables"
         except Exception:
-            _drop_schema_only(con, created)
+            _drop_schema_only(connection, case, created)
             created.clear()
             statement = _inline_empty_ctes(statement, case)
-        _submit_compile(con, case.dialect, statement)
+            route = "inline empty typed CTEs"
+        print(f"{case.dialect} {case.name}: {route}")
+        _submit_compile(connection, case.dialect, statement)
+        return route
     except Exception as exc:
         raise AssertionError(
             f"{case.dialect} compile failed for statement {case.name}: {exc}"
         ) from exc
     finally:
-        _drop_schema_only(con, created)
+        _drop_schema_only(connection, case, created)

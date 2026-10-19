@@ -8,5 +8,5 @@ pytestmark = pytest.mark.warehouse_compile
 
 
 @pytest.mark.parametrize("case", compile_statement_cases("snowflake"), ids=lambda case: case.name)
-def test_snowflake_statement_compiles(snowflake_con, case):
-    run_compile_case(snowflake_con, case)
+def test_snowflake_statement_compiles(snowflake_compile_con, case):
+    run_compile_case(snowflake_compile_con, case)
