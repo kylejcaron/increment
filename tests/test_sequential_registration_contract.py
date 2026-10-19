@@ -1364,6 +1364,7 @@ def test_automatic_segments_on_a_unit_panel_match_the_manual_registration():
     assert {row.dimension_value for row in auto_source.run_breakout()} == set(levels)
 
 
+@pytest.mark.integration
 def test_automatic_segments_under_an_explicit_bh_view_read_out_at_the_view_level():
     """A declared BH breakout view selects at its own q, and the readout requires
     the registration to carry that level: the automatic roster is registered
@@ -1554,6 +1555,7 @@ def _occupancy(snapshot):
 
 @pytest.mark.parametrize("kind", _BOOL_KINDS)
 @pytest.mark.parametrize("registered", ["automatic", "explicit"])
+@pytest.mark.integration
 def test_boolean_and_null_summary_segments_match_the_canonical_string_oracle(kind, registered):
     from increment.semantics.design import Randomized
     from increment.semantics.models import AnalysisPlan, InferenceSpec
@@ -1601,6 +1603,7 @@ def test_boolean_and_null_summary_segments_match_the_canonical_string_oracle(kin
 
 
 @pytest.mark.parametrize("kind", _BOOL_KINDS)
+@pytest.mark.integration
 def test_boolean_and_null_panel_segments_match_the_canonical_string_oracle(kind):
     import pandas as pd
 

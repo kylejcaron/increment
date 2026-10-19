@@ -11,6 +11,7 @@ from datetime import datetime
 
 import ibis
 import pyarrow as pa
+import pytest
 
 from increment import Analysis
 from increment.semantics.models import AnalysisPlan, ConversionMetric
@@ -337,3 +338,6 @@ def test_from_source_seam_instance_has_a_working_plan_property() -> None:
         metrics={"revenue": "mean"},
     )
     assert {role for _, role in _run_roles(analysis)} == {None}
+
+
+pytestmark = pytest.mark.integration

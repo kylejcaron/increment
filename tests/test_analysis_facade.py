@@ -2653,3 +2653,6 @@ def test_moments_checkpoint_reexport_refused(tmp_path):
         stage="read",
     )
     assert not target.exists()
+
+
+pytestmark = pytest.mark.integration

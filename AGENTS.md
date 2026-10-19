@@ -51,7 +51,9 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 - Unmarked test categories default to cheap unit/small regression checks.
   Mark component/query/UI/subprocess boundaries `integration`; use `slow`
   for expensive work and `stress` plus `slow` for large deterministic grids.
-  Legacy unmarked tests require source inspection, not an assumed unit label.
+  Integration tests remain in PR fast CI; the unit tier excludes them for
+  local iteration. Legacy unmarked tests require source inspection, not an
+  assumed unit label.
 - Recovery, coverage and bias studies use `parameter_recovery` plus `slow`;
   deterministic inferential-certification families use
   `numerical_certification` plus `slow`. Notebook exports use `examples` plus

@@ -2392,3 +2392,6 @@ def test_asof_lift_native_refuses_effect_prior_before_capture(con):
     with pytest.raises(CapabilityError) as raised:
         analysis.run_asof_lift(prior=Normal(mu=0, sigma=0.1))
     assert raised.value.code == "sequential.route.unsupported"
+
+
+pytestmark = pytest.mark.integration

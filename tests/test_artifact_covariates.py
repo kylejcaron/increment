@@ -57,6 +57,7 @@ def _publish_and_reopen(
     return Analysis.from_unit_day_artifact(store, ref, expected_context=context), manifest
 
 
+@pytest.mark.integration
 def test_artifact_serves_declared_unit_covariate_and_keeps_missing_null(tmp_path):
     from increment.semantics.design import Observational
 
@@ -74,6 +75,7 @@ def test_artifact_serves_declared_unit_covariate_and_keeps_missing_null(tmp_path
     assert rows == pytest.approx({u: t for u, t in tenure.items() if u != "u3"})
 
 
+@pytest.mark.integration
 def test_artifact_auto_publishes_declared_covariate_without_explicit_request(tmp_path):
     """Regression: a covariate is fully determined by `design.covariates`, so
     publishing must include it even when the caller never builds a
@@ -88,6 +90,7 @@ def test_artifact_auto_publishes_declared_covariate_without_explicit_request(tmp
     assert rows == pytest.approx(tenure)
 
 
+@pytest.mark.integration
 def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_path):
     defs_path, con, units = categorical_defs_and_con(tmp_path)
     defs_path.write_text(
@@ -107,6 +110,7 @@ def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_
     assert rows["u0"] == units["u0"]["tenure"]
 
 
+@pytest.mark.integration
 def test_observational_property_wins_over_same_named_measure_binding_on_replay(tmp_path):
     defs_path, con, tenure, *_ = covariate_defs_and_con(tmp_path, observational=True)
     defs_path.write_text(
@@ -182,6 +186,7 @@ def _publish_categorical(
     return Analysis.from_unit_day_artifact(store, ref, expected_context=context), manifest
 
 
+@pytest.mark.integration
 def test_artifact_serves_a_string_covariate_as_levels_and_keeps_missing_null(tmp_path):
     """A declared string property is published on its own
     `unit_covariate_level` relation and read back as a string column -- the
@@ -218,6 +223,7 @@ def test_artifact_serves_a_string_covariate_as_levels_and_keeps_missing_null(tmp
     )
 
 
+@pytest.mark.integration
 def test_string_covariate_is_requestable_only_under_its_level_request(tmp_path):
     """The catalog types a string covariate as `unit_covariate_level`: the
     numeric request for it is refused as absent from the trusted catalog,
@@ -248,6 +254,7 @@ def test_string_covariate_is_requestable_only_under_its_level_request(tmp_path):
     }
 
 
+@pytest.mark.integration
 def test_numeric_covariate_wire_is_untouched_by_the_level_relation(tmp_path):
     """Legacy numeric artifacts keep verifying: the numeric covariate
     relation still carries its frozen three-column schema digest, and its

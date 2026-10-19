@@ -115,6 +115,7 @@ def _group_id_cast_defs(*, control_group: str) -> Definitions:
     )
 
 
+@pytest.mark.integration
 def test_execute_path_casts_int_group_id_before_arm_counting():
     """1 primary, 1 treatment arm: the correct split is alpha_share/1 ->
     level 0.95. A `group_id` column typed int64 must cast to `str` before

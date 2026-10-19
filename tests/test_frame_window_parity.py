@@ -464,6 +464,7 @@ CANCELLING_REFS = {"cy1": "ref_y", "cden1": "ref_den"}
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 @pytest.mark.parametrize("case", PARITY_CASES, ids=lambda c: c.id)
+@pytest.mark.integration
 def test_frame_matches_builders(case: Case, backend: str) -> None:
     expected = ibis_moments(case)
     if case.id == "mean-window-7-censored":
@@ -519,6 +520,7 @@ ASOF_CASES = [
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 @pytest.mark.parametrize("case", ASOF_CASES, ids=lambda c: c.id)
+@pytest.mark.integration
 def test_frame_asof_matches_builders(case: Case, backend: str) -> None:
     expected = ibis_asof_moments(case)
     actual = frame_asof_moments(case, backend)
@@ -537,6 +539,7 @@ def test_frame_asof_matches_builders(case: Case, backend: str) -> None:
             assert act_m[col] == pytest.approx(exp_val, rel=1e-9), f"{case.id}/{key}: {col}"
 
 
+@pytest.mark.integration
 def test_frame_asof_bounded_retention_completed_windows_match_builder() -> None:
     bounded = Case(
         id="retention-band-7-14",
@@ -707,6 +710,7 @@ COMPLETED_WINDOW_CASES = [
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 @pytest.mark.parametrize("case", COMPLETED_WINDOW_CASES, ids=lambda c: c.id)
+@pytest.mark.integration
 def test_asof_completed_windows_only_no_op_and_gate_match_across_backends(
     case: Case, backend: str
 ) -> None:
@@ -735,6 +739,7 @@ def test_asof_completed_windows_only_no_op_and_gate_match_across_backends(
         assert decision_actual[key] == pytest.approx(exp_m), f"{case.id}/{key}"
 
 
+@pytest.mark.integration
 def test_frame_exposure_gate_matches_builders_at_every_supported_grain() -> None:
     ibis = pytest.importorskip("ibis")
 

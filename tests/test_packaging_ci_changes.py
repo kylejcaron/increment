@@ -124,3 +124,6 @@ def test_packaging_configuration_and_type_markers_require_wheel_smoke(repository
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "packaging configuration")
     assert _required(repo, base)
+
+
+pytestmark = pytest.mark.integration

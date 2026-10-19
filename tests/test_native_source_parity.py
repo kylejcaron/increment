@@ -30,6 +30,7 @@ def pricing_analysis(pricing_con):
     return Analysis.from_definitions("pricing_tier_test", "examples/definitions/", pricing_con)
 
 
+@pytest.mark.integration
 def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
     """unit_counts() (the MomentSource protocol's per-arm count) matches
     the enrolled counts srm() reports natively, and cluster_counts()
@@ -54,6 +55,7 @@ def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
         src.cluster_counts()
 
 
+@pytest.mark.integration
 def test_public_unit_counts_match_definition_source(pricing_analysis):
     source = _native_source(pricing_analysis)
     assert pricing_analysis.unit_counts() == source.unit_counts()
@@ -68,6 +70,7 @@ def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
     assert raised.value.code == "source.native.operation"
 
 
+@pytest.mark.integration
 def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path):
     defs_path, con = _quantile_defs_and_con(tmp_path, include_unassigned=True)
     native = Analysis.from_definitions("exp", defs_path, con, on_mixed_assignment="exclude")
@@ -178,6 +181,7 @@ metrics:
     return defs_path, con
 
 
+@pytest.mark.integration
 def test_quantile_parity(tmp_path):
     """unit_frame()-served per-unit rows, fed to estimate_quantile_lift
     directly, must reproduce Analysis.run()'s own quantile row - the
@@ -219,6 +223,7 @@ def test_quantile_parity(tmp_path):
     assert candidate_lift.ub == pytest.approx(baseline_lift.ub, rel=1e-9)
 
 
+@pytest.mark.integration
 def test_quantile_explicit_preferred_direction_flows_through_infer_lift(tmp_path):
     """Finding 3: estimate_quantile_lift never forwarded preferred_direction
     to infer_lift at all -- even an EXPLICITLY declared direction (e.g. p90
@@ -307,6 +312,7 @@ experiments:
 @pytest.mark.filterwarnings(
     "ignore:metric .* total clusters across arms .* below 40:RuntimeWarning"
 )
+@pytest.mark.integration
 def test_clustered_native_path_undeclared_metric_preferred_direction_is_none(tmp_path):
     """Finding 2: `_build_for_metrics`'s shared `estimate_lift(...)` call
     defaulted `preferred_direction="increase"` for every undeclared metric
@@ -323,6 +329,7 @@ def test_clustered_native_path_undeclared_metric_preferred_direction_is_none(tmp
 @pytest.mark.filterwarnings(
     "ignore:metric .* total clusters across arms .* below 40:RuntimeWarning"
 )
+@pytest.mark.integration
 def test_clustered_run_refuses_call_time_policy_on_a_declared_plan(tmp_path):
     """A declared clustered plan refuses call-time policy overrides."""
     defs_path, con = _cluster_defs_and_con(tmp_path, cluster=True)
@@ -335,6 +342,7 @@ def test_clustered_run_refuses_call_time_policy_on_a_declared_plan(tmp_path):
 @pytest.mark.filterwarnings(
     "ignore:metric .* total clusters across arms .* below 40:RuntimeWarning"
 )
+@pytest.mark.integration
 def test_metrics_reassignment_reresolves_a_same_name_metric_swap(tmp_path):
     """Reassigning `_metrics` with a SAME-NAMED metric object carrying
     different declared fields must re-resolve the plan. A name-only
@@ -362,6 +370,7 @@ def test_metrics_reassignment_reresolves_a_same_name_metric_swap(tmp_path):
     assert estimate.alternative == "less"
 
 
+@pytest.mark.integration
 def test_definitions_unit_frame_serves_declared_covariate(tmp_path):
     from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
@@ -373,6 +382,7 @@ def test_definitions_unit_frame_serves_declared_covariate(tmp_path):
     assert rows == pytest.approx(tenure)
 
 
+@pytest.mark.integration
 def test_definitions_unit_frame_keeps_a_missing_covariate_null(tmp_path):
     from tests.analysis_factory import _native_source
     from tests.covariate_cases import covariate_defs_and_con
@@ -500,6 +510,7 @@ def test_definitions_unit_frame_refuses_unusable_ad_hoc_covariate(tmp_path, cova
     assert raised.value.code == code
 
 
+@pytest.mark.integration
 def test_definitions_unit_frame_serves_a_string_property_as_a_categorical_column(tmp_path):
     """A string property retains its native labels in a unit frame."""
     import pyarrow as pa

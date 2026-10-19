@@ -1074,3 +1074,6 @@ def test_compiled_plan_from_dict_rejects_mutated_guarantee() -> None:
     with pytest.raises(WireFormatError) as exc:
         compiled_plan_from_dict(payload)
     assert exc.value.code == "wire.multiplicity.guarantee_mismatch"
+
+
+pytestmark = pytest.mark.integration

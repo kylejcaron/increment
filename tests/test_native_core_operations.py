@@ -60,6 +60,7 @@ def test_triggered_counts_are_the_complete_triggered_workflow(tmp_path):
     assert sum(counts.values()) < 400
 
 
+@pytest.mark.integration
 def test_moments_source_preserves_catalog(con):
     analysis = Analysis.from_definitions(
         "new_onboarding_v2",
@@ -276,6 +277,7 @@ def test_query_exposure_refusal_names_missing_and_returned_columns(tmp_path):
     )
 
 
+@pytest.mark.integration
 def test_export_moments_is_source_owned_and_portable(con, tmp_path):
     analysis = Analysis.from_definitions(
         "new_onboarding_v2",
@@ -308,6 +310,7 @@ def test_export_moments_is_source_owned_and_portable(con, tmp_path):
     assert payloads == {json.dumps({"control": 2, "treatment": 2}, sort_keys=True)}
 
 
+@pytest.mark.integration
 def test_panel_and_summary_sql_are_lazy(con, monkeypatch):
     analysis = Analysis.from_definitions(
         "new_onboarding_v2",

@@ -1013,3 +1013,6 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
     )
     assert treatment.lift is None
     assert treatment.failure_code == "estimation.cuped_linear.nonfinite"
+
+
+pytestmark = pytest.mark.integration

@@ -72,6 +72,7 @@ experiments:
     return defs_path, con
 
 
+@pytest.mark.integration
 def test_materialized_panel_reflects_a_valid_exposure_and_fact_added_after_materialize(tmp_path):
     """VERIFIED repro (9wj2): materialize with store='always', then insert a
     new valid exposure plus a purchase; the fingerprint invalidation path

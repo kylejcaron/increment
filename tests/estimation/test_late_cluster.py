@@ -678,6 +678,7 @@ def _native_cluster_analysis(
     return make_analysis(con, defs, experiment="native_late", _design=design)
 
 
+@pytest.mark.integration
 def test_clustered_preperiod_does_not_recommend_refused_cuped() -> None:
     import warnings
 
@@ -693,6 +694,7 @@ def test_clustered_preperiod_does_not_recommend_refused_cuped() -> None:
     assert "analysis.cuped.covariate_unused" not in warning_codes(caught)
 
 
+@pytest.mark.integration
 def test_clustered_exploratory_only_run_does_not_recommend_refused_cuped() -> None:
     import warnings
 

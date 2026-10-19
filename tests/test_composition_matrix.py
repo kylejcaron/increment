@@ -1260,3 +1260,6 @@ def test_capability_pairs(pair, native):
         assert pair == ("cuped", "encouragement")
         _assert_sane_lift(result, "revenue")
         assert {"itt", "compliance", "late"} <= {e.estimand for e in result}
+
+
+pytestmark = [*pytestmark, pytest.mark.integration]

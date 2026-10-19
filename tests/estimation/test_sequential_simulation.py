@@ -979,3 +979,6 @@ def test_certified_laws_are_exactly_the_tested_ones():
     assert sim.AGGREGATE_SAMPLING_LAWS == frozenset({"bernoulli"})
     for law in certified:
         assert sim.certifies_exactly(RuntimeCase(name=law, law=law))
+
+
+pytestmark = pytest.mark.integration

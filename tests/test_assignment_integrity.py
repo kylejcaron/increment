@@ -298,6 +298,7 @@ def test_experiment_allocation_scheme_reaches_encouragement_design():
     assert design.allocation_scheme == "independent"
 
 
+@pytest.mark.integration
 def test_clustered_run_keeps_mixed_and_unassigned_audit_counts_in_scope(tmp_path):
     import ibis
     import pyarrow as pa

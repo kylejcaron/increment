@@ -202,6 +202,7 @@ def _analysis(tmp_path, con, yaml_text, subdir):
     return Analysis("exp", d, con)
 
 
+@pytest.mark.integration
 def test_declarative_dims_match_inline_sql(tmp_path, con):
     inline = _analysis(tmp_path, con, INLINE_YAML, "inline").run()
     declarative = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative").run()
@@ -216,6 +217,7 @@ def test_declarative_dims_match_inline_sql(tmp_path, con):
         )
 
 
+@pytest.mark.integration
 def test_pre_exposure_breakout_never_sees_post_exposure_value(tmp_path, con):
     a = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative")
     a = make_analysis_like(
@@ -238,6 +240,7 @@ def test_pre_exposure_breakout_never_sees_post_exposure_value(tmp_path, con):
     assert "free" in plan_values
 
 
+@pytest.mark.integration
 def test_summary_sql_contains_generated_joins(tmp_path, con):
     a = _analysis(tmp_path, con, DECLARATIVE_YAML, "declarative")
     sqls = a.summary_sql()  # dict keyed per metric
@@ -246,6 +249,7 @@ def test_summary_sql_contains_generated_joins(tmp_path, con):
     assert "snap_user_plan" in joined
 
 
+@pytest.mark.integration
 def test_report_trend_over_dim_backed_dimension(tmp_path, con):
     # The calendar/analytics path: Report must see dim-joined columns too.
     d = tmp_path / "report"

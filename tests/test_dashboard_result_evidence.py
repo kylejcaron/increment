@@ -166,6 +166,7 @@ def test_complete_set_text_keeps_every_endpoint_of_point_free_sets(
 
 @pytest.mark.parametrize("stat_sig", [True, False, None])
 @pytest.mark.parametrize("discovery", [True, False, None])
+@pytest.mark.integration
 def test_outcome_label_formats_captured_verdict_and_selection(
     storefront: DashboardSnapshot, stat_sig: bool | None, discovery: bool | None
 ) -> None:
@@ -235,6 +236,7 @@ def test_outcome_label_does_not_add_row_identity_to_layout_text(
 # Levels
 
 
+@pytest.mark.integration
 def test_interval_levels_keep_two_decimals_in_every_disclosure(
     storefront: DashboardSnapshot,
 ) -> None:

@@ -302,6 +302,7 @@ def test_mixed_cuped_mean_ratio_rows_match_summary_and_panel_with_roles():
         panel.close()
 
 
+@pytest.mark.integration
 def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
     from tests.parity_harness import matrix_cases, matrix_data
     from tests.parity_harness.comparison import nested_close

@@ -2738,3 +2738,6 @@ def test_native_and_artifact_observational_quantile_requests_keep_precedence(
         if native is not None:
             native.close()
         con.disconnect()
+
+
+pytestmark = pytest.mark.integration

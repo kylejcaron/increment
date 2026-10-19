@@ -1170,3 +1170,6 @@ def test_breakout_route_keeps_refusing_triggered_sequential_segments(tmp_path):
         assert raised.value.code == "sequential.route.unsupported"
     finally:
         analysis.close()
+
+
+pytestmark = pytest.mark.integration

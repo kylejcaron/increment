@@ -141,7 +141,7 @@ package = true
 # test. The `docs_snippets` Nox session runs them in the conditional docs CI job.
 testpaths = ["tests"]
 markers = [
-    "integration: exercises cooperating components, local query engines, UI or subprocess boundaries; purpose only, included in fast unless slow",
+    "integration: exercises cooperating components, local query engines, UI or subprocess boundaries; included in integration-fast and fast, excluded from unit",
     "stress: large-scale or exhaustive deterministic validation; also requires slow and remains in functional-slow until an equivalent required execution gate is activated",
     "slow: expensive functional test; excluded from fast, included in functional-slow unless parameter_recovery, numerical_certification or examples",
     "parameter_recovery: Monte Carlo coverage, bias or recovery study; also requires slow; excluded from fast and functional-slow, run by scientific gates",

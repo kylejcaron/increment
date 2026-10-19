@@ -413,6 +413,7 @@ def _union_horizon_analysis(con, defs, *, store, metrics=None):
     return analysis
 
 
+@pytest.mark.integration
 def test_store_never_changes_the_numeric_answer_for_an_unbounded_avg_metric():
     """Regression: an unbounded (no ``window_days``) ``avg`` MeanMetric on
     a still-running experiment must return the SAME value whether or not
@@ -458,6 +459,7 @@ def test_store_never_changes_the_numeric_answer_for_an_unbounded_avg_metric():
         )
 
 
+@pytest.mark.integration
 def test_unbounded_avg_metric_spine_is_bounded_by_every_declared_metric_not_just_itself():
     """Non-vacuousness check for the test above: proves the union horizon
     is actually load-bearing (not a fixture that happens to agree either
@@ -504,6 +506,7 @@ def test_unbounded_avg_metric_spine_is_bounded_by_every_declared_metric_not_just
     assert solo_sum_y["treatment"] == pytest.approx((20.0 + 24.0) / 2)
 
 
+@pytest.mark.integration
 def test_run_daily_and_panel_sql_share_the_same_union_bound_as_run():
     """The panel-path readouts (``run_daily``/``run_asof``/``panel_sql``,
     fed by :func:`~increment.query.builders.unit_day_panel`) must use the

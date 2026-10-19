@@ -284,6 +284,7 @@ def test_percentile_winsor_unsupported_ingress_classifications_remain_source_spe
         )
 
 
+@pytest.mark.integration
 def test_cell(cell: matrix.Cell) -> None:
     """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,
     so one leg refusing never hides the other's rows."""

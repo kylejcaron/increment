@@ -177,6 +177,7 @@ def _publish(
     return ref, exposure_ref, measure_ref
 
 
+@pytest.mark.integration
 def test_publication_is_manifest_last_and_snapshot_is_immutable() -> None:
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
@@ -632,6 +633,7 @@ def test_pre_manifest_abort_leaves_no_manifest_and_no_relations() -> None:
     assert exposure_ref.relation.name not in set(con.list_tables(database="artifact"))
 
 
+@pytest.mark.integration
 def test_drop_generation_invalidation_failure_preserves_generation(monkeypatch) -> None:
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
@@ -662,6 +664,7 @@ def test_drop_generation_invalidation_failure_preserves_generation(monkeypatch) 
         assert rows[0]["sum_value"] == 2.0
 
 
+@pytest.mark.integration
 def test_drop_generation_preserves_unrelated_concurrent_publication() -> None:
     con = ibis.duckdb.connect()
     store_a = WarehouseArtifactStore(con, schema_name="artifact")
@@ -684,6 +687,7 @@ def test_drop_generation_preserves_unrelated_concurrent_publication() -> None:
     assert rows[0]["sum_value"] == 2.0
 
 
+@pytest.mark.integration
 def test_open_snapshot_refuses_live_relation_read_after_drop(monkeypatch) -> None:
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
@@ -714,6 +718,7 @@ def test_open_snapshot_refuses_live_relation_read_after_drop(monkeypatch) -> Non
         assert refusal2.value.code == "artifact.generation.dropped"
 
 
+@pytest.mark.integration
 def test_drop_generation_refuses_foreign_manifest_locators() -> None:
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
@@ -1019,6 +1024,7 @@ def test_store_construction_adopts_index_table_created_by_a_concurrent_store(
     assert store.visible_manifests == (ref,)
 
 
+@pytest.mark.integration
 def test_reverse_ordered_index_table_publishes_and_adopts_like_native() -> None:
     from tests.test_unit_day_artifact_facade import _native
 
@@ -1268,6 +1274,7 @@ def test_invalid_namespace_refuses_before_any_warehouse_ddl() -> None:
 
 
 # Guards publication from a definitions analysis configured with store="none".
+@pytest.mark.integration
 def test_publish_unit_day_artifact_works_from_a_storeless_definitions_analysis() -> None:
     con = ibis.duckdb.connect()
     seed_event_log(con)
@@ -1621,6 +1628,7 @@ def _tombstone_count(con: Any, artifact_id: UUID, generation_id: UUID) -> int:
     )
 
 
+@pytest.mark.integration
 def test_abandon_generation_is_idempotent_for_seen_and_unseen_pairs() -> None:
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
@@ -1644,6 +1652,7 @@ def test_abandon_generation_is_idempotent_for_seen_and_unseen_pairs() -> None:
     assert _tombstone_count(con, *unseen) == 1
 
 
+@pytest.mark.integration
 def test_fresh_process_abandons_and_erases_a_persisted_generation(tmp_path) -> None:
     import subprocess
     import sys

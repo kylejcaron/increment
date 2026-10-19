@@ -226,6 +226,7 @@ def test_post_exposure_segment_artefact_killed_by_pre_exposure_scoping(tmp_path)
     )
 
 
+@pytest.mark.integration
 def test_run_breakout_uses_pre_exposure_value_and_nulls_units_with_no_pre_exposure_row(tmp_path):
     """Fast (unmarked, small-N, in-memory DuckDB) end-to-end companion to
     the ``parameter_recovery``-marked artefact reproduction above - that

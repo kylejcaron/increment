@@ -510,6 +510,7 @@ _UNBOUNDED_RETENTION_SUBSTRATES = ("definitions", "frame_panel", "unit_day_artif
 
 
 @pytest.mark.parametrize("substrate", _UNBOUNDED_RETENTION_SUBSTRATES)
+@pytest.mark.integration
 def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source(
     substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -547,6 +548,7 @@ def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source
 
 @pytest.mark.slow
 @pytest.mark.parametrize("method", ["run_daily", "run_daily_lift"])
+@pytest.mark.integration
 def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_artifact_read(
     method: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -576,6 +578,7 @@ def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_ar
         con.disconnect()
 
 
+@pytest.mark.integration
 def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_axis(
     tmp_path,
 ) -> None:
@@ -594,6 +597,7 @@ def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_a
 
 
 @pytest.mark.parametrize("substrate", _UNBOUNDED_RETENTION_SUBSTRATES)
+@pytest.mark.integration
 def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_source(
     substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -654,6 +658,7 @@ _WINSORIZED_DAILY_SUBSTRATES = ("definitions", "frame_panel", "unit_day_artifact
 
 
 @pytest.mark.parametrize("substrate", _WINSORIZED_DAILY_SUBSTRATES)
+@pytest.mark.integration
 def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_source(
     substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -696,6 +701,7 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
             con.disconnect()
 
 
+@pytest.mark.integration
 def test_winsorized_daily_hazard_covers_every_adapter_that_can_express_it(tmp_path) -> None:
     """Winsorization applies to a mean metric on a source that serves the day axis. An
     adapter's default metric does not decide that: the unit-day artifact adapter defaults

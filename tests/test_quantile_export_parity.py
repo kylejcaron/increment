@@ -44,6 +44,7 @@ _QUANTILE_CASES = {case.id: case for case in PARITY_CASES}
     "case_id", ["quantile_tied_rounded_outcomes", "audit-panel-pre-exposure-and-selection"]
 )
 @pytest.mark.parametrize("ingress", _RANDOMIZED_INGRESSES)
+@pytest.mark.integration
 def test_randomized_quantile_export_refuses_on_every_ingress(
     tmp_path: Path, case_id: str, ingress: str
 ) -> None:
@@ -93,6 +94,7 @@ def test_observational_quantile_export_refuses_on_frame_ingresses(
     assert not path.exists()
 
 
+@pytest.mark.integration
 def test_observational_quantile_export_refuses_on_definitions_and_reopened_artifact(
     tmp_path: Path,
 ) -> None:

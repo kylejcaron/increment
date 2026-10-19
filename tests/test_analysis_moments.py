@@ -432,6 +432,7 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
         assert got[key] == pytest.approx(baseline[key], rel=1e-12), key
 
 
+@pytest.mark.integration
 def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
     metric = MeanMetric(
         name="revenue",
@@ -558,6 +559,7 @@ def test_portable_subset_validates_only_selected_winsorization_declarations(tmp_
     assert global_refusal.value.code == "moments.format.mixed"
 
 
+@pytest.mark.integration
 def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):
     """A fixed-value-winsorized metric and an unwinsorized one must both
     survive run() and export(), despite differing winsor-percentile dtypes."""
