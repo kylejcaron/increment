@@ -1471,7 +1471,11 @@ class _WarehouseArtifactQrSession:
         if not required:
             _raise("query.session.snapshot.materialization_failed")
         created = None
-        cleanup = None
+        cleanup = (
+            _MaterializedRelation(name, name, None, "pg_temp")
+            if self._con.name == "postgres"
+            else _MaterializedRelation(name, name, None, None)
+        )
         try:
             if self._con.name == "snowflake":
                 catalog = getattr(self._con, "current_catalog", None)

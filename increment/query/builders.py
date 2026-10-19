@@ -1419,9 +1419,15 @@ def breakout_property_table(
 
 
 def canonical_dimension_value(value: ir.Value) -> ir.Value:
-    """String identity of a dimension value; Booleans are lower-cased, NULL stays NULL."""
+    """String identity for dimensions, escaping reserved breakout labels."""
     casted = value.cast("string")
-    return casted.lower() if value.type().is_boolean() else casted
+    if value.type().is_boolean():
+        return casted.lower()
+    if value.type().is_string():
+        escaped = (casted == "__null__") | casted.startswith("\\")
+        prefix = ibis.literal("\\", type="string")
+        return ibis.ifelse(escaped, prefix + casted, casted)  # ty: ignore[unsupported-operator]
+    return casted
 
 
 def join_breakout_dimension(table: ir.Table, properties_table: ir.Table, by: list[str]) -> ir.Table:
@@ -1433,9 +1439,9 @@ def join_breakout_dimension(table: ir.Table, properties_table: ir.Table, by: lis
 
     Each `by` column is cast to string before the coalesce; only
     boolean-typed columns are also lower-cased, so a genuinely string
-    property's casing (e.g. a country code) is never altered. A real
-    property value that is literally `"__null__"` collides with the
-    sentinel - an accepted, vanishingly unlikely limitation.
+    property's casing (e.g. a country code) is never altered. Values
+    colliding with the NULL sentinel or escape prefix are escaped before
+    they enter the breakout grouping key.
 
     Uses an explicit `rname` because *table* may already carry a
     `unit_id_right` column from an earlier `unit_id`-keyed join.

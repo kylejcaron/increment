@@ -3797,10 +3797,24 @@ def estimate_cuped_linear_fit(
         prior=prior,
     )
     results, cuped_failures, refuse_arm = refusals
+    withheld = dict(getattr(fit, "withheld", ()))
+    resolved_order = tuple(map(str, getattr(fit, "arm_order", arm_order or ())))
+    if withheld:
+        resolved_order = _withhold_refused_arms(
+            withheld,
+            resolved_order,
+            control_group=control_group,
+            refuse_arm=refuse_arm,
+        )
+        if not resolved_order:
+            return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    fit = getattr(fit, "fit", fit)
+    if fit is None:
+        return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
     return _project_cuped_linear(
         fit,
         metric,
-        tuple(map(str, getattr(fit, "arm_order", arm_order or ()))),
+        resolved_order,
         control_group=control_group,
         method=method,
         method_role=method_role,

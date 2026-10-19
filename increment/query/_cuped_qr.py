@@ -28,6 +28,46 @@ def _sum_sql(expressions: Iterable[Any]) -> Any:
     return total
 
 
+def _power_two_l2_scale(
+    relation: ir.Table,
+    expression: Any,
+    *,
+    execute: Callable[[ir.Table], object],
+) -> float:
+    """Return a power-of-two L2 scale without exporting a row extreme."""
+    from increment.query._cuped_cells import _component_exponent_parts
+
+    maxima = relation.aggregate(_qr_scale_max=expression.abs().max())
+    scaled = relation.cross_join(maxima).mutate(
+        _qr_scale_normalized=expression
+        / ibis.ifelse(maxima._qr_scale_max > 0, maxima._qr_scale_max, 1.0)
+    )
+    moments = scaled.aggregate(
+        _qr_scale_squares=scaled._qr_scale_normalized.pow(2).sum(),
+        _qr_scale_max=maxima._qr_scale_max.max(),
+    )
+    maximum_exponent, scaled_norm, valid = _component_exponent_parts(
+        moments._qr_scale_max, moments._qr_scale_squares
+    )
+    exponent = ibis.ifelse(
+        moments._qr_scale_max == 0,
+        0,
+        (maximum_exponent + scaled_norm.log2().floor() + 1).clip(upper=1023),
+    ).cast("int64")
+    record = _rows(
+        execute(
+            moments.select(
+                _qr_scale_exponent=exponent,
+                _qr_scale_valid=valid | (moments._qr_scale_max == 0),
+            )
+        )
+    )[0]
+    if not record["_qr_scale_valid"]:
+        return 1.0
+    scale = math.ldexp(1.0, int(record["_qr_scale_exponent"]))
+    return scale if scale else math.ldexp(1.0, -1074)
+
+
 @dataclass(frozen=True, slots=True)
 class QRFactor:
     """Bounded triangular factor and transformed outcome right-hand sides."""
@@ -197,6 +237,70 @@ def _stable_offset_difference(value: float, reference: float, scale: float) -> f
     )
     numerator = math.fsum((math.ldexp(value, -exponent), -math.ldexp(reference, -exponent)))
     return numerator / math.ldexp(scale, -exponent)
+
+
+def _normalize_projection_jacobian(
+    terms: Sequence[tuple[int, Sequence[float], Sequence[float], float]],
+    size: int,
+) -> tuple[tuple[float, ...], float, int]:
+    """Represent Jacobian ratios without forming an overflowing reciprocal."""
+    parts = []
+    for index, numerator, denominator, sign in terms:
+        mantissa = sign
+        exponent = 0
+        for value in numerator:
+            fraction, shift = math.frexp(value)
+            mantissa *= fraction
+            exponent += shift
+        for value in denominator:
+            fraction, shift = math.frexp(value)
+            mantissa /= fraction
+            exponent -= shift
+        fraction, shift = math.frexp(mantissa)
+        parts.append((index, fraction, exponent + shift))
+    if not parts:
+        return tuple(0.0 for _ in range(size)), 1.0, 0
+    scale_exponent = max(exponent for _, _, exponent in parts)
+    scale_mantissa = max(
+        abs(mantissa) for _, mantissa, exponent in parts if exponent == scale_exponent
+    )
+    normalized = [0.0] * size
+    for index, mantissa, exponent in parts:
+        normalized[index] = math.ldexp(mantissa / scale_mantissa, exponent - scale_exponent)
+    return tuple(normalized), scale_mantissa, scale_exponent
+
+
+def _stable_ratio(numerator: float, denominator: float) -> float:
+    numerator_mantissa, numerator_exponent = math.frexp(numerator)
+    denominator_mantissa, denominator_exponent = math.frexp(denominator)
+    try:
+        return math.ldexp(
+            numerator_mantissa / denominator_mantissa,
+            numerator_exponent - denominator_exponent,
+        )
+    except OverflowError:
+        return math.copysign(float("inf"), numerator_mantissa * denominator_mantissa)
+
+
+def _stable_product_ratio(
+    numerators: Sequence[float], denominators: Sequence[float], exponent: int = 0
+) -> float:
+    mantissa = 1.0
+    shift = exponent
+    for value in numerators:
+        fraction, part_exponent = math.frexp(value)
+        mantissa *= fraction
+        shift += part_exponent
+    for value in denominators:
+        fraction, part_exponent = math.frexp(value)
+        mantissa /= fraction
+        shift -= part_exponent
+    mantissa, part_exponent = math.frexp(mantissa)
+    shift += part_exponent
+    try:
+        return math.ldexp(mantissa, shift)
+    except OverflowError:
+        return math.copysign(float("inf"), mantissa)
 
 
 def _contrast_covariates(state: FitState, jacobian: np.ndarray) -> np.ndarray:
@@ -392,6 +496,32 @@ def _warehouse_projection_reductions(
     s4_rows = []
     g_rows = []
     g2_rows = []
+    score_scale_names = tuple(
+        f"_qr_score_column_scale_{index}"
+        for index, _ in enumerate(name for family in score_names for name in family)
+    )
+    score_scale_row = _rows(
+        execute(
+            current.aggregate(
+                **{
+                    scale_name: current[score_name].abs().max()
+                    for scale_name, score_name in zip(
+                        score_scale_names,
+                        (name for family in score_names for name in family),
+                        strict=True,
+                    )
+                }
+            )
+        )
+    )[0]
+    score_column_scales = {
+        name: float(score_scale_row[scale_name])
+        for scale_name, name in zip(
+            score_scale_names,
+            (name for family in score_names for name in family),
+            strict=True,
+        )
+    }
     for spec, estimate in zip(projection_specs, projection_estimates, strict=True):
         identity = tuple(spec.identity)
         scale_name = str(identity[len(state.identity) + 3])
@@ -415,15 +545,34 @@ def _warehouse_projection_reductions(
             g_rows.append(tuple(zero_matrix for _ in range(component_count)))
             g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
             continue
-        actual_jacobian = (
-            jacobian * (float(spec.scale) / float(spec.divisor)) * np.ldexp(1.0, spec.exponent)
-        )
-        score = _sum_sql(
-            current[score_names[family][arm]] * float(actual_jacobian[family * len(arms) + arm])
-            for family in range(component_count)
-            for arm in range(len(arms))
-        )
-        score_record = _rows(execute(current.aggregate(_qr_score_square=score.pow(2).sum())))[0]
+        score_terms = []
+        for family in range(component_count):
+            for arm in range(len(arms)):
+                name = score_names[family][arm]
+                column_scale = score_column_scales[name]
+                if column_scale == 0.0:
+                    continue
+                coefficient = _stable_product_ratio(
+                    (
+                        float(jacobian[family * len(arms) + arm]),
+                        float(spec.scale),
+                        column_scale,
+                    ),
+                    (float(spec.divisor),),
+                    int(spec.exponent),
+                )
+                score_terms.append((current[name] / column_scale) * coefficient)
+        score = _sum_sql(score_terms)
+        projection_scale_row = _rows(execute(current.aggregate(_qr_score_scale=score.abs().max())))[
+            0
+        ]
+        score_scale = float(projection_scale_row["_qr_score_scale"])
+        safe_score_scale = score_scale if score_scale > 0.0 else 1.0
+        score_sum = _rows(
+            execute(
+                current.aggregate(_qr_scaled_score_square=(score / safe_score_scale).pow(2).sum())
+            )
+        )[0]
         records.append(
             (
                 spec.kind,
@@ -431,8 +580,8 @@ def _warehouse_projection_reductions(
                 spec.control,
                 scale_name,
                 estimate,
-                float(np.sqrt(max(0.0, score_record["_qr_score_square"]))),
-                1.0,
+                score_scale,
+                float(score_sum["_qr_scaled_score_square"]),
             )
         )
         contrasts = tuple(
@@ -782,6 +931,15 @@ class _QRDesignEncoder:
     def _continuous(self, name: str, policy: str, value: Any, null: Any) -> None:
         numeric = value.cast("float64")
         if value.type().is_floating():
+            nonfinite_count = _rows(
+                self.execute(
+                    self.transformed.aggregate(
+                        _qr_nonfinite=((numeric.isinf() & ~numeric.isnull()).cast("int64").sum())
+                    )
+                )
+            )[0]["_qr_nonfinite"]
+            if nonfinite_count:
+                _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
             null = null | numeric.isnan()
         if policy == "refuse":
             missing_count = _rows(
@@ -801,49 +959,80 @@ class _QRDesignEncoder:
             if any(int(row["_qr_missing"]) > 0 for row in counts):
                 self.indicator_masks.setdefault(name, []).append(name)
         safe = ibis.ifelse(null, 0.0, numeric)
-        first_rows = self.transformed.filter(~null).mutate(
-            _qr_first=ibis.row_number().over(
-                group_by=[self.transformed["group_id"]],
-                order_by=[self.transformed[column] for column in self.row_identity_columns],
+        anchor_rows = _rows(
+            self.execute(
+                self.transformed.group_by("group_id").aggregate(_qr_anchor=cast(Any, safe).mean())
             )
         )
-        first_values = _rows(
-            self.execute(first_rows.filter(first_rows._qr_first == 0).select("group_id", name))
-        )
-        first_by_arm = {str(row["group_id"]): float(row[name]) for row in first_values}
-        arm_offsets = tuple(first_by_arm.get(arm, 0.0) for arm in self.arms)
+        anchor_by_arm = {str(row["group_id"]): float(row["_qr_anchor"]) for row in anchor_rows}
+        arm_offsets = tuple(anchor_by_arm.get(arm, 0.0) for arm in self.arms)
         raw_centered = ibis.ifelse(null, 0.0, numeric) - _sum_sql(
             ibis.ifelse(self.transformed["group_id"] == arm, offset, 0.0)
             for arm, offset in zip(self.arms, arm_offsets, strict=True)
         )
-        spread = _rows(
-            self.execute(
-                self.transformed.aggregate(
-                    _qr_max=raw_centered.abs().max(),
-                    _qr_min=cast(Any, safe).min(),
-                    _qr_max_raw=cast(Any, safe).max(),
-                )
+        from increment.query._cuped_cells import _component_exponent_parts
+
+        def scale_exponent(centered):
+            maximum = centered.abs().max()
+            maxima = self.transformed.aggregate(_qr_centered_max=maximum)
+            scaled = self.transformed.cross_join(maxima).mutate(
+                _qr_norm=centered
+                / ibis.ifelse(maxima._qr_centered_max > 0, maxima._qr_centered_max, 1.0)
             )
-        )[0]
-        scale = float(spread["_qr_max"] or 0.0)
-        if not math.isfinite(scale):
+            stats = scaled.aggregate(
+                _qr_norm_squares=scaled._qr_norm.pow(2).sum(),
+                _qr_centered_max=maxima._qr_centered_max.max(),
+                _qr_nonzero=(scaled._qr_norm.abs().max() > 0),
+            )
+            max_exponent, scaled_norm, valid = _component_exponent_parts(
+                stats._qr_centered_max, stats._qr_norm_squares
+            )
+            scale_valid = valid | (stats._qr_centered_max == 0)
+            exponent = ibis.ifelse(
+                valid,
+                (max_exponent + scaled_norm.log2().floor() + 1).clip(upper=1023),
+                0,
+            ).cast("int64")
+            row = _rows(
+                self.execute(
+                    stats.select(
+                        _qr_scale_exponent=exponent,
+                        _qr_scale_valid=scale_valid,
+                        _qr_nonzero=stats._qr_nonzero,
+                    )
+                )
+            )[0]
+            return (
+                int(row["_qr_scale_exponent"]),
+                bool(row["_qr_scale_valid"]),
+                bool(row["_qr_nonzero"]),
+            )
+
+        exponent, valid, nonzero = scale_exponent(raw_centered)
+        if not valid:
             arm_offsets = tuple(0.0 for _ in self.arms)
             raw_centered = safe
-            scale = float(spread["_qr_max_raw"] or 0.0)
-        raw_range = float(spread["_qr_max_raw"] or 0.0) - float(spread["_qr_min"] or 0.0)
+            exponent, valid, nonzero = scale_exponent(raw_centered)
+        if not valid:
+            _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
+        if not nonzero:
+            self.structural.append(name)
+            self.levels.append(None)
+            self.references.append(0.0)
+            return
+        scale = math.ldexp(1.0, exponent)
         if scale == 0.0:
-            if raw_range == 0.0:
-                self.structural.append(name)
-                self.levels.append(None)
-                self.references.append(0.0)
-                return
-            scale = 1.0
+            scale = math.ldexp(1.0, -1074)
         self.levels.append(None)
         self.references.append(0.0)
         self.offsets.append(arm_offsets)
         self.scales.append(scale)
         query_name = f"_qr_covariate_{self.counter}"
-        self.transformed = self.transformed.mutate(**{query_name: cast(Any, raw_centered) / scale})
+        from increment.query._cuped_cells import _binary_normalize
+
+        self.transformed = self.transformed.mutate(
+            **{query_name: _binary_normalize(cast(Any, raw_centered), exponent)}
+        )
         self.counter += 1
         self.query_columns.append(query_name)
         self.encoded_columns.append(name)
@@ -878,7 +1067,9 @@ class _QRDesignEncoder:
             frequencies[key] = frequencies.get(key, 0) + int(row["_qr_count"])
             by_arm_level[(str(row["group_id"]), key)] = int(row["_qr_count"])
         if len(full_levels) > 200:
-            general_qr_required(None, "categorical_levels", covariate=name)
+            from types import SimpleNamespace
+
+            general_qr_required(SimpleNamespace(name=name), "categorical_levels", covariate=name)
         for level in full_levels:
             observed_counts = {arm: by_arm_level.get((arm, level), 0) for arm in self.arms}
             if any(count < 2 for count in observed_counts.values()):
@@ -1130,95 +1321,71 @@ def prepare_qr_factor_input(
         raw_stats = _rows(
             execute(
                 relation.aggregate(
-                    _qr_outcome_max=value.abs().max(),
-                    _qr_outcome_count=value.count(),
+                    _qr_outcome_nonfinite=(
+                        (value.isnull() | value.isnan() | value.isinf()).cast("int64").sum()
+                    )
                 )
             )
         )[0]
-        if not math.isfinite(float(raw_stats["_qr_outcome_max"])) or int(
-            raw_stats["_qr_outcome_count"]
-        ) != sum(counts):
+        if int(raw_stats["_qr_outcome_nonfinite"] or 0):
             _fail("estimation.cuped_linear.nonfinite", name=source_name, row=0)
-        row_number = ibis.row_number().over(
-            group_by=[relation["group_id"]],
-            order_by=[value, *(relation[column] for column in row_identity_columns)],
+        anchor_rows = _rows(
+            execute(relation.group_by("group_id").aggregate(_qr_anchor=value.mean()))
         )
-        median_index = _sum_sql(
-            ibis.ifelse(relation["group_id"] == arm, count_lookup[arm] // 2, 0) for arm in arms
-        )
-        anchors = relation.filter(row_number == median_index).select("group_id", source_name)
-        anchor_rows = _rows(execute(anchors))
-        anchor_by_arm = {str(row["group_id"]): float(row[source_name]) for row in anchor_rows}
+        anchor_by_arm = {str(row["group_id"]): float(row["_qr_anchor"]) for row in anchor_rows}
         component_offsets = tuple(anchor_by_arm[arm] for arm in arms)
         centered = value - _sum_sql(
             ibis.ifelse(relation["group_id"] == arm, offset, 0.0)
             for arm, offset in zip(arms, component_offsets, strict=True)
         )
-        centered_max = _rows(execute(relation.aggregate(_qr_centered_max=centered.abs().max())))[0][
-            "_qr_centered_max"
-        ]
-        if not math.isfinite(float(centered_max)):
-            component_offsets = tuple(0.0 for _ in arms)
-            centered = value
-        mean_rows = _rows(
+        centered_nonfinite = _rows(
             execute(
-                relation.group_by("group_id").aggregate(
-                    **{f"_qr_outcome_mean_{component}": centered.mean()}
+                relation.aggregate(
+                    _qr_centered_nonfinite=(
+                        (centered.isnan() | centered.isinf()).cast("int64").sum()
+                    )
                 )
             )
-        )
-        mean_by_arm = {
-            str(row["group_id"]): float(row[f"_qr_outcome_mean_{component}"]) for row in mean_rows
-        }
-        component_means = tuple(mean_by_arm[arm] for arm in arms)
-        residual = centered - _sum_sql(
-            ibis.ifelse(
-                relation["group_id"] == arm,
-                component_means[arm_index],
-                0.0,
-            )
-            for arm_index, arm in enumerate(arms)
-        )
+        )[0]["_qr_centered_nonfinite"]
+        if int(centered_nonfinite or 0):
+            component_offsets = tuple(0.0 for _ in arms)
+            centered = value
+        component_means = tuple(0.0 for _ in arms)
         residual_name = f"_qr_outcome_centered_{component}"
-        outcome_fields[residual_name] = residual
+        outcome_fields[residual_name] = centered
         offsets.append(component_offsets)
         centered_means.append(component_means)
     relation = relation.mutate(**fields, _qr_sqrt_weight=sqrt_weight, **outcome_fields)
     outcome_names = tuple(f"_qr_outcome_centered_{index}" for index in range(len(outcome_columns)))
-    scales_record = _rows(
-        execute(
-            relation.aggregate(
-                **{
-                    f"_qr_design_scale_{index}": relation[name].abs().max()
-                    for index, name in enumerate((*arm_columns, *weighted_covariate_columns))
-                },
-                **{
-                    f"_qr_outcome_scale_{index}": relation[name].abs().max()
-                    for index, name in enumerate(outcome_names)
-                },
-            )
-        )
-    )[0]
     raw_design_columns = (*arm_columns, *weighted_covariate_columns)
     design_scales = tuple(
-        float(scales_record[f"_qr_design_scale_{index}"]) or 1.0
-        for index in range(len(raw_design_columns))
+        _power_two_l2_scale(relation, relation[name], execute=execute)
+        for name in raw_design_columns
     )
     outcome_scales = tuple(
-        float(scales_record[f"_qr_outcome_scale_{index}"]) or 1.0
-        for index in range(len(outcome_names))
+        _power_two_l2_scale(
+            relation,
+            relation["_qr_sqrt_weight"] * relation[outcome],
+            execute=execute,
+        )
+        for outcome in outcome_names
     )
+    from increment.query._cuped_cells import _binary_normalize
+
     design_columns = tuple(f"_qr_design_{index}" for index in range(len(raw_design_columns)))
     rhs_names = tuple(f"_qr_rhs_{index}" for index in range(len(outcome_names)))
     relation = relation.mutate(
         **{
-            name: relation[source_name] / scale
+            name: _binary_normalize(relation[source_name], math.frexp(scale)[1] - 1)
             for name, source_name, scale in zip(
                 design_columns, raw_design_columns, design_scales, strict=True
             )
         },
         **{
-            rhs: relation["_qr_sqrt_weight"] * relation[outcome] / scale
+            rhs: _binary_normalize(
+                relation["_qr_sqrt_weight"] * relation[outcome],
+                math.frexp(scale)[1] - 1,
+            )
             for rhs, outcome, scale in zip(rhs_names, outcome_names, outcome_scales, strict=True)
         },
     )
@@ -1326,18 +1493,31 @@ def fit_warehouse_qr(  # noqa: PLR0915
     denominator_support = ()
     if metric.type == "ratio":
         denominator = relation["y_den"].cast("float64")
-        denominator_residual = denominator - _sum_sql(
-            ibis.ifelse(
-                relation["group_id"] == arm,
-                prepared.outcome_offsets[1][index] + prepared.centered_outcome_means[1][index],
-                0.0,
-            )
-            for index, arm in enumerate(arms)
+        denominator_scale = denominator.abs().max().over(group_by=[relation["group_id"]])
+        normalized = cast(
+            ir.Table,
+            scratch.materialize_next(
+                relation.mutate(
+                    _qr_den_norm=denominator
+                    / ibis.ifelse(denominator_scale > 0, denominator_scale, 1.0)
+                )
+            ),
+        )
+        normalized_mean = normalized["_qr_den_norm"].mean().over(group_by=[normalized["group_id"]])
+        centered_denominator = cast(
+            ir.Table,
+            scratch.materialize_next(
+                normalized.mutate(
+                    _qr_den_mean=normalized_mean,
+                    _qr_den_residual=normalized["_qr_den_norm"] - normalized_mean,
+                )
+            ),
         )
         moments = _rows(
             execute(
-                relation.group_by("group_id").aggregate(
-                    _qr_den_squares=denominator_residual.pow(2).sum()
+                centered_denominator.group_by("group_id").aggregate(
+                    _qr_den_squares=centered_denominator["_qr_den_residual"].pow(2).sum(),
+                    _qr_den_mean=centered_denominator["_qr_den_mean"].first(),
                 )
             )
         )
@@ -1346,13 +1526,13 @@ def fit_warehouse_qr(  # noqa: PLR0915
         for row in moments:
             arm = str(row["group_id"])
             index = arms.index(arm)
-            mean = component_means[1][index]
+            mean = float(row["_qr_den_mean"])
             if mean <= 0:
                 _fail(
                     "estimation.cuped_linear.nonpositive_component",
                     family="denominator",
                     arm=arm,
-                    value=mean,
+                    value=component_means[1][index],
                 )
             count = prepared.counts[index]
             second = float(row["_qr_den_squares"])
@@ -1448,37 +1628,45 @@ def fit_warehouse_qr(  # noqa: PLR0915
                 for scale in ("log", "absolute"):
                     for arm, comparison in ((treatment, control), (control, treatment)):
                         ai, ci = arms.index(arm), arms.index(comparison)
-                        jacobian = np.zeros(2 * arm_count)
-                        nt, nd = mean_matrix[0, ai], mean_matrix[1, ai]
-                        nc, cd = mean_matrix[0, ci], mean_matrix[1, ci]
+                        nt, nd = float(mean_matrix[0, ai]), float(mean_matrix[1, ai])
+                        nc, cd = float(mean_matrix[0, ci]), float(mean_matrix[1, ci])
                         if scale == "log":
-                            jacobian[[ai, ci, arm_count + ai, arm_count + ci]] = (
-                                1 / nt,
-                                -1 / nc,
-                                -1 / nd,
-                                1 / cd,
+                            jacobian_terms = (
+                                (ai, (1.0,), (nt,), 1.0),
+                                (ci, (1.0,), (nc,), -1.0),
+                                (arm_count + ai, (1.0,), (nd,), -1.0),
+                                (arm_count + ci, (1.0,), (cd,), 1.0),
                             )
                             estimate = math.log(nt) - math.log(nd) - math.log(nc) + math.log(cd)
                         else:
-                            rt, rc = nt / nd, nc / cd
-                            jacobian[[ai, ci, arm_count + ai, arm_count + ci]] = (
-                                1 / nd,
-                                -1 / cd,
-                                -rt / nd,
-                                rc / cd,
+                            treatment_ratio = _stable_ratio(nt, nd)
+                            control_ratio = _stable_ratio(nc, cd)
+                            jacobian_terms = (
+                                (ai, (1.0,), (nd,), 1.0),
+                                (ci, (1.0,), (cd,), -1.0),
+                                (arm_count + ai, (nt,), (nd, nd), -1.0),
+                                (arm_count + ci, (nc,), (cd, cd), 1.0),
                             )
-                            estimate = rt - rc
+                            with np.errstate(over="ignore", invalid="ignore"):
+                                estimate = treatment_ratio - control_ratio
+                        jacobian_values, jacobian_scale, jacobian_exponent = (
+                            _normalize_projection_jacobian(jacobian_terms, 2 * arm_count)
+                        )
+                        available = math.isfinite(float(estimate))
+                        if not available:
+                            jacobian_values = tuple(0.0 for _ in jacobian_values)
+                            jacobian_scale, jacobian_exponent = 1.0, 0
                         specs.append(
                             ProjectionSpec(
                                 identity=state.identity + ("ratio", arm, comparison, scale),
                                 kind="ratio",
-                                jacobian=tuple(float(value) for value in jacobian),
-                                scale=1.0,
+                                jacobian=jacobian_values,
+                                scale=jacobian_scale,
                                 divisor=1.0,
-                                exponent=0,
+                                exponent=jacobian_exponent,
                                 arm=arm,
                                 control=comparison,
-                                available=True,
+                                available=available,
                             )
                         )
                         estimates.append(float(estimate))

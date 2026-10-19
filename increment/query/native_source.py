@@ -4226,7 +4226,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                         relation = relation.filter(relation["__qr_breakout_value"].isnull())
                     else:
                         relation = relation.filter(
-                            relation["__qr_breakout_value"].cast("string") == request.breakout_value
+                            canonical_dimension_value(relation["__qr_breakout_value"])
+                            == request.breakout_value
                         )
                 yield relation, execute, pinned._session.qr_scratch
 

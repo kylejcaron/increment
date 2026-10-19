@@ -560,18 +560,32 @@ def _load_breakout_metric_rows(
                     if ("__null__" if row.get(dimension) is None else str(row[dimension]))
                     == segment_value
                 )
+                from increment.breakout.estimates import _partition_nonpositive_mean_rows
+
+                admitted_rows = _partition_nonpositive_mean_rows(
+                    list(segment_rows),
+                    control_group=control_group,
+                    metric_types={metric.name: metric.type},
+                    binomial_gate_exempt_metrics=frozenset(),
+                ).live
                 arms = sorted(
                     {
                         str(row["group_id"])
-                        for row in segment_rows
+                        for row in admitted_rows
                         if row.get("group_id") is not None
                     }
                 )
                 if control_group not in arms:
                     continue
                 arm_order = (control_group, *(arm for arm in arms if arm != control_group))
-                request_value = None if segment_value == "__null__" else segment_value
                 is_null = segment_value == "__null__"
+                request_value = (
+                    None
+                    if is_null
+                    else segment_value[1:]
+                    if segment_value.startswith("\\")
+                    else segment_value
+                )
                 try:
                     identity, fit = fit_source.fit_cuped_multicovariate(
                         metric,

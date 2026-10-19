@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import cast
 
 import ibis
@@ -516,6 +517,7 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
     session = _scratch_session(connection, tmp_path)
 
     def guarded_execute(expression):
+        assert type(expression.op()).__name__ == "Aggregate"
         result = connection.to_pyarrow(expression)
         assert result.num_rows <= 1
         assert "unit_id" not in result.column_names
@@ -655,20 +657,9 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
             atol=1e-11,
         )
         for index, (spec, projection) in enumerate(zip(projection_specs, projections, strict=True)):
-            covariance_jacobian = (
-                np.asarray(spec.jacobian)
-                * (spec.scale / spec.divisor)
-                * np.ldexp(1.0, spec.exponent)
-            )
-            expected_score_scale = np.sqrt(
-                covariance_jacobian
-                @ np.asarray(summary.adjusted_component_covariance)
-                @ covariance_jacobian
-            )
-            assert projection.se == pytest.approx(expected_score_scale, rel=1e-9, abs=1e-11)
-            assert summary.scaled_projected_score_squares[index][5] == pytest.approx(
-                projection.se, rel=1e-9, abs=1e-11
-            )
+            assert summary.scaled_projected_score_squares[index][5] * math.sqrt(
+                summary.scaled_projected_score_squares[index][6]
+            ) == pytest.approx(projection.se, rel=1e-9, abs=1e-11)
             jacobian = np.asarray(spec.jacobian)
             contrast = np.concatenate(
                 (
@@ -827,6 +818,7 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
     session = _scratch_session(connection, tmp_path)
 
     def guarded_execute(expression):
+        assert type(expression.op()).__name__ == "Aggregate"
         result = connection.to_pyarrow(expression)
         assert result.num_rows <= 1
         assert "unit_id" not in result.column_names
@@ -952,7 +944,8 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
         )
         for projection_index, (spec, projection) in enumerate(zip(specs, projections, strict=True)):
             np.testing.assert_allclose(
-                summary.scaled_projected_score_squares[projection_index][5],
+                summary.scaled_projected_score_squares[projection_index][5]
+                * math.sqrt(summary.scaled_projected_score_squares[projection_index][6]),
                 projection.se,
                 rtol=1e-9,
                 atol=1e-11,
@@ -1194,9 +1187,38 @@ def test_warehouse_qr_encoder_matches_local_layout(tmp_path):
             )
             assert encoded.layout == local.layout
             assert encoded.layout.shared_indicators == (("x", "x_copy"),)
-            assert encoded.offsets == ((7.0, 11.0), (1.0, 9.0), (0.0, 0.0), (0.0, 0.0))
-            assert encoded.scales[0] == pytest.approx(11.0)
-            assert encoded.scales[1] == pytest.approx(11.0)
+            np.testing.assert_allclose(
+                encoded.offsets,
+                (
+                    (
+                        math.fsum(
+                            float(row["x"] or 0.0) for row in rows if row["group_id"] == "control"
+                        )
+                        / 200,
+                        math.fsum(
+                            float(row["x"] or 0.0) for row in rows if row["group_id"] == "treatment"
+                        )
+                        / 200,
+                    ),
+                    (
+                        math.fsum(
+                            float(row["x_copy"] or 0.0)
+                            for row in rows
+                            if row["group_id"] == "control"
+                        )
+                        / 200,
+                        math.fsum(
+                            float(row["x_copy"] or 0.0)
+                            for row in rows
+                            if row["group_id"] == "treatment"
+                        )
+                        / 200,
+                    ),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ),
+            )
+            assert all(math.frexp(scale)[0] == 0.5 for scale in encoded.scales)
             prepared = prepare_qr_factor_input(
                 encoded,
                 outcome_columns=("y",),
@@ -1629,7 +1651,13 @@ def test_qr_outcome_centers_cancelling_extremes_like_local_fit(tmp_path):
         warehouse_means = np.asarray(prepared.outcome_offsets[0]) + np.asarray(
             prepared.centered_outcome_means[0]
         )
-        np.testing.assert_allclose(warehouse_means, local.adjusted_means, rtol=1e-9, atol=1e-12)
+        scale = max(abs(float(row["y"])) for row in rows)
+        for arm_index, arm in enumerate(arms):
+            values = [float(row["y"]) for row in rows if row["group_id"] == arm]
+            exact_mean = math.fsum(values) / len(values)
+            ulp_tolerance = 4 * math.ulp(scale)
+            assert abs(warehouse_means[arm_index] - exact_mean) <= ulp_tolerance
+            assert abs(local.adjusted_means[arm_index] - exact_mean) <= ulp_tolerance
     finally:
         session.drop_materialized()
         connection.disconnect()
@@ -1658,7 +1686,8 @@ def test_unchanged_warehouse_qr_requests_keep_stable_identity():
     assert first.identity != changed.identity
 
 
-def test_qr_ratio_with_near_zero_denominators_matches_local_fit(tmp_path):
+@pytest.mark.parametrize("denominator_scale", (1.0e-150, 1.0e-200, 1.0e-310))
+def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scale, tmp_path):
     from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.estimation.engine import Method
     from increment.query._cuped_qr import fit_warehouse_qr
@@ -1676,7 +1705,8 @@ def test_qr_ratio_with_near_zero_denominators_matches_local_fit(tmp_path):
                     "group_id": arm,
                     "x": coordinate,
                     "y": 3.0 + 0.2 * arm_index + 0.4 * coordinate + 0.05 * np.sin(index),
-                    "y_den": 1.0e-150 * (1.0 + 0.02 * np.sin(index * 0.7) + arm_index * 0.001),
+                    "y_den": denominator_scale
+                    * (1.0 + 0.02 * np.sin(index * 0.7) + arm_index * 0.001),
                 }
             )
     method = Method.cuped_multicovariate(covariates=[CupedCovariate(name="x", kind="continuous")])
@@ -1728,7 +1758,269 @@ def test_qr_ratio_with_near_zero_denominators_matches_local_fit(tmp_path):
             actual._projections, local._projections, strict=True
         ):
             assert actual_projection[:4] == local_projection[:4]
-            assert actual_projection[4:] == pytest.approx(local_projection[4:], rel=1e-9, abs=1e-12)
+            if denominator_scale == 1.0e-310 and actual_projection[3] == "absolute":
+                assert all(math.isnan(value) for value in actual_projection[4:])
+                assert all(math.isnan(value) for value in local_projection[4:])
+            else:
+                assert actual_projection[4:] == pytest.approx(
+                    local_projection[4:], rel=1e-9, abs=1e-12
+                )
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_qr_tiny_mean_large_denominator_spread_refuses_support_like_local_fit(tmp_path):
+    from increment.errors import CodedError
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate
+    from increment.query._cuped_qr import fit_warehouse_qr
+    from increment.query.cuped import _ResolvedCupedRequest
+    from increment.semantics.models import Measure, RatioMetric
+
+    arms = ("control", "treatment")
+    rows = []
+    denominator_values = {
+        "control": (1.0, 1.1, 1.2, 1.3, 1.4, 1.5),
+        "treatment": (3.0e-300, -2.98e-300, 0.01e-300, 0.01e-300, 0.01e-300, 0.01e-300),
+    }
+    covariate_values = {"x": []}
+    for arm_index, arm in enumerate(arms):
+        for index, denominator in enumerate(denominator_values[arm]):
+            x = float(index // 3)
+            covariate_values["x"].append(x)
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index}",
+                    "group_id": arm,
+                    "x": x,
+                    "y": 2.0 + arm_index + index,
+                    "y_den": denominator,
+                }
+            )
+    declarations = [CupedCovariate(name="x", kind="continuous")]
+    method = Method.cuped_multicovariate(covariates=declarations)
+    metric = RatioMetric(
+        name="ratio",
+        entity="unit",
+        numerator=Measure(fact="num", aggregation="sum"),
+        denominator=Measure(fact="den", aggregation="sum"),
+    )
+    request = _ResolvedCupedRequest(
+        identity=("tiny-denominator-support",),
+        control=arms[0],
+        arm_order=arms,
+        method=method,
+    )
+    with pytest.raises(CodedError) as local_error:
+        fit_cuped_multicovariate(
+            None,
+            [row["group_id"] for row in rows],
+            control=arms[0],
+            arm_order=arms,
+            covariates=covariate_values,
+            kinds={"x": "continuous"},
+            numerator=[row["y"] for row in rows],
+            denominator=[row["y_den"] for row in rows],
+        )
+    assert local_error.value.code == "estimation.cuped_linear.support_region"
+
+    connection = ibis.duckdb.connect()
+    connection.create_table("tiny_denominator_support", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    try:
+        with pytest.raises(CodedError) as actual_error:
+            with session.qr_scratch() as scratch:
+                fit_warehouse_qr(
+                    connection.table("tiny_denominator_support"),
+                    metric=metric,
+                    request=request,
+                    execute=connection.to_pyarrow,
+                    scratch=scratch,
+                )
+        assert actual_error.value.code == local_error.value.code
+        assert actual_error.value.context["region"] == local_error.value.context["region"]
+        actual_violations = cast(
+            tuple[tuple[str, float, float], ...], actual_error.value.context["violations"]
+        )
+        local_violations = cast(
+            tuple[tuple[str, float, float], ...], local_error.value.context["violations"]
+        )
+        actual_violation = actual_violations[0]
+        local_violation = local_violations[0]
+        assert actual_violation[0] == local_violation[0] == "ratio_denominator_precision"
+        assert actual_violation[1:] == pytest.approx(local_violation[1:], rel=1e-12)
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_qr_encoder_refuses_infinite_covariates_with_coded_error(tmp_path):
+    from increment.errors import InvalidRequestError
+    from increment.frame import CupedCovariate
+    from increment.query._cuped_qr import encode_qr_covariates
+
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "qr_infinite_covariate",
+        obj=[
+            {"unit_id": "c0", "group_id": "control", "x": 1.0},
+            {"unit_id": "c1", "group_id": "control", "x": 2.0},
+            {"unit_id": "t0", "group_id": "treatment", "x": float("inf")},
+            {"unit_id": "t1", "group_id": "treatment", "x": 3.0},
+        ],
+    )
+    try:
+        with pytest.raises(InvalidRequestError) as raised:
+            encode_qr_covariates(
+                connection.table("qr_infinite_covariate"),
+                (CupedCovariate(name="x", kind="continuous"),),
+                arms=("control", "treatment"),
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+            )
+        assert raised.value.code == "estimation.cuped_linear.nonfinite"
+        assert raised.value.context["name"] == "x"
+    finally:
+        connection.disconnect()
+
+
+def test_qr_encoder_routes_more_than_200_levels_with_coded_refusal():
+    from increment.errors import CapabilityError
+    from increment.frame import CupedCovariate
+    from increment.query._cuped_qr import encode_qr_covariates
+
+    rows = [
+        {"unit_id": f"{arm}-{index}", "group_id": arm, "category": f"level-{index:03d}"}
+        for arm in ("control", "treatment")
+        for index in range(201)
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_many_levels", obj=rows)
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            encode_qr_covariates(
+                connection.table("qr_many_levels"),
+                (CupedCovariate(name="category", kind="categorical"),),
+                arms=("control", "treatment"),
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+            )
+        assert raised.value.code == "query.cuped.general_qr_required"
+        assert raised.value.context["reason"] == "categorical_levels"
+    finally:
+        connection.disconnect()
+
+
+@pytest.mark.parametrize("invalid_arm", ("variant-b", "control"))
+def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):
+    from contextlib import contextmanager
+
+    from increment.errors import CodedError
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.estimation.engine import Method, estimate_cuped_linear_fit
+    from increment.frame import CupedCovariate
+    from increment.query.cuped import (
+        _ResolvedCupedRequest,
+        _WarehouseCupedFitEvidence,
+        fit_multicovariate_source,
+    )
+    from increment.semantics.models import Measure, RatioMetric
+
+    arms = ("control", "variant-a", "variant-b")
+    rows = []
+    for arm_index, arm in enumerate(arms):
+        for index in range(48):
+            x = index / 47.0
+            den = -1.0 if arm == invalid_arm else 1.0 + 0.01 * np.sin(index)
+            slope = 7.0 if arm == invalid_arm else 0.4
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index:03d}",
+                    "group_id": arm,
+                    "x": x,
+                    "y": 4.0 + arm_index + slope * x + 0.02 * np.cos(index),
+                    "y_den": den,
+                }
+            )
+    method = Method.cuped_multicovariate(covariates=[CupedCovariate(name="x", kind="continuous")])
+    metric = RatioMetric(
+        name="ratio",
+        entity="unit",
+        numerator=Measure(fact="num", aggregation="sum"),
+        denominator=Measure(fact="den", aggregation="sum"),
+    )
+    request = _ResolvedCupedRequest(
+        identity=("ratio-withheld",),
+        control="control",
+        arm_order=arms,
+        method=method,
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("ratio_withheld_input", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+
+    class Source:
+        @contextmanager
+        def cuped_relation(self, _metric, _request):
+            yield (
+                connection.table("ratio_withheld_input"),
+                connection.to_pyarrow,
+                session.qr_scratch,
+            )
+
+    try:
+        evidence = cast(
+            _WarehouseCupedFitEvidence,
+            fit_multicovariate_source(Source(), metric, request),
+        )
+        assert evidence.arm_order == arms
+        withheld = cast(dict[str, CodedError], dict(evidence.withheld))
+        assert invalid_arm in withheld
+        assert withheld[invalid_arm].code == (
+            "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+        )
+        if invalid_arm == "control":
+            assert evidence.fit is None
+        else:
+            assert evidence.fit is not None
+            assert evidence.fit.arm_order == ("control", "variant-a")
+
+        projected = estimate_cuped_linear_fit(
+            metric,
+            evidence,
+            arm_order=arms,
+            control_group="control",
+            method=method,
+            method_role="sensitivity",
+            alpha=0.05,
+            alternative="two-sided",
+        )
+        output = {row.group_id: row for row in projected.results}
+        if invalid_arm == "control":
+            assert all(row.failure_code == withheld["control"].code for row in output.values())
+        else:
+            assert output["variant-b"].failure_code == withheld["variant-b"].code
+            actual = output["variant-a"]
+            local_mask = np.asarray([row["group_id"] != "variant-b" for row in rows], dtype=bool)
+            local = fit_cuped_multicovariate(
+                None,
+                np.asarray([row["group_id"] for row in rows], dtype=str)[local_mask],
+                control="control",
+                arm_order=("control", "variant-a"),
+                covariates={"x": np.asarray([row["x"] for row in rows], dtype=float)[local_mask]},
+                kinds={"x": "continuous"},
+                numerator=np.asarray([row["y"] for row in rows], dtype=float)[local_mask],
+                denominator=np.asarray([row["y_den"] for row in rows], dtype=float)[local_mask],
+            )
+            expected = local.ratio("variant-a", control="control", scale="log")
+            assert actual.lift is not None
+            assert actual.lift.value == pytest.approx(math.expm1(expected.estimate), rel=1e-9)
+            assert actual.lift.log_se == pytest.approx(expected.se, rel=1e-9)
+            assert actual.dof == pytest.approx(expected.dof, rel=1e-9)
     finally:
         session.drop_materialized()
         connection.disconnect()

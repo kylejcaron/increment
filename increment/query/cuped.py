@@ -17,7 +17,10 @@ from increment.query._cuped_cells import (
 )
 
 if TYPE_CHECKING:
-    from increment.estimation.cuped.types import CategoricalCells, MulticovariateCupedFit
+    from increment.estimation.cuped.types import (
+        CategoricalCells,
+        MulticovariateCupedFit,
+    )
     from increment.estimation.engine import Method
 
 
@@ -39,8 +42,10 @@ class _ResolvedCupedRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class _Unused:
-    pass
+class _WarehouseCupedFitEvidence:
+    fit: MulticovariateCupedFit | None
+    arm_order: tuple[str, ...]
+    withheld: tuple[tuple[str, object], ...] = ()
 
 
 def _require_compact_request(source, metric, method: Method) -> None:
@@ -164,7 +169,7 @@ def _known_cells_outcome_domain(source, metric, relation, outcomes) -> bool:
 
 def fit_multicovariate_source(
     source, metric, request: _ResolvedCupedRequest
-) -> MulticovariateCupedFit:
+) -> MulticovariateCupedFit | _WarehouseCupedFitEvidence:
     """Fit from bounded categorical cells or stable warehouse QR evidence."""
     from increment.errors import CodedError
     from increment.query._cuped_cells import REFUSALS as CELL_REFUSALS
@@ -194,10 +199,46 @@ def fit_multicovariate_source(
             except CodedError as exc:
                 if exc.code not in CELL_REFUSALS:
                     raise
-        with scratch_factory() as scratch:
-            return fit_warehouse_qr(
-                relation, metric=metric, request=request, execute=execute, scratch=scratch
+        from increment.estimation.variance import require_positive_denominator_mean
+
+        withheld = {}
+        fitted_request = request
+        if metric.type == "ratio":
+            denominator_means = _rows(
+                execute(
+                    relation.group_by("group_id").aggregate(
+                        _qr_denominator_mean=relation["y_den"].cast("float64").mean()
+                    )
+                )
             )
+            for row in denominator_means:
+                arm = str(row["group_id"])
+                try:
+                    require_positive_denominator_mean(
+                        metric=metric.name,
+                        group_id=arm,
+                        d_bar=float(row["_qr_denominator_mean"]),
+                    )
+                except CodedError as exc:
+                    withheld[arm] = exc
+            admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
+            if request.control in withheld or len(admitted) < 2:
+                return _WarehouseCupedFitEvidence(None, request.arm_order, tuple(withheld.items()))
+            relation = relation.filter(relation["group_id"].isin(admitted))
+            fitted_request = replace(
+                request,
+                arm_order=admitted,
+                identity=request.identity + ("admitted_arms", admitted),
+            )
+        with scratch_factory() as scratch:
+            fit = fit_warehouse_qr(
+                relation, metric=metric, request=fitted_request, execute=execute, scratch=scratch
+            )
+        return (
+            _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
+            if withheld
+            else fit
+        )
 
 
 def _portable_categorical_domain(source, metric, method, population) -> None:
