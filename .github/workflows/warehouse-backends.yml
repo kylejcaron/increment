@@ -6,7 +6,7 @@ on:
       backend_mode:
         description: Backend gates to run
         type: choice
-        options: [all, postgres, cloud]
+        options: [all, postgres, cloud, compile]
         default: all
       postgres_shards:
         description: Number of duration-balanced PostgreSQL shards
@@ -15,7 +15,7 @@ on:
   workflow_call:
     inputs:
       backend_mode:
-        description: "Backend gates to run: all, postgres, or cloud (Snowflake and BigQuery)."
+        description: "Backend gates to run: all, postgres, cloud (Snowflake and BigQuery), or compile (SQL compilation only)."
         required: false
         type: string
         default: all
@@ -34,12 +34,12 @@ env:
 jobs:
   # Invalid reusable-workflow inputs must fail, not skip every backend.
   reject-unknown-backend-mode:
-    if: ${{ inputs.backend_mode != 'all' && inputs.backend_mode != 'postgres' && inputs.backend_mode != 'cloud' }}
+    if: ${{ inputs.backend_mode != 'all' && inputs.backend_mode != 'postgres' && inputs.backend_mode != 'cloud' && inputs.backend_mode != 'compile' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
-          echo "::error::backend_mode must be all, postgres or cloud; got '$MODE'"
+          echo "::error::backend_mode must be all, postgres, cloud or compile; got '$MODE'"
           exit 1
         env: {MODE: "${{ inputs.backend_mode }}"}
 
@@ -126,6 +126,48 @@ jobs:
         run: printf '%s' "$SA_KEY" > "$RUNNER_TEMP/gcp-sa.json"
         env: {SA_KEY: "${{ secrets.INCREMENT_TEST_BIGQUERY_SA_KEY }}"}
       - run: uv run --with nox nox -s tests_warehouse_bigquery
+        env:
+          INCREMENT_TEST_BIGQUERY_PROJECT: ${{ secrets.INCREMENT_TEST_BIGQUERY_PROJECT }}
+          INCREMENT_TEST_BIGQUERY_DATASET: ${{ secrets.INCREMENT_TEST_BIGQUERY_DATASET }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-sa.json
+
+  snowflake-compile:
+    if: ${{ inputs.backend_mode == 'compile' }}
+    concurrency:
+      group: compile-snowflake-backend
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv run --with nox nox -s tests_warehouse_compile_snowflake
+        env:
+          INCREMENT_TEST_SNOWFLAKE_ACCOUNT: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_ACCOUNT }}
+          INCREMENT_TEST_SNOWFLAKE_USER: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_USER }}
+          INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY }}
+          INCREMENT_TEST_SNOWFLAKE_WAREHOUSE: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_WAREHOUSE }}
+          INCREMENT_TEST_SNOWFLAKE_DATABASE: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_DATABASE }}
+          INCREMENT_TEST_SNOWFLAKE_SCHEMA: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_SCHEMA }}
+
+  bigquery-compile:
+    if: ${{ inputs.backend_mode == 'compile' }}
+    concurrency:
+      group: compile-bigquery-backend
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - name: Write service-account key
+        run: printf '%s' "$SA_KEY" > "$RUNNER_TEMP/gcp-sa.json"
+        env: {SA_KEY: "${{ secrets.INCREMENT_TEST_BIGQUERY_SA_KEY }}"}
+      - run: uv run --with nox nox -s tests_warehouse_compile_bigquery
         env:
           INCREMENT_TEST_BIGQUERY_PROJECT: ${{ secrets.INCREMENT_TEST_BIGQUERY_PROJECT }}
           INCREMENT_TEST_BIGQUERY_DATASET: ${{ secrets.INCREMENT_TEST_BIGQUERY_DATASET }}
