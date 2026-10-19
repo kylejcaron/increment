@@ -140,6 +140,65 @@ def test_frame_digest_matches_canonical_streaming_encoder_for_edge_values():
     assert _frame_digest_and_arms(forward)[1] == _frame_digest_and_arms(reverse)[1]
 
 
+def test_raw_moment_row_digest_is_pinned_and_encodes_nonfinite_moments():
+    from increment.readouts._metric_rows import _rows_raw_digest_and_arms
+
+    finite = (
+        {
+            "metric": "m",
+            "group_id": "c",
+            "n": 40,
+            "ref_y": 1.5,
+            "cy1": -0.0,
+            "cy2": 2.25e-300,
+            "cden3": None,
+            "x_role": None,
+        },
+        {
+            "metric": "m",
+            "group_id": "t",
+            "n": 2**60,
+            "ref_y": 1e300,
+            "cy1": 0.1,
+            "cy2": 1.7976931348623157e308,
+            "cden3": 5e-324,
+            "x_role": "covariate",
+        },
+    )
+    assert _rows_raw_digest_and_arms(finite) == (
+        frozenset({"c", "t"}),
+        "e7e31b58fa1e058a78dd2fa1360c08edbcab18ebc5e7819f3743efc1bb3d4d6f",
+        2,
+    )
+
+    def reference(rows):
+        digest = StreamingDigest()
+        for row in rows:
+            digest.update(
+                {
+                    key: None
+                    if value != value
+                    else {"__float__": "+inf" if value > 0 else "-inf"}
+                    if isinstance(value, float) and value in (float("inf"), float("-inf"))
+                    else value
+                    for key, value in row.items()
+                }
+            )
+        return digest.hexdigest(), digest.count
+
+    overflowed = (
+        {**finite[0], "cy2": float("inf"), "cden3": float("-inf")},
+        {**finite[1], "cden3": float("nan")},
+    )
+    arms, digest, count = _rows_raw_digest_and_arms(overflowed)
+    assert (arms, (digest, count)) == (frozenset({"c", "t"}), reference(overflowed))
+    assert digest != _rows_raw_digest_and_arms(({**finite[0], "cy2": float("-inf")}, finite[1]))[1]
+    assert (
+        _rows_raw_digest_and_arms((finite[0], {**finite[1], "cden3": float("nan")}))[1]
+        == (_rows_raw_digest_and_arms((finite[0], {**finite[1], "cden3": None}))[1])
+    )
+
+
 def test_metadata_context_is_deeply_immutable_and_portable():
     result = IntegrityResult(
         status="not_applicable",

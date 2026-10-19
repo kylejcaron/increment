@@ -981,6 +981,13 @@ their own populations; aggregate and per-unit evidence share one source
 snapshot, including the resolved fact source of each breakout.
 Native and artifact readouts of a mixed method still fit from per-unit
 warehouse evidence; their moment exports never transfer units.
+The mixed fit centers and scales each arm itself, so it stays available when
+an arm's ordinary centered second moments overflow the float range (centered
+outcomes near $10^{154}$ or larger).
+Unadjusted and scalar CUPED rows read those moments and refuse with
+`estimation.armstats.arm_stats.group_summary_moment`, naming the metric, arm,
+and moment; rescale the values to use them. An overflowed denominator third
+moment only makes the denominator-skew check unavailable.
 
 Relative and absolute projections have separate availability. A usable
 relative estimate survives an absolute-projection refusal, whose exact

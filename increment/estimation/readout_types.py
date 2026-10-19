@@ -6,6 +6,7 @@ This module intentionally has no query-layer dependencies.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from enum import StrEnum
@@ -760,7 +761,18 @@ class ReadoutMetadata(_ReadoutModel):
         )
 
 
-def _digest_mapping_rows(rows: Iterable[Mapping[str, object]]) -> tuple[int, int]:
+def _frame_float(value: float) -> object:
+    """Digest value of a frame float: NaN is missing and infinities carry a marker."""
+    if value != value:
+        return None
+    if math.isinf(value):
+        return {"__float__": "+inf" if value > 0 else "-inf"}
+    return value
+
+
+def _digest_mapping_rows(
+    rows: Iterable[Mapping[str, object]], *, normalize_frame_floats: bool = False
+) -> tuple[int, int]:
     layouts: dict[tuple[str, ...], tuple[tuple[str, ...], tuple[bytes, ...]]] = {}
     total = 0
     count = 0
@@ -779,13 +791,23 @@ def _digest_mapping_rows(rows: Iterable[Mapping[str, object]]) -> tuple[int, int
             keys, prefixes = layout
             parts = []
             for key, prefix in zip(keys, prefixes, strict=True):
-                scalar = _digest_scalar_bytes(row[key])
+                value = row[key]
+                if normalize_frame_floats and type(value) is float and not math.isfinite(value):
+                    break
+                scalar = _digest_scalar_bytes(value)
                 if scalar is None:
                     break
                 parts.append(prefix + scalar + b"]")
             else:
                 payload = b'["mapping",[' + b",".join(parts) + b"]]"
         if payload is None:
+            if normalize_frame_floats and any(
+                isinstance(value, float) and not math.isfinite(value) for value in row.values()
+            ):
+                row = {
+                    name: _frame_float(value) if isinstance(value, float) else value
+                    for name, value in row.items()
+                }
             payload = _digest_json_bytes(row)
         total += int.from_bytes(sha256(payload).digest(), "big")
         count += 1
@@ -808,14 +830,12 @@ def _digest_positional_rows(
     for row in rows:
         parts = []
         generic_row = None
-        for key, prefix, index in zip(keys, prefixes, indices, strict=True):
+        for prefix, index in zip(prefixes, indices, strict=True):
             value = row[index]
             if normalize_frame_floats and isinstance(value, float):
-                if value != value:
-                    value = None
-                elif value == float("inf") or value == float("-inf"):
+                value = _frame_float(value)
+                if isinstance(value, dict):
                     generic_row = dict(zip(columns, row, strict=True))
-                    generic_row[key] = {"__float__": "+inf" if value > 0 else "-inf"}
                     break
             scalar = _digest_scalar_bytes(value)
             if scalar is None:
@@ -826,10 +846,7 @@ def _digest_positional_rows(
             if normalize_frame_floats:
                 for name, value in generic_row.items():
                     if isinstance(value, float):
-                        if value != value:
-                            generic_row[name] = None
-                        elif value == float("inf") or value == float("-inf"):
-                            generic_row[name] = {"__float__": "+inf" if value > 0 else "-inf"}
+                        generic_row[name] = _frame_float(value)
             payload = _digest_json_bytes(generic_row)
         else:
             payload = b'["mapping",[' + b",".join(parts) + b"]]"
@@ -853,9 +870,11 @@ class StreamingDigest:
         ) % (1 << 256)
         self.count += 1
 
-    def update_rows(self, rows: Iterable[Mapping[str, object]]) -> None:
-        """Digest a batch of mapping rows."""
-        total, count = _digest_mapping_rows(rows)
+    def update_rows(
+        self, rows: Iterable[Mapping[str, object]], *, normalize_frame_floats: bool = False
+    ) -> None:
+        """Digest a batch of mapping rows; *normalize_frame_floats* as for positional rows."""
+        total, count = _digest_mapping_rows(rows, normalize_frame_floats=normalize_frame_floats)
         self.accumulator = (self.accumulator + total) % (1 << 256)
         self.count += count
 
