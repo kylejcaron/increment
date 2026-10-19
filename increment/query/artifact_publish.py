@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import ibis
+import ibis.expr.datatypes as ibis_dt
 
 from increment.errors import CapabilityError
 from increment.errors import refuse as _refuse
@@ -89,7 +90,7 @@ def _wire_uptake_timestamp(ts: ir.TimestampColumn, experiment: Experiment) -> ir
 def _as_utc_timestamp(value: ir.TimestampColumn) -> ir.TimestampValue:
     """Interpret a naive timestamp as UTC while preserving explicit offsets."""
     text = value.cast("string")
-    has_offset = text.re_search(r"(?:[+-]\d{2}(?::?\d{2})?|Z)$")
+    has_offset = text.re_search(r"([+-][0-9]{2}(:[0-9]{2}|[0-9]{2})?|Z)$")
     return ibis.timestamp(
         ibis.ifelse(has_offset, text, text + "+00:00"),
         timezone="UTC",
@@ -661,7 +662,7 @@ class ArtifactPublisher:
             group_id=exposures.group_id.cast("string"),
             first_exposure_ts=_as_utc_timestamp(
                 _wire_uptake_timestamp(exposures.first_exposure_ts, self._experiment)
-            ),
+            ).cast(ibis_dt.Timestamp(timezone="UTC", scale=6)),
             first_exposure_date=exposures.first_exposure_date,
         )
         exposure_bounds = self._con.to_pyarrow(

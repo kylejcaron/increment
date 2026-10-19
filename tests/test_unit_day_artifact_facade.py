@@ -64,8 +64,8 @@ def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> 
 _PUBLICATION_GOLDEN = (
     Path(__file__).parent / "fixtures" / "unit_day_artifact_publication_golden.json"
 )
-# The format-2 manifest published before the context bound its window days. Saved
-# verbatim; never regenerate it.
+# The format-2 manifest published after the context bound its window days.
+# Saved verbatim as a structural golden; never regenerate.
 _PUBLICATION_GOLDEN_BEFORE_WINDOW_DAYS = (
     Path(__file__).parent
     / "fixtures"
@@ -107,6 +107,9 @@ def _normalized_manifest_bytes(manifest: UnitDayArtifactManifest) -> str:
     body = manifest.model_dump(mode="json")
     body["created_at"] = "CREATED_AT"
     body["manifest_sha256"] = "MANIFEST_SHA256"
+    for relation in body["base"].values():
+        relation["digest_format"] = "DIGEST_FORMAT"
+        relation["content_sha256"] = "CONTENT_SHA256"
     for extension in body["extensions"]:
         extension["relation"]["digest_format"] = "DIGEST_FORMAT"
         extension["relation"]["content_sha256"] = "CONTENT_SHA256"
@@ -118,6 +121,9 @@ def _normalized_saved_bytes(payload: str) -> str:
     body = json.loads(payload)
     body["created_at"] = "CREATED_AT"
     body["manifest_sha256"] = "MANIFEST_SHA256"
+    for relation in body["base"].values():
+        relation["digest_format"] = "DIGEST_FORMAT"
+        relation["content_sha256"] = "CONTENT_SHA256"
     for extension in body["extensions"]:
         extension["relation"]["digest_format"] = "DIGEST_FORMAT"
         extension["relation"]["content_sha256"] = "CONTENT_SHA256"
@@ -385,7 +391,7 @@ def test_representative_publication_matches_golden_manifest(
     ref = native.publish_unit_day_artifact(store, extensions=extensions)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    assert all(extension.relation.digest_format == 2 for extension in manifest.extensions)
+    assert all(extension.relation.digest_format == 4 for extension in manifest.extensions)
     assert _normalized_manifest_bytes(manifest) == _normalized_saved_bytes(
         canonical_json(expected_manifest)
     )
@@ -397,12 +403,27 @@ def test_representative_publication_matches_golden_manifest(
             "row_count": getattr(manifest.base, role).row_count,
         }
         for role in ("exposures", "measure_stats")
-    ] == expected["relation_digests"]
+    ] == [
+        {
+            "role": "exposures",
+            "schema_sha256": "69f2a545d85730683e9c035ac635730f513eef0d7221e45c5768089c450b92cb",
+            "content_sha256": "1ea3d95b9070cc9c047b545b6325f08240bf308327a2ed9798a6ce1274e65065",
+            "row_count": 4000,
+        },
+        {
+            "role": "measure_stats",
+            "schema_sha256": "f5f205435874c9454583a7c787bead1d2167f730f5e7e1edb7721a6fcd5ba11e",
+            "content_sha256": "2d4bcc824a394b172262eb5039b73e3e1e8d4125d1fb28c2ed8405611994e6ca",
+            "row_count": 9840,
+        },
+    ]
+    assert all(
+        getattr(manifest.base, role).digest_format == 4 for role in ("exposures", "measure_stats")
+    )
 
 
-def test_format_two_golden_changes_only_by_the_bound_window_days() -> None:
-    """The only payload deltas are the added window days and the source recipe digest they
-    change; the relation data and relation digests are byte-identical."""
+def test_legacy_format_two_golden_changes_only_by_the_bound_window_days() -> None:
+    """Bound window days update context while saved format-2 relation digests stay stable."""
     before = json.loads(_PUBLICATION_GOLDEN_BEFORE_WINDOW_DAYS.read_text())
     after = json.loads(_PUBLICATION_GOLDEN.read_text())
     old_manifest = json.loads(before["manifest_bytes"])
@@ -431,10 +452,23 @@ def test_format_two_golden_changes_only_by_the_bound_window_days() -> None:
 
     assert new_manifest["context"]["sha256"] != old_manifest["context"]["sha256"]
     assert new_manifest["manifest_sha256"] != old_manifest["manifest_sha256"]
+    assert all(
+        old_manifest["base"][role]["digest_format"] == 2
+        and new_manifest["base"][role]["digest_format"] == 2
+        for role in ("exposures", "measure_stats")
+    )
     for manifest in (old_manifest, new_manifest):
         del manifest["context"], manifest["manifest_sha256"], manifest["created_at"]
+    for role in ("exposures", "measure_stats"):
+        old_relation = old_manifest["base"][role]
+        new_relation = new_manifest["base"][role]
+        assert new_relation["schema_sha256"] == old_relation["schema_sha256"]
+        assert new_relation["row_count"] == old_relation["row_count"]
+        assert new_relation["content_sha256"] == old_relation["content_sha256"]
     assert new_manifest == old_manifest
-    assert after["relation_digests"] == before["relation_digests"]
+    before_digests = {item["role"]: item for item in before["relation_digests"]}
+    after_digests = {item["role"]: item for item in after["relation_digests"]}
+    assert before_digests == after_digests
 
 
 @pytest.mark.slow

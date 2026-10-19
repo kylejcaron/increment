@@ -25,6 +25,99 @@ from integration.warehouse_execution._suite import (
 pytestmark = pytest.mark.warehouse_bigquery
 
 
+def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
+    import math
+    from io import BytesIO
+    from uuid import uuid4
+
+    import ibis
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from google.cloud import bigquery
+
+    from increment.query import artifact_digest
+    from increment.query.artifact_digest import digest_relation_sql_v2
+    from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
+
+    schema = _PORTABLE_SCHEMA
+    rows = _portable_digest_rows()
+    arrow = pa.Table.from_arrays(
+        [
+            pa.array([row[index] for row in rows], type=field_type)
+            for index, field_type in enumerate(
+                (
+                    pa.int64(),
+                    pa.string(),
+                    pa.int64(),
+                    pa.float64(),
+                    pa.date32(),
+                    pa.timestamp("us", tz="UTC"),
+                    pa.bool_(),
+                )
+            )
+        ],
+        names=[name for name, _type, _nullable in schema],
+    )
+    duckdb = ibis.duckdb.connect()
+    table_name = f"digest_spec_{uuid4().hex[:10]}"
+    try:
+        parquet = BytesIO()
+        pq.write_table(arrow, parquet)
+        parquet.seek(0)
+        destination = f"{bigquery_con.current_catalog}.{bigquery_con.current_database}.{table_name}"
+        job = bigquery_con.client.load_table_from_file(
+            parquet,
+            destination,
+            size=parquet.getbuffer().nbytes,
+            job_config=bigquery.LoadJobConfig(source_format=bigquery.SourceFormat.PARQUET),
+        )
+        job.result()
+        table = bigquery_con.sql(
+            f"SELECT CAST(`id` AS INT64) AS `id`, `text`, "
+            f"CAST(`integer` AS INT64) AS `integer`, `float`, `date`, "
+            f"CAST(`timestamp` AS TIMESTAMP) AS `timestamp`, `boolean`, "
+            f"IEEE_DIVIDE(1.0, `float`) AS `float_reciprocal` "
+            f"FROM `{destination}`"
+        )
+        fetched_arrow = bigquery_con.to_pyarrow(table)
+        fetched_rows = fetched_arrow.select(
+            ["id", "integer", "float", "float_reciprocal"]
+        ).to_pylist()
+        fetched_rows.sort(key=lambda row: row["id"])
+        assert [(row["id"], row["integer"]) for row in fetched_rows] == [
+            (row[0], row[2]) for row in rows
+        ]
+        assert fetched_rows[0]["float"] == 0.0
+        assert fetched_rows[0]["float_reciprocal"] == float("inf")
+        assert fetched_rows[6]["float"] is not None
+        assert math.isnan(fetched_rows[6]["float"])
+        assert fetched_rows[9]["float"] is None
+        stored_arrow = fetched_arrow.select([name for name, _type, _nullable in schema])
+        expected = digest_relation_sql_v2(
+            duckdb,
+            duckdb.create_table("digest_spec_stored", stored_arrow),
+            "portable_spec",
+            schema,
+            primary_key=("id",),
+        )
+        monkeypatch.setattr(
+            artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "bigquery"})
+        )
+        actual = digest_relation_sql_v2(
+            bigquery_con, table, "portable_spec", schema, primary_key=("id",)
+        )
+        assert actual.content_sha256 == expected.content_sha256
+    finally:
+        duckdb.disconnect()
+        bigquery_con.drop_table(table_name, force=True)
+
+
+def test_bigquery_float64_token_matches_pinned_python_binary64(bigquery_con):
+    from integration.warehouse_execution._float_tokens import run_float_token_probe
+
+    run_float_token_probe(bigquery_con, dialect="bigquery")
+
+
 def test_artifact_cleanup_qualifies_bigquery_metadata_tables():
     class Connection:
         current_catalog = "release-project"

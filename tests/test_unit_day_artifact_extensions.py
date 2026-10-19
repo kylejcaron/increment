@@ -1580,7 +1580,7 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
 
 
 @pytest.mark.slow
-def test_extension_relation_publishes_and_reopens_under_digest_format_two() -> None:
+def test_extension_relation_publishes_and_reopens_under_digest_format_four() -> None:
     """Extension relations use the warehouse SQL digest and retain public rows."""
     from increment import Analysis
     from tests.test_unit_day_artifact_facade import _extensions, _native
@@ -1590,8 +1590,8 @@ def test_extension_relation_publishes_and_reopens_under_digest_format_two() -> N
     ref = native.publish_unit_day_artifact(store, extensions=requests)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    assert manifest.base.exposures.digest_format == 2
-    assert [e.relation.digest_format for e in manifest.extensions] == [2] * len(requests)
+    assert manifest.base.exposures.digest_format == 4
+    assert [e.relation.digest_format for e in manifest.extensions] == [4] * len(requests)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     try:
 

@@ -43,6 +43,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
+from increment.query._artifact_float import _Float64Token, register_float64_token
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
@@ -51,14 +52,14 @@ _DIGEST_BATCH_ROWS = 4096
 
 DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT
 
-# `digest_relation_sql_v2` (SQL text tokens) and `digest_relation_bucketed`
-# (`canonical_row_bytes`) share this v2 domain but not format ids: a stored
-# `digest_format`, never the connected backend, selects the verify codec.
-# DOMAIN_ROOT stays fixed: manifest, context, request and extension hashes embed it.
+# SQL digest formats use the same v2 domain and row-token framing. Format 2
+# is retained only for verifying existing DuckDB relations; format 4 replaces
+# its decimal float payload with an exact binary64 significand/exponent token.
 _DOMAIN_ROOT_V2 = b"increment.unit-day-artifact\x00v2\x00"
 
-#: `digest_relation_sql_v2`'s row encoding: SQL text tokens.
-SQL_DIGEST_FORMAT = 2
+#: `digest_relation_sql_v2`'s current SQL text-token encoding.
+SQL_DIGEST_FORMAT = 4
+_SQL_DIGEST_FORMAT_V2 = 2
 #: `digest_relation_bucketed`'s row encoding: binary `canonical_row_bytes`.
 BUCKETED_DIGEST_FORMAT = 3
 
@@ -998,14 +999,8 @@ def digest_relation_bucketed(
     )
 
 
-# Backends whose SQL digest v2 path is live-verified. Other dialects compile in
-# tests/test_unit_day_artifact_digest_v2_dialects.py but join only after a live
-# float round-trip probe against a real connection.
-_SQL_DIGEST_BACKENDS = frozenset({"duckdb"})
+_SQL_DIGEST_BACKENDS = frozenset({"duckdb", "postgres", "snowflake", "bigquery"})
 
-# Native SHA-256-returning-hex-text function per backend. Compile-verified
-# for all four via ibis.to_sql(dialect=...) with no live connection; only
-# duckdb is also live-executed (see tests/test_unit_day_artifact_digest_v2.py).
 _SQL_DIGEST_SHA256: dict[str, Callable[[ir.StringValue], ir.StringValue]] = {}
 # Same hash as 32 raw bytes, and its lowercase-hex rendering. Row hashes are
 # held in binary (half the width of hex) while waiting to be aggregated.
@@ -1021,6 +1016,32 @@ class _Sha2Binary(ops.Value):
 
     dtype = dt.binary
     shape = rlz.shape_like("arg")
+
+
+class _PostgresEpochMicros(ops.Value):
+    arg: ops.Value[dt.Timestamp]
+
+    dtype = dt.string
+    shape = rlz.shape_like("arg")
+
+
+def _compile_postgres_epoch_micros(_compiler: object, _op: _PostgresEpochMicros, *, arg: Any):
+    import sqlglot as sg
+
+    value = arg.sql(dialect="postgres")
+    return sg.parse_one(
+        f"CAST(CAST(EXTRACT(EPOCH FROM {value}) * 1000000 AS BIGINT) AS TEXT)",
+        read="postgres",
+    )
+
+
+def _register_postgres_digest_ops() -> None:
+    from ibis.backends.sql.compilers.postgres import PostgresCompiler
+
+    PostgresCompiler.visit__PostgresEpochMicros = _compile_postgres_epoch_micros  # ty: ignore[unresolved-attribute]
+
+
+_register_postgres_digest_ops()
 
 
 def _compile_snowflake_sha2_binary(_compiler: object, _op: _Sha2Binary, *, arg: Any, bits: Any):
@@ -1060,19 +1081,24 @@ def _register_sha256_backends() -> None:
     @ibis.udf.scalar.builtin(name="to_hex")
     def _bigquery_to_hex(x: bytes) -> str: ...  # ty: ignore[empty-body]
 
-    @ibis.udf.scalar.builtin(name="digest")
-    def _postgres_digest(x: str, algo: str) -> bytes: ...  # ty: ignore[empty-body]
+    @ibis.udf.scalar.builtin(name="sha256")
+    def _postgres_sha256(x: bytes) -> bytes: ...  # ty: ignore[empty-body]
 
     @ibis.udf.scalar.builtin(name="encode")
     def _postgres_encode(x: bytes, fmt: str) -> str: ...  # ty: ignore[empty-body]
 
+    @ibis.udf.scalar.builtin(name="convert_to")
+    def _postgres_convert_to(x: str, encoding: str) -> bytes: ...  # ty: ignore[empty-body]
+
     _SQL_DIGEST_SHA256["duckdb"] = _duckdb_sha256  # ty: ignore[invalid-assignment]
-    _SQL_DIGEST_SHA256["snowflake"] = lambda col: _snowflake_sha2(col, 256)  # ty: ignore[invalid-assignment]
+    _SQL_DIGEST_SHA256["snowflake"] = lambda col: _snowflake_sha2(  # ty: ignore[invalid-assignment]
+        col, 256
+    )
     _SQL_DIGEST_SHA256["bigquery"] = lambda col: _bigquery_to_hex(  # ty: ignore[invalid-assignment]
         col.hashbytes("sha256")
     )
     _SQL_DIGEST_SHA256["postgres"] = lambda col: _postgres_encode(  # ty: ignore[invalid-assignment]
-        _postgres_digest(col, "sha256"), "hex"
+        _postgres_sha256(_postgres_convert_to(col, "UTF8")), "hex"
     )
     _SQL_DIGEST_SHA256_BINARY["duckdb"] = lambda col: _duckdb_unhex(_duckdb_sha256(col))  # ty: ignore[invalid-assignment]
     _SQL_DIGEST_SHA256_BINARY["snowflake"] = lambda col: _Sha2Binary(
@@ -1080,7 +1106,9 @@ def _register_sha256_backends() -> None:
         cast("ops.Value[dt.Integer]", ibis.literal(256).op()),
     ).to_expr()
     _SQL_DIGEST_SHA256_BINARY["bigquery"] = lambda col: col.hashbytes("sha256")
-    _SQL_DIGEST_SHA256_BINARY["postgres"] = lambda col: _postgres_digest(col, "sha256")  # ty: ignore[invalid-assignment]
+    _SQL_DIGEST_SHA256_BINARY["postgres"] = lambda col: _postgres_sha256(  # ty: ignore[invalid-assignment]
+        _postgres_convert_to(col, "UTF8")
+    )
     _SQL_DIGEST_BINARY_HEX["duckdb"] = lambda col: cast("ir.StringValue", _duckdb_hex(col)).lower()
     _SQL_DIGEST_BINARY_HEX["snowflake"] = lambda col: _snowflake_hex_encode(col, 0)  # ty: ignore[invalid-assignment]
     _SQL_DIGEST_BINARY_HEX["bigquery"] = lambda col: _bigquery_to_hex(col)  # ty: ignore[invalid-assignment]
@@ -1089,9 +1117,9 @@ def _register_sha256_backends() -> None:
 
 _register_sha256_backends()
 
-# High-precision FLOAT64-to-injective-string per backend. DuckDB's 17-digit printf
-# showed no collisions over 20,001 sampled doubles; other backends use documented
-# round-trip defaults and join _SQL_DIGEST_BACKENDS only after the same live probe.
+# Format 2 remains readable only on DuckDB; format 4 uses exact binary64
+# significand/exponent tokens on every SQL digest backend.
+_SQL_DIGEST_FLOAT_TOKEN_V2: dict[str, Callable[[ir.FloatingValue], ir.StringValue]] = {}
 _SQL_DIGEST_FLOAT_TOKEN: dict[str, Callable[[ir.FloatingValue], ir.StringValue]] = {}
 
 
@@ -1099,19 +1127,21 @@ def _register_float_token_backends() -> None:
     @ibis.udf.scalar.builtin(name="printf")
     def _duckdb_printf17g(fmt: str, x: float) -> str: ...  # ty: ignore[empty-body]
 
-    _SQL_DIGEST_FLOAT_TOKEN["duckdb"] = lambda col: _duckdb_printf17g(  # ty: ignore[invalid-assignment]
+    _SQL_DIGEST_FLOAT_TOKEN_V2["duckdb"] = lambda col: _duckdb_printf17g(  # ty: ignore[invalid-assignment]
         "%.17g", col
     )
-    _SQL_DIGEST_FLOAT_TOKEN["snowflake"] = lambda col: col.cast("string")
-    _SQL_DIGEST_FLOAT_TOKEN["bigquery"] = lambda col: col.cast("string")
-    _SQL_DIGEST_FLOAT_TOKEN["postgres"] = lambda col: col.cast("string")
+    register_float64_token()
+    for dialect in ("duckdb", "snowflake", "bigquery", "postgres"):
+        _SQL_DIGEST_FLOAT_TOKEN[dialect] = lambda col: _Float64Token(
+            cast("ops.Value[dt.Floating]", col.op())
+        ).to_expr()
 
 
 _register_float_token_backends()
 
 # TIMESTAMP_UTC_US as integer epoch microseconds. A string cast renders in the
 # session time zone, so the same stored instant would digest differently per
-# connection. Only duckdb's is live-verified; the others are compile-pinned.
+# connection. DuckDB and PostgreSQL are live-verified; the others are compile-pinned.
 _SQL_DIGEST_TIMESTAMP_TOKEN: dict[str, Callable[[ir.TimestampValue], ir.StringValue]] = {}
 
 
@@ -1130,12 +1160,9 @@ def _register_timestamp_token_backends() -> None:
         _date_part("epoch_microsecond", col).cast("int64").cast("string")
     )
     _SQL_DIGEST_TIMESTAMP_TOKEN["bigquery"] = lambda col: _bigquery_unix_micros(col).cast("string")
-    _SQL_DIGEST_TIMESTAMP_TOKEN["postgres"] = lambda col: (
-        (cast("ir.FloatingValue", _date_part("epoch", col)) * 1_000_000)
-        .round()
-        .cast("int64")
-        .cast("string")
-    )
+    _SQL_DIGEST_TIMESTAMP_TOKEN["postgres"] = lambda col: _PostgresEpochMicros(
+        cast("ops.Value[dt.Timestamp]", col.op())
+    ).to_expr()
 
 
 _register_timestamp_token_backends()
@@ -1159,29 +1186,55 @@ def _sql_binary_hex_expr(col: ir.BinaryValue, *, dialect: str) -> ir.StringValue
     return _SQL_DIGEST_BINARY_HEX[dialect](col)
 
 
-def _row_token_expr(
-    table: ir.Table, tagged_fields: Sequence[tuple[str, int, str]], *, dialect: str
+def _float_payload_expr(
+    col: ir.FloatingValue, *, dialect: str, digest_format: int = SQL_DIGEST_FORMAT
 ) -> ir.StringValue:
-    """One `tag(2 hex) + len(16-digit decimal, zero-padded) + payload` token
-    per field, concatenated in schema order. `tagged_fields` is
-    `(column_name, type_tag, kind)` where `kind` selects the payload
-    encoding: `"float"` and `"timestamp"` use the backend's registered token
-    (full-precision float text; epoch microseconds, independent of the
-    session time zone), every other kind a plain string cast, which is exact
-    and injective for STRING/INT64/DATE/BOOLEAN. `dialect` is explicit so
-    the construction is compile-testable against an unbound table."""
+    """Canonical float payload including the digest version's special values."""
+    if digest_format == _SQL_DIGEST_FORMAT_V2:
+        if dialect != "duckdb":
+            _raise(
+                "artifact.digest.rows",
+                constraint="format 2 float verification is supported only on DuckDB",
+                value={"backend": dialect},
+                route="verify format-2 relations on DuckDB or republish with format 4",
+            )
+        finite = _SQL_DIGEST_FLOAT_TOKEN_V2[dialect](col)
+    else:
+        finite = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
+    return col.isnan().ifelse(
+        ibis.literal("nan", type="string"),
+        col.isinf().ifelse(
+            (col < ibis.literal(0.0)).ifelse(
+                ibis.literal("-inf", type="string"),
+                ibis.literal("inf", type="string"),
+            ),
+            finite,
+        ),
+    )  # ty: ignore[invalid-return-type]
+
+
+def _row_token_expr(
+    table: ir.Table,
+    tagged_fields: Sequence[tuple[str, int, str]],
+    *,
+    dialect: str,
+    digest_format: int = SQL_DIGEST_FORMAT,
+) -> ir.StringValue:
+    """One `tag(2 hex) + len(16-digit decimal, zero-padded) + payload`
+    token per field, concatenated in schema order."""
     parts = []
     for name, tag, kind in tagged_fields:
         col = table[name]
         if kind == "float":
-            payload = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
+            payload = _float_payload_expr(col, dialect=dialect, digest_format=digest_format)
         elif kind == "timestamp":
             payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
+        elif kind == "date":
+            # Avoid Snowflake DATE_OUTPUT_FORMAT and PostgreSQL DateStyle settings.
+            payload = col.strftime("%Y-%m-%d")
         else:
             payload = col.cast("string")
         length = payload.length().cast("string").lpad(16, "0")
-        # ibis.literal's overload return type isn't resolved from a literal
-        # `type="string"` kwarg by ty's stubs; the runtime value is a StringScalar.
         token = ibis.literal(f"{tag:02x}", type="string") + length + payload  # ty: ignore[unsupported-operator]
         if col.type().nullable:
             token = (col.isnull()).ifelse(ibis.literal("00" + "0" * 16, type="string"), token)
@@ -1192,6 +1245,16 @@ def _row_token_expr(
     return expr
 
 
+def _digest_to_pyarrow(con: Any, expr: ir.Expr) -> Any:
+    """Fetch a bounded digest result without BigQuery Storage API overhead."""
+    if con.name != "bigquery":
+        return con.to_pyarrow(expr)
+    table_expr = expr.as_table()
+    result = con.raw_sql(con.compile(table_expr))
+    arrow = result.to_arrow(create_bqstorage_client=False, progress_bar_type=None)
+    return cast(Any, expr).__pyarrow_result__(arrow, schema=table_expr.schema())
+
+
 def _assert_unique_primary_key_sql(con: Any, table: ir.Table, pk: Sequence[str], role: str) -> None:
     if not pk:
         return
@@ -1200,7 +1263,9 @@ def _assert_unique_primary_key_sql(con: Any, table: ir.Table, pk: Sequence[str],
     # of a partition marks exactly one repeated key value.
     keys = [table[name] for name in pk]
     ranked = table.select(_key_rank=ibis.row_number().over(group_by=keys, order_by=keys))
-    dup_count = int(con.to_pyarrow(ranked.filter(ranked["_key_rank"] == 1).count()).as_py())
+    dup_count = int(
+        _digest_to_pyarrow(con, ranked.filter(ranked["_key_rank"] == 1).count()).as_py()
+    )
     if dup_count:
         _raise(
             "artifact.digest.primary_key",
@@ -1225,24 +1290,15 @@ def _count_where(conditions: Sequence[ir.BooleanValue]) -> ir.NumericScalar | No
 def _assert_cells_valid_sql(
     con: Any, table: ir.Table, fields: Sequence[FieldSpec], pk: Sequence[str], role: str
 ) -> None:
-    """The SQL row token never routes through `_cell`, so apply its per-cell
-    refusals here, in one query and in `_cell`'s precedence: NULL primary key,
-    then NULL in a non-nullable field, then non-finite FLOAT64."""
+    """Check key and declared nullability before encoding SQL row tokens."""
     checks = {
         "pk_nulls": _count_where([table[name].isnull() for name in pk]),
         "nulls": _count_where([table[f.name].isnull() for f in fields if not f.nullable]),
-        "nonfinite": _count_where(
-            [
-                table[f.name].isnan() | table[f.name].isinf()
-                for f in fields
-                if f.type_tag is DigestType.FLOAT64
-            ]
-        ),
     }
     metrics = [expr.name(name) for name, expr in checks.items() if expr is not None]
     if not metrics:
         return
-    counts = con.to_pyarrow(table.aggregate(metrics)).to_pylist()[0]
+    counts = _digest_to_pyarrow(con, table.aggregate(metrics)).to_pylist()[0]
     if counts.get("pk_nulls"):
         _raise(
             "artifact.digest.primary_key",
@@ -1260,41 +1316,60 @@ def _assert_cells_valid_sql(
             value=int(counts["nulls"]),
             route=f"fill the NULL cells of {role!r} or declare those fields nullable",
         )
-    if counts.get("nonfinite"):
-        _raise(
-            "artifact.digest.nonfinite",
-            field=tuple(f.name for f in fields if f.type_tag is DigestType.FLOAT64),
-            constraint="FLOAT64 cells must be finite; value counts the offending rows",
-            value=int(counts["nonfinite"]),
-            route=f"replace NaN and infinities in {role!r} with finite values or NULL",
-        )
+
+
+def _drop_sql_digest_hash_table(con: Any, relation: ir.Table) -> None:
+    """Drop a SQL digest scratch table in the physical namespace Ibis returned."""
+    op = relation.op()
+    namespace = op.namespace
+    catalog, database = namespace.catalog, namespace.database
+    if con.name == "postgres":
+        database = database or "pg_temp"
+    elif con.name == "snowflake":
+        catalog = catalog or getattr(con, "current_catalog", None)
+        database = database or getattr(con, "current_database", None)
+    physical_database = (
+        (catalog, database) if catalog is not None and database is not None else database or catalog
+    )
+    con.drop_table(op.name, database=physical_database, force=True)
 
 
 def digest_relation_sql_v2(
-    con: Any, table: ir.Table, role: str, schema: object, *, primary_key: Sequence[str] = ()
+    con: Any,
+    table: ir.Table,
+    role: str,
+    schema: object,
+    *,
+    primary_key: Sequence[str] = (),
+    digest_format: int = SQL_DIGEST_FORMAT,
 ) -> RelationDigests:
-    """SQL fast path (gated to `_SQL_DIGEST_BACKENDS`). Row hashes are
-    materialized once, as 32 raw bytes, into a temporary table; bucket digests
-    are then aggregated over their lowercase hex, one bucket range at a time.
-    An ordered string aggregate buffers its whole input, so ranges are sized
-    to ~`_DIGEST_ROWS_PER_PASS` rows without hashing any row twice. All of it
-    stays inside the backend's own memory manager (which may spill), never
-    the Python heap: only the populated buckets' (bucket_index, bucket_digest) pairs --
-    at most 4096 rows -- cross the client boundary. Raises
-    artifact.digest.primary_key before hashing if `table` has a NULL or
-    duplicate primary key value."""
+    """SQL digest in the v2 domain: format 2 for DuckDB verification, format 4 for writes."""
     if con.name not in _SQL_DIGEST_BACKENDS:
         _raise(
             "artifact.digest.rows",
-            constraint="SQL digest v2 runs only on live-verified backends",
+            constraint="SQL digest runs only on enabled backends",
             value={"backend": con.name, "enabled": tuple(sorted(_SQL_DIGEST_BACKENDS))},
             route="digest this backend's relation with digest_relation_bucketed",
+        )
+    if digest_format not in {_SQL_DIGEST_FORMAT_V2, SQL_DIGEST_FORMAT}:
+        _raise(
+            "artifact.digest.rows",
+            constraint="SQL digest supports formats 2 and 4",
+            value=digest_format,
+            route="use format 2 for DuckDB verification or publish with format 4",
+        )
+    if digest_format == _SQL_DIGEST_FORMAT_V2 and con.name != "duckdb":
+        _raise(
+            "artifact.digest.rows",
+            constraint="format 2 is a DuckDB-only verify codec",
+            value={"backend": con.name},
+            route="verify format-2 relations on DuckDB or republish with format 4",
         )
     fields = _fields(schema)
     pk = tuple(primary_key)
     _check_primary_key(fields, pk)
     if not pk:
-        counted = int(con.to_pyarrow(table.count()).as_py())
+        counted = int(_digest_to_pyarrow(con, table.count()).as_py())
         if counted > 1:
             _raise(
                 "artifact.digest.primary_key",
@@ -1308,20 +1383,25 @@ def digest_relation_sql_v2(
     _assert_unique_primary_key_sql(con, table, pk, role)
     schema_raw = canonical_schema_bytes(fields)
     sh = schema_sha256(role, schema)
-    kinds = {DigestType.FLOAT64: "float", DigestType.TIMESTAMP_UTC_US: "timestamp"}
+    kinds = {
+        DigestType.FLOAT64: "float",
+        DigestType.TIMESTAMP_UTC_US: "timestamp",
+        DigestType.DATE: "date",
+    }
     tagged_fields = [(f.name, int(f.type_tag), kinds.get(f.type_tag, "other")) for f in fields]
-    row_token = _row_token_expr(table, tagged_fields, dialect=con.name)
+    row_token = _row_token_expr(table, tagged_fields, dialect=con.name, digest_format=digest_format)
 
     def sha256_hex(col: ir.StringValue) -> ir.StringValue:
         return _sql_digest_sha256_expr(col, dialect=con.name)
 
-    row_hashes = table.select(h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name))
     hashed_name = f"incr_digest_{uuid.uuid4().hex}"
-    hashed = con.create_table(hashed_name, row_hashes, temp=True)
+    hashed = None
     try:
+        row_hashes = table.select(h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name))
+        hashed = con.create_table(hashed_name, row_hashes, temp=True)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
-        row_count = int(con.to_pyarrow(hashed.count()).as_py())
+        row_count = int(_digest_to_pyarrow(con, hashed.count()).as_py())
         rows: list[dict[str, Any]] = []
         step = 16**_BUCKET_HEX_LEN // _digest_passes(row_count)
         for start in range(0, 16**_BUCKET_HEX_LEN, step):
@@ -1331,14 +1411,20 @@ def digest_relation_sql_v2(
             bucket_digests = (
                 part.group_by("bucket")
                 .aggregate(
-                    bucket_digest=sha256_hex(part.h.group_concat(sep="", order_by=part.h)),
+                    bucket_digest=sha256_hex(
+                        part.h.group_concat(
+                            sep="",
+                            order_by=ibis.asc(part.h, nulls_first=con.name == "bigquery"),
+                        )
+                    ),
                     n=part.count(),
                 )
                 .order_by("bucket")
             )
-            rows.extend(con.to_pyarrow(bucket_digests).to_pylist())
+            rows.extend(_digest_to_pyarrow(con, bucket_digests).to_pylist())
     finally:
-        con.drop_table(hashed_name, force=True)
+        if hashed is not None:
+            _drop_sql_digest_hash_table(con, hashed)
     bucketed = sum(record["n"] for record in rows)
     if bucketed != row_count:
         _raise(
@@ -1360,9 +1446,7 @@ def digest_relation_sql_v2(
         + _u64(row_count, None, _ROW_COUNT)
         + bytes(pairs)
     ).hexdigest()
-    return RelationDigests(
-        role, sh, ch, row_count, schema_raw, None, digest_format=SQL_DIGEST_FORMAT
-    )
+    return RelationDigests(role, sh, ch, row_count, schema_raw, None, digest_format=digest_format)
 
 
 def canonical_json_bytes(value: object) -> bytes:
