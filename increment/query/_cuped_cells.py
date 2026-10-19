@@ -121,13 +121,24 @@ def _median_overflows(centered, exponent):
     return ((exponent == 1024) & (magnitude >= 1.0)) | ((exponent == 1023) & (magnitude >= 2.0))
 
 
-def _component_exponent(value):
-    maximum = value.cast("float64").abs().max()
-    return ibis.ifelse(
-        (maximum > 0) & ~maximum.isnan() & ~maximum.isinf(),
-        (maximum.log2().floor() + 1).clip(upper=1024),
-        0,
-    ).cast("int64")
+def _component_exponent_parts(maximum, sum_squares):
+    """Scale by the arm's L2 norm while keeping its maximum SQL-local.
+
+    With ``m=max(abs(v))`` and ``q=sum((v/m)**2)``, the norm is ``m*sqrt(q)``.
+    Writing ``m=s*2**e`` with ``e=floor(log2(m))+1`` lets us calculate its
+    exponent as ``e+floor(log2(s*sqrt(q)))+1`` without materializing an
+    overflowing norm. Since ``q`` terms are at most one, every normalized
+    outcome is at most one and offsets at most two; the compensated-sum and
+    ``2**-36`` range checks therefore keep their existing bounds.
+    """
+    maximum = maximum.fill_null(0.0)
+    valid = (maximum > 0) & ~maximum.isnan() & ~maximum.isinf()
+    max_exponent = ibis.ifelse(valid, (maximum.log2().floor() + 1).clip(upper=1024), 0).cast(
+        "int64"
+    )
+    scaled_maximum = _binary_normalize(maximum, max_exponent)
+    scaled_norm = scaled_maximum * sum_squares.sqrt()
+    return max_exponent, ibis.ifelse(valid, scaled_norm, 1.0), valid
 
 
 def _join_on(left, right, keys):
@@ -140,9 +151,66 @@ def _join_on(left, right, keys):
 
 def _cell_relation(relation, names, outcomes):
     keys = ("group_id", *names)
-    exponents = relation.group_by("group_id").aggregate(
+
+    maxima = relation.group_by("group_id").aggregate(
+        **{
+            f"_max_{f}": relation[name].cast("float64").abs().max()
+            for f, name in enumerate(outcomes)
+        }
+    )
+    relation = _join_on(relation, maxima, ("group_id",))
+    norm_stats = relation.group_by("group_id").aggregate(
         _arm_count=relation.count(),
-        **{f"exponent_{f}": _component_exponent(relation[name]) for f, name in enumerate(outcomes)},
+        **{
+            name: expression
+            for f, outcome in enumerate(outcomes)
+            for name, expression in (
+                (f"_norm_max_{f}", relation[f"_max_{f}"].max()),
+                (
+                    f"_sum_squares_{f}",
+                    (
+                        relation[outcome].cast("float64")
+                        / ibis.ifelse(relation[f"_max_{f}"] > 0, relation[f"_max_{f}"], 1.0)
+                    )
+                    .pow(2)
+                    .sum(),
+                ),
+            )
+        },
+    )
+    norm_stats = norm_stats.mutate(
+        **{
+            name: value
+            for f in range(len(outcomes))
+            for parts in (
+                _component_exponent_parts(
+                    norm_stats[f"_norm_max_{f}"], norm_stats[f"_sum_squares_{f}"]
+                ),
+            )
+            for name, value in (
+                (f"_max_exponent_{f}", parts[0]),
+                (f"_scaled_norm_{f}", parts[1]),
+                (f"_norm_valid_{f}", parts[2]),
+            )
+        }
+    )
+    exponents = norm_stats.mutate(
+        **{
+            f"exponent_{f}": ibis.ifelse(
+                norm_stats[f"_norm_valid_{f}"],
+                (
+                    norm_stats[f"_max_exponent_{f}"]
+                    + norm_stats[f"_scaled_norm_{f}"].log2().floor()
+                    + 1
+                ).clip(upper=1024),
+                0,
+            ).cast("int64")
+            for f in range(len(outcomes))
+        }
+    ).select(
+        "group_id",
+        "_arm_count",
+        *(f"exponent_{f}" for f in range(len(outcomes))),
     )
     relation = _join_on(relation, exponents, ("group_id",))
     relation = relation.mutate(
@@ -323,6 +391,7 @@ def _scratch_columns(components):
     for f in range(components):
         columns.update(
             {
+                f"_max_{f}",
                 f"exponent_{f}",
                 f"_rank_{f}",
                 f"_median_{f}",
