@@ -219,6 +219,7 @@ def test_duckdb_qr_coefficients_and_unit_quantities_match_local_fit(tmp_path):
                 design_columns=design_columns,
                 outcome_columns=("y_fit",),
                 sqrt_weight_column="sqrt_weight",
+                row_identity_columns=("unit_id",),
                 design_scales=tuple(design_scales),
                 coefficients=coefficients,
                 execute=bounded_execute,
@@ -333,6 +334,7 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
                 design_columns=design_columns,
                 outcome_columns=("y_fit",),
                 sqrt_weight_column="sqrt_weight",
+                row_identity_columns=("unit_id",),
                 design_scales=tuple(design_scales),
                 coefficients=coefficients,
                 execute=bounded_execute,
@@ -340,6 +342,649 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
             )
         assert summary.max_leverage == pytest.approx(expected_max, rel=1e-9)
         assert summary.refusal_witness == (("max_leverage", summary.max_leverage, 0.45),)
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
+def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkeypatch):
+    from increment.query._cuped_qr import QRFactor, warehouse_qr_unit_summary
+
+    width = 203
+    design_columns = tuple(f"d{index}" for index in range(width))
+    row = {
+        "unit_id": "one",
+        "sqrt_weight": 1.0,
+        "y_fit": 1.0,
+        **{name: float(index + 1) / width for index, name in enumerate(design_columns)},
+    }
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    connection.create_table("factor_input", obj=[row])
+    session = _scratch_session(connection, tmp_path)
+    statements = []
+    original_create = type(connection).create_table
+
+    def capture_statement(backend, name, expression, *args, **kwargs):
+        if str(name).startswith("_cuped_qr_"):
+            statements.append(str(ibis.to_sql(expression, dialect=dialect)))
+        return original_create(backend, name, expression, *args, **kwargs)
+
+    monkeypatch.setattr(type(connection), "create_table", capture_statement)
+    try:
+        factor = QRFactor(
+            triangular_factor=tuple(
+                tuple(1.0 if row_index == column_index else 0.0 for column_index in range(width))
+                for row_index in range(width)
+            ),
+            transformed_rhs=tuple((0.0,) for _ in range(width)),
+        )
+        with session.qr_scratch() as scratch:
+            warehouse_qr_unit_summary(
+                connection.table("factor_input"),
+                factor,
+                design_columns=design_columns,
+                outcome_columns=("y_fit",),
+                sqrt_weight_column="sqrt_weight",
+                row_identity_columns=("unit_id",),
+                design_scales=(1.0,) * width,
+                coefficients=((0.0,) * width,),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+        assert len(statements) >= 4
+        assert max(map(len, statements)) < 100_000
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noqa: PLR0915
+    tmp_path,
+):
+    from increment.estimation.cuped import (
+        FitState,
+        ProjectionSpec,
+        fit_cuped_multicovariate,
+    )
+    from increment.estimation.cuped.inference import finalize_fit
+    from increment.query._cuped_qr import (
+        factor_design_relation,
+        solve_qr_coefficients,
+        warehouse_inference_summary,
+        warehouse_qr_unit_summary,
+    )
+
+    arms_order = ("control", "treatment")
+    arm_values = np.repeat(arms_order, 32)
+    x = np.concatenate(
+        (1.0e8 + np.linspace(-5.0, 6.0, 32), 1.0e8 + 30.0 + np.linspace(-12.0, 8.0, 32))
+    )
+    centered_by_arm = np.concatenate(
+        (
+            np.linspace(-5.0, 6.0, 32) - np.mean(np.linspace(-5.0, 6.0, 32)),
+            np.linspace(-12.0, 8.0, 32) - np.mean(np.linspace(-12.0, 8.0, 32)),
+        )
+    )
+    y = np.concatenate(
+        (
+            10.0 + 0.35 * centered_by_arm[:32] + np.linspace(-0.4, 0.5, 32),
+            12.0 + 0.35 * centered_by_arm[32:] + np.linspace(0.3, -0.6, 32),
+        )
+    )
+    local = fit_cuped_multicovariate(
+        y,
+        arm_values,
+        control="control",
+        arm_order=arms_order,
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    indices = tuple(np.flatnonzero(arm_values == arm) for arm in arms_order)
+    offsets = tuple(float(x[index[0]]) for index in indices)
+    covariate_scale = max(
+        abs(float(x[row] - offsets[arm]))
+        for arm, arm_indices in enumerate(indices)
+        for row in arm_indices
+    )
+    encoded = np.asarray(
+        [
+            (float(x[row]) - offsets[arm]) / covariate_scale
+            for arm, rows in enumerate(indices)
+            for row in rows
+        ]
+    )
+    centered = encoded.copy()
+    centered_means = []
+    for arm_indices in indices:
+        centered_means.append(float(encoded[arm_indices].mean()))
+        centered[arm_indices] -= centered_means[-1]
+    outcome_means = tuple(float(y[index].mean()) for index in indices)
+    y_fit = np.asarray(
+        [float(y[row]) - outcome_means[arm] for arm, rows in enumerate(indices) for row in rows]
+    )
+    sqrt_weight = 1.0 / np.sqrt(len(indices[0]) * (len(indices[0]) - 1))
+    sqrt_weights = np.full(len(y), sqrt_weight)
+    design_unscaled = np.zeros((len(y), len(arms_order) + 1))
+    for arm, arm_indices in enumerate(indices):
+        design_unscaled[arm_indices, arm] = sqrt_weight
+        design_unscaled[arm_indices, -1] = sqrt_weight * centered[arm_indices]
+    design_scales = np.max(np.abs(design_unscaled), axis=0)
+    design = design_unscaled / design_scales
+    rhs_scale = float(np.max(np.abs(sqrt_weights * y_fit)))
+    rhs = sqrt_weights * y_fit / rhs_scale
+    design_columns = tuple(f"d{index}" for index in range(design.shape[1]))
+    rows = [
+        {
+            "unit_id": f"unit-{index:04d}",
+            "arm_index": int(arm_values[index] == "treatment"),
+            "sqrt_weight": float(sqrt_weights[index]),
+            "x_centered": float(centered[index]),
+            "y_fit": float(y_fit[index]),
+            "rhs": float(rhs[index]),
+            **{
+                name: float(value)
+                for name, value in zip(design_columns, design[index], strict=True)
+            },
+        }
+        for index in range(len(y))
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    connection.create_table("factor_input", obj=rows)
+    session = _scratch_session(connection, tmp_path)
+
+    def guarded_execute(expression):
+        result = connection.to_pyarrow(expression)
+        assert result.num_rows <= 1
+        assert "unit_id" not in result.column_names
+        return result
+
+    try:
+        with session.qr_scratch() as scratch:
+            factor = factor_design_relation(
+                connection.table("factor_input"),
+                design_columns=design_columns,
+                rhs_columns=("rhs",),
+                order_columns=("unit_id",),
+                execute=guarded_execute,
+                scratch=scratch,
+                covariate_start=len(arms_order),
+                covariate_names=("x",),
+            )
+            coefficients = solve_qr_coefficients(
+                factor,
+                design_scales=tuple(design_scales),
+                outcome_scales=(rhs_scale,),
+            )
+            unit_summary = warehouse_qr_unit_summary(
+                connection.table("factor_input"),
+                factor,
+                design_columns=design_columns,
+                outcome_columns=("y_fit",),
+                sqrt_weight_column="sqrt_weight",
+                row_identity_columns=("unit_id",),
+                design_scales=tuple(design_scales),
+                coefficients=coefficients,
+                execute=guarded_execute,
+                scratch=scratch,
+            )
+            fit_identity = ("warehouse-qr-inference-oracle",)
+            state = FitState(
+                identity=fit_identity,
+                eligible_arms=arms_order,
+                withheld_arms=(),
+                refusal_contexts=(),
+                counts=(len(indices[0]), len(indices[1])),
+                layout=local.layout,
+                offsets=(offsets,),
+                scales=(covariate_scale,),
+                centered_means=((centered_means[0],), (centered_means[1],)),
+                anchor=local.anchor,
+                triangular_factor=factor.triangular_factor,
+                transformed_rhs=(tuple(row[0] for row in factor.transformed_rhs),),
+                slopes=(coefficients[0][len(arms_order) :],),
+                adjusted_means=local.adjusted_means,
+                theta=local.theta,
+                n_min=len(indices[0]),
+                p=1,
+                is_ratio=False,
+                control="control",
+            )
+            treatment_mean, control_mean = local.adjusted_means[1], local.adjusted_means[0]
+            relative_reference = min(treatment_mean, control_mean)
+            projection_specs = (
+                ProjectionSpec(
+                    fit_identity + ("absolute", "treatment", "control", ""),
+                    "absolute",
+                    (-1.0, 1.0),
+                    1.0,
+                    1.0,
+                    0,
+                    "treatment",
+                    "control",
+                ),
+                ProjectionSpec(
+                    fit_identity + ("absolute", "control", "treatment", ""),
+                    "absolute",
+                    (1.0, -1.0),
+                    1.0,
+                    1.0,
+                    0,
+                    "control",
+                    "treatment",
+                ),
+                ProjectionSpec(
+                    fit_identity + ("relative", "treatment", "control", ""),
+                    "relative",
+                    (
+                        -relative_reference / control_mean,
+                        relative_reference / treatment_mean,
+                    ),
+                    1.0,
+                    relative_reference,
+                    0,
+                    "treatment",
+                    "control",
+                ),
+                ProjectionSpec(
+                    fit_identity + ("relative", "control", "treatment", ""),
+                    "relative",
+                    (
+                        relative_reference / control_mean,
+                        -relative_reference / treatment_mean,
+                    ),
+                    1.0,
+                    relative_reference,
+                    0,
+                    "control",
+                    "treatment",
+                ),
+            )
+            projections = (
+                local.absolute("treatment"),
+                local.absolute("control", control="treatment"),
+                local.relative("treatment"),
+                local.relative("control", control="treatment"),
+            )
+            summary = warehouse_inference_summary(
+                state,
+                unit_summary,
+                factor,
+                design_scales=tuple(design_scales),
+                sqrt_weight_column="sqrt_weight",
+                covariate_columns=("x_centered",),
+                projection_specs=projection_specs,
+                projection_estimates=tuple(item.estimate for item in projections),
+                execute=guarded_execute,
+                scratch=scratch,
+            )
+            finalized = finalize_fit(state, summary)
+
+        q_expected, r_expected = np.linalg.qr(design, mode="reduced")
+        signs = np.sign(np.diag(np.asarray(factor.triangular_factor)) / np.diag(r_expected))
+        q_expected *= signs[None, :]
+        h_expected = np.sum(q_expected**2, axis=1)
+        weighted_q = sqrt_weights[:, None] * q_expected
+        np.testing.assert_allclose(summary.u, weighted_q.T @ weighted_q, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(
+            summary.adjusted_component_covariance,
+            local.covariance,
+            rtol=1e-9,
+            atol=1e-11,
+        )
+        for index, (spec, projection) in enumerate(zip(projection_specs, projections, strict=True)):
+            covariance_jacobian = (
+                np.asarray(spec.jacobian)
+                * (spec.scale / spec.divisor)
+                * np.ldexp(1.0, spec.exponent)
+            )
+            expected_score_scale = np.sqrt(
+                covariance_jacobian
+                @ np.asarray(summary.adjusted_component_covariance)
+                @ covariance_jacobian
+            )
+            assert projection.se == pytest.approx(expected_score_scale, rel=1e-9, abs=1e-11)
+            assert summary.scaled_projected_score_squares[index][5] == pytest.approx(
+                projection.se, rel=1e-9, abs=1e-11
+            )
+            jacobian = np.asarray(spec.jacobian)
+            contrast = np.concatenate(
+                (
+                    jacobian,
+                    -np.asarray(
+                        [
+                            sum(
+                                jacobian[arm]
+                                * (
+                                    centered_means[arm]
+                                    + offsets[arm] / covariate_scale
+                                    - local.anchor[0] / covariate_scale
+                                )
+                                for arm in range(len(arms_order))
+                            )
+                        ]
+                    ),
+                )
+            )
+            common_scale = float(np.max(np.abs(contrast)))
+            coefficient = np.linalg.solve(
+                np.asarray(factor.triangular_factor).T,
+                (contrast / common_scale) / design_scales,
+            )
+            t = sqrt_weights * (q_expected @ coefficient) / np.sqrt(1.0 - h_expected)
+            feature = np.column_stack(
+                (q_expected * (sqrt_weights * t)[:, None], q_expected * (t / sqrt_weights)[:, None])
+            )
+            expected_s2 = float(t @ t)
+            expected_s4 = float((t * t) @ (t * t))
+            expected_g = feature.T @ feature
+            expected_g2 = feature.T @ (feature * (t * t)[:, None])
+            assert summary.s2[index][0] == pytest.approx(expected_s2, rel=1e-9, abs=1e-11)
+            assert summary.s4[index][0] == pytest.approx(expected_s4, rel=1e-9, abs=1e-11)
+            np.testing.assert_allclose(summary.g[index][0], expected_g, rtol=1e-9, atol=1e-11)
+            np.testing.assert_allclose(summary.g2[index][0], expected_g2, rtol=1e-9, atol=1e-11)
+            result = (
+                finalized.absolute("treatment")
+                if index == 0
+                else finalized.absolute("control", control="treatment")
+                if index == 1
+                else finalized.relative("treatment")
+                if index == 2
+                else finalized.relative("control", control="treatment")
+            )
+            assert result.estimate == pytest.approx(projection.estimate, rel=1e-9, abs=1e-11)
+            assert result.se == pytest.approx(projection.se, rel=1e-9, abs=1e-11)
+            assert result.dof == pytest.approx(projection.dof, rel=1e-9, abs=1e-11)
+            assert result.lower == pytest.approx(projection.lower, rel=1e-9, abs=1e-11)
+            assert result.upper == pytest.approx(projection.upper, rel=1e-9, abs=1e-11)
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa: PLR0915
+    from increment.estimation.cuped import FitState, ProjectionSpec, fit_cuped_multicovariate
+    from increment.query._cuped_qr import (
+        factor_design_relation,
+        solve_qr_coefficients,
+        warehouse_inference_summary,
+        warehouse_qr_unit_summary,
+    )
+
+    arms_order = ("control", "treatment")
+    arm_values = np.repeat(arms_order, 30)
+    raw_x = np.concatenate((np.linspace(-4.0, 4.0, 30), 10.0 + np.linspace(-7.0, 7.0, 30)))
+    x_centered_by_arm = np.concatenate(
+        (
+            np.linspace(-4.0, 4.0, 30) - np.mean(np.linspace(-4.0, 4.0, 30)),
+            np.linspace(-7.0, 7.0, 30) - np.mean(np.linspace(-7.0, 7.0, 30)),
+        )
+    )
+    numerator = np.concatenate(
+        (
+            8.0 + 0.25 * x_centered_by_arm[:30] + np.linspace(-0.2, 0.3, 30),
+            10.0 + 0.25 * x_centered_by_arm[30:] + np.linspace(0.25, -0.15, 30),
+        )
+    )
+    denominator = np.concatenate(
+        (
+            2.0 + 0.04 * x_centered_by_arm[:30] + np.linspace(-0.04, 0.05, 30),
+            2.5 + 0.04 * x_centered_by_arm[30:] + np.linspace(0.03, -0.05, 30),
+        )
+    )
+    local = fit_cuped_multicovariate(
+        None,
+        arm_values,
+        control="control",
+        arm_order=arms_order,
+        numerator=numerator,
+        denominator=denominator,
+        covariates={"x": raw_x},
+        kinds={"x": "continuous"},
+    )
+    indices = tuple(np.flatnonzero(arm_values == arm) for arm in arms_order)
+    offsets = tuple(float(raw_x[index[0]]) for index in indices)
+    covariate_scale = max(
+        abs(float(raw_x[row] - offsets[arm]))
+        for arm, arm_indices in enumerate(indices)
+        for row in arm_indices
+    )
+    encoded = np.asarray(
+        [
+            (float(raw_x[row]) - offsets[arm]) / covariate_scale
+            for arm, arm_rows in enumerate(indices)
+            for row in arm_rows
+        ]
+    )
+    centered = encoded.copy()
+    centered_means = []
+    for arm_indices in indices:
+        centered_means.append(float(encoded[arm_indices].mean()))
+        centered[arm_indices] -= centered_means[-1]
+    outcome_arrays = (numerator, denominator)
+    outcome_centers = tuple(
+        np.asarray(
+            [
+                float(values[row]) - float(values[indices[arm]].mean())
+                for arm, arm_rows in enumerate(indices)
+                for row in arm_rows
+            ]
+        )
+        for values in outcome_arrays
+    )
+    sqrt_weight = 1.0 / np.sqrt(len(indices[0]) * (len(indices[0]) - 1))
+    sqrt_weights = np.full(len(arm_values), sqrt_weight)
+    design_unscaled = np.zeros((len(arm_values), len(arms_order) + 1))
+    for arm, arm_indices in enumerate(indices):
+        design_unscaled[arm_indices, arm] = sqrt_weight
+        design_unscaled[arm_indices, -1] = sqrt_weight * centered[arm_indices]
+    design_scales = np.max(np.abs(design_unscaled), axis=0)
+    design = design_unscaled / design_scales
+    rhs_unscaled = np.column_stack(outcome_centers) * sqrt_weights[:, None]
+    outcome_scales = np.max(np.abs(rhs_unscaled), axis=0)
+    rhs = rhs_unscaled / outcome_scales
+    design_columns = tuple(f"d{index}" for index in range(design.shape[1]))
+    rows = [
+        {
+            "unit_id": f"unit-{index:04d}",
+            "sqrt_weight": float(sqrt_weights[index]),
+            "x_centered": float(centered[index]),
+            "num_fit": float(outcome_centers[0][index]),
+            "den_fit": float(outcome_centers[1][index]),
+            **{f"rhs{family}": float(rhs[index, family]) for family in range(2)},
+            **{
+                name: float(value)
+                for name, value in zip(design_columns, design[index], strict=True)
+            },
+        }
+        for index in range(len(arm_values))
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    connection.create_table("factor_input", obj=rows)
+    session = _scratch_session(connection, tmp_path)
+
+    def guarded_execute(expression):
+        result = connection.to_pyarrow(expression)
+        assert result.num_rows <= 1
+        assert "unit_id" not in result.column_names
+        return result
+
+    try:
+        with session.qr_scratch() as scratch:
+            factor = factor_design_relation(
+                connection.table("factor_input"),
+                design_columns=design_columns,
+                rhs_columns=("rhs0", "rhs1"),
+                order_columns=("unit_id",),
+                execute=guarded_execute,
+                scratch=scratch,
+                covariate_start=len(arms_order),
+                covariate_names=("x",),
+            )
+            coefficients = solve_qr_coefficients(
+                factor,
+                design_scales=tuple(design_scales),
+                outcome_scales=tuple(outcome_scales),
+            )
+            unit_summary = warehouse_qr_unit_summary(
+                connection.table("factor_input"),
+                factor,
+                design_columns=design_columns,
+                outcome_columns=("num_fit", "den_fit"),
+                sqrt_weight_column="sqrt_weight",
+                row_identity_columns=("unit_id",),
+                design_scales=tuple(design_scales),
+                coefficients=coefficients,
+                execute=guarded_execute,
+                scratch=scratch,
+            )
+            fit_identity = ("warehouse-qr-ratio-inference-oracle",)
+            state = FitState(
+                identity=fit_identity,
+                eligible_arms=arms_order,
+                withheld_arms=(),
+                refusal_contexts=(),
+                counts=(30, 30),
+                layout=local.layout,
+                offsets=(offsets,),
+                scales=(covariate_scale,),
+                centered_means=((centered_means[0],), (centered_means[1],)),
+                anchor=local.anchor,
+                triangular_factor=factor.triangular_factor,
+                transformed_rhs=tuple(
+                    tuple(row[family] for row in factor.transformed_rhs) for family in range(2)
+                ),
+                slopes=tuple(coefficients[family][len(arms_order) :] for family in range(2)),
+                adjusted_means=local.adjusted_means,
+                theta=local.theta,
+                n_min=30,
+                p=1,
+                is_ratio=True,
+                control="control",
+            )
+            means = np.asarray(local.adjusted_means).reshape((2, 2))
+            control_num, treatment_num = means[0]
+            control_den, treatment_den = means[1]
+            treatment_ratio = treatment_num / treatment_den
+            control_ratio = control_num / control_den
+            log_jacobian = (
+                -1.0 / control_num,
+                1.0 / treatment_num,
+                1.0 / control_den,
+                -1.0 / treatment_den,
+            )
+            absolute_jacobian = (
+                -1.0 / control_den,
+                1.0 / treatment_den,
+                control_ratio / control_den,
+                -treatment_ratio / treatment_den,
+            )
+            specs = (
+                ProjectionSpec(
+                    fit_identity + ("ratio", "treatment", "control", "log"),
+                    "ratio",
+                    log_jacobian,
+                    1.0,
+                    1.0,
+                    0,
+                    "treatment",
+                    "control",
+                ),
+                ProjectionSpec(
+                    fit_identity + ("ratio", "treatment", "control", "absolute"),
+                    "ratio",
+                    absolute_jacobian,
+                    1.0,
+                    1.0,
+                    0,
+                    "treatment",
+                    "control",
+                ),
+            )
+            projections = (
+                local.ratio("treatment", scale="log"),
+                local.ratio("treatment", scale="absolute"),
+            )
+            summary = warehouse_inference_summary(
+                state,
+                unit_summary,
+                factor,
+                design_scales=tuple(design_scales),
+                sqrt_weight_column="sqrt_weight",
+                covariate_columns=("x_centered",),
+                projection_specs=specs,
+                projection_estimates=tuple(item.estimate for item in projections),
+                execute=guarded_execute,
+                scratch=scratch,
+            )
+
+        q_expected, r_expected = np.linalg.qr(design, mode="reduced")
+        signs = np.sign(np.diag(np.asarray(factor.triangular_factor)) / np.diag(r_expected))
+        q_expected *= signs[None, :]
+        h_expected = np.sum(q_expected**2, axis=1)
+        weighted_q = sqrt_weights[:, None] * q_expected
+        np.testing.assert_allclose(summary.u, weighted_q.T @ weighted_q, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(
+            summary.adjusted_component_covariance, local.covariance, rtol=1e-9, atol=1e-11
+        )
+        for projection_index, (spec, projection) in enumerate(zip(specs, projections, strict=True)):
+            np.testing.assert_allclose(
+                summary.scaled_projected_score_squares[projection_index][5],
+                projection.se,
+                rtol=1e-9,
+                atol=1e-11,
+            )
+            arm_jacobians = np.asarray(spec.jacobian).reshape((2, len(arms_order)))
+            contrasts = []
+            for family in range(2):
+                contrast_x = sum(
+                    arm_jacobians[family, arm]
+                    * (
+                        centered_means[arm]
+                        + offsets[arm] / covariate_scale
+                        - local.anchor[0] / covariate_scale
+                    )
+                    for arm in range(len(arms_order))
+                )
+                contrasts.append(np.concatenate((arm_jacobians[family], np.asarray([-contrast_x]))))
+            common_scale = max(float(np.max(np.abs(value))) for value in contrasts)
+            expected_components = []
+            for contrast in contrasts:
+                coefficient = np.linalg.solve(
+                    np.asarray(factor.triangular_factor).T,
+                    (contrast / common_scale) / design_scales,
+                )
+                t = sqrt_weights * (q_expected @ coefficient) / np.sqrt(1.0 - h_expected)
+                feature = np.column_stack(
+                    (
+                        q_expected * (sqrt_weights * t)[:, None],
+                        q_expected * (t / sqrt_weights)[:, None],
+                    )
+                )
+                expected_components.append(
+                    (
+                        float(t @ t),
+                        float((t * t) @ (t * t)),
+                        feature.T @ feature,
+                        feature.T @ (feature * (t * t)[:, None]),
+                    )
+                )
+            for family, (s2, s4, gram, weighted_gram) in enumerate(expected_components):
+                assert summary.s2[projection_index][family] == pytest.approx(
+                    s2, rel=1e-9, abs=1e-11
+                )
+                assert summary.s4[projection_index][family] == pytest.approx(
+                    s4, rel=1e-9, abs=1e-11
+                )
+                np.testing.assert_allclose(
+                    summary.g[projection_index][family], gram, rtol=1e-9, atol=1e-11
+                )
+                np.testing.assert_allclose(
+                    summary.g2[projection_index][family], weighted_gram, rtol=1e-9, atol=1e-11
+                )
     finally:
         session.drop_materialized()
         connection.disconnect()
