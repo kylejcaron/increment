@@ -89,6 +89,25 @@ def test_row_token_compiles_without_backend_specific_sql(dialect):
     ibis.to_sql(_TABLE.select(tok=token), dialect=dialect)
 
 
+@pytest.mark.parametrize(
+    "dialect,expected_fragment",
+    [
+        ("duckdb", "STRFTIME("),
+        ("snowflake", "TO_CHAR("),
+        ("bigquery", "FORMAT_DATE("),
+        ("postgres", "TO_CHAR("),
+    ],
+)
+def test_date_token_uses_explicit_iso_format(dialect, expected_fragment):
+    import sqlglot
+
+    table = ibis.table({"day": "date"}, name="rows")
+    token = _row_token_expr(table, [("day", 4, "date")], dialect=dialect)
+    sql = str(ibis.to_sql(table.select(tok=token), dialect=dialect))
+    sqlglot.parse_one(sql, read=dialect)
+    assert expected_fragment in sql
+
+
 @pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
 def test_float64_binary_token_compiles_as_a_scalar(dialect):
     import sqlglot

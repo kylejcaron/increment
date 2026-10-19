@@ -1227,6 +1227,9 @@ def _row_token_expr(
             payload = _float_payload_expr(col, dialect=dialect, digest_format=digest_format)
         elif kind == "timestamp":
             payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
+        elif kind == "date":
+            # Avoid Snowflake DATE_OUTPUT_FORMAT and PostgreSQL DateStyle settings.
+            payload = col.strftime("%Y-%m-%d")
         else:
             payload = col.cast("string")
         length = payload.length().cast("string").lpad(16, "0")
@@ -1350,7 +1353,11 @@ def digest_relation_sql_v2(
     _assert_unique_primary_key_sql(con, table, pk, role)
     schema_raw = canonical_schema_bytes(fields)
     sh = schema_sha256(role, schema)
-    kinds = {DigestType.FLOAT64: "float", DigestType.TIMESTAMP_UTC_US: "timestamp"}
+    kinds = {
+        DigestType.FLOAT64: "float",
+        DigestType.TIMESTAMP_UTC_US: "timestamp",
+        DigestType.DATE: "date",
+    }
     tagged_fields = [(f.name, int(f.type_tag), kinds.get(f.type_tag, "other")) for f in fields]
     row_token = _row_token_expr(table, tagged_fields, dialect=con.name, digest_format=digest_format)
 

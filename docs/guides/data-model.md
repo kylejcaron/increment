@@ -717,8 +717,9 @@ publication time, and experiment end are not completeness proofs.
     Format 4 encodes a finite binary64 value as its sign, exact decimal integer
     significand, `p`, and exact binary exponent; zero retains its sign and
     subnormals use the fixed exponent -1074. NaN and infinity retain their
-    canonical spellings. This avoids backend decimal expansion and is unique
-    for each finite IEEE-754 value. PostgreSQL timestamp tokens use numeric
+    canonical spellings. Date tokens use explicit ISO `YYYY-MM-DD` formatting
+    rather than session output settings. Binary64 tokens avoid backend decimal
+    expansion and are unique for each finite IEEE-754 value. PostgreSQL
     `EXTRACT(EPOCH)` before conversion to integer microseconds, without passing
     through floating-point seconds. Text hash inputs are converted explicitly
     to UTF-8 bytes, so backslashes remain literal text rather than PostgreSQL

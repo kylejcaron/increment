@@ -66,7 +66,12 @@ def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
     import pyarrow as pa
 
     from increment.query import artifact_digest
-    from increment.query.artifact_digest import digest_relation_sql_v2
+    from increment.query.artifact_digest import (
+        DigestType,
+        _fields,
+        _row_token_expr,
+        digest_relation_sql_v2,
+    )
     from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
 
     schema = _PORTABLE_SCHEMA
@@ -91,9 +96,10 @@ def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
     duckdb = ibis.duckdb.connect()
     pg_name = f"digest_spec_{uuid4().hex[:10]}"
     try:
+        duck_table = duckdb.create_table("digest_spec", arrow)
         expected = digest_relation_sql_v2(
             duckdb,
-            duckdb.create_table("digest_spec", arrow),
+            duck_table,
             "portable_spec",
             schema,
             primary_key=("id",),
@@ -121,6 +127,39 @@ def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
             expected.content_sha256
             == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
         )
+        if actual.content_sha256 != expected.content_sha256:
+            kinds = {
+                DigestType.DATE: "date",
+                DigestType.FLOAT64: "float",
+                DigestType.TIMESTAMP_UTC_US: "timestamp",
+            }
+            tagged_fields = [
+                (field.name, int(field.type_tag), kinds.get(field.type_tag, "other"))
+                for field in _fields(schema)
+            ]
+
+            def field_tokens(con, relation, dialect):
+                tokens = {
+                    f"token_{name}": _row_token_expr(
+                        relation, ((name, tag, kind),), dialect=dialect
+                    )
+                    for name, tag, kind in tagged_fields
+                }
+                return sorted(
+                    con.to_pyarrow(relation.select(id=relation.id, **tokens)).to_pylist(),
+                    key=lambda row: row["id"],
+                )
+
+            duckdb_tokens = field_tokens(duckdb, duck_table, "duckdb")
+            snowflake_tokens = field_tokens(snowflake_con, table, "snowflake")
+            assert [row["id"] for row in snowflake_tokens] == [row["id"] for row in duckdb_tokens]
+            for duckdb_row, snowflake_row in zip(duckdb_tokens, snowflake_tokens, strict=True):
+                for name, _tag, _kind in tagged_fields:
+                    assert snowflake_row[f"token_{name}"] == duckdb_row[f"token_{name}"], (
+                        f"format-4 token mismatch: row id={duckdb_row['id']}, field={name}, "
+                        f"DuckDB={duckdb_row[f'token_{name}']!r}, "
+                        f"Snowflake={snowflake_row[f'token_{name}']!r}"
+                    )
         assert actual.content_sha256 == expected.content_sha256
     finally:
         duckdb.disconnect()
