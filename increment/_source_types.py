@@ -607,6 +607,13 @@ class ScalarMethodMomentSource(Protocol):
 
 
 @runtime_checkable
+class CategoricalEvidenceSource(Protocol):
+    """Sources retaining joint categorical evidence for multicovariate requests."""
+
+    def categorical_evidence(self, metric: Metric, method: Any) -> Any: ...
+
+
+@runtime_checkable
 class MomentSource(Protocol):
     """A source of aggregated moments, decoupled from how they were computed."""
 

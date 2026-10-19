@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import pickle
 from fractions import Fraction
-from functools import partial
 from typing import Any, cast
 
 import pyarrow as pa
@@ -68,7 +67,7 @@ _SCALAR_EXECUTION_CASES = {
     "run_breakout": "readout",
     "run_asof_lift": "readout",
     "run_daily_lift": "readout",
-    "export": "readout",
+    "export": "export",
     "from_unit_summary": "registration",
     "from_unit_panel": "registration",
     "from_moments": "checkpoint",
@@ -85,7 +84,12 @@ def _scalar_operation_cases(kind=None):
     missing = operations - _SCALAR_EXECUTION_CASES.keys()
     assert not missing, f"Public operations without an execution case: {sorted(missing)}"
     assert _SCALAR_EXECUTION_CASES.keys() <= operations
-    assert set(_SCALAR_EXECUTION_CASES.values()) <= {"readout", "registration", "checkpoint"}
+    assert set(_SCALAR_EXECUTION_CASES.values()) <= {
+        "readout",
+        "export",
+        "registration",
+        "checkpoint",
+    }
     return tuple(
         name for name in sorted(operations) if kind is None or _SCALAR_EXECUTION_CASES[name] == kind
     )
@@ -478,10 +482,7 @@ def scalar_probe(monkeypatch):
     return admissions, reads, unread
 
 
-@pytest.mark.parametrize(
-    "operation",
-    [*_scalar_operation_cases("readout"), "export_moments"],
-)
+@pytest.mark.parametrize("operation", _scalar_operation_cases("readout"))
 def test_public_scalar_operations_refuse_before_evidence(
     tmp_path, monkeypatch, scalar_probe, operation
 ):
@@ -516,31 +517,60 @@ def test_public_scalar_operations_refuse_before_evidence(
             tmp_path, sensitivity=(second,), breakout=operation == "run_breakout"
         )
         try:
-            if operation == "export_moments":
-                source = _native_source(path, con)
-                invoke = partial(source.export_moments, tmp_path / "unsupported.parquet")
-            else:
-                analysis = Analysis.from_definitions("cov_test", path, con, store="none")
-                if operation == "export":
-                    invoke = partial(analysis.export, tmp_path / "unsupported.parquet")
-                else:
-                    invoke = getattr(analysis, operation)
+            analysis = Analysis.from_definitions("cov_test", path, con, store="none")
+            invoke = getattr(analysis, operation)
             monkeypatch.setattr(con, "to_pyarrow", unread)
             admissions.clear()
             with pytest.raises(CodedError) as raised:
                 invoke()
-            if operation == "run_breakout":
-                expected = "facade.analysis_config.multifamily_scalar_breakout"
-            elif operation in {"export", "export_moments"}:
-                expected = "facade.analysis_config.multifamily_scalar_export"
-            else:
-                expected = "readout.scalar_method_evidence"
+            expected = (
+                "facade.analysis_config.multifamily_scalar_breakout"
+                if operation == "run_breakout"
+                else "readout.scalar_method_evidence"
+            )
             assert raised.value.code == expected
-            assert not (tmp_path / "unsupported.parquet").exists()
         finally:
             con.disconnect()
     assert admissions
     assert reads == []
+
+
+@pytest.mark.parametrize("operation", _scalar_operation_cases("export"))
+def test_public_export_carries_each_scalar_family(tmp_path, operation):
+    second = _scalar("second", "history_b")
+    path, con, methods = _native_case(tmp_path, sensitivity=(second,))
+    destination = tmp_path / "families.parquet"
+    try:
+        with Analysis.from_definitions("cov_test", path, con, store="none") as analysis:
+            expected = {row.method: row for row in analysis.run() if isinstance(row, LiftEstimate)}
+            getattr(analysis, operation)(destination)
+        design = _native_source(path, con).context.design
+        rows = pq.read_table(destination).to_pylist()
+        assert {row["moments_format"] for row in rows} == {13}
+        restored = Analysis.from_moments(
+            rows,
+            metrics=[
+                MetricSpec(
+                    name="revenue", decision_method=methods[0], sensitivity_methods=(second,)
+                )
+            ],
+            design=design,
+            experiment_id="cov_test",
+        )
+        try:
+            replayed = {row.method: row for row in restored.run() if isinstance(row, LiftEstimate)}
+        finally:
+            restored.close()
+        assert replayed.keys() == expected.keys() == {methods[0].name, "second"}
+        for name, row in expected.items():
+            assert replayed[name].require_lift().value == pytest.approx(
+                row.require_lift().value, rel=1e-10
+            )
+            assert replayed[name].require_lift().log_se == pytest.approx(
+                row.require_lift().log_se, rel=1e-10
+            )
+    finally:
+        con.disconnect()
 
 
 @pytest.mark.parametrize("explicit", [False, True])

@@ -176,25 +176,54 @@ def _artifact_source(path, con):
 
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 @pytest.mark.parametrize("transport", ["export", "moments_source"])
-def test_single_cube_transports_refuse_before_reading(tmp_path, monkeypatch, ingress, transport):
+def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, ingress, transport):
+    import pyarrow.parquet as pq
+
+    from increment.estimation.results import LiftEstimate
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
     path, con, methods, *_ = _scalar_native_case(tmp_path)
     source = (_native_source if ingress == "native" else _artifact_source)(path, con)
-    destination = tmp_path / "moments.json"
-    monkeypatch.setattr(
-        con,
-        "to_pyarrow",
-        lambda *args, **kwargs: pytest.fail("single-cube refusal must precede evidence access"),
-    )
     try:
-        with pytest.raises(CodedError) as raised:
-            if transport == "export":
-                source.export_moments(destination)
-            else:
+        expected = {row.method: row for row in run(source) if isinstance(row, LiftEstimate)}
+        monkeypatch.setattr(
+            type(source),
+            "unit_frame",
+            lambda *args, **kwargs: pytest.fail("scalar family evidence never reads unit frames"),
+        )
+        if transport == "export":
+            destination = tmp_path / "families.parquet"
+            source.export_moments(destination)
+            rows = pq.read_table(destination).to_pylist()
+            assert {row["moments_format"] for row in rows} == {13}
+            assert sum(row.get("record_kind") == "cuped_evidence" for row in rows) == 2
+            restored = Analysis.from_moments(
+                rows,
+                metrics=[
+                    MetricSpec(
+                        name="revenue", decision_method=methods[0], sensitivity_methods=methods[1:]
+                    )
+                ],
+                design=source.context.design,
+                experiment_id="cov_test",
+            )
+            try:
+                actual = restored.run()
+            finally:
+                restored.close()
+        else:
+            actual = run(
                 source.moments_source(metrics=source.context.metrics, methods=list(methods))
-        assert raised.value.code == "facade.analysis_config.multifamily_scalar_export"
-        assert not destination.exists()
+            )
+        replayed = {row.method: row for row in actual if isinstance(row, LiftEstimate)}
+        assert replayed.keys() == expected.keys() == {"scalar_a", "companion_b"}
+        for name, row in expected.items():
+            assert (replayed[name].role, replayed[name].method_role) == (row.role, row.method_role)
+            lift, reference = replayed[name].require_lift(), row.require_lift()
+            for field in ("value", "log_se", "lb", "ub"):
+                assert getattr(lift, field) == pytest.approx(
+                    getattr(reference, field), rel=1e-10, abs=1e-12
+                )
     finally:
         if ingress == "artifact":
             source.close()

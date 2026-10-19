@@ -305,11 +305,12 @@ and context are retained.
 A metric absent from a segment's queried evidence remains outside that segment's
 BH family and has no discovery verdict.
 
-Moment exports and direct `moments_source` transports retain one scalar family
-per metric. Native and artifact routes reject several distinct scalar families
-with `facade.analysis_config.multifamily_scalar_export` before reading or
-writing evidence. Provenance-free legacy `from_moments` inputs still accept a
-single scalar request, but several distinct requests refuse with
+Moment exports and direct `moments_source` transports carry one scalar family
+per metric in format 12. A metric whose requests resolve to several distinct
+scalar families travels in format 13 instead, with one method-scoped evidence
+envelope per family; see [Portable CUPED evidence](#portable-cuped-evidence).
+Provenance-free legacy `from_moments` inputs still accept a single scalar
+request, but several distinct requests refuse with
 `facade.analysis_config.cuped_scalar_moments`; a recorded covariate-name
 mismatch is never treated as anonymous evidence.
 When a portable cube records its scalar recipe, the missing-value preparation
@@ -978,6 +979,8 @@ Breakout cells fit separately and may therefore be unavailable even when the
 whole-population fit is supported. Assigned and triggered results retain
 their own populations; aggregate and per-unit evidence share one source
 snapshot, including the resolved fact source of each breakout.
+Native and artifact readouts of a mixed method still fit from per-unit
+warehouse evidence; their moment exports never transfer units.
 
 Relative and absolute projections have separate availability. A usable
 relative estimate survives an absolute-projection refusal, whose exact
@@ -1027,7 +1030,7 @@ numerator/denominator covariance. Bell–McCaffrey reductions likewise
 weight each original-unit cell contribution by $m_g$ before the shared
 finalizer forms its component-stacked trace ratio.
 
-These cells are parameter-independent and merge only when source,
+These cells are parameter-independent and merge only when evidence identity,
 preparation, arm ordering, and covariate identities agree. Null categories
 remain distinct from string labels. The usual level-support, rank, leverage,
 and denominator-precision rules still apply to the combined observations;
@@ -1073,6 +1076,48 @@ or `from_unit_panel`. The producer never downloads units automatically,
 merges or suppresses categories, or changes the inferential procedure.
 The guards do not provide differential privacy or protection against
 arbitrary side information.
+
+### Portable CUPED evidence
+
+A moment export stays in format 12 when every metric has at most one scalar
+family and no categorical-only `cuped_multicovariate` request. Otherwise it is
+format 13: ordinary rows carry outcome moments only, unique per metric and
+arm, and each distinct request has one `record_kind="cuped_evidence"` row whose
+`cuped_evidence` column holds a canonical JSON payload:
+
+```text
+{"version": 1, "kind": "scalar_moments" | "categorical_cells", "metric": ...,
+ "method": <declaration without its label>, "population": "assigned" | "triggered",
+ "breakout": null, "source_sha256": ..., "evidence": {...}}
+```
+
+`scalar_moments` evidence holds the family's per-arm moment rows;
+`categorical_cells` evidence holds the joint cells above. Requests that differ
+only by label share one envelope, and `source_sha256` binds each envelope to
+the cube's source identity. Before estimation, `from_moments` refuses an
+unknown payload version or kind with `moments.cuped_evidence.unsupported`,
+repeated envelopes with `moments.cuped_evidence.duplicate`, and unknown or
+missing fields, noncanonical bytes, conflicting or invalid evidence, a
+mismatched source, metric, population or breakout, envelopes outside format
+13, or format 13 without envelopes with `moments.cuped_evidence.invalid`. A
+request the cube carries no evidence for refuses with
+`readout.scalar_method_evidence` for a scalar family and
+`facade.analysis_config.cuped_linear_moments` for a mixed method.
+
+Replay selects scalar evidence by request identity and fits categorical
+evidence with the unit route's estimator, ratio arm withholding, and
+projections. Categorical replay identifies its aggregate evidence, so its
+snapshot differs from the unit-source run; scalar-only replay keeps the
+unit-source snapshot. Categorical evidence identity is the metric, population,
+breakout, and request, independent of the producing source, so partitions of
+one request merge; scalar envelopes merge as centered moments.
+
+Native and artifact exports reduce categorical requests in the warehouse
+under the guards above or refuse with `query.cuped.general_qr_required`.
+Mixed methods with continuous covariates have no compact evidence and are
+omitted from every export, as in format 12. A native `moments_source` builds
+the same envelopes for several scalar families and leaves mixed requests to
+the live source.
 
 ## The math
 
