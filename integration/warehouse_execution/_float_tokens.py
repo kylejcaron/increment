@@ -101,6 +101,8 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
             assert literal_token == [{"token": "-0"}]
             actual = [{"id": row["id"], "token": row["token"]} for row in actual_rows]
         else:
+            table = con.create_table(name, arrow)
+            created = True
             actual = con.to_pyarrow(
                 table.select(
                     id=table.id,
