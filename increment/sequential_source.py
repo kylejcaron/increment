@@ -1567,7 +1567,15 @@ class SequentialSourceMixin:
     """Existing source adapters retain immutable snapshots independently of moments."""
 
     _context: SourceContext
-    _sequential_snapshot: SequentialSnapshot | None = None
+    _population: Literal["assigned", "triggered"] = "assigned"
+
+    @property
+    def population(self) -> Literal["assigned", "triggered"]:
+        return self._population
+
+    @property
+    def trigger_name(self) -> str | None:
+        return self.context.trigger_name
 
     @property
     def context(self) -> SourceContext:

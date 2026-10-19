@@ -159,6 +159,7 @@ from increment.sources import (
     BreakoutMomentsSource,
     ComplianceArm,
     ComplianceSummary,
+    CUPEDEvidenceExportSource,
     MomentSource,
     SourceContext,
     SourceOperation,
@@ -675,8 +676,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
             pinned._context = replace(pinned._context, configs=tuple(configs))
-        if self._sequential_snapshot is not None:
-            pinned.adopt_sequential_snapshot(self._sequential_snapshot)
+        sequential_snapshot = getattr(self, "_sequential_snapshot", None)
+        if sequential_snapshot is not None:
+            pinned.adopt_sequential_snapshot(sequential_snapshot)
         return pinned
 
     def _add_observational_covariate_sources(
@@ -3482,7 +3484,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
             view = self if population == "assigned" else self.triggered_source()
             portable = portable_cuped_rows(
-                view, requests, categorical_cells=None, identity=identity_record
+                cast(CUPEDEvidenceExportSource, view),
+                requests,
+                categorical_cells=None,
+                identity=identity_record,
             )
             _grain, assignment_counts, unit_counts = self._counts_for_population(
                 population, operation="moments_source"
@@ -3669,23 +3674,32 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self.context.configs, design=self.context.design, categorical=True
         )
         if requests is not None:
-            portable = portable_cuped_rows(
-                self,
-                requests,
-                categorical_cells=lambda metric, method: categorical_request_cells(
-                    self, metric, method, population="assigned"
-                ),
-                identity=identity_record,
-            )
-            rows = stamp_fixed_rows(
-                portable,
-                version=CUPED_EVIDENCE_FORMAT,
-                plan=compiled_plan_to_json(self._context.plan),
-                identity=identity_payload,
-                counts=json.dumps(self.unit_counts(), sort_keys=True, separators=(",", ":")),
-                compliance=self._compliance_wire_payload(),
-            )
-            write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
+            with self.readout_snapshot(
+                metrics=tuple(metric for metric, _, _ in requests),
+                population="assigned",
+                configs=self.context.configs,
+            ) as pinned:
+                pinned_identity = source_identity(pinned)
+                pinned_identity_payload = json.dumps(
+                    pinned_identity, sort_keys=True, separators=(",", ":")
+                )
+                portable = portable_cuped_rows(
+                    cast(CUPEDEvidenceExportSource, pinned),
+                    requests,
+                    categorical_cells=lambda metric, method: categorical_request_cells(
+                        pinned, metric, method, population="assigned"
+                    ),
+                    identity=pinned_identity,
+                )
+                rows = stamp_fixed_rows(
+                    portable,
+                    version=CUPED_EVIDENCE_FORMAT,
+                    plan=compiled_plan_to_json(self._context.plan),
+                    identity=pinned_identity_payload,
+                    counts=json.dumps(pinned.unit_counts(), sort_keys=True, separators=(",", ":")),
+                    compliance=cast("DefinitionsMomentSource", pinned)._compliance_wire_payload(),
+                )
+                write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
             return
         # Import lazily because parquet export requires the live ibis session.
         import pyarrow as pa
