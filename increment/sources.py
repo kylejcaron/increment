@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from increment._canonical import canonical_json_bytes
+from increment._immutable import _FrozenMapping
 from increment._labels import (
     MIXED_ASSIGNMENT_LABEL,
     UNASSIGNED_LABEL,
@@ -1146,15 +1147,22 @@ def _configs_from_compiled_plan(
     plan: CompiledDecisionPlan,
     fallback: tuple[ResolvedMetricConfig, ...],
 ) -> tuple[ResolvedMetricConfig, ...]:
-    """Use wire-carried runtime-safe methods and priors for rehydrated cubes."""
+    """Restore wire defaults without replacing resolved method declarations."""
     from increment._analysis_config import ResolvedMetricConfig
 
     fallback_by_name = {config.metric.name: config for config in fallback}
     out: list[ResolvedMetricConfig] = []
     for metric in metrics:
+        config = fallback_by_name[metric.name]
         procedure = plan.procedures.get(metric.name)
-        if not hasattr(procedure, "decision_method"):
-            out.append(fallback_by_name[metric.name])
+        if (
+            not config.decision_defaulted
+            or config.sensitivity_methods
+            or config.source_methods
+            or config.methods_explicitly_empty
+            or not hasattr(procedure, "decision_method")
+        ):
+            out.append(config)
             continue
         runtime_procedure = cast("Any", procedure)
         out.append(
@@ -1171,6 +1179,11 @@ def _configs_from_compiled_plan(
                 if runtime_procedure.prior is not None
                 else fallback_by_name[metric.name].prior_is_global,
                 covariates=fallback_by_name[metric.name].covariates,
+                source_methods=(
+                    runtime_procedure.decision_method,
+                    *runtime_procedure.sensitivity_methods,
+                ),
+                covariate_available=bool(fallback_by_name[metric.name].covariates),
                 methods_explicitly_empty=runtime_procedure.methods_explicitly_empty,
             )
         )
@@ -1217,6 +1230,28 @@ def _validated_compliance_payload(
         if row.get("experiment_id") != compliance.study_id:
             invalid_compliance_state("moment study differs from compliance cohort")
     return compliance
+
+
+def _aggregate_configs(
+    metrics: tuple[Metric, ...],
+    plan: CompiledDecisionPlan,
+    configs: Sequence[ResolvedMetricConfig] | None,
+    *,
+    bindings: Mapping[str, Any] | None = None,
+    design: Randomized | Encouragement | Observational | None,
+    route: str,
+    representation: Literal["moments", "breakout"],
+) -> tuple[ResolvedMetricConfig, ...]:
+    from increment._analysis_config import resolve_configs, validate_scalar_route
+
+    base = (
+        tuple(configs)
+        if configs is not None
+        else resolve_configs(metrics, bindings=bindings, specs=None, methods=None, prior=None)
+    )
+    resolved = _configs_from_compiled_plan(metrics, plan, base)
+    validate_scalar_route(resolved, route=route, representation=representation, design=design)
+    return resolved
 
 
 class MomentsSource(SequentialSourceMixin):
@@ -1338,7 +1373,7 @@ class MomentsSource(SequentialSourceMixin):
 
         metric_catalog = tuple(cast("Metric", metric) for metric in metrics)
         stored_plan: CompiledDecisionPlan | None = None
-        if plan_payload is not None and (plan is None or envelope_identity is not None):
+        if plan_payload is not None:
             from increment.decision_wire import compiled_plan_from_json
 
             stored_plan = compiled_plan_from_json(
@@ -1388,20 +1423,44 @@ class MomentsSource(SequentialSourceMixin):
 
             self._legacy_prior_exclusions = _legacy_prior_exclusion_metrics(plan_payload)
 
-        from increment._analysis_config import resolve_configs
-
-        base_configs = (
-            tuple(configs)
-            if configs is not None
-            else resolve_configs(
-                metric_catalog,
-                bindings=bindings_by_name,
-                specs=None,
-                methods=None,
-                prior=None,
-            )
+        base_configs = _aggregate_configs(
+            metric_catalog,
+            compiled,
+            configs,
+            bindings=bindings_by_name,
+            route="MomentsSource",
+            representation="moments",
+            design=design,
         )
-        base_configs = _configs_from_compiled_plan(metric_catalog, compiled, base_configs)
+        from increment._analysis_config import (
+            effective_methods,
+            resolve_configs,
+            validate_scalar_route,
+        )
+
+        self._scalar_recipe_configs: tuple[ResolvedMetricConfig, ...] = ()
+        if stored_plan is not None:
+            recorded_configs = _configs_from_compiled_plan(
+                metric_catalog,
+                stored_plan,
+                resolve_configs(
+                    metric_catalog, bindings=None, specs=None, methods=None, prior=None
+                ),
+            )
+            self._scalar_recipe_configs = tuple(
+                config
+                for config in recorded_configs
+                if any(
+                    method.variance_reduction == "cuped"
+                    for method in effective_methods(config, design=design)
+                )
+            )
+        named_metrics = {
+            str(row["metric"]) for row in self._rows if row.get("covariate_name") is not None
+        }
+        self._scalar_anonymous_metrics = frozenset(
+            metric.name for metric in metric_catalog if metric.name not in named_metrics
+        )
         validate_compiled_encouragement_plan(compiled, design)
         validate_sequential_plan(compiled, metric_catalog, design)
         self._context = SourceContext(
@@ -1413,6 +1472,37 @@ class MomentsSource(SequentialSourceMixin):
             cluster=self._compliance.cluster if self._compliance is not None else None,
             trigger_name=trigger_name,
         )
+        if self.scalar_recipe_fixed:
+            recorded = {config.metric.name for config in self.scalar_recipe_configs}
+            validate_scalar_route(
+                tuple(config for config in base_configs if config.metric.name in recorded),
+                route="MomentsSource",
+                representation="prepared",
+                design=design,
+                retained_configs=self.scalar_recipe_configs,
+                anonymous_metrics=self.scalar_anonymous_metrics,
+            )
+        self._restore_checkpoint(rows, stored_plan)
+
+    def _restore_checkpoint(
+        self,
+        rows: Sequence[Mapping[str, object]],
+        stored_plan: CompiledDecisionPlan | None,
+    ) -> None:
+        compiled = self.context.plan
+        base_configs = self.context.configs
+        design = self.context.design
+
+        if getattr(compiled.inference, "registration", None) is not None:
+            from increment._analysis_config import validate_scalar_route
+
+            validate_scalar_route(
+                base_configs,
+                route="sequential.checkpoint_adoption",
+                representation="registered",
+                registered_plan=stored_plan if stored_plan is not None else compiled,
+                design=design,
+            )
 
         from increment.sequential_state import sequential_refuse, snapshot_from_json
 
@@ -1443,7 +1533,9 @@ class MomentsSource(SequentialSourceMixin):
         return getattr(self._source, "population", "assigned")
 
     @contextmanager
-    def readout_snapshot(self, *, metrics, population, uptake_facts=(), include_breakouts=False):
+    def readout_snapshot(
+        self, *, metrics, population, uptake_facts=(), include_breakouts=False, configs=None
+    ):
         snapshot = getattr(self._source, "readout_snapshot", None)
         if snapshot is None:
             yield self
@@ -1453,6 +1545,7 @@ class MomentsSource(SequentialSourceMixin):
             population=self.population,
             uptake_facts=uptake_facts,
             include_breakouts=include_breakouts,
+            configs=configs,
         ) as pinned:
             yield pinned
 
@@ -1471,6 +1564,51 @@ class MomentsSource(SequentialSourceMixin):
             _refuse(_MOMENTS_BREAKOUT)
         return [dict(r) for r in self._rows if r["metric"] == metric.name]
 
+    @property
+    def scalar_moments_only(self) -> bool:
+        """The aggregate cube retains one scalar input per metric."""
+        return True
+
+    @property
+    def scalar_recipe_fixed(self) -> bool:
+        return (
+            bool(self._scalar_recipe_configs)
+            and getattr(self.context.plan.inference, "registration", None) is None
+        )
+
+    @property
+    def scalar_recipe_configs(self) -> tuple[ResolvedMetricConfig, ...]:
+        """Scalar preparations recorded with the cube, independent of requested defaults."""
+        return self._scalar_recipe_configs
+
+    @property
+    def scalar_anonymous_metrics(self) -> frozenset[str]:
+        """Metrics without recorded input-name provenance, even when preparation is known."""
+        return self._scalar_anonymous_metrics
+
+    def moments_for_method(
+        self,
+        metric,
+        method,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, object]]:
+        """Select a named scalar family, preserving anonymous legacy x rows."""
+        rows = self.moments(metric, by=by)
+        covariates = method.covariates or ()
+        if not covariates:
+            return rows
+        covariate_name = covariates[0].name
+        named = [row for row in rows if row.get("covariate_name") is not None]
+        if not named:
+            return rows
+        selected = [row for row in named if row.get("covariate_name") == covariate_name]
+        if not selected:
+            from increment._analysis_config import refuse_unidentified_scalar_moments
+
+            refuse_unidentified_scalar_moments(metric.name)
+        return selected
+
     def unit_frame(
         self,
         metric,
@@ -1488,9 +1626,13 @@ class MomentsSource(SequentialSourceMixin):
             winsor_refuse(
                 "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
             )
+        self.refuse_unavailable_covariates(covariates)
+        _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
+
+    @staticmethod
+    def refuse_unavailable_covariates(covariates: Sequence[str]) -> None:
         if covariates:
             _refuse(_MOMENTS_COVARIATE_UNAVAILABLE, covariates=tuple(covariates))
-        _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
 
     def unit_counts(self) -> dict[str, int]:
         """Return source-level enrolled counts carried by supported cubes."""
@@ -1605,6 +1747,14 @@ def export_source_moments(
     from increment.semantics.design import Encouragement
 
     context = source.context
+    from increment._analysis_config import validate_scalar_route
+
+    validate_scalar_route(
+        context.configs,
+        route=f"{type(source).__name__}.export_moments",
+        representation="export",
+        design=context.design,
+    )
     identity_payload = json.dumps(source_identity(source), sort_keys=True, separators=(",", ":"))
     plan_payload = compiled_plan_to_json(
         context.plan,
@@ -1715,6 +1865,22 @@ class BreakoutMomentsSource(SequentialSourceMixin):
     operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
 
+    @property
+    def scalar_moments_only(self) -> bool:
+        return True
+
+    @property
+    def scalar_recipe_fixed(self) -> bool:
+        return True
+
+    @property
+    def scalar_recipe_configs(self) -> tuple[ResolvedMetricConfig, ...]:
+        return self.context.configs
+
+    @property
+    def scalar_anonymous_metrics(self) -> frozenset[str]:
+        return frozenset()
+
     def __init__(
         self,
         rows: Sequence[Mapping[str, object]],
@@ -1728,9 +1894,10 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         configs: Sequence[ResolvedMetricConfig] | None = None,
         _source: Any | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
+        scalar_refusals: Mapping[str, Sequence[tuple[str, str, _RefusalSpec, Mapping[str, object]]]]
+        | None = None,
     ) -> None:
         self._source = _source
-        self._rows = [dict(r) for r in rows]
         self._dimension = dimension
         self._source_name = source_name
         self._population = population
@@ -1749,20 +1916,24 @@ class BreakoutMomentsSource(SequentialSourceMixin):
                 configs=configs,
             )
         )
-        from increment._analysis_config import resolve_configs
-
-        base_configs = (
-            tuple(configs)
-            if configs is not None
-            else resolve_configs(
-                metric_catalog,
-                bindings=None,
-                specs=None,
-                methods=None,
-                prior=None,
-            )
+        base_configs = _aggregate_configs(
+            metric_catalog,
+            compiled,
+            configs,
+            route="BreakoutMomentsSource",
+            representation="breakout",
+            design=design,
         )
-        base_configs = _configs_from_compiled_plan(metric_catalog, compiled, base_configs)
+        self._rows = [dict(row) for row in rows]
+        self._scalar_refusals = _FrozenMapping(
+            {
+                metric: tuple(
+                    (dimension, value, spec, _FrozenMapping(context))
+                    for dimension, value, spec, context in failures
+                )
+                for metric, failures in (scalar_refusals or {}).items()
+            }
+        )
         validate_compiled_encouragement_plan(compiled, design)
         self._context = SourceContext(
             study_id=study_id,
@@ -1804,6 +1975,25 @@ class BreakoutMomentsSource(SequentialSourceMixin):
                 requested=by,
             )
         return [dict(r) for r in self._rows if r["metric"] == metric.name]
+
+    def breakout_moments_for_method(self, metric, method, *, by):
+        """Select an input already represented by this prepared breakout cube."""
+        from increment._analysis_config import overlay_configs, validate_scalar_route
+        from increment._source_types import ScalarBreakoutRows
+
+        validate_scalar_route(
+            overlay_configs((metric,), self.context.configs, methods=[method], prior=None),
+            route="BreakoutMomentsSource.breakout",
+            representation="prepared",
+            design=self.context.design,
+            retained_configs=self.context.configs,
+        )
+        return ScalarBreakoutRows(
+            tuple(self.moments(metric, by=by)),
+            self._scalar_refusals.get(metric.name, ())
+            if method.variance_reduction == "cuped"
+            else (),
+        )
 
     def unit_frame(
         self,

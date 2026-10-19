@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import warnings
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
@@ -61,6 +62,13 @@ if TYPE_CHECKING:
     from increment.query.artifact_contract import ArtifactContext, ArtifactStore
     from increment.semantics.artifact import UnitDayArtifactRef
     from increment.semantics.models import Experiment, Metric
+
+
+def _binding_covariates(binding: Any) -> tuple[Any, ...]:
+    methods = (() if binding.decision_method is None else (binding.decision_method,)) + (
+        binding.sensitivity_methods
+    )
+    return tuple(covariate for method in methods for covariate in method.covariates or ())
 
 
 def _utc_now() -> dt.datetime:
@@ -417,7 +425,7 @@ class ArtifactPublisher:
                 continue
             binding = self._experiment.bindings[request.metric_name]
             covariate = next(
-                item for item in binding.covariates if item.name == request.covariate_name
+                item for item in _binding_covariates(binding) if item.name == request.covariate_name
             )
             if covariate.measure is not None:
                 measure_source, _ = _find_fact_source(self._defs, covariate.measure.fact)
@@ -925,6 +933,8 @@ class ArtifactPublisher:
         rows: list[dict[str, object]] = []
         for exposure in exposure_rows:
             value = values.get(str(exposure["unit_id"]))
+            if field == "value" and value is not None and math.isnan(float(value)):
+                value = None
             rows.append(
                 {
                     "experiment_id": self._experiment.name,
@@ -942,7 +952,9 @@ class ArtifactPublisher:
         exposure_rows: list[dict[str, object]],
     ) -> _PublicationExtensionSpec:
         binding = self._experiment.bindings[request.metric_name]
-        covariate = next(item for item in binding.covariates if item.name == request.covariate_name)
+        covariate = next(
+            item for item in _binding_covariates(binding) if item.name == request.covariate_name
+        )
         measure = covariate.measure
         assert measure is not None
         source, fact = _find_fact_source(self._defs, measure.fact)
@@ -995,6 +1007,8 @@ class ArtifactPublisher:
             unit_id = str(exposure["unit_id"])
             has_preperiod_events = unit_id in values
             value = values.get(unit_id)
+            if value is not None and math.isnan(float(value)):
+                value = None
             rows.append(
                 {
                     "experiment_id": self._experiment.name,

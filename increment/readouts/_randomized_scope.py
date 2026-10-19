@@ -261,7 +261,7 @@ def _scoped_randomized_results(
     rows,
     computations,
     observed_by_metric,
-    evidence_components,
+    evidence_by_metric,
     population,
     base_roster=None,
 ):
@@ -271,7 +271,7 @@ def _scoped_randomized_results(
         ReadoutMetadata,
         SourceReadoutScope,
     )
-    from increment.readouts._design_scope import _config_snapshot, resolve_roster
+    from increment.readouts._design_scope import _config_snapshot, _request_snapshot, resolve_roster
 
     roster = resolve_roster(src, design, population, observed_by_metric, base_roster=base_roster)
     roster_arms = roster.arms
@@ -279,6 +279,11 @@ def _scoped_randomized_results(
     integrity_counts = roster.integrity_counts
     known_roster_arms = roster.known_arms
     roster_source = roster.source
+    evidence_components = {
+        name: evidence.evidence_components
+        or ((evidence.evidence_kind, evidence.evidence_sha256, evidence.evidence_count),)
+        for name, evidence in evidence_by_metric.items()
+    }
     source = _randomized_source(selected, evidence_components, assignment_counts, population)
     from increment._source_identity import source_identity
 
@@ -297,7 +302,8 @@ def _scoped_randomized_results(
         "q": plan.q,
         "declared": plan.declared,
         "procedures": {
-            name: value.model_dump(mode="json") for name, value in plan.procedures.items()
+            name: _request_snapshot(value.model_dump(mode="json"), field=f"procedures.{name}")
+            for name, value in plan.procedures.items()
         },
         "source_identity": source_identity(src),
     }
@@ -306,6 +312,27 @@ def _scoped_randomized_results(
         request["trigger_declared"] = True
         request["trigger_name"] = trigger_name
     snapshot_id = _randomized_snapshot_id(source, request)
+    decision_snapshot_id = None
+    from increment.readouts._design_scope import has_covariate_declarations
+
+    if has_covariate_declarations(configs):
+        from increment.readouts._design_scope import decision_request_snapshot
+
+        decision_source = _randomized_source(
+            selected,
+            {
+                name: evidence.decision_evidence_components
+                for name, evidence in evidence_by_metric.items()
+            },
+            assignment_counts,
+            population,
+        )
+        decision_snapshot_id = _randomized_snapshot_id(
+            decision_source,
+            decision_request_snapshot(request, configs, design),
+        )
+        if decision_snapshot_id == snapshot_id:
+            decision_snapshot_id = None
 
     failure_by_cell, method_info, cells, decision_cells = _randomized_cell_registry(
         selected, configs, design, plan, computations, roster_arms, population
@@ -462,7 +489,14 @@ def _scoped_randomized_results(
         decision_complete_by_population={population: complete},
         integrity=(integrity,),
     )
-    output, families = attach_multiplicity_scope(output, ordered_cells, plan, configs, snapshot_id)
+    output, families = attach_multiplicity_scope(
+        output,
+        ordered_cells,
+        plan,
+        configs,
+        snapshot_id,
+        decision_snapshot_id=decision_snapshot_id,
+    )
     scope = ReadoutScope(
         snapshot_id=snapshot_id,
         cells=ordered_cells,

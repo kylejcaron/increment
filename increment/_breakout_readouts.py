@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 from increment import readouts
-from increment._analysis_config import _Unset
+from increment._analysis_config import _Unset, overlay_configs
 from increment._day_axis import _TRIGGER_UNSUPPORTED
 from increment._literals import Correction
 from increment._source_operations import BreakoutSourcesOperation, ReadoutSnapshotOperation
@@ -19,6 +19,7 @@ from increment.query.native_contract import NativeViewSource
 from increment.readouts._requests import _validate_breakout_request
 
 if TYPE_CHECKING:
+    from increment._analysis_config import ResolvedMetricConfig
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
@@ -58,17 +59,31 @@ class BreakoutReadouts:
         self._src = src
         self._experiment = experiment
 
+    def _configs(self, req: BreakoutRequest) -> tuple[ResolvedMetricConfig, ...]:
+        return tuple(
+            overlay_configs(
+                req.metrics,
+                self._src.context.configs,
+                methods=None,
+                prior=None,
+                decision_method=req.decision_method,
+                sensitivity_methods=req.sensitivity_methods,
+                prior_override=req.prior,
+            )
+        )
+
     def _slices(
         self,
         req: BreakoutRequest,
         route: BreakoutRoute,
     ) -> Iterator[_BreakoutSlice]:
+        configs = self._configs(req)
         if route == "artifact":
             assert self._experiment is not None
             breakouts = self._experiment.breakouts
             artifact = cast("BreakoutSourcesOperation", self._src)
             scoped_sources = artifact.breakout_sources(
-                breakouts, metrics=list(req.metrics), population=req.population
+                breakouts, metrics=list(req.metrics), population=req.population, configs=configs
             )
             for breakout, scoped in zip(breakouts, scoped_sources, strict=True):
                 yield _BreakoutSlice(
@@ -100,7 +115,7 @@ class BreakoutReadouts:
             ),
         )
         scoped_sources = native_src.breakout_sources(
-            breakouts, metrics=list(req.metrics), population=req.population
+            breakouts, metrics=list(req.metrics), population=req.population, configs=configs
         )
         for breakout, scoped in zip(breakouts, scoped_sources, strict=True):
             multi = sum(item.property == breakout.property for item in breakouts) > 1
@@ -232,7 +247,10 @@ class BreakoutReadouts:
             req = self.validate_request(req)
         if route == "native":
             with cast(ReadoutSnapshotOperation, self._src).readout_snapshot(
-                metrics=req.metrics, population="assigned", include_breakouts=True
+                metrics=req.metrics,
+                population="assigned",
+                include_breakouts=True,
+                configs=self._configs(req),
             ) as pinned:
                 return BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
                     req, route

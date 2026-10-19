@@ -21,7 +21,7 @@ from increment.estimation.arm_contract import (
     arm_runtime_support,
 )
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean
-from increment.frame import MetricSpec
+from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.assignment import ParallelAssignment
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec
@@ -147,14 +147,18 @@ def test_predeclared_cuped_narrows_the_asymptotic_interval_and_labels_the_row():
         covariate="covariate_pre",
     )
     frame = _experiment_frame(rng)
-    _, plain = _run(
-        frame, MetricSpec(name="outcome", type="mean", covariate="covariate"), _ASYMPTOTIC
-    )
+    _, plain = _run(frame, MetricSpec(name="outcome", type="mean"), _ASYMPTOTIC)
     adjusted_plan = AnalysisPlan(
         primary="outcome",
         inference=InferenceSpec(kind="asymptotic_mean", adjustments={"outcome": adjustment}),
     )
-    spec = MetricSpec(name="outcome", type="mean", covariate="covariate", decision_method=_CUPED)
+    spec = MetricSpec(
+        name="outcome",
+        type="mean",
+        decision_method=Method.cuped(
+            covariates=CupedCovariate(name="covariate", kind="continuous", missing="impute")
+        ),
+    )
     analysis, adjusted = completed(
         MEAN_CUPED_ASYMPTOTIC,
         "predeclared-cuped-summary-state",
@@ -176,7 +180,13 @@ def test_predeclared_cuped_narrows_the_asymptotic_interval_and_labels_the_row():
 
 def test_in_experiment_coefficient_is_retained_as_joint_moments_on_the_asymptotic_route():
     rng = np.random.default_rng(7)
-    spec = MetricSpec(name="outcome", type="mean", covariate="covariate", decision_method=_CUPED)
+    spec = MetricSpec(
+        name="outcome",
+        type="mean",
+        decision_method=Method.cuped(
+            covariates=CupedCovariate(name="covariate", kind="continuous", missing="impute")
+        ),
+    )
     analysis, row = completed(
         MEAN_CUPED_ASYMPTOTIC,
         "in-experiment-cuped-summary-joint-moments",
@@ -212,7 +222,13 @@ def test_capture_retains_the_adjusted_scalar_exactly():
             "covariate": [2.0, 6.0, 4.0, 8.0],
         }
     )
-    spec = MetricSpec(name="outcome", type="mean", covariate="covariate", decision_method=_CUPED)
+    spec = MetricSpec(
+        name="outcome",
+        type="mean",
+        decision_method=Method.cuped(
+            covariates=CupedCovariate(name="covariate", kind="continuous", missing="impute")
+        ),
+    )
     analysis, _ = _run(frame, spec, plan)
     means = {s.group_id: s.mean[0] for s in analysis.sequential_snapshot().states}
     # control: 10 - (2-4)/2 = 11, 12 - (6-4)/2 = 11; treatment: 20, 22.
@@ -497,9 +513,13 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
                     MetricSpec(
                         name="outcome",
                         missing="zero",
-                        covariate="covariate",
-                        covariate_missing=covariate_missing,
-                        decision_method=_CUPED,
+                        decision_method=Method.cuped(
+                            covariates=CupedCovariate(
+                                name="covariate",
+                                kind="continuous",
+                                missing=covariate_missing,
+                            )
+                        ),
                     )
                 ],
                 experiment_id=f"covariate-{covariate_missing}",
@@ -521,12 +541,14 @@ def test_sequential_missing_zero_keeps_covariate_and_refusal_policies_separate()
                 MetricSpec(
                     name="outcome",
                     missing="zero",
-                    covariate="covariate",
-                    covariate_missing="error",
-                    decision_method=_CUPED,
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(
+                            name="covariate", kind="continuous", missing="refuse"
+                        )
+                    ),
                 )
             ],
-            experiment_id="covariate-error",
+            experiment_id="covariate-refuse",
             plan=plan,
             design=_DESIGN,
             exposure_date="exposure",

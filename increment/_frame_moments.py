@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 import narwhals as nw
@@ -21,7 +21,11 @@ from increment._frame_panel import (
     _uptake_day_elapsed,
     _with_day_index,
 )
-from increment._frame_validation import COVARIATE_IMPUTE_ALL_NULL
+from increment._frame_validation import (
+    COVARIATE_COLUMN_MISSING,
+    COVARIATE_IMPUTE_ALL_NULL,
+    SCALAR_COVARIATE_REFUSALS,
+)
 from increment._moment_plan import (
     CLUSTER_SIZE_GRAIN,
     CLUSTER_UPTAKE_GRAIN,
@@ -74,6 +78,18 @@ _raise = raiser(_REFUSALS)
 
 # A data-dependent refusal is retained until its metric is requested.
 _DeferredRefusal = tuple[RefusalSpec, Mapping[str, object]]
+
+
+@dataclass(frozen=True, slots=True)
+class _CovariateReduction:
+    """Method-scoped covariate preparation and retained reduction failures."""
+
+    tables: Mapping[str, nw.DataFrame[Any]] | None = None
+    columns: Mapping[str, str] | None = None
+    means: Mapping[str, float | None] | None = None
+    failures: dict[str, _DeferredRefusal] | None = None
+    cell_failures: dict[tuple[str, str, str], _DeferredRefusal] | None = None
+
 
 if TYPE_CHECKING:
     from increment.frame import MetricSpec
@@ -238,7 +254,12 @@ def _moment_fields(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _apply_spec_missing(
-    long: nw.DataFrame[Any], spec: MetricSpec, *, has_x: bool, has_den: bool
+    long: nw.DataFrame[Any],
+    spec: MetricSpec,
+    *,
+    has_x: bool,
+    has_den: bool,
+    covariate: Any | None = None,
 ) -> nw.DataFrame[Any]:
     """Apply *spec*'s declared null/NaN policy to its own selected columns.
 
@@ -248,7 +269,7 @@ def _apply_spec_missing(
     ``missing="zero"`` counts a missing value as 0 with the row still in
     ``n``; ``missing="drop"`` removes the row from THIS metric's moments
     (complete-case). A missing covariate value is filled with the pooled
-    mean of the observed values (or 0 under ``covariate_missing="zero"``),
+    mean of the observed values (or 0 under ``missing="zero"``),
     computed from the covariate column alone -- BEFORE ``missing="drop"``
     removes any outcome-null rows below, never from the arm or the
     outcome, which is what keeps the adjusted estimate unbiased under
@@ -261,7 +282,15 @@ def _apply_spec_missing(
             long.select((nw.col("x").is_null() | nw.col("x").is_nan()).cast(nw.Int64).sum()).item()
         )
         if x_missing:
-            if spec.covariate_missing == "zero":
+            assert covariate is not None
+            if covariate.missing == "refuse":
+                refuse(
+                    COVARIATE_COLUMN_MISSING,
+                    metric=spec.name,
+                    covariate=covariate.name,
+                    n_missing=x_missing,
+                )
+            if covariate.missing == "zero":
                 fill = 0.0
             else:
                 mean = long.select(nw.col("x").fill_nan(None).mean()).item()
@@ -269,7 +298,7 @@ def _apply_spec_missing(
                     refuse(
                         COVARIATE_IMPUTE_ALL_NULL,
                         metric=spec.name,
-                        covariate=spec.covariate,
+                        covariate=covariate.name,
                     )
                 fill = float(mean)
             long = long.with_columns(nw.col("x").fill_nan(None).fill_null(fill).alias("x"))
@@ -442,6 +471,56 @@ def _day_moment_records(
             yield record, _winsor_metadata_for_record(record, metadata, key_cols=key_cols)
 
 
+def _partitioned_moment_rows(
+    frame: nw.DataFrame[Any],
+    *,
+    group: str,
+    metrics: Sequence[MetricSpec],
+    experiment_id: str,
+    uptake: str | None,
+    cluster: str | None,
+    by: Sequence[str],
+    outcome_column: str | None,
+    denominator_column: str | None,
+    covariates: _CovariateReduction,
+) -> list[dict[str, Any]]:
+    assert len(by) == 1 and covariates.cell_failures is not None
+    rows = []
+    for key, partition in frame.group_by(list(by)):
+        label = "__null__" if key[0] is None else str(key[0])
+        admitted = tuple(
+            spec for spec in metrics if (spec.name, by[0], label) not in covariates.cell_failures
+        )
+        if not admitted:
+            continue
+        failures: dict[str, _DeferredRefusal] = {}
+        try:
+            rows.extend(
+                _moment_rows(
+                    partition,
+                    group=group,
+                    metrics=admitted,
+                    experiment_id=experiment_id,
+                    uptake=uptake,
+                    cluster=cluster,
+                    by=by,
+                    outcome_column=outcome_column,
+                    denominator_column=denominator_column,
+                    covariates=replace(covariates, failures=failures, cell_failures=None),
+                )
+            )
+        except InvalidRequestError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            failures[str(exc.context["metric"])] = (
+                SCALAR_COVARIATE_REFUSALS[exc.code],
+                exc.context,
+            )
+        for metric, failure in failures.items():
+            covariates.cell_failures[(metric, by[0], label)] = failure
+    return rows
+
+
 def _moment_rows(
     frame: nw.DataFrame[Any],
     *,
@@ -451,13 +530,41 @@ def _moment_rows(
     uptake: str | None = None,
     cluster: str | None = None,
     by: Sequence[str] = (),
+    outcome_column: str | None = None,
+    denominator_column: str | None = None,
+    covariates: _CovariateReduction | None = None,
 ) -> list[dict[str, Any]]:
     """Build centered moments after each metric's pooled unit transform."""
+    if covariates is not None and covariates.cell_failures is not None and by:
+        return _partitioned_moment_rows(
+            frame,
+            group=group,
+            metrics=metrics,
+            experiment_id=experiment_id,
+            uptake=uptake,
+            cluster=cluster,
+            by=by,
+            outcome_column=outcome_column,
+            denominator_column=denominator_column,
+            covariates=covariates,
+        )
+    covariate_columns = None if covariates is None else covariates.columns
+    covariate_means = None if covariates is None else covariates.means
+    covariate_failures = None if covariates is None else covariates.failures
     rows: list[dict[str, Any]] = []
     has_d = uptake is not None
 
     for spec in metrics:
-        has_x = spec.covariate is not None
+        covariate = next(
+            (
+                covariate
+                for method in spec._methods
+                if method.variance_reduction == "cuped"
+                for covariate in method.covariates or ()
+            ),
+            None,
+        )
+        has_x = covariate is not None
         has_den = spec.denominator is not None
         key_cols = ("group_id", *by)
 
@@ -467,14 +574,16 @@ def _moment_rows(
                 *[nw.col(name) for name in by],
                 nw.col(group).alias("group_id"),
                 nw.col(cluster).alias("__cluster__"),
-                nw.col(spec.y_column).cast(nw.Float64).alias("y"),
+                nw.col(outcome_column or spec.y_column).cast(nw.Float64).alias("y"),
             ]
             if has_den:
-                select_exprs.append(nw.col(spec.denominator).cast(nw.Float64).alias("y_den"))
+                select_exprs.append(
+                    nw.col(denominator_column or spec.denominator).cast(nw.Float64).alias("y_den")
+                )
             if has_uptake:
                 select_exprs.append(nw.col(uptake).cast(nw.Float64).alias("d"))
             long = frame.select(*select_exprs)
-            long = _apply_spec_missing(long, spec, has_x=False, has_den=has_den)
+            long = _apply_spec_missing(long, spec, has_x=False, has_den=has_den, covariate=None)
             long, winsor_metadata = _apply_winsorization(long, spec, key_cols=key_cols)
             cluster_aggs = [
                 nw.col("y").sum().alias("y"),
@@ -513,11 +622,14 @@ def _moment_rows(
                 )
             continue
 
-        exprs = [nw.col(spec.y_column).cast(nw.Float64).alias("y")]
+        exprs = [nw.col(outcome_column or spec.y_column).cast(nw.Float64).alias("y")]
         if has_x:
-            exprs.append(nw.col(spec.covariate).cast(nw.Float64).alias("x"))
+            x_column = (covariate_columns or {}).get(covariate.name, covariate.name)
+            exprs.append(nw.col(x_column).cast(nw.Float64).alias("x"))
         if has_den:
-            exprs.append(nw.col(spec.denominator).cast(nw.Float64).alias("y_den"))
+            exprs.append(
+                nw.col(denominator_column or spec.denominator).cast(nw.Float64).alias("y_den")
+            )
         if uptake is not None:
             exprs.append(nw.col(uptake).cast(nw.Float64).alias("d"))
 
@@ -526,7 +638,20 @@ def _moment_rows(
             nw.col(group).alias("group_id"),
             *exprs,
         )
-        long = _apply_spec_missing(long, spec, has_x=has_x, has_den=has_den)
+        if has_x and covariate.missing == "impute" and covariate_means is not None:
+            mean = covariate_means[covariate.name]
+            if mean is not None:
+                long = long.with_columns(nw.col("x").fill_nan(None).fill_null(mean).alias("x"))
+        try:
+            long = _apply_spec_missing(
+                long, spec, has_x=has_x, has_den=has_den, covariate=covariate
+            )
+        except InvalidRequestError as exc:
+            if covariate_failures is None or exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            covariate_failures[spec.name] = (SCALAR_COVARIATE_REFUSALS[exc.code], exc.context)
+            has_x = False
+            long = _apply_spec_missing(long.drop("x"), spec, has_x=False, has_den=has_den)
         long, winsor_metadata = _apply_winsorization(long, spec, key_cols=key_cols)
         columns = {"y": "y"}
         if has_x:
@@ -1426,6 +1551,23 @@ def _windowed_moment_rows(
     return rows
 
 
+def _conversion_total_failures(
+    collapsed: nw.DataFrame[Any], specs: Sequence[MetricSpec]
+) -> dict[str, _DeferredRefusal]:
+    """Reject day counts where total-grain conversion requires a binary value."""
+    failures: dict[str, _DeferredRefusal] = {}
+    for spec in specs:
+        if spec.type != "conversion":
+            continue
+        collapsed_max = collapsed[spec.y_column].max()
+        if collapsed_max is not None and float(collapsed_max) > 1.0:
+            failures[spec.name] = (
+                _REFUSALS["frame.moments.metric_type_conversion"],
+                {"metric": spec.name, "value": float(collapsed_max)},
+            )
+    return failures
+
+
 def _total_moment_rows(
     panel: nw.DataFrame[Any],
     specs: Sequence[MetricSpec],
@@ -1439,7 +1581,7 @@ def _total_moment_rows(
     observation_end: dt.date | dt.datetime | str | int | float | None,
     fact_max_ds: Mapping[str, Any],
     by: Sequence[str] = (),
-    covariates: Mapping[str, nw.DataFrame[Any]] | None = None,
+    covariates: _CovariateReduction | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, _DeferredRefusal]]:
     """``"total"`` grain moments, split into the unwindowed fast path (one
     shared collapse + group_by) and the per-spec windowed/retention path
@@ -1478,31 +1620,57 @@ def _total_moment_rows(
         # Join caller-resolved per-unit covariates onto the collapsed totals that
         # `from_unit_summary` also uses, so one moment implementation serves both.
         covariate_aliases: dict[str, str] = {}
-        for name, per_unit in (covariates or {}).items():
+        covariate_means: dict[str, float | None] = {}
+        imputed_names = {
+            covariate.name
+            for spec in plain
+            for method in spec._methods
+            if method.variance_reduction == "cuped"
+            for covariate in method.covariates or ()
+            if covariate.missing == "impute"
+        }
+        for name, per_unit in ((None if covariates is None else covariates.tables) or {}).items():
             covariate_aliases[name] = _scratch_name(collapsed, f"__covariate__{name}")
+            if name in imputed_names:
+                covariate_means[covariate_aliases[name]] = per_unit.select(
+                    nw.col(name).fill_nan(None).mean()
+                ).item()
             collapsed = collapsed.join(
                 per_unit.rename({name: covariate_aliases[name]}), on="unit_id", how="left"
             )
+
+        def remap_method(method: Any) -> Any:
+            if not method.covariates:
+                return method
+            return method.model_copy(
+                update={
+                    "covariates": tuple(
+                        covariate.model_copy(update={"name": covariate_aliases[covariate.name]})
+                        if covariate.name in covariate_aliases
+                        else covariate
+                        for covariate in method.covariates
+                    )
+                }
+            )
+
         moment_specs = [
-            spec.model_copy(update={"covariate": covariate_aliases[spec.covariate]})
-            if spec.covariate in covariate_aliases
-            else spec
+            spec.model_copy(
+                update={
+                    "decision_method": (
+                        None if spec.decision_method is None else remap_method(spec.decision_method)
+                    ),
+                    "sensitivity_methods": tuple(
+                        remap_method(method) for method in spec.sensitivity_methods
+                    ),
+                }
+            )
             for spec in plain
         ]
         # A conversion is any-occurrence (0/1). The unwindowed sum would
         # silently turn a multi-day converter into a day count - defer the
         # refusal until that metric is selected, while allowing valid siblings
         # to use this shared collapsed frame.
-        for conv_spec in plain:
-            if conv_spec.type != "conversion":
-                continue
-            collapsed_max = collapsed[conv_spec.y_column].max()
-            if collapsed_max is not None and float(collapsed_max) > 1.0:
-                value = float(collapsed_max)
-                failures[conv_spec.name] = (
-                    _REFUSALS["frame.moments.metric_type_conversion"],
-                    {"metric": conv_spec.name, "value": value},
-                )
+        failures.update(_conversion_total_failures(collapsed, plain))
         if failures:
             moment_specs = [spec for spec in moment_specs if spec.name not in failures]
         rows += _moment_rows(
@@ -1512,6 +1680,11 @@ def _total_moment_rows(
             experiment_id=experiment_id,
             uptake=uptake,
             by=by,
+            covariates=_CovariateReduction(
+                means=covariate_means,
+                failures=failures,
+                cell_failures=None if covariates is None else covariates.cell_failures,
+            ),
         )
     if windowed:
         assert exposure is not None  # enforced by _validate_exposure_date

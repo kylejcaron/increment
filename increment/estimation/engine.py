@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment._finite_sample_refusals import (
     refuse_finite_sample_cuped,
@@ -111,7 +111,12 @@ from increment.estimation.variance import (
     stable_log_ratio,
 )
 from increment.estimation.variance import ratio_abs_diff_se as variance_ratio_abs_diff_se
-from increment.semantics.models import Metric, RetentionMetric
+from increment.semantics.models import (
+    CupedCovariate,
+    CupedCovariateBinding,
+    Metric,
+    RetentionMetric,
+)
 from increment.sequential_state import SequentialSnapshot, sequential_refuse
 
 if TYPE_CHECKING:
@@ -136,46 +141,47 @@ _REFUSALS = refusals(
         "estimation.engine.ratio.cuped": RefusalSpec(
             "estimation.engine.ratio.cuped",
             UnsupportedRequestError,
-            template="CUPED cannot be applied to ratio metric '{metric}' from this source: experiment '{experiment}' declares n_pre_periods=0, and the warehouse covariate for a ratio metric is its numerator's pre-period total, so no covariate moments (ref_x/cx1/cx2/cxy) or covariate-denominator cross moment (cxden) can be materialized. Declare n_pre_periods > 0 on the experiment, or supply the covariate column directly via from_unit_summary(metrics=[MetricSpec(type='ratio', numerator=..., denominator=..., covariate='<pre-period column>')]).",
+            template="CUPED cannot be applied to ratio metric '{metric}' from this source: experiment '{experiment}' declares n_pre_periods=0, and the warehouse covariate for a ratio metric is its numerator's pre-period total, so no covariate moments (ref_x/cx1/cx2/cxy) or covariate-denominator cross moment (cxden) can be materialized. Declare n_pre_periods > 0 on the experiment, or supply the covariate through Method.cuped(covariates=...) in the frame's MetricSpec method declaration.",
         ),
         "estimation.engine.arm.duplicate_rows": "group_summary carries more than one row for (metric, group_id) {keys} -- an unchecked duplicate control row silently overwrites an earlier one in the lookup dict, and an unchecked duplicate treatment row is silently iterated as if it were a second arm, either way returning an arbitrary lift instead of a refusal. Deduplicate group_summary to exactly one row per (metric, group_id) before calling estimate_lift.",
         "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
         "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
         "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
+        "estimation.engine.method_covariates": "method {method!r} has an invalid CUPED covariate declaration for its variance-reduction procedure",
         "estimation.engine.cuped_linear_unit_evidence": RefusalSpec(
             "estimation.engine.cuped_linear_unit_evidence",
             UnsupportedRequestError,
-            template="cuped_linear for metric {metric!r} requires per-unit outcomes and declared covariates; use a per-unit analysis entry point instead of aggregate moments.",
+            template="multicovariate CUPED for metric {metric!r} requires per-unit outcomes and covariates declared on the method; use a per-unit analysis entry point instead of aggregate moments.",
             keys=frozenset({"metric"}),
         ),
         "estimation.engine.cuped_linear_observational": RefusalSpec(
             "estimation.engine.cuped_linear_observational",
             UnsupportedRequestError,
-            template="cuped_linear is a randomized mean/ratio estimator and cannot be used with observational metric {metric!r}; choose an observational estimator or a randomized design.",
+            template="multicovariate CUPED is a randomized mean/ratio estimator and cannot be used with observational metric {metric!r}; choose an observational estimator or a randomized design.",
             keys=frozenset({"metric"}),
         ),
         "estimation.engine.cuped_linear_cluster": RefusalSpec(
             "estimation.engine.cuped_linear_cluster",
             UnsupportedRequestError,
-            template="cuped_linear does not support clustered assignment (cluster={cluster!r}); choose an unadjusted clustered method or scalar CUPED where supported.",
+            template="multicovariate CUPED does not support clustered assignment (cluster={cluster!r}); choose an unadjusted clustered method or scalar CUPED where supported.",
             keys=frozenset({"cluster"}),
         ),
         "estimation.engine.cuped_linear_sequential": RefusalSpec(
             "estimation.engine.cuped_linear_sequential",
             UnsupportedRequestError,
-            template="cuped_linear is fixed-horizon only and cannot be used with sequential inference; use an unadjusted sequential method or scalar CUPED's registered sequential route.",
+            template="multicovariate CUPED is fixed-horizon only and cannot be used with sequential inference; use an unadjusted sequential method or scalar CUPED's registered sequential route.",
             keys=frozenset(),
         ),
         "estimation.engine.cuped_linear_winsorization": RefusalSpec(
             "estimation.engine.cuped_linear_winsorization",
             UnsupportedRequestError,
-            template="cuped_linear cannot be composed with winsorization for metric {metric!r}; choose one supported construction.",
+            template="multicovariate CUPED cannot be composed with winsorization for metric {metric!r}; choose one supported construction.",
             keys=frozenset({"metric"}),
         ),
         "estimation.engine.cuped_linear_encouragement": RefusalSpec(
             "estimation.engine.cuped_linear_encouragement",
             UnsupportedRequestError,
-            template="cuped_linear is not available for encouragement design metric {metric!r}; use an encouragement-supported method without mixed CUPED.",
+            template="multicovariate CUPED is not available for encouragement design metric {metric!r}; use an encouragement-supported method without CUPED.",
             keys=frozenset({"metric"}),
         ),
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
@@ -313,6 +319,24 @@ def check_total_clusters(
         )
 
 
+def _normalize_method_covariates(
+    covariates: CupedCovariate | Sequence[CupedCovariate] | None,
+) -> tuple[CupedCovariate, ...] | None:
+    if covariates is None:
+        return None
+    if isinstance(covariates, CupedCovariate):
+        return (covariates,)
+    return tuple(covariates)
+
+
+def _normalize_method_covariates_input(value: object) -> object:
+    if value is None or isinstance(value, CupedCovariate):
+        return _normalize_method_covariates(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(cast(Sequence[CupedCovariate], value))
+    return value
+
+
 class Method(CodedModel, BaseModel):
     """An estimation configuration: named method with optional adjustments.
 
@@ -360,18 +384,28 @@ class Method(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str  # label carried on the LiftEstimate
-    variance_reduction: str = "none"  # "none" | "cuped" | "cuped_linear"
+    variance_reduction: str = "none"  # "none" | "cuped" | "cuped_multicovariate"
     conversion_inference: ConversionInference = "auto"
+    covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
+    procedure: Literal["unadjusted"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     propensity_learner: Callable[[], Any] | None = None
     outcome_learner: Callable[[], Any] | None = None
     folds: int | None = None
 
+    @field_validator("covariates", mode="before")
+    @classmethod
+    def _normalize_covariates(cls, value: object) -> object:
+        return _normalize_method_covariates_input(value)
+
     @model_validator(mode="after")
     def _check_label_matches_configuration(self) -> Method:
-        VARIANCE_REDUCTION.get(self.variance_reduction)  # raises if unregistered
+        VARIANCE_REDUCTION.get(self.variance_reduction)
+        self._validate_method_configuration(self)
         if self.conversion_inference == "finite_sample" and self.variance_reduction in (
             "cuped",
-            "cuped_linear",
+            "cuped_multicovariate",
         ):
             refuse_finite_sample_cuped(self.name)
         if self.name == "cuped" and self.variance_reduction != "cuped":
@@ -379,6 +413,61 @@ class Method(CodedModel, BaseModel):
         if self.name == "iptw" and (self.outcome_learner is not None or self.folds is not None):
             _refuse("estimation.engine.method.name_iptw_does")
         return self
+
+    @property
+    def is_observational(self) -> bool:
+        """Whether the name selects a registered observational adjustment."""
+        from increment.estimation.adjust import ADJUSTMENTS
+
+        return self.name in ADJUSTMENTS
+
+    @classmethod
+    def unadjusted(
+        cls, *, name: str = "naive", conversion_inference: ConversionInference = "auto"
+    ) -> Method:
+        return cls(
+            name=name,
+            variance_reduction="none",
+            conversion_inference=conversion_inference,
+            procedure="unadjusted" if name not in {"naive", "unadjusted"} else None,
+        )
+
+    @classmethod
+    def cuped(
+        cls,
+        *,
+        covariates: CupedCovariate | Sequence[CupedCovariate] | None = None,
+        name: str = "cuped",
+    ) -> Method:
+        values = _normalize_method_covariates(covariates)
+        return cls(name=name, variance_reduction="cuped", covariates=values)
+
+    @classmethod
+    def cuped_multicovariate(
+        cls,
+        *,
+        covariates: CupedCovariate | Sequence[CupedCovariate],
+        name: str = "cuped_multicovariate",
+    ) -> Method:
+        values = _normalize_method_covariates(covariates)
+        return cls(name=name, variance_reduction="cuped_multicovariate", covariates=values)
+
+    @classmethod
+    def _validate_method_configuration(cls, method: Method) -> None:
+        values = method.covariates
+        procedure = method.variance_reduction
+        if procedure == "none" and values is not None:
+            _refuse("estimation.engine.method_covariates", method=method.name)
+        if procedure == "cuped" and values is not None:
+            if len(values) != 1 or values[0].kind != "continuous":
+                _refuse("estimation.engine.method_covariates", method=method.name)
+            if values[0].missing not in ("impute", "zero", "refuse"):
+                _refuse("estimation.engine.method_covariates", method=method.name)
+        if procedure == "cuped_multicovariate":
+            if not values or len({item.name for item in values}) != len(values):
+                _refuse("estimation.engine.method_covariates", method=method.name)
+            if any(item.missing not in ("refuse", "impute-indicator") for item in values):
+                _refuse("estimation.engine.method_covariates", method=method.name)
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +767,15 @@ def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _Win
     }
 
 
+def _is_unadjusted_method(method: Method) -> bool:
+    """Whether a declared procedure or historical label selects unadjusted inference."""
+    return method.variance_reduction == "none" and (
+        method.name in {"naive", "unadjusted"}
+        or method.procedure == "unadjusted"
+        and not method.is_observational
+    )
+
+
 def _validate_unique_method_names(
     methods: Sequence[Method] | None,
     *,
@@ -701,7 +799,7 @@ def _validate_unique_method_names(
 def resolve_method_roles(
     methods: Sequence[Method],
     *,
-    prefer: Callable[[Method], bool] = lambda m: m.name == "unadjusted",
+    prefer: Callable[[Method], bool] = _is_unadjusted_method,
     override: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     decision: Method | None = None,
 ) -> dict[str, Literal["decision", "sensitivity"]]:
@@ -971,7 +1069,7 @@ def _reject_cuped_linear_aggregate(
     if methods is None:
         return
     for metric in metrics:
-        if any(method.variance_reduction == "cuped_linear" for method in methods):
+        if any(method.variance_reduction == "cuped_multicovariate" for method in methods):
             _refuse("estimation.engine.cuped_linear_unit_evidence", metric=metric.name)
 
 
@@ -984,7 +1082,9 @@ def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
     metrics = tuple(request.metrics)
     methods = request.estimation_methods
     linear_by_metric = {
-        metric.name: any(method.variance_reduction == "cuped_linear" for method in metric_methods)
+        metric.name: any(
+            method.variance_reduction == "cuped_multicovariate" for method in metric_methods
+        )
         for metric, metric_methods in zip(metrics, methods, strict=True)
     }
     mechanism = getattr(request.design, "mechanism", None)
@@ -3472,6 +3572,7 @@ def _fit_cuped_multicovariate_frame(
     control_group: str,
     arm_order: tuple[str, ...],
     ratio: bool,
+    covariate_columns: Mapping[str, str] | None = None,
 ) -> Any:
     """Fit the per-unit evidence frame once, returning the fit or its coded refusal."""
     import numpy as np
@@ -3481,7 +3582,9 @@ def _fit_cuped_multicovariate_frame(
     declarations = tuple(covariates)
     # The frame carries a covariate named like one of its own columns under
     # a scratch column; the declared name still identifies it in the fit.
-    columns = unit_frame_covariate_columns([item.name for item in declarations])
+    columns = covariate_columns or unit_frame_covariate_columns(
+        [item.name for item in declarations]
+    )
     y = np.asarray(frame.get_column("y").to_list(), dtype=float)
     try:
         return fit_cuped_multicovariate(
@@ -3512,6 +3615,7 @@ def estimate_cuped_linear(
     method: Method,
     method_role: Literal["decision", "sensitivity"],
     covariates: Sequence[Any],
+    covariate_columns: Mapping[str, str] | None = None,
     alpha: float,
     alternative: str,
     null_lift: float = 0.0,
@@ -3563,7 +3667,12 @@ def estimate_cuped_linear(
         if frame is None:
             return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
     fit = _fit_cuped_multicovariate_frame(
-        frame, covariates, control_group=control_group, arm_order=arm_order, ratio=ratio
+        frame,
+        covariates,
+        control_group=control_group,
+        arm_order=arm_order,
+        ratio=ratio,
+        covariate_columns=covariate_columns,
     )
     if isinstance(fit, CodedError):
         if not results or not fit.code.startswith("estimation.cuped_linear."):

@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Encouragement, Observational, Randomized
-    from increment.semantics.models import Metric
+    from increment.semantics.models import CupedCovariate, Metric
     from increment.sources import SourceOperation
 Grain = Literal["total", "daily", "asof"]
 
@@ -508,6 +508,102 @@ class SourceContext:
 
     # SourceContext is construction state shared by every population view.
     # Triggered population selection belongs to the source-owned adapter.
+
+
+@runtime_checkable
+class CovariateAvailability(Protocol):
+    """Optional source metadata listing names usable as unit covariates."""
+
+    @property
+    def available_covariates(self) -> frozenset[str] | None: ...
+
+
+@runtime_checkable
+class ScalarCovariateMoments(Protocol):
+    """Static grains that can retain scalar covariate cross moments."""
+
+    @property
+    def scalar_covariate_grains(self) -> frozenset[Grain]: ...
+
+
+@runtime_checkable
+class ScalarBindingSource(Protocol):
+    """Static published bindings available to scalar reductions."""
+
+    @property
+    def scalar_bindings(self) -> Mapping[str, Sequence[CupedCovariate]]: ...
+
+
+@runtime_checkable
+class SingleScalarFamilySource(Protocol):
+    """Aggregate sources retaining at most one scalar input per metric."""
+
+    @property
+    def scalar_moments_only(self) -> bool: ...
+
+    @property
+    def scalar_recipe_fixed(self) -> bool: ...
+
+    @property
+    def scalar_recipe_configs(self) -> tuple[ResolvedMetricConfig, ...]: ...
+
+    @property
+    def scalar_anonymous_metrics(self) -> frozenset[str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ScalarBreakoutRows:
+    """Method-specific moments and scalar refusals indexed by segment."""
+
+    rows: tuple[Mapping[str, Any], ...]
+    refusals: tuple[tuple[str, str, RefusalSpec, Mapping[str, object]], ...] = ()
+
+
+@runtime_checkable
+class ScalarBreakoutMomentSource(Protocol):
+    def breakout_moments_for_method(
+        self, metric: Metric, method: Any, *, by: Sequence[str]
+    ) -> ScalarBreakoutRows: ...
+
+
+@runtime_checkable
+class ConfiguredBreakoutSource(Protocol):
+    """Sources acquiring a breakout cube for an effective method request."""
+
+    def breakout_source(
+        self,
+        breakout: Any,
+        *,
+        metrics: Sequence[Metric],
+        configs: Sequence[Any] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> Any: ...
+
+
+class MethodMomentEvidence(Protocol):
+    @property
+    def rows(self) -> tuple[Mapping[str, Any], ...]: ...
+
+    def rows_for_method(
+        self,
+        method: Any,
+        *,
+        dimension: str | None = None,
+        dimension_value: str | None = None,
+    ) -> Sequence[Mapping[str, Any]]: ...
+
+
+@runtime_checkable
+class ScalarMethodMomentSource(Protocol):
+    """Sources capable of acquiring moments for one effective method."""
+
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> Sequence[Mapping[str, Any]]: ...
 
 
 @runtime_checkable

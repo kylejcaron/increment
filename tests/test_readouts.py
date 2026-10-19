@@ -31,7 +31,7 @@ from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
-from increment.frame import MetricSpec
+from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import AnalysisPlan, MeanMetric
 from tests.test_sequential_public_sources import gaussian_plan
@@ -280,7 +280,14 @@ def test_run_plain_cuped_methods_have_unique_to_frame_rows():
         unit="user_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="revenue", covariate="pre_revenue")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous")),
+                ),
+            )
+        ],
     )
     results = analysis.run(
         decision_method=Method(name="plain"),
@@ -812,7 +819,7 @@ def test_observational_method_defaults_have_distinct_snapshot_identity():
         unit="u",
         group="g",
         control="control",
-        metrics=[MetricSpec(name="y", covariate="x")],
+        metrics=[MetricSpec(name="y")],
         design=Observational(control_group="control", adjustment=AdjustmentSet(covariates=("x",))),
     )
     (default_method,) = readouts.run(source)
@@ -2548,8 +2555,9 @@ def test_winsor_validation_scopes_adjustments_to_selected_metrics(other_adjustme
             spec["winsorization"] = Winsorization(upper_percentile=0.95)
         if (name == "winsor") is adjust_winsor:
             if other_adjustment == "cuped":
-                spec["covariate"] = "x"
-                spec["decision_method"] = Method(name="cuped", variance_reduction="cuped")
+                spec["decision_method"] = Method.cuped(
+                    covariates=CupedCovariate(name="x", kind="continuous")
+                )
             else:
                 spec["prior"] = Normal(mu=0, sigma=0.1)
         specs.append(MetricSpec(name=name, **spec))
@@ -2582,8 +2590,7 @@ def test_mixed_readout_emits_winsor_and_adjusted_other_metric(other_adjustment):
     winsor_metric = MetricSpec(name="winsor", winsorization=Winsorization(upper_percentile=0.95))
     plain_metric = MetricSpec(
         name="plain",
-        covariate="x" if other_adjustment == "cuped" else None,
-        decision_method=Method(name="cuped", variance_reduction="cuped")
+        decision_method=Method.cuped(covariates=CupedCovariate(name="x", kind="continuous"))
         if other_adjustment == "cuped"
         else None,
         prior=Normal(mu=0, sigma=0.1) if other_adjustment == "prior" else None,

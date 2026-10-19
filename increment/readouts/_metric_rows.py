@@ -3,15 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from increment._analysis_config import overlay_configs, validate_scalar_route
+from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
+from increment._source_operations import ReadoutSnapshotOperation
+from increment._source_types import ScalarBreakoutMomentSource, ScalarMethodMomentSource
+from increment.errors import CodedError, refuse
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
-from increment.sources import MomentSource
+from increment.semantics.design import Encouragement
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._source_types import RawOutcomeSource
+    from increment.errors import RefusalSpec
     from increment.semantics.models import Metric
+    from increment.sources import MomentSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +32,42 @@ class MetricRows:
     evidence_kind: str
     evidence_sha256: str
     evidence_count: int
+    decision_evidence_components: tuple[tuple[str, str, int], ...]
     evidence_components: tuple[tuple[str, str, int], ...] = ()
+    covariate_columns: tuple[tuple[str, str], ...] = ()
+    method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
+    method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
+    method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
+
+    def rows_for_method(
+        self,
+        method: Any,
+        *,
+        dimension: str | None = None,
+        dimension_value: str | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Return the produced input family, replaying only its own cell refusal."""
+        for name, spec, context in self.method_refusals:
+            if name == method.name:
+                refuse(spec, **context)
+        for name, cell_dimension, value, spec, context in self.method_cell_refusals:
+            if name != method.name:
+                continue
+            if dimension is None:
+                raise AssertionError("Partitioned scalar evidence requires a segment.")
+            if cell_dimension == dimension and value == dimension_value:
+                refuse(spec, **context)
+        for name, rows in self.method_rows:
+            if name == method.name:
+                if dimension is None:
+                    return rows
+                return tuple(
+                    row
+                    for row in rows
+                    if ("__null__" if row.get(dimension) is None else str(row[dimension]))
+                    == dimension_value
+                )
+        raise AssertionError(f"Scalar evidence for method {method.name!r} was not acquired.")
 
 
 def _frame_digest_and_arms(frame):
@@ -74,6 +116,55 @@ def _rows_digest(rows):
     return digest.hexdigest(), digest.count
 
 
+def _scalar_method_rows(src, metric, methods, decision, *, by):
+    if not isinstance(src, ScalarMethodMomentSource):
+        validate_scalar_route(
+            overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
+            route=type(src).__name__,
+            representation="implicit",
+            design=src.context.design,
+        )
+        rows = tuple(src.moments(metric, grain="total", by=by))
+        return list(rows), tuple((method.name, rows) for method in methods), ()
+    families = []
+    refusals = []
+    for method in methods:
+        try:
+            family_rows = tuple(src.moments_for_method(metric, method, by=by))
+        except CodedError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            refusals.append((method.name, SCALAR_COVARIATE_REFUSALS[exc.code], exc.context))
+        else:
+            families.append((method.name, family_rows))
+    selected = next((rows for name, rows in families if name == decision.name), None)
+    if selected is not None:
+        rows = list(selected)
+    elif decision.variance_reduction != "cuped":
+        rows = list(src.moments_for_method(metric, decision, by=by))
+    else:
+        from increment.estimation.engine import Method
+
+        assert any(name == decision.name for name, _spec, _context in refusals)
+        rows = list(src.moments_for_method(metric, Method.unadjusted(), by=by))
+    return rows, tuple(families), tuple(refusals)
+
+
+def _decision_unit_component(frame, method, acquired_columns):
+    import narwhals as nw
+
+    from increment._source_types import unit_frame_covariate_columns
+
+    names = tuple(covariate.name for covariate in method.covariates)
+    canonical = unit_frame_covariate_columns(names)
+    acquired = set(acquired_columns.values())
+    projected = frame.select(
+        *(nw.col(column) for column in frame.columns if column not in acquired),
+        *(nw.col(acquired_columns[name]).alias(canonical[name]) for name in names),
+    )
+    return ("unit_evidence_rows", *_frame_digest_and_arms(projected)[1:])
+
+
 def _load_metric_rows(
     src: MomentSource,
     metric: Metric,
@@ -91,13 +182,26 @@ def _load_metric_rows(
     this function's contract) call it before `_load_metric_rows`.
     """
     has_linear = any(
-        getattr(method, "variance_reduction", None) == "cuped_linear" for method in methods
+        getattr(method, "variance_reduction", None) == "cuped_multicovariate" for method in methods
     )
-    if has_linear and not _snapshot_active:
-        snapshot = getattr(src, "readout_snapshot", None)
-        if snapshot is not None:
+    has_scalar = any(method.variance_reduction == "cuped" for method in methods)
+    if (has_linear or has_scalar) and not _snapshot_active:
+        if isinstance(src, ReadoutSnapshotOperation):
             population = getattr(src, "population", "assigned")
-            with snapshot(metrics=(metric,), population=population) as pinned:
+            configs = overlay_configs(
+                (metric,), src.context.configs, methods=list(methods), prior=None
+            )
+            uptake_facts = (
+                (src.context.design.uptake.fact,)
+                if isinstance(src.context.design, Encouragement)
+                else ()
+            )
+            with src.readout_snapshot(
+                metrics=(metric,),
+                population=population,
+                configs=configs,
+                uptake_facts=uptake_facts,
+            ) as pinned:
                 return _load_metric_rows(
                     pinned,
                     metric,
@@ -128,6 +232,9 @@ def _load_metric_rows(
                 evidence_kind="unit_evidence_rows",
                 evidence_sha256=evidence_sha256,
                 evidence_count=evidence_count,
+                decision_evidence_components=(
+                    ("unit_evidence_rows", evidence_sha256, evidence_count),
+                ),
             )
         raw = _raw_state_from_source(src, metric, native=native)
         from increment.estimation.winsor import build_winsor_references
@@ -153,6 +260,7 @@ def _load_metric_rows(
             evidence_kind="unit_evidence_rows",
             evidence_sha256=evidence_sha256,
             evidence_count=evidence_count,
+            decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
         )
     if getattr(metric, "type", None) == "quantile":
         import narwhals as nw
@@ -168,12 +276,51 @@ def _load_metric_rows(
             evidence_kind="unit_evidence_rows",
             evidence_sha256=evidence_sha256,
             evidence_count=evidence_count,
+            decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
         )
     _refuse_unsupported_by(metric, by)
-    rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
+    scalar_methods = [
+        method for method in methods if getattr(method, "variance_reduction", None) == "cuped"
+    ]
+    method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
+    method_refusals = ()
+    if scalar_methods:
+        rows, method_rows, method_refusals = _scalar_method_rows(
+            src, metric, scalar_methods, methods[0], by=by
+        )
+    elif methods and isinstance(src, ScalarMethodMomentSource):
+        rows = list(src.moments_for_method(metric, methods[0], by=by))
+    else:
+        rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
+    ordinary_component = ("moments_rows", moments_sha256, moments_count)
     if has_linear:
         observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
+    method_components = tuple(
+        (f"scalar_method:{name}", *_rows_raw_digest_and_arms(family_rows)[1:])
+        for name, family_rows in method_rows
+        if any(method.name == name and method.covariates for method in scalar_methods)
+    )
+    method_components += tuple(
+        (
+            f"scalar_method:{name}",
+            *_rows_raw_digest_and_arms(
+                ({"failure_code": spec.code, "failure_context": dict(context)},)
+            )[1:],
+        )
+        for name, spec, context in method_refusals
+    )
+    decision_is_linear = bool(methods and methods[0].variance_reduction == "cuped_multicovariate")
+    decision_components = (
+        ("moments_rows", moments_sha256, moments_count)
+        if decision_is_linear
+        else ordinary_component,
+        *(
+            item
+            for item in method_components
+            if methods and item[0] == f"scalar_method:{methods[0].name}"
+        ),
+    )
     if not has_linear:
         return MetricRows(
             rows=tuple(rows),
@@ -183,15 +330,26 @@ def _load_metric_rows(
             evidence_kind="moments_rows",
             evidence_sha256=moments_sha256,
             evidence_count=moments_count,
-            evidence_components=(("moments_rows", moments_sha256, moments_count),),
+            decision_evidence_components=decision_components,
+            evidence_components=(
+                ("moments_rows", moments_sha256, moments_count),
+                *method_components,
+            ),
+            method_rows=method_rows,
+            method_refusals=tuple(method_refusals),
         )
 
     import narwhals as nw
 
+    from increment._source_types import unit_frame_covariate_columns
+
     covariate_names = tuple(item.name for item in covariates)
+    acquired_columns = unit_frame_covariate_columns(covariate_names)
     native = src.unit_frame(metric, covariates=covariate_names)
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
+    if decision_is_linear:
+        decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
     return MetricRows(
         rows=tuple(rows),
         unit_frame=native,
@@ -200,8 +358,100 @@ def _load_metric_rows(
         evidence_kind="mixed_rows",
         evidence_sha256="",
         evidence_count=moments_count + unit_count,
+        decision_evidence_components=decision_components,
         evidence_components=(
             ("moments_rows", moments_sha256, moments_count),
             ("unit_evidence_rows", unit_sha256, unit_count),
+            *method_components,
         ),
+        method_rows=method_rows,
+        method_refusals=tuple(method_refusals),
+        covariate_columns=tuple(acquired_columns.items()),
+    )
+
+
+def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group) -> MetricRows:
+    """Acquire effective scalar inputs without promoting a segment failure."""
+    if any(method.variance_reduction == "cuped" for method in methods) and not isinstance(
+        src, ScalarBreakoutMomentSource
+    ):
+        validate_scalar_route(
+            overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
+            route=f"{type(src).__name__}.breakout",
+            representation="implicit",
+            design=src.context.design,
+        )
+    from increment.estimation.engine import Method
+
+    base = (
+        src.breakout_moments_for_method(metric, Method.unadjusted(), by=(dimension,)).rows
+        if isinstance(src, ScalarBreakoutMomentSource)
+        else tuple(src.moments(metric, grain="total", by=(dimension,)))
+    )
+    families = []
+    failures = []
+    cell_failures = []
+    for method in methods:
+        if method.variance_reduction != "cuped":
+            continue
+        if not isinstance(src, ScalarBreakoutMomentSource):
+            families.append((method.name, base))
+            continue
+        try:
+            acquired = src.breakout_moments_for_method(metric, method, by=(dimension,))
+        except CodedError as exc:
+            if exc.code not in SCALAR_COVARIATE_REFUSALS:
+                raise
+            failures.append((method.name, SCALAR_COVARIATE_REFUSALS[exc.code], exc.context))
+        else:
+            families.append((method.name, acquired.rows))
+            cell_failures.extend((method.name, *failure) for failure in acquired.refusals)
+    observed, digest, count = _rows_digest_and_arms(base)
+    ordinary_component = ("moments_rows", digest, count)
+    method_components = []
+    for method in methods:
+        if method.variance_reduction != "cuped":
+            continue
+        records = (
+            tuple(row for name, rows in families if name == method.name for row in rows)
+            + tuple(
+                {"failure_code": spec.code, "failure_context": dict(context)}
+                for name, spec, context in failures
+                if name == method.name
+            )
+            + tuple(
+                {
+                    "dimension": cell_dimension,
+                    "dimension_value": value,
+                    "failure_code": spec.code,
+                    "failure_context": dict(context),
+                }
+                for name, cell_dimension, value, spec, context in cell_failures
+                if name == method.name
+            )
+        )
+        method_components.append(
+            (f"scalar_method:{method.name}", *_rows_raw_digest_and_arms(records)[1:])
+        )
+    components = (ordinary_component, *method_components)
+    return MetricRows(
+        rows=base,
+        unit_frame=None,
+        observed_arms=observed,
+        n_treatment_arms=len(observed - {control_group}),
+        evidence_kind="moments_rows",
+        evidence_sha256=digest,
+        evidence_count=count,
+        decision_evidence_components=(
+            ordinary_component,
+            *(
+                item
+                for item in method_components
+                if methods and item[0] == f"scalar_method:{methods[0].name}"
+            ),
+        ),
+        evidence_components=components,
+        method_rows=tuple(families),
+        method_refusals=tuple(failures),
+        method_cell_refusals=tuple(cell_failures),
     )

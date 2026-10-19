@@ -30,8 +30,9 @@ from increment.semantics.design import (
 def _linear_metric(*, winsorization: dict[str, Any] | None = None) -> MetricSpec:
     return MetricSpec(
         name="revenue",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
         winsorization=winsorization,
     )
 
@@ -173,22 +174,32 @@ def _summary_source(
 def test_composition_gates_refuse_before_source_acquisition(case: str, expected_code: str) -> None:
     from functools import partial
 
-    linear = _linear_metric()
+    linear = cast(Method, _linear_metric().decision_method)
     if case == "cluster":
-        source = _summary_source(metric=linear, cluster="cluster")
-    elif case == "sequential":
-        source = _summary_source(
-            metric=MetricSpec(name="revenue", covariates=linear.covariates),
-            design=Randomized(
-                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-            ),
-            plan=AnalysisPlan(inference=InferenceSpec(kind="asymptotic_mean")),
-        )
+        from increment.errors import CapabilityError
+
+        with pytest.raises(CapabilityError) as raised:
+            _summary_source(metric=_linear_metric(), cluster="cluster")
+        assert raised.value.code == "source.frame.cluster_capability"
+        return
+    if case == "sequential":
+        from increment.errors import CapabilityError
+
+        with pytest.raises(CapabilityError) as raised:
+            _summary_source(
+                metric=_linear_metric(),
+                design=Randomized(
+                    control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+                ),
+                plan=AnalysisPlan(inference=InferenceSpec(kind="asymptotic_mean")),
+            )
+        assert raised.value.code == "sequential.route.unsupported"
+        return
     elif case == "winsor":
         source = _summary_source(metric=_linear_metric(winsorization={"upper_percentile": 0.9}))
     elif case == "observational":
         source = _summary_source(
-            metric=linear,
+            metric=_linear_metric(),
             design=Observational(
                 control_group="control", adjustment=AdjustmentSet(covariates=("pre",))
             ),
@@ -202,11 +213,11 @@ def test_composition_gates_refuse_before_source_acquisition(case: str, expected_
                 justification="The test-only encouragement affects revenue through uptake.",
             ),
         )
-        source = _summary_source(metric=linear, design=design, uptake="uptake")
+        source = _summary_source(metric=_linear_metric(), design=design, uptake="uptake")
     invoke = partial(
         run_readout,
         cast(Any, source),
-        decision_method=cast(Method, linear.decision_method),
+        decision_method=linear,
     )
     with pytest.raises(UnsupportedRequestError) as raised:
         invoke()
@@ -361,8 +372,9 @@ def test_cuped_linear_absolute_ratio_projection_failure_preserves_log_ratio() ->
         type="ratio",
         numerator="revenue",
         denominator="orders",
-        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        decision_method=Method.cuped_multicovariate(
+            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+        ),
     )
     rows = [
         {

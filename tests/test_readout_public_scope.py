@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis, AnalysisPlan, MetricSpec
+from increment import Analysis, AnalysisPlan, CupedCovariate, Method, MetricSpec
 from increment.breakout.estimates import (
     BreakoutEstimate,
     DailyLiftEstimate,
@@ -1419,7 +1419,6 @@ def _assert_selection_repr_disclosures(results, selected_row, sensitivity_row):
 
 
 def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance():
-    from increment import Method
     from increment.tables import estimates_to_readout
 
     rng = np.random.default_rng(23)
@@ -1450,9 +1449,10 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
                     name="secondary",
                     type="mean",
                     missing="drop",
-                    covariate="x",
                     decision_method=Method(name="unadjusted"),
-                    sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+                    sensitivity_methods=(
+                        Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+                    ),
                 ),
             ],
             plan=AnalysisPlan(primary="primary", secondaries=["secondary"], q=0.2),
@@ -1530,7 +1530,6 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
 
 
 def test_sensitivity_survives_when_every_decision_method_fails():
-    from increment import Method
 
     rng = np.random.default_rng(18)
     n = 200
@@ -1551,9 +1550,10 @@ def test_sensitivity_survives_when_every_decision_method_fails():
             MetricSpec(
                 name="rev",
                 type="mean",
-                covariate="x",
                 decision_method=Method(name="unadjusted"),
-                sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+                sensitivity_methods=(
+                    Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
+                ),
             )
         ],
     )

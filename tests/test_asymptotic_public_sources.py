@@ -1210,7 +1210,7 @@ def test_boolean_covariate_also_declared_as_a_segment_keeps_the_adjusted_state(k
     import numpy as np
     import pandas as pd
 
-    from increment import Method
+    from increment import CupedCovariate, Method
 
     rng = np.random.default_rng(3)
     n = 240
@@ -1232,8 +1232,9 @@ def test_boolean_covariate_also_declared_as_a_segment_keeps_the_adjusted_state(k
     spec = MetricSpec(
         name="outcome",
         type="mean",
-        covariate="covariate",
-        decision_method=Method(name="cuped", variance_reduction="cuped"),
+        decision_method=Method.cuped(
+            covariates=CupedCovariate(name="covariate", kind="continuous")
+        ),
     )
 
     def plan(dimension):

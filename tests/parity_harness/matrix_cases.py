@@ -19,7 +19,7 @@ import pandas as pd
 
 from increment import Analysis
 from increment.estimation.engine import Method
-from increment.frame import MetricSpec
+from increment.frame import CupedCovariate, MetricSpec
 from increment.plan import bind_automatic_sequential_plan
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import (
@@ -45,7 +45,6 @@ from .cases import (
 from .matrix import Cell, Outcome, Refuses, Runs, StructuralAbsence
 
 METRIC_NAME = "m"
-_CUPED = Method(name="cuped", variance_reduction="cuped")
 _CUPED_SPEC = MethodSpec(name="cuped", variance_reduction="cuped")
 _REPORT_LAYER = ("total", "active")
 _MARGIN = 0.05
@@ -245,10 +244,12 @@ def metric_spec(cell: Cell) -> MetricSpec | dict[str, str]:
         case other:
             raise AssertionError(other)
     if cell.option == "cuped":
-        kwargs |= {
-            "covariate": "pre_converted" if cell.base == "conversion" else "pre_revenue",
-            "decision_method": _CUPED,
-        }
+        kwargs["decision_method"] = Method.cuped(
+            covariates=CupedCovariate(
+                name="pre_converted" if cell.base == "conversion" else "pre_revenue",
+                kind="continuous",
+            )
+        )
     winsorization = _winsorization(cell)
     if winsorization is not None:
         kwargs["winsorization"] = Winsorization.model_validate(winsorization)
@@ -682,13 +683,13 @@ def linear_cuped_frame_case(
         CupedCovariate(name="device", kind="categorical"),
         CupedCovariate(name="new_user", kind="categorical"),
     )
-    method = Method(name="linear", variance_reduction="cuped_linear")
-    scalar_method = Method(name="cuped", variance_reduction="cuped")
+    method = Method.cuped_multicovariate(name="linear", covariates=covariates)
+    scalar_method = Method.cuped(
+        covariates=CupedCovariate(name="pre_revenue", kind="continuous", missing="impute")
+    )
     metrics = (
         MetricSpec(
             name="revenue",
-            covariate="pre_revenue" if scalar_cuped else None,
-            covariates=covariates,
             decision_method=method,
             sensitivity_methods=(scalar_method,) if scalar_cuped else (),
             winsorization=(
@@ -701,14 +702,12 @@ def linear_cuped_frame_case(
             numerator="revenue",
             denominator="orders",
             preferred_direction="increase",
-            covariates=covariates,
             decision_method=method,
         ),
         MetricSpec(
             name="signups",
             type="conversion",
             value_column="signup_conversion",
-            covariates=covariates,
             decision_method=method,
         ),
     )

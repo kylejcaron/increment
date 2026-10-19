@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     import pyarrow as pa
 
+    from increment._analysis_config import ResolvedMetricConfig
     from increment.sources import Grain
 
 
@@ -60,6 +61,15 @@ class TriggeredPopulationSource:
             include_covariate=include_covariate,
             population="triggered",
         )
+
+    def moments_for_method(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        by: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        return self._source.moments_for_method(metric, method, by=by, population="triggered")
 
     def unit_frame(
         self,
@@ -116,6 +126,9 @@ class TriggeredPopulationSource:
     def close(self) -> None:
         self._source.close()
 
+    def readout_execution(self):
+        return self._source.readout_execution()
+
     @contextmanager
     def readout_snapshot(
         self,
@@ -124,11 +137,13 @@ class TriggeredPopulationSource:
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
+        configs: Sequence[ResolvedMetricConfig] | None = None,
     ) -> Iterator[MomentSource]:
         with self._source.readout_snapshot(
             metrics=metrics,
             population="assigned",
             uptake_facts=uptake_facts,
             include_breakouts=include_breakouts,
+            configs=configs,
         ) as pinned:
             yield self if pinned is self._source else pinned.triggered_source()

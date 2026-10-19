@@ -1426,15 +1426,17 @@ class WarehouseSession:
         column_hints: Mapping[str, tuple[str | None, str | None]] = MappingProxyType({}),
         scope: SourceScope | None = None,
         source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+        extra_relations: Mapping[str, Table] = MappingProxyType({}),
     ) -> WarehouseSession:
         """Capture all requested streams in one execution, preserving their types.
-
         `column_hints` maps a query's exact SQL text (the same key `source_sql`
         uses) to `(unit_column, timestamp_column)`: either or both may be `None`
         when that predicate does not apply to this stream (e.g. a dimension
         source has no timestamp axis; an exposure/trigger stream is deliberately
         never scoped -- see `_pinned_source`'s own module docs). With
-        `scope=None` (the default), no predicate is pushed.
+        `scope=None` (the default), no predicate is pushed. `extra_relations`
+        adds Ibis relations under lookup keys; unlike SQL queries, these are
+        already expressed in the executing backend's native relation model.
 
         Each stream occupies distinct typed columns of a tagged UNION ALL.
         The tagged relation stays in a warehouse TEMP table. Subsequent
@@ -1458,6 +1460,7 @@ class WarehouseSession:
                         scope.enrolled_units, table[unit_col] == scope.enrolled_units["unit_id"]
                     )
             tables.append(table)
+        tables.extend(extra_relations.values())
         fields = [
             (index, name, f"s{index}_c{column}", dtype)
             for index, table in enumerate(tables)
@@ -1491,6 +1494,11 @@ class WarehouseSession:
         for index, sql in enumerate(queries):
             stream = captured.filter(captured["_stream"] == index)
             pinned._source_tables[sql] = stream.select(
+                **{name: stream[alias] for owner, name, alias, _dtype in fields if owner == index}
+            )
+        for index, key in enumerate(extra_relations, start=len(queries)):
+            stream = captured.filter(captured["_stream"] == index)
+            pinned._source_tables[key] = stream.select(
                 **{name: stream[alias] for owner, name, alias, _dtype in fields if owner == index}
             )
         pinned._captured_relations = frozenset(

@@ -28,7 +28,7 @@ import ibis
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis, MetricSpec
+from increment import Analysis, CupedCovariate, Method, MetricSpec
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
@@ -556,8 +556,9 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
             name="pre_outcome",
             type="mean",
             value_column="pre_outcome",
-            covariate="pre_x",
-            covariate_missing="impute",
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name="pre_x", kind="continuous", missing="impute")
+            ),
             preferred_direction="increase",
         ),
     ]
@@ -578,7 +579,6 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     assert isinstance(imputation_warning, IncrementWarning)
     assert imputation_warning.code == "frame.validation.metric_covariate_missing_imputed"
     assert imputation_warning.context["n_missing"] == 73
-    from increment.estimation.engine import Method
 
     with pytest.warns(IncrementWarning) as censoring_warnings:
         source_result = source.run(decision_method=Method(name="unadjusted"))
@@ -599,7 +599,7 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
         plan=plan,
         experiment_id="m3-late-panel",
     )
-    replay_result = replay.run()
+    replay_result = replay.run(decision_method=Method(name="unadjusted"))
     assert isinstance(replay_result, LiftEstimates)
     assert_prior_free_sampling_family(replay_result)
     expected = {CellKey.from_row(row): row for row in source_result}
@@ -643,7 +643,9 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
                     name="revenue",
                     type="mean",
                     value_column="revenue",
-                    covariate="pre_x",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="pre_x", kind="continuous")
+                    ),
                     window_days=7,
                     preferred_direction="increase",
                 )

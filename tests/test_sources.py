@@ -697,12 +697,11 @@ def test_frame_plan_matches_configs_and_wire_refuses_runtime_learner():
     from increment.errors import WireFormatError
     from increment.estimation.engine import Method
     from increment.estimation.inference import Normal
-    from increment.frame import from_unit_summary
+    from increment.frame import CupedCovariate, from_unit_summary
 
     spec = {
         "name": "metric",
-        "covariate": "x",
-        "decision_method": Method(name="cuped", variance_reduction="cuped"),
+        "decision_method": Method.cuped(covariates=CupedCovariate(name="x", kind="continuous")),
         "prior": Normal(mu=0.0, sigma=0.5),
     }
     source = from_unit_summary(

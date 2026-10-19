@@ -15,6 +15,14 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from increment._analysis_config import effective_methods
 from increment._literals import Correction, ValueScale
+from increment._source_types import (
+    ConfiguredBreakoutSource,
+    CovariateAvailability,
+    ScalarBindingSource,
+    ScalarBreakoutMomentSource,
+    ScalarMethodMomentSource,
+    SingleScalarFamilySource,
+)
 from increment.errors import (
     RefusalSpec,
     refuse,
@@ -26,7 +34,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
-    from increment.semantics.models import Metric
+    from increment.semantics.models import CupedCovariate, Metric
 
 
 def _validate_typed_arm_compatibility(request: ReadoutRequest) -> None:  # noqa: PLR0915
@@ -261,7 +269,15 @@ class ReadoutRequest:
     grain: Grain
     by: tuple[str, ...] = ()
     dimension: str | None = None
-    capabilities: frozenset[Grain] = frozenset()
+    available_covariates: frozenset[str] | None = None
+    scalar_bindings: Mapping[str, tuple[CupedCovariate, ...]] | None = None
+    scalar_moments_only: bool = False
+    scalar_recipe_fixed: bool = False
+    scalar_recipe_configs: tuple[ResolvedMetricConfig, ...] = ()
+    scalar_anonymous_metrics: frozenset[str] = frozenset()
+    scalar_method_evidence: bool = False
+    scalar_breakout_evidence: bool = False
+    capabilities: frozenset[str] = frozenset({"total"})
     source_breakouts: tuple[str, ...] = ()
     source_name: str = "source"
     shape: Shape | None = None
@@ -295,6 +311,9 @@ class ReadoutRequest:
         if len(metrics) != len(configs):
             _raise("readout.request.readoutrequest_requires_one_resolved")
         context = source.context
+        available_covariates = (
+            source.available_covariates if isinstance(source, CovariateAvailability) else None
+        )
         return cls(
             context=context,
             metrics=tuple(metrics),
@@ -303,6 +322,36 @@ class ReadoutRequest:
             grain=grain,
             by=tuple(by),
             dimension=dimension,
+            available_covariates=available_covariates,
+            scalar_bindings=(
+                MappingProxyType(
+                    {metric: tuple(bindings) for metric, bindings in source.scalar_bindings.items()}
+                )
+                if isinstance(source, ScalarBindingSource)
+                else None
+            ),
+            scalar_moments_only=(
+                source.scalar_moments_only
+                if isinstance(source, SingleScalarFamilySource)
+                else False
+            ),
+            scalar_recipe_fixed=(
+                source.scalar_recipe_fixed
+                if isinstance(source, SingleScalarFamilySource)
+                else False
+            ),
+            scalar_recipe_configs=(
+                source.scalar_recipe_configs if isinstance(source, SingleScalarFamilySource) else ()
+            ),
+            scalar_anonymous_metrics=(
+                source.scalar_anonymous_metrics
+                if isinstance(source, SingleScalarFamilySource)
+                else frozenset()
+            ),
+            scalar_method_evidence=isinstance(source, ScalarMethodMomentSource),
+            scalar_breakout_evidence=isinstance(
+                source, (ScalarBreakoutMomentSource, ConfiguredBreakoutSource)
+            ),
             capabilities=frozenset(getattr(source, "capabilities", {"total"})),
             source_breakouts=tuple(getattr(source, "breakouts", ())),
             source_name=type(source).__name__,
@@ -405,8 +454,44 @@ def validate_request(request: ReadoutRequest) -> None:
     """
     _validate_estimands(request)
     _validate_identification(request)
+    from increment._analysis_config import validate_readout_covariates, validate_scalar_route
+    from increment.estimation.sequential import SEQUENTIAL_POLICIES
 
-    from increment._analysis_config import validate_readout_covariates
+    representation: Literal["unit", "moments", "breakout", "implicit"] = (
+        "breakout"
+        if request.view == "breakout"
+        else "moments"
+        if request.scalar_moments_only
+        else "unit"
+    )
+    route = f"{request.source_name}.{request.view}"
+    if request.view == "asof" and not isinstance(request.plan.inference, SEQUENTIAL_POLICIES):
+        representation, route = "implicit", "readouts.asof_lift"
+    validate_scalar_route(
+        request.configs,
+        route=route,
+        representation=representation,
+        design=request.design,
+        bindings=request.scalar_bindings,
+    )
+    if request.scalar_recipe_fixed:
+        recorded = {config.metric.name for config in request.scalar_recipe_configs}
+        validate_scalar_route(
+            tuple(config for config in request.configs if config.metric.name in recorded),
+            route=route,
+            representation="prepared",
+            design=request.design,
+            retained_configs=request.scalar_recipe_configs,
+            anonymous_metrics=request.scalar_anonymous_metrics,
+        )
+    if isinstance(request.plan.inference, SEQUENTIAL_POLICIES):
+        validate_scalar_route(
+            request.configs,
+            route=route,
+            representation="registered",
+            design=request.design,
+            retained_configs=request.context.configs,
+        )
     from increment.estimation.adjust import validate_readout_adjustment
     from increment.estimation.encouragement import validate_readout_encouragement
     from increment.estimation.engine import (
@@ -437,6 +522,21 @@ def validate_request(request: ReadoutRequest) -> None:
     validate_readout_encouragement(request)
     validate_readout_inference(request)
     validate_readout_source(request)
+    if request.view in {"run", "breakout"} and not isinstance(
+        request.plan.inference, SEQUENTIAL_POLICIES
+    ):
+        supported = (
+            request.scalar_breakout_evidence
+            if request.view == "breakout"
+            else request.scalar_method_evidence
+        )
+        if not supported:
+            validate_scalar_route(
+                request.configs,
+                route=request.source_name,
+                representation="implicit",
+                design=request.design,
+            )
 
 
 __all__ = [

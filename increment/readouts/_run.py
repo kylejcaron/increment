@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from increment._analysis_config import UNSET, _Unset
+from increment._analysis_config import UNSET, _Unset, effective_methods
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
+from increment._source_operations import ReadoutExecutionOperation, ReadoutSnapshotOperation
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.estimation.adjust import observational_evidence
 from increment.estimation.engine import Method
@@ -25,7 +27,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
-from increment.readouts._metric_rows import _load_metric_rows
+from increment.readouts._metric_rows import MetricRows, _load_metric_rows
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
 from increment.readouts._randomized import (
@@ -133,50 +135,53 @@ def run(
     # before any source snapshot or evidence read begins.
     for config in configs:
         _config_snapshot(config, design)
-    # Percentile readouts need the raw source snapshot, and an observational readout reads
-    # unit frames and moments that must be one execution. An empty selection reads nothing, so
-    # it never opens a snapshot (a definitions-backed capture writes TEMP tables). Metadata/
-    # request validation above is intentionally complete before capture.
-    needs_snapshot = bool(selected) and (
+    # Raw frames and method-scoped covariates share one capture across the
+    # selected metrics, including their common observation horizon. An empty
+    # selection reads nothing. Request validation is complete before capture.
+    needs_live_evidence = bool(selected) and not isinstance(
+        src.context.plan.inference, SEQUENTIAL_POLICIES
+    )
+    needs_snapshot = needs_live_evidence and (
         design.mechanism == "observational"
+        or (
+            not _design_compliance_only(src, estimands)
+            and any(
+                method.variance_reduction in ("cuped", "cuped_multicovariate")
+                for config in configs
+                for method in effective_methods(config, design=design)
+            )
+        )
         or any(
             getattr(getattr(metric, "winsorization", None), "has_percentile", False)
             for metric in selected
         )
     )
-    if needs_snapshot:
-        from increment._source_operations import ReadoutSnapshotOperation
-
-        if isinstance(src, ReadoutSnapshotOperation):
+    with ExitStack() as execution:
+        if needs_snapshot and isinstance(src, ReadoutSnapshotOperation):
             uptake = getattr(design, "uptake", None)
             uptake_facts = () if uptake is None else (uptake.fact,)
-            with src.readout_snapshot(
-                metrics=selected, population=_population, uptake_facts=uptake_facts
-            ) as pinned:
-                return _as_collection(
-                    _run_prepared(
-                        pinned,
-                        selected,
-                        configs,
-                        prior=prior,
-                        by=by,
-                        estimands=estimands,
-                        value_scale=value_scale,
-                        population=_population,
-                    )
+            src = execution.enter_context(
+                src.readout_snapshot(
+                    metrics=selected,
+                    population=_population,
+                    uptake_facts=uptake_facts,
+                    configs=configs,
                 )
-    return _as_collection(
-        _run_prepared(
-            src,
-            selected,
-            configs,
-            prior=prior,
-            by=by,
-            estimands=estimands,
-            value_scale=value_scale,
-            population=_population,
+            )
+        if needs_live_evidence and isinstance(src, ReadoutExecutionOperation):
+            execution.enter_context(src.readout_execution())
+        return _as_collection(
+            _run_prepared(
+                src,
+                selected,
+                configs,
+                prior=prior,
+                by=by,
+                estimands=estimands,
+                value_scale=value_scale,
+                population=_population,
+            )
         )
-    )
 
 
 def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
@@ -285,6 +290,20 @@ def _run_plan_and_roster(src, design, configs, population):
     return plan, _preflight_roster(src, design, population)
 
 
+def _load_encouragement_evidence(src, selected, configs, design, by):
+    config_by_metric = {config.metric.name: config for config in configs}
+    return {
+        metric.name: _load_metric_rows(
+            src,
+            metric,
+            by=by,
+            control_group=design.control_group,
+            methods=effective_methods(config_by_metric[metric.name], design=design),
+        )
+        for metric in selected
+    }
+
+
 def _run_prepared(
     src: MomentSource,
     selected: Sequence[Metric],
@@ -307,7 +326,7 @@ def _run_prepared(
 
         _refuse_segmented_registration(plan.inference)
         rows = sequential_readout(
-            src, metrics=selected, estimands=estimands, _include_unrequested=True
+            src, metrics=selected, estimands=estimands, _include_unrequested=True, configs=configs
         )
         return scope_sequential_results(
             src,
@@ -316,6 +335,7 @@ def _run_prepared(
             base_roster=preflight_roster,
             metrics=[metric.name for metric in selected],
             estimands=estimands,
+            configs=configs,
         )
     call_prior = cast("Prior | None", None if prior is UNSET else prior)
     cluster = src.context.cluster
@@ -328,6 +348,7 @@ def _run_prepared(
         if by and compliance_only:
             _raise_readout_request("readout.run.segment_unsupported", metric="uptake")
         rows_by_metric: dict[str, list[Mapping[str, Any]]] = {}
+        evidence_by_metric: dict[str, MetricRows] = {}
         if not compliance_only:
             reject_quantile_metrics(
                 selected,
@@ -336,11 +357,9 @@ def _run_prepared(
                 "which a quantile metric has none of",
                 remedy="Drop the encouragement design or the quantile metric.",
             )
+            evidence_by_metric = _load_encouragement_evidence(src, selected, configs, design, by)
             rows_by_metric = {
-                metric.name: list(
-                    _load_metric_rows(src, metric, by=by, control_group=design.control_group).rows
-                )
-                for metric in selected
+                name: list(evidence.rows) for name, evidence in evidence_by_metric.items()
             }
             if selected:
                 _refuse_if_no_treatment_arm(
@@ -377,6 +396,7 @@ def _run_prepared(
             metrics=selected,
             rows_by_metric=rows_by_metric,
             configs=configs,
+            evidence_by_metric=evidence_by_metric,
             design=design,
             plan=plan,
             estimands=estimands,
@@ -410,6 +430,7 @@ def _run_prepared(
                 cluster=cluster,
             ),
             evidence_rows=rows_by_metric,
+            method_evidence=evidence_by_metric,
             observed_by_metric=observed,
             compliance_summary=summary,
             base_roster=preflight_roster,
@@ -485,7 +506,7 @@ def _run_prepared(
     advisory_seen: set[tuple[object, ...]] = set()
     observed_arms: set[str] = set()
     observed_by_metric: dict[str, set[str]] = {}
-    evidence_components: dict[str, tuple[tuple[str, str, int], ...]] = {}
+    evidence_by_metric = {}
     computations: list[Any] = []
     out, refused_cells, secondary_entries, computations = _estimate_randomized_non_secondary(
         src,
@@ -499,7 +520,7 @@ def _run_prepared(
         observed_arms=observed_arms,
         computations=computations,
         observed_by_metric=observed_by_metric,
-        evidence_components=evidence_components,
+        evidence_by_metric=evidence_by_metric,
     )
     secondary_out, secondary_refused = _estimate_randomized_secondary_family(
         src,
@@ -512,7 +533,7 @@ def _run_prepared(
         observed_arms=observed_arms,
         computations=computations,
         observed_by_metric=observed_by_metric,
-        evidence_components=evidence_components,
+        evidence_by_metric=evidence_by_metric,
     )
     out.extend(secondary_out)
     refused_cells.extend(secondary_refused)
@@ -531,7 +552,7 @@ def _run_prepared(
         out,
         computations,
         observed_by_metric,
-        evidence_components,
+        evidence_by_metric,
         population,
         preflight_roster,
     )

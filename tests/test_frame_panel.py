@@ -17,11 +17,12 @@ import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import readouts
+from increment import Method, readouts
 from increment._frame_panel import _day_axis_label_order
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.frame import (
+    CupedCovariate,
     FramePanelSource,
     FrameTotalsSource,
     MetricSpec,
@@ -2445,7 +2446,14 @@ def test_panel_allows_cuped_covariates_named_as_canonical_columns(
             group="variant",
             date="day",
             control="control",
-            metrics=[MetricSpec(name="revenue", covariate=name)],
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name=name, kind="continuous")
+                    ),
+                )
+            ],
             design=_DESIGN,
         )
         metric = _metric(source, "revenue")
@@ -2663,7 +2671,15 @@ def test_panel_covariate_on_windowed_metric_raises_and_points_at_summary(
             group="variant",
             date="day",
             control="control",
-            metrics=[MetricSpec(name="revenue", covariate="orders", window_days=1)],
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    decision_method=Method.cuped(
+                        covariates=CupedCovariate(name="orders", kind="continuous")
+                    ),
+                    window_days=1,
+                )
+            ],
             exposure_date="exposed_on",
         )
     assert exc.value.code == "frame.validation.from_unit_panel"
@@ -2680,7 +2696,14 @@ def test_panel_covariate_varying_within_unit_refuses(panel_frame: pa.Table) -> N
         group="variant",
         date="day",
         control="control",
-        metrics=[MetricSpec(name="revenue", covariate="orders")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="orders", kind="continuous")
+                ),
+            )
+        ],
     )
     with pytest.raises(InvalidRequestError) as exc:
         src.moments(_metric(src, "revenue"), grain="total")
@@ -2705,7 +2728,14 @@ def test_panel_covariate_varies_with_mixed_public_unit_ids() -> None:
         group="arm",
         date="day",
         control="control",
-        metrics=[MetricSpec(name="revenue", covariate="orders")],
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="orders", kind="continuous")
+                ),
+            )
+        ],
     )
 
     with pytest.raises(InvalidRequestError) as exc:
@@ -2748,7 +2778,10 @@ def test_panel_cuped_moments_and_interval_match_unit_summary() -> None:
             for u in units
         ]
     )
-    spec = MetricSpec(name="revenue", covariate="tenure")
+    spec = MetricSpec(
+        name="revenue",
+        decision_method=Method.cuped(covariates=CupedCovariate(name="tenure", kind="continuous")),
+    )
 
     panel_src = from_unit_panel(
         panel_table,
@@ -2782,9 +2815,9 @@ def test_panel_cuped_moments_and_interval_match_unit_summary() -> None:
             ("n", "ref_y", "cy1", "cy2", "ref_x", "cx1", "cx2", "cxy"),
         )
 
-    from increment.estimation.engine import Method, estimate_lift
+    from increment.estimation.engine import estimate_lift
 
-    cuped_methods = [Method(name="cuped", variance_reduction="cuped")]
+    cuped_methods = [Method.cuped(covariates=CupedCovariate(name="tenure", kind="continuous"))]
     panel_result = estimate_lift(
         metrics=list(panel_src.context.metrics),
         summary=list(panel_moments.values()),
@@ -2819,7 +2852,12 @@ def test_panel_covariate_varying_within_unit_does_not_block_sibling_metrics(
         date="day",
         control="control",
         metrics=[
-            MetricSpec(name="revenue", covariate="orders"),
+            MetricSpec(
+                name="revenue",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="orders", kind="continuous")
+                ),
+            ),
             MetricSpec(name="clicks", value_column="revenue"),
         ],
     )
@@ -2863,7 +2901,12 @@ def test_panel_cuped_covariate_name_colliding_with_a_metric_column() -> None:
     )
     metrics = [
         MetricSpec(name="tenure", missing="zero"),
-        MetricSpec(name="revenue", covariate="tenure"),
+        MetricSpec(
+            name="revenue",
+            decision_method=Method.cuped(
+                covariates=CupedCovariate(name="tenure", kind="continuous")
+            ),
+        ),
     ]
     panel_src = from_unit_panel(
         panel_table,
@@ -2931,7 +2974,13 @@ def test_panel_cuped_scratch_alias_collision_matches_ordinary_and_summary(backen
     def sources(prefix: str) -> tuple[FramePanelSource, FrameTotalsSource]:
         decoys = [f"{prefix}{name}" for name in outcomes.values()]
         metrics = [
-            MetricSpec(name=name, covariate=covariate) for name, covariate in outcomes.items()
+            MetricSpec(
+                name=name,
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name=covariate, kind="continuous")
+                ),
+            )
+            for name, covariate in outcomes.items()
         ]
         metrics += [MetricSpec(name=name, missing="zero") for name in decoys]
         summary_rows = [
@@ -3053,7 +3102,12 @@ def test_panel_covariate_all_nan_for_a_unit_matches_summary_mean_imputation() ->
             for u in units
         ]
     )
-    spec = MetricSpec(name="revenue", covariate="tenure")
+    spec = MetricSpec(
+        name="revenue",
+        decision_method=Method.cuped(
+            covariates=CupedCovariate(name="tenure", kind="continuous", missing="impute")
+        ),
+    )
 
     with pytest.warns(IncrementWarning) as rec_panel:
         panel_src = from_unit_panel(
@@ -4470,9 +4524,16 @@ def test_panel_unit_frame_preserves_declared_categorical_covariate_and_null() ->
         metrics=[
             MetricSpec(
                 name="revenue",
-                covariates=(
-                    CupedCovariate(name="region", kind="categorical"),
-                    CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
+                decision_method=Method.cuped_multicovariate(
+                    name="linear",
+                    covariates=(
+                        CupedCovariate(
+                            name="region",
+                            kind="categorical",
+                            missing="impute-indicator",
+                        ),
+                        CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
+                    ),
                 ),
             )
         ],

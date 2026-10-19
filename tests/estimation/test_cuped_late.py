@@ -14,6 +14,7 @@ import math
 
 import pytest
 
+from increment import CupedCovariate
 from increment.errors import InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
 from increment.estimation.cuped import cuped_adjust, pooled_theta
@@ -644,7 +645,14 @@ def test_cxd_parity_between_frame_and_warehouse_substrates():
         unit="unit_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="rev", covariate="pre_rev")],
+        metrics=[
+            MetricSpec(
+                name="rev",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_rev", kind="continuous")
+                ),
+            )
+        ],
         uptake="clicked",
     ).raw_moments
 
@@ -714,6 +722,13 @@ def test_frame_leaves_cxd_null_without_an_uptake_column():
         unit="unit_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="rev", covariate="pre_rev")],
+        metrics=[
+            MetricSpec(
+                name="rev",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_rev", kind="continuous")
+                ),
+            )
+        ],
     )
     assert all(r["cxd"] is None for r in src.raw_moments)

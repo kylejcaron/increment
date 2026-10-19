@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from increment.errors import (
     InvalidRequestError,
@@ -24,14 +24,27 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.estimation.engine import Method, _validate_unique_method_names, resolve_method_roles
+from increment.estimation.engine import (
+    Method,
+    _is_unadjusted_method,
+    _validate_unique_method_names,
+    resolve_method_roles,
+)
 from increment.estimation.inference import Normal, Prior
 from increment.semantics.design import Encouragement, Observational, Randomized
-from increment.semantics.models import ExperimentMetric, MethodSpec, Metric, NormalPriorSpec
+from increment.semantics.models import (
+    AdjustmentCovariate,
+    CupedCovariate,
+    ExperimentMetric,
+    MethodSpec,
+    Metric,
+    NormalPriorSpec,
+)
 
 if TYPE_CHECKING:
     from increment._literals import MultiplicityCorrection
     from increment._readout_request import Correction, ReadoutRequest
+    from increment.decision import CompiledDecisionPlan
     from increment.frame import MetricSpec
 
 
@@ -53,14 +66,109 @@ _REFUSALS = refusals(
         "facade.analysis_config.cuped_linear_moments": RefusalSpec(
             "facade.analysis_config.cuped_linear_moments",
             UnsupportedRequestError,
-            template="metric {metric!r} requests cuped_linear, but from_moments stores aggregate moments rather than per-unit covariates; use from_unit_summary, from_unit_panel, from_definitions, or an artifact published with covariate extensions.",
+            template="metric {metric!r} requests cuped_multicovariate, but from_moments stores aggregate moments rather than per-unit covariates; use from_unit_summary, from_unit_panel, from_definitions, or an artifact published with covariate extensions.",
             keys=frozenset({"metric"}),
         ),
-        "facade.analysis_config.cuped_linear_covariates": "metric {metric!r} requests cuped_linear without a declared covariate set.",
-        "facade.analysis_config.cuped_linear_metric_type": "metric {metric!r} has type={metric_type!r}; cuped_linear supports mean and conversion metrics only.",
+        "facade.analysis_config.cuped_scalar_moments": RefusalSpec(
+            "facade.analysis_config.cuped_scalar_moments",
+            UnsupportedRequestError,
+            template="metric {metric!r} requests named scalar CUPED covariates, but this moments format carries no covariate-name provenance; use from_unit_summary, from_unit_panel, from_definitions, or an artifact with covariate extensions.",
+            keys=frozenset({"metric"}),
+        ),
+        "facade.analysis_config.cuped_linear_covariates": "metric {metric!r} requests cuped_multicovariate without covariates declared on the method.",
+        "facade.analysis_config.cuped_linear_metric_type": "metric {metric!r} has type={metric_type!r}; multicovariate CUPED supports mean and conversion metrics only.",
+        "facade.analysis_config.multifamily_scalar_export": RefusalSpec(
+            "facade.analysis_config.multifamily_scalar_export",
+            UnsupportedRequestError,
+            template="metric {metric!r} requests multiple scalar CUPED covariate families, but the current moments format can retain only one x family; export is refused before writing. Export one scalar family, or use fixed-horizon unit evidence.",
+            keys=frozenset({"metric"}),
+        ),
+        "facade.analysis_config.multifamily_scalar_breakout": RefusalSpec(
+            "facade.analysis_config.multifamily_scalar_breakout",
+            UnsupportedRequestError,
+            template=(
+                "metric {metric!r} requests multiple distinct scalar CUPED covariate families "
+                "for a breakout; one breakout moment row can retain only one x family. "
+                "Run one scalar family per breakout request, or use cuped_multicovariate "
+                "when the covariates form one joint family."
+            ),
+            keys=frozenset({"metric"}),
+        ),
+        "facade.analysis_config.covariate_binding_conflict": "covariate alias {covariate!r} has incompatible source binding or kind across methods",
+        "readout.scalar_method_evidence": RefusalSpec(
+            "readout.scalar_method_evidence",
+            UnsupportedRequestError,
+            template=(
+                "source route {route!r} cannot produce scalar evidence for method {method!r}; "
+                "use a unit-bearing source or a source that preserves method-scoped moments"
+            ),
+            keys=frozenset({"route", "method"}),
+        ),
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def method_covariates(config: object, method: Method) -> tuple[CupedCovariate, ...] | None:
+    """Return one method's inputs; ``None`` is the established implicit scalar x-family."""
+    if method.variance_reduction == "cuped":
+        return method.covariates
+    return ()
+
+
+def ensure_covariate_binding_compatible(
+    previous: CupedCovariate | AdjustmentCovariate,
+    current: CupedCovariate,
+    *,
+    current_alias: str | None = None,
+) -> None:
+    previous_kind = getattr(previous, "kind", None)
+    current_kind = getattr(current, "kind", None)
+    previous_property = getattr(previous, "property", None) or getattr(previous, "name", None)
+    current_property = (
+        getattr(current, "property", None) or current_alias or getattr(current, "name", None)
+    )
+    previous_source = getattr(previous, "source", None)
+    current_source = getattr(current, "source", None)
+    previous_measure = getattr(previous, "measure", None)
+    current_measure = getattr(current, "measure", None)
+    compatible = (
+        (previous_kind is None or current_kind is None or previous_kind == current_kind)
+        and (
+            previous_property is None
+            or current_property is None
+            or previous_property == current_property
+        )
+        and (previous_source is None or current_source is None or previous_source == current_source)
+        and ((previous_measure is None) == (current_measure is None))
+        and (
+            previous_measure is None
+            or current_measure is None
+            or previous_measure == current_measure
+        )
+    )
+    if not compatible:
+        _raise(
+            "facade.analysis_config.covariate_binding_conflict",
+            covariate=current_alias or current.name,
+        )
+
+
+def union_covariates(
+    configs: Sequence[object], methods: Sequence[Sequence[Method]]
+) -> tuple[CupedCovariate, ...]:
+    """Deduplicate raw covariate bindings before acquisition, independent of missing policy."""
+    by_name: dict[str, CupedCovariate] = {}
+    for _config, method_group in zip(configs, methods, strict=True):
+        for method in method_group:
+            for covariate in method.covariates or ():
+                previous = by_name.get(covariate.name)
+                if previous is None:
+                    by_name[covariate.name] = covariate
+                    continue
+                ensure_covariate_binding_compatible(previous, covariate)
+    return tuple(by_name.values())
+
 
 _DEFAULT_DECISION_METHOD = Method(name="unadjusted")
 
@@ -81,6 +189,7 @@ class ResolvedMetricConfig:
     # It is not inferred from a placeholder ``Method`` instance.
     decision_defaulted: bool = False
     covariate_available: bool = False
+    source_methods: tuple[Method, ...] = ()
 
     @property
     def uses_design_default(self) -> bool:
@@ -103,18 +212,193 @@ def effective_methods(
     return methods
 
 
-def validate_readout_covariates(request: ReadoutRequest) -> None:
-    """Refuse an effective cuped_linear method whose metric declares no covariates.
+def _scalar_preparation(covariates: Sequence[CupedCovariate] | None) -> tuple[str, ...]:
+    return (
+        tuple(covariate.missing for covariate in covariates)
+        if covariates is not None
+        else ("zero",)
+    )
 
-    Runs in the shared request preflight so a call-time override is refused
-    on every ingress before any source acquisition, matching the declaration
-    rule :func:`resolve_configs` applies to configured methods.
+
+def validate_scalar_route(
+    configs: Sequence[ResolvedMetricConfig],
+    *,
+    route: str,
+    representation: Literal[
+        "unit",
+        "moments",
+        "export",
+        "breakout",
+        "implicit",
+        "native_sequential",
+        "registered",
+        "unavailable",
+        "prepared",
+    ] = "unit",
+    design: Randomized | Encouragement | Observational | None = None,
+    retained_configs: Sequence[ResolvedMetricConfig] = (),
+    registered_plan: CompiledDecisionPlan | None = None,
+    bindings: Mapping[str, Sequence[CupedCovariate]] | None = None,
+    covariate_moments_available: bool | None = None,
+    anonymous_metrics: Collection[str] = (),
+) -> None:
+    """Admit effective scalar inputs against a route's retained representation.
+
+    The input family includes its missing-value preparation, not its display
+    label. This check uses declarations only and precedes evidence acquisition.
+    Raw published bindings can apply each supported missing policy at reduction.
+    Known moment capabilities retain their existing missing-covariate refusal
+    before checking whether a named binding is representable.
     """
+    retained = {config.metric.name: config for config in retained_configs}
+    for config in configs:
+        methods = effective_methods(config, design=design)
+        scalar = tuple(method for method in methods if method.variance_reduction == "cuped")
+        families = {method.covariates for method in scalar}
+        if representation in {"moments", "export", "breakout"} and len(families) > 1:
+            code = {
+                "moments": "facade.analysis_config.cuped_scalar_moments",
+                "export": "facade.analysis_config.multifamily_scalar_export",
+                "breakout": "facade.analysis_config.multifamily_scalar_breakout",
+            }[representation]
+            _raise(code, metric=config.metric.name, route=route)
+        expected = set()
+        if representation in {"registered", "prepared"}:
+            declared = retained.get(config.metric.name)
+            expected = (
+                {
+                    method.covariates
+                    for method in effective_methods(declared, design=design)
+                    if method.variance_reduction == "cuped"
+                }
+                if declared is not None
+                else set()
+            )
+            if representation == "registered" and registered_plan is not None:
+                from increment.estimation.decision_types import ContrastDecisionProcedure
+
+                procedure = registered_plan.procedures.get(config.metric.name)
+                expected = (
+                    {
+                        method.covariates
+                        for method in (procedure.decision_method, *procedure.sensitivity_methods)
+                        if method.variance_reduction == "cuped"
+                    }
+                    if procedure is not None
+                    and not isinstance(procedure, ContrastDecisionProcedure)
+                    else set()
+                )
+            if representation == "registered" and (len(families) > 1 or families != expected):
+                from increment.sequential_state import sequential_refuse
+
+                sequential_refuse(
+                    "source.invalid",
+                    "effective scalar inputs and missing-value preparation must match "
+                    "the registered input; construct a new analysis for a different recipe",
+                    metric=config.metric.name,
+                    route=route,
+                )
+        for method in scalar:
+            if representation == "prepared" and method.covariates not in expected:
+                preparation_matches = config.metric.name in anonymous_metrics and any(
+                    _scalar_preparation(method.covariates) == _scalar_preparation(family)
+                    for family in expected
+                )
+                if not preparation_matches and (expected or method.covariates is not None):
+                    _raise("readout.scalar_method_evidence", route=route, method=method.name)
+            if (
+                representation == "implicit"
+                and method.covariates
+                and covariate_moments_available is not None
+                and (not config.covariate_available or not covariate_moments_available)
+            ):
+                from increment.estimation.cuped.scalar import refuse_unmaterialized_covariate
+
+                refuse_unmaterialized_covariate(
+                    group_id=getattr(design, "control_group", None),
+                    metric=config.metric.name,
+                )
+            if representation == "unavailable" or (
+                representation == "implicit" and method.covariates
+            ):
+                _raise("readout.scalar_method_evidence", route=route, method=method.name)
+            if representation == "native_sequential" and method.covariates:
+                from increment.sequential_state import sequential_refuse
+
+                sequential_refuse(
+                    "source.invalid",
+                    "native sequential capture retains the outcome pre-period input, not "
+                    "explicit property or measure bindings; use the implicit registered "
+                    "input or a unit-summary frame with the bound covariate",
+                    metric=config.metric.name,
+                    route=route,
+                )
+            if bindings is None:
+                continue
+            for covariate in method.covariates or ():
+                candidates = bindings.get(config.metric.name, ())
+                matching = False
+                for candidate in candidates:
+                    if candidate.name != covariate.name:
+                        continue
+                    try:
+                        ensure_covariate_binding_compatible(candidate, covariate)
+                    except InvalidRequestError:
+                        continue
+                    matching = True
+                    break
+                if not matching:
+                    _raise(
+                        "readout.scalar_method_evidence",
+                        method=method.name,
+                        route=route,
+                    )
+
+
+def validate_readout_covariates(request: ReadoutRequest) -> None:
+    """Refuse effective CUPED bindings absent from the source's available columns."""
     for config, methods in zip(request.configs, request.estimation_methods, strict=True):
-        if not config.covariates and any(
-            method.variance_reduction == "cuped_linear" for method in methods
-        ):
-            _raise("facade.analysis_config.cuped_linear_covariates", metric=config.metric.name)
+        for method in methods:
+            if method.variance_reduction not in ("cuped", "cuped_multicovariate"):
+                continue
+            if not method.covariates:
+                continue
+            if (
+                method.variance_reduction == "cuped_multicovariate"
+                and request.scalar_bindings is not None
+            ):
+                published = {
+                    covariate.name: covariate
+                    for covariate in request.scalar_bindings.get(config.metric.name, ())
+                }
+                for covariate in method.covariates:
+                    previous = published.get(covariate.name)
+                    if previous is None:
+                        _raise(
+                            "facade.analysis_config.cuped_linear_covariates",
+                            metric=config.metric.name,
+                        )
+                    ensure_covariate_binding_compatible(previous, covariate)
+            requested = frozenset(covariate.name for covariate in method.covariates)
+            if request.available_covariates is not None:
+                if requested <= request.available_covariates:
+                    continue
+                _raise(
+                    "facade.analysis_config.cuped_linear_covariates",
+                    metric=config.metric.name,
+                )
+            if config.covariate_available or method in config.source_methods:
+                continue
+            legacy_scalar_x = (
+                request.source_name == "MomentsSource"
+                and method.variance_reduction == "cuped"
+                and len(method.covariates) == 1
+            )
+            if not legacy_scalar_x:
+                _raise(
+                    "facade.analysis_config.cuped_linear_covariates",
+                    metric=config.metric.name,
+                )
 
 
 def normalize_display_correction(correction: MultiplicityCorrection) -> Correction:
@@ -143,9 +427,9 @@ def _roles_from_methods(
     from increment.estimation.adjust import ADJUSTMENTS
 
     prefer = (
-        (lambda m: m.name != "unadjusted")
+        (lambda method: not _is_unadjusted_method(method))
         if any(method.name in ADJUSTMENTS for method in methods)
-        else (lambda m: m.name == "unadjusted")
+        else _is_unadjusted_method
     )
     roles = resolve_method_roles(methods, prefer=prefer)
     decision = next(m for m in methods if roles[m.name] == "decision")
@@ -169,6 +453,8 @@ def method_from_spec(spec: MethodSpec) -> Method:
         name=spec.name,
         variance_reduction=spec.variance_reduction,
         conversion_inference=spec.conversion_inference,
+        covariates=spec.covariates,
+        procedure=spec.procedure,
     )
 
 
@@ -307,6 +593,11 @@ def refuse_cuped_linear_moments(metric: str) -> NoReturn:
     _raise("facade.analysis_config.cuped_linear_moments", metric=metric)
 
 
+def refuse_unidentified_scalar_moments(metric: str) -> NoReturn:
+    """Refuse a named scalar covariate absent from aggregate-moment provenance."""
+    _raise("facade.analysis_config.cuped_scalar_moments", metric=metric)
+
+
 def resolve_configs(
     selected: Sequence[Metric],
     bindings: Mapping[str, ExperimentMetric] | None,
@@ -389,15 +680,16 @@ def resolve_configs(
             else (decision_method, *sensitivity_methods),
             caller=f"metric {metric.name!r}",
         )
-        covariates = (
-            binding.covariates
-            if binding is not None
-            else (spec.covariates if spec is not None else ())
-        )
         configured_methods = (() if decision_defaulted else (decision_method,)) + tuple(
             sensitivity_methods
         )
-        if any(method.variance_reduction == "cuped_linear" for method in configured_methods):
+        covariates = union_covariates((object(),), (configured_methods,))
+        configured_methods = (() if decision_defaulted else (decision_method,)) + tuple(
+            sensitivity_methods
+        )
+        if any(
+            method.variance_reduction == "cuped_multicovariate" for method in configured_methods
+        ):
             if not covariates:
                 if bindings is None and specs is None:
                     _raise("facade.analysis_config.cuped_linear_moments", metric=metric.name)
@@ -418,9 +710,9 @@ def resolve_configs(
                 methods_explicitly_empty=methods_explicitly_empty,
                 decision_defaulted=decision_defaulted,
                 covariates=tuple(covariates),
+                source_methods=configured_methods,
                 covariate_available=(
-                    (spec is not None and spec.covariate is not None)
-                    or metric.name in covariate_available_metrics
+                    bool(covariates) or metric.name in covariate_available_metrics
                 ),
             )
         )
@@ -483,12 +775,19 @@ def overlay_configs(
             else (resolved_decision, *resolved_sensitivity),
             caller=f"metric {metric.name!r}",
         )
+        configured_methods = (
+            ()
+            if methods_explicitly_empty
+            else ((() if result_defaulted else (resolved_decision,)) + tuple(resolved_sensitivity))
+        )
+        covariates = union_covariates((config,), (configured_methods,))
         out.append(
             replace(
                 config,
                 metric=metric,
                 decision_method=resolved_decision,
                 sensitivity_methods=resolved_sensitivity,
+                covariates=covariates,
                 prior=cast(
                     Prior | None,
                     (
@@ -508,6 +807,7 @@ def overlay_configs(
                     else config.methods_explicitly_empty
                 ),
                 decision_defaulted=result_defaulted,
+                covariate_available=config.covariate_available,
             )
         )
     return tuple(out)

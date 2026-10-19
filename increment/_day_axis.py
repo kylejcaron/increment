@@ -18,7 +18,12 @@ from increment._frame_panel import _day_axis_label_order
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
-from increment._source_types import ComplianceSummary, classify_source, compliance_summary_series
+from increment._source_types import (
+    ComplianceSummary,
+    ScalarCovariateMoments,
+    classify_source,
+    compliance_summary_series,
+)
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     DailyLiftEstimate,
@@ -1524,6 +1529,8 @@ class DayAxisReadouts:
         prior: Prior | None | _Unset,
     ) -> DailyLiftEstimates:
         route = self._route()
+        from increment._analysis_config import validate_scalar_route
+
         _, requested_estimands, encouragement_design = _validate_lift_request(
             req,
             src=self._src,
@@ -1618,6 +1625,22 @@ class DayAxisReadouts:
             }
         else:
             _validate_daily_inference(_sequential_inference(self._plan), method=req.caller)
+        validate_scalar_route(
+            opts.configs,
+            route=f"Analysis.{req.caller}",
+            representation=(
+                "registered"
+                if getattr(self._plan.inference, "registration", None) is not None
+                else "implicit"
+            ),
+            registered_plan=self._plan,
+            design=self._design,
+            covariate_moments_available=(
+                req.grain in self._src.scalar_covariate_grains
+                if isinstance(self._src, ScalarCovariateMoments)
+                else True
+            ),
+        )
         design_compliance, compliance_by_date = _compliance_readouts(
             req, encouragement_design, requested_estimands, extra, self._src
         )
