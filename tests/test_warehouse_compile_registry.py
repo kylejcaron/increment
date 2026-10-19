@@ -97,3 +97,15 @@ def test_schema_only_ddl_matches_rendered_table_identifier(dialect):
     assert create_table.this.args.get("quoted") == query_table.this.args.get("quoted")
     assert create_table.args.get("db") == query_table.args.get("db")
     assert create_table.args.get("catalog") == query_table.args.get("catalog")
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_negative_control_is_registered_and_renders_offline(dialect):
+    from integration.warehouse_execution._compile import compile_negative_control
+
+    case = compile_negative_control(dialect)
+    sql = case.compile(case.build(case.table_names))
+    ast = sqlglot.parse_one(sql, read=dialect)
+    referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
+    assert referenced <= set(case.table_names.values())
+    assert set(case.table_names.values()) <= referenced
