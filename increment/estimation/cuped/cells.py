@@ -82,17 +82,17 @@ def categorical_cells(
     patterns = tuple(sorted(set(rows), key=_pattern_key))
     lookup = {pattern: index for index, pattern in enumerate(patterns)}
     codes = np.fromiter((lookup[row] for row in rows), dtype=int, count=len(groups))
-    exponents = tuple(
-        math.frexp(float(np.max(np.abs(values), initial=0.0)))[1] for values in outcomes
-    )
     counts = np.zeros((len(order), len(patterns)), dtype=np.int64)
     references = np.zeros((len(outcomes), len(order)))
+    exponents = [[0] * len(order) for _ in outcomes]
     first = np.zeros((len(order), len(outcomes), len(patterns)))
     scatter = np.zeros((len(order), len(outcomes), len(outcomes), len(patterns)))
     for a, arm_rows in enumerate(indices):
         if not len(arm_rows):
             continue
         references[:, a] = [values[arm_rows[0]] for values in outcomes]
+        for f, values in enumerate(outcomes):
+            exponents[f][a] = math.frexp(float(np.max(np.abs(values[arm_rows]))))[1]
         for k in range(len(patterns)):
             selected = arm_rows[codes[arm_rows] == k]
             count = len(selected)
@@ -101,8 +101,8 @@ def categorical_cells(
                 continue
             centered = np.array(
                 [
-                    np.ldexp(values[selected], -exponents[f])
-                    - math.ldexp(references[f, a], -exponents[f])
+                    np.ldexp(values[selected], -exponents[f][a])
+                    - math.ldexp(references[f, a], -exponents[f][a])
                     for f, values in enumerate(outcomes)
                 ]
             )
@@ -125,7 +125,7 @@ def categorical_cells(
         ),
         outcome_references=_freeze_payload(references),
         centered_first_moments=_freeze_payload(first),
-        outcome_exponents=exponents,
+        outcome_exponents=_freeze_payload(exponents),
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=tuple(covariates),
     )
@@ -156,19 +156,23 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
         np.asarray(part.symmetric_cross_moments, dtype=float) for part in (left, right)
     ]
     components = len(left.outcome_references)
-    exponents = tuple(
-        max(
-            (
-                part.outcome_exponents[f]
-                for part in (left, right)
-                if any(part.outcome_references[f])
-                or np.any(np.asarray(part.centered_first_moments)[:, f])
-                or np.any(np.asarray(part.symmetric_cross_moments)[:, f, f])
-            ),
-            default=0,
-        )
+    arm_count = len(left.arms)
+    exponents = [
+        [
+            max(
+                (
+                    part.outcome_exponents[f][a]
+                    for part in (left, right)
+                    if part.outcome_references[f][a]
+                    or any(part.centered_first_moments[a][f])
+                    or any(part.symmetric_cross_moments[a][f][f])
+                ),
+                default=0,
+            )
+            for a in range(arm_count)
+        ]
         for f in range(components)
-    )
+    ]
     counts = np.zeros((len(left.arms), len(patterns)), dtype=np.int64)
     references = np.array(
         [
@@ -193,18 +197,20 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
                     [
                         math.fsum(
                             (
-                                math.ldexp(part.outcome_references[f][a], -exponents[f]),
-                                -math.ldexp(references[f, a], -exponents[f]),
+                                math.ldexp(part.outcome_references[f][a], -exponents[f][a]),
+                                -math.ldexp(references[f, a], -exponents[f][a]),
                                 math.ldexp(
                                     part.centered_first_moments[a][f][old] / count,
-                                    part.outcome_exponents[f] - exponents[f],
+                                    part.outcome_exponents[f][a] - exponents[f][a],
                                 ),
                             )
                         )
                         for f in range(components)
                     ]
                 )
-                shifts = np.asarray(part.outcome_exponents) - exponents
+                shifts = np.array(
+                    [part.outcome_exponents[f][a] - exponents[f][a] for f in range(components)]
+                )
                 cross = np.ldexp(part_cross[a, :, :, old], shifts[:, None] + shifts[None, :])
                 entries.append((count, mean, cross))
             if not entries:
@@ -239,7 +245,7 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
         centered_first_moments=_freeze_payload(first),
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=left.covariate_names,
-        outcome_exponents=exponents,
+        outcome_exponents=_freeze_payload(exponents),
     )
 
 
@@ -256,7 +262,7 @@ def _denominator_support(cells, counts):
     for a, count in enumerate(counts):
         first = np.asarray(cells.centered_first_moments[a][1])
         mean = (
-            math.ldexp(cells.outcome_references[1][a], -cells.outcome_exponents[1])
+            math.ldexp(cells.outcome_references[1][a], -cells.outcome_exponents[1][a])
             + math.fsum(first) / count
         )
         if mean <= 0:
@@ -264,7 +270,7 @@ def _denominator_support(cells, counts):
                 "estimation.cuped_linear.nonpositive_component",
                 family="denominator",
                 arm=cells.arms[a],
-                value=math.ldexp(mean, cells.outcome_exponents[1]),
+                value=math.ldexp(mean, cells.outcome_exponents[1][a]),
             )
         cell_counts = np.asarray(cells.counts[a])
         present = cell_counts > 0
@@ -338,12 +344,16 @@ def fit_categorical_cells(cells: CategoricalCells, *, control) -> Multicovariate
         missing,
         multiplicities,
     )
+    position_exponents = np.array(
+        [[cells.outcome_exponents[f][a] for a, _ in positions] for f in range(components)],
+        dtype=int,
+    )
     outcomes = tuple(
         np.ldexp(
             np.array(
                 [cells.centered_first_moments[a][f][k] / cells.counts[a][k] for a, k in positions]
             ),
-            cells.outcome_exponents[f],
+            position_exponents[f],
         )
         for f in range(components)
     )
@@ -360,7 +370,7 @@ def fit_categorical_cells(cells: CategoricalCells, *, control) -> Multicovariate
         control,
         np.zeros((len(cells.arms), len(scales))),
         multiplicities=multiplicities,
-        scatter_factor=(_scatter_root(scatter), cells.outcome_exponents),
+        scatter_factor=(_scatter_root(scatter), position_exponents),
         denominator_support=denominator_support,
         outcome_references=cells.outcome_references,
     )
