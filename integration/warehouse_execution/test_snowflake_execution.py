@@ -61,6 +61,57 @@ def test_artifact_manifest_index_namespace_contract(snowflake_con):
     run_artifact_namespace_probe(snowflake_con, dialect="snowflake")
 
 
+def test_snowflake_format2_digest_matches_duckdb(snowflake_con, monkeypatch):
+    import ibis
+
+    from increment.query import artifact_digest
+    from increment.query.artifact_digest import digest_relation_sql_v2
+    from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
+
+    schema = _PORTABLE_SCHEMA
+    rows = _portable_digest_rows()
+    types = {
+        "id": "int64",
+        "text": "string",
+        "integer": "int64",
+        "float": "float64",
+        "date": "date",
+        "timestamp": "timestamp('UTC')",
+        "boolean": "boolean",
+    }
+    duckdb = ibis.duckdb.connect()
+    pg_name = f"digest_spec_{uuid4().hex[:10]}"
+    try:
+        expected = digest_relation_sql_v2(
+            duckdb,
+            duckdb.create_table("digest_spec", ibis.memtable(rows, schema=ibis.schema(types))),
+            "portable_spec",
+            schema,
+            primary_key=("id",),
+        )
+        table = snowflake_con.create_table(pg_name, ibis.memtable(rows, schema=ibis.schema(types)))
+        monkeypatch.setattr(
+            artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "snowflake"})
+        )
+        actual = digest_relation_sql_v2(
+            snowflake_con, table, "portable_spec", schema, primary_key=("id",)
+        )
+        assert (
+            expected.content_sha256
+            == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+        )
+        assert actual.content_sha256 == expected.content_sha256
+    finally:
+        duckdb.disconnect()
+        snowflake_con.drop_table(pg_name, force=True)
+
+
+def test_snowflake_float17g_matches_pinned_duckdb_binary64(snowflake_con):
+    from integration.warehouse_execution._float_tokens import run_float_token_probe
+
+    run_float_token_probe(snowflake_con, dialect="snowflake")
+
+
 def test_scratch_schema_helpers_qualify_with_the_database():
     class Connection:
         current_catalog = "RELEASE_DB"

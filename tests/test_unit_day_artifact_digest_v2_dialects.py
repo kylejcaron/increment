@@ -29,7 +29,7 @@ _TABLE = ibis.table(
         ("duckdb", "SHA256("),
         ("snowflake", "SHA2("),
         ("bigquery", "TO_HEX(SHA256("),
-        ("postgres", "ENCODE(DIGEST("),
+        ("postgres", "ENCODE(SHA256("),
     ],
 )
 def test_sha256_hex_compiles_to_the_vendor_function(dialect, expected_fragment):
@@ -44,7 +44,7 @@ def test_sha256_hex_compiles_to_the_vendor_function(dialect, expected_fragment):
         ("duckdb", "UNHEX(SHA256(", "LOWER(HEX("),
         ("snowflake", "SHA2_BINARY(", "HEX_ENCODE("),
         ("bigquery", "SHA256(", "TO_HEX("),
-        ("postgres", "DIGEST(", "ENCODE("),
+        ("postgres", "SHA256(", "ENCODE("),
     ],
 )
 def test_binary_row_hash_and_hex_rendering_compile_to_vendor_functions(
@@ -77,13 +77,80 @@ def test_row_token_compiles_without_backend_specific_sql(dialect):
     ibis.to_sql(_TABLE.select(tok=token), dialect=dialect)
 
 
+def test_postgres_float_token_uses_ieee_bytes_and_explicit_17_digit_rounding():
+    table = ibis.table({"value": "float64"}, name="rows")
+    token = _row_token_expr(table, [("value", 3, "float")], dialect="postgres")
+    sql = str(ibis.to_sql(table.select(token=token), dialect="postgres"))
+    assert "FLOAT8SEND(" in sql
+    assert "GET_BYTE(" in sql
+    assert "DIV(" in sql
+    assert "%" in sql
+    assert "TRIM_SCALE(" in sql
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_cloud_float17g_compiles_exact_integer_limb_arithmetic(dialect):
+    table = ibis.table({"value": "float64"}, name="rows")
+    token = _row_token_expr(table, [("value", 3, "float")], dialect=dialect)
+    sql = str(ibis.to_sql(table.select(token=token), dialect=dialect))
+    import sqlglot
+
+    sqlglot.parse_one(sql, read=dialect)
+    assert "10000000000000000" in sql
+    assert "LAG(" in sql
+    assert "MOD(" in sql
+    assert "UNBOUNDED PRECEDING" in sql
+
+
+@pytest.mark.integration
+def test_integer_limb_float17g_matches_native_duckdb():
+    import json
+    import math
+    import struct
+    from pathlib import Path
+
+    import numpy as np
+    import pyarrow as pa
+
+    from increment.query._artifact_float import _float17g_sql
+
+    fixture = json.loads((Path(__file__).parent / "fixtures/artifact_float17g.json").read_text())
+    pinned = [struct.unpack(">d", bytes.fromhex(case["bits"]))[0] for case in fixture["cases"]]
+    powers = [
+        neighbour
+        for exponent in range(-1074, 1024)
+        for value in (math.ldexp(1.0, exponent),)
+        for neighbour in (math.nextafter(value, 0.0), value, math.nextafter(value, math.inf))
+    ]
+    values = np.concatenate(
+        [
+            np.random.default_rng(173).bit_generator.random_raw(10_000).view(np.float64),
+            pinned,
+            powers,
+        ]
+    )
+    finite = values[np.isfinite(values)]
+    con = ibis.duckdb.connect()
+    try:
+        con.create_table("float_limb_spec", pa.table({"value": finite}))
+        sql = _float17g_sql('"value"', dialect="duckdb")
+        rows = con.raw_sql(
+            f"SELECT value, {sql} AS actual, printf('%.17g', value) AS expected "
+            "FROM float_limb_spec"
+        ).fetchall()
+        for value, actual, expected in rows:
+            assert actual == expected, value
+    finally:
+        con.disconnect()
+
+
 @pytest.mark.parametrize(
     "dialect,expected_fragment",
     [
         ("duckdb", "EPOCH_US("),
         ("snowflake", "DATE_PART('epoch_microsecond'"),
         ("bigquery", "UNIX_MICROS("),
-        ("postgres", "DATE_PART('epoch'"),
+        ("postgres", "EXTRACT(EPOCH FROM"),
     ],
 )
 def test_timestamp_token_renders_epoch_microseconds_not_session_local_text(

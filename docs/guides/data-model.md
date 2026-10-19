@@ -706,11 +706,24 @@ publication time, and experiment end are not completeness proofs.
     and semantic role.
 
     The warehouse store persists each relation before hashing the persisted
-    rows. Format-2 relations use the SQL digest codec, whose row processing and
-    result transfer remain warehouse-side; unsupported historical relation
-    formats are refused before unit transfer when the backend cannot verify
-    them. Streaming `RelationDigests.rows_bytes` is `None`; buffered
+    rows. Format-2 SQL verification is enabled for DuckDB and PostgreSQL.
+    Only bounded hash/count summaries return to Python; per-unit hashing stays
+    in the warehouse. Unsupported historical relation formats are refused
+    before unit transfer when the backend cannot verify them.
+    `RelationDigests.rows_bytes` is `None` on the SQL route;
     `digest_relation()` still includes the canonical row bytes.
+
+    Format 2 uses DuckDB's `%.17g` float spelling: exact binary64 values are
+    rounded half-even to 17 significant decimal digits, then trailing zeros
+    are removed and scientific notation is used below exponent -4 or from
+    exponent 17. PostgreSQL decodes `float8send` into an exact decimal integer
+    and scale before rounding. Snowflake and BigQuery use exact decimal
+    integer limbs to avoid their fixed decimal precision limits; their SQL
+    verifiers remain disabled pending live backend validation.
+    PostgreSQL timestamp tokens use numeric `EXTRACT(EPOCH)` before conversion
+    to integer microseconds, without passing through floating-point seconds.
+    Text hash inputs are converted explicitly to UTF-8 bytes, so backslashes
+    remain literal text rather than PostgreSQL bytea escape sequences.
 
     Exposure metadata and integrity checks use SQL reductions, joins, and
     anti-joins rather than per-unit Python collections. Explicit row APIs such

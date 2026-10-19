@@ -43,6 +43,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
+from increment.query._artifact_float import _CloudFloat17g, register_cloud_float17g
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
@@ -998,14 +999,10 @@ def digest_relation_bucketed(
     )
 
 
-# Backends whose SQL digest v2 path is live-verified. Other dialects compile in
-# tests/test_unit_day_artifact_digest_v2_dialects.py but join only after a live
-# float round-trip probe against a real connection.
-_SQL_DIGEST_BACKENDS = frozenset({"duckdb"})
+_SQL_DIGEST_BACKENDS = frozenset({"duckdb", "postgres"})
 
-# Native SHA-256-returning-hex-text function per backend. Compile-verified
-# for all four via ibis.to_sql(dialect=...) with no live connection; only
-# duckdb is also live-executed (see tests/test_unit_day_artifact_digest_v2.py).
+# Native SHA-256-returning-hex-text functions. DuckDB and PostgreSQL are
+# live-verified; hosted backends remain disabled until their live probes pass.
 _SQL_DIGEST_SHA256: dict[str, Callable[[ir.StringValue], ir.StringValue]] = {}
 # Same hash as 32 raw bytes, and its lowercase-hex rendering. Row hashes are
 # held in binary (half the width of hex) while waiting to be aggregated.
@@ -1021,6 +1018,108 @@ class _Sha2Binary(ops.Value):
 
     dtype = dt.binary
     shape = rlz.shape_like("arg")
+
+
+class _PostgresFloat17g(ops.Value):
+    """Render float8 exactly like DuckDB's `printf('%.17g', value)`."""
+
+    arg: ops.Value[dt.Floating]
+
+    dtype = dt.string
+    shape = rlz.shape_like("arg")
+
+
+class _PostgresEpochMicros(ops.Value):
+    arg: ops.Value[dt.Timestamp]
+
+    dtype = dt.string
+    shape = rlz.shape_like("arg")
+
+
+def _compile_postgres_epoch_micros(_compiler: object, _op: _PostgresEpochMicros, *, arg: Any):
+    import sqlglot as sg
+
+    value = arg.sql(dialect="postgres")
+    return sg.parse_one(
+        f"CAST(CAST(EXTRACT(EPOCH FROM {value}) * 1000000 AS BIGINT) AS TEXT)",
+        read="postgres",
+    )
+
+
+def _compile_postgres_float17g(_compiler: object, _op: _PostgresFloat17g, *, arg: Any):
+    import sqlglot as sg
+
+    value = arg.sql(dialect="postgres")
+    # |x| = D * 10**-scale, with integer D. Division/remainder, not a
+    # fixed-scale decimal division, decide the exact half-even rounding.
+    sql = f"""(
+      SELECT (CASE WHEN sign <> 0 THEN '-' ELSE '' END) ||
+        CASE WHEN coefficient = 0 THEN '0'
+          WHEN exponent10 < -4 OR exponent10 >= 17 THEN
+            left(digits, 1) ||
+            CASE WHEN length(digits) > 1 THEN '.' || substr(digits, 2) ELSE '' END ||
+            'e' || CASE WHEN exponent10 < 0 THEN '-' ELSE '+' END ||
+            lpad(abs(exponent10)::text, greatest(2, length(abs(exponent10)::text)), '0')
+          WHEN exponent10 < 0 THEN '0.' || repeat('0', -exponent10 - 1) || digits
+          WHEN length(digits) <= exponent10 + 1 THEN
+            digits || repeat('0', exponent10 + 1 - length(digits))
+          ELSE left(digits, exponent10 + 1) || '.' || substr(digits, exponent10 + 2)
+        END
+      FROM (
+        SELECT sign, coefficient,
+          exp10 + CASE WHEN coefficient = 100000000000000000 THEN 1 ELSE 0 END AS exponent10,
+          rtrim(trim_scale(coefficient)::text, '0') AS digits
+        FROM (
+          SELECT sign, exp10,
+            whole + CASE WHEN 2 * remainder > divisor
+              OR (2 * remainder = divisor AND mod(whole, 2) = 1)
+              THEN 1 ELSE 0 END AS coefficient
+          FROM (
+            SELECT sign, exp10, divisor, div(integer_value, divisor) AS whole,
+              mod(integer_value, divisor) AS remainder
+            FROM (
+              SELECT sign, length(trim_scale(integer_value)::text) - 1 - scale AS exp10,
+                integer_value, power(10::numeric,
+                  greatest(length(trim_scale(integer_value)::text) - 17, 0)) AS divisor
+              FROM (
+                SELECT sign, greatest(-exponent2, 0) AS scale,
+                  mantissa::numeric * power(
+                    CASE WHEN exponent2 < 0 THEN 5::numeric ELSE 2::numeric END,
+                    abs(exponent2)) AS integer_value
+                FROM (
+                  SELECT (get_byte(raw, 0) & 128) AS sign,
+                    CASE WHEN expbits = 0 THEN -1074 ELSE expbits - 1075 END AS exponent2,
+                    fraction + CASE WHEN expbits = 0 THEN 0 ELSE 4503599627370496 END AS mantissa
+                  FROM (
+                    SELECT raw,
+                      (get_byte(raw, 0) & 127) * 16 + (get_byte(raw, 1) >> 4) AS expbits,
+                      (get_byte(raw, 1) & 15)::bigint * 281474976710656
+                        + get_byte(raw, 2)::bigint * 1099511627776
+                        + get_byte(raw, 3)::bigint * 4294967296
+                        + get_byte(raw, 4)::bigint * 16777216
+                        + get_byte(raw, 5)::bigint * 65536
+                        + get_byte(raw, 6)::bigint * 256
+                        + get_byte(raw, 7)::bigint AS fraction
+                    FROM (SELECT float8send({value}) AS raw) AS source_bits
+                  ) AS decoded
+                ) AS binary_value
+              ) AS exact_decimal
+            ) AS scaled_value
+          ) AS quotient_remainder
+        ) AS rounded_value
+      ) AS fmt
+    )"""
+    return sg.parse_one(f"SELECT {sql}", read="postgres").expressions[0]
+
+
+def _register_postgres_digest_ops() -> None:
+    from ibis.backends.sql.compilers.postgres import PostgresCompiler
+
+    PostgresCompiler.visit__PostgresFloat17g = _compile_postgres_float17g  # ty: ignore[unresolved-attribute]
+    PostgresCompiler.visit__PostgresEpochMicros = _compile_postgres_epoch_micros  # ty: ignore[unresolved-attribute]
+
+
+_register_postgres_digest_ops()
 
 
 def _compile_snowflake_sha2_binary(_compiler: object, _op: _Sha2Binary, *, arg: Any, bits: Any):
@@ -1060,11 +1159,14 @@ def _register_sha256_backends() -> None:
     @ibis.udf.scalar.builtin(name="to_hex")
     def _bigquery_to_hex(x: bytes) -> str: ...  # ty: ignore[empty-body]
 
-    @ibis.udf.scalar.builtin(name="digest")
-    def _postgres_digest(x: str, algo: str) -> bytes: ...  # ty: ignore[empty-body]
+    @ibis.udf.scalar.builtin(name="sha256")
+    def _postgres_sha256(x: bytes) -> bytes: ...  # ty: ignore[empty-body]
 
     @ibis.udf.scalar.builtin(name="encode")
     def _postgres_encode(x: bytes, fmt: str) -> str: ...  # ty: ignore[empty-body]
+
+    @ibis.udf.scalar.builtin(name="convert_to")
+    def _postgres_convert_to(x: str, encoding: str) -> bytes: ...  # ty: ignore[empty-body]
 
     _SQL_DIGEST_SHA256["duckdb"] = _duckdb_sha256  # ty: ignore[invalid-assignment]
     _SQL_DIGEST_SHA256["snowflake"] = lambda col: _snowflake_sha2(col, 256)  # ty: ignore[invalid-assignment]
@@ -1072,7 +1174,7 @@ def _register_sha256_backends() -> None:
         col.hashbytes("sha256")
     )
     _SQL_DIGEST_SHA256["postgres"] = lambda col: _postgres_encode(  # ty: ignore[invalid-assignment]
-        _postgres_digest(col, "sha256"), "hex"
+        _postgres_sha256(_postgres_convert_to(col, "UTF8")), "hex"
     )
     _SQL_DIGEST_SHA256_BINARY["duckdb"] = lambda col: _duckdb_unhex(_duckdb_sha256(col))  # ty: ignore[invalid-assignment]
     _SQL_DIGEST_SHA256_BINARY["snowflake"] = lambda col: _Sha2Binary(
@@ -1080,7 +1182,9 @@ def _register_sha256_backends() -> None:
         cast("ops.Value[dt.Integer]", ibis.literal(256).op()),
     ).to_expr()
     _SQL_DIGEST_SHA256_BINARY["bigquery"] = lambda col: col.hashbytes("sha256")
-    _SQL_DIGEST_SHA256_BINARY["postgres"] = lambda col: _postgres_digest(col, "sha256")  # ty: ignore[invalid-assignment]
+    _SQL_DIGEST_SHA256_BINARY["postgres"] = lambda col: _postgres_sha256(  # ty: ignore[invalid-assignment]
+        _postgres_convert_to(col, "UTF8")
+    )
     _SQL_DIGEST_BINARY_HEX["duckdb"] = lambda col: cast("ir.StringValue", _duckdb_hex(col)).lower()
     _SQL_DIGEST_BINARY_HEX["snowflake"] = lambda col: _snowflake_hex_encode(col, 0)  # ty: ignore[invalid-assignment]
     _SQL_DIGEST_BINARY_HEX["bigquery"] = lambda col: _bigquery_to_hex(col)  # ty: ignore[invalid-assignment]
@@ -1089,9 +1193,7 @@ def _register_sha256_backends() -> None:
 
 _register_sha256_backends()
 
-# High-precision FLOAT64-to-injective-string per backend. DuckDB's 17-digit printf
-# showed no collisions over 20,001 sampled doubles; other backends use documented
-# round-trip defaults and join _SQL_DIGEST_BACKENDS only after the same live probe.
+# Format-2 floats share DuckDB's exact 17-significant-digit, half-even spelling.
 _SQL_DIGEST_FLOAT_TOKEN: dict[str, Callable[[ir.FloatingValue], ir.StringValue]] = {}
 
 
@@ -1102,16 +1204,21 @@ def _register_float_token_backends() -> None:
     _SQL_DIGEST_FLOAT_TOKEN["duckdb"] = lambda col: _duckdb_printf17g(  # ty: ignore[invalid-assignment]
         "%.17g", col
     )
-    _SQL_DIGEST_FLOAT_TOKEN["snowflake"] = lambda col: col.cast("string")
-    _SQL_DIGEST_FLOAT_TOKEN["bigquery"] = lambda col: col.cast("string")
-    _SQL_DIGEST_FLOAT_TOKEN["postgres"] = lambda col: col.cast("string")
+    register_cloud_float17g()
+    for dialect in ("snowflake", "bigquery"):
+        _SQL_DIGEST_FLOAT_TOKEN[dialect] = lambda col: _CloudFloat17g(
+            cast("ops.Value[dt.Floating]", col.op())
+        ).to_expr()
+    _SQL_DIGEST_FLOAT_TOKEN["postgres"] = lambda col: _PostgresFloat17g(
+        cast("ops.Value[dt.Floating]", col.op())
+    ).to_expr()
 
 
 _register_float_token_backends()
 
 # TIMESTAMP_UTC_US as integer epoch microseconds. A string cast renders in the
 # session time zone, so the same stored instant would digest differently per
-# connection. Only duckdb's is live-verified; the others are compile-pinned.
+# connection. DuckDB and PostgreSQL are live-verified; the others are compile-pinned.
 _SQL_DIGEST_TIMESTAMP_TOKEN: dict[str, Callable[[ir.TimestampValue], ir.StringValue]] = {}
 
 
@@ -1130,12 +1237,9 @@ def _register_timestamp_token_backends() -> None:
         _date_part("epoch_microsecond", col).cast("int64").cast("string")
     )
     _SQL_DIGEST_TIMESTAMP_TOKEN["bigquery"] = lambda col: _bigquery_unix_micros(col).cast("string")
-    _SQL_DIGEST_TIMESTAMP_TOKEN["postgres"] = lambda col: (
-        (cast("ir.FloatingValue", _date_part("epoch", col)) * 1_000_000)
-        .round()
-        .cast("int64")
-        .cast("string")
-    )
+    _SQL_DIGEST_TIMESTAMP_TOKEN["postgres"] = lambda col: _PostgresEpochMicros(
+        cast("ops.Value[dt.Timestamp]", col.op())
+    ).to_expr()
 
 
 _register_timestamp_token_backends()
@@ -1174,7 +1278,17 @@ def _row_token_expr(
     for name, tag, kind in tagged_fields:
         col = table[name]
         if kind == "float":
-            payload = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
+            finite = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
+            payload = col.isnan().ifelse(
+                ibis.literal("nan", type="string"),
+                col.isinf().ifelse(
+                    (col < 0).ifelse(
+                        ibis.literal("-inf", type="string"),
+                        ibis.literal("inf", type="string"),
+                    ),
+                    finite,
+                ),
+            )
         elif kind == "timestamp":
             payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
         else:
@@ -1225,19 +1339,10 @@ def _count_where(conditions: Sequence[ir.BooleanValue]) -> ir.NumericScalar | No
 def _assert_cells_valid_sql(
     con: Any, table: ir.Table, fields: Sequence[FieldSpec], pk: Sequence[str], role: str
 ) -> None:
-    """The SQL row token never routes through `_cell`, so apply its per-cell
-    refusals here, in one query and in `_cell`'s precedence: NULL primary key,
-    then NULL in a non-nullable field, then non-finite FLOAT64."""
+    """Check key and declared nullability before encoding SQL row tokens."""
     checks = {
         "pk_nulls": _count_where([table[name].isnull() for name in pk]),
         "nulls": _count_where([table[f.name].isnull() for f in fields if not f.nullable]),
-        "nonfinite": _count_where(
-            [
-                table[f.name].isnan() | table[f.name].isinf()
-                for f in fields
-                if f.type_tag is DigestType.FLOAT64
-            ]
-        ),
     }
     metrics = [expr.name(name) for name, expr in checks.items() if expr is not None]
     if not metrics:
@@ -1259,14 +1364,6 @@ def _assert_cells_valid_sql(
             constraint="non-nullable fields must hold a value; value counts the offending rows",
             value=int(counts["nulls"]),
             route=f"fill the NULL cells of {role!r} or declare those fields nullable",
-        )
-    if counts.get("nonfinite"):
-        _raise(
-            "artifact.digest.nonfinite",
-            field=tuple(f.name for f in fields if f.type_tag is DigestType.FLOAT64),
-            constraint="FLOAT64 cells must be finite; value counts the offending rows",
-            value=int(counts["nonfinite"]),
-            route=f"replace NaN and infinities in {role!r} with finite values or NULL",
         )
 
 

@@ -100,6 +100,21 @@ def test_artifact_publish_adopt_parity(postgres_con, monkeypatch, clustered, fai
     con = postgres_con
     WarehouseArtifactStore(con)
     metadata = ("ud_manifest_index", "ud_manifest_dropped")
+    real_to_pyarrow = con.to_pyarrow
+    forbidden_columns = (
+        {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"},
+        {"unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"},
+    )
+
+    def reject_unit_transfer(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit-level artifact rows crossed the Python materialization boundary"
+            )
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", reject_unit_transfer)
     before = {name: con.table(name).to_pyarrow().to_pylist() for name in metadata}
     tables = {name for name in con.list_tables() if name.startswith("ud_")}
 
@@ -125,6 +140,160 @@ def test_artifact_publish_adopt_parity(postgres_con, monkeypatch, clustered, fai
 
 def test_artifact_output_confidentiality(postgres_con):
     run_artifact_confidentiality_probe(postgres_con, dialect="postgres")
+
+
+def test_postgres_sha256_hashes_utf8_without_decoding_backslashes(postgres_con):
+    import hashlib
+
+    import pyarrow as pa
+
+    from increment.query.artifact_digest import (
+        _sql_binary_hex_expr,
+        _sql_digest_sha256_binary_expr,
+        _sql_digest_sha256_expr,
+    )
+
+    values = ["", r"\x4142", r"a\b", r"a\000b", "é/多言語", "quote'\nline"]
+    name = f"hash_utf8_spec_{uuid4().hex[:10]}"
+    table = postgres_con.create_table(name, pa.table({"text": values}))
+    try:
+        binary = _sql_digest_sha256_binary_expr(table.text, dialect="postgres")
+        actual = postgres_con.to_pyarrow(
+            table.select(
+                text=table.text,
+                hex_hash=_sql_digest_sha256_expr(table.text, dialect="postgres"),
+                binary_hash=_sql_binary_hex_expr(binary, dialect="postgres"),
+            )
+        ).to_pylist()
+        assert len(actual) == len(values)
+        for row in actual:
+            expected = hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+            assert row["hex_hash"] == row["binary_hash"] == expected
+    finally:
+        postgres_con.drop_table(name, force=True)
+
+
+def test_postgres_timestamp_tokens_preserve_epoch_microseconds(postgres_con):
+    import pyarrow as pa
+
+    from increment.query.artifact_digest import _SQL_DIGEST_TIMESTAMP_TOKEN
+
+    instants = [
+        dt.datetime(1, 1, 1, 0, 0, 0, 1, tzinfo=dt.UTC),
+        dt.datetime(1900, 1, 1, 0, 0, 0, 1, tzinfo=dt.UTC),
+        dt.datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=dt.UTC),
+        dt.datetime(1970, 1, 1, 0, 0, 0, 1, tzinfo=dt.UTC),
+        dt.datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=dt.UTC),
+    ]
+    epoch = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+    expected = []
+    for value in instants:
+        delta = value - epoch
+        expected.append(str((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds))
+    name = f"timestamp_token_spec_{uuid4().hex[:10]}"
+    table = postgres_con.create_table(
+        name, pa.table({"ts": pa.array(instants, type=pa.timestamp("us", tz="UTC"))})
+    )
+    try:
+        for zone in ("UTC", "America/Los_Angeles"):
+            postgres_con.raw_sql(f"SET TIME ZONE '{zone}'")
+            actual = (
+                postgres_con.to_pyarrow(
+                    table.select(token=_SQL_DIGEST_TIMESTAMP_TOKEN["postgres"](table.ts))
+                )
+                .column("token")
+                .to_pylist()
+            )
+            assert sorted(actual) == sorted(expected)
+    finally:
+        postgres_con.raw_sql("SET TIME ZONE 'UTC'")
+        postgres_con.drop_table(name, force=True)
+
+
+def test_postgres_format2_digest_matches_duckdb(postgres_con):
+    """Exercise format-2 hashing on native PostgreSQL values, including its
+    built-in SHA-256 path (without requiring pgcrypto)."""
+    import ibis
+
+    from increment.query.artifact_digest import digest_relation_sql_v2
+    from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
+
+    schema = _PORTABLE_SCHEMA
+    rows = _portable_digest_rows()
+    types = {
+        "id": "int64",
+        "text": "string",
+        "integer": "int64",
+        "float": "float64",
+        "date": "date",
+        "timestamp": "timestamp('UTC')",
+        "boolean": "boolean",
+    }
+    duckdb = ibis.duckdb.connect()
+    try:
+        duck_table = duckdb.create_table(
+            "digest_spec", ibis.memtable(rows, schema=ibis.schema(types))
+        )
+        pg_table = postgres_con.create_table(
+            f"digest_spec_{uuid4().hex[:10]}", ibis.memtable(rows, schema=ibis.schema(types))
+        )
+        expected = digest_relation_sql_v2(
+            duckdb, duck_table, "portable_spec", schema, primary_key=("id",)
+        )
+        actual = digest_relation_sql_v2(
+            postgres_con, pg_table, "portable_spec", schema, primary_key=("id",)
+        )
+        assert (
+            expected.content_sha256
+            == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+        )
+        from increment.query.artifact_digest import _row_token_expr
+
+        fields = [
+            ("id", 2, "int"),
+            ("text", 1, "string"),
+            ("integer", 2, "int"),
+            ("float", 3, "float"),
+            ("date", 4, "date"),
+            ("timestamp", 5, "timestamp"),
+            ("boolean", 6, "bool"),
+        ]
+        duck_tokens = duckdb.to_pyarrow(
+            duck_table.select(
+                id=duck_table.id, token=_row_token_expr(duck_table, fields, dialect="duckdb")
+            )
+        ).to_pylist()
+        postgres_tokens = postgres_con.to_pyarrow(
+            pg_table.select(
+                id=pg_table.id,
+                token=_row_token_expr(pg_table, fields, dialect="postgres"),
+            )
+        ).to_pylist()
+        assert sorted(duck_tokens, key=lambda row: row["id"]) == sorted(
+            postgres_tokens, key=lambda row: row["id"]
+        )
+        assert actual.content_sha256 == expected.content_sha256
+    finally:
+        duckdb.disconnect()
+        if "pg_table" in locals():
+            postgres_con.drop_table(pg_table.get_name(), force=True)
+
+
+def test_postgres_float17g_matches_duckdb_random_binary64(postgres_con):
+    from integration.warehouse_execution._float_tokens import run_float_token_probe
+
+    run_float_token_probe(postgres_con, dialect="postgres", random_count=10_000)
+
+
+@pytest.mark.parametrize("damage", ["none", "tamper", "duplicate", "domain", "exposure"])
+def test_postgres_cuped_artifact_integrity_is_warehouse_only(
+    postgres_con, monkeypatch, tmp_path, damage
+):
+    from integration.warehouse_execution._artifact_integrity import run_artifact_integrity_probe
+
+    run_artifact_integrity_probe(
+        postgres_con, dialect="postgres", monkeypatch=monkeypatch, tmp_path=tmp_path, damage=damage
+    )
 
 
 def test_artifact_sequential_identity_matches_native(postgres_con):

@@ -1,7 +1,7 @@
 """Format-2/3 unit-day artifact content digest: an order-independent hash
 tree (SHA-256 per row, bucketed by row hash, ordered-concat within each
 bucket, hashed again across buckets in bucket order), computed either in
-SQL (format 2, DuckDB today) or via one client-side pass with no external
+SQL (format 2, DuckDB and PostgreSQL) or via one client-side pass with no external
 sort (format 3): the two hash different row encodings, so they carry
 distinct format ids."""
 
@@ -51,6 +51,108 @@ def test_sql_digest_is_order_independent(con):
     assert forward.content_sha256 == backward.content_sha256
     assert forward.row_count == backward.row_count == 3
     assert forward.digest_format == 2
+
+
+_PORTABLE_SCHEMA = (
+    ("id", "INT64", False),
+    ("text", "STRING", True),
+    ("integer", "INT64", True),
+    ("float", "FLOAT64", True),
+    ("date", "DATE", True),
+    ("timestamp", "TIMESTAMP_UTC_US", True),
+    ("boolean", "BOOLEAN", True),
+)
+
+
+def _portable_digest_rows():
+    import sys
+    from datetime import UTC, datetime
+
+    return [
+        (
+            0,
+            "",
+            -(2**63),
+            -0.0,
+            date(1, 1, 1),
+            datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+            False,
+        ),
+        (
+            1,
+            "多言語/🧪",
+            2**63 - 1,
+            0.0,
+            date(9999, 12, 31),
+            datetime(1970, 1, 1, 0, 0, 0, 1, tzinfo=UTC),
+            True,
+        ),
+        (2, None, -(2**53), sys.float_info.min, None, None, None),
+        (
+            3,
+            "e\u0301",
+            2**53,
+            sys.float_info.max,
+            date(2000, 2, 29),
+            datetime(2000, 1, 1, 0, 0, 0, 999999, tzinfo=UTC),
+            False,
+        ),
+        (
+            4,
+            "🧪",
+            None,
+            -sys.float_info.max,
+            date(1900, 1, 1),
+            datetime(1900, 1, 1, 0, 0, 0, 1, tzinfo=UTC),
+            True,
+        ),
+        (
+            5,
+            "empty-is-not-null",
+            1,
+            float.fromhex("0x0.0000000000001p-1022"),
+            date(1969, 12, 31),
+            datetime(1969, 12, 31, 23, 59, 59, 1, tzinfo=UTC),
+            False,
+        ),
+        (6, "NaN", 0, float("nan"), date(1970, 1, 1), datetime(1970, 1, 1, tzinfo=UTC), True),
+        (
+            7,
+            "positive infinity",
+            -1,
+            float("inf"),
+            None,
+            datetime(2024, 2, 29, 23, 59, 59, 999999, tzinfo=UTC),
+            False,
+        ),
+        (8, "negative infinity", 1, float("-inf"), date(2024, 1, 1), None, True),
+        (9, None, None, None, None, None, None),
+    ]
+
+
+def test_sql_digest_format2_portable_edge_relation_is_pinned(con):
+    """The format-2 oracle pins the portable float, integer, text, NULL,
+    date, timestamp, and boolean encodings to one DuckDB-produced digest."""
+    schema = ibis.schema(
+        {
+            "id": "int64",
+            "text": "string",
+            "integer": "int64",
+            "float": "float64",
+            "date": "date",
+            "timestamp": "timestamp('UTC')",
+            "boolean": "boolean",
+        }
+    )
+    table = con.create_table(
+        "portable_digest_spec", ibis.memtable(_portable_digest_rows(), schema=schema)
+    )
+    digest = digest_relation_sql_v2(
+        con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",)
+    )
+    assert (
+        digest.content_sha256 == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+    )
 
 
 def test_sql_digest_detects_row_mutation(con):
@@ -134,7 +236,6 @@ _STATS_SCHEMA = (
     [
         ({"unit_id": None, "value": 1.0, "note": None}, "artifact.digest.primary_key"),
         ({"unit_id": "u2", "value": None, "note": "x"}, "artifact.digest.nullable"),
-        ({"unit_id": "u2", "value": float("inf"), "note": None}, "artifact.digest.nonfinite"),
     ],
 )
 def test_every_digest_path_refuses_the_same_bad_cell_with_the_same_code(con, bad_row, code):
