@@ -25,6 +25,13 @@ class CompileCase:
         return str(ibis.to_sql(expression, dialect=self.dialect))
 
 
+@dataclass(frozen=True, slots=True)
+class BigQueryCompileSession:
+    client: object
+    default_dataset: object
+    query_config_factory: Callable[..., object]
+
+
 def _schema(fields):
     types = {
         "STRING": dt.string,
@@ -425,12 +432,18 @@ def _ddl_type(dialect: str, data_type: dt.DataType) -> str:
     raise TypeError(f"unsupported compile schema type: {data_type}")
 
 
+def _identifier(dialect: str, identifier: str) -> str:
+    if dialect == "bigquery":
+        return f"`{identifier}`"
+    return f'"{identifier}"'
+
+
 def _schema_only_ddl(case: CompileCase, key: str, table_name: str) -> str:
     columns = ", ".join(
-        f"{column} {_ddl_type(case.dialect, case.schemas[key][column])}"
+        f"{_identifier(case.dialect, column)} {_ddl_type(case.dialect, case.schemas[key][column])}"
         for column in case.schemas[key].names
     )
-    return f"CREATE TABLE {table_name} ({columns})"
+    return f"CREATE TABLE {_identifier(case.dialect, table_name)} ({columns})"
 
 
 def _inline_empty_ctes(statement: str, case: CompileCase) -> str:
@@ -449,12 +462,17 @@ def _inline_empty_ctes(statement: str, case: CompileCase) -> str:
                     ),
                 ),
                 column,
-                quoted=False,
+                quoted=True,
             )
             for column in case.schemas[key].names
         ]
         source = exp.select(*projections).where(exp.false())
-        ctes.append(exp.CTE(this=source, alias=exp.TableAlias(this=exp.to_identifier(table_name))))
+        ctes.append(
+            exp.CTE(
+                this=source,
+                alias=exp.TableAlias(this=exp.to_identifier(table_name, quoted=True)),
+            )
+        )
     with_clause = query.args.get("with_")
     if with_clause is None:
         query.set("with_", exp.With(expressions=ctes))
@@ -470,15 +488,13 @@ def _execute_sql(connection, dialect: str, statement: str, *, dry_run: bool = Fa
             return cursor.execute(statement)
         finally:
             cursor.close()
-    from google.cloud.bigquery import QueryJobConfig
-
-    client, dataset = connection
-    config = QueryJobConfig(
-        default_dataset=dataset,
+    session = connection
+    config = session.query_config_factory(
+        default_dataset=session.default_dataset,
         dry_run=dry_run,
         use_query_cache=False,
     )
-    job = client.query(statement, job_config=config)
+    job = session.client.query(statement, job_config=config)
     if not dry_run:
         job.result()
     return job
@@ -493,7 +509,11 @@ def _create_schema_only(connection, case: CompileCase, created: list[str]) -> No
 def _drop_schema_only(connection, case: CompileCase, table_names) -> None:
     for table_name in reversed(table_names):
         try:
-            _execute_sql(connection, case.dialect, f"DROP TABLE IF EXISTS {table_name}")
+            _execute_sql(
+                connection,
+                case.dialect,
+                f"DROP TABLE IF EXISTS {_identifier(case.dialect, table_name)}",
+            )
         except Exception:
             pass
 

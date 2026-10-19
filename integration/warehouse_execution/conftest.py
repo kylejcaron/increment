@@ -177,15 +177,16 @@ def snowflake_compile_con():
 def bigquery_compile_session():
     from google.cloud import bigquery
 
+    from integration.warehouse_execution._compile import BigQueryCompileSession
+
     env = _require_env("INCREMENT_TEST_BIGQUERY_PROJECT", "INCREMENT_TEST_BIGQUERY_DATASET")
     if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
         pytest.fail("missing GOOGLE_APPLICATION_CREDENTIALS for BigQuery compile test")
     client = bigquery.Client(project=env["INCREMENT_TEST_BIGQUERY_PROJECT"])
-    dataset = client.dataset(
-        env["INCREMENT_TEST_BIGQUERY_DATASET"],
-        project=env["INCREMENT_TEST_BIGQUERY_PROJECT"],
+    dataset = bigquery.DatasetReference(
+        env["INCREMENT_TEST_BIGQUERY_PROJECT"], env["INCREMENT_TEST_BIGQUERY_DATASET"]
     )
     try:
-        yield client, dataset
+        yield BigQueryCompileSession(client, dataset, bigquery.QueryJobConfig)
     finally:
         client.close()
