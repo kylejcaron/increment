@@ -1126,6 +1126,17 @@ omitted from every export, as in format 12. A native `moments_source` builds
 the same envelopes for several scalar families and leaves mixed requests to
 the live source.
 
+From definitions or an adopted unit-day artifact, `analysis.export(path)`
+writes the cube. Reload its rows with `Analysis.from_moments`, passing each
+metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
+design: the embedded plan supplies the declared decision and sensitivity
+methods, including scalar companions, so the replayed estimates, intervals,
+and roles match the source run. The cube has no breakout dimension, so
+`run_breakout` on it refuses with `facade.analysis.operation`. A metric with
+fixed winsorization caps, or any other bounded or discrete outcome, sends the
+whole export to `query.cuped.general_qr_required` before outcome cells leave
+the warehouse; run that request on the unit source instead.
+
 ## The math
 
     The coefficient minimizes the variance of the additive contrast
