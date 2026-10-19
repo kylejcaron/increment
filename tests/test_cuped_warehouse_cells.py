@@ -210,6 +210,73 @@ def test_categorical_warehouse_first_sums_retain_survivors_beside_large_terms():
         )
 
 
+def _survivor_frame(tiers):
+    def arm(offset):
+        extremes = [value for tier in tiers for value in (tier, -tier)]
+        values = offset + 0.25 * np.arange(20 - len(extremes))
+        return np.concatenate(([extremes[0]], values, extremes[1:]))
+
+    return pd.DataFrame(
+        {
+            "unit_id": [f"{arm}-{i:02d}" for arm in ("c", "t") for i in range(20)],
+            "group_id": np.repeat(["c", "t"], 20),
+            "segment": "A",
+            "device": "mobile",
+            "y": np.concatenate((arm(1.0), arm(2.0))),
+        }
+    )
+
+
+def test_categorical_warehouse_sums_survivors_beside_cancelling_extremes_exactly():
+    frame = _survivor_frame((1.2345678901234567e155,))
+    cells, _ = _produce(frame)
+    fit = fit_categorical_cells(cells, control="c")
+    expected = fit_cuped_multicovariate(
+        frame.y.to_numpy(),
+        frame.group_id.to_numpy(),
+        control="c",
+        arm_order=("c", "t"),
+        covariates={name: frame[name].to_numpy() for name in ("segment", "device")},
+        kinds={"segment": "categorical", "device": "categorical"},
+    )
+    assert np.asarray(fit.adjusted_means) == pytest.approx(
+        np.asarray(expected.adjusted_means), rel=1e-10, abs=0
+    )
+    for field in ("estimate", "se", "dof"):
+        assert getattr(fit.absolute("t"), field) == pytest.approx(
+            getattr(expected.absolute("t"), field), rel=1e-10, abs=0
+        )
+
+
+def test_categorical_warehouse_unresolvable_summation_range_refuses_before_transfer():
+    from increment.query._cuped_cells import categorical_cells_from_relation
+
+    con = ibis.duckdb.connect()
+    con.create_table("units", obj=_survivor_frame((1.2345678901234567e155, 1e78)))
+    transfers = []
+
+    def execute(expression):
+        result = con.to_pyarrow(expression)
+        transfers.append(tuple(result.column_names))
+        return result
+
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            categorical_cells_from_relation(
+                con.table("units"), execute, metric=_metric(), request=_request()
+            )
+    finally:
+        con.disconnect()
+    assert raised.value.code == "query.cuped.general_qr_required"
+    assert raised.value.context["reason"] == "component_range"
+    assert raised.value.context["arm"] == "c"
+    assert raised.value.context["component"] == "outcome"
+    route = raised.value.context["route"]
+    assert isinstance(route, str) and "from_unit_summary" in route
+    assert len(transfers) == 1
+    assert not any(name.startswith(("ref_", "first_", "cross_")) for name in transfers[0])
+
+
 def test_categorical_encoded_bound_accounts_for_long_arm_labels():
     frame = _cells_frame((41, 29, 37, 33), arm_width=10_000)
     cells, transfers = _produce(frame, request=_request(10_000))
@@ -259,6 +326,29 @@ def test_categorical_warehouse_ineligible_request_transfers_no_outcome_cells(
         assert len(transfers) == 1
         assert transfers[0][1] == 1
         assert all(not name.startswith(("ref_", "first_", "cross_")) for name in transfers[0][0])
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.parametrize("column_type", ["bigint", "boolean", "decimal(18, 4)"])
+def test_categorical_warehouse_non_floating_outcome_column_refuses_before_execution(column_type):
+    from increment.query._cuped_cells import categorical_cells_from_relation
+
+    con = ibis.duckdb.connect()
+    con.create_table("units", obj=_cells_frame((40, 40, 40, 40)))
+
+    def execute(expression):
+        pytest.fail("Known discrete domains must refuse before executing warehouse queries")
+
+    try:
+        relation = con.sql(
+            f"select unit_id, group_id, segment, device, cast(y > 8 as {column_type}) as y from units"
+            if column_type == "boolean"
+            else f"select unit_id, group_id, segment, device, cast(y as {column_type}) as y from units"
+        )
+        with pytest.raises(CapabilityError) as raised:
+            categorical_cells_from_relation(relation, execute, metric=_metric(), request=_request())
+        assert raised.value.context["reason"] == "outcome_domain"
     finally:
         con.disconnect()
 
