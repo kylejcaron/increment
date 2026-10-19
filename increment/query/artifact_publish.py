@@ -89,7 +89,7 @@ def _wire_uptake_timestamp(ts: ir.TimestampColumn, experiment: Experiment) -> ir
 def _as_utc_timestamp(value: ir.TimestampColumn) -> ir.TimestampValue:
     """Interpret a naive timestamp as UTC while preserving explicit offsets."""
     text = value.cast("string")
-    has_offset = text.re_search(r"(?:[+-]\d{2}(?::?\d{2})?|Z)$")
+    has_offset = text.re_search(r"([+-][0-9]{2}(:[0-9]{2}|[0-9]{2})?|Z)$")
     return ibis.timestamp(
         ibis.ifelse(has_offset, text, text + "+00:00"),
         timezone="UTC",

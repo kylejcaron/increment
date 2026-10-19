@@ -26,10 +26,13 @@ pytestmark = pytest.mark.warehouse_bigquery
 
 
 def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
+    from io import BytesIO
     from uuid import uuid4
 
     import ibis
     import pyarrow as pa
+    import pyarrow.parquet as pq
+    from google.cloud import bigquery
 
     from increment.query import artifact_digest
     from increment.query.artifact_digest import digest_relation_sql_v2
@@ -64,7 +67,30 @@ def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
             schema,
             primary_key=("id",),
         )
-        table = bigquery_con.create_table(table_name, arrow)
+        parquet = BytesIO()
+        pq.write_table(arrow, parquet)
+        parquet.seek(0)
+        destination = f"{bigquery_con.current_catalog}.{bigquery_con.current_database}.{table_name}"
+        job = bigquery_con.client.load_table_from_file(
+            parquet,
+            destination,
+            size=parquet.getbuffer().nbytes,
+            job_config=bigquery.LoadJobConfig(source_format=bigquery.SourceFormat.PARQUET),
+        )
+        job.result()
+        table = bigquery_con.sql(
+            f"SELECT CAST(`id` AS INT64) AS `id`, `text`, "
+            f"CAST(`integer` AS INT64) AS `integer`, `float`, `date`, "
+            f"`timestamp`, `boolean` "
+            f"FROM `{destination}`"
+        )
+        fetched_integers = bigquery_con.to_pyarrow(
+            table.select(id=table.id, integer=table.integer)
+        ).to_pylist()
+        fetched_integers.sort(key=lambda row: row["id"])
+        assert [(row["id"], row["integer"]) for row in fetched_integers] == [
+            (row[0], row[2]) for row in rows
+        ]
         monkeypatch.setattr(
             artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "bigquery"})
         )

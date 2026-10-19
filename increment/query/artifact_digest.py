@@ -1428,7 +1428,12 @@ def digest_relation_sql_v2(
             bucket_digests = (
                 part.group_by("bucket")
                 .aggregate(
-                    bucket_digest=sha256_hex(part.h.group_concat(sep="", order_by=part.h)),
+                    bucket_digest=sha256_hex(
+                        part.h.group_concat(
+                            sep="",
+                            order_by=ibis.asc(part.h, nulls_first=con.name == "bigquery"),
+                        )
+                    ),
                     n=part.count(),
                 )
                 .order_by("bucket")

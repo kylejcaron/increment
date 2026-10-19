@@ -61,11 +61,22 @@ def test_binary_row_hash_and_hex_rendering_compile_to_vendor_functions(
 
 @pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
 def test_ordered_group_concat_compiles(dialect):
-    grouped = _TABLE.group_by("id").aggregate(
-        h=_TABLE.name.group_concat(sep="", order_by=_TABLE.name)
-    )
+    order = ibis.asc(_TABLE.name, nulls_first=dialect == "bigquery")
+    grouped = _TABLE.group_by("id").aggregate(h=_TABLE.name.group_concat(sep="", order_by=order))
     sql = str(ibis.to_sql(grouped, dialect=dialect))
     assert "ORDER BY" in sql.upper()
+    if dialect == "bigquery":
+        assert "NULLS LAST" not in sql.upper()
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
+def test_timestamp_offset_detection_uses_portable_regex(dialect):
+    from increment.query.artifact_publish import _as_utc_timestamp
+
+    table = ibis.table({"ts": "timestamp"}, name="rows")
+    sql = str(ibis.to_sql(table.select(ts=_as_utc_timestamp(table.ts)), dialect=dialect))
+    assert "(?:" not in sql
+    assert "[0-9]{2}" in sql
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
@@ -88,18 +99,16 @@ def test_postgres_float_token_uses_ieee_bytes_and_explicit_17_digit_rounding():
     assert "TRIM_SCALE(" in sql
 
 
-@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-def test_cloud_float17g_compiles_exact_integer_limb_arithmetic(dialect):
+@pytest.mark.parametrize("dialect,fragment", [("snowflake", "TO_CHAR("), ("bigquery", "FORMAT(")])
+def test_cloud_float17g_compiles_to_native_formatter(dialect, fragment):
     table = ibis.table({"value": "float64"}, name="rows")
     token = _row_token_expr(table, [("value", 3, "float")], dialect=dialect)
     sql = str(ibis.to_sql(table.select(token=token), dialect=dialect))
     import sqlglot
 
     sqlglot.parse_one(sql, read=dialect)
-    assert "10000000000000000" in sql
-    assert "LAG(" in sql
-    assert "MOD(" in sql
-    assert "UNBOUNDED PRECEDING" in sql
+    assert fragment in sql
+    assert "LAG(" not in sql
 
 
 @pytest.mark.integration
