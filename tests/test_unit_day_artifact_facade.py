@@ -503,7 +503,8 @@ def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
 
     def guarded_to_pyarrow(table, *args, **kwargs):
         names = set(table.schema().names) if hasattr(table, "schema") else set()
-        assert not {"unit_id", "ds", "first_exposure_ts"} <= names
+        assert not {"unit_id", "first_exposure_ts"} <= names
+        assert not {"unit_id", "ds"} <= names
         return real_to_pyarrow(table, *args, **kwargs)
 
     def unexpected_batch_transfer(*_args, **_kwargs):
@@ -929,6 +930,7 @@ def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_wareho
     con_utc, native_utc, _context_utc, _store_utc = _native(
         definitions=definitions, source_snapshot_evidence=evidence
     )
+
     con_la, native_la, context_la, store_la = _native(
         definitions=definitions, source_snapshot_evidence=evidence
     )
@@ -1027,6 +1029,59 @@ def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_wareho
         native_la.close()
         con_utc.disconnect()
         con_la.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("property_name", "dtype", "expression"),
+    [
+        ("integer_property", "int", "CAST(1 AS BIGINT)"),
+        ("boolean_property", "bool", "user_id LIKE '%0'"),
+    ],
+)
+def test_publication_accepts_integer_and_boolean_property_covariates(
+    tmp_path: Path, property_name: str, dtype: str, expression: str
+) -> None:
+    definitions = _definitions(tmp_path)
+    payload = yaml.safe_load(definitions.read_text())
+    source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    source["sql"] = source["sql"].replace(
+        "SELECT *", f"SELECT *, {expression} AS {property_name}", 1
+    )
+    source["properties"].append(
+        {"name": property_name, "column": property_name, "dtype": dtype, "as_of": "static"}
+    )
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["plan"]["secondaries"] = [
+        {
+            "metric": "purchase_rate",
+            "decision_method": {
+                "name": "scalar",
+                "variance_reduction": "cuped",
+                "covariates": [
+                    {
+                        "name": property_name,
+                        "kind": "continuous",
+                        "property": property_name,
+                        "source": "event_log",
+                        "missing": "zero",
+                    }
+                ],
+            },
+        }
+    ]
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    con, native, context, store = _native(definitions=definitions)
+    try:
+        reference = native.publish_unit_day_artifact(
+            store, extensions=_extensions(context, "unit_covariate")
+        )
+        assert reference.artifact_id
+    finally:
+        native.close()
+        con.disconnect()
 
 
 @pytest.mark.integration
@@ -1760,10 +1815,15 @@ def _triggered_scalar_covariate_case(
     )
     metric = "purchase_rate"
     covariate_name = "tenure" if binding == "property" else "preperiod_page_views"
-    missing = {"outside": "refuse", "impute": "impute", "all_null": "impute"}[scenario]
+    missing = {
+        "outside": "refuse",
+        "impute": "impute",
+        "impute_outside": "impute",
+        "all_null": "impute",
+    }[scenario]
 
     if binding == "property":
-        if scenario == "outside":
+        if scenario in {"outside", "impute_outside"}:
             value_sql = (
                 "CASE WHEN country_code = 'US' THEN "
                 "CAST(abs(hash(user_id)) % 100 AS DOUBLE) ELSE NULL END"
@@ -1804,14 +1864,14 @@ def _triggered_scalar_covariate_case(
     else:
         filters = (
             [{"property": "country", "op": "equals", "values": ["US"]}]
-            if scenario == "outside"
+            if scenario in {"outside", "impute_outside"}
             else (
                 [{"property": "country", "op": "not_equals", "values": ["US"]}]
                 if scenario == "all_null"
                 else []
             )
         )
-        measure_fact = "purchase" if scenario == "outside" else "page_view"
+        measure_fact = "purchase" if scenario in {"outside", "impute_outside"} else "page_view"
         covariate = {
             "name": covariate_name,
             "kind": "continuous",
@@ -1891,6 +1951,26 @@ def test_triggered_scalar_refuse_ignores_missing_outside_population(
         rows = lift_rows(adopted.run(metrics=[metric_name]))
         assert rows
         assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
+        triggered_cuped = next(
+            row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
+        )
+        assert triggered_cuped.lift is not None
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_imputation_ignores_missing_outside_population(
+    tmp_path: Path, binding: str
+) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="impute_outside"
+    )
+    try:
+        rows = lift_rows(adopted.run(metrics=[metric_name]))
         triggered_cuped = next(
             row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
         )
