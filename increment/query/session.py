@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import ibis
 import ibis.expr.types as ir
@@ -88,6 +88,15 @@ _REFUSALS = refusals(
             "query.session.snapshot.materialization_failed",
             CapabilityError,
             template="source snapshot requires warehouse TEMP tables; live fallback is forbidden",
+        ),
+        "query.session.qr_scratch_cleanup_failed": RefusalSpec(
+            "query.session.qr_scratch_cleanup_failed",
+            CapabilityError,
+            template=(
+                "warehouse QR scratch cleanup failed; retained relations are listed for "
+                "manual removal: {relations}"
+            ),
+            keys=frozenset({"relations", "route"}),
         ),
         "query.session.materialization_namespace": RefusalSpec(
             "query.session.materialization_namespace",
@@ -355,6 +364,10 @@ class WarehouseArtifactStore:
         self._validate_namespace()
         self._ensure_metadata_table()
         self._ensure_dropped_table()
+
+    def qr_scratch(self):
+        """Return a scoped scratch owner for computations over a pinned artifact snapshot."""
+        return _warehouse_artifact_qr_scratch(self._con)
 
     def preflight_publication(self) -> None:
         """Require warehouse-side digest verification before source assembly."""
@@ -1178,6 +1191,7 @@ class WarehouseArtifactStore:
             verify_relation,
             lambda expression: self._con.to_pyarrow(expression),
             lambda expression: record_batches(self._con, expression),
+            self.qr_scratch,
         )
         validate_snapshot_identity(snapshot, ref)
         try:
@@ -1351,6 +1365,170 @@ class _MaterializedRelation:
     schema: str | None
 
 
+class _WarehouseQrScratch:
+    """Own two alternating TEMP relations for one warehouse QR execution."""
+
+    def __init__(self, session: _QrScratchSession) -> None:
+        self._session = session
+        self._active: _MaterializedRelation | None = None
+        self._next_slot = 0
+        self._counter = 0
+
+    def materialize_next(self, expression: ir.Table) -> ir.Table:
+        """Create the next relation before releasing the current work relation."""
+        name = f"_cuped_qr_{self._session._suffix}_{self._next_slot}_{self._counter}"
+        self._next_slot = 1 - self._next_slot
+        self._counter += 1
+        result = self._session.materialize_table(name, expression, required=True)
+        locator = next(
+            (item for item in reversed(self._session._materialized) if item.requested_name == name),
+            None,
+        )
+        if locator is None:
+            _raise("query.session.snapshot.materialization_failed")
+        previous = self._active
+        self._active = locator
+        if previous is not None and not self._drop(previous):
+            _raise(
+                "query.session.qr_scratch_cleanup_failed",
+                relations=self.leftovers,
+                route=f"restore DROP privileges on {self._session._con.name} and retry",
+            )
+        return result
+
+    @property
+    def leftovers(self) -> tuple[tuple[str | None, str | None, str], ...]:
+        return tuple(
+            (item.catalog, item.schema, item.name)
+            for item in self._session._materialized
+            if item.requested_name.startswith(f"_cuped_qr_{self._session._suffix}_")
+        )
+
+    def close(self) -> None:
+        if self._active is not None:
+            active = self._active
+            if self._drop(active):
+                self._active = None
+
+    def _drop(self, locator: _MaterializedRelation) -> bool:
+        try:
+            self._session._drop_materialized_relation(locator)
+        except Exception:
+            return False
+        self._session._materialized.remove(locator)
+        return True
+
+    def __enter__(self) -> _WarehouseQrScratch:
+        return self
+
+    def __exit__(self, _exc_type, exc, _traceback) -> bool:
+        self.close()
+        leftovers = self.leftovers
+        if leftovers:
+            names = tuple(
+                f"{catalog + '.' if catalog else ''}{schema + '.' if schema else ''}{name}"
+                for catalog, schema, name in leftovers
+            )
+            if exc is not None:
+                raise _raise(
+                    "query.session.qr_scratch_cleanup_failed",
+                    relations=names,
+                    route=f"drop the listed relations with {self._session._con.name} and retry",
+                ) from exc
+            _raise(
+                "query.session.qr_scratch_cleanup_failed",
+                relations=names,
+                route=f"drop the listed relations with {self._session._con.name} and retry",
+            )
+        return False
+
+
+class _QrScratchSession(Protocol):
+    _con: SQLBackend
+    _materialized: list[_MaterializedRelation]
+    _suffix: str
+
+    def materialize_table(self, name: str, expr: ir.Table, *, required: bool) -> ir.Table: ...
+
+    def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None: ...
+
+
+@contextmanager
+def _warehouse_qr_scratch(session: _QrScratchSession) -> Iterator[_WarehouseQrScratch]:
+    with _WarehouseQrScratch(session) as scratch:
+        yield scratch
+
+
+class _WarehouseArtifactQrSession:
+    """Connection-only materialization owner for immutable artifact snapshots."""
+
+    def __init__(self, con: SQLBackend) -> None:
+        self._con = con
+        self._suffix = uuid.uuid4().hex[:12]
+        self._materialized: list[_MaterializedRelation] = []
+
+    def materialize_table(self, name: str, expr: ir.Table, *, required: bool) -> ir.Table:
+        if not required:
+            _raise("query.session.snapshot.materialization_failed")
+        created = None
+        cleanup = None
+        try:
+            if self._con.name == "snowflake":
+                catalog = getattr(self._con, "current_catalog", None)
+                schema = getattr(self._con, "current_database", None)
+                if not catalog or not schema:
+                    _raise("query.session.materialization_namespace", backend=self._con.name)
+                database = sqlglot.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
+                cleanup = _MaterializedRelation(name, name, catalog, schema)
+                created = self._con.create_table(name, expr, temp=True, database=database)
+            else:
+                created = self._con.create_table(name, expr, temp=True)
+            operation = created.op()
+            catalog = operation.namespace.catalog
+            schema = operation.namespace.database
+            if self._con.name == "postgres":
+                rows = self._con.to_pyarrow(
+                    self._con.sql(
+                        "SELECT nspname FROM pg_catalog.pg_namespace "
+                        "WHERE oid = pg_my_temp_schema()"
+                    )
+                ).to_pylist()
+                schema = rows[0]["nspname"] if rows else None
+                if not isinstance(schema, str) or not schema.startswith("pg_temp_"):
+                    _raise("query.session.snapshot.materialization_failed")
+                catalog = None
+            elif self._con.name == "snowflake":
+                catalog = catalog or getattr(self._con, "current_catalog", None)
+                schema = schema or getattr(self._con, "current_database", None)
+            if not catalog and not schema:
+                _raise("query.session.snapshot.materialization_failed")
+            locator = _MaterializedRelation(name, operation.name, catalog, schema)
+            self._materialized.append(locator)
+            return created
+        except Exception:
+            if created is not None and cleanup is not None:
+                try:
+                    self._drop_materialized_relation(cleanup)
+                except Exception:
+                    self._materialized.append(cleanup)
+            _raise("query.session.snapshot.materialization_failed")
+
+    def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None:
+        database = (
+            (relation.catalog, relation.schema)
+            if relation.catalog is not None and relation.schema is not None
+            else relation.schema or relation.catalog
+        )
+        self._con.drop_table(relation.name, database=database, force=True)
+
+
+@contextmanager
+def _warehouse_artifact_qr_scratch(con: SQLBackend) -> Iterator[_WarehouseQrScratch]:
+    session = _WarehouseArtifactQrSession(con)
+    with _WarehouseQrScratch(session) as scratch:
+        yield scratch
+
+
 class WarehouseSession:
     """One ibis connection's fact-table cache and TEMP-table mechanics.
 
@@ -1386,6 +1564,10 @@ class WarehouseSession:
     @property
     def defs(self) -> Definitions:
         return self._defs
+
+    def qr_scratch(self):
+        """Return a scoped owner for at most two alternating QR work relations."""
+        return _warehouse_qr_scratch(self)
 
     @property
     def source_snapshot_evidence(self) -> SourceSnapshotEvidence | None:

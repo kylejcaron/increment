@@ -46,7 +46,7 @@ def _require_compact_request(source, metric, method: Method) -> None:
 def categorical_cells_source(source, metric, request: _ResolvedCupedRequest) -> CategoricalCells:
     """Capture categorical evidence on the source's pinned warehouse relation."""
     _require_compact_request(source, metric, request.method)
-    with source.cuped_relation(metric, request) as (relation, execute):
+    with source.cuped_relation(metric, request) as (relation, execute, _scratch):
         return categorical_cells_from_relation(relation, execute, metric=metric, request=request)
 
 
@@ -68,11 +68,41 @@ def categorical_request_cells(
         population=population,
     )
     _require_compact_request(source, metric, method)
-    with source.cuped_relation(metric, request) as (relation, execute):
+    with source.cuped_relation(metric, request) as (relation, execute, _scratch):
         labels = {row["group_id"] for row in _rows(execute(relation.select("group_id").distinct()))}
         arms = sorted(str(label) for label in labels if label is not None and str(label) != control)
         request = replace(request, arm_order=(control, *arms))
         return categorical_cells_from_relation(relation, execute, metric=metric, request=request)
+
+
+def resolved_multicovariate_request(
+    source,
+    metric,
+    method: Method,
+    *,
+    control: str,
+    arm_order: tuple[str, ...],
+    population: Literal["assigned", "triggered"] = "assigned",
+) -> _ResolvedCupedRequest:
+    """Bind one warehouse fit to its immutable source and normalized request."""
+    from increment._source_identity import source_identity
+
+    identity = (
+        "warehouse-cuped-fit-v1",
+        metric.name,
+        population,
+        source_identity(source),
+        method_key(method),
+        control,
+        arm_order,
+    )
+    return _ResolvedCupedRequest(
+        identity=identity,
+        control=control,
+        arm_order=arm_order,
+        method=method,
+        population=population,
+    )
 
 
 def fit_multicovariate_source(

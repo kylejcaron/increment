@@ -1413,7 +1413,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         relation = self._unit_relation_with_covariates(
             metric, covariates=tuple(item.name for item in request.method.covariates or ())
         )
-        yield relation, self._snapshot.execute
+        yield relation, self._snapshot.execute, getattr(self._snapshot, "qr_scratch", None)
 
     def unit_frame(
         self,

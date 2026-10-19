@@ -4147,8 +4147,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 metric,
                 covariates=tuple(item.name for item in request.method.covariates or ()),
                 population=request.population,
-            ) as evidence:
-                yield evidence
+            ) as (relation, execute):
+                yield relation, execute, pinned._session.qr_scratch
 
     def unit_frame(
         self,
