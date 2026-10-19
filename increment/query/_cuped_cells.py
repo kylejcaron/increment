@@ -53,6 +53,13 @@ def known_outcome_domain(metric):
     )
 
 
+def known_qr_outcome_domain(metric):
+    """Whether QR is ruled out by declarations before inspecting source columns."""
+    if metric.type not in ("mean", "ratio", "conversion"):
+        return True
+    return bool(getattr(getattr(metric, "winsorization", None), "has_percentile", False))
+
+
 def _known_outcome_domain(metric, relation, outcomes):
     if known_outcome_domain(metric):
         return True

@@ -593,34 +593,51 @@ def test_categorical_source_fitter_uses_native_and_verified_artifact_relations(
 
 @pytest.mark.parametrize("categorical_sources", [True], indirect=True)
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
-def test_integer_fact_domain_refuses_before_categorical_transfer(
+def test_integer_fact_domain_routes_through_qr_without_unit_keyed_transfer(
     categorical_sources, ingress, monkeypatch
 ):
+    from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.query.cuped import fit_multicovariate_source
     from increment.query.session import WarehouseSession
 
     native, artifact, request = categorical_sources
     source = native if ingress == "native" else artifact
+    metric = source.context.metrics[0]
+    unit_rows = source.unit_frame(metric, covariates=("segment", "device")).to_pylist()
+    expected = fit_cuped_multicovariate(
+        np.asarray([row["y"] for row in unit_rows]),
+        np.asarray([row["group_id"] for row in unit_rows]),
+        control=request.control,
+        arm_order=request.arm_order,
+        covariates={
+            name: np.asarray([row[name] for row in unit_rows]) for name in ("segment", "device")
+        },
+        kinds={"segment": "categorical", "device": "categorical"},
+    )
     transferred = []
     original_fetch = WarehouseSession.fetch_arrow
     original_execute = type(artifact._snapshot).execute
 
     def fetch(session, expression, **kwargs):
         transferred.append(tuple(expression.columns))
+        assert "unit_id" not in expression.columns
         assert not any(name.startswith(("ref_", "first_", "cross_")) for name in expression.columns)
         return original_fetch(session, expression, **kwargs)
 
     def execute_snapshot(snapshot, expression):
         transferred.append(tuple(expression.columns))
+        assert "unit_id" not in expression.columns
         assert not any(name.startswith(("ref_", "first_", "cross_")) for name in expression.columns)
         return original_execute(snapshot, expression)
 
     monkeypatch.setattr(WarehouseSession, "fetch_arrow", fetch)
     monkeypatch.setattr(type(artifact._snapshot), "execute", execute_snapshot)
-    with pytest.raises(CapabilityError) as raised:
-        fit_multicovariate_source(source, source.context.metrics[0], request)
-    assert raised.value.code == "query.cuped.general_qr_required"
-    assert raised.value.context["reason"] == "outcome_domain"
+    actual = fit_multicovariate_source(source, metric, request)
+    assert transferred
+    for name in ("theta", "adjusted_means", "covariance", "dof", "max_leverage"):
+        assert np.asarray(getattr(actual, name)) == pytest.approx(
+            np.asarray(getattr(expected, name)), rel=1e-9, abs=1e-12
+        )
 
 
 def _intercept_transfers(monkeypatch, native, artifact, *, outcome_cells: bool):

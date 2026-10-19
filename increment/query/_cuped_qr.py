@@ -493,8 +493,9 @@ def warehouse_inference_summary(
     design_scale_array = np.asarray(design_scales, dtype=float)
     projection_specs = tuple(projection_specs)
     projection_estimates = tuple(float(value) for value in projection_estimates)
-    if len(projection_specs) != len(projection_estimates):
-        raise ValueError("projection specification and estimate counts differ")
+    assert len(projection_specs) == len(projection_estimates), (
+        "projection specification and estimate counts differ"
+    )
     relation = unit_summary.relation
     width = len(state.eligible_arms) + state.p
     q_columns = tuple(f"_qr_q_{index}" for index in range(width))
@@ -678,7 +679,7 @@ def _apply_pivoted_r_rank(
     if not names:
         return
     block = np.asarray(factor, dtype=float)[start:, start:]
-    scales = np.linalg.norm(block, axis=0)
+    scales = np.max(np.abs(block), axis=0)
     if not np.isfinite(scales).all() or np.any(scales == 0.0):
         deficient = tuple(names[index] for index, scale in enumerate(scales) if scale == 0.0)
         _fail(
@@ -687,6 +688,8 @@ def _apply_pivoted_r_rank(
             partners=(),
         )
     scaled = block / scales[None, :]
+    column_norms = np.linalg.norm(scaled, axis=0)
+    scaled /= column_norms[None, :]
     _, pivoted, pivots = scipy_qr(scaled, mode="economic", pivoting=True, check_finite=False)
     diagonal_squares = np.diag(pivoted) ** 2
     rank = int(np.count_nonzero(diagonal_squares > len(names) * np.finfo(float).eps))
@@ -696,3 +699,811 @@ def _apply_pivoted_r_rank(
             columns=(names[int(pivots[rank])],),
             partners=tuple(names[int(index)] for index in pivots[:rank]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedQRDesign:
+    """Retained, arm-centered covariates and their local-encoder layout."""
+
+    relation: ir.Table
+    layout: Any
+    columns: tuple[str, ...]
+    offsets: tuple[tuple[float, ...], ...]
+    scales: tuple[float, ...]
+    centered_means: tuple[tuple[float, ...], ...]
+    anchor: tuple[float, ...]
+
+
+class _QRDesignEncoder:
+    def __init__(
+        self,
+        relation: ir.Table,
+        arms: tuple[str, ...],
+        row_identity_columns: tuple[str, ...],
+        execute: Callable[[ir.Table], object],
+    ):
+        self.transformed = relation
+        self.arms = arms
+        self.row_identity_columns = row_identity_columns
+        self.execute = execute
+        self.encoded_columns: list[str] = []
+        self.query_columns: list[str] = []
+        self.offsets: list[tuple[float, ...]] = []
+        self.scales: list[float] = []
+        self.levels: list[tuple[object, ...] | None] = []
+        self.references: list[object] = []
+        self.structural: list[str] = []
+        self.indicator_masks: dict[str, list[str]] = {}
+        self.counter = 0
+
+    def encode(self, declarations: tuple[Any, ...]) -> EncodedQRDesign:
+        from increment.estimation.cuped.encoding import MISSING_CATEGORY, MulticovariateCupedLayout
+
+        for declaration in declarations:
+            name = str(declaration.name)
+            kind = str(declaration.kind)
+            policy = str(getattr(declaration, "missing", "refuse"))
+            if kind not in ("continuous", "categorical"):
+                _fail("estimation.cuped_linear.covariate_kind", name=name, kind=kind)
+            if policy not in ("refuse", "impute-indicator"):
+                _fail("estimation.cuped_linear.missing_refused", name=name)
+            value = self.transformed[name]
+            null = value.isnull()
+            if kind == "categorical" and not value.type().is_string():
+                _fail(
+                    "estimation.cuped_linear.covariate_kind",
+                    name=name,
+                    kind="categorical values must be strings",
+                )
+            if kind == "continuous":
+                self._continuous(name, policy, value, null)
+            else:
+                self._categorical(name, policy, value, null, MISSING_CATEGORY)
+        self._shared_indicators()
+        centered_means, anchors = self._centered_anchors()
+        return EncodedQRDesign(
+            self.transformed,
+            MulticovariateCupedLayout(
+                tuple(str(item.name) for item in declarations),
+                tuple(str(item.kind) for item in declarations),
+                tuple(self.levels[: len(declarations)]),
+                tuple(self.references[: len(declarations)]),
+                tuple(self.encoded_columns),
+                tuple(self.structural),
+                tuple(self.shared_indicators),
+            ),
+            tuple(self.query_columns),
+            tuple(self.offsets),
+            tuple(self.scales),
+            centered_means,
+            anchors,
+        )
+
+    def _continuous(self, name: str, policy: str, value: Any, null: Any) -> None:
+        numeric = value.cast("float64")
+        if value.type().is_floating():
+            null = null | numeric.isnan()
+        if policy == "refuse":
+            missing_count = _rows(
+                self.execute(self.transformed.aggregate(_qr_missing=null.cast("int64").sum()))
+            )[0]["_qr_missing"]
+            if missing_count:
+                _fail("estimation.cuped_linear.missing_refused", name=name)
+        if policy == "impute-indicator":
+            counts = _rows(
+                self.execute(
+                    self.transformed.group_by("group_id").aggregate(
+                        _qr_missing=null.cast("int64").sum(),
+                        _qr_count=self.transformed.count(),
+                    )
+                )
+            )
+            if any(int(row["_qr_missing"]) > 0 for row in counts):
+                self.indicator_masks.setdefault(name, []).append(name)
+        safe = ibis.ifelse(null, 0.0, numeric)
+        first_rows = self.transformed.filter(~null).mutate(
+            _qr_first=ibis.row_number().over(
+                group_by=[self.transformed["group_id"]],
+                order_by=[self.transformed[column] for column in self.row_identity_columns],
+            )
+        )
+        first_values = _rows(
+            self.execute(first_rows.filter(first_rows._qr_first == 0).select("group_id", name))
+        )
+        first_by_arm = {str(row["group_id"]): float(row[name]) for row in first_values}
+        arm_offsets = tuple(first_by_arm.get(arm, 0.0) for arm in self.arms)
+        raw_centered = ibis.ifelse(null, 0.0, numeric) - _sum_sql(
+            ibis.ifelse(self.transformed["group_id"] == arm, offset, 0.0)
+            for arm, offset in zip(self.arms, arm_offsets, strict=True)
+        )
+        spread = _rows(
+            self.execute(
+                self.transformed.aggregate(
+                    _qr_max=raw_centered.abs().max(),
+                    _qr_min=cast(Any, safe).min(),
+                    _qr_max_raw=cast(Any, safe).max(),
+                )
+            )
+        )[0]
+        scale = float(spread["_qr_max"] or 0.0)
+        if not math.isfinite(scale):
+            arm_offsets = tuple(0.0 for _ in self.arms)
+            raw_centered = safe
+            scale = float(spread["_qr_max_raw"] or 0.0)
+        raw_range = float(spread["_qr_max_raw"] or 0.0) - float(spread["_qr_min"] or 0.0)
+        if scale == 0.0:
+            if raw_range == 0.0:
+                self.structural.append(name)
+                self.levels.append(None)
+                self.references.append(0.0)
+                return
+            scale = 1.0
+        self.levels.append(None)
+        self.references.append(0.0)
+        self.offsets.append(arm_offsets)
+        self.scales.append(scale)
+        query_name = f"_qr_covariate_{self.counter}"
+        self.transformed = self.transformed.mutate(**{query_name: cast(Any, raw_centered) / scale})
+        self.counter += 1
+        self.query_columns.append(query_name)
+        self.encoded_columns.append(name)
+
+    def _categorical(
+        self, name: str, policy: str, value: Any, null: Any, missing_category: object
+    ) -> None:
+        from increment.query._cuped_cells import general_qr_required
+
+        values = _rows(self.execute(self.transformed.select(name).distinct()))
+        observed = {None if row[name] is None else str(row[name]) for row in values}
+        category_levels = tuple(sorted(value for value in observed if value is not None))
+        has_missing = None in observed
+        full_levels: tuple[object, ...] = (
+            *category_levels,
+            *((missing_category,) if has_missing else ()),
+        )
+        if has_missing and policy == "refuse":
+            _fail("estimation.cuped_linear.missing_refused", name=name)
+        counts = _rows(
+            self.execute(
+                self.transformed.group_by("group_id", name).aggregate(
+                    _qr_count=self.transformed.count()
+                )
+            )
+        )
+        frequencies = dict.fromkeys(full_levels, 0)
+        by_arm_level: dict[tuple[str, object], int] = {}
+        for row in counts:
+            label = None if row[name] is None else str(row[name])
+            key = missing_category if label is None else label
+            frequencies[key] = frequencies.get(key, 0) + int(row["_qr_count"])
+            by_arm_level[(str(row["group_id"]), key)] = int(row["_qr_count"])
+        if len(full_levels) > 200:
+            general_qr_required(None, "categorical_levels", covariate=name)
+        for level in full_levels:
+            observed_counts = {arm: by_arm_level.get((arm, level), 0) for arm in self.arms}
+            if any(count < 2 for count in observed_counts.values()):
+                shown = "<typed-missing>" if level is missing_category else level
+                _fail(
+                    "estimation.cuped_linear.level_support",
+                    column=name,
+                    level=shown,
+                    counts=observed_counts,
+                )
+        reference = max(
+            full_levels,
+            key=lambda level: (frequencies.get(level, 0), -full_levels.index(level)),
+            default=None,
+        )
+        self.levels.append(full_levels)
+        self.references.append(reference)
+        if len(full_levels) <= 1:
+            self.structural.append(name)
+            return
+        for level in full_levels:
+            if level == reference:
+                continue
+            shown = "<typed-missing>" if level is missing_category else repr(level)
+            query_name = f"_qr_covariate_{self.counter}"
+            encoded = (
+                null.cast("float64")
+                if level is missing_category
+                else (value.cast("string") == str(level)).cast("float64")
+            )
+            self.transformed = self.transformed.mutate(**{query_name: encoded})
+            self.query_columns.append(query_name)
+            self.encoded_columns.append(f"{name}[{shown}]")
+            self.offsets.append(tuple(0.0 for _ in self.arms))
+            self.scales.append(1.0)
+            self.counter += 1
+
+    def _shared_indicators(self) -> None:
+        shared = []
+        for name in self.indicator_masks:
+            value = self.transformed[name]
+            mask = value.isnull()
+            if value.type().is_floating():
+                mask = mask | value.cast("float64").isnan()
+            for owners in shared:
+                representative = self.transformed[owners[0]]
+                representative_mask = representative.isnull()
+                if representative.type().is_floating():
+                    representative_mask = (
+                        representative_mask | representative.cast("float64").isnan()
+                    )
+                differences = _rows(
+                    self.execute(
+                        self.transformed.aggregate(
+                            _qr_different=(mask != representative_mask).cast("int64").sum()
+                        )
+                    )
+                )[0]["_qr_different"]
+                if int(differences or 0) == 0:
+                    owners.append(name)
+                    break
+            else:
+                shared.append([name])
+        retained = []
+        for owners in shared:
+            indicator_name = f"missing[{','.join(owners)}]"
+            query_name = f"_qr_covariate_{self.counter}"
+            value = self.transformed[owners[0]]
+            indicator_value = value.isnull()
+            if value.type().is_floating():
+                indicator_value = indicator_value | value.cast("float64").isnan()
+            counts = _rows(
+                self.execute(
+                    self.transformed.aggregate(
+                        _qr_missing=indicator_value.cast("int64").sum(),
+                        _qr_count=self.transformed.count(),
+                    )
+                )
+            )[0]
+            if int(counts["_qr_missing"] or 0) in (
+                0,
+                int(counts["_qr_count"] or 0),
+            ):
+                continue
+            self.transformed = self.transformed.mutate(
+                **{query_name: indicator_value.cast("float64")}
+            )
+            self.query_columns.append(query_name)
+            self.encoded_columns.append(indicator_name)
+            retained.append(tuple(owners))
+            self.offsets.append(tuple(0.0 for _ in self.arms))
+            self.scales.append(1.0)
+            self.counter += 1
+        self.shared_indicators = retained
+
+    def _centered_anchors(self) -> tuple[tuple[tuple[float, ...], ...], tuple[float, ...]]:
+        if not self.query_columns:
+            return (), ()
+        means_rows = _rows(
+            self.execute(
+                self.transformed.group_by("group_id").aggregate(
+                    **{
+                        f"_qr_mean_{index}": self.transformed[column].mean()
+                        for index, column in enumerate(self.query_columns)
+                    }
+                )
+            )
+        )
+        means_by_arm = {str(row["group_id"]): row for row in means_rows}
+        centered_means = tuple(
+            tuple(float(means_by_arm[arm][f"_qr_mean_{index}"]) for arm in self.arms)
+            for index in range(len(self.query_columns))
+        )
+        counts = _rows(
+            self.execute(
+                self.transformed.group_by("group_id").aggregate(_qr_n=self.transformed.count())
+            )
+        )
+        count_lookup = {str(row["group_id"]): int(row["_qr_n"]) for row in counts}
+        total = sum(count_lookup[arm] for arm in self.arms)
+        anchors = tuple(
+            math.fsum(
+                count_lookup[arm] / total * centered_means[index][arm_index]
+                + count_lookup[arm] / total * self.offsets[index][arm_index] / self.scales[index]
+                for arm_index, arm in enumerate(self.arms)
+            )
+            * self.scales[index]
+            for index in range(len(self.query_columns))
+        )
+        return centered_means, anchors
+
+
+def encode_qr_covariates(
+    relation: ir.Table,
+    declarations: Sequence[Any],
+    *,
+    arms: Sequence[str],
+    row_identity_columns: Sequence[str],
+    execute: Callable[[ir.Table], object] | None = None,
+) -> EncodedQRDesign:
+    """Encode declared covariates relationally using the local CUPED layout rules."""
+    execute = execute or (lambda expression: expression.execute())
+    encoder = _QRDesignEncoder(
+        relation,
+        tuple(str(arm) for arm in arms),
+        tuple(row_identity_columns),
+        execute,
+    )
+    return encoder.encode(tuple(declarations))
+
+
+@dataclass(frozen=True, slots=True)
+class QRPreparedRelation:
+    """Weighted factor input plus bounded scale and outcome metadata."""
+
+    relation: ir.Table
+    design_columns: tuple[str, ...]
+    rhs_columns: tuple[str, ...]
+    outcome_columns: tuple[str, ...]
+    covariate_columns: tuple[str, ...]
+    sqrt_weight_column: str
+    design_scales: tuple[float, ...]
+    outcome_scales: tuple[float, ...]
+    counts: tuple[int, ...]
+    outcome_offsets: tuple[tuple[float, ...], ...]
+    centered_outcome_means: tuple[tuple[float, ...], ...]
+
+
+def prepare_qr_factor_input(
+    encoded: EncodedQRDesign,
+    *,
+    outcome_columns: Sequence[str],
+    arms: Sequence[str],
+    row_identity_columns: Sequence[str],
+    execute: Callable[[ir.Table], object],
+    scratch,
+    control: str | None = None,
+) -> QRPreparedRelation:
+    """Center, weight and max-scale the retained QR design and outcome RHS."""
+
+    from increment.estimation.cuped._numeric import _fail
+    from increment.query._cuped_cells import _rows
+
+    relation = encoded.relation
+    arms = tuple(str(arm) for arm in arms)
+    outcome_columns = tuple(outcome_columns)
+    row_identity_columns = tuple(row_identity_columns)
+    counts_rows = _rows(execute(relation.group_by("group_id").aggregate(_qr_n=relation.count())))
+    count_lookup = {str(row["group_id"]): int(row["_qr_n"]) for row in counts_rows}
+    if set(count_lookup) != set(arms):
+        _fail(
+            "estimation.cuped_linear.invalid_arms",
+            control=control if control is not None else (arms[0] if arms else None),
+            arm_order=arms,
+            observed=tuple(count_lookup),
+        )
+    counts = tuple(count_lookup.get(arm, 0) for arm in arms)
+    if min(counts, default=0) < 2:
+        from increment.estimation.cuped._numeric import _fail
+
+        _fail(
+            "estimation.cuped_linear.arm_counts",
+            counts=dict(zip(arms, counts, strict=True)),
+        )
+    sqrt_weight = _sum_sql(
+        ibis.ifelse(
+            relation["group_id"] == arm,
+            math.sqrt(1.0 / (count_lookup[arm] * (count_lookup[arm] - 1))),
+            0.0,
+        )
+        for arm in arms
+    )
+    arm_columns = tuple(f"_qr_arm_design_{index}" for index in range(len(arms)))
+    fields = {
+        "group_id": relation["group_id"],
+        **{name: relation[name] for name in row_identity_columns},
+    }
+    fields.update(
+        {
+            name: ibis.ifelse(relation["group_id"] == arm, sqrt_weight, 0.0)
+            for name, arm in zip(arm_columns, arms, strict=True)
+        }
+    )
+    covariate_columns = tuple(
+        f"_qr_centered_covariate_{index}" for index in range(len(encoded.columns))
+    )
+    weighted_covariate_columns = tuple(
+        f"_qr_weighted_covariate_{index}" for index in range(len(encoded.columns))
+    )
+    for index, (source_name, target_name, weighted_name) in enumerate(
+        zip(encoded.columns, covariate_columns, weighted_covariate_columns, strict=True)
+    ):
+        arm_mean = _sum_sql(
+            ibis.ifelse(
+                relation["group_id"] == arm,
+                float(encoded.centered_means[index][arm_index]),
+                0.0,
+            )
+            for arm_index, arm in enumerate(arms)
+        )
+        centered = relation[source_name] - arm_mean
+        fields[target_name] = centered
+        fields[weighted_name] = centered * sqrt_weight
+    offsets: list[tuple[float, ...]] = []
+    centered_means: list[tuple[float, ...]] = []
+    outcome_fields = {}
+    for component, source_name in enumerate(outcome_columns):
+        value = relation[source_name].cast("float64")
+        raw_stats = _rows(
+            execute(
+                relation.aggregate(
+                    _qr_outcome_max=value.abs().max(),
+                    _qr_outcome_count=value.count(),
+                )
+            )
+        )[0]
+        if not math.isfinite(float(raw_stats["_qr_outcome_max"])) or int(
+            raw_stats["_qr_outcome_count"]
+        ) != sum(counts):
+            _fail("estimation.cuped_linear.nonfinite", name=source_name, row=0)
+        row_number = ibis.row_number().over(
+            group_by=[relation["group_id"]],
+            order_by=[value, *(relation[column] for column in row_identity_columns)],
+        )
+        median_index = _sum_sql(
+            ibis.ifelse(relation["group_id"] == arm, count_lookup[arm] // 2, 0) for arm in arms
+        )
+        anchors = relation.filter(row_number == median_index).select("group_id", source_name)
+        anchor_rows = _rows(execute(anchors))
+        anchor_by_arm = {str(row["group_id"]): float(row[source_name]) for row in anchor_rows}
+        component_offsets = tuple(anchor_by_arm[arm] for arm in arms)
+        centered = value - _sum_sql(
+            ibis.ifelse(relation["group_id"] == arm, offset, 0.0)
+            for arm, offset in zip(arms, component_offsets, strict=True)
+        )
+        centered_max = _rows(execute(relation.aggregate(_qr_centered_max=centered.abs().max())))[0][
+            "_qr_centered_max"
+        ]
+        if not math.isfinite(float(centered_max)):
+            component_offsets = tuple(0.0 for _ in arms)
+            centered = value
+        mean_rows = _rows(
+            execute(
+                relation.group_by("group_id").aggregate(
+                    **{f"_qr_outcome_mean_{component}": centered.mean()}
+                )
+            )
+        )
+        mean_by_arm = {
+            str(row["group_id"]): float(row[f"_qr_outcome_mean_{component}"]) for row in mean_rows
+        }
+        component_means = tuple(mean_by_arm[arm] for arm in arms)
+        residual = centered - _sum_sql(
+            ibis.ifelse(
+                relation["group_id"] == arm,
+                component_means[arm_index],
+                0.0,
+            )
+            for arm_index, arm in enumerate(arms)
+        )
+        residual_name = f"_qr_outcome_centered_{component}"
+        outcome_fields[residual_name] = residual
+        offsets.append(component_offsets)
+        centered_means.append(component_means)
+    relation = relation.mutate(**fields, _qr_sqrt_weight=sqrt_weight, **outcome_fields)
+    outcome_names = tuple(f"_qr_outcome_centered_{index}" for index in range(len(outcome_columns)))
+    scales_record = _rows(
+        execute(
+            relation.aggregate(
+                **{
+                    f"_qr_design_scale_{index}": relation[name].abs().max()
+                    for index, name in enumerate((*arm_columns, *weighted_covariate_columns))
+                },
+                **{
+                    f"_qr_outcome_scale_{index}": relation[name].abs().max()
+                    for index, name in enumerate(outcome_names)
+                },
+            )
+        )
+    )[0]
+    raw_design_columns = (*arm_columns, *weighted_covariate_columns)
+    design_scales = tuple(
+        float(scales_record[f"_qr_design_scale_{index}"]) or 1.0
+        for index in range(len(raw_design_columns))
+    )
+    outcome_scales = tuple(
+        float(scales_record[f"_qr_outcome_scale_{index}"]) or 1.0
+        for index in range(len(outcome_names))
+    )
+    design_columns = tuple(f"_qr_design_{index}" for index in range(len(raw_design_columns)))
+    rhs_names = tuple(f"_qr_rhs_{index}" for index in range(len(outcome_names)))
+    relation = relation.mutate(
+        **{
+            name: relation[source_name] / scale
+            for name, source_name, scale in zip(
+                design_columns, raw_design_columns, design_scales, strict=True
+            )
+        },
+        **{
+            rhs: relation["_qr_sqrt_weight"] * relation[outcome] / scale
+            for rhs, outcome, scale in zip(rhs_names, outcome_names, outcome_scales, strict=True)
+        },
+    )
+    return QRPreparedRelation(
+        relation,
+        design_columns,
+        rhs_names,
+        outcome_names,
+        covariate_columns,
+        "_qr_sqrt_weight",
+        design_scales,
+        outcome_scales,
+        counts,
+        tuple(offsets),
+        tuple(centered_means),
+    )
+
+
+def fit_warehouse_qr(  # noqa: PLR0915
+    relation: ir.Table,
+    *,
+    metric,
+    request,
+    execute: Callable[[ir.Table], object],
+    scratch,
+) -> Any:
+    """Fit and finalize a mixed CUPED model from a retained warehouse relation."""
+    from increment.estimation.cuped._numeric import _fail
+    from increment.estimation.cuped.inference import finalize_fit
+    from increment.estimation.cuped.types import FitState, ProjectionSpec
+    from increment.query._cuped_cells import _rows
+
+    arms = tuple(request.arm_order)
+    if any(arm not in arms for arm in (request.control,)):
+        _fail("estimation.cuped_linear.control_missing", control=request.control)
+    declarations = tuple(request.method.covariates or ())
+    row_identity_columns = ("unit_id",)
+    encoded = encode_qr_covariates(
+        relation,
+        declarations,
+        arms=arms,
+        row_identity_columns=row_identity_columns,
+        execute=execute,
+    )
+    outcome_columns = ("y", "y_den") if metric.type == "ratio" else ("y",)
+    prepared = prepare_qr_factor_input(
+        encoded,
+        outcome_columns=outcome_columns,
+        arms=arms,
+        row_identity_columns=row_identity_columns,
+        execute=execute,
+        scratch=scratch,
+        control=request.control,
+    )
+    factor = factor_design_relation(
+        prepared.relation,
+        design_columns=prepared.design_columns,
+        rhs_columns=prepared.rhs_columns,
+        order_columns=row_identity_columns,
+        execute=execute,
+        scratch=scratch,
+        covariate_start=len(arms),
+        covariate_names=encoded.layout.encoded_columns,
+    )
+    coefficients = solve_qr_coefficients(
+        factor,
+        design_scales=prepared.design_scales,
+        outcome_scales=prepared.outcome_scales,
+    )
+    arm_count = len(arms)
+    slopes = tuple(tuple(row[arm_count:]) for row in coefficients)
+    component_means = tuple(
+        tuple(
+            math.fsum(
+                (
+                    prepared.outcome_offsets[component][arm_index],
+                    prepared.centered_outcome_means[component][arm_index],
+                )
+            )
+            for arm_index in range(arm_count)
+        )
+        for component in range(len(outcome_columns))
+    )
+    adjusted_means = []
+    for component in range(len(outcome_columns)):
+        for arm_index in range(arm_count):
+            difference = tuple(
+                math.fsum(
+                    (
+                        encoded.centered_means[index][arm_index],
+                        _stable_offset_difference(
+                            encoded.offsets[index][arm_index],
+                            encoded.anchor[index],
+                            encoded.scales[index],
+                        ),
+                    )
+                )
+                for index in range(len(encoded.columns))
+            )
+            adjustment = math.fsum(
+                slopes[component][index] * difference[index]
+                for index in range(len(encoded.columns))
+            )
+            adjusted_means.append(component_means[component][arm_index] - adjustment)
+    denominator_support = ()
+    if metric.type == "ratio":
+        denominator = relation["y_den"].cast("float64")
+        denominator_residual = denominator - _sum_sql(
+            ibis.ifelse(
+                relation["group_id"] == arm,
+                prepared.outcome_offsets[1][index] + prepared.centered_outcome_means[1][index],
+                0.0,
+            )
+            for index, arm in enumerate(arms)
+        )
+        moments = _rows(
+            execute(
+                relation.group_by("group_id").aggregate(
+                    _qr_den_squares=denominator_residual.pow(2).sum()
+                )
+            )
+        )
+        # Group-specific aggregate expressions yield one record per arm.
+        support_rows = []
+        for row in moments:
+            arm = str(row["group_id"])
+            index = arms.index(arm)
+            mean = component_means[1][index]
+            if mean <= 0:
+                _fail(
+                    "estimation.cuped_linear.nonpositive_component",
+                    family="denominator",
+                    arm=arm,
+                    value=mean,
+                )
+            count = prepared.counts[index]
+            second = float(row["_qr_den_squares"])
+            precision = math.sqrt(second) / math.sqrt(count) / math.sqrt(count - 1) / mean
+            support_rows.append((arm, precision))
+        denominator_support = tuple(support_rows)
+    state = FitState(
+        identity=request.identity,
+        eligible_arms=arms,
+        withheld_arms=(),
+        refusal_contexts=(),
+        counts=prepared.counts,
+        layout=encoded.layout,
+        offsets=encoded.offsets,
+        scales=encoded.scales,
+        centered_means=tuple(
+            tuple(encoded.centered_means[index][arm_index] for index in range(len(encoded.columns)))
+            for arm_index in range(arm_count)
+        ),
+        anchor=encoded.anchor,
+        triangular_factor=factor.triangular_factor,
+        transformed_rhs=tuple(
+            tuple(
+                factor.transformed_rhs[row][component] for row in range(len(factor.transformed_rhs))
+            )
+            for component in range(len(outcome_columns))
+        ),
+        slopes=slopes,
+        adjusted_means=tuple(adjusted_means),
+        theta=tuple(
+            slope[index] / encoded.scales[index]
+            for slope in slopes
+            for index in range(len(encoded.scales))
+        ),
+        n_min=min(prepared.counts),
+        p=len(encoded.columns),
+        is_ratio=metric.type == "ratio",
+        denominator_support=denominator_support,
+        control=request.control,
+    )
+    specs = []
+    estimates = []
+    mean_matrix = np.asarray(state.adjusted_means, dtype=float).reshape(
+        len(outcome_columns), arm_count
+    )
+    for treatment_index in range(1, arm_count):
+        for control_index in range(treatment_index):
+            treatment, control = arms[treatment_index], arms[control_index]
+            for arm, comparison in ((treatment, control), (control, treatment)):
+                jacobian = np.zeros(arm_count)
+                jacobian[arms.index(arm)] = 1.0
+                jacobian[arms.index(comparison)] = -1.0
+                specs.append(
+                    ProjectionSpec(
+                        identity=state.identity + ("absolute", arm, comparison, ""),
+                        kind="absolute",
+                        jacobian=tuple(float(value) for value in jacobian),
+                        scale=1.0,
+                        divisor=1.0,
+                        exponent=0,
+                        arm=arm,
+                        control=comparison,
+                        available=True,
+                    )
+                )
+                estimates.append(
+                    float(mean_matrix[0, arms.index(arm)] - mean_matrix[0, arms.index(comparison)])
+                )
+            if np.all(mean_matrix[0, [treatment_index, control_index]] > 0):
+                for arm, comparison in ((treatment, control), (control, treatment)):
+                    ai, ci = arms.index(arm), arms.index(comparison)
+                    jacobian = np.zeros(arm_count)
+                    jacobian[ai], jacobian[ci] = 1 / mean_matrix[0, ai], -1 / mean_matrix[0, ci]
+                    specs.append(
+                        ProjectionSpec(
+                            identity=state.identity + ("relative", arm, comparison, ""),
+                            kind="relative",
+                            jacobian=tuple(float(value) for value in jacobian),
+                            scale=1.0,
+                            divisor=1.0,
+                            exponent=0,
+                            arm=arm,
+                            control=comparison,
+                            available=True,
+                        )
+                    )
+                    estimates.append(
+                        float(math.log(mean_matrix[0, ai]) - math.log(mean_matrix[0, ci]))
+                    )
+            if len(outcome_columns) == 2 and np.all(
+                mean_matrix[:, [treatment_index, control_index]] > 0
+            ):
+                for scale in ("log", "absolute"):
+                    for arm, comparison in ((treatment, control), (control, treatment)):
+                        ai, ci = arms.index(arm), arms.index(comparison)
+                        jacobian = np.zeros(2 * arm_count)
+                        nt, nd = mean_matrix[0, ai], mean_matrix[1, ai]
+                        nc, cd = mean_matrix[0, ci], mean_matrix[1, ci]
+                        if scale == "log":
+                            jacobian[[ai, ci, arm_count + ai, arm_count + ci]] = (
+                                1 / nt,
+                                -1 / nc,
+                                -1 / nd,
+                                1 / cd,
+                            )
+                            estimate = math.log(nt) - math.log(nd) - math.log(nc) + math.log(cd)
+                        else:
+                            rt, rc = nt / nd, nc / cd
+                            jacobian[[ai, ci, arm_count + ai, arm_count + ci]] = (
+                                1 / nd,
+                                -1 / cd,
+                                -rt / nd,
+                                rc / cd,
+                            )
+                            estimate = rt - rc
+                        specs.append(
+                            ProjectionSpec(
+                                identity=state.identity + ("ratio", arm, comparison, scale),
+                                kind="ratio",
+                                jacobian=tuple(float(value) for value in jacobian),
+                                scale=1.0,
+                                divisor=1.0,
+                                exponent=0,
+                                arm=arm,
+                                control=comparison,
+                                available=True,
+                            )
+                        )
+                        estimates.append(float(estimate))
+    unit_summary = warehouse_qr_unit_summary(
+        prepared.relation,
+        factor,
+        design_columns=prepared.design_columns,
+        outcome_columns=prepared.outcome_columns,
+        sqrt_weight_column=prepared.sqrt_weight_column,
+        row_identity_columns=row_identity_columns,
+        design_scales=prepared.design_scales,
+        coefficients=coefficients,
+        execute=execute,
+        scratch=scratch,
+    )
+    summary = warehouse_inference_summary(
+        state,
+        unit_summary,
+        factor,
+        design_scales=prepared.design_scales,
+        sqrt_weight_column=prepared.sqrt_weight_column,
+        covariate_columns=prepared.covariate_columns,
+        projection_specs=tuple(specs),
+        projection_estimates=tuple(estimates),
+        execute=execute,
+        scratch=scratch,
+    )
+    return finalize_fit(state, summary)

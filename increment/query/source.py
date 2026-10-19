@@ -1384,6 +1384,34 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         ):
             refuse_observational_quantile(metric)
 
+    def fit_cuped_multicovariate(
+        self,
+        metric: Metric,
+        method,
+        *,
+        control: str,
+        arm_order: tuple[str, ...],
+        population: Literal["assigned", "triggered"] = "assigned",
+        breakout_dimension: str | None = None,
+        breakout_source: str | None = None,
+        breakout_value: str | None = None,
+        breakout_is_null: bool = False,
+    ):
+        from increment.query.cuped import fit_multicovariate_request
+
+        return fit_multicovariate_request(
+            self,
+            metric,
+            method,
+            control=control,
+            arm_order=arm_order,
+            population=population,
+            breakout_dimension=breakout_dimension,
+            breakout_source=breakout_source,
+            breakout_value=breakout_value,
+            breakout_is_null=breakout_is_null,
+        )
+
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Expose only a verified warehouse relation to compact CUPED reduction."""
@@ -1401,7 +1429,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             else (binding.measure_key,)
         )
         domains = {item.measure_key: item.outcome_domain for item in self._manifest.measures}
-        if any(domains.get(key, "unknown") != "continuous" for key in keys):
+        if any(domains.get(key, "unknown") not in ("continuous", "discrete") for key in keys):
             general_qr_required(metric, "outcome_domain")
         if request.population != self._population:
             if request.population == "triggered" and self._population == "assigned":
@@ -1413,6 +1441,32 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         relation = self._unit_relation_with_covariates(
             metric, covariates=tuple(item.name for item in request.method.covariates or ())
         )
+        if request.breakout_dimension is not None:
+            extension = self._extension(
+                {
+                    "kind": "breakout_dimension",
+                    "property_name": request.breakout_dimension,
+                    "source_name": request.breakout_source,
+                }
+            )
+            extension_relation = self._verified_extension_relation(
+                extension, request=_artifact_request(extension)
+            )
+            dimension = extension_relation.select(
+                "unit_id",
+                **{
+                    "__qr_breakout_missing": extension_relation.value_is_missing,
+                    "__qr_breakout_value": extension_relation.dimension_value,
+                },
+            )
+            relation = relation.left_join(dimension, "unit_id")
+            if request.breakout_is_null:
+                relation = relation.filter(relation["__qr_breakout_missing"])
+            else:
+                relation = relation.filter(
+                    ~relation["__qr_breakout_missing"]
+                    & (relation["__qr_breakout_value"] == request.breakout_value)
+                )
         yield relation, self._snapshot.execute, getattr(self._snapshot, "qr_scratch", None)
 
     def unit_frame(

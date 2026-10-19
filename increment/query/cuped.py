@@ -13,6 +13,7 @@ from increment.query._cuped_cells import (
     categorical_cells_from_relation,
     general_qr_required,
     known_outcome_domain,
+    known_qr_outcome_domain,
 )
 
 if TYPE_CHECKING:
@@ -27,18 +28,27 @@ class _ResolvedCupedRequest:
     arm_order: tuple[str, ...]
     method: Method
     population: Literal["assigned", "triggered"] = "assigned"
+    breakout_dimension: str | None = None
+    breakout_source: str | None = None
+    breakout_value: str | None = None
+    breakout_is_null: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "identity", _freeze_payload(self.identity))
         object.__setattr__(self, "arm_order", tuple(self.arm_order))
 
 
+@dataclass(frozen=True, slots=True)
+class _Unused:
+    pass
+
+
 def _require_compact_request(source, metric, method: Method) -> None:
     """Declaration-level routes to general QR, checked before any warehouse query."""
-    if any(item.kind != "categorical" for item in method.covariates or ()):
-        general_qr_required(metric, "continuous_covariates")
     if known_outcome_domain(metric):
         general_qr_required(metric, "outcome_domain")
+    if any(item.kind != "categorical" for item in method.covariates or ()):
+        general_qr_required(metric, "continuous_covariates")
     if getattr(source, "cuped_relation", None) is None:
         general_qr_required(metric, "source_relation_unavailable")
 
@@ -83,6 +93,10 @@ def resolved_multicovariate_request(
     control: str,
     arm_order: tuple[str, ...],
     population: Literal["assigned", "triggered"] = "assigned",
+    breakout_dimension: str | None = None,
+    breakout_source: str | None = None,
+    breakout_value: str | None = None,
+    breakout_is_null: bool = False,
 ) -> _ResolvedCupedRequest:
     """Bind one warehouse fit to its immutable source and normalized request."""
     from increment._source_identity import source_identity
@@ -95,6 +109,10 @@ def resolved_multicovariate_request(
         method_key(method),
         control,
         arm_order,
+        breakout_dimension,
+        breakout_source,
+        breakout_value,
+        breakout_is_null,
     )
     return _ResolvedCupedRequest(
         identity=identity,
@@ -102,13 +120,134 @@ def resolved_multicovariate_request(
         arm_order=arm_order,
         method=method,
         population=population,
+        breakout_dimension=breakout_dimension,
+        breakout_source=breakout_source,
+        breakout_value=breakout_value,
+        breakout_is_null=breakout_is_null,
     )
+
+
+def _known_cells_outcome_domain(source, metric, relation, outcomes) -> bool:
+    """Check source-certified domains before considering categorical cells."""
+    domain_reader = getattr(source, "cuped_outcome_domains", None)
+    if callable(domain_reader):
+        return any(domain != "continuous" for domain in domain_reader(metric))
+    leaf = source
+    seen: set[int] = set()
+    manifest = None
+    while id(leaf) not in seen:
+        seen.add(id(leaf))
+        manifest = getattr(leaf, "_manifest", None)
+        if manifest is not None:
+            break
+        leaf = getattr(leaf, "_source", None)
+        if leaf is None:
+            break
+    if manifest is not None:
+        binding = next(
+            (item for item in manifest.metric_measures if item.metric_name == metric.name),
+            None,
+        )
+        if binding is None:
+            return True
+        measure_keys = (
+            (binding.numerator_measure_key, binding.denominator_measure_key)
+            if binding.kind == "ratio"
+            else (binding.measure_key,)
+        )
+        domains = {item.measure_key: item.outcome_domain for item in manifest.measures}
+        return any(domains.get(key, "unknown") != "continuous" for key in measure_keys)
+    from increment.query._cuped_cells import _known_outcome_domain
+
+    return _known_outcome_domain(metric, relation, outcomes)
 
 
 def fit_multicovariate_source(
     source, metric, request: _ResolvedCupedRequest
 ) -> MulticovariateCupedFit:
-    """Fit categorical warehouse evidence without transferring individual observations."""
-    return fit_categorical_cells(
-        categorical_cells_source(source, metric, request), control=request.control
+    """Fit from bounded categorical cells or stable warehouse QR evidence."""
+    from increment.errors import CodedError
+    from increment.query._cuped_cells import REFUSALS as CELL_REFUSALS
+    from increment.query._cuped_qr import fit_warehouse_qr
+
+    if known_qr_outcome_domain(metric):
+        general_qr_required(metric, "outcome_domain")
+    relation_factory = getattr(source, "cuped_relation", None)
+    if not callable(relation_factory):
+        general_qr_required(
+            metric,
+            "outcome_domain" if known_outcome_domain(metric) else "source_relation_unavailable",
+        )
+    with relation_factory(metric, request) as (relation, execute, scratch_factory):
+        categorical_only = all(
+            item.kind == "categorical" for item in request.method.covariates or ()
+        )
+        outcomes = ("y", "y_den") if metric.type == "ratio" else ("y",)
+        if categorical_only and not _known_cells_outcome_domain(source, metric, relation, outcomes):
+            try:
+                return fit_categorical_cells(
+                    categorical_cells_from_relation(
+                        relation, execute, metric=metric, request=request
+                    ),
+                    control=request.control,
+                )
+            except CodedError as exc:
+                if exc.code not in CELL_REFUSALS:
+                    raise
+        with scratch_factory() as scratch:
+            return fit_warehouse_qr(
+                relation, metric=metric, request=request, execute=execute, scratch=scratch
+            )
+
+
+def _portable_categorical_domain(source, metric, method, population) -> None:
+    """Refuse non-cell categorical exports before any outcome aggregate is transferred."""
+    from increment.query._cuped_cells import general_qr_required
+
+    control = str(source.context.design.control_group)
+    request = _ResolvedCupedRequest(
+        identity=categorical_identity(metric.name, method_key(method), population),
+        control=control,
+        arm_order=(control,),
+        method=method,
+        population=population,
     )
+    with source.cuped_relation(metric, request) as (relation, _execute, _scratch):
+        outcomes = ("y", "y_den") if metric.type == "ratio" else ("y",)
+        if _known_cells_outcome_domain(source, metric, relation, outcomes):
+            general_qr_required(metric, "outcome_domain")
+
+
+def fit_multicovariate_request(
+    source,
+    metric,
+    method: Method,
+    *,
+    control: str,
+    arm_order: tuple[str, ...],
+    population: Literal["assigned", "triggered"] = "assigned",
+    breakout_dimension: str | None = None,
+    breakout_source: str | None = None,
+    breakout_value: str | None = None,
+    breakout_is_null: bool = False,
+):
+    """Build request identity and fit through the source-owned query interface."""
+    from increment.errors import CodedError
+
+    request = resolved_multicovariate_request(
+        source,
+        metric,
+        method,
+        control=control,
+        arm_order=arm_order,
+        population=population,
+        breakout_dimension=breakout_dimension,
+        breakout_source=breakout_source,
+        breakout_value=breakout_value,
+        breakout_is_null=breakout_is_null,
+    )
+    try:
+        fit = fit_multicovariate_source(source, metric, request)
+    except CodedError as exc:
+        fit = exc
+    return request.identity, fit

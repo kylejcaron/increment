@@ -3665,7 +3665,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
-        from increment.query.cuped import categorical_request_cells
+        from increment.query.cuped import (
+            _portable_categorical_domain,
+            categorical_request_cells,
+        )
         from increment.sources import stamp_fixed_rows, write_moments_table
 
         identity_record = source_identity(self)
@@ -3679,6 +3682,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 population="assigned",
                 configs=self.context.configs,
             ) as pinned:
+                for metric, _scalar, categorical in requests:
+                    for method in categorical:
+                        _portable_categorical_domain(pinned, metric, method, population="assigned")
                 pinned_identity = source_identity(pinned)
                 pinned_identity_payload = json.dumps(
                     pinned_identity, sort_keys=True, separators=(",", ":")
@@ -4121,6 +4127,49 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return units.join(dimensions, keys="unit_id", join_type="left outer")
 
+    def fit_cuped_multicovariate(
+        self,
+        metric: Metric,
+        method,
+        *,
+        control: str,
+        arm_order: tuple[str, ...],
+        population: Literal["assigned", "triggered"] = "assigned",
+        breakout_dimension: str | None = None,
+        breakout_source: str | None = None,
+        breakout_value: str | None = None,
+        breakout_is_null: bool = False,
+    ):
+        from increment.query.cuped import fit_multicovariate_request
+
+        return fit_multicovariate_request(
+            self,
+            metric,
+            method,
+            control=control,
+            arm_order=arm_order,
+            population=population,
+            breakout_dimension=breakout_dimension,
+            breakout_source=breakout_source,
+            breakout_value=breakout_value,
+            breakout_is_null=breakout_is_null,
+        )
+
+    def cuped_outcome_domains(self, metric: Metric) -> tuple[str, ...]:
+        """Return declared SQL domains for outcome components without reading rows."""
+        from increment.query._cuped_cells import component_domain
+
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        domains = []
+        for measure in components:
+            fact_source, fact = _find_fact_source(self._defs, measure.fact)
+            column = _resolve_value_column(fact_source, fact)
+            datatype = self._get_fact_table(fact_source)[column].type() if column else None
+            domains.append(component_domain(measure, datatype))
+        return tuple(domains)
+
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Keep the complete CUPED relation inside one pinned source execution."""
@@ -4141,13 +4190,44 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 datatype = (
                     pinned._get_fact_table(source)[column].type() if column is not None else None
                 )
-                if component_domain(measure, datatype) != "continuous":
+                if component_domain(measure, datatype) == "unknown":
                     general_qr_required(metric, "outcome_domain")
             with pinned._unit_relation(
                 metric,
                 covariates=tuple(item.name for item in request.method.covariates or ()),
                 population=request.population,
             ) as (relation, execute):
+                if request.breakout_dimension is not None:
+                    from increment.semantics.models import Breakout
+
+                    breakout = Breakout(
+                        property=request.breakout_dimension,
+                        source=request.breakout_source,
+                    )
+                    exposures = (
+                        pinned._get_trigger_population(operation="breakout_cuped")
+                        if request.population == "triggered"
+                        else pinned._get_exposures()
+                    )
+                    source = _resolve_breakout_fact_source(
+                        pinned._defs, pinned._experiment, breakout
+                    )
+                    properties = pinned._build_breakout_properties_table(
+                        source, breakout.property, exposures
+                    )
+                    relation = relation.left_join(
+                        properties.select(
+                            "unit_id",
+                            **{"__qr_breakout_value": properties[breakout.property]},
+                        ),
+                        "unit_id",
+                    )
+                    if request.breakout_is_null:
+                        relation = relation.filter(relation["__qr_breakout_value"].isnull())
+                    else:
+                        relation = relation.filter(
+                            relation["__qr_breakout_value"].cast("string") == request.breakout_value
+                        )
                 yield relation, execute, pinned._session.qr_scratch
 
     def unit_frame(

@@ -420,8 +420,8 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
 
 
 @pytest.mark.integration
-def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch):
-    from tests.analysis_factory import _native_source
+def test_native_breakout_qr_never_uses_unit_frame(tmp_path, monkeypatch):
+    from increment.query.native_source import DefinitionsMomentSource
     from tests.covariate_cases import _CATEGORICAL_DESIGN, categorical_defs_and_con
 
     path, con, _units = categorical_defs_and_con(tmp_path)
@@ -437,8 +437,6 @@ def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch)
         )
     )
     analysis = Analysis.from_definitions("cat_test", path, con, store="none")
-    source = _native_source(analysis)
-    original = type(source).unit_frame
     methods: dict[str, Any] = {
         "sensitivity_methods": [
             Method.cuped_multicovariate(
@@ -448,23 +446,13 @@ def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch)
         ],
     }
     baseline = analysis.run_breakout(**methods)
-    mutated = False
 
-    def mutate_before_units(self, *args, **kwargs):
-        nonlocal mutated
-        if not mutated:
-            mutated = True
-            con.raw_sql(
-                "UPDATE cat_events SET revenue = revenue * 2 "
-                "WHERE event = 'purchase' AND user_id IN "
-                "(SELECT user_id FROM cat_events WHERE group_id = 'treatment')"
-            )
-        return original(self, *args, **kwargs)
+    def forbidden_unit_frame(*args, **kwargs):
+        pytest.fail("warehouse mixed-CUPED breakout fetched a per-unit frame")
 
-    monkeypatch.setattr(type(source), "unit_frame", mutate_before_units)
+    monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_frame)
     try:
         after = analysis.run_breakout(**methods)
-        assert mutated
         assert [(r.dimension_value, r.method) for r in after] == [
             (r.dimension_value, r.method) for r in baseline
         ]

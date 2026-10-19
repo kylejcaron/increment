@@ -24,12 +24,32 @@ def _scratch_session(connection, tmp_path):
     return WarehouseSession(connection, load(definitions_path))
 
 
+def _guard_no_unit_keyed_transfers(monkeypatch):
+    from increment.query.artifact_contract import ImmutableArtifactSnapshot
+    from increment.query.session import WarehouseSession
+
+    def guarded(original):
+        def execute(self, expression, *args, **kwargs):
+            result = original(self, expression, *args, **kwargs)
+            names = getattr(getattr(result, "schema", None), "names", ())
+            if "unit_id" in names and getattr(result, "num_rows", 0):
+                pytest.fail("warehouse QR transferred a unit-keyed row")
+            return result
+
+        return execute
+
+    monkeypatch.setattr(WarehouseSession, "fetch_arrow", guarded(WarehouseSession.fetch_arrow))
+    monkeypatch.setattr(
+        ImmutableArtifactSnapshot, "execute", guarded(ImmutableArtifactSnapshot.execute)
+    )
+
+
 def _positive_diagonal(r, rhs):
     signs = np.where(np.diag(r) < 0, -1.0, 1.0)
     return signs[:, None] * r, signs[:, None] * rhs
 
 
-@pytest.mark.parametrize("p", [1, 4, 20])
+@pytest.mark.parametrize("p", [1, 4, 20, 50])
 def test_duckdb_householder_factor_matches_numpy(p, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
 
@@ -990,7 +1010,8 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
         connection.disconnect()
 
 
-def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(tmp_path):
+@pytest.mark.parametrize("perturbation", [0.0, 1.0e-12])
+def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(perturbation, tmp_path):
     from increment.errors import CodedError
     from increment.query._cuped_qr import factor_design_relation
 
@@ -998,7 +1019,7 @@ def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(tmp_path):
         {
             "unit_id": f"unit-{index:04d}",
             "x0": float(index),
-            "x1": float(index),
+            "x1": float(index) + perturbation * float(np.sin(index)),
             "y": float(index),
         }
         for index in range(80)
@@ -1067,6 +1088,32 @@ def test_qr_scratch_drop_failure_exposes_retained_locator(tmp_path, monkeypatch)
         connection.disconnect()
 
 
+def test_qr_scratch_create_permission_failure_leaves_no_work_relation(tmp_path, monkeypatch):
+    from increment.errors import CodedError
+
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    original_create = type(connection).create_table
+
+    def denied_create(backend, name, *args, **kwargs):
+        if str(name).startswith("_cuped_qr_"):
+            raise PermissionError("simulated temporary-relation CREATE denial")
+        return original_create(backend, name, *args, **kwargs)
+
+    monkeypatch.setattr(type(connection), "create_table", denied_create)
+    try:
+        with pytest.raises(CodedError) as raised:
+            with session.qr_scratch() as scratch:
+                scratch.materialize_next(connection.table("scratch_source"))
+        assert raised.value.code == "query.session.snapshot.materialization_failed"
+        assert session.materialized_names == []
+    finally:
+        monkeypatch.setattr(type(connection), "create_table", original_create)
+        session.drop_materialized()
+        connection.disconnect()
+
+
 def test_artifact_snapshot_qr_scratch_materializes_and_cleans_relations():
     from increment.query.session import WarehouseArtifactStore
 
@@ -1079,6 +1126,98 @@ def test_artifact_snapshot_qr_scratch_materializes_and_cleans_relations():
             assert relation.count().execute() == 2
             assert scratch.leftovers
         assert not scratch.leftovers
+    finally:
+        connection.disconnect()
+
+
+def test_warehouse_qr_encoder_matches_local_layout(tmp_path):
+    import ibis
+
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.frame import CupedCovariate
+    from increment.query._cuped_qr import (
+        encode_qr_covariates,
+        factor_design_relation,
+        prepare_qr_factor_input,
+    )
+
+    rows = [
+        {
+            "unit_id": f"c{index}",
+            "group_id": "control",
+            "y": float(index),
+            "x": None if index % 17 == 0 else float((index * 7) % 13),
+            "x_copy": None if index % 17 == 0 else float((index * 14) % 13),
+            "kind": ("a", "b")[index % 2],
+        }
+        for index in range(200)
+    ] + [
+        {
+            "unit_id": f"t{index}",
+            "group_id": "treatment",
+            "y": float(index + 1),
+            "x": None if index % 17 == 0 else float((index * 11) % 13),
+            "x_copy": None if index % 17 == 0 else float((index * 22) % 13),
+            "kind": ("a", "b")[index % 2],
+        }
+        for index in range(200)
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_encode_input", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    declarations = (
+        CupedCovariate(name="x", kind="continuous", missing="impute-indicator"),
+        CupedCovariate(name="x_copy", kind="continuous", missing="impute-indicator"),
+        CupedCovariate(name="kind", kind="categorical"),
+    )
+    local = fit_cuped_multicovariate(
+        [row["y"] for row in rows],
+        [row["group_id"] for row in rows],
+        control="control",
+        arm_order=("control", "treatment"),
+        covariates={
+            "x": [row["x"] for row in rows],
+            "x_copy": [row["x_copy"] for row in rows],
+            "kind": [row["kind"] for row in rows],
+        },
+        kinds={"x": "continuous", "x_copy": "continuous", "kind": "categorical"},
+        missing={"x": "impute-indicator", "x_copy": "impute-indicator"},
+    )
+    try:
+        with session.qr_scratch() as scratch:
+            encoded = encode_qr_covariates(
+                connection.table("qr_encode_input"),
+                declarations,
+                arms=("control", "treatment"),
+                row_identity_columns=("unit_id",),
+            )
+            assert encoded.layout == local.layout
+            assert encoded.layout.shared_indicators == (("x", "x_copy"),)
+            assert encoded.offsets == ((7.0, 11.0), (1.0, 9.0), (0.0, 0.0), (0.0, 0.0))
+            assert encoded.scales[0] == pytest.approx(11.0)
+            assert encoded.scales[1] == pytest.approx(11.0)
+            prepared = prepare_qr_factor_input(
+                encoded,
+                outcome_columns=("y",),
+                arms=("control", "treatment"),
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+            assert prepared.counts == (200, 200)
+            assert len(prepared.design_columns) == len(local.layout.encoded_columns) + 2
+            factor = factor_design_relation(
+                prepared.relation,
+                design_columns=prepared.design_columns,
+                rhs_columns=prepared.rhs_columns,
+                order_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+                covariate_start=2,
+                covariate_names=local.layout.encoded_columns,
+            )
+            assert len(factor.triangular_factor) == len(prepared.design_columns)
     finally:
         connection.disconnect()
 
@@ -1097,6 +1236,7 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
         pytest.fail("general warehouse QR transferred unit-keyed data")
 
     monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_transfer)
+    _guard_no_unit_keyed_transfers(monkeypatch)
     try:
         actual = cast(list[LiftEstimate], warehouse.run(metrics=[metric]))
         expected = cast(list[LiftEstimate], local.run(metrics=[metric]))
@@ -1108,11 +1248,487 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
             assert row.sampling_reason_code == reference.sampling_reason_code
             if row.sampling_reason_code is None:
                 assert row.lift is not None and reference.lift is not None
-                for field in ("value", "log_se", "dof", "lb", "ub"):
+                for field in ("value", "log_se", "lb", "ub"):
                     assert getattr(row.lift, field) == pytest.approx(
                         getattr(reference.lift, field), rel=1e-9, abs=1e-11
                     )
+                assert row.dof == pytest.approx(reference.dof, rel=1e-9, abs=1e-11)
     finally:
         local.close()
         warehouse.close()
+        connection.disconnect()
+
+
+@pytest.mark.parametrize("metric", ["revenue", "rpo"])
+def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
+    metric, tmp_path, monkeypatch
+):
+    from increment.query import source as artifact_source
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+
+    units = matrix_data.linear_cuped_rows()
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_artifact_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "qr_artifact.yaml"
+    definitions_path.write_text(mixed_cuped_definitions_yaml("qr_artifact_events"))
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    store = WarehouseArtifactStore(connection, schema_name="qr_compact_artifacts")
+    context = artifact_context(definitions, experiment, "error")
+    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+    reference = native.publish_unit_day_artifact(store, extensions=extensions)
+    artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    local = matrix_cases.linear_cuped_frame_case(units, panel=False)
+
+    def forbidden_unit_transfer(*args, **kwargs):
+        pytest.fail("artifact general warehouse QR transferred unit-keyed data")
+
+    monkeypatch.setattr(
+        artifact_source._ArtifactFacadeSource, "unit_frame", forbidden_unit_transfer
+    )
+    _guard_no_unit_keyed_transfers(monkeypatch)
+    try:
+        actual = cast(list[LiftEstimate], artifact.run(metrics=[metric]))
+        expected = cast(list[LiftEstimate], local.run(metrics=[metric]))
+        actual_rows = {(row.metric, row.group_id, row.method): row for row in actual}
+        expected_rows = {(row.metric, row.group_id, row.method): row for row in expected}
+        assert actual_rows.keys() == expected_rows.keys()
+        for key, row in actual_rows.items():
+            reference_row = expected_rows[key]
+            assert row.sampling_reason_code == reference_row.sampling_reason_code
+            if row.sampling_reason_code is None:
+                assert row.lift is not None and reference_row.lift is not None
+                for field in ("value", "log_se", "lb", "ub"):
+                    assert getattr(row.lift, field) == pytest.approx(
+                        getattr(reference_row.lift, field), rel=1e-9, abs=1e-11
+                    )
+                assert row.dof == pytest.approx(reference_row.dof, rel=1e-9, abs=1e-11)
+    finally:
+        local.close()
+        artifact.close()
+        native.close()
+        connection.disconnect()
+
+
+def test_qr_outcome_anchor_falls_back_before_overflow(tmp_path):
+    from increment.query._cuped_qr import (
+        encode_qr_covariates,
+        factor_design_relation,
+        prepare_qr_factor_input,
+    )
+
+    extreme = 1.7e308
+    rows = [
+        {"unit_id": f"{arm}{index}", "group_id": arm, "y": value}
+        for arm in ("control", "treatment")
+        for index, value in enumerate((extreme, -extreme))
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_extreme_outcome", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    try:
+        relation = connection.table("qr_extreme_outcome")
+        with session.qr_scratch() as scratch:
+            encoded = encode_qr_covariates(
+                relation,
+                (),
+                arms=("control", "treatment"),
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+            )
+            prepared = prepare_qr_factor_input(
+                encoded,
+                outcome_columns=("y",),
+                arms=("control", "treatment"),
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+            assert prepared.outcome_offsets == ((0.0, 0.0),)
+            assert np.isfinite(prepared.outcome_scales).all()
+            factor = factor_design_relation(
+                prepared.relation,
+                design_columns=prepared.design_columns,
+                rhs_columns=prepared.rhs_columns,
+                order_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+                covariate_start=2,
+                covariate_names=(),
+            )
+            assert np.isfinite(factor.transformed_rhs).all()
+            assert np.isfinite(factor.triangular_factor).all()
+    finally:
+        connection.disconnect()
+
+
+@pytest.mark.parametrize("scales", [(1.0e-300, 1.0e300), (1.0e300, 1.0e-300)])
+def test_duckdb_householder_factor_handles_tiny_and_huge_scales(scales, tmp_path):
+    from increment.query._cuped_qr import factor_design_relation
+
+    n = 16
+    first = np.tile(np.array([1.0, -1.0]), n // 2)
+    second = np.tile(np.array([1.0, 1.0, -1.0, -1.0]), n // 4)
+    design = np.column_stack((first, second))
+    outcomes = np.column_stack((first * scales[0], second * scales[1]))
+    rows = [
+        {
+            "unit_id": f"scale-{index:02d}",
+            "x0": float(x[0]),
+            "x1": float(x[1]),
+            "y0": float(y[0]),
+            "y1": float(y[1]),
+        }
+        for index, (x, y) in enumerate(zip(design, outcomes, strict=True))
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    connection.create_table("scale_factor_input", obj=rows)
+    session = _scratch_session(connection, tmp_path)
+    try:
+        with session.qr_scratch() as scratch:
+            actual = factor_design_relation(
+                connection.table("scale_factor_input"),
+                design_columns=("x0", "x1"),
+                rhs_columns=("y0", "y1"),
+                order_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+        expected_q, expected_r = np.linalg.qr(design, mode="reduced")
+        expected_rhs = expected_q.T @ outcomes
+        expected_r, expected_rhs = _positive_diagonal(expected_r, expected_rhs)
+        actual_r, actual_rhs = _positive_diagonal(
+            np.asarray(actual.triangular_factor), np.asarray(actual.transformed_rhs)
+        )
+        np.testing.assert_allclose(actual_r, expected_r, rtol=1e-10, atol=1e-14)
+        for component, scale in enumerate(scales):
+            np.testing.assert_allclose(
+                actual_rhs[:, component],
+                expected_rhs[:, component],
+                rtol=1e-10,
+                atol=scale * 1e-14,
+            )
+    finally:
+        session.drop_materialized()
+
+
+@pytest.mark.parametrize("sql_kind", ["integer", "decimal", "boolean"])
+def test_qr_numeric_sql_domains_match_local_fitter(sql_kind, tmp_path):
+    from decimal import Decimal
+
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.frame import CupedCovariate
+    from increment.query._cuped_qr import (
+        encode_qr_covariates,
+        factor_design_relation,
+        prepare_qr_factor_input,
+        solve_qr_coefficients,
+    )
+
+    rows = []
+    arms = ("control", "treatment")
+    for arm_index, arm in enumerate(arms):
+        for index in range(36):
+            if sql_kind == "integer":
+                x = index + arm_index * 3
+                y = index % 7 + arm_index
+            elif sql_kind == "decimal":
+                x = Decimal(index + arm_index * 3) / Decimal(10)
+                y = Decimal(index % 7 + arm_index) / Decimal(4)
+            else:
+                x = bool(index % 2)
+                y = bool(index % 7 < 3 + arm_index)
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index:03d}",
+                    "group_id": arm,
+                    "x": x,
+                    "y": y,
+                }
+            )
+    connection = ibis.duckdb.connect()
+    connection.create_table("numeric_qr_input", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    numeric_x = np.asarray([float(row["x"]) for row in rows])
+    numeric_y = np.asarray([float(row["y"]) for row in rows])
+    arm_values = np.asarray([row["group_id"] for row in rows])
+    local = fit_cuped_multicovariate(
+        numeric_y,
+        arm_values,
+        control="control",
+        arm_order=arms,
+        covariates={"x": numeric_x},
+        kinds={"x": "continuous"},
+    )
+    try:
+        relation = connection.table("numeric_qr_input")
+        if sql_kind == "integer":
+            assert relation["x"].type().is_integer()
+            assert relation["y"].type().is_integer()
+        elif sql_kind == "decimal":
+            assert relation["x"].type().is_decimal()
+            assert relation["y"].type().is_decimal()
+        else:
+            assert relation["x"].type().is_boolean()
+            assert relation["y"].type().is_boolean()
+        with session.qr_scratch() as scratch:
+            encoded = encode_qr_covariates(
+                relation,
+                (CupedCovariate(name="x", kind="continuous"),),
+                arms=arms,
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+            )
+            prepared = prepare_qr_factor_input(
+                encoded,
+                outcome_columns=("y",),
+                arms=arms,
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+            factor = factor_design_relation(
+                prepared.relation,
+                design_columns=prepared.design_columns,
+                rhs_columns=prepared.rhs_columns,
+                order_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+                covariate_start=len(arms),
+                covariate_names=encoded.layout.encoded_columns,
+            )
+            coefficients = solve_qr_coefficients(
+                factor,
+                design_scales=prepared.design_scales,
+                outcome_scales=prepared.outcome_scales,
+            )
+        assert coefficients[0][-1] / encoded.scales[0] == pytest.approx(
+            local.theta[0], rel=1e-9, abs=1e-12
+        )
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+@pytest.mark.parametrize("case", ["empty_arm", "null_outcome", "nan_outcome"])
+def test_qr_input_refusals_match_local_codes(case, tmp_path):
+    from increment.errors import CodedError
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.query._cuped_qr import encode_qr_covariates, prepare_qr_factor_input
+
+    rows = []
+    for arm in ("control", "treatment"):
+        for index in range(16):
+            outcome = float(index + (arm == "treatment"))
+            if case == "null_outcome" and index == 3:
+                outcome = None
+            if case == "nan_outcome" and index == 3:
+                outcome = float("nan")
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index:02d}",
+                    "group_id": arm,
+                    "y": outcome,
+                }
+            )
+    arms = ("control", "treatment", "withheld") if case == "empty_arm" else ("control", "treatment")
+    local_outcome = np.asarray(
+        [np.nan if row["y"] is None else row["y"] for row in rows], dtype=float
+    )
+    with pytest.raises(CodedError) as local_error:
+        fit_cuped_multicovariate(
+            local_outcome,
+            np.asarray([row["group_id"] for row in rows]),
+            control="control",
+            arm_order=arms,
+            covariates={},
+            kinds={},
+        )
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_refusal_input", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    try:
+        with pytest.raises(CodedError) as warehouse_error:
+            with session.qr_scratch() as scratch:
+                encoded = encode_qr_covariates(
+                    connection.table("qr_refusal_input"),
+                    (),
+                    arms=arms,
+                    row_identity_columns=("unit_id",),
+                    execute=connection.to_pyarrow,
+                )
+                prepare_qr_factor_input(
+                    encoded,
+                    outcome_columns=("y",),
+                    arms=arms,
+                    row_identity_columns=("unit_id",),
+                    execute=connection.to_pyarrow,
+                    scratch=scratch,
+                )
+        assert warehouse_error.value.code == local_error.value.code
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_qr_outcome_centers_cancelling_extremes_like_local_fit(tmp_path):
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.query._cuped_qr import encode_qr_covariates, prepare_qr_factor_input
+
+    rows = []
+    for arm, ordinary in (("control", 1.0), ("treatment", 2.0)):
+        outcomes = [1.0e300, -1.0e300, *([ordinary] * 8)]
+        rows.extend(
+            {
+                "unit_id": f"{arm}-{index:02d}",
+                "group_id": arm,
+                "y": value,
+            }
+            for index, value in enumerate(outcomes)
+        )
+    arms = ("control", "treatment")
+    local = fit_cuped_multicovariate(
+        np.asarray([row["y"] for row in rows]),
+        np.asarray([row["group_id"] for row in rows]),
+        control=arms[0],
+        arm_order=arms,
+        covariates={},
+        kinds={},
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("canceling_qr_input", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    try:
+        relation = connection.table("canceling_qr_input")
+        encoded = encode_qr_covariates(
+            relation,
+            (),
+            arms=arms,
+            row_identity_columns=("unit_id",),
+            execute=connection.to_pyarrow,
+        )
+        with session.qr_scratch() as scratch:
+            prepared = prepare_qr_factor_input(
+                encoded,
+                outcome_columns=("y",),
+                arms=arms,
+                row_identity_columns=("unit_id",),
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+        warehouse_means = np.asarray(prepared.outcome_offsets[0]) + np.asarray(
+            prepared.centered_outcome_means[0]
+        )
+        np.testing.assert_allclose(warehouse_means, local.adjusted_means, rtol=1e-9, atol=1e-12)
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_unchanged_warehouse_qr_requests_keep_stable_identity():
+    from types import SimpleNamespace
+
+    from increment.estimation.engine import Method
+    from increment.query.cuped import resolved_multicovariate_request
+    from increment.semantics.models import CupedCovariate
+
+    source = SimpleNamespace(context=SimpleNamespace(study_id="stable-qr-identity"))
+    metric = SimpleNamespace(name="metric")
+    method = Method.cuped_multicovariate(covariates=[CupedCovariate(name="x", kind="continuous")])
+    first = resolved_multicovariate_request(
+        source, metric, method, control="control", arm_order=("control", "treatment")
+    )
+    repeated = resolved_multicovariate_request(
+        source, metric, method, control="control", arm_order=("control", "treatment")
+    )
+    assert first.identity == repeated.identity
+    changed = resolved_multicovariate_request(
+        source, metric, method, control="treatment", arm_order=("control", "treatment")
+    )
+    assert first.identity != changed.identity
+
+
+def test_qr_ratio_with_near_zero_denominators_matches_local_fit(tmp_path):
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.estimation.engine import Method
+    from increment.query._cuped_qr import fit_warehouse_qr
+    from increment.query.cuped import _ResolvedCupedRequest
+    from increment.semantics.models import CupedCovariate, Measure, RatioMetric
+
+    rows = []
+    arms = ("control", "treatment")
+    for arm_index, arm in enumerate(arms):
+        for index in range(60):
+            coordinate = index / 59.0
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index:03d}",
+                    "group_id": arm,
+                    "x": coordinate,
+                    "y": 3.0 + 0.2 * arm_index + 0.4 * coordinate + 0.05 * np.sin(index),
+                    "y_den": 1.0e-150 * (1.0 + 0.02 * np.sin(index * 0.7) + arm_index * 0.001),
+                }
+            )
+    method = Method.cuped_multicovariate(covariates=[CupedCovariate(name="x", kind="continuous")])
+    metric = RatioMetric(
+        name="ratio",
+        entity="unit",
+        numerator=Measure(fact="num", aggregation="sum"),
+        denominator=Measure(fact="den", aggregation="sum"),
+    )
+    request = _ResolvedCupedRequest(
+        identity=("near-zero-ratio",),
+        control=arms[0],
+        arm_order=arms,
+        method=method,
+    )
+    values = np.asarray([row["y"] for row in rows])
+    denominators = np.asarray([row["y_den"] for row in rows])
+    groups = np.asarray([row["group_id"] for row in rows])
+    coordinates = np.asarray([row["x"] for row in rows])
+    local = fit_cuped_multicovariate(
+        None,
+        groups,
+        control=arms[0],
+        arm_order=arms,
+        covariates={"x": coordinates},
+        kinds={"x": "continuous"},
+        numerator=values,
+        denominator=denominators,
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("near_zero_ratio", obj=rows)
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    try:
+        with session.qr_scratch() as scratch:
+            actual = fit_warehouse_qr(
+                connection.table("near_zero_ratio"),
+                metric=metric,
+                request=request,
+                execute=connection.to_pyarrow,
+                scratch=scratch,
+            )
+        for name in ("theta", "adjusted_means", "covariance", "dof", "max_leverage"):
+            assert np.asarray(getattr(actual, name)) == pytest.approx(
+                np.asarray(getattr(local, name)), rel=1e-9, abs=1e-12
+            )
+        assert len(actual._projections) == len(local._projections)
+        for actual_projection, local_projection in zip(
+            actual._projections, local._projections, strict=True
+        ):
+            assert actual_projection[:4] == local_projection[:4]
+            assert actual_projection[4:] == pytest.approx(local_projection[4:], rel=1e-9, abs=1e-12)
+    finally:
+        session.drop_materialized()
         connection.disconnect()
