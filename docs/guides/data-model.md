@@ -715,9 +715,11 @@ publication time, and experiment end are not completeness proofs.
     `digest_relation()` still includes the canonical row bytes.
 
     Format 4 encodes a finite binary64 value as its sign, exact decimal integer
-    significand, `p`, and exact binary exponent; zero retains its sign and
-    subnormals use the fixed exponent -1074. NaN and infinity retain their
-    canonical spellings. Date tokens use explicit ISO `YYYY-MM-DD` formatting
+    significand, `p`, and exact binary exponent. The token preserves the sign
+    of a stored zero, and subnormals use the fixed exponent -1074. Some ingestion
+    paths, including BigQuery Parquet loads, may normalize source `-0.0` to
+    stored `+0.0`; digests represent stored relation content. NaN and infinity
+    retain their canonical spellings. Date tokens use explicit ISO `YYYY-MM-DD`
     rather than session output settings. Binary64 tokens avoid backend decimal
     expansion and are unique for each finite IEEE-754 value. PostgreSQL
     `EXTRACT(EPOCH)` before conversion to integer microseconds, without passing

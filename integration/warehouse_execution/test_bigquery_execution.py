@@ -61,13 +61,6 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
     duckdb = ibis.duckdb.connect()
     table_name = f"digest_spec_{uuid4().hex[:10]}"
     try:
-        expected = digest_relation_sql_v2(
-            duckdb,
-            duckdb.create_table("digest_spec", arrow),
-            "portable_spec",
-            schema,
-            primary_key=("id",),
-        )
         parquet = BytesIO()
         pq.write_table(arrow, parquet)
         parquet.seek(0)
@@ -82,28 +75,36 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
         table = bigquery_con.sql(
             f"SELECT CAST(`id` AS INT64) AS `id`, `text`, "
             f"CAST(`integer` AS INT64) AS `integer`, `float`, `date`, "
-            f"`timestamp`, `boolean` "
+            f"CAST(`timestamp` AS TIMESTAMP) AS `timestamp`, `boolean`, "
+            f"IEEE_DIVIDE(1.0, `float`) AS `float_reciprocal` "
             f"FROM `{destination}`"
         )
-        fetched_rows = bigquery_con.to_pyarrow(
-            table.select(id=table.id, integer=table.integer, float=table.float)
+        fetched_arrow = bigquery_con.to_pyarrow(table)
+        fetched_rows = fetched_arrow.select(
+            ["id", "integer", "float", "float_reciprocal"]
         ).to_pylist()
         fetched_rows.sort(key=lambda row: row["id"])
         assert [(row["id"], row["integer"]) for row in fetched_rows] == [
             (row[0], row[2]) for row in rows
         ]
+        assert fetched_rows[0]["float"] == 0.0
+        assert fetched_rows[0]["float_reciprocal"] == float("inf")
         assert fetched_rows[6]["float"] is not None
         assert math.isnan(fetched_rows[6]["float"])
         assert fetched_rows[9]["float"] is None
+        stored_arrow = fetched_arrow.select([name for name, _type, _nullable in schema])
+        expected = digest_relation_sql_v2(
+            duckdb,
+            duckdb.create_table("digest_spec_stored", stored_arrow),
+            "portable_spec",
+            schema,
+            primary_key=("id",),
+        )
         monkeypatch.setattr(
             artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "bigquery"})
         )
         actual = digest_relation_sql_v2(
             bigquery_con, table, "portable_spec", schema, primary_key=("id",)
-        )
-        assert (
-            expected.content_sha256
-            == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
         )
         assert actual.content_sha256 == expected.content_sha256
     finally:

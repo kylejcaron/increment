@@ -43,7 +43,7 @@ def float64_token_sql(value: str, *, dialect: str) -> str:
         sign = f"LEFT(TO_VARCHAR(({value})), 1) = '-'"
         integer_type, text_type = "NUMBER(38,0)", "VARCHAR"
     elif dialect == "bigquery":
-        sign = f"STARTS_WITH(CAST(({value}) AS STRING), '-')"
+        sign = f"IEEE_DIVIDE(1.0, ({value})) < 0"
         integer_type, text_type = "INT64", "STRING"
     elif dialect == "postgres":
         sign = f"(GET_BYTE(FLOAT8SEND(({value})), 0) & 128) <> 0"

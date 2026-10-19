@@ -174,6 +174,26 @@ def test_sql_digest_format4_portable_edge_relation_is_pinned(con):
     )
 
 
+def test_sql_digest_format4_positive_zero_content_is_pinned(con):
+    import struct
+
+    import pyarrow as pa
+
+    arrow = _portable_digest_arrow()
+    float_index = arrow.schema.get_field_index("float")
+    values = arrow.column(float_index).to_pylist()
+    values[0] = 0.0
+    assert struct.pack(">d", values[0]) == bytes.fromhex("0000000000000000")
+    stored_arrow = arrow.set_column(float_index, "float", pa.array(values, type=pa.float64()))
+    table = con.create_table("portable_digest_v4_positive_zero", stored_arrow)
+    digest = digest_relation_sql_v2(
+        con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",)
+    )
+    assert (
+        digest.content_sha256 == "1df82b505bc1c38e07f7e492d7d9fc8e130c1331151fd6b5066827b32481632b"
+    )
+
+
 def test_sql_digest_detects_row_mutation(con):
     baseline = digest_relation_sql_v2(
         con, _table(con, _ROWS), "exposures", _SCHEMA, primary_key=_PK
