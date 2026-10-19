@@ -16,6 +16,7 @@ from increment.estimation.armstats import ArmStats
 from increment.estimation.cuped._numeric import (
     _UNIT_MEAN,
     _arm_mean,
+    _arm_offset,
     _canonical_float,
     _check_alpha,
     _exact_sum,
@@ -837,11 +838,7 @@ def _center_outcomes(outcomes, indices):
         centered = np.empty_like(outcome)
         arm_offsets = []
         for idx in indices:
-            offset = float(np.partition(outcome[idx], len(idx) // 2)[len(idx) // 2])
-            values = outcome[idx] - offset
-            if not np.isfinite(values).all():
-                offset = 0.0
-                values = outcome[idx]
+            offset, values = _arm_offset(outcome[idx])
             centered[idx] = values
             arm_offsets.append(offset)
         centered_outcomes.append(centered)

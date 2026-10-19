@@ -73,6 +73,33 @@ def _binary_normalize(value, exponent):
     return value.cast("float64") / (2.0**half) / (2.0 ** (exponent - half))
 
 
+def _binary_denormalize(value, exponent):
+    half = exponent // 2
+    return value * (2.0**half) * (2.0 ** (exponent - half))
+
+
+def _compensated_sum(value, sigma):
+    """Sum terms of magnitude at most two whose count is below ``sigma / 4``.
+
+    Rounding each term to the float grid at ``sigma`` keeps every partial sum of
+    the rounded parts exact in any order; the exact remainders, each below
+    ``sigma * 2**-53``, are summed apart. The total error is therefore at most
+    about ``count**2 * sigma * 2**-106``: survivors much smaller than that beside
+    cancelling extremes are not retained, unlike the per-unit exact sum.
+    """
+    high = (value + sigma) - sigma
+    return high.sum() + (value - high).sum()
+
+
+def _median_overflows(centered, exponent):
+    """Whether a normalized difference would overflow at the original scale.
+
+    Normalized magnitudes stay below two, so only the two largest exponents can overflow.
+    """
+    magnitude = centered.abs()
+    return ((exponent == 1024) & (magnitude >= 1.0)) | ((exponent == 1023) & (magnitude >= 2.0))
+
+
 def _component_exponent(value):
     maximum = value.cast("float64").abs().max()
     return ibis.ifelse(
@@ -93,53 +120,96 @@ def _join_on(left, right, keys):
 def _cell_relation(relation, names, outcomes):
     keys = ("group_id", *names)
     exponents = relation.group_by("group_id").aggregate(
-        **{f"exponent_{f}": _component_exponent(relation[name]) for f, name in enumerate(outcomes)}
+        _arm_count=relation.count(),
+        **{f"exponent_{f}": _component_exponent(relation[name]) for f, name in enumerate(outcomes)},
     )
     relation = _join_on(relation, exponents, ("group_id",))
-    bases = relation.group_by("group_id").aggregate(
+    relation = relation.mutate(
+        _sigma=2.0 ** (relation["_arm_count"].cast("float64").log2().ceil() + 2),
         **{
-            f"_base_{f}": relation[name].first(order_by=relation.unit_id)
+            f"_rank_{f}": ibis.row_number().over(group_by="group_id", order_by=relation[name])
+            for f, name in enumerate(outcomes)
+        },
+    )
+    # The per-unit fitter's offset: the upper median, kept inside the warehouse.
+    medians = relation.group_by("group_id").aggregate(
+        **{
+            f"_median_{f}": relation[name]
+            .cast("float64")
+            .max(where=relation[f"_rank_{f}"] == relation["_arm_count"] // 2)
             for f, name in enumerate(outcomes)
         }
     )
-    shifted = _join_on(relation, bases, ("group_id",))
+    relation = _join_on(relation, medians, ("group_id",))
+    overflow = relation.group_by("group_id").aggregate(
+        **{
+            f"_overflow_{f}": _median_overflows(
+                _binary_normalize(relation[name], relation[f"exponent_{f}"])
+                - _binary_normalize(relation[f"_median_{f}"], relation[f"exponent_{f}"]),
+                relation[f"exponent_{f}"],
+            ).any()
+            for f, name in enumerate(outcomes)
+        }
+    )
+    relation = _join_on(relation, overflow, ("group_id",))
+    relation = relation.mutate(
+        **{
+            f"_base_{f}": ibis.ifelse(relation[f"_overflow_{f}"], 0.0, relation[f"_median_{f}"])
+            for f in range(len(outcomes))
+        }
+    )
+    shifted = relation.mutate(
+        **{
+            f"_offset_{f}": _binary_normalize(relation[name], relation[f"exponent_{f}"])
+            - _binary_normalize(relation[f"_base_{f}"], relation[f"exponent_{f}"])
+            for f, name in enumerate(outcomes)
+        }
+    )
+    # Transferred references are arm means, never a selected unit's outcome.
     references = shifted.group_by("group_id").aggregate(
         **{
             f"ref_{f}": shifted[f"_base_{f}"].first()
-            + (shifted[name].cast("float64") - shifted[f"_base_{f}"]).mean()
-            for f, name in enumerate(outcomes)
+            + _binary_denormalize(
+                _compensated_sum(shifted[f"_offset_{f}"], shifted["_sigma"])
+                / shifted["_arm_count"].first(),
+                shifted[f"exponent_{f}"].first(),
+            )
+            for f in range(len(outcomes))
         }
     )
-    referenced = _join_on(relation, references, ("group_id",))
+    referenced = _join_on(shifted, references, ("group_id",))
     centered = referenced.mutate(
         **{
-            f"_centered_{f}": _binary_normalize(referenced[name], referenced[f"exponent_{f}"])
-            - _binary_normalize(referenced[f"ref_{f}"], referenced[f"exponent_{f}"])
-            for f, name in enumerate(outcomes)
+            f"_shift_{f}": _binary_normalize(referenced[f"ref_{f}"], referenced[f"exponent_{f}"])
+            - _binary_normalize(referenced[f"_base_{f}"], referenced[f"exponent_{f}"])
+            for f in range(len(outcomes))
         }
     )
     aggregates = {"n": centered.count()}
     for f, name in enumerate(outcomes):
         value = centered[name].cast("float64")
         finite = value.notnull() & ~value.isnan() & ~value.isinf()
+        total = _compensated_sum(centered[f"_offset_{f}"], centered["_sigma"])
         aggregates.update(
             {
                 f"ref_{f}": centered[f"ref_{f}"].first(),
                 f"exponent_{f}": centered[f"exponent_{f}"].first(),
-                f"first_{f}": centered[f"_centered_{f}"].sum(),
+                f"_sum_{f}": total,
+                # Rebase the exact cell sum once onto the transferred reference.
+                f"first_{f}": total - centered.count() * centered[f"_shift_{f}"].first(),
                 f"contributors_{f}": finite.cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
-                f"max_centered_{f}": centered[f"_centered_{f}"].abs().max(),
+                f"max_centered_{f}": centered[f"_offset_{f}"].abs().max(),
             }
         )
     first = centered.group_by(list(keys)).aggregate(**aggregates)
     means = first.select(
-        *keys, **{f"_mean_{f}": first[f"first_{f}"] / first.n for f in range(len(outcomes))}
+        *keys, **{f"_mean_{f}": first[f"_sum_{f}"] / first.n for f in range(len(outcomes))}
     )
     residuals = _join_on(centered, means, keys)
     residuals = residuals.mutate(
         **{
-            f"_residual_{f}": residuals[f"_centered_{f}"] - residuals[f"_mean_{f}"]
+            f"_residual_{f}": residuals[f"_offset_{f}"] - residuals[f"_mean_{f}"]
             for f in range(len(outcomes))
         }
     )

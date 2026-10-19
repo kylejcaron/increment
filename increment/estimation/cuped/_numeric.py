@@ -153,6 +153,15 @@ def _arm_mean(values: np.ndarray) -> float:
         return math.ldexp(large / len(items), shift) + small / len(items)
 
 
+def _arm_offset(values: np.ndarray) -> tuple[float, np.ndarray]:
+    """Upper-median offset and centered values; zero offset when centering would overflow."""
+    offset = float(np.partition(values, len(values) // 2)[len(values) // 2])
+    centered = values - offset
+    if not np.isfinite(centered).all():
+        return 0.0, values
+    return offset, centered
+
+
 _ScaledMean = tuple[float, float, int]
 _UNIT_MEAN: _ScaledMean = (0.5, 0.0, 1)
 

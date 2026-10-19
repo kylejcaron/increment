@@ -1004,6 +1004,14 @@ separately for each arm and component; the exponents travel with the evidence.
 Projected-score arithmetic applies these scales without reconstructing raw
 second moments, so arms whose units differ by many orders of magnitude keep
 their uncertainty and denominator support.
+Each arm is centered exactly as the per-unit fit centers it, on its upper
+median (or zero when that subtraction would overflow), so cancelling extreme
+outcomes round the same way. Cell sums of these centered values are then
+rebased once onto the arm-mean reference the evidence carries. Local
+reductions sum exactly; warehouse reductions use a compensated two-part sum
+whose error is far below the per-unit centering rounding, though survivors
+more than about $2^{53}$ times smaller than cancelling extremes in the same
+arm are not retained there.
 
 For a cell with multiplicity $m_g$, factor rows
 $\sqrt{m_g w_a}\,z_g$, where $w_a=1/[n_a(n_a-1)]$. Dividing its compressed
