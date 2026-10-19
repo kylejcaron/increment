@@ -487,19 +487,46 @@ class CategoricalCells:
                     _invalid_evidence(
                         "CategoricalCells outcome magnitudes must be finite and nonnegative"
                     )
+                first = self.centered_first_moments[a][f]
                 count = sum(self.counts[a])
                 reference = math.ldexp(self.outcome_references[f][a], -self.outcome_exponents[f][a])
-                total = math.fsum(
-                    (
-                        count * reference,
-                        *(self.centered_first_moments[a][f][k] for k in range(len(self.patterns))),
+                total = math.fsum((count * reference, *first))
+                square_terms: list[float] = []
+                for k, cell_count in enumerate(self.counts[a]):
+                    if not cell_count:
+                        continue
+                    centered = first[k]
+                    square_terms.extend(
+                        (
+                            cell_count * reference * reference,
+                            2.0 * reference * centered,
+                            centered * centered / cell_count,
+                            self.symmetric_cross_moments[a][f][f][k],
+                        )
                     )
-                )
+                square_sum = math.fsum(square_terms)
+                # gamma_(128N) encloses the reducers' per-row centering,
+                # rebasing and scatter sums; 2N*eps bounds the warehouse
+                # compensated magnitude's final remainder sum.
+                u = 2.0**-53
+                magnitude_error = 2.0 * count * u + 4.0 * u
+                operations = 128.0 * count * u
+                if magnitude_error < 0.5 and operations < 0.5:
+                    magnitude_upper = magnitude / (1.0 - magnitude_error)
+                    gamma_operations = operations / (1.0 - operations)
+                    rounding_slack = gamma_operations * (
+                        math.fsum(abs(term) for term in square_terms)
+                        + magnitude_upper * magnitude_upper
+                    )
+                    minimum_magnitude = math.sqrt(max(0.0, square_sum - rounding_slack))
+                else:
+                    magnitude_upper = math.inf
+                    minimum_magnitude = 0.0
                 if count == 0 and magnitude != 0:
                     _invalid_evidence("CategoricalCells empty arms must have zero magnitude")
-                if abs(total) > magnitude * (1.0 + 2.0**-40):
+                if abs(total) > magnitude * (1.0 + 2.0**-40) or magnitude_upper < minimum_magnitude:
                     _invalid_evidence(
-                        "CategoricalCells outcome magnitude is below the arm's absolute sum"
+                        "CategoricalCells outcome magnitude is below retained moment bounds"
                     )
 
     def merge(self, other: CategoricalCells) -> CategoricalCells:

@@ -1194,12 +1194,26 @@ class Analysis:
             refuse_cuped_linear_moments,
             refuse_missing_scalar_evidence,
         )
-        from increment._cuped_evidence import method_key
-        from increment.sources import cuped_evidence_requests
+        from increment._cuped_evidence import invalid_evidence, method_key
+        from increment.sources import cuped_evidence_items
 
-        evidence = cuped_evidence_requests(rows, require_plan=plan is None)
+        evidence_items = cuped_evidence_items(rows, require_plan=plan is None)
+        evidence = {
+            metric: {key: item.kind for key, item in items.items()}
+            for metric, items in evidence_items.items()
+        }
         portable_metrics: set[str] = set()
         for spec in specs:
+            for item in evidence_items.get(spec.name, {}).values():
+                if item.kind != "categorical_cells":
+                    continue
+                expected_components = 2 if spec.type == "ratio" else 1
+                if item.cells is None or len(item.cells.outcome_references) != expected_components:
+                    invalid_evidence(
+                        f"categorical evidence for metric {spec.name!r} has "
+                        f"{0 if item.cells is None else len(item.cells.outcome_references)} "
+                        f"components; expected {expected_components}"
+                    )
             methods_for_metric = (
                 () if spec.decision_method is None else (spec.decision_method,)
             ) + spec.sensitivity_methods
