@@ -126,11 +126,12 @@ moments, artifact, and checkpoint formats.
     Republish from trusted definitions; existing format-1 manifests still
     contain their original SQL. See [Canonical unit-day artifacts](guides/data-model.md#canonical-unit-day-artifacts).
 
-    Warehouse relation digests are separate from the context format. New
-    publications use digest format 2 and verify it with the SQL codec on the
-    warehouse. Relations stored with digest formats 1 or 3 cannot be adopted
-    on a route without a warehouse-side verifier; they refuse before unit
-    transfer with `query.session.warehouse_artifact.verification_unavailable`.
+    publications use digest format 4 and verify it with the SQL codec on
+    DuckDB, PostgreSQL, Snowflake, and BigQuery. Format 2 remains a
+    verify-only codec for existing DuckDB relations. Relations stored with
+    digest formats 1 or 3 cannot be adopted on a route without a warehouse-side
+    verifier; they refuse before unit transfer with
+    `query.session.warehouse_artifact.verification_unavailable`.
     Republish from trusted definitions with warehouse-side integrity enabled;
     never relabel a stored digest.
 

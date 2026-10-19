@@ -259,7 +259,7 @@ class UnitDayArtifactRef(_ArtifactBase):
 class ArtifactRelationRef(_ArtifactBase):
     """A relation locator bound to one artifact generation and semantic role."""
 
-    digest_format: Literal[1, 2, 3] = 2
+    digest_format: Literal[1, 2, 3, 4] = 2
     artifact_id: UUID
     generation_id: UUID
     role: RelationRole

@@ -1,9 +1,8 @@
-"""Format-2/3 unit-day artifact content digest: an order-independent hash
-tree (SHA-256 per row, bucketed by row hash, ordered-concat within each
-bucket, hashed again across buckets in bucket order), computed either in
-SQL (format 2, DuckDB today) or via one client-side pass with no external
-sort (format 3): the two hash different row encodings, so they carry
-distinct format ids."""
+"""Unit-day artifact content digest formats 2, 3, and 4 use an order-independent
+hash tree (SHA-256 per row, bucketed by row hash, ordered-concat within each
+bucket, hashed again across buckets in bucket order). SQL format 4 is used for
+all enabled backends; SQL format 2 verifies existing DuckDB relations; format 3
+uses one client-side pass with a different row encoding."""
 
 from __future__ import annotations
 
@@ -50,7 +49,149 @@ def test_sql_digest_is_order_independent(con):
     )
     assert forward.content_sha256 == backward.content_sha256
     assert forward.row_count == backward.row_count == 3
-    assert forward.digest_format == 2
+    assert forward.digest_format == 4
+
+
+_PORTABLE_SCHEMA = (
+    ("id", "INT64", False),
+    ("text", "STRING", True),
+    ("integer", "INT64", True),
+    ("float", "FLOAT64", True),
+    ("date", "DATE", True),
+    ("timestamp", "TIMESTAMP_UTC_US", True),
+    ("boolean", "BOOLEAN", True),
+)
+
+
+def _portable_digest_rows():
+    import sys
+    from datetime import UTC, datetime
+
+    return [
+        (
+            0,
+            "",
+            -(2**63),
+            -0.0,
+            date(1, 1, 1),
+            datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+            False,
+        ),
+        (
+            1,
+            "多言語/🧪",
+            2**63 - 1,
+            0.0,
+            date(9999, 12, 31),
+            datetime(1970, 1, 1, 0, 0, 0, 1, tzinfo=UTC),
+            True,
+        ),
+        (2, None, -(2**53), sys.float_info.min, None, None, None),
+        (
+            3,
+            "e\u0301",
+            2**53,
+            sys.float_info.max,
+            date(2000, 2, 29),
+            datetime(2000, 1, 1, 0, 0, 0, 999999, tzinfo=UTC),
+            False,
+        ),
+        (
+            4,
+            "🧪",
+            None,
+            -sys.float_info.max,
+            date(1900, 1, 1),
+            datetime(1900, 1, 1, 0, 0, 0, 1, tzinfo=UTC),
+            True,
+        ),
+        (
+            5,
+            "empty-is-not-null",
+            1,
+            float.fromhex("0x0.0000000000001p-1022"),
+            date(1969, 12, 31),
+            datetime(1969, 12, 31, 23, 59, 59, 1, tzinfo=UTC),
+            False,
+        ),
+        (6, "NaN", 0, float("nan"), date(1970, 1, 1), datetime(1970, 1, 1, tzinfo=UTC), True),
+        (
+            7,
+            "positive infinity",
+            -1,
+            float("inf"),
+            None,
+            datetime(2024, 2, 29, 23, 59, 59, 999999, tzinfo=UTC),
+            False,
+        ),
+        (8, "negative infinity", 1, float("-inf"), date(2024, 1, 1), None, True),
+        (9, None, None, None, None, None, None),
+    ]
+
+
+def _portable_digest_arrow():
+    import pyarrow as pa
+
+    rows = _portable_digest_rows()
+    types = (
+        pa.int64(),
+        pa.string(),
+        pa.int64(),
+        pa.float64(),
+        pa.date32(),
+        pa.timestamp("us", tz="UTC"),
+        pa.bool_(),
+    )
+    return pa.Table.from_arrays(
+        [
+            pa.array([row[index] for row in rows], type=field_type)
+            for index, field_type in enumerate(types)
+        ],
+        names=[name for name, _type, _nullable in _PORTABLE_SCHEMA],
+    )
+
+
+def test_sql_digest_format2_duckdb_verify_codec_stays_pinned(con):
+    """Existing DuckDB relations retain the format-2 decimal-float verifier."""
+    table = con.create_table("portable_digest_v2_spec", _portable_digest_arrow())
+    digest = digest_relation_sql_v2(
+        con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",), digest_format=2
+    )
+    assert digest.digest_format == 2
+    assert (
+        digest.content_sha256 == "389d14c938d31a916b43a48610a969d16305e5219c8eb725c02e8bbcfa81f259"
+    )
+
+
+def test_sql_digest_format4_portable_edge_relation_is_pinned(con):
+    table = con.create_table("portable_digest_v4_spec", _portable_digest_arrow())
+    digest = digest_relation_sql_v2(
+        con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",)
+    )
+    assert digest.digest_format == 4
+    assert (
+        digest.content_sha256 == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
+    )
+
+
+def test_sql_digest_format4_positive_zero_content_is_pinned(con):
+    import struct
+
+    import pyarrow as pa
+
+    arrow = _portable_digest_arrow()
+    float_index = arrow.schema.get_field_index("float")
+    values = arrow.column(float_index).to_pylist()
+    values[0] = 0.0
+    assert struct.pack(">d", values[0]) == bytes.fromhex("0000000000000000")
+    stored_arrow = arrow.set_column(float_index, "float", pa.array(values, type=pa.float64()))
+    table = con.create_table("portable_digest_v4_positive_zero", stored_arrow)
+    digest = digest_relation_sql_v2(
+        con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",)
+    )
+    assert (
+        digest.content_sha256 == "1df82b505bc1c38e07f7e492d7d9fc8e130c1331151fd6b5066827b32481632b"
+    )
 
 
 def test_sql_digest_detects_row_mutation(con):
@@ -134,7 +275,6 @@ _STATS_SCHEMA = (
     [
         ({"unit_id": None, "value": 1.0, "note": None}, "artifact.digest.primary_key"),
         ({"unit_id": "u2", "value": None, "note": "x"}, "artifact.digest.nullable"),
-        ({"unit_id": "u2", "value": float("inf"), "note": None}, "artifact.digest.nonfinite"),
     ],
 )
 def test_every_digest_path_refuses_the_same_bad_cell_with_the_same_code(con, bad_row, code):

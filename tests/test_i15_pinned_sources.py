@@ -76,7 +76,7 @@ def test_artifact_write_persists_exactly_the_rows_it_digested():
             DATE '2024-01-01' AS first_exposure_date""")
         with store.begin_publication(expected_context=context) as publication:
             reference = publication.write_relation("exposures", live)
-            assert reference.digest_format == 2
+            assert reference.digest_format == 4
             persisted_table = con.table(reference.relation.name, database="artifacts")
             persisted = con.to_pyarrow(persisted_table)
             assert persisted["unit_id"].to_pylist() == ["1"]

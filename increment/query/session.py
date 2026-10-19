@@ -44,6 +44,7 @@ from increment.query.artifact_contract import (
 )
 from increment.query.artifact_digest import (
     _SQL_DIGEST_BACKENDS,
+    _SQL_DIGEST_FORMAT_V2,
     BUCKETED_DIGEST_FORMAT,
     SQL_DIGEST_FORMAT,
     digest_relation_bucketed,
@@ -824,11 +825,7 @@ class WarehouseArtifactStore:
                     raise refusal from cause
 
     def _digest_table(self, table: ir.Table, role: str, *, digest_format: int):
-        """Recompute a relation's digest with the exact codec `digest_format`
-        names -- never re-derived from the connected backend, since
-        `SQL_DIGEST_FORMAT` and `BUCKETED_DIGEST_FORMAT` hash different row
-        encodings and a stored format id must fully determine which one a
-        later verify recomputes."""
+        """Recompute the codec named by the stored digest format."""
         schema = ARTIFACT_RELATION_SCHEMAS[role]
         primary_key = ARTIFACT_RELATION_PRIMARY_KEYS[role]
         if digest_format == 1:
@@ -842,8 +839,15 @@ class WarehouseArtifactStore:
                     )
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
-        if digest_format == SQL_DIGEST_FORMAT:
-            return digest_relation_sql_v2(self._con, table, role, schema, primary_key=primary_key)
+        if digest_format in {_SQL_DIGEST_FORMAT_V2, SQL_DIGEST_FORMAT}:
+            return digest_relation_sql_v2(
+                self._con,
+                table,
+                role,
+                schema,
+                primary_key=primary_key,
+                digest_format=digest_format,
+            )
         if digest_format == BUCKETED_DIGEST_FORMAT:
             return digest_relation_bucketed(self._con, table, role, schema, primary_key=primary_key)
         _raise(
@@ -851,7 +855,7 @@ class WarehouseArtifactStore:
         )
 
     def _digest_table_for_write(self, table: ir.Table, role: str):
-        """Write only the warehouse-verifiable format-2 codec."""
+        """Write only the warehouse-verifiable format-4 codec."""
         self._require_warehouse_digest_verifier(relation=role, digest_format=BUCKETED_DIGEST_FORMAT)
         return self._digest_table(table, role, digest_format=SQL_DIGEST_FORMAT)
 
@@ -1040,15 +1044,23 @@ class WarehouseArtifactStore:
 
     def _preflight_relation_formats(self, relation_refs: tuple[ArtifactRelationRef, ...]) -> None:
         for relation_ref in relation_refs:
-            if relation_ref.digest_format not in {1, SQL_DIGEST_FORMAT, BUCKETED_DIGEST_FORMAT}:
+            if relation_ref.digest_format not in {
+                1,
+                _SQL_DIGEST_FORMAT_V2,
+                SQL_DIGEST_FORMAT,
+                BUCKETED_DIGEST_FORMAT,
+            }:
                 _raise(
                     "query.session.warehouse_artifact.unknown_digest_format",
                     digest_format=relation_ref.digest_format,
                 )
-            if (
-                relation_ref.digest_format != SQL_DIGEST_FORMAT
-                or self._con.name not in _SQL_DIGEST_BACKENDS
-            ):
+            can_verify = (
+                relation_ref.digest_format == _SQL_DIGEST_FORMAT_V2 and self._con.name == "duckdb"
+            ) or (
+                relation_ref.digest_format == SQL_DIGEST_FORMAT
+                and self._con.name in _SQL_DIGEST_BACKENDS
+            )
+            if not can_verify:
                 _raise(
                     "query.session.warehouse_artifact.verification_unavailable",
                     relation=relation_ref.relation.name,

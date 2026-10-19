@@ -61,6 +61,160 @@ def test_artifact_manifest_index_namespace_contract(snowflake_con):
     run_artifact_namespace_probe(snowflake_con, dialect="snowflake")
 
 
+def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
+    import ibis
+    import pyarrow as pa
+
+    from increment.query import artifact_digest
+    from increment.query.artifact_digest import (
+        _BUCKET_HEX_LEN,
+        DigestType,
+        _fields,
+        _row_token_expr,
+        _sql_binary_hex_expr,
+        _sql_digest_sha256_binary_expr,
+        _sql_digest_sha256_expr,
+        digest_relation_sql_v2,
+    )
+    from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
+
+    schema = _PORTABLE_SCHEMA
+    rows = _portable_digest_rows()
+    arrow = pa.Table.from_arrays(
+        [
+            pa.array([row[index] for row in rows], type=field_type)
+            for index, field_type in enumerate(
+                (
+                    pa.int64(),
+                    pa.string(),
+                    pa.int64(),
+                    pa.float64(),
+                    pa.date32(),
+                    pa.timestamp("us", tz="UTC"),
+                    pa.bool_(),
+                )
+            )
+        ],
+        names=[name for name, _type, _nullable in schema],
+    )
+    duckdb = ibis.duckdb.connect()
+    pg_name = f"digest_spec_{uuid4().hex[:10]}"
+    try:
+        duck_table = duckdb.create_table("digest_spec", arrow)
+        expected = digest_relation_sql_v2(
+            duckdb,
+            duck_table,
+            "portable_spec",
+            schema,
+            primary_key=("id",),
+        )
+        snowflake_con.create_table(pg_name, arrow)
+        table = snowflake_con.sql(
+            f'SELECT CAST("id" AS BIGINT) AS "id", "text", '
+            f'CAST("integer" AS BIGINT) AS "integer", "float", "date", '
+            f'"timestamp", "boolean" FROM "{pg_name}"'
+        )
+        fetched_integers = snowflake_con.to_pyarrow(
+            table.select(id=table.id, integer=table.integer)
+        ).to_pylist()
+        fetched_integers.sort(key=lambda row: row["id"])
+        assert [(row["id"], row["integer"]) for row in fetched_integers] == [
+            (row[0], row[2]) for row in rows
+        ]
+        monkeypatch.setattr(
+            artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "snowflake"})
+        )
+        actual = digest_relation_sql_v2(
+            snowflake_con, table, "portable_spec", schema, primary_key=("id",)
+        )
+        assert (
+            expected.content_sha256
+            == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
+        )
+        kinds = {
+            DigestType.DATE: "date",
+            DigestType.FLOAT64: "float",
+            DigestType.TIMESTAMP_UTC_US: "timestamp",
+        }
+        tagged_fields = [
+            (field.name, int(field.type_tag), kinds.get(field.type_tag, "other"))
+            for field in _fields(schema)
+        ]
+
+        def field_tokens(con, relation, dialect):
+            tokens = {
+                f"token_{name}": _row_token_expr(relation, ((name, tag, kind),), dialect=dialect)
+                for name, tag, kind in tagged_fields
+            }
+            return sorted(
+                con.to_pyarrow(relation.select(id=relation.id, **tokens)).to_pylist(),
+                key=lambda row: row["id"],
+            )
+
+        def digest_stages(con, relation, dialect):
+            tokens = relation.select(
+                id=relation.id,
+                token=_row_token_expr(relation, tagged_fields, dialect=dialect),
+            )
+            hashes = tokens.select(
+                id=tokens.id,
+                token=tokens.token,
+                row_hash=_sql_binary_hex_expr(
+                    _sql_digest_sha256_binary_expr(tokens.token, dialect=dialect),
+                    dialect=dialect,
+                ),
+            )
+            hashes = hashes.select(
+                id=hashes.id,
+                token=hashes.token,
+                row_hash=hashes.row_hash,
+                bucket=hashes.row_hash.substr(0, _BUCKET_HEX_LEN),
+            )
+            row_stages = con.to_pyarrow(hashes.order_by("id")).to_pylist()
+            bucket_input = hashes.select(bucket=hashes.bucket, h=hashes.row_hash)
+            bucket_rows = (
+                bucket_input.group_by("bucket")
+                .aggregate(
+                    bucket_digest=_sql_digest_sha256_expr(
+                        bucket_input.h.group_concat(
+                            sep="",
+                            order_by=ibis.asc(bucket_input.h, nulls_first=dialect == "bigquery"),
+                        ),
+                        dialect=dialect,
+                    ),
+                    n=bucket_input.count(),
+                )
+                .order_by("bucket")
+            )
+            return {
+                "rows": row_stages,
+                "buckets": con.to_pyarrow(bucket_rows).to_pylist(),
+            }
+
+        duckdb_tokens = field_tokens(duckdb, duck_table, "duckdb")
+        snowflake_tokens = field_tokens(snowflake_con, table, "snowflake")
+        duckdb_stages = digest_stages(duckdb, duck_table, "duckdb")
+        snowflake_stages = digest_stages(snowflake_con, table, "snowflake")
+        assert duckdb_tokens == snowflake_tokens, (
+            "format-4 field-token mismatch: "
+            f"DuckDB={duckdb_tokens!r}; Snowflake={snowflake_tokens!r}"
+        )
+        assert actual.content_sha256 == expected.content_sha256, (
+            "format-4 digest mismatch after stage diagnostics; "
+            f"DuckDB={expected.content_sha256}, Snowflake={actual.content_sha256}; "
+            f"DuckDB stages={duckdb_stages!r}; Snowflake stages={snowflake_stages!r}"
+        )
+    finally:
+        duckdb.disconnect()
+        snowflake_con.drop_table(pg_name, force=True)
+
+
+def test_snowflake_float64_token_matches_pinned_python_binary64(snowflake_con):
+    from integration.warehouse_execution._float_tokens import run_float_token_probe
+
+    run_float_token_probe(snowflake_con, dialect="snowflake")
+
+
 def test_scratch_schema_helpers_qualify_with_the_database():
     class Connection:
         current_catalog = "RELEASE_DB"
