@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from increment.estimation.armstats import ArmStats
-from increment.estimation.cuped._numeric import _fail
+from increment.estimation.cuped._numeric import _arm_mean, _arm_offset, _fail
 from increment.estimation.cuped.encoding import _categorical_values, _encode_covariates
 from increment.estimation.cuped.inference import _mean_covariance, finalize_fit
 from increment.estimation.cuped.multicovariate import (
@@ -90,9 +90,19 @@ def categorical_cells(
     for a, arm_rows in enumerate(indices):
         if not len(arm_rows):
             continue
-        references[:, a] = [values[arm_rows[0]] for values in outcomes]
+        bases = []
         for f, values in enumerate(outcomes):
-            exponents[f][a] = math.frexp(float(np.max(np.abs(values[arm_rows]))))[1]
+            arm_values = values[arm_rows]
+            exponents[f][a] = math.frexp(float(np.max(np.abs(arm_values))))[1]
+            offset, centered = _arm_offset(arm_values)
+            references[f, a] = offset + _arm_mean(centered)
+            bases.append(offset)
+        # Center exactly as the per-unit fitter does, then rebase the exact cell
+        # sums once onto the transferred arm-mean reference.
+        shifts = [
+            math.ldexp(references[f, a], -exponents[f][a]) - math.ldexp(bases[f], -exponents[f][a])
+            for f in range(len(outcomes))
+        ]
         for k in range(len(patterns)):
             selected = arm_rows[codes[arm_rows] == k]
             count = len(selected)
@@ -102,12 +112,16 @@ def categorical_cells(
             centered = np.array(
                 [
                     np.ldexp(values[selected], -exponents[f][a])
-                    - math.ldexp(references[f, a], -exponents[f][a])
+                    - math.ldexp(bases[f], -exponents[f][a])
                     for f, values in enumerate(outcomes)
                 ]
             )
-            first[a, :, k] = [math.fsum(values) for values in centered]
-            centered -= first[a, :, k, None] / count
+            sums = np.array([math.fsum(values) for values in centered])
+            first[a, :, k] = [
+                math.fsum((total, -count * shift))
+                for total, shift in zip(sums, shifts, strict=True)
+            ]
+            centered -= sums[:, None] / count
             scatter[a, :, :, k] = centered @ centered.T
     levels = tuple(
         tuple(sorted(set(column), key=lambda value: (value is None, value or "")))

@@ -144,6 +144,72 @@ def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(r
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
 
 
+def test_categorical_warehouse_reference_preserves_cancelling_extreme_outcomes():
+    frame = pd.DataFrame(
+        {
+            "unit_id": [f"{arm}-{i:02d}" for arm in ("c", "t") for i in range(20)],
+            "group_id": np.repeat(["c", "t"], 20),
+            "segment": "A",
+            "device": "mobile",
+            "y": np.concatenate(([1e155, -1e155], np.ones(18), [1e155, -1e155], np.full(18, 2.0))),
+        }
+    )
+    cells, _ = _produce(frame)
+    fit = fit_categorical_cells(cells, control="c")
+    expected = fit_cuped_multicovariate(
+        frame.y.to_numpy(),
+        frame.group_id.to_numpy(),
+        control="c",
+        arm_order=("c", "t"),
+        covariates={name: frame[name].to_numpy() for name in ("segment", "device")},
+        kinds={"segment": "categorical", "device": "categorical"},
+    )
+    assert np.asarray(fit.adjusted_means) == pytest.approx(
+        np.asarray(expected.adjusted_means), rel=1e-10, abs=0
+    )
+    for actual, reference in zip(
+        (fit.absolute("t"), fit.relative("t")),
+        (expected.absolute("t"), expected.relative("t")),
+        strict=True,
+    ):
+        for field in ("estimate", "se", "dof", "lower", "upper"):
+            assert getattr(actual, field) == pytest.approx(
+                getattr(reference, field), rel=1e-10, abs=0
+            )
+
+
+def test_categorical_warehouse_first_sums_retain_survivors_beside_large_terms():
+    def arm(offset):
+        return np.concatenate(([1e12], offset + 0.1 * np.arange(18), [-1e12]))
+
+    frame = pd.DataFrame(
+        {
+            "unit_id": [f"{arm}-{i:02d}" for arm in ("c", "t") for i in range(20)],
+            "group_id": np.repeat(["c", "t"], 20),
+            "segment": "A",
+            "device": "mobile",
+            "y": np.concatenate((arm(1 / 3), arm(2 / 3))),
+        }
+    )
+    cells, _ = _produce(frame)
+    fit = fit_categorical_cells(cells, control="c")
+    expected = fit_cuped_multicovariate(
+        frame.y.to_numpy(),
+        frame.group_id.to_numpy(),
+        control="c",
+        arm_order=("c", "t"),
+        covariates={name: frame[name].to_numpy() for name in ("segment", "device")},
+        kinds={"segment": "categorical", "device": "categorical"},
+    )
+    assert np.asarray(fit.adjusted_means) == pytest.approx(
+        np.asarray(expected.adjusted_means), rel=1e-10, abs=0
+    )
+    for field in ("estimate", "se", "dof"):
+        assert getattr(fit.absolute("t"), field) == pytest.approx(
+            getattr(expected.absolute("t"), field), rel=1e-10, abs=0
+        )
+
+
 def test_categorical_encoded_bound_accounts_for_long_arm_labels():
     frame = _cells_frame((41, 29, 37, 33), arm_width=10_000)
     cells, transfers = _produce(frame, request=_request(10_000))

@@ -898,6 +898,24 @@ def test_categorical_arm_scales_preserve_unit_inference_through_merges(ratio):
         _assert_scale_free_parity(fit_categorical_cells(cells, control="c"), expected)
 
 
+def test_categorical_reference_preserves_cancelling_extreme_outcomes():
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    arms = np.repeat(["c", "t"], 20)
+    y = np.concatenate(([1e155, -1e155], np.ones(18), [1e155, -1e155], np.full(18, 2.0)))
+    arguments: dict[str, Any] = {
+        "y": y,
+        "arms": arms,
+        "control": "c",
+        "arm_order": ("c", "t"),
+        "covariates": {"category": np.repeat("same", len(arms))},
+    }
+    expected = fit_cuped_multicovariate(**arguments, kinds={"category": "categorical"})
+    assert expected.absolute("t").estimate == pytest.approx(1.0, rel=1e-12)
+    cells = categorical_cells(**arguments, identity=("cancelling-extremes",))
+    _assert_scale_free_parity(fit_categorical_cells(cells, control="c"), expected)
+
+
 def test_categorical_singleton_merge_preserves_representable_large_scatter():
     import math
 
