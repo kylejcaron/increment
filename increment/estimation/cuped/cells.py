@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -314,6 +315,66 @@ def _arm_sum_terms(parts, arm, component, exponent):
                 terms.extend(_two_product(count, reference))
                 terms.append(math.ldexp(part.centered_first_moments[arm][component][old], shift))
     return terms
+
+
+def select_cell_arms(cells: CategoricalCells, arms: Sequence[object]) -> CategoricalCells:
+    """Evidence for a subset of arms; joint patterns and levels follow the kept units."""
+    if not arms or any(arm not in cells.arms for arm in arms):
+        _fail(
+            "estimation.cuped_linear.invalid_arms",
+            control=arms[0] if arms else None,
+            arm_order=tuple(arms),
+            observed=cells.arms,
+        )
+    index = [cells.arms.index(arm) for arm in arms]
+    kept = [k for k in range(len(cells.patterns)) if any(cells.counts[a][k] for a in index)]
+    patterns = tuple(cells.patterns[k] for k in kept)
+    levels = tuple(
+        tuple(
+            sorted(
+                {pattern[column] for pattern in patterns},
+                key=lambda value: (value is None, value or ""),
+            )
+        )
+        for column in range(len(cells.levels))
+    )
+    components = range(len(cells.outcome_references))
+    return CategoricalCells(
+        identity=cells.identity,
+        arms=tuple(arms),
+        patterns=patterns,
+        counts=_freeze_payload([[cells.counts[a][k] for k in kept] for a in index]),
+        levels=levels,
+        null_metadata=tuple(
+            (metadata[0], None in level)
+            for metadata, level in zip(cells.null_metadata, levels, strict=True)
+        ),
+        outcome_references=_freeze_payload(
+            [[cells.outcome_references[f][a] for a in index] for f in components]
+        ),
+        centered_first_moments=_freeze_payload(
+            [
+                [[cells.centered_first_moments[a][f][k] for k in kept] for f in components]
+                for a in index
+            ]
+        ),
+        symmetric_cross_moments=_freeze_payload(
+            [
+                [
+                    [[cells.symmetric_cross_moments[a][f][g][k] for k in kept] for g in components]
+                    for f in components
+                ]
+                for a in index
+            ]
+        ),
+        covariate_names=cells.covariate_names,
+        outcome_exponents=_freeze_payload(
+            [[cells.outcome_exponents[f][a] for a in index] for f in components]
+        ),
+        outcome_magnitudes=_freeze_payload(
+            [[cells.outcome_magnitudes[f][a] for a in index] for f in components]
+        ),
+    )
 
 
 def _scatter_root(scatter):

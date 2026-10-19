@@ -2375,7 +2375,7 @@ def test_design_summary_rejects_incompatible_shape_identity_catalog_and_plans(tm
             assert raised.value.code == "moments.format.invalid"
         with pytest.raises(CodedError) as future:
             MomentsSource(
-                [{**envelope, "moments_format": 13}],
+                [{**envelope, "moments_format": 14}],
                 metrics=[],
                 study_id="uptake_test",
                 design=design(7),

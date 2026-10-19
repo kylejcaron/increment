@@ -66,7 +66,7 @@ _REFUSALS = refusals(
         "facade.analysis_config.cuped_linear_moments": RefusalSpec(
             "facade.analysis_config.cuped_linear_moments",
             UnsupportedRequestError,
-            template="metric {metric!r} requests cuped_multicovariate, but from_moments stores aggregate moments rather than per-unit covariates; use from_unit_summary, from_unit_panel, from_definitions, or an artifact published with covariate extensions.",
+            template="metric {metric!r} requests cuped_multicovariate, but these aggregate moments carry no joint categorical evidence for that request; export a categorical-only request in moments format 13, or use from_unit_summary, from_unit_panel, from_definitions, or an artifact published with covariate extensions.",
             keys=frozenset({"metric"}),
         ),
         "facade.analysis_config.cuped_scalar_moments": RefusalSpec(
@@ -77,12 +77,6 @@ _REFUSALS = refusals(
         ),
         "facade.analysis_config.cuped_linear_covariates": "metric {metric!r} requests cuped_multicovariate without covariates declared on the method.",
         "facade.analysis_config.cuped_linear_metric_type": "metric {metric!r} has type={metric_type!r}; multicovariate CUPED supports mean and conversion metrics only.",
-        "facade.analysis_config.multifamily_scalar_export": RefusalSpec(
-            "facade.analysis_config.multifamily_scalar_export",
-            UnsupportedRequestError,
-            template="metric {metric!r} requests multiple scalar CUPED covariate families, but the current moments format can retain only one x family; export is refused before writing. Export one scalar family, or use fixed-horizon unit evidence.",
-            keys=frozenset({"metric"}),
-        ),
         "facade.analysis_config.multifamily_scalar_breakout": RefusalSpec(
             "facade.analysis_config.multifamily_scalar_breakout",
             UnsupportedRequestError,
@@ -227,7 +221,6 @@ def validate_scalar_route(
     representation: Literal[
         "unit",
         "moments",
-        "export",
         "breakout",
         "implicit",
         "native_sequential",
@@ -255,10 +248,9 @@ def validate_scalar_route(
         methods = effective_methods(config, design=design)
         scalar = tuple(method for method in methods if method.variance_reduction == "cuped")
         families = {method.covariates for method in scalar}
-        if representation in {"moments", "export", "breakout"} and len(families) > 1:
+        if representation in {"moments", "breakout"} and len(families) > 1:
             code = {
                 "moments": "facade.analysis_config.cuped_scalar_moments",
-                "export": "facade.analysis_config.multifamily_scalar_export",
                 "breakout": "facade.analysis_config.multifamily_scalar_breakout",
             }[representation]
             _raise(code, metric=config.metric.name, route=route)
@@ -596,6 +588,11 @@ def refuse_cuped_linear_moments(metric: str) -> NoReturn:
 def refuse_unidentified_scalar_moments(metric: str) -> NoReturn:
     """Refuse a named scalar covariate absent from aggregate-moment provenance."""
     _raise("facade.analysis_config.cuped_scalar_moments", metric=metric)
+
+
+def refuse_missing_scalar_evidence(route: str, method: str) -> NoReturn:
+    """Refuse a scalar request absent from method-scoped portable evidence."""
+    _raise("readout.scalar_method_evidence", route=route, method=method)
 
 
 def resolve_configs(

@@ -969,9 +969,12 @@ ref distribution and store authorization are the authenticity boundary.
 `Analysis.from_moments` reads centered, complete `moments_format=12`
 fixed-horizon rows, including a complete embedded `decision_plan`, a source
 identity record and, on every denominator row, the ratio denominator's
-centered third moment `cden3`. It also reads the earlier fixed-horizon formats
-10 and 11 and sequential checkpoint formats 9 and 10. Formats above 12 are
-refused with `moments.format.unsupported_future`; fixed-horizon formats 1–8
+centered third moment `cden3`. Format 13 adds method-scoped CUPED evidence
+envelopes when an export needs them (see
+[Portable CUPED evidence](cuped.md#portable-cuped-evidence)). It also reads the
+earlier fixed-horizon formats 10 and 11 and sequential checkpoint formats 9
+and 10. Formats above 13 are refused with `moments.format.unsupported_future`;
+fixed-horizon formats 1–8
 with `moments.format.unsupported_legacy`. `from_moments` is separate from the
 unit-day artifact boundary.
 

@@ -3548,21 +3548,52 @@ def _withhold_ratio_arms(
     refusal.
     """
     refused = _ratio_denominator_refusals(frame, metric.name)
+    remaining = _withhold_refused_arms(
+        refused, arm_order, control_group=control_group, refuse_arm=refuse_arm
+    )
+    if not remaining:
+        return None, ()
+    if refused:
+        frame = frame.filter(~nw.col("group_id").is_in(list(refused)))
+    return frame, remaining
+
+
+def _withhold_refused_arms(
+    refused: Mapping[str, CodedError],
+    arm_order: tuple[str, ...],
+    *,
+    control_group: str,
+    refuse_arm: Callable[[str, str, Mapping[str, object]], None],
+) -> tuple[str, ...]:
+    """Record each refused arm's own failure; the arms left to fit, or none to contrast."""
     if control_group in refused:
         refusal = refused[control_group]
         for arm in arm_order:
             if arm != control_group:
                 refuse_arm(arm, refusal.code, refusal.context)
-        return None, ()
+        return ()
     for arm in arm_order:
         if arm in refused:
             refuse_arm(arm, refused[arm].code, refused[arm].context)
-    if refused:
-        frame = frame.filter(~nw.col("group_id").is_in(list(refused)))
-        arm_order = tuple(arm for arm in arm_order if arm not in refused)
-    if arm_order == (control_group,):
-        return None, ()
-    return frame, arm_order
+    remaining = tuple(arm for arm in arm_order if arm not in refused)
+    return () if remaining == (control_group,) else remaining
+
+
+def _cell_denominator_refusals(cells: Any, metric_name: str) -> dict[str, CodedError]:
+    """The variance owner's refusal for every cell arm whose raw denominator mean is not positive."""
+    refused: dict[str, CodedError] = {}
+    for a, arm in enumerate(cells.arms):
+        count = sum(cells.counts[a])
+        if not count:
+            continue
+        d_bar = cells.outcome_references[1][a] + math.ldexp(
+            math.fsum(cells.centered_first_moments[a][1]) / count, cells.outcome_exponents[1][a]
+        )
+        try:
+            require_positive_denominator_mean(metric=metric_name, group_id=str(arm), d_bar=d_bar)
+        except CodedError as exc:
+            refused[str(arm)] = exc
+    return refused
 
 
 def _fit_cuped_multicovariate_frame(
@@ -3635,6 +3666,130 @@ def estimate_cuped_linear(
     frame = nw.from_native(unit_frame, eager_only=True)
     ratio = getattr(metric, "type", None) == "ratio"
     arm_order = tuple(dict.fromkeys((control_group, *map(str, frame.get_column("group_id")))))
+
+    refusals = _cuped_linear_refusals(
+        metric,
+        method,
+        method_role,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        prior=prior,
+    )
+    results, cuped_failures, refuse_arm = refusals
+    if ratio:
+        frame, arm_order = _withhold_ratio_arms(
+            frame,
+            arm_order,
+            metric=metric,
+            control_group=control_group,
+            refuse_arm=refuse_arm,
+        )
+        if frame is None:
+            return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    fit = _fit_cuped_multicovariate_frame(
+        frame,
+        covariates,
+        control_group=control_group,
+        arm_order=arm_order,
+        ratio=ratio,
+        covariate_columns=covariate_columns,
+    )
+    return _project_cuped_linear(
+        fit,
+        metric,
+        arm_order,
+        control_group=control_group,
+        method=method,
+        method_role=method_role,
+        alpha=alpha,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        prior=prior,
+        refusals=refusals,
+    )
+
+
+def estimate_cuped_linear_cells(
+    metric: Metric,
+    cells: Any,
+    *,
+    control_group: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    alpha: float,
+    alternative: str,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+    prior: Prior | None = None,
+) -> Any:
+    """Fit joint categorical evidence and project it exactly as the per-unit route does.
+
+    Ratio arms whose raw denominator mean is not positive are withheld with
+    their own refusal before the fit, as on the per-unit route.
+    """
+    from increment.estimation.cuped.cells import fit_categorical_cells, select_cell_arms
+
+    arm_order = tuple(dict.fromkeys((control_group, *map(str, cells.arms))))
+    refusals = _cuped_linear_refusals(
+        metric,
+        method,
+        method_role,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        prior=prior,
+    )
+    results, cuped_failures, refuse_arm = refusals
+    if getattr(metric, "type", None) == "ratio":
+        arm_order = _withhold_refused_arms(
+            _cell_denominator_refusals(cells, metric.name),
+            arm_order,
+            control_group=control_group,
+            refuse_arm=refuse_arm,
+        )
+        if not arm_order:
+            return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    try:
+        selected = cells if arm_order == tuple(cells.arms) else select_cell_arms(cells, arm_order)
+        fit = fit_categorical_cells(selected, control=control_group)
+    except CodedError as exc:
+        fit = exc
+    return _project_cuped_linear(
+        fit,
+        metric,
+        arm_order,
+        control_group=control_group,
+        method=method,
+        method_role=method_role,
+        alpha=alpha,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        prior=prior,
+        refusals=refusals,
+    )
+
+
+_LinearRefusals = tuple[
+    list[LiftEstimate],
+    list[tuple[Any, ...]],
+    Callable[[str, str, Mapping[str, object]], None],
+]
+
+
+def _cuped_linear_refusals(
+    metric: Metric,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    *,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    prior: Prior | None,
+) -> _LinearRefusals:
+    """Unavailable cell rows and decision failures recorded for one linear method."""
     results: list[LiftEstimate] = []
     cuped_failures: list[tuple[Any, ...]] = []
 
@@ -3656,24 +3811,27 @@ def estimate_cuped_linear(
         if method_role == "decision":
             cuped_failures.append((metric.name, arm, "itt", code, context))
 
-    if ratio:
-        frame, arm_order = _withhold_ratio_arms(
-            frame,
-            arm_order,
-            metric=metric,
-            control_group=control_group,
-            refuse_arm=refuse_arm,
-        )
-        if frame is None:
-            return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
-    fit = _fit_cuped_multicovariate_frame(
-        frame,
-        covariates,
-        control_group=control_group,
-        arm_order=arm_order,
-        ratio=ratio,
-        covariate_columns=covariate_columns,
-    )
+    return results, cuped_failures, refuse_arm
+
+
+def _project_cuped_linear(
+    fit: Any,
+    metric: Metric,
+    arm_order: tuple[str, ...],
+    *,
+    control_group: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    alpha: float,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    prior: Prior | None,
+    refusals: _LinearRefusals,
+) -> Any:
+    """Project one fit, or the coded refusal it raised, onto per-arm linear CUPED rows."""
+    results, cuped_failures, refuse_arm = refusals
+    ratio = getattr(metric, "type", None) == "ratio"
     if isinstance(fit, CodedError):
         if not results or not fit.code.startswith("estimation.cuped_linear."):
             raise fit

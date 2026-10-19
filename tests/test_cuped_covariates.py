@@ -834,11 +834,9 @@ def test_scalar_sensitivity_uses_its_own_covariate_when_mixed_cuped_is_present()
     assert result.require_lift().log_se == pytest.approx(reference.require_lift().log_se)
 
 
-def test_multi_family_scalar_export_refuses_before_writing_payload(tmp_path):
+def test_each_scalar_family_matches_its_single_family_fit():
     import numpy as np
     import pandas as pd
-
-    from increment.errors import UnsupportedRequestError
 
     rng = np.random.default_rng(23)
     n_per_arm = 40
@@ -899,11 +897,3 @@ def test_multi_family_scalar_export_refuses_before_writing_payload(tmp_path):
         assert combined[name].require_lift().log_se == pytest.approx(
             reference.require_lift().log_se
         )
-
-    path = tmp_path / "multi-family.parquet"
-
-    with pytest.raises(UnsupportedRequestError) as raised:
-        analysis.export(path)
-
-    assert raised.value.code == "facade.analysis_config.multifamily_scalar_export"
-    assert not path.exists()

@@ -552,6 +552,101 @@ def test_integer_fact_domain_refuses_before_categorical_transfer(
     assert raised.value.context["reason"] == "outcome_domain"
 
 
+def _intercept_transfers(monkeypatch, native, artifact, *, outcome_cells: bool):
+    from increment.query.session import WarehouseSession
+
+    transferred = []
+    original_fetch = WarehouseSession.fetch_arrow
+    original_execute = type(artifact._snapshot).execute
+
+    def check(columns):
+        assert "unit_id" not in columns
+        if not outcome_cells:
+            assert not any(name.startswith(("ref_", "first_", "cross_")) for name in columns)
+        transferred.append(tuple(columns))
+
+    def fetch(session, expression, **kwargs):
+        check(expression.columns)
+        return original_fetch(session, expression, **kwargs)
+
+    def execute_snapshot(snapshot, expression):
+        check(expression.columns)
+        return original_execute(snapshot, expression)
+
+    def no_units(*args, **kwargs):
+        pytest.fail("Categorical export must not materialize unit frames")
+
+    monkeypatch.setattr(WarehouseSession, "fetch_arrow", fetch)
+    monkeypatch.setattr(type(artifact._snapshot), "execute", execute_snapshot)
+    monkeypatch.setattr(type(native), "unit_frame", no_units)
+    monkeypatch.setattr(type(artifact), "unit_frame", no_units)
+    return transferred
+
+
+@pytest.mark.parametrize("ingress", ["native", "artifact"])
+def test_categorical_warehouse_export_replays_without_unit_transfer(
+    categorical_sources, ingress, tmp_path, monkeypatch
+):
+    import pyarrow.parquet as pq
+
+    from increment import Analysis
+    from increment.estimation.results import LiftEstimate
+    from increment.frame import MetricSpec
+    from increment.readouts import run
+
+    native, artifact, request = categorical_sources
+    source = native if ingress == "native" else artifact
+    (expected,) = (row for row in run(source) if isinstance(row, LiftEstimate))
+    transferred = _intercept_transfers(monkeypatch, native, artifact, outcome_cells=True)
+    destination = tmp_path / "categorical.parquet"
+    source.export_moments(destination)
+    rows = pq.read_table(destination).to_pylist()
+    assert transferred
+    assert {row["moments_format"] for row in rows} == {13}
+    envelopes = [
+        json.loads(row["cuped_evidence"])
+        for row in rows
+        if row.get("record_kind") == "cuped_evidence"
+    ]
+    assert [(item["kind"], item["metric"]) for item in envelopes] == [
+        ("categorical_cells", "revenue")
+    ]
+    restored = Analysis.from_moments(
+        rows,
+        metrics=[MetricSpec(name="revenue", decision_method=request.method)],
+        design=source.context.design,
+        experiment_id="mixed_cuped",
+    )
+    try:
+        (actual,) = (row for row in restored.run() if isinstance(row, LiftEstimate))
+    finally:
+        restored.close()
+    assert (actual.method, actual.method_role) == (expected.method, expected.method_role)
+    lift, reference = actual.require_lift(), expected.require_lift()
+    for field in ("value", "log_se", "lb", "ub"):
+        assert getattr(lift, field) == pytest.approx(
+            getattr(reference, field), rel=1e-10, abs=1e-12
+        )
+
+
+@pytest.mark.parametrize("categorical_sources", [True], indirect=True)
+@pytest.mark.parametrize("ingress", ["native", "artifact"])
+def test_ineligible_categorical_export_refuses_before_outcome_transfer(
+    categorical_sources, ingress, tmp_path, monkeypatch
+):
+    native, artifact, _ = categorical_sources
+    source = native if ingress == "native" else artifact
+    _intercept_transfers(monkeypatch, native, artifact, outcome_cells=False)
+    destination = tmp_path / "categorical.parquet"
+    with pytest.raises(CapabilityError) as raised:
+        source.export_moments(destination)
+    assert raised.value.code == "query.cuped.general_qr_required"
+    assert raised.value.context["reason"] == "outcome_domain"
+    route = raised.value.context["route"]
+    assert isinstance(route, str) and "from_unit_summary" in route
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize(("segments", "eligible"), [(64, True), (65, False)])
 def test_categorical_cell_budget_and_eightfold_boundary_are_enforced_in_sql(segments, eligible):
     from increment.query._cuped_cells import categorical_cells_from_relation

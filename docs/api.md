@@ -69,12 +69,13 @@ moments, artifact, and checkpoint formats.
 
     | Format | Written by | Read by `from_moments` |
     |---|---|---|
+    | 13 | Fixed-horizon `export` when a metric needs method-scoped CUPED evidence: several scalar families or a categorical-only multicovariate request | Yes |
     | 12 | Fixed-horizon `export`; source identity, exact counts, ratio denominator third moment `cden3` | Yes |
     | 11 | Prior fixed-horizon export; source identity and exact counts | Yes; ratio denominator-skew coverage is unavailable |
     | 10 | Earlier fixed-horizon export or current sequential checkpoint export | Yes; fixed-horizon ratio denominator-skew coverage is unavailable |
     | 9 | Prior sequential checkpoint export | Yes |
     | Below 9 | No longer written | Refused: `moments.format.unsupported_legacy` |
-    | Above 12 | Not written by this release | Refused: `moments.format.unsupported_future` |
+    | Above 13 | Not written by this release | Refused: `moments.format.unsupported_future` |
 
     A cube must use one format (`moments.format.mixed`) and have no duplicate
     `(metric, group_id)` rows (`moments.rows.duplicate`). Fixed and sequential
@@ -94,7 +95,7 @@ moments, artifact, and checkpoint formats.
     `cden3`; their lift rows mark denominator-skew coverage unavailable, not
     passed.
 
-    Fixed formats 11 and 12 and sequential format 10 carry source identity.
+    Fixed formats 11, 12, and 13 and sequential format 10 carry source identity.
     `from_moments` restores it rather than using the replay object's default
     study name. Snapshot identity also binds the canonical request, pinned
     evidence, and integer sufficient statistics—not floating aggregates.

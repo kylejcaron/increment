@@ -1973,14 +1973,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
     ) -> _ArtifactFacadeSource:
-        from increment._analysis_config import overlay_configs, validate_scalar_route
-
-        validate_scalar_route(
-            overlay_configs(metrics, self.context.configs, methods=methods, prior=prior),
-            route="artifact.moments_source",
-            representation="export",
-            design=self.context.design,
-        )
         if population == "triggered":
             return cast("_ArtifactFacadeSource", self.triggered_source())
         return self
