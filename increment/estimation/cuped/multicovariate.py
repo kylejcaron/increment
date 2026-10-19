@@ -93,6 +93,7 @@ class _LinearCupedCalculator:
     _row_exponents: tuple[tuple[int, ...], ...]
     _multiplicities: np.ndarray | None = None
     _scatter_factor: np.ndarray | None = None
+    _scatter_exponents: tuple[int, ...] | None = None
 
     def _contrast_x(self, j: np.ndarray) -> np.ndarray:
         jsum = math.fsum(float(value) for value in j)
@@ -348,14 +349,13 @@ class _LinearCupedCalculator:
         scatter_score = (
             influence[:, None] * self._scatter_factor[:, family, :] / leverage_factor[:, None]
         )
-        if divisor is not None:
-            for a in range(len(self.arm_order)):
-                mask = self._arm_index == a
-                exponent = self._row_exponents[family][a]
-                scatter_score[mask] = np.ldexp(
-                    np.ldexp(scatter_score[mask], -exponent) / divisor[0],
-                    exponent - divisor[2],
-                )
+        assert self._scatter_exponents is not None
+        exponent = self._scatter_exponents[family]
+        scatter_score = (
+            np.ldexp(scatter_score / divisor[0], exponent - divisor[2])
+            if divisor is not None
+            else np.ldexp(scatter_score, exponent)
+        )
         return (
             np.concatenate((score * np.sqrt(self._multiplicities), scatter_score.reshape(-1)))
             * scale
@@ -1182,7 +1182,8 @@ def _fit_calculator(
             for f in range(len(outcomes))
         ),
         multiplicities,
-        scatter_factor,
+        scatter_factor[0] if scatter_factor is not None else None,
+        scatter_factor[1] if scatter_factor is not None else None,
     )
     return calculator, leverage
 

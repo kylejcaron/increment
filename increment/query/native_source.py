@@ -4056,10 +4056,25 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Keep the complete CUPED relation inside one pinned source execution."""
+        from increment.query._cuped_cells import component_domain, general_qr_required
+
         configs = overlay_configs(
             (metric,), self.context.configs, methods=[request.method], prior=None
         )
         with self._pinned_source_execution(metrics=(metric,), configs=configs) as pinned:
+            components = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            for measure in components:
+                source, fact = _find_fact_source(pinned._defs, measure.fact)
+                column = _resolve_value_column(source, fact)
+                datatype = (
+                    pinned._get_fact_table(source)[column].type() if column is not None else None
+                )
+                if component_domain(measure, datatype) != "continuous":
+                    general_qr_required(metric, "outcome_domain")
             with pinned._unit_relation(
                 metric,
                 covariates=tuple(item.name for item in request.method.covariates or ()),

@@ -187,6 +187,7 @@ class _PublicationAssembly:
     certified_edges: dict[str, dt.date]
     observed_edges: dict[str, dt.date]
     measure_specs: dict[str, tuple[Any, Metric, str | None, str, tuple[Any, ...]]]
+    measure_domains: dict[str, Literal["continuous", "discrete", "unknown"]]
     metric_measures: tuple[Any, ...]
     first_ds: dt.date
     last_ds: dt.date
@@ -207,6 +208,7 @@ def _assemble_publication_manifest(
     measures = tuple(
         MeasureManifest(
             measure_key=key,
+            outcome_domain=assembly.measure_domains[key],
             source_provenance_sha256=__import__("hashlib")
             .sha256(canonical_json(ref.model_dump(mode="python")).encode())
             .hexdigest(),
@@ -619,6 +621,19 @@ class ArtifactPublisher:
             return value.date()
         return value if isinstance(value, dt.date) else self._NO_DATA_SIGNAL
 
+    def _measure_domains(self, specs):
+        from increment.query._cuped_cells import component_domain
+
+        return {
+            key: component_domain(
+                ref,
+                self._get_fact_table(_find_fact_source(self._defs, ref.fact)[0])[column].type()
+                if column is not None
+                else None,
+            )
+            for key, (ref, _metric, column, _part, _physical) in specs.items()
+        }
+
     def _assemble_publication(
         self,
         context: Any,
@@ -772,6 +787,7 @@ class ArtifactPublisher:
             certified_edges=certified_edges,
             observed_edges=observed_edges,
             measure_specs=measure_specs,
+            measure_domains=self._measure_domains(measure_specs),
             metric_measures=metric_measures,
             first_ds=first_ds,
             last_ds=last_ds,

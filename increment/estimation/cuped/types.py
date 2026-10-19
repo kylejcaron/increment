@@ -345,8 +345,10 @@ class InferenceSummary:
 class CategoricalCells:
     """Joint cells: arm-referenced first sums and within-cell centered cross sums.
 
-    References are component × arm; first sums are arm × component × pattern;
-    cross sums are arm × component × component × pattern. Null levels use None.
+    Physical references are component × arm; first sums are arm × component ×
+    pattern, scaled by 2**outcome_exponents[component]. Cross sums are arm ×
+    component × component × pattern, scaled by both component powers.
+    Null levels use None.
     """
 
     identity: tuple[object, ...]
@@ -358,6 +360,7 @@ class CategoricalCells:
     outcome_references: tuple[tuple[float, ...], ...]
     centered_first_moments: tuple[tuple[tuple[float, ...], ...], ...]
     symmetric_cross_moments: tuple[tuple[tuple[tuple[float, ...], ...], ...], ...]
+    outcome_exponents: tuple[int, ...]
     covariate_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -371,6 +374,7 @@ class CategoricalCells:
             "outcome_references",
             "centered_first_moments",
             "symmetric_cross_moments",
+            "outcome_exponents",
             "covariate_names",
         ):
             object.__setattr__(self, name, _freeze_payload(getattr(self, name)))
@@ -430,6 +434,11 @@ class CategoricalCells:
 
     def _validate_outcome_values(self) -> None:
         components = len(self.outcome_references)
+        if len(self.outcome_exponents) != components or any(
+            isinstance(value, bool) or not isinstance(value, int) or not -1073 <= value <= 1024
+            for value in self.outcome_exponents
+        ):
+            _invalid_evidence("CategoricalCells outcome scales must be component binary exponents")
         for values in (
             self.outcome_references,
             self.centered_first_moments,

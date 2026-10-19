@@ -503,6 +503,7 @@ def test_frozen_evidence_recursively_copies_mutable_payloads():
         "outcome_references": [],
         "centered_first_moments": [[], []],
         "symmetric_cross_moments": [[], []],
+        "outcome_exponents": [],
     }
     cells = CategoricalCells(**cell_evidence)
     cell_counts[0, 0] = 99
@@ -803,4 +804,71 @@ def test_categorical_cells_merge_singleton_partitions_without_changing_support()
     _assert_cell_fit_parity(
         fit_categorical_cells(parts[0].merge(parts[1]), control="c"),
         fit_categorical_cells(complete, control="c"),
+    )
+
+
+@pytest.mark.parametrize("unit_scale", [1e-200, 1e155])
+@pytest.mark.parametrize("ratio", [False, True])
+def test_categorical_component_scales_preserve_unit_projection_scores(unit_scale, ratio):
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    arms = np.repeat(["c", "t"], 20)
+    row = np.arange(len(arms), dtype=float)
+    numerator = unit_scale * (3.0 + 0.1 * np.sin(row))
+    denominator = unit_scale * (2.0 + 0.05 * np.cos(row))
+    arguments: dict[str, Any] = {
+        "y": None if ratio else numerator,
+        "arms": arms,
+        "control": "c",
+        "arm_order": ("c", "t"),
+        "covariates": {"category": np.repeat("same", len(arms))},
+        **({"numerator": numerator, "denominator": denominator} if ratio else {}),
+    }
+    cells = categorical_cells(**arguments, identity=("scaled-components",))
+    expected = fit_cuped_multicovariate(**arguments, kinds={"category": "categorical"})
+    actual = fit_categorical_cells(cells, control="c")
+    for actual_row, expected_row in zip(actual._projections, expected._projections, strict=True):
+        assert actual_row[:4] == expected_row[:4]
+        assert actual_row[4:] == pytest.approx(expected_row[4:], rel=1e-10, abs=0)
+    if ratio:
+        for scale in ("absolute", "log"):
+            assert actual.ratio("t", scale=scale).se == pytest.approx(
+                expected.ratio("t", scale=scale).se, rel=1e-10, abs=0
+            )
+    else:
+        assert actual.absolute("t").se / unit_scale == pytest.approx(
+            expected.absolute("t").se / unit_scale, rel=1e-10, abs=0
+        )
+
+
+def test_categorical_singleton_merge_preserves_representable_large_scatter():
+    import math
+
+    from increment.estimation.cuped.cells import categorical_cells
+
+    arguments = {
+        "arms": np.array(["c", "t"]),
+        "control": "c",
+        "arm_order": ("c", "t"),
+        "covariates": {"category": np.array(["same", "same"])},
+        "identity": ("large-merge",),
+    }
+    left = categorical_cells(y=np.array([-8e153, -8e153]), **arguments)
+    right = categorical_cells(y=np.array([8e153, 8e153]), **arguments)
+    merged = left.merge(right)
+    complete = categorical_cells(
+        y=np.array([-8e153, -8e153, 8e153, 8e153]),
+        **{
+            **arguments,
+            "arms": np.array(["c", "t", "c", "t"]),
+            "covariates": {"category": np.repeat("same", 4)},
+        },
+    )
+    for a in range(2):
+        scatter = math.ldexp(
+            merged.symmetric_cross_moments[a][0][0][0], 2 * merged.outcome_exponents[0]
+        )
+        assert scatter == pytest.approx(1.28e308, rel=1e-14)
+    assert np.asarray(merged.symmetric_cross_moments) == pytest.approx(
+        np.asarray(complete.symmetric_cross_moments), rel=1e-14
     )

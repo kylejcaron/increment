@@ -999,6 +999,10 @@ category tables are not sufficient: the joint pattern determines the
 design row, leverage, and fitted-slope uncertainty. Mean evidence retains
 one outcome component; ratio evidence retains both components and their
 within-cell cross scatter.
+Component first sums and scatters are normalized by exact powers of two,
+whose exponents travel with the evidence. Projected-score arithmetic applies
+these scales without reconstructing raw second moments, preserving uncertainty
+for very small or large component units.
 
 For a cell with multiplicity $m_g$, factor rows
 $\sqrt{m_g w_a}\,z_g$, where $w_a=1/[n_a(n_a-1)]$. Dividing its compressed
@@ -1029,6 +1033,9 @@ from the original unit count. Every retained outcome component needs at
 least three finite contributors and demonstrably positive within-cell
 scatter in every cell. Known discrete or bounded outcome domains require
 general warehouse QR instead.
+The discrete-domain check uses original source-column metadata, retained in
+artifact measure manifests, rather than the prepared floating-point outcomes.
+An older artifact without that metadata cannot establish categorical eligibility.
 Transferred centering references are arm-level component means, not selected
 unit outcomes; any unit-valued numerical base remains inside the warehouse.
 

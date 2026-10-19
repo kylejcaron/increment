@@ -1379,14 +1379,28 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Expose only a verified warehouse relation to compact CUPED reduction."""
+        from increment.query._cuped_cells import general_qr_required
+
+        binding = next(
+            (item for item in self._manifest.metric_measures if item.metric_name == metric.name),
+            None,
+        )
+        if binding is None:
+            general_qr_required(metric, "outcome_domain")
+        keys = (
+            (binding.numerator_measure_key, binding.denominator_measure_key)
+            if binding.kind == "ratio"
+            else (binding.measure_key,)
+        )
+        domains = {item.measure_key: item.outcome_domain for item in self._manifest.measures}
+        if any(domains.get(key, "unknown") != "continuous" for key in keys):
+            general_qr_required(metric, "outcome_domain")
         if request.population != self._population:
             if request.population == "triggered" and self._population == "assigned":
                 triggered = cast("_ArtifactFacadeSource", self.triggered_source())
                 with triggered.cuped_relation(metric, request) as evidence:
                     yield evidence
                 return
-            from increment.query._cuped_cells import general_qr_required
-
             general_qr_required(metric, "source_population")
         relation = self._unit_relation_with_covariates(
             metric, covariates=tuple(item.name for item in request.method.covariates or ())
