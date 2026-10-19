@@ -113,6 +113,238 @@ def test_duckdb_householder_factor_handles_large_offset_small_spread(tmp_path):
         connection.disconnect()
 
 
+def test_duckdb_qr_coefficients_and_unit_quantities_match_local_fit(tmp_path):
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.query._cuped_qr import (
+        factor_design_relation,
+        solve_qr_coefficients,
+        warehouse_qr_unit_summary,
+    )
+
+    rng = np.random.default_rng(20261014)
+    arms_order = ("control", "variant-a", "variant-b")
+    arms = np.repeat(arms_order, 48)
+    x = np.concatenate(
+        [
+            1.0e8 + np.linspace(-4.0, 4.0, 48),
+            -3.0e7 + np.linspace(-19.0, 19.0, 48),
+            8.0e8 + np.linspace(-27.0, 27.0, 48),
+        ]
+    )
+    y = np.concatenate(
+        [
+            4.0e5 + 1.7 * x[:48] + rng.normal(0.0, 0.2, 48),
+            8.0e5 + 1.7 * x[48:96] + rng.normal(0.0, 0.3, 48),
+            2.0e6 + 1.7 * x[96:] + rng.normal(0.0, 0.4, 48),
+        ]
+    )
+    local = fit_cuped_multicovariate(
+        y,
+        arms,
+        control="control",
+        arm_order=arms_order,
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+
+    x_scale = max(
+        abs(float(x[np.flatnonzero(arms == arm)[0]] - x[index]))
+        for arm in arms_order
+        for index in np.flatnonzero(arms == arm)
+    )
+    y_fit = np.empty_like(y)
+    sqrt_weights = np.empty_like(y)
+    design_unscaled = np.zeros((len(y), len(arms_order) + 1))
+    for arm_index, arm in enumerate(arms_order):
+        indices = np.flatnonzero(arms == arm)
+        x_anchor = x[indices[0]]
+        encoded = (x[indices] - x_anchor) / x_scale
+        x_centered = encoded - encoded.mean()
+        y_centered = y[indices] - y[indices].mean()
+        weight = 1.0 / (len(indices) * (len(indices) - 1))
+        sqrt_weight = np.sqrt(weight)
+        sqrt_weights[indices] = sqrt_weight
+        y_fit[indices] = y_centered
+        design_unscaled[indices, arm_index] = sqrt_weight
+        design_unscaled[indices, -1] = sqrt_weight * x_centered
+    design_scales = np.max(np.abs(design_unscaled), axis=0)
+    design = design_unscaled / design_scales
+    rhs_scale = float(np.max(np.abs(sqrt_weights * y_fit)))
+    rhs = sqrt_weights * y_fit / rhs_scale
+    design_columns = tuple(f"d{index}" for index in range(design.shape[1]))
+    rows = [
+        {
+            "unit_id": f"unit-{index:04d}",
+            "arm": str(arms[index]),
+            "sqrt_weight": float(sqrt_weights[index]),
+            "y_fit": float(y_fit[index]),
+            "rhs": float(rhs[index]),
+            **{
+                name: float(value)
+                for name, value in zip(design_columns, design[index], strict=True)
+            },
+        }
+        for index in range(len(y))
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    connection.create_table("factor_input", obj=rows)
+    session = _scratch_session(connection, tmp_path)
+
+    def bounded_execute(expression):
+        result = connection.to_pyarrow(expression)
+        assert result.num_rows <= 1
+        return result
+
+    try:
+        with session.qr_scratch() as scratch:
+            factor = factor_design_relation(
+                connection.table("factor_input"),
+                design_columns=design_columns,
+                rhs_columns=("rhs",),
+                order_columns=("unit_id",),
+                execute=bounded_execute,
+                scratch=scratch,
+                covariate_start=len(arms_order),
+                covariate_names=("x",),
+            )
+            coefficients = solve_qr_coefficients(
+                factor,
+                design_scales=tuple(design_scales),
+                outcome_scales=(rhs_scale,),
+            )
+            summary = warehouse_qr_unit_summary(
+                connection.table("factor_input"),
+                factor,
+                design_columns=design_columns,
+                outcome_columns=("y_fit",),
+                sqrt_weight_column="sqrt_weight",
+                design_scales=tuple(design_scales),
+                coefficients=coefficients,
+                execute=bounded_execute,
+                scratch=scratch,
+            )
+            residual_sum = bounded_execute(
+                summary.relation.aggregate(
+                    _residual_square_sum=summary.relation["_qr_residual_0"].pow(2).sum()
+                )
+            ).to_pylist()[0]["_residual_square_sum"]
+        np.testing.assert_allclose(
+            coefficients[0][-1] / x_scale, local.theta[0], rtol=1e-9, atol=1e-11
+        )
+        assert summary.max_leverage == pytest.approx(local.max_leverage, rel=1e-9)
+        assert summary.sum_leverage == pytest.approx(local.leverage_trace, rel=1e-9)
+        assert summary.refusal_witness == ()
+        expected_residual = np.empty_like(y)
+        for arm in arms_order:
+            indices = np.flatnonzero(arms == arm)
+            expected_residual[indices] = (
+                y[indices] - y[indices].mean() - local.theta[0] * (x[indices] - x[indices].mean())
+            )
+        assert residual_sum == pytest.approx(float(expected_residual @ expected_residual), rel=1e-9)
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
+    from increment.errors import CodedError
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.query._cuped_qr import (
+        factor_design_relation,
+        solve_qr_coefficients,
+        warehouse_qr_unit_summary,
+    )
+
+    arms_order = ("control", "treatment")
+    arms = np.repeat(arms_order, 8)
+    x = np.concatenate((np.arange(8, dtype=float), np.array([0, 0, 0, 0, 0, 0, 90, 100])))
+    y = np.concatenate((np.linspace(2, 3, 8), np.linspace(4, 7, 8)))
+    with pytest.raises(CodedError) as local_error:
+        fit_cuped_multicovariate(
+            y,
+            arms,
+            control=arms_order[0],
+            arm_order=arms_order,
+            covariates={"x": x},
+            kinds={"x": "continuous"},
+        )
+    assert local_error.value.code == "estimation.cuped_linear.support_region"
+
+    sqrt_weight = float(np.sqrt(1 / (8 * 7)))
+    design_unscaled = np.zeros((len(y), len(arms_order) + 1))
+    y_fit = np.empty_like(y)
+    for arm_index, arm in enumerate(arms_order):
+        indices = np.flatnonzero(arms == arm)
+        x_centered = x[indices] - x[indices].mean()
+        design_unscaled[indices, arm_index] = sqrt_weight
+        design_unscaled[indices, -1] = sqrt_weight * x_centered
+        y_fit[indices] = y[indices] - y[indices].mean()
+    design_scales = np.max(np.abs(design_unscaled), axis=0)
+    design = design_unscaled / design_scales
+    rhs_scale = float(np.max(np.abs(sqrt_weight * y_fit)))
+    rhs = sqrt_weight * y_fit / rhs_scale
+    expected_q, _ = np.linalg.qr(design_unscaled, mode="reduced")
+    expected_max = float(np.max(np.sum(expected_q**2, axis=1)))
+    design_columns = tuple(f"d{index}" for index in range(design.shape[1]))
+    rows = [
+        {
+            "unit_id": f"unit-{index:02d}",
+            "sqrt_weight": sqrt_weight,
+            "y_fit": float(y_fit[index]),
+            "rhs": float(rhs[index]),
+            **{
+                name: float(value)
+                for name, value in zip(design_columns, design[index], strict=True)
+            },
+        }
+        for index in range(len(y))
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    connection.create_table("factor_input", obj=rows)
+    session = _scratch_session(connection, tmp_path)
+
+    def bounded_execute(expression):
+        result = connection.to_pyarrow(expression)
+        assert result.num_rows <= 1
+        return result
+
+    try:
+        with session.qr_scratch() as scratch:
+            factor = factor_design_relation(
+                connection.table("factor_input"),
+                design_columns=design_columns,
+                rhs_columns=("rhs",),
+                order_columns=("unit_id",),
+                execute=bounded_execute,
+                scratch=scratch,
+                covariate_start=len(arms_order),
+                covariate_names=("x",),
+            )
+            coefficients = solve_qr_coefficients(
+                factor,
+                design_scales=tuple(design_scales),
+                outcome_scales=(rhs_scale,),
+            )
+            summary = warehouse_qr_unit_summary(
+                connection.table("factor_input"),
+                factor,
+                design_columns=design_columns,
+                outcome_columns=("y_fit",),
+                sqrt_weight_column="sqrt_weight",
+                design_scales=tuple(design_scales),
+                coefficients=coefficients,
+                execute=bounded_execute,
+                scratch=scratch,
+            )
+        assert summary.max_leverage == pytest.approx(expected_max, rel=1e-9)
+        assert summary.refusal_witness == (("max_leverage", summary.max_leverage, 0.45),)
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
 def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(tmp_path):
     from increment.errors import CodedError
     from increment.query._cuped_qr import factor_design_relation

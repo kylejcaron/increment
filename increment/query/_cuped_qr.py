@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import ibis
 import ibis.expr.types as ir
 import numpy as np
 from scipy.linalg import qr as scipy_qr
+from scipy.linalg import solve_triangular
 
 from increment.estimation.cuped._numeric import _fail
+from increment.estimation.cuped.multicovariate import M1_MAX_LEVERAGE
 from increment.query._cuped_cells import _rows
+
+
+def _sum_sql(expressions: Iterable[Any]) -> Any:
+    total = ibis.literal(0.0)
+    for expression in expressions:
+        total = total + expression
+    return total
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +30,96 @@ class QRFactor:
 
     triangular_factor: tuple[tuple[float, ...], ...]
     transformed_rhs: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QRUnitSummary:
+    """Warehouse-resident row quantities and bounded leverage reductions."""
+
+    relation: ir.Table
+    max_leverage: float
+    sum_leverage: float
+    refusal_witness: tuple[tuple[str, object, float], ...]
+
+
+def solve_qr_coefficients(
+    factor: QRFactor,
+    *,
+    design_scales: Sequence[float],
+    outcome_scales: Sequence[float],
+) -> tuple[tuple[float, ...], ...]:
+    """Solve the small triangular systems and restore input column scales."""
+    triangular = np.asarray(factor.triangular_factor, dtype=float)
+    transformed = np.asarray(factor.transformed_rhs, dtype=float)
+    design_scale = np.asarray(design_scales, dtype=float)
+    outcome_scale = np.asarray(outcome_scales, dtype=float)
+    solved = solve_triangular(triangular, transformed, lower=False, check_finite=False)
+    coefficients = solved * outcome_scale[None, :] / design_scale[:, None]
+    return tuple(
+        tuple(float(value) for value in coefficients[:, component])
+        for component in range(coefficients.shape[1])
+    )
+
+
+def warehouse_qr_unit_summary(
+    relation: ir.Table,
+    factor: QRFactor,
+    *,
+    design_columns: Sequence[str],
+    outcome_columns: Sequence[str],
+    sqrt_weight_column: str,
+    design_scales: Sequence[float],
+    coefficients: Sequence[Sequence[float]],
+    execute: Callable[[ir.Table], object],
+    scratch,
+) -> QRUnitSummary:
+    """Reconstruct leverage and regression residuals without exporting rows."""
+    design_columns = tuple(design_columns)
+    outcome_columns = tuple(outcome_columns)
+    inverse_transpose = solve_triangular(
+        np.asarray(factor.triangular_factor, dtype=float).T,
+        np.eye(len(design_columns)),
+        lower=True,
+        check_finite=False,
+    )
+    q_columns = tuple(f"_qr_q_{index}" for index in range(len(design_columns)))
+    q_values = {
+        name: _sum_sql(
+            relation[design_columns[design_index]]
+            * ibis.literal(float(inverse_transpose[index, design_index]))
+            for design_index in range(index + 1)
+        )
+        for index, name in enumerate(q_columns)
+    }
+    working = relation.mutate(**q_values)
+    leverage = _sum_sql(working[name] * working[name] for name in q_columns)
+    working = working.mutate(_qr_h=leverage)
+    design_scales = tuple(float(value) for value in design_scales)
+    residuals = {}
+    for component, outcome_column in enumerate(outcome_columns):
+        prediction = _sum_sql(
+            relation[name]
+            * ibis.literal(design_scales[index] * float(coefficients[component][index]))
+            / relation[sqrt_weight_column]
+            for index, name in enumerate(design_columns)
+        )
+        residuals[f"_qr_residual_{component}"] = relation[outcome_column] - prediction
+    working = working.mutate(**residuals)
+    evidence = scratch.materialize_next(working)
+    record = _rows(
+        execute(
+            evidence.aggregate(
+                _qr_max_leverage=evidence._qr_h.max(),
+                _qr_sum_leverage=evidence._qr_h.sum(),
+            )
+        )
+    )[0]
+    maximum = float(record["_qr_max_leverage"])
+    total = float(record["_qr_sum_leverage"])
+    witness = (
+        (("max_leverage", maximum, float(M1_MAX_LEVERAGE)),) if maximum > M1_MAX_LEVERAGE else ()
+    )
+    return QRUnitSummary(evidence, maximum, total, witness)
 
 
 def factor_design_relation(

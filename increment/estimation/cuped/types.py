@@ -272,7 +272,7 @@ class InferenceSummary:
     projection_identity: tuple[object, ...]
     max_leverage: float
     sum_leverage: float
-    refusal_witness: tuple[tuple[str, object], ...]
+    refusal_witness: tuple[tuple[str, object, float], ...]
     adjusted_component_covariance: tuple[tuple[float, ...], ...]
     scaled_projected_score_squares: tuple[tuple[str, object, object, str, float, float, float], ...]
     s2: tuple[tuple[float, ...], ...] = ()
