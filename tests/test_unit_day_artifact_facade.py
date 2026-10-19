@@ -372,6 +372,18 @@ def test_representative_publication_matches_golden_manifest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     expected = json.loads(_PUBLICATION_GOLDEN.read_text())
+    expected_manifest = json.loads(expected["manifest_bytes"])
+    domains = {
+        "avg_session_duration": "continuous",
+        "d7_retention": "discrete",
+        "purchase_rate": "continuous",
+    }
+    measure_domains = {
+        binding["measure_key"]: domains[binding["metric_name"]]
+        for binding in expected_manifest["metric_measures"]
+    }
+    for measure in expected_manifest["measures"]:
+        measure["outcome_domain"] = measure_domains[measure["measure_key"]]
     monkeypatch.setattr(session_module, "uuid", _FixedUUID())
     definitions = _definitions(tmp_path, breakouts=[{"property": "country"}])
     _con, native, context, store = _native(definitions=definitions)
@@ -381,7 +393,7 @@ def test_representative_publication_matches_golden_manifest(
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
     assert all(extension.relation.digest_format == 4 for extension in manifest.extensions)
     assert _normalized_manifest_bytes(manifest) == _normalized_saved_bytes(
-        expected["manifest_bytes"]
+        canonical_json(expected_manifest)
     )
     assert [
         {

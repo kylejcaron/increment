@@ -408,11 +408,12 @@ class Freshness(_ArtifactBase):
 
 class MeasureManifest(_ExplicitOnlyFields, _ArtifactBase):
     _explicit_only_fields: ClassVar[frozenset[str]] = frozenset(
-        {"event_horizon", "certified_edge", "observed_edge"}
+        {"event_horizon", "certified_edge", "observed_edge", "outcome_domain"}
     )
 
     measure_key: str = Field(min_length=1)
     source_provenance_sha256: str
+    outcome_domain: Literal["continuous", "discrete", "unknown"] = "unknown"
     freshness: Freshness
     #: Filtered event horizon over this measure's metric_events streams, with NULL
     #: values dropped and ratio denominators included; native uses it as spine edge.

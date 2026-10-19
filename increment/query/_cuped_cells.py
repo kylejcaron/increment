@@ -59,6 +59,29 @@ def _known_outcome_domain(metric, relation, outcomes):
     )
 
 
+def component_domain(measure, datatype):
+    """Retain the original outcome domain before numerical preparation."""
+    if getattr(measure, "aggregation", None) in ("count", "count_distinct", "any"):
+        return "discrete"
+    if datatype is None or datatype.is_integer() or datatype.is_boolean() or datatype.is_decimal():
+        return "discrete"
+    return "continuous" if datatype.is_floating() else "unknown"
+
+
+def _binary_normalize(value, exponent):
+    half = exponent // 2
+    return value.cast("float64") / (2.0**half) / (2.0 ** (exponent - half))
+
+
+def _component_exponent(value):
+    maximum = value.cast("float64").abs().max()
+    return ibis.ifelse(
+        (maximum > 0) & ~maximum.isnan() & ~maximum.isinf(),
+        (maximum.log2().floor() + 1).clip(upper=1024),
+        0,
+    ).cast("int64")
+
+
 def _join_on(left, right, keys):
     joined = left.join(right, [left[name].identical_to(right[name]) for name in keys])
     return joined.select(
@@ -69,6 +92,10 @@ def _join_on(left, right, keys):
 
 def _cell_relation(relation, names, outcomes):
     keys = ("group_id", *names)
+    exponents = relation.aggregate(
+        **{f"exponent_{f}": _component_exponent(relation[name]) for f, name in enumerate(outcomes)}
+    )
+    relation = relation.cross_join(exponents)
     bases = relation.group_by("group_id").aggregate(
         **{
             f"_base_{f}": relation[name].first(order_by=relation.unit_id)
@@ -86,7 +113,8 @@ def _cell_relation(relation, names, outcomes):
     referenced = _join_on(relation, references, ("group_id",))
     centered = referenced.mutate(
         **{
-            f"_centered_{f}": referenced[name].cast("float64") - referenced[f"ref_{f}"]
+            f"_centered_{f}": _binary_normalize(referenced[name], referenced[f"exponent_{f}"])
+            - _binary_normalize(referenced[f"ref_{f}"], referenced[f"exponent_{f}"])
             for f, name in enumerate(outcomes)
         }
     )
@@ -97,6 +125,7 @@ def _cell_relation(relation, names, outcomes):
         aggregates.update(
             {
                 f"ref_{f}": centered[f"ref_{f}"].first(),
+                f"exponent_{f}": centered[f"exponent_{f}"].first(),
                 f"first_{f}": centered[f"_centered_{f}"].sum(),
                 f"contributors_{f}": finite.cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
@@ -201,7 +230,7 @@ def categorical_cells_from_relation(
     if preflight["encoded_bytes"] is None or preflight["encoded_bytes"] > MAX_ENCODED_BYTES:
         general_qr_required(metric, "encoded_bytes")
     fields = [*names, "group_id", "n"]
-    fields += [f"{kind}_{f}" for f in range(len(outcomes)) for kind in ("ref", "first")]
+    fields += [f"{kind}_{f}" for f in range(len(outcomes)) for kind in ("ref", "first", "exponent")]
     fields += [f"cross_{f}_{g}" for f in range(len(outcomes)) for g in range(f, len(outcomes))]
     rows = _rows(execute(cells.select(*fields)))
     return _as_cells(rows, names, len(outcomes), request)
@@ -247,4 +276,5 @@ def _as_cells(rows, names, components, request):
         centered_first_moments=_freeze_payload(first),
         symmetric_cross_moments=_freeze_payload(cross),
         covariate_names=names,
+        outcome_exponents=tuple(int(rows[0][f"exponent_{f}"]) for f in range(components)),
     )

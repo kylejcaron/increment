@@ -104,8 +104,11 @@ def _produce(frame, metric=None, request=None):
 
 
 @pytest.mark.parametrize("ratio", [False, True])
-def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(ratio):
+@pytest.mark.parametrize("unit_scale", [1.0, 1e-200, 1e155])
+def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(ratio, unit_scale):
     frame = _cells_frame((41, 29, 37, 33), ratio=ratio)
+    for component in ("y", "y_den") if ratio else ("y",):
+        frame[component] *= unit_scale
     cells, transfers = _produce(frame)
     components = ["y", "y_den"] if ratio else ["y"]
     arm_means = frame.groupby("group_id", sort=False)[components].mean().to_numpy().T
@@ -134,7 +137,7 @@ def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(r
         )
     for actual, reference in zip(fit._projections, expected._projections, strict=True):
         assert actual[:4] == reference[:4]
-        assert actual[4:] == pytest.approx(reference[4:], rel=1e-10, abs=1e-12)
+        assert actual[4:] == pytest.approx(reference[4:], rel=1e-10, abs=0.0)
     assert len(transfers) == 2
     assert len(transfers[0][1]) == 1
     assert len(transfers[1][1]) == 8
@@ -218,10 +221,11 @@ def test_categorical_warehouse_discrete_domain_refuses_before_query_execution():
 
 
 @pytest.fixture
-def categorical_sources(tmp_path):
+def categorical_sources(tmp_path, request):
     from dataclasses import replace
     from typing import cast
 
+    import pyarrow as pa
     import yaml
 
     from increment import Analysis
@@ -234,7 +238,10 @@ def categorical_sources(tmp_path):
     from tests.analysis_factory import _moment_source, _native_source
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
-    frame = _cells_frame((41, 29, 37, 33))
+    discrete = getattr(request, "param", False)
+    frame = _cells_frame((8, 8, 8, 8) if discrete else (41, 29, 37, 33))
+    if discrete:
+        frame["y"] = np.tile([0] * 7 + [1], 8)
     units = [
         {
             "user_id": row.unit_id,
@@ -267,7 +274,14 @@ def categorical_sources(tmp_path):
     path = tmp_path / "categorical.yaml"
     path.write_text(yaml.safe_dump(data))
     con = ibis.duckdb.connect()
-    con.create_table("events", obj=mixed_cuped_event_rows(units))
+    events = mixed_cuped_event_rows(units)
+    if discrete:
+        for event in events:
+            if event["value"] is not None:
+                event["value"] = int(event["value"])
+    con.create_table("events", obj=pa.Table.from_pylist(events))
+    if discrete:
+        assert con.table("events").value.type().is_integer()
     native = Analysis.from_definitions("mixed_cuped", path, con)
     definitions = load(path)
     experiment = definitions.experiment("mixed_cuped")
@@ -327,6 +341,38 @@ def test_categorical_source_fitter_uses_native_and_verified_artifact_relations(
             np.asarray(getattr(right, name)), rel=1e-10, abs=1e-12
         )
     assert transferred and max(transferred) <= 8
+
+
+@pytest.mark.parametrize("categorical_sources", [True], indirect=True)
+@pytest.mark.parametrize("ingress", ["native", "artifact"])
+def test_integer_fact_domain_refuses_before_categorical_transfer(
+    categorical_sources, ingress, monkeypatch
+):
+    from increment.query.cuped import fit_multicovariate_source
+    from increment.query.session import WarehouseSession
+
+    native, artifact, request = categorical_sources
+    source = native if ingress == "native" else artifact
+    transferred = []
+    original_fetch = WarehouseSession.fetch_arrow
+    original_execute = type(artifact._snapshot).execute
+
+    def fetch(session, expression, **kwargs):
+        transferred.append(tuple(expression.columns))
+        assert not any(name.startswith(("ref_", "first_", "cross_")) for name in expression.columns)
+        return original_fetch(session, expression, **kwargs)
+
+    def execute_snapshot(snapshot, expression):
+        transferred.append(tuple(expression.columns))
+        assert not any(name.startswith(("ref_", "first_", "cross_")) for name in expression.columns)
+        return original_execute(snapshot, expression)
+
+    monkeypatch.setattr(WarehouseSession, "fetch_arrow", fetch)
+    monkeypatch.setattr(type(artifact._snapshot), "execute", execute_snapshot)
+    with pytest.raises(CapabilityError) as raised:
+        fit_multicovariate_source(source, source.context.metrics[0], request)
+    assert raised.value.code == "query.cuped.general_qr_required"
+    assert raised.value.context["reason"] == "outcome_domain"
 
 
 @pytest.mark.parametrize(("segments", "eligible"), [(64, True), (65, False)])
