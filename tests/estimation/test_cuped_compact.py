@@ -841,6 +841,63 @@ def test_categorical_component_scales_preserve_unit_projection_scores(unit_scale
         )
 
 
+def _assert_scale_free_parity(actual, expected):
+    for name in ("adjusted_means", "covariance", "dof", "max_leverage", "mean_leverage"):
+        assert np.asarray(getattr(actual, name)) == pytest.approx(
+            np.asarray(getattr(expected, name)), rel=1e-10, abs=0
+        )
+    assert actual.n_by_arm == expected.n_by_arm
+    for left, right in zip(actual._projections, expected._projections, strict=True):
+        assert left[:4] == right[:4]
+        assert left[4:] == pytest.approx(right[4:], rel=1e-10, abs=0, nan_ok=True)
+    projections = (
+        (("ratio", {"scale": "absolute"}), ("ratio", {"scale": "log"}))
+        if expected.is_ratio
+        else (("absolute", {}), ("relative", {}))
+    )
+    for kind, options in projections:
+        for alpha in (0.01, 0.2):
+            left = getattr(actual, kind)("t", alpha=alpha, **options)
+            right = getattr(expected, kind)("t", alpha=alpha, **options)
+            for field in ("estimate", "se", "dof", "lower", "upper"):
+                assert getattr(left, field) == pytest.approx(
+                    getattr(right, field), rel=1e-10, abs=0
+                )
+
+
+@pytest.mark.parametrize("ratio", [False, True])
+def test_categorical_arm_scales_preserve_unit_inference_through_merges(ratio):
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    arms = np.repeat(["c", "t"], 20)
+    row = np.arange(len(arms), dtype=float)
+    arm_scale = np.where(arms == "c", 1e-200, 1e155)
+    numerator = arm_scale * (3.0 + 0.1 * np.sin(row))
+    denominator = arm_scale * (2.0 + 0.05 * np.cos(row))
+    category = np.repeat("same", len(arms))
+
+    def arguments(mask):
+        return {
+            "y": None if ratio else numerator[mask],
+            "arms": arms[mask],
+            "control": "c",
+            "arm_order": ("c", "t"),
+            "covariates": {"category": category[mask]},
+            **({"numerator": numerator[mask], "denominator": denominator[mask]} if ratio else {}),
+        }
+
+    everything = np.ones(len(arms), dtype=bool)
+    expected = fit_cuped_multicovariate(**arguments(everything), kinds={"category": "categorical"})
+    complete = categorical_cells(**arguments(everything), identity=("arm-scales",))
+    parts = [
+        categorical_cells(**arguments(row % 3 == remainder), identity=("arm-scales",))
+        for remainder in range(3)
+    ]
+    merged = parts[2].merge(parts[0]).merge(parts[1])
+    for cells in (complete, merged):
+        _assert_scale_free_parity(fit_categorical_cells(cells, control="c"), expected)
+
+
 def test_categorical_singleton_merge_preserves_representable_large_scatter():
     import math
 
@@ -866,7 +923,7 @@ def test_categorical_singleton_merge_preserves_representable_large_scatter():
     )
     for a in range(2):
         scatter = math.ldexp(
-            merged.symmetric_cross_moments[a][0][0][0], 2 * merged.outcome_exponents[0]
+            merged.symmetric_cross_moments[a][0][0][0], 2 * merged.outcome_exponents[0][a]
         )
         assert scatter == pytest.approx(1.28e308, rel=1e-14)
     assert np.asarray(merged.symmetric_cross_moments) == pytest.approx(

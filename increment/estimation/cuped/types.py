@@ -345,9 +345,10 @@ class InferenceSummary:
 class CategoricalCells:
     """Joint cells: arm-referenced first sums and within-cell centered cross sums.
 
-    Physical references are component × arm; first sums are arm × component ×
-    pattern, scaled by 2**outcome_exponents[component]. Cross sums are arm ×
-    component × component × pattern, scaled by both component powers.
+    Physical references and binary exponents are component × arm. First sums
+    are arm × component × pattern, scaled by 2**outcome_exponents[component][arm].
+    Cross sums are arm × component × component × pattern, scaled by both of
+    the arm's component powers, so each arm keeps its own representable scale.
     Null levels use None.
     """
 
@@ -360,7 +361,7 @@ class CategoricalCells:
     outcome_references: tuple[tuple[float, ...], ...]
     centered_first_moments: tuple[tuple[tuple[float, ...], ...], ...]
     symmetric_cross_moments: tuple[tuple[tuple[tuple[float, ...], ...], ...], ...]
-    outcome_exponents: tuple[int, ...]
+    outcome_exponents: tuple[tuple[int, ...], ...]
     covariate_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -435,10 +436,16 @@ class CategoricalCells:
     def _validate_outcome_values(self) -> None:
         components = len(self.outcome_references)
         if len(self.outcome_exponents) != components or any(
-            isinstance(value, bool) or not isinstance(value, int) or not -1073 <= value <= 1024
-            for value in self.outcome_exponents
+            len(row) != len(self.arms)
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or not -1073 <= value <= 1024
+                for value in row
+            )
+            for row in self.outcome_exponents
         ):
-            _invalid_evidence("CategoricalCells outcome scales must be component binary exponents")
+            _invalid_evidence(
+                "CategoricalCells outcome scales must be component-by-arm binary exponents"
+            )
         for values in (
             self.outcome_references,
             self.centered_first_moments,

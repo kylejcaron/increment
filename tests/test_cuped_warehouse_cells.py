@@ -104,15 +104,18 @@ def _produce(frame, metric=None, request=None):
 
 
 @pytest.mark.parametrize("ratio", [False, True])
-@pytest.mark.parametrize("unit_scale", [1.0, 1e-200, 1e155])
-def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(ratio, unit_scale):
+@pytest.mark.parametrize(
+    "arm_scales", [(1.0, 1.0), (1e-200, 1e-200), (1e155, 1e155), (1e-200, 1e155)]
+)
+def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(ratio, arm_scales):
     frame = _cells_frame((41, 29, 37, 33), ratio=ratio)
+    scale = frame.group_id.map(dict(zip(("c", "t"), arm_scales, strict=True)))
     for component in ("y", "y_den") if ratio else ("y",):
-        frame[component] *= unit_scale
+        frame[component] *= scale
     cells, transfers = _produce(frame)
     components = ["y", "y_den"] if ratio else ["y"]
     arm_means = frame.groupby("group_id", sort=False)[components].mean().to_numpy().T
-    assert np.asarray(cells.outcome_references) == pytest.approx(arm_means, rel=1e-14, abs=1e-14)
+    assert np.asarray(cells.outcome_references) == pytest.approx(arm_means, rel=1e-14, abs=0)
     fit = fit_categorical_cells(cells, control="c")
     expected = fit_cuped_multicovariate(
         None if ratio else frame.y.to_numpy(),
@@ -124,20 +127,16 @@ def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(r
         numerator=frame.y.to_numpy() if ratio else None,
         denominator=frame.y_den.to_numpy() if ratio else None,
     )
-    for name in (
-        "theta",
-        "adjusted_means",
-        "covariance",
-        "max_leverage",
-        "mean_leverage",
-        "leverage_trace",
-    ):
+    assert np.asarray(fit.adjusted_means) == pytest.approx(
+        np.asarray(expected.adjusted_means), rel=1e-10, abs=0
+    )
+    for name in ("theta", "covariance", "max_leverage", "mean_leverage", "leverage_trace"):
         assert np.asarray(getattr(fit, name)) == pytest.approx(
             np.asarray(getattr(expected, name)), rel=1e-10, abs=1e-12
         )
     for actual, reference in zip(fit._projections, expected._projections, strict=True):
         assert actual[:4] == reference[:4]
-        assert actual[4:] == pytest.approx(reference[4:], rel=1e-10, abs=0.0)
+        assert actual[4:] == pytest.approx(reference[4:], rel=1e-10, abs=0.0, nan_ok=True)
     assert len(transfers) == 2
     assert len(transfers[0][1]) == 1
     assert len(transfers[1][1]) == 8

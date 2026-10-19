@@ -999,10 +999,11 @@ category tables are not sufficient: the joint pattern determines the
 design row, leverage, and fitted-slope uncertainty. Mean evidence retains
 one outcome component; ratio evidence retains both components and their
 within-cell cross scatter.
-Component first sums and scatters are normalized by exact powers of two,
-whose exponents travel with the evidence. Projected-score arithmetic applies
-these scales without reconstructing raw second moments, preserving uncertainty
-for very small or large component units.
+Component first sums and scatters are normalized by exact powers of two chosen
+separately for each arm and component; the exponents travel with the evidence.
+Projected-score arithmetic applies these scales without reconstructing raw
+second moments, so arms whose units differ by many orders of magnitude keep
+their uncertainty and denominator support.
 
 For a cell with multiplicity $m_g$, factor rows
 $\sqrt{m_g w_a}\,z_g$, where $w_a=1/[n_a(n_a-1)]$. Dividing its compressed

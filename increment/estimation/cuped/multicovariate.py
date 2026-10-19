@@ -93,7 +93,7 @@ class _LinearCupedCalculator:
     _row_exponents: tuple[tuple[int, ...], ...]
     _multiplicities: np.ndarray | None = None
     _scatter_factor: np.ndarray | None = None
-    _scatter_exponents: tuple[int, ...] | None = None
+    _scatter_exponents: np.ndarray | None = None
 
     def _contrast_x(self, j: np.ndarray) -> np.ndarray:
         jsum = math.fsum(float(value) for value in j)
@@ -350,7 +350,7 @@ class _LinearCupedCalculator:
             influence[:, None] * self._scatter_factor[:, family, :] / leverage_factor[:, None]
         )
         assert self._scatter_exponents is not None
-        exponent = self._scatter_exponents[family]
+        exponent = self._scatter_exponents[family][:, None]
         scatter_score = (
             np.ldexp(scatter_score / divisor[0], exponent - divisor[2])
             if divisor is not None

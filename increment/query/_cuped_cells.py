@@ -92,10 +92,10 @@ def _join_on(left, right, keys):
 
 def _cell_relation(relation, names, outcomes):
     keys = ("group_id", *names)
-    exponents = relation.aggregate(
+    exponents = relation.group_by("group_id").aggregate(
         **{f"exponent_{f}": _component_exponent(relation[name]) for f, name in enumerate(outcomes)}
     )
-    relation = relation.cross_join(exponents)
+    relation = _join_on(relation, exponents, ("group_id",))
     bases = relation.group_by("group_id").aggregate(
         **{
             f"_base_{f}": relation[name].first(order_by=relation.unit_id)
@@ -242,6 +242,7 @@ def _as_cells(rows, names, components, request):
     arms = request.arm_order
     counts = np.zeros((len(arms), len(patterns)), dtype=np.int64)
     references = np.zeros((components, len(arms)))
+    exponents = [[0] * len(arms) for _ in range(components)]
     first = np.zeros((len(arms), components, len(patterns)))
     cross = np.zeros((len(arms), components, components, len(patterns)))
     for row in rows:
@@ -250,6 +251,7 @@ def _as_cells(rows, names, components, request):
         counts[a, k] = row["n"]
         for f in range(components):
             references[f, a] = row[f"ref_{f}"]
+            exponents[f][a] = int(row[f"exponent_{f}"])
             first[a, f, k] = row[f"first_{f}"]
             for g in range(f, components):
                 cross[a, f, g, k] = cross[a, g, f, k] = row[f"cross_{f}_{g}"]
@@ -276,5 +278,5 @@ def _as_cells(rows, names, components, request):
         centered_first_moments=_freeze_payload(first),
         symmetric_cross_moments=_freeze_payload(cross),
         covariate_names=names,
-        outcome_exponents=tuple(int(rows[0][f"exponent_{f}"]) for f in range(components)),
+        outcome_exponents=_freeze_payload(exponents),
     )
