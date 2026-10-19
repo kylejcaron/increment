@@ -75,6 +75,11 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="incompatible CUPED compact evidence: reason={reason!r}",
         ),
+        "estimation.cuped_linear.merge_precision": RefusalSpec(
+            "estimation.cuped_linear.merge_precision",
+            InvalidRequestError,
+            template="merged categorical evidence cannot preserve the {component} mean of arm {arm!r}: its error bound {bound!r} exceeds 2**-36 of the mean {mean!r}; {route}",
+        ),
     },
 )
 

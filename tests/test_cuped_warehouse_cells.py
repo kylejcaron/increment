@@ -284,6 +284,28 @@ def test_categorical_encoded_bound_accounts_for_long_arm_labels():
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
 
 
+@pytest.mark.parametrize("ratio", [False, True])
+def test_categorical_warehouse_magnitudes_match_local_evidence(ratio):
+    from increment.estimation.cuped.cells import categorical_cells
+
+    frame = _cells_frame((41, 29, 37, 33), ratio=ratio)
+    cells, _ = _produce(frame)
+    local = categorical_cells(
+        None if ratio else frame.y.to_numpy(),
+        frame.group_id.to_numpy(),
+        control="c",
+        arm_order=("c", "t"),
+        covariates={name: frame[name].to_numpy() for name in ("segment", "device")},
+        numerator=frame.y.to_numpy() if ratio else None,
+        denominator=frame.y_den.to_numpy() if ratio else None,
+        identity=("snapshot", "outcome", "assigned"),
+    )
+    assert cells.outcome_exponents == local.outcome_exponents
+    assert np.asarray(cells.outcome_magnitudes) == pytest.approx(
+        np.asarray(local.outcome_magnitudes), rel=1e-14, abs=0
+    )
+
+
 @pytest.mark.parametrize(
     ("counts", "options", "reason"),
     [

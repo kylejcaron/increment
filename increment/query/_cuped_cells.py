@@ -195,9 +195,16 @@ def _cell_relation(relation, names, outcomes):
     arm_sums = {
         f: _compensated(shifted[f"_offset_{f}"], shifted["_sigma"]) for f in range(len(outcomes))
     }
+    magnitudes = {
+        f: _compensated(
+            _binary_normalize(shifted[name], shifted[f"exponent_{f}"]).abs(), shifted["_sigma"]
+        )[0]
+        for f, name in enumerate(outcomes)
+    }
     totals = shifted.group_by("group_id").aggregate(
         **{f"_arm_sum_{f}": total for f, (total, _) in arm_sums.items()},
         **{f"_arm_remainder_{f}": remainder for f, (_, remainder) in arm_sums.items()},
+        **{f"_arm_magnitude_{f}": magnitude for f, magnitude in magnitudes.items()},
     )
     joined = _join_on(shifted, totals, ("group_id",))
     # Transferred references are arm means, never a selected unit's outcome.
@@ -241,6 +248,7 @@ def _cell_relation(relation, names, outcomes):
                 f"contributors_{f}": finite.cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
                 f"max_centered_{f}": centered[f"_offset_{f}"].abs().max(),
+                f"magnitude_{f}": centered[f"_arm_magnitude_{f}"].first(),
             }
         )
     first = centered.group_by(list(keys)).aggregate(**aggregates)
@@ -351,7 +359,11 @@ def categorical_cells_from_relation(
     if preflight["encoded_bytes"] is None or preflight["encoded_bytes"] > MAX_ENCODED_BYTES:
         general_qr_required(metric, "encoded_bytes")
     fields = [*names, "group_id", "n"]
-    fields += [f"{kind}_{f}" for f in range(len(outcomes)) for kind in ("ref", "first", "exponent")]
+    fields += [
+        f"{kind}_{f}"
+        for f in range(len(outcomes))
+        for kind in ("ref", "first", "exponent", "magnitude")
+    ]
     fields += [f"cross_{f}_{g}" for f in range(len(outcomes)) for g in range(f, len(outcomes))]
     rows = _rows(execute(cells.select(*fields)))
     return _as_cells(rows, names, len(outcomes), request)
@@ -364,6 +376,7 @@ def _as_cells(rows, names, components, request):
     counts = np.zeros((len(arms), len(patterns)), dtype=np.int64)
     references = np.zeros((components, len(arms)))
     exponents = [[0] * len(arms) for _ in range(components)]
+    magnitudes = [[0.0] * len(arms) for _ in range(components)]
     first = np.zeros((len(arms), components, len(patterns)))
     cross = np.zeros((len(arms), components, components, len(patterns)))
     for row in rows:
@@ -373,6 +386,7 @@ def _as_cells(rows, names, components, request):
         for f in range(components):
             references[f, a] = row[f"ref_{f}"]
             exponents[f][a] = int(row[f"exponent_{f}"])
+            magnitudes[f][a] = row[f"magnitude_{f}"]
             first[a, f, k] = row[f"first_{f}"]
             for g in range(f, components):
                 cross[a, f, g, k] = cross[a, g, f, k] = row[f"cross_{f}_{g}"]
@@ -400,4 +414,5 @@ def _as_cells(rows, names, components, request):
         symmetric_cross_moments=_freeze_payload(cross),
         covariate_names=names,
         outcome_exponents=_freeze_payload(exponents),
+        outcome_magnitudes=_freeze_payload(magnitudes),
     )

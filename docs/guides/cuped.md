@@ -1027,13 +1027,22 @@ numerator/denominator covariance. Bell–McCaffrey reductions likewise
 weight each original-unit cell contribution by $m_g$ before the shared
 finalizer forms its component-stacked trace ratio.
 
-These cells are parameter-independent and merge using centered-moment
-formulas only when source, preparation, arm ordering, and covariate
-identities agree. Null categories remain distinct from string labels.
-The usual level-support, rank, leverage, and denominator-precision rules
-still apply to the combined observations; individual partitions need
-not satisfy fitting support. This estimation representation does not by
-itself establish that a warehouse cell is safe to transfer.
+These cells are parameter-independent and merge only when source,
+preparation, arm ordering, and covariate identities agree. Null categories
+remain distinct from string labels. The usual level-support, rank, leverage,
+and denominator-precision rules still apply to the combined observations;
+individual partitions need not satisfy fitting support. This estimation
+representation does not by itself establish that a warehouse cell is safe to
+transfer.
+
+Evidence also records each arm's sum of absolute component values. A merge
+forms combined references and first sums exactly from the partitions' parts.
+Partitions center on their own medians, so where an arm's values nearly
+cancel the merged result can differ from the unpartitioned fit by more than
+rounding: when $2^{-49}$ of the arm's absolute sum exceeds $2^{-36}$ of its
+combined sum, the merge refuses with
+`estimation.cuped_linear.merge_precision`, naming the arm and component.
+Fit the unpartitioned cells, or explicitly supplied per-unit data, instead.
 
 The warehouse categorical producer checks eligibility inside the warehouse
 before transferring outcome cells: no more than 4096 arm-by-joint-pattern

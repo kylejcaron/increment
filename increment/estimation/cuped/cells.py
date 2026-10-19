@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from increment.estimation.armstats import ArmStats
-from increment.estimation.cuped._numeric import _arm_mean, _arm_offset, _fail
+from increment.estimation.cuped._numeric import _arm_mean, _arm_offset, _fail, _two_product
 from increment.estimation.cuped.encoding import _categorical_values, _encode_covariates
 from increment.estimation.cuped.inference import _mean_covariance, finalize_fit
 from increment.estimation.cuped.multicovariate import (
@@ -25,6 +25,16 @@ from increment.estimation.cuped.types import (
     _invalid_evidence,
 )
 from increment.estimation.variance import ratio_denominator_precision
+
+# Partition centering, unpartitioned centering, stored roundings and the merge
+# arithmetic together err by at most about ten units in the last place of each
+# arm's absolute component sum.
+_MERGE_ERROR = 2.0**-49
+_MERGE_TOLERANCE = 2.0**-36
+_MERGE_ROUTE = (
+    "Fit from the unpartitioned cells, or explicitly supplied per-unit data, "
+    "instead of merging these partitions."
+)
 
 
 def _pattern_key(pattern):
@@ -85,6 +95,7 @@ def categorical_cells(
     counts = np.zeros((len(order), len(patterns)), dtype=np.int64)
     references = np.zeros((len(outcomes), len(order)))
     exponents = [[0] * len(order) for _ in outcomes]
+    magnitudes = [[0.0] * len(order) for _ in outcomes]
     first = np.zeros((len(order), len(outcomes), len(patterns)))
     scatter = np.zeros((len(order), len(outcomes), len(outcomes), len(patterns)))
     for a, arm_rows in enumerate(indices):
@@ -94,6 +105,7 @@ def categorical_cells(
         for f, values in enumerate(outcomes):
             arm_values = values[arm_rows]
             exponents[f][a] = math.frexp(float(np.max(np.abs(arm_values))))[1]
+            magnitudes[f][a] = math.fsum(np.abs(np.ldexp(arm_values, -exponents[f][a])))
             offset, centered = _arm_offset(arm_values)
             references[f, a] = offset + _arm_mean(centered)
             bases.append(offset)
@@ -140,6 +152,7 @@ def categorical_cells(
         outcome_references=_freeze_payload(references),
         centered_first_moments=_freeze_payload(first),
         outcome_exponents=_freeze_payload(exponents),
+        outcome_magnitudes=_freeze_payload(magnitudes),
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=tuple(covariates),
     )
@@ -187,19 +200,37 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
         ]
         for f in range(components)
     ]
-    counts = np.zeros((len(left.arms), len(patterns)), dtype=np.int64)
-    references = np.array(
-        [
-            [
-                (left if sum(left.counts[a]) else right).outcome_references[f][a]
-                for a in range(len(left.arms))
-            ]
-            for f in range(components)
-        ]
-    )
-    first = np.zeros((len(left.arms), components, len(patterns)))
-    scatter = np.zeros((len(left.arms), components, components, len(patterns)))
-    for a in range(len(left.arms)):
+    counts = np.zeros((arm_count, len(patterns)), dtype=np.int64)
+    references = np.zeros((components, arm_count))
+    magnitudes = [[0.0] * arm_count for _ in range(components)]
+    first = np.zeros((arm_count, components, len(patterns)))
+    scatter = np.zeros((arm_count, components, components, len(patterns)))
+    labels = ("numerator", "denominator") if components == 2 else ("outcome",)
+    for a in range(arm_count):
+        parts = [part for part in (left, right) if sum(part.counts[a])]
+        if not parts:
+            continue
+        units = sum(sum(part.counts[a]) for part in parts)
+        means = []
+        for f in range(components):
+            exponent = exponents[f][a]
+            total = math.fsum(_arm_sum_terms(parts, a, f, exponent))
+            magnitude = math.fsum(
+                math.ldexp(part.outcome_magnitudes[f][a], part.outcome_exponents[f][a] - exponent)
+                for part in parts
+            )
+            if len(parts) == 2 and _MERGE_ERROR * magnitude > _MERGE_TOLERANCE * abs(total):
+                _fail(
+                    "estimation.cuped_linear.merge_precision",
+                    arm=left.arms[a],
+                    component=labels[f],
+                    bound=math.ldexp(_MERGE_ERROR * magnitude / units, exponent),
+                    mean=math.ldexp(total / units, exponent),
+                    route=_MERGE_ROUTE,
+                )
+            means.append(total / units)
+            references[f, a] = math.ldexp(means[f], exponent)
+            magnitudes[f][a] = magnitude
         for k, pattern in enumerate(patterns):
             entries = []
             for part, lookup, part_cross in zip((left, right), lookups, cross_moments, strict=True):
@@ -207,39 +238,47 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
                 if old is None or not part.counts[a][old]:
                     continue
                 count = part.counts[a][old]
-                mean = np.array(
+                shifts = [part.outcome_exponents[f][a] - exponents[f][a] for f in range(components)]
+                offset = np.array(
                     [
                         math.fsum(
                             (
                                 math.ldexp(part.outcome_references[f][a], -exponents[f][a]),
-                                -math.ldexp(references[f, a], -exponents[f][a]),
+                                -means[f],
                                 math.ldexp(
-                                    part.centered_first_moments[a][f][old] / count,
-                                    part.outcome_exponents[f][a] - exponents[f][a],
+                                    part.centered_first_moments[a][f][old] / count, shifts[f]
                                 ),
                             )
                         )
                         for f in range(components)
                     ]
                 )
-                shifts = np.array(
-                    [part.outcome_exponents[f][a] - exponents[f][a] for f in range(components)]
-                )
-                cross = np.ldexp(part_cross[a, :, :, old], shifts[:, None] + shifts[None, :])
-                entries.append((count, mean, cross))
+                scale = np.asarray(shifts)
+                cross = np.ldexp(part_cross[a, :, :, old], scale[:, None] + scale[None, :])
+                entries.append((part, old, count, offset, cross))
             if not entries:
                 continue
-            count, mean, cross = entries[0]
+            counts[a, k] = sum(entry[2] for entry in entries)
+            for f in range(components):
+                terms = []
+                for part, old, count, _offset, _cross in entries:
+                    reference = math.ldexp(part.outcome_references[f][a], -exponents[f][a])
+                    terms.extend(_two_product(count, reference))
+                    terms.append(
+                        math.ldexp(
+                            part.centered_first_moments[a][f][old],
+                            part.outcome_exponents[f][a] - exponents[f][a],
+                        )
+                    )
+                terms.extend(_two_product(-int(counts[a, k]), means[f]))
+                first[a, f, k] = math.fsum(terms)
+            cross = entries[0][4]
             if len(entries) == 2:
-                second_count, second_mean, second_cross = entries[1]
-                total = count + second_count
-                delta = second_mean - mean
-                weighted_delta = math.sqrt(count * (second_count / total)) * delta
-                cross = cross + second_cross + np.outer(weighted_delta, weighted_delta)
-                mean = mean + delta * (second_count / total)
-                count = total
-            counts[a, k] = count
-            first[a, :, k] = count * mean
+                (_, _, left_count, left_offset, left_cross) = entries[0]
+                (_, _, right_count, right_offset, right_cross) = entries[1]
+                share = math.sqrt(left_count * (right_count / (left_count + right_count)))
+                weighted = share * (right_offset - left_offset)
+                cross = left_cross + right_cross + np.outer(weighted, weighted)
             scatter[a, :, :, k] = cross
     levels = tuple(
         tuple(sorted(set(a) | set(b), key=lambda value: (value is None, value or "")))
@@ -260,7 +299,21 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=left.covariate_names,
         outcome_exponents=_freeze_payload(exponents),
+        outcome_magnitudes=_freeze_payload(magnitudes),
     )
+
+
+def _arm_sum_terms(parts, arm, component, exponent):
+    """Exact terms whose sum is an arm's component total at the merged scale."""
+    terms = []
+    for part in parts:
+        reference = math.ldexp(part.outcome_references[component][arm], -exponent)
+        shift = part.outcome_exponents[component][arm] - exponent
+        for old, count in enumerate(part.counts[arm]):
+            if count:
+                terms.extend(_two_product(count, reference))
+                terms.append(math.ldexp(part.centered_first_moments[arm][component][old], shift))
+    return terms
 
 
 def _scatter_root(scatter):
@@ -400,6 +453,7 @@ def fit_categorical_cells(cells: CategoricalCells, *, control) -> Multicovariate
         cells.centered_first_moments,
         cells.symmetric_cross_moments,
         cells.outcome_exponents,
+        cells.outcome_magnitudes,
     )
     state = FitState(
         identity=identity,
