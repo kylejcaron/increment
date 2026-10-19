@@ -29,6 +29,7 @@ def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
     from uuid import uuid4
 
     import ibis
+    import pyarrow as pa
 
     from increment.query import artifact_digest
     from increment.query.artifact_digest import digest_relation_sql_v2
@@ -36,28 +37,34 @@ def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
 
     schema = _PORTABLE_SCHEMA
     rows = _portable_digest_rows()
-    types = {
-        "id": "int64",
-        "text": "string",
-        "integer": "int64",
-        "float": "float64",
-        "date": "date",
-        "timestamp": "timestamp('UTC')",
-        "boolean": "boolean",
-    }
+    arrow = pa.Table.from_arrays(
+        [
+            pa.array([row[index] for row in rows], type=field_type)
+            for index, field_type in enumerate(
+                (
+                    pa.int64(),
+                    pa.string(),
+                    pa.int64(),
+                    pa.float64(),
+                    pa.date32(),
+                    pa.timestamp("us", tz="UTC"),
+                    pa.bool_(),
+                )
+            )
+        ],
+        names=[name for name, _type, _nullable in schema],
+    )
     duckdb = ibis.duckdb.connect()
     table_name = f"digest_spec_{uuid4().hex[:10]}"
     try:
         expected = digest_relation_sql_v2(
             duckdb,
-            duckdb.create_table("digest_spec", ibis.memtable(rows, schema=ibis.schema(types))),
+            duckdb.create_table("digest_spec", arrow),
             "portable_spec",
             schema,
             primary_key=("id",),
         )
-        table = bigquery_con.create_table(
-            table_name, ibis.memtable(rows, schema=ibis.schema(types))
-        )
+        table = bigquery_con.create_table(table_name, arrow)
         monkeypatch.setattr(
             artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "bigquery"})
         )

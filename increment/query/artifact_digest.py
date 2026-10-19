@@ -999,10 +999,10 @@ def digest_relation_bucketed(
     )
 
 
-_SQL_DIGEST_BACKENDS = frozenset({"duckdb", "postgres"})
+_SQL_DIGEST_BACKENDS = frozenset({"duckdb", "postgres", "snowflake", "bigquery"})
 
-# Native SHA-256-returning-hex-text functions. DuckDB and PostgreSQL are
-# live-verified; hosted backends remain disabled until their live probes pass.
+# The format-2 digest path is enabled only for backends covered by live
+# parity probes in their warehouse execution suite.
 _SQL_DIGEST_SHA256: dict[str, Callable[[ir.StringValue], ir.StringValue]] = {}
 # Same hash as 32 raw bytes, and its lowercase-hex rendering. Row hashes are
 # held in binary (half the width of hex) while waiting to be aggregated.
