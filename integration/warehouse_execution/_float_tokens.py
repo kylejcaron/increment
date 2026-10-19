@@ -33,6 +33,7 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
         {"id": index, "token": _float64_token_py(value)} for index, value in enumerate(values)
     ]
     name = f"float_token_spec_{uuid4().hex[:10]}"
+    destination: str | None = None
     created = False
     try:
         if dialect == "bigquery":
@@ -72,10 +73,36 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
         for wanted, observed in zip(expected, actual, strict=True):
             if wanted != observed:
                 index = wanted["id"]
+                details = ""
+                if (
+                    dialect == "bigquery"
+                    and cases[index]["bits"] == "8000000000000000"
+                    and destination is not None
+                ):
+                    diagnostics = (
+                        con.raw_sql(
+                            "SELECT "
+                            "CAST(`value` AS STRING) AS cast_value, "
+                            "IEEE_DIVIDE(1.0, `value`) AS reciprocal, "
+                            "SIGN(`value`) AS sign, "
+                            "STARTS_WITH(CAST(`value` AS STRING), '-') AS cast_starts_minus, "
+                            "CAST('-0' AS FLOAT64) AS literal_value, "
+                            "CAST(CAST('-0' AS FLOAT64) AS STRING) AS literal_cast_value, "
+                            "IEEE_DIVIDE(1.0, CAST('-0' AS FLOAT64)) AS literal_reciprocal, "
+                            "SIGN(CAST('-0' AS FLOAT64)) AS literal_sign, "
+                            "STARTS_WITH(CAST(CAST('-0' AS FLOAT64) AS STRING), '-') "
+                            "AS literal_cast_starts_minus "
+                            f"FROM `{destination}` WHERE `id` = {index}"
+                        )
+                        .to_arrow(create_bqstorage_client=False, progress_bar_type=None)
+                        .to_pylist()
+                    )
+                    details = f", BigQuery -0 diagnostics={diagnostics!r}"
                 raise AssertionError(
                     f"{dialect} FLOAT64 token mismatch: id={index}, "
                     f"value={values[index]!r}, bits={cases[index]['bits']}, "
                     f"expected={wanted['token']!r}, actual={observed['token']!r}"
+                    f"{details}"
                 )
     finally:
         if created:

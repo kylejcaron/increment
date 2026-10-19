@@ -215,6 +215,9 @@ def test_float64_binary_token_compiles_as_a_scalar(dialect):
     assert "WITH " not in sql.upper()
     assert "LAG(" not in sql.upper()
     assert "E+" not in sql.upper()
+    if dialect == "bigquery":
+        assert "STARTS_WITH" in sql
+        assert "IEEE_DIVIDE" not in sql
 
 
 def test_float64_binary_tokens_match_python_for_all_pinned_values():
