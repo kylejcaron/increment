@@ -963,14 +963,16 @@ ref distribution and store authorization are the authenticity boundary.
     supported versions. Republish from trusted definitions to obtain a
     format-2 artifact; the refusal never upgrades an old context. Existing
     artifacts are not deleted and credentials are not rotated automatically.
-    Relation digest formats are independent of the context format. Warehouse
-    adoption in this branch verifies format 2 on DuckDB; formats 1 and 3, and
-    format 2 on other backends, are refused with
+    Relation digest formats are independent of the context format. Publication
+    on DuckDB, PostgreSQL, Snowflake and BigQuery writes digest format 4, which
+    the warehouse reader verifies on each of them; format 2 remains verifiable
+    on DuckDB for existing artifacts. Formats 1 and 3, and format 2 on other
+    backends, are refused with
     `query.session.warehouse_artifact.verification_unavailable` and structured
     relation/format context. Format 1 remains available only to the explicit
-    historical local codec. Republish from trusted definitions on a supported
-    backend to produce a warehouse-verifiable artifact; this does not upgrade
-    an existing manifest or transfer its unverified rows.
+    historical local codec. Republish from trusted definitions to produce a
+    warehouse-verifiable artifact; this does not upgrade an existing manifest
+    or transfer its unverified rows.
 
     Relation schema/content and manifest digests use the same domain root,
     role-specific markers, schema bytes, row count, and rows sorted by primary
