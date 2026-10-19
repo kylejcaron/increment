@@ -26,28 +26,43 @@ def _power_cases(base: int) -> str:
     )
 
 
-def _integer_product_ctes(name: str, source: str, factor: str) -> str:
-    """Multiply a decimal integer string by a factor below B = 10**16.
+def _integer_product_ctes(
+    name: str, source: str, factor: str, *, dialect: str, width: int, max_index: int
+) -> str:
+    """Multiply a decimal integer string by a factor below 10**width.
 
-    For t_j = a_j*m = B*h_j + l_j, set s_j = l_j + h_(j-1). A carry
-    is generated at s_j >= B, reset at s_j < B-1, and otherwise propagated.
-    Two prefix maxima recover every carry without recursion.
+    Two prefix maxima recover every carry without recursion. BigQuery's
+    BIGNUMERIC permits 32-digit limbs; Snowflake's 38-digit precision uses
+    16-digit limbs so the limb/factor product remains exact.
     """
-    indices = "UNNEST(range(53)) AS offsets(j)"
-    joined = "STRING_AGG(LPAD(CAST(digit AS VARCHAR), 16, '0'), '' ORDER BY j DESC)"
+    base = 10**width
+    if dialect == "snowflake":
+        indices = (
+            f"(SELECT column1 AS j FROM VALUES {', '.join(f'({i})' for i in range(max_index + 1))})"
+        )
+        joined = (
+            f"LISTAGG(LPAD(CAST(digit AS VARCHAR), {width}, '0'), '') "
+            "WITHIN GROUP (ORDER BY j DESC)"
+        )
+    elif dialect == "bigquery":
+        indices = f"UNNEST(GENERATE_ARRAY(0, {max_index})) AS j"
+        joined = f"STRING_AGG(LPAD(CAST(digit AS STRING), {width}, '0'), '' ORDER BY j DESC)"
+    else:
+        indices = f"UNNEST(range({max_index + 1})) AS offsets(j)"
+        joined = f"STRING_AGG(LPAD(CAST(digit AS VARCHAR), {width}, '0'), '' ORDER BY j DESC)"
     previous = "ORDER BY j ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
     return f"""
       {name}_products AS (
         SELECT j AS j,
-          CAST(RIGHT(LEFT(CONCAT('0000000000000000', digits),
-            LENGTH(digits) + 16 - 16 * j), 16) AS DECIMAL(38,0)) * {factor} AS product
+          CAST(RIGHT(LEFT(CONCAT(REPEAT('0', {width}), digits),
+            LENGTH(digits) + {width} - {width} * j), {width}) AS DECIMAL(38,0)) * {factor} AS product
         FROM {source}, {indices}
-        WHERE j <= CAST(CEIL(LENGTH(digits) / 16.0) AS INTEGER)
+        WHERE j <= CAST(CEIL(LENGTH(digits) / {width}.0) AS INTEGER)
       ),
       {name}_parts AS (
-        SELECT j, MOD(product, 10000000000000000) AS low,
-          CASE WHEN product < 10000000000000000 THEN CAST(0 AS DECIMAL(38,0)) ELSE
-            CAST(LEFT(CAST(product AS VARCHAR), LENGTH(CAST(product AS VARCHAR)) - 16) AS DECIMAL(38,0)) END AS high
+        SELECT j, MOD(product, {base}) AS low,
+          CASE WHEN product < {base} THEN CAST(0 AS DECIMAL(38,0)) ELSE
+            CAST(LEFT(CAST(product AS VARCHAR), LENGTH(CAST(product AS VARCHAR)) - {width}) AS DECIMAL(38,0)) END AS high
         FROM {name}_products
       ),
       {name}_sums AS (
@@ -55,41 +70,29 @@ def _integer_product_ctes(name: str, source: str, factor: str) -> str:
       ),
       {name}_digits AS (
         SELECT j, MOD(s + CASE WHEN
-          COALESCE(MAX(CASE WHEN s >= 10000000000000000 THEN j END) OVER ({previous}), -1) >
-          COALESCE(MAX(CASE WHEN s < 9999999999999999 THEN j END) OVER ({previous}), -1)
-          THEN 1 ELSE 0 END, 10000000000000000) AS digit
+          COALESCE(MAX(CASE WHEN s >= {base} THEN j END) OVER ({previous}), -1) >
+          COALESCE(MAX(CASE WHEN s < {base - 1} THEN j END) OVER ({previous}), -1)
+          THEN 1 ELSE 0 END, {base}) AS digit
         FROM {name}_sums
       ),
       {name} AS (SELECT LTRIM({joined}, '0') AS digits FROM {name}_digits)
     """
 
 
-def _snowflake_float17g_sql(value: str) -> str:
-    """Format binary64 with Snowflake's native 17-digit scientific model."""
-    scientific = f"TO_CHAR(({value}), 'FM9.9999999999999999EEEE')"
-    mantissa = f"SPLIT_PART({scientific}, 'E', 1)"
-    exponent = f"TO_NUMBER(SPLIT_PART({scientific}, 'E', 2))"
-    trimmed = f"RTRIM(RTRIM({mantissa}, '0'), '.')"
-    sign = f"IFF(LEFT({mantissa}, 1) = '-', '-', '')"
-    digits = f"REPLACE(REPLACE({trimmed}, '-', ''), '.', '')"
-    position = f"({exponent} + 1)"
-    scientific_token = (
-        f"CONCAT({trimmed}, 'e', IFF({exponent} < 0, '-', '+'), "
-        f"LPAD(TO_VARCHAR(ABS({exponent})), 2, '0'))"
-    )
-    fixed_token = (
-        f"CASE WHEN {position} <= 0 THEN CONCAT({sign}, '0.', "
-        f"REPEAT('0', -{position}), {digits}) "
-        f"WHEN {position} >= LENGTH({digits}) THEN CONCAT({sign}, {digits}, "
-        f"REPEAT('0', {position} - LENGTH({digits}))) "
-        f"ELSE CONCAT({sign}, SUBSTR({digits}, 1, {position}), '.', "
-        f"SUBSTR({digits}, {position} + 1)) END"
-    )
-    return (
-        f"CASE WHEN ({value}) = 0 THEN CONCAT({sign}, '0') "
-        f"WHEN {exponent} < -4 OR {exponent} >= 17 THEN {scientific_token} "
-        f"ELSE {fixed_token} END"
-    )
+@cache
+def _dialect_limb_config(dialect: str) -> tuple[str, str, str, str, int, int]:
+    if dialect == "bigquery":
+        return "BIGNUMERIC", "STRING", "INT64", "IEEE_DIVIDE(1.0, ({value})) < 0", 32, 25
+    if dialect == "snowflake":
+        return (
+            "DECIMAL(38,0)",
+            "VARCHAR",
+            "INTEGER",
+            "LEFT(CAST(({value}) AS VARCHAR), 1) = '-'",
+            16,
+            53,
+        )
+    return "DECIMAL(38,0)", "VARCHAR", "INTEGER", "signbit(({value}))", 16, 53
 
 
 def _float17g_sql(value: str, *, dialect: str) -> str:
@@ -101,21 +104,24 @@ def _float17g_sql(value: str, *, dialect: str) -> str:
     Floating arithmetic is confined to exact binary rescaling; logarithms
     only estimate an exponent that is corrected before extracting m.
     """
-    if dialect == "bigquery":
-        return f"FORMAT('%.17g', ({value}))"
-    if dialect == "snowflake":
-        return _snowflake_float17g_sql(value)
-    numeric = "DECIMAL(38,0)"
-    text = "VARCHAR"
-    integer = "INTEGER"
-    sign = f"signbit(({value}))"
+    numeric, text, integer, sign_template, width, max_index = _dialect_limb_config(dialect)
+    sign = sign_template.format(value=value)
     small_factor = (
         "CASE remainder "
         + " ".join(f"WHEN {r} THEN CASE WHEN e < 0 THEN {5**r} ELSE {2**r} END" for r in range(23))
         + " END"
     )
-    first = _integer_product_ctes("first_product", "powers", "mantissa")
-    second = _integer_product_ctes("second_product", "second_input", "small_factor")
+    first = _integer_product_ctes(
+        "first_product", "powers", "mantissa", dialect=dialect, width=width, max_index=max_index
+    )
+    second = _integer_product_ctes(
+        "second_product",
+        "second_input",
+        "small_factor",
+        dialect=dialect,
+        width=width,
+        max_index=max_index,
+    )
     return f"""CONCAT(CASE WHEN {sign} THEN '-' ELSE '' END, (
       WITH input_value AS (SELECT {value} AS x),
       magnitude AS (SELECT x, CASE WHEN x = 0 OR x IS NULL OR NOT

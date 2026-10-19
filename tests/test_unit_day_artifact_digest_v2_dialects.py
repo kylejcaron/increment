@@ -12,6 +12,7 @@ import ibis
 import pytest
 
 from increment.query.artifact_digest import (
+    _float_payload_expr,
     _row_token_expr,
     _sql_binary_hex_expr,
     _sql_digest_sha256_binary_expr,
@@ -99,16 +100,17 @@ def test_postgres_float_token_uses_ieee_bytes_and_explicit_17_digit_rounding():
     assert "TRIM_SCALE(" in sql
 
 
-@pytest.mark.parametrize("dialect,fragment", [("snowflake", "TO_CHAR("), ("bigquery", "FORMAT(")])
-def test_cloud_float17g_compiles_to_native_formatter(dialect, fragment):
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_cloud_float17g_uses_exact_integer_limb_formatter(dialect):
     table = ibis.table({"value": "float64"}, name="rows")
-    token = _row_token_expr(table, [("value", 3, "float")], dialect=dialect)
-    sql = str(ibis.to_sql(table.select(token=token), dialect=dialect))
+    payload = _float_payload_expr(table.value, dialect=dialect)
+    sql = str(ibis.to_sql(table.select(payload=payload), dialect=dialect))
     import sqlglot
 
     sqlglot.parse_one(sql, read=dialect)
-    assert fragment in sql
-    assert "LAG(" not in sql
+    assert "LAG(" in sql
+    assert "FORMAT(" not in sql
+    assert "TO_CHAR(" not in sql
 
 
 @pytest.mark.integration

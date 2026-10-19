@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import ibis
+import ibis.expr.datatypes as ibis_dt
 
 from increment.errors import CapabilityError
 from increment.errors import refuse as _refuse
@@ -646,7 +647,7 @@ class ArtifactPublisher:
             group_id=exposures.group_id.cast("string"),
             first_exposure_ts=_as_utc_timestamp(
                 _wire_uptake_timestamp(exposures.first_exposure_ts, self._experiment)
-            ),
+            ).cast(ibis_dt.Timestamp(timezone="UTC", scale=6)),
             first_exposure_date=exposures.first_exposure_date,
         )
         exposure_bounds = self._con.to_pyarrow(

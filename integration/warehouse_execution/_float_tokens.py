@@ -11,7 +11,7 @@ import ibis
 import numpy as np
 import pyarrow as pa
 
-from increment.query.artifact_digest import _row_token_expr
+from increment.query.artifact_digest import _float_payload_expr
 
 
 def float_token_cases(*, random_count: int = 500) -> list[dict]:
@@ -35,22 +35,16 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
     try:
         oracle = duckdb.create_table(name, arrow)
         expected = duckdb.to_pyarrow(
-            oracle.select(
-                id=oracle.id,
-                token=_row_token_expr(oracle, [("value", 3, "float")], dialect="duckdb"),
-            )
+            oracle.select(id=oracle.id, token=_float_payload_expr(oracle.value, dialect="duckdb"))
         ).to_pylist()
         expected.sort(key=lambda row: row["id"])
         for case, row in zip(cases, expected, strict=True):
             if "token" in case:
-                token = case["token"]
-                assert row["token"] == f"03{len(token):016d}{token}", case["bits"]
+                assert row["token"] == case["token"], case["bits"]
         table = con.create_table(name, arrow)
         created = True
         actual = con.to_pyarrow(
-            table.select(
-                id=table.id, token=_row_token_expr(table, [("value", 3, "float")], dialect=dialect)
-            )
+            table.select(id=table.id, token=_float_payload_expr(table.value, dialect=dialect))
         ).to_pylist()
         actual.sort(key=lambda row: row["id"])
         assert len(actual) == len(expected)

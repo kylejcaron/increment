@@ -1263,39 +1263,44 @@ def _sql_binary_hex_expr(col: ir.BinaryValue, *, dialect: str) -> ir.StringValue
     return _SQL_DIGEST_BINARY_HEX[dialect](col)
 
 
+def _float_payload_expr(col: ir.FloatingValue, *, dialect: str) -> ir.StringValue:
+    """Canonical float payload including DuckDB's spellings for non-finite values."""
+    finite = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
+    return col.isnan().ifelse(
+        ibis.literal("nan", type="string"),
+        col.isinf().ifelse(
+            (col < 0).ifelse(  # ty: ignore[unsupported-operator]
+                ibis.literal("-inf", type="string"),
+                ibis.literal("inf", type="string"),
+            ),
+            finite,
+        ),
+    )  # ty: ignore[invalid-return-type]
+
+
 def _row_token_expr(
-    table: ir.Table, tagged_fields: Sequence[tuple[str, int, str]], *, dialect: str
+    table: ir.Table,
+    tagged_fields: Sequence[tuple[str, int, str]],
+    *,
+    dialect: str,
+    float_payload_columns: dict[str, str] | None = None,
 ) -> ir.StringValue:
-    """One `tag(2 hex) + len(16-digit decimal, zero-padded) + payload` token
-    per field, concatenated in schema order. `tagged_fields` is
-    `(column_name, type_tag, kind)` where `kind` selects the payload
-    encoding: `"float"` and `"timestamp"` use the backend's registered token
-    (full-precision float text; epoch microseconds, independent of the
-    session time zone), every other kind a plain string cast, which is exact
-    and injective for STRING/INT64/DATE/BOOLEAN. `dialect` is explicit so
-    the construction is compile-testable against an unbound table."""
+    """One `tag(2 hex) + len(16-digit decimal, zero-padded) + payload`
+    token per field, concatenated in schema order."""
     parts = []
     for name, tag, kind in tagged_fields:
         col = table[name]
         if kind == "float":
-            finite = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
-            payload = col.isnan().ifelse(
-                ibis.literal("nan", type="string"),
-                col.isinf().ifelse(
-                    (col < 0).ifelse(
-                        ibis.literal("-inf", type="string"),
-                        ibis.literal("inf", type="string"),
-                    ),
-                    finite,
-                ),
+            payload = (
+                table[float_payload_columns[name]]
+                if float_payload_columns is not None and name in float_payload_columns
+                else _float_payload_expr(col, dialect=dialect)
             )
         elif kind == "timestamp":
             payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
         else:
             payload = col.cast("string")
         length = payload.length().cast("string").lpad(16, "0")
-        # ibis.literal's overload return type isn't resolved from a literal
-        # `type="string"` kwarg by ty's stubs; the runtime value is a StringScalar.
         token = ibis.literal(f"{tag:02x}", type="string") + length + payload  # ty: ignore[unsupported-operator]
         if col.type().nullable:
             token = (col.isnull()).ifelse(ibis.literal("00" + "0" * 16, type="string"), token)
@@ -1407,15 +1412,40 @@ def digest_relation_sql_v2(
     sh = schema_sha256(role, schema)
     kinds = {DigestType.FLOAT64: "float", DigestType.TIMESTAMP_UTC_US: "timestamp"}
     tagged_fields = [(f.name, int(f.type_tag), kinds.get(f.type_tag, "other")) for f in fields]
-    row_token = _row_token_expr(table, tagged_fields, dialect=con.name)
+    digest_source = table
+    float_fields = [name for name, _tag, kind in tagged_fields if kind == "float"]
+    payload_columns: dict[str, str] = {}
+    payload_table_name: str | None = None
+    if con.name in {"snowflake", "bigquery"} and float_fields:
+        payload_columns = {
+            name: f"__incr_float_payload_{index}" for index, name in enumerate(float_fields)
+        }
+        staged = table.select(
+            *table.columns,
+            **{
+                payload_columns[name]: _float_payload_expr(table[name], dialect=con.name)
+                for name in float_fields
+            },
+        )
+        payload_table_name = f"incr_payload_{uuid.uuid4().hex}"
+        digest_source = con.create_table(payload_table_name, staged, temp=True)
+    row_token = _row_token_expr(
+        digest_source,
+        tagged_fields,
+        dialect=con.name,
+        float_payload_columns=payload_columns or None,
+    )
 
     def sha256_hex(col: ir.StringValue) -> ir.StringValue:
         return _sql_digest_sha256_expr(col, dialect=con.name)
 
-    row_hashes = table.select(h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name))
     hashed_name = f"incr_digest_{uuid.uuid4().hex}"
-    hashed = con.create_table(hashed_name, row_hashes, temp=True)
+    hashed = None
     try:
+        row_hashes = digest_source.select(
+            h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name)
+        )
+        hashed = con.create_table(hashed_name, row_hashes, temp=True)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
         row_count = int(con.to_pyarrow(hashed.count()).as_py())
@@ -1440,7 +1470,10 @@ def digest_relation_sql_v2(
             )
             rows.extend(con.to_pyarrow(bucket_digests).to_pylist())
     finally:
-        con.drop_table(hashed_name, force=True)
+        if hashed is not None:
+            con.drop_table(hashed_name, force=True)
+        if payload_table_name is not None:
+            con.drop_table(payload_table_name, force=True)
     bucketed = sum(record["n"] for record in rows)
     if bucketed != row_count:
         _raise(
