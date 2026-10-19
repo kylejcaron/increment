@@ -67,9 +67,13 @@ def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
 
     from increment.query import artifact_digest
     from increment.query.artifact_digest import (
+        _BUCKET_HEX_LEN,
         DigestType,
         _fields,
         _row_token_expr,
+        _sql_binary_hex_expr,
+        _sql_digest_sha256_binary_expr,
+        _sql_digest_sha256_expr,
         digest_relation_sql_v2,
     )
     from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
@@ -125,42 +129,81 @@ def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
         )
         assert (
             expected.content_sha256
-            == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
+            == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
         )
-        if actual.content_sha256 != expected.content_sha256:
-            kinds = {
-                DigestType.DATE: "date",
-                DigestType.FLOAT64: "float",
-                DigestType.TIMESTAMP_UTC_US: "timestamp",
+        kinds = {
+            DigestType.DATE: "date",
+            DigestType.FLOAT64: "float",
+            DigestType.TIMESTAMP_UTC_US: "timestamp",
+        }
+        tagged_fields = [
+            (field.name, int(field.type_tag), kinds.get(field.type_tag, "other"))
+            for field in _fields(schema)
+        ]
+
+        def field_tokens(con, relation, dialect):
+            tokens = {
+                f"token_{name}": _row_token_expr(relation, ((name, tag, kind),), dialect=dialect)
+                for name, tag, kind in tagged_fields
             }
-            tagged_fields = [
-                (field.name, int(field.type_tag), kinds.get(field.type_tag, "other"))
-                for field in _fields(schema)
-            ]
+            return sorted(
+                con.to_pyarrow(relation.select(id=relation.id, **tokens)).to_pylist(),
+                key=lambda row: row["id"],
+            )
 
-            def field_tokens(con, relation, dialect):
-                tokens = {
-                    f"token_{name}": _row_token_expr(
-                        relation, ((name, tag, kind),), dialect=dialect
-                    )
-                    for name, tag, kind in tagged_fields
-                }
-                return sorted(
-                    con.to_pyarrow(relation.select(id=relation.id, **tokens)).to_pylist(),
-                    key=lambda row: row["id"],
+        def digest_stages(con, relation, dialect):
+            tokens = relation.select(
+                id=relation.id,
+                token=_row_token_expr(relation, tagged_fields, dialect=dialect),
+            )
+            hashes = tokens.select(
+                id=tokens.id,
+                token=tokens.token,
+                row_hash=_sql_binary_hex_expr(
+                    _sql_digest_sha256_binary_expr(tokens.token, dialect=dialect),
+                    dialect=dialect,
+                ),
+            )
+            hashes = hashes.select(
+                id=hashes.id,
+                token=hashes.token,
+                row_hash=hashes.row_hash,
+                bucket=hashes.row_hash.substr(0, _BUCKET_HEX_LEN),
+            )
+            row_stages = con.to_pyarrow(hashes.order_by("id")).to_pylist()
+            bucket_input = hashes.select(bucket=hashes.bucket, h=hashes.row_hash)
+            bucket_rows = (
+                bucket_input.group_by("bucket")
+                .aggregate(
+                    bucket_digest=_sql_digest_sha256_expr(
+                        bucket_input.h.group_concat(
+                            sep="",
+                            order_by=ibis.asc(bucket_input.h, nulls_first=dialect == "bigquery"),
+                        ),
+                        dialect=dialect,
+                    ),
+                    n=bucket_input.count(),
                 )
+                .order_by("bucket")
+            )
+            return {
+                "rows": row_stages,
+                "buckets": con.to_pyarrow(bucket_rows).to_pylist(),
+            }
 
-            duckdb_tokens = field_tokens(duckdb, duck_table, "duckdb")
-            snowflake_tokens = field_tokens(snowflake_con, table, "snowflake")
-            assert [row["id"] for row in snowflake_tokens] == [row["id"] for row in duckdb_tokens]
-            for duckdb_row, snowflake_row in zip(duckdb_tokens, snowflake_tokens, strict=True):
-                for name, _tag, _kind in tagged_fields:
-                    assert snowflake_row[f"token_{name}"] == duckdb_row[f"token_{name}"], (
-                        f"format-4 token mismatch: row id={duckdb_row['id']}, field={name}, "
-                        f"DuckDB={duckdb_row[f'token_{name}']!r}, "
-                        f"Snowflake={snowflake_row[f'token_{name}']!r}"
-                    )
-        assert actual.content_sha256 == expected.content_sha256
+        duckdb_tokens = field_tokens(duckdb, duck_table, "duckdb")
+        snowflake_tokens = field_tokens(snowflake_con, table, "snowflake")
+        duckdb_stages = digest_stages(duckdb, duck_table, "duckdb")
+        snowflake_stages = digest_stages(snowflake_con, table, "snowflake")
+        assert duckdb_tokens == snowflake_tokens, (
+            "format-4 field-token mismatch: "
+            f"DuckDB={duckdb_tokens!r}; Snowflake={snowflake_tokens!r}"
+        )
+        assert actual.content_sha256 == expected.content_sha256, (
+            "format-4 digest mismatch after stage diagnostics; "
+            f"DuckDB={expected.content_sha256}, Snowflake={actual.content_sha256}; "
+            f"DuckDB stages={duckdb_stages!r}; Snowflake stages={snowflake_stages!r}"
+        )
     finally:
         duckdb.disconnect()
         snowflake_con.drop_table(pg_name, force=True)

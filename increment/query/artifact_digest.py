@@ -1091,7 +1091,9 @@ def _register_sha256_backends() -> None:
     def _postgres_convert_to(x: str, encoding: str) -> bytes: ...  # ty: ignore[empty-body]
 
     _SQL_DIGEST_SHA256["duckdb"] = _duckdb_sha256  # ty: ignore[invalid-assignment]
-    _SQL_DIGEST_SHA256["snowflake"] = lambda col: _snowflake_sha2(col, 256)  # ty: ignore[invalid-assignment]
+    _SQL_DIGEST_SHA256["snowflake"] = lambda col: _snowflake_sha2(  # ty: ignore[invalid-assignment]
+        col, 256
+    )
     _SQL_DIGEST_SHA256["bigquery"] = lambda col: _bigquery_to_hex(  # ty: ignore[invalid-assignment]
         col.hashbytes("sha256")
     )
@@ -1243,6 +1245,16 @@ def _row_token_expr(
     return expr
 
 
+def _digest_to_pyarrow(con: Any, expr: ir.Expr) -> Any:
+    """Fetch a bounded digest result without BigQuery Storage API overhead."""
+    if con.name != "bigquery":
+        return con.to_pyarrow(expr)
+    table_expr = expr.as_table()
+    result = con.raw_sql(con.compile(table_expr))
+    arrow = result.to_arrow(create_bqstorage_client=False, progress_bar_type=None)
+    return cast(Any, expr).__pyarrow_result__(arrow, schema=table_expr.schema())
+
+
 def _assert_unique_primary_key_sql(con: Any, table: ir.Table, pk: Sequence[str], role: str) -> None:
     if not pk:
         return
@@ -1251,7 +1263,9 @@ def _assert_unique_primary_key_sql(con: Any, table: ir.Table, pk: Sequence[str],
     # of a partition marks exactly one repeated key value.
     keys = [table[name] for name in pk]
     ranked = table.select(_key_rank=ibis.row_number().over(group_by=keys, order_by=keys))
-    dup_count = int(con.to_pyarrow(ranked.filter(ranked["_key_rank"] == 1).count()).as_py())
+    dup_count = int(
+        _digest_to_pyarrow(con, ranked.filter(ranked["_key_rank"] == 1).count()).as_py()
+    )
     if dup_count:
         _raise(
             "artifact.digest.primary_key",
@@ -1284,7 +1298,7 @@ def _assert_cells_valid_sql(
     metrics = [expr.name(name) for name, expr in checks.items() if expr is not None]
     if not metrics:
         return
-    counts = con.to_pyarrow(table.aggregate(metrics)).to_pylist()[0]
+    counts = _digest_to_pyarrow(con, table.aggregate(metrics)).to_pylist()[0]
     if counts.get("pk_nulls"):
         _raise(
             "artifact.digest.primary_key",
@@ -1302,6 +1316,22 @@ def _assert_cells_valid_sql(
             value=int(counts["nulls"]),
             route=f"fill the NULL cells of {role!r} or declare those fields nullable",
         )
+
+
+def _drop_sql_digest_hash_table(con: Any, relation: ir.Table) -> None:
+    """Drop a SQL digest scratch table in the physical namespace Ibis returned."""
+    op = relation.op()
+    namespace = op.namespace
+    catalog, database = namespace.catalog, namespace.database
+    if con.name == "postgres":
+        database = database or "pg_temp"
+    elif con.name == "snowflake":
+        catalog = catalog or getattr(con, "current_catalog", None)
+        database = database or getattr(con, "current_database", None)
+    physical_database = (
+        (catalog, database) if catalog is not None and database is not None else database or catalog
+    )
+    con.drop_table(op.name, database=physical_database, force=True)
 
 
 def digest_relation_sql_v2(
@@ -1339,7 +1369,7 @@ def digest_relation_sql_v2(
     pk = tuple(primary_key)
     _check_primary_key(fields, pk)
     if not pk:
-        counted = int(con.to_pyarrow(table.count()).as_py())
+        counted = int(_digest_to_pyarrow(con, table.count()).as_py())
         if counted > 1:
             _raise(
                 "artifact.digest.primary_key",
@@ -1371,7 +1401,7 @@ def digest_relation_sql_v2(
         hashed = con.create_table(hashed_name, row_hashes, temp=True)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
-        row_count = int(con.to_pyarrow(hashed.count()).as_py())
+        row_count = int(_digest_to_pyarrow(con, hashed.count()).as_py())
         rows: list[dict[str, Any]] = []
         step = 16**_BUCKET_HEX_LEN // _digest_passes(row_count)
         for start in range(0, 16**_BUCKET_HEX_LEN, step):
@@ -1391,10 +1421,10 @@ def digest_relation_sql_v2(
                 )
                 .order_by("bucket")
             )
-            rows.extend(con.to_pyarrow(bucket_digests).to_pylist())
+            rows.extend(_digest_to_pyarrow(con, bucket_digests).to_pylist())
     finally:
         if hashed is not None:
-            con.drop_table(hashed_name, force=True)
+            _drop_sql_digest_hash_table(con, hashed)
     bucketed = sum(record["n"] for record in rows)
     if bucketed != row_count:
         _raise(

@@ -35,8 +35,28 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
     name = f"float_token_spec_{uuid4().hex[:10]}"
     created = False
     try:
-        table = con.create_table(name, arrow)
-        created = True
+        if dialect == "bigquery":
+            from io import BytesIO
+
+            import pyarrow.parquet as pq
+            from google.cloud import bigquery
+
+            parquet = BytesIO()
+            pq.write_table(arrow, parquet)
+            parquet.seek(0)
+            destination = f"{con.current_catalog}.{con.current_database}.{name}"
+            job = con.client.load_table_from_file(
+                parquet,
+                destination,
+                size=parquet.getbuffer().nbytes,
+                job_config=bigquery.LoadJobConfig(source_format=bigquery.SourceFormat.PARQUET),
+            )
+            created = True
+            job.result()
+            table = con.sql(f"SELECT CAST(`id` AS INT64) AS `id`, `value` FROM `{destination}`")
+        else:
+            table = con.create_table(name, arrow)
+            created = True
         actual = con.to_pyarrow(
             table.select(
                 id=table.id,
@@ -44,7 +64,19 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
             )
         ).to_pylist()
         actual.sort(key=lambda row: row["id"])
-        assert actual == expected
+        if len(actual) != len(expected):
+            raise AssertionError(
+                f"{dialect} FLOAT64 token row-count mismatch: "
+                f"expected={len(expected)}, actual={len(actual)}"
+            )
+        for wanted, observed in zip(expected, actual, strict=True):
+            if wanted != observed:
+                index = wanted["id"]
+                raise AssertionError(
+                    f"{dialect} FLOAT64 token mismatch: id={index}, "
+                    f"value={values[index]!r}, bits={cases[index]['bits']}, "
+                    f"expected={wanted['token']!r}, actual={observed['token']!r}"
+                )
     finally:
         if created:
             con.drop_table(name, force=True)

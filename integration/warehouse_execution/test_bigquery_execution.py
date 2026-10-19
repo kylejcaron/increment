@@ -26,6 +26,7 @@ pytestmark = pytest.mark.warehouse_bigquery
 
 
 def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
+    import math
     from io import BytesIO
     from uuid import uuid4
 
@@ -84,13 +85,16 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
             f"`timestamp`, `boolean` "
             f"FROM `{destination}`"
         )
-        fetched_integers = bigquery_con.to_pyarrow(
-            table.select(id=table.id, integer=table.integer)
+        fetched_rows = bigquery_con.to_pyarrow(
+            table.select(id=table.id, integer=table.integer, float=table.float)
         ).to_pylist()
-        fetched_integers.sort(key=lambda row: row["id"])
-        assert [(row["id"], row["integer"]) for row in fetched_integers] == [
+        fetched_rows.sort(key=lambda row: row["id"])
+        assert [(row["id"], row["integer"]) for row in fetched_rows] == [
             (row[0], row[2]) for row in rows
         ]
+        assert fetched_rows[6]["float"] is not None
+        assert math.isnan(fetched_rows[6]["float"])
+        assert fetched_rows[9]["float"] is None
         monkeypatch.setattr(
             artifact_digest, "_SQL_DIGEST_BACKENDS", frozenset({"duckdb", "bigquery"})
         )
@@ -99,7 +103,7 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
         )
         assert (
             expected.content_sha256
-            == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
+            == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
         )
         assert actual.content_sha256 == expected.content_sha256
     finally:

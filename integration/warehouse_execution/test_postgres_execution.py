@@ -215,27 +215,17 @@ def test_postgres_format4_digest_matches_duckdb(postgres_con):
     import ibis
 
     from increment.query.artifact_digest import digest_relation_sql_v2
-    from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
+    from tests.test_unit_day_artifact_digest_v2 import (
+        _PORTABLE_SCHEMA,
+        _portable_digest_arrow,
+    )
 
     schema = _PORTABLE_SCHEMA
-    rows = _portable_digest_rows()
-    types = {
-        "id": "int64",
-        "text": "string",
-        "integer": "int64",
-        "float": "float64",
-        "date": "date",
-        "timestamp": "timestamp('UTC')",
-        "boolean": "boolean",
-    }
+    arrow = _portable_digest_arrow()
     duckdb = ibis.duckdb.connect()
     try:
-        duck_table = duckdb.create_table(
-            "digest_spec", ibis.memtable(rows, schema=ibis.schema(types))
-        )
-        pg_table = postgres_con.create_table(
-            f"digest_spec_{uuid4().hex[:10]}", ibis.memtable(rows, schema=ibis.schema(types))
-        )
+        duck_table = duckdb.create_table("digest_spec", arrow)
+        pg_table = postgres_con.create_table(f"digest_spec_{uuid4().hex[:10]}", arrow)
         expected = digest_relation_sql_v2(
             duckdb, duck_table, "portable_spec", schema, primary_key=("id",)
         )
@@ -244,7 +234,7 @@ def test_postgres_format4_digest_matches_duckdb(postgres_con):
         )
         assert (
             expected.content_sha256
-            == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
+            == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
         )
         from increment.query.artifact_digest import _row_token_expr
 
@@ -276,6 +266,45 @@ def test_postgres_format4_digest_matches_duckdb(postgres_con):
         duckdb.disconnect()
         if "pg_table" in locals():
             postgres_con.drop_table(pg_table.get_name(), force=True)
+
+
+def test_postgres_format4_date_tokens_ignore_datestyle(postgres_con):
+    import ibis
+
+    from increment.query.artifact_digest import digest_relation_sql_v2
+
+    table_name = f"date_style_digest_{uuid4().hex[:10]}"
+    schema = (("id", "INT64", False), ("day", "DATE", False))
+    relation = None
+    original_datestyle = postgres_con.raw_sql("SHOW DateStyle").fetchone()[0]
+    try:
+        relation = postgres_con.create_table(
+            table_name,
+            ibis.memtable(
+                [(1, dt.date(2024, 1, 2))],
+                schema=ibis.schema({"id": "int64", "day": "date"}),
+            ),
+        )
+        legacy_casts = []
+        digests = []
+        for datestyle in ("ISO, MDY", "SQL, MDY"):
+            postgres_con.raw_sql(f"SET DateStyle TO '{datestyle}'")
+            legacy_casts.append(
+                postgres_con.to_pyarrow(relation.select(day_text=relation.day.cast("string")))[
+                    "day_text"
+                ].to_pylist()
+            )
+            digests.append(
+                digest_relation_sql_v2(
+                    postgres_con, relation, "date_style", schema, primary_key=("id",)
+                ).content_sha256
+            )
+        assert legacy_casts[0] != legacy_casts[1]
+        assert digests[0] == digests[1]
+    finally:
+        postgres_con.raw_sql(f"SET DateStyle TO '{original_datestyle}'")
+        if relation is not None:
+            postgres_con.drop_table(table_name, force=True)
 
 
 def test_postgres_float64_token_matches_duckdb_random_binary64(postgres_con):

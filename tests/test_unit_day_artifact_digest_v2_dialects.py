@@ -19,6 +19,100 @@ from increment.query.artifact_digest import (
     _sql_digest_sha256_expr,
 )
 
+
+@pytest.mark.parametrize(
+    "backend,namespace,current_catalog,current_database,expected_database",
+    [
+        ("duckdb", ("temp", "main"), None, None, ("temp", "main")),
+        ("postgres", (None, None), None, "analytics", "pg_temp"),
+        (
+            "snowflake",
+            (None, None),
+            "warehouse",
+            "scratch",
+            ("warehouse", "scratch"),
+        ),
+        (
+            "bigquery",
+            ("project", "session_dataset"),
+            "project",
+            "default_dataset",
+            ("project", "session_dataset"),
+        ),
+    ],
+)
+def test_digest_scratch_cleanup_targets_created_namespace(
+    backend, namespace, current_catalog, current_database, expected_database
+):
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from increment.query.artifact_digest import _drop_sql_digest_hash_table
+
+    catalog, database = namespace
+    relation = SimpleNamespace(
+        op=lambda: SimpleNamespace(
+            name="digest_scratch",
+            namespace=SimpleNamespace(catalog=catalog, database=database),
+        )
+    )
+
+    class Connection:
+        def __init__(self):
+            self.name = backend
+            self.current_catalog = current_catalog
+            self.current_database = current_database
+            self.dropped = []
+
+        def drop_table(self, name, **kwargs):
+            self.dropped.append((name, kwargs))
+
+    con = Connection()
+    _drop_sql_digest_hash_table(con, cast(Any, relation))
+    assert con.dropped == [("digest_scratch", {"database": expected_database, "force": True})]
+
+
+def test_bigquery_digest_fetch_disables_storage_api():
+    import pyarrow as pa
+
+    from increment.query.artifact_digest import _digest_to_pyarrow
+
+    relation = ibis.table({"value": "int64"}, name="source")
+    expr = relation.aggregate(total=relation.value.count())
+
+    class Query:
+        def __init__(self):
+            self.arrow_options = None
+
+        def to_arrow(self, **kwargs):
+            self.arrow_options = kwargs
+            return pa.table({"total": [3]})
+
+    class Connection:
+        name = "bigquery"
+
+        def __init__(self):
+            self.query = Query()
+            self.sql = None
+
+        def compile(self, table):
+            return "SELECT COUNT(value) AS total FROM source"
+
+        def raw_sql(self, sql):
+            self.sql = sql
+            return self.query
+
+    con = Connection()
+    actual = _digest_to_pyarrow(con, expr)
+
+    assert actual.to_pylist() == [{"total": 3}]
+    assert con.sql == "SELECT COUNT(value) AS total FROM source"
+    assert con.query.arrow_options == {
+        "create_bqstorage_client": False,
+        "progress_bar_type": None,
+    }
+
+
 _TABLE = ibis.table(
     {"id": "int64", "name": "string", "amount": "float64", "raw": "binary"}, name="rows"
 )
@@ -58,6 +152,8 @@ def test_binary_row_hash_and_hex_rendering_compile_to_vendor_functions(
     sql = str(ibis.to_sql(expr, dialect=dialect))
     assert binary_fragment in sql
     assert hex_fragment in sql
+    if dialect == "snowflake":
+        assert 'HEX_ENCODE("t0"."raw", 0)' in sql
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])

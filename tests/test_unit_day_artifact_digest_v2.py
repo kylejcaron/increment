@@ -129,52 +129,48 @@ def _portable_digest_rows():
     ]
 
 
+def _portable_digest_arrow():
+    import pyarrow as pa
+
+    rows = _portable_digest_rows()
+    types = (
+        pa.int64(),
+        pa.string(),
+        pa.int64(),
+        pa.float64(),
+        pa.date32(),
+        pa.timestamp("us", tz="UTC"),
+        pa.bool_(),
+    )
+    return pa.Table.from_arrays(
+        [
+            pa.array([row[index] for row in rows], type=field_type)
+            for index, field_type in enumerate(types)
+        ],
+        names=[name for name, _type, _nullable in _PORTABLE_SCHEMA],
+    )
+
+
 def test_sql_digest_format2_duckdb_verify_codec_stays_pinned(con):
     """Existing DuckDB relations retain the format-2 decimal-float verifier."""
-    schema = ibis.schema(
-        {
-            "id": "int64",
-            "text": "string",
-            "integer": "int64",
-            "float": "float64",
-            "date": "date",
-            "timestamp": "timestamp('UTC')",
-            "boolean": "boolean",
-        }
-    )
-    table = con.create_table(
-        "portable_digest_v2_spec", ibis.memtable(_portable_digest_rows(), schema=schema)
-    )
+    table = con.create_table("portable_digest_v2_spec", _portable_digest_arrow())
     digest = digest_relation_sql_v2(
         con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",), digest_format=2
     )
     assert digest.digest_format == 2
     assert (
-        digest.content_sha256 == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+        digest.content_sha256 == "389d14c938d31a916b43a48610a969d16305e5219c8eb725c02e8bbcfa81f259"
     )
 
 
 def test_sql_digest_format4_portable_edge_relation_is_pinned(con):
-    schema = ibis.schema(
-        {
-            "id": "int64",
-            "text": "string",
-            "integer": "int64",
-            "float": "float64",
-            "date": "date",
-            "timestamp": "timestamp('UTC')",
-            "boolean": "boolean",
-        }
-    )
-    table = con.create_table(
-        "portable_digest_v4_spec", ibis.memtable(_portable_digest_rows(), schema=schema)
-    )
+    table = con.create_table("portable_digest_v4_spec", _portable_digest_arrow())
     digest = digest_relation_sql_v2(
         con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",)
     )
     assert digest.digest_format == 4
     assert (
-        digest.content_sha256 == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
+        digest.content_sha256 == "28b8c5135e6da8dcddeca6854a0bb9cc86a205eee4f6b3e26795589124e669e5"
     )
 
 
