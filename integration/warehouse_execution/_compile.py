@@ -22,6 +22,8 @@ class CompileCase:
         return self.builder(table_names, self.dialect)
 
     def compile(self, expression) -> str:
+        if isinstance(expression, str):
+            return expression
         return str(ibis.to_sql(expression, dialect=self.dialect))
 
 
@@ -30,6 +32,16 @@ class BigQueryCompileSession:
     client: object
     default_dataset: object
     query_config_factory: Callable[..., object]
+
+
+class WarehouseCompileError(AssertionError):
+    def __init__(self, dialect: str, statement_name: str, engine_message: str):
+        self.dialect = dialect
+        self.statement_name = statement_name
+        self.engine_message = engine_message
+        super().__init__(
+            f"{dialect} compile failed for statement {statement_name}: {engine_message}"
+        )
 
 
 def _schema(fields):
@@ -157,6 +169,29 @@ def _cell_builder(stage):
 def _register(cases, dialect, name, schemas, builder):
     names = {key: f"incr_compile_{key}_{uuid4().hex[:12]}" for key in schemas}
     cases.append(CompileCase(name, schemas, builder, names, dialect))
+
+
+def compile_negative_control(dialect: str) -> CompileCase:
+    if dialect not in {"snowflake", "bigquery"}:
+        raise ValueError(f"unsupported compile dialect {dialect!r}")
+    if dialect == "bigquery":
+
+        def builder(_tables, _dialect):
+            return "SELECT CAST(1 AS VARCHAR)"
+
+        schemas = {}
+        name = "negative_control.bigquery_unsupported_type"
+    else:
+        schemas = {"negative": ibis.schema({"present": "int64"})}
+
+        def builder(table_names, _dialect):
+            table_name = _identifier("snowflake", table_names["negative"])
+            return f'SELECT "definitely_missing_column" FROM {table_name}'
+
+        name = "negative_control.snowflake_missing_column"
+    cases = []
+    _register(cases, dialect, name, schemas, builder)
+    return cases[0]
 
 
 def _adoption_validation_builder(kind):
@@ -532,25 +567,24 @@ def run_compile_case(connection, case: CompileCase) -> str:
         expression = case.build(case.table_names)
         statement = case.compile(expression)
     except Exception as exc:
-        raise AssertionError(
-            f"{case.dialect} compile failed for statement {case.name}: {exc}"
-        ) from exc
+        raise WarehouseCompileError(case.dialect, case.name, str(exc)) from exc
 
     try:
-        try:
-            _create_schema_only(connection, case, created)
-            route = "empty schema-only tables"
-        except Exception:
-            _drop_schema_only(connection, case, created)
-            created.clear()
-            statement = _inline_empty_ctes(statement, case)
-            route = "inline empty typed CTEs"
+        if case.schemas:
+            try:
+                _create_schema_only(connection, case, created)
+                route = "empty schema-only tables"
+            except Exception:
+                _drop_schema_only(connection, case, created)
+                created.clear()
+                statement = _inline_empty_ctes(statement, case)
+                route = "inline empty typed CTEs"
+        else:
+            route = "inline statement without source tables"
         print(f"{case.dialect} {case.name}: {route}")
         _submit_compile(connection, case.dialect, statement)
         return route
     except Exception as exc:
-        raise AssertionError(
-            f"{case.dialect} compile failed for statement {case.name}: {exc}"
-        ) from exc
+        raise WarehouseCompileError(case.dialect, case.name, str(exc)) from exc
     finally:
         _drop_schema_only(connection, case, created)
