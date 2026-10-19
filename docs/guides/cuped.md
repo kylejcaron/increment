@@ -1045,14 +1045,15 @@ individual partitions need not satisfy fitting support. This estimation
 representation does not by itself establish that a warehouse cell is safe to
 transfer.
 
-Evidence also records each arm's sum of absolute component values. A merge
-forms combined references and first sums exactly from the partitions' parts.
-Partitions center on their own medians, so where an arm's values nearly
-cancel the merged result can differ from the unpartitioned fit by more than
-rounding: when $2^{-49}$ of the arm's absolute sum exceeds $2^{-36}$ of its
-combined sum, the merge refuses with
-`estimation.cuped_linear.merge_precision`, naming the arm and component.
-Fit the unpartitioned cells, or explicitly supplied per-unit data, instead.
+Evidence carries no sum of absolute component values. For the merge precision
+guard, each component's sum of absolute values is bounded by
+$\sqrt{n\sum_i y_i^2}$, where the squared sum is reconstructed from the
+retained reference, centered first sums, and within-cell scatter. A rigorous
+rounding allowance is applied to that reconstruction. If the resulting bound
+shows that rounding could materially alter a nearly cancelled merged mean,
+the merge refuses with `estimation.cuped_linear.merge_precision`, naming the
+arm and component. Fit the unpartitioned cells, or explicitly supplied
+per-unit data, instead.
 
 The warehouse categorical producer checks eligibility inside the warehouse
 before transferring outcome cells: no more than 4096 arm-by-joint-pattern

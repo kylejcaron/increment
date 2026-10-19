@@ -47,6 +47,7 @@ from increment._source_identity import (
 from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
+    CUPEDEvidenceExportSource,
     Grain,
     MomentSource,
     SourceContext,
@@ -1372,6 +1373,65 @@ def _aggregate_configs(
     return resolved
 
 
+def _portable_population_and_trigger(
+    evidence, source: CUPEDEvidenceExportSource | None, trusted_trigger_name
+):
+    populations = {item.population for item in evidence}
+    triggers = {item.trigger_name for item in evidence}
+    if len(populations) > 1 or len(triggers) > 1:
+        invalid_evidence("CUPED envelopes disagree on population or trigger identity")
+    source_population = source.population if source is not None else None
+    source_trigger = source.trigger_name if source is not None else None
+    if (
+        populations
+        and source_population is not None
+        and next(iter(populations)) != source_population
+    ):
+        invalid_evidence("CUPED envelope population differs from its source")
+    trigger_name = next(iter(triggers), source_trigger)
+    if trigger_name is not None and source_trigger is not None and trigger_name != source_trigger:
+        invalid_evidence("CUPED envelope trigger identity differs from its source")
+    if trigger_name is not None and trusted_trigger_name is not None:
+        if trigger_name != trusted_trigger_name:
+            invalid_evidence("CUPED envelope trigger identity differs from its source")
+    population = next(iter(populations), source_population or "assigned")
+    if population == "triggered" and trigger_name is None:
+        invalid_evidence("triggered evidence requires a preserved trigger identity")
+    return population, trigger_name
+
+
+def _moments_trigger_name(
+    envelope_identity, study_id, embedded_trigger_name, trusted_trigger_name, evidence_trigger_name
+):
+    if envelope_identity is not None and envelope_identity != study_id:
+        invalid_compliance_state("design summary experiment identity differs from requested study")
+    if (
+        embedded_trigger_name is not None
+        and trusted_trigger_name is not None
+        and embedded_trigger_name != trusted_trigger_name
+    ):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received=embedded_trigger_name,
+            required="the trusted source trigger name",
+        )
+    if (
+        evidence_trigger_name is not None
+        and embedded_trigger_name is not None
+        and evidence_trigger_name != embedded_trigger_name
+    ):
+        invalid_evidence("CUPED envelope trigger identity differs from moments metadata")
+    return embedded_trigger_name or trusted_trigger_name or evidence_trigger_name
+
+
+def _moments_source_identity(source_record, requested_record, version, study_id):
+    if source_record is not None:
+        return source_record
+    if requested_record is not None:
+        return requested_record
+    return _legacy_moments_source_identity(version, study_id)
+
+
 class MomentsSource(SequentialSourceMixin):
     """`MomentSource` over pre-computed `group_summary` rows: a moments cube
     (e.g. exported to parquet) rehydrated with no warehouse or frame, just
@@ -1442,32 +1502,23 @@ class MomentsSource(SequentialSourceMixin):
             require_plan=plan is None,
             require_source_identity=_source_identity_record is None,
         )
+        self._population, self._trigger_name = _portable_population_and_trigger(
+            evidence,
+            None if _source is None else cast(CUPEDEvidenceExportSource, _source),
+            _trusted_trigger_name,
+        )
+        evidence_trigger_name = self._trigger_name
         self._bind_evidence(evidence)
-        self._source_identity_record = (
-            source_identity_record
-            if source_identity_record is not None
-            else _source_identity_record
+        self._source_identity_record = _moments_source_identity(
+            source_identity_record, _source_identity_record, _version, study_id
         )
-        self._source_identity_record = (
-            self._source_identity_record
-            if self._source_identity_record is not None
-            else _legacy_moments_source_identity(_version, study_id)
+        trigger_name = _moments_trigger_name(
+            envelope_identity,
+            study_id,
+            embedded_trigger_name,
+            _trusted_trigger_name,
+            evidence_trigger_name,
         )
-        if envelope_identity is not None and envelope_identity != study_id:
-            invalid_compliance_state(
-                "design summary experiment identity differs from requested study"
-            )
-        if (
-            embedded_trigger_name is not None
-            and _trusted_trigger_name is not None
-            and embedded_trigger_name != _trusted_trigger_name
-        ):
-            _refuse(
-                _MOMENTS_FORMAT_INVALID,
-                received=embedded_trigger_name,
-                required="the trusted source trigger name",
-            )
-        trigger_name = embedded_trigger_name or _trusted_trigger_name
         self._rows = stripped
         self._assignment_counts = assignment_counts
         self._compliance = _validated_compliance_payload(
@@ -1695,7 +1746,11 @@ class MomentsSource(SequentialSourceMixin):
 
     @property
     def population(self) -> Literal["assigned", "triggered"]:
-        return getattr(self._source, "population", "assigned")
+        return self._population
+
+    @property
+    def trigger_name(self) -> str | None:
+        return self.context.trigger_name
 
     @contextmanager
     def readout_snapshot(
@@ -1987,7 +2042,11 @@ def export_source_moments(
     portable = (
         None
         if requests is None
-        else portable_cuped_rows(source, requests, categorical_cells=_categorical_cells_for(source))
+        else portable_cuped_rows(
+            cast(CUPEDEvidenceExportSource, source),
+            requests,
+            categorical_cells=_categorical_cells_for(source),
+        )
     )
     version = MOMENTS_FORMAT if portable is None else CUPED_EVIDENCE_FORMAT
     raw_rows = (

@@ -195,16 +195,9 @@ def _cell_relation(relation, names, outcomes):
     arm_sums = {
         f: _compensated(shifted[f"_offset_{f}"], shifted["_sigma"]) for f in range(len(outcomes))
     }
-    magnitudes = {
-        f: _compensated(
-            _binary_normalize(shifted[name], shifted[f"exponent_{f}"]).abs(), shifted["_sigma"]
-        )[0]
-        for f, name in enumerate(outcomes)
-    }
     totals = shifted.group_by("group_id").aggregate(
         **{f"_arm_sum_{f}": total for f, (total, _) in arm_sums.items()},
         **{f"_arm_remainder_{f}": remainder for f, (_, remainder) in arm_sums.items()},
-        **{f"_arm_magnitude_{f}": magnitude for f, magnitude in magnitudes.items()},
     )
     joined = _join_on(shifted, totals, ("group_id",))
     # Transferred references are arm means, never a selected unit's outcome.
@@ -237,7 +230,6 @@ def _cell_relation(relation, names, outcomes):
                 f"ref_{f}": centered[f"ref_{f}"].first(),
                 f"exponent_{f}": centered[f"exponent_{f}"].first(),
                 f"_sum_{f}": total,
-                # Rebase the exact cell sum once onto the transferred reference.
                 f"first_{f}": total - count * centered[f"_shift_{f}"].first(),
                 f"_precise_{f}": _resolved(count, remainder, count * base + total)
                 & _resolved(
@@ -248,7 +240,6 @@ def _cell_relation(relation, names, outcomes):
                 f"contributors_{f}": finite.cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
                 f"max_centered_{f}": centered[f"_offset_{f}"].abs().max(),
-                f"magnitude_{f}": centered[f"_arm_magnitude_{f}"].first(),
             }
         )
     first = centered.group_by(list(keys)).aggregate(**aggregates)
@@ -327,6 +318,53 @@ def _rows(value):
     return list(nw.from_native(value, eager_only=True).iter_rows(named=True))
 
 
+def _scratch_columns(components):
+    columns = {"_arm_count", "_sigma"}
+    for f in range(components):
+        columns.update(
+            {
+                f"exponent_{f}",
+                f"_rank_{f}",
+                f"_median_{f}",
+                f"_overflow_{f}",
+                f"_base_{f}",
+                f"_base_norm_{f}",
+                f"_centered_{f}",
+                f"_offset_{f}",
+                f"_arm_sum_{f}",
+                f"_arm_remainder_{f}",
+                f"ref_{f}",
+                f"_shift_{f}",
+                f"first_{f}",
+                f"_precise_{f}",
+                f"contributors_{f}",
+                f"distinct_{f}",
+                f"max_centered_{f}",
+                f"_sum_{f}",
+                f"_mean_{f}",
+                f"_residual_{f}",
+            }
+        )
+        for g in range(f, components):
+            columns.add(f"cross_{f}_{g}")
+    return columns
+
+
+def _rename_scratch_inputs(relation, names, components):
+    scratch = _scratch_columns(components)
+    occupied = set(relation.columns)
+    rename = {}
+    safe_names = {}
+    for index, name in enumerate(sorted(occupied & scratch)):
+        candidate = f"__increment_cuped_input_{index}"
+        while candidate in occupied or candidate in scratch:
+            candidate += "_"
+        rename[candidate] = name
+        safe_names[name] = candidate
+        occupied.add(candidate)
+    return relation.rename(rename), tuple(safe_names.get(name, name) for name in names)
+
+
 def categorical_cells_from_relation(
     relation, execute, *, metric, request: _ResolvedCupedRequest
 ) -> CategoricalCells:
@@ -338,9 +376,10 @@ def categorical_cells_from_relation(
     outcomes = ("y", "y_den") if metric.type == "ratio" else ("y",)
     if _known_outcome_domain(metric, relation, outcomes):
         general_qr_required(metric, "outcome_domain")
+    relation, query_names = _rename_scratch_inputs(relation, names, len(outcomes))
     relation = relation.filter(relation.group_id.isin(request.arm_order))
-    cells = _cell_relation(relation, names, outcomes)
-    preflight = _rows(execute(_preflight(cells, names, len(outcomes), request, metric)))[0]
+    cells = _cell_relation(relation, query_names, outcomes)
+    preflight = _rows(execute(_preflight(cells, query_names, len(outcomes), request, metric)))[0]
     count = int(preflight["cell_count"])
     if not 0 < count <= MAX_CELLS:
         general_qr_required(metric, "cell_count")
@@ -358,25 +397,21 @@ def categorical_cells_from_relation(
             )
     if preflight["encoded_bytes"] is None or preflight["encoded_bytes"] > MAX_ENCODED_BYTES:
         general_qr_required(metric, "encoded_bytes")
-    fields = [*names, "group_id", "n"]
-    fields += [
-        f"{kind}_{f}"
-        for f in range(len(outcomes))
-        for kind in ("ref", "first", "exponent", "magnitude")
-    ]
+    fields = [*query_names, "group_id", "n"]
+    fields += [f"{kind}_{f}" for f in range(len(outcomes)) for kind in ("ref", "first", "exponent")]
     fields += [f"cross_{f}_{g}" for f in range(len(outcomes)) for g in range(f, len(outcomes))]
     rows = _rows(execute(cells.select(*fields)))
-    return _as_cells(rows, names, len(outcomes), request)
+    return _as_cells(rows, query_names, len(outcomes), request, covariate_names=names)
 
 
-def _as_cells(rows, names, components, request):
+def _as_cells(rows, names, components, request, *, covariate_names=None):
+    covariate_names = names if covariate_names is None else covariate_names
     patterns = tuple(sorted({tuple(row[name] for name in names) for row in rows}, key=_pattern_key))
     lookup = {pattern: k for k, pattern in enumerate(patterns)}
     arms = request.arm_order
     counts = np.zeros((len(arms), len(patterns)), dtype=np.int64)
     references = np.zeros((components, len(arms)))
     exponents = [[0] * len(arms) for _ in range(components)]
-    magnitudes = [[0.0] * len(arms) for _ in range(components)]
     first = np.zeros((len(arms), components, len(patterns)))
     cross = np.zeros((len(arms), components, components, len(patterns)))
     for row in rows:
@@ -386,7 +421,6 @@ def _as_cells(rows, names, components, request):
         for f in range(components):
             references[f, a] = row[f"ref_{f}"]
             exponents[f][a] = int(row[f"exponent_{f}"])
-            magnitudes[f][a] = row[f"magnitude_{f}"]
             first[a, f, k] = row[f"first_{f}"]
             for g in range(f, components):
                 cross[a, f, g, k] = cross[a, g, f, k] = row[f"cross_{f}_{g}"]
@@ -412,7 +446,6 @@ def _as_cells(rows, names, components, request):
         outcome_references=_freeze_payload(references),
         centered_first_moments=_freeze_payload(first),
         symmetric_cross_moments=_freeze_payload(cross),
-        covariate_names=names,
+        covariate_names=covariate_names,
         outcome_exponents=_freeze_payload(exponents),
-        outcome_magnitudes=_freeze_payload(magnitudes),
     )

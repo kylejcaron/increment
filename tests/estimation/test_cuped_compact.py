@@ -499,12 +499,11 @@ def test_frozen_evidence_recursively_copies_mutable_payloads():
         "patterns": [["a"]],
         "counts": cell_counts,
         "levels": [["a"]],
-        "null_metadata": [[False]],
+        "null_metadata": [["refuse", False]],
         "outcome_references": [],
         "centered_first_moments": [[], []],
         "symmetric_cross_moments": [[], []],
         "outcome_exponents": [],
-        "outcome_magnitudes": [],
     }
     cells = CategoricalCells(**cell_evidence)
     cell_counts[0, 0] = 99
@@ -917,6 +916,32 @@ def test_categorical_reference_preserves_cancelling_extreme_outcomes():
     _assert_scale_free_parity(fit_categorical_cells(cells, control="c"), expected)
 
 
+def test_categorical_cells_keep_arm_scales_for_cross_arm_uncertainty():
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    control = 1e-100 * (1.0 + np.linspace(-0.1, 0.1, 20))
+    treatment = 1e100 * (1.0 + np.linspace(-0.1, 0.1, 20))
+    y = np.concatenate((control, treatment))
+    arms = np.repeat(["c", "t"], 20)
+    arguments = {
+        "y": y,
+        "arms": arms,
+        "control": "c",
+        "arm_order": ("c", "t"),
+        "covariates": {"category": np.repeat("same", len(y))},
+    }
+    expected = fit_cuped_multicovariate(
+        y,
+        arms,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"category": np.repeat("same", len(y))},
+        kinds={"category": "categorical"},
+    )
+    cells = categorical_cells(**arguments, identity=("cross-arm-scale",))
+    _assert_scale_free_parity(fit_categorical_cells(cells, control="c"), expected)
+
+
 def test_categorical_cells_refuse_empty_declared_arm_like_unit_fit():
     from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
 
@@ -966,6 +991,12 @@ def test_categorical_singleton_merge_preserves_representable_large_scatter():
         assert scatter == pytest.approx(1.28e308, rel=1e-14)
     assert np.asarray(merged.symmetric_cross_moments) == pytest.approx(
         np.asarray(complete.symmetric_cross_moments), rel=1e-14
+    )
+    assert np.asarray(merged.outcome_references) == pytest.approx(
+        np.asarray(complete.outcome_references), rel=1e-14
+    )
+    assert np.asarray(merged.centered_first_moments) == pytest.approx(
+        np.asarray(complete.centered_first_moments), rel=1e-14, abs=1e-14
     )
 
 
@@ -1023,6 +1054,41 @@ def test_categorical_merge_refuses_cancellation_beyond_merged_precision(y, parti
     assert isinstance(route, str) and "unpartitioned" in route
 
 
+def test_categorical_compact_cancellation_error_is_bounded_by_data_scale():
+    import math
+
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
+
+    control = [-1.0] * 11 + [11.0 + 2.0**-49]
+    treatment = [2.0**-51] * 12
+    y = np.asarray([*control, *treatment])
+    arms = np.asarray(["c"] * 12 + ["t"] * 12)
+    categories = {"segment": np.repeat("same", 24)}
+    cells = categorical_cells(
+        y,
+        arms,
+        identity=("cancellation",),
+        control="c",
+        arm_order=("c", "t"),
+        covariates=categories,
+    )
+    compact = fit_categorical_cells(cells, control="c")
+    unit = fit_cuped_multicovariate(
+        y,
+        arms,
+        control="c",
+        arm_order=("c", "t"),
+        covariates=categories,
+        kinds={"segment": "categorical"},
+    )
+    scale = max(map(abs, control))
+    tolerance = 4 * math.ulp(scale)
+    exact_mean = math.fsum(control) / len(control)
+    assert abs(compact.adjusted_means[0] - unit.adjusted_means[0]) <= tolerance
+    assert abs(compact.adjusted_means[0] - exact_mean) <= tolerance
+    assert abs(unit.adjusted_means[0] - exact_mean) <= tolerance
+
+
 def test_categorical_merge_of_ordinary_partitions_is_exact_against_whole_evidence():
     from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
 
@@ -1032,72 +1098,57 @@ def test_categorical_merge_of_ordinary_partitions_is_exact_against_whole_evidenc
         **values, kinds={"segment": "categorical", "device": "categorical"}
     )
     _assert_cell_fit_parity(fit_categorical_cells(complete, control="c"), expected)
-    assert np.asarray(complete.outcome_magnitudes) == pytest.approx(
-        np.asarray(
-            [
-                [
-                    math.fsum(
-                        np.abs(
-                            np.ldexp(
-                                values[name][values["arms"] == arm],
-                                -complete.outcome_exponents[f][a],
-                            )
-                        )
-                    )
-                    for a, arm in enumerate(complete.arms)
-                ]
-                for f, name in enumerate(("numerator", "denominator"))
-            ]
-        ),
-        rel=1e-15,
-        abs=0,
-    )
 
 
-@pytest.mark.parametrize(
-    "change",
-    ["negative", "nonfinite", "empty_arm", "below_sum"],
-)
-def test_categorical_cells_validate_outcome_magnitudes(change):
-    from increment.estimation.cuped.cells import categorical_cells
+@pytest.mark.parametrize("partitions", [2, 3, 7])
+@pytest.mark.parametrize("outcome", ["lognormal", "binary"])
+def test_categorical_merge_accepts_ordinary_partitioned_outcomes(partitions, outcome):
+    from increment.estimation.cuped.cells import categorical_cells, fit_categorical_cells
 
-    cells = categorical_cells(**_crossed_category_case(), identity=("magnitudes",))
-    magnitudes = [list(row) for row in cells.outcome_magnitudes]
-    counts = [list(row) for row in cells.counts]
-    if change == "negative":
-        magnitudes[0][0] = -1.0
-    elif change == "nonfinite":
-        magnitudes[0][0] = math.inf
-    elif change == "empty_arm":
-        counts.append([0] * len(cells.patterns))
-        magnitudes[0].append(1.0)
+    rng = np.random.default_rng(23)
+    arms = np.repeat(["c", "t"], 84)
+    if outcome == "lognormal":
+        y = rng.lognormal(mean=0.2, sigma=0.8, size=len(arms))
     else:
-        magnitudes[0][0] *= 0.5
-    evidence: dict[str, Any] = {
-        **{field: getattr(cells, field) for field in cells.__dataclass_fields__},
-        "outcome_magnitudes": magnitudes,
+        y = rng.binomial(1, 0.4, size=len(arms)).astype(float)
+    values = {
+        "y": y,
+        "arms": arms,
+        "control": "c",
+        "arm_order": ("c", "t"),
+        "covariates": {"category": np.repeat("same", len(arms))},
     }
-    if change == "empty_arm":
-        evidence.update(
-            arms=(*cells.arms, "empty"),
-            counts=counts,
-            outcome_references=[[*row, 0.0] for row in cells.outcome_references],
-            outcome_exponents=[[*row, 0] for row in cells.outcome_exponents],
-            centered_first_moments=[*cells.centered_first_moments, [[0.0] * len(cells.patterns)]],
-            symmetric_cross_moments=[
-                *cells.symmetric_cross_moments,
-                [[[0.0] * len(cells.patterns)]],
-            ],
+    parts = []
+    rows = np.arange(len(arms))
+    for index in range(partitions):
+        mask = rows % partitions == index
+        parts.append(
+            categorical_cells(
+                y[mask],
+                arms[mask],
+                identity=("ordinary-partitions",),
+                control="c",
+                arm_order=("c", "t"),
+                covariates={"category": np.repeat("same", int(mask.sum()))},
+            )
         )
-    with pytest.raises(InvalidRequestError) as raised:
-        if change == "empty_arm":
-            CategoricalCells(**evidence)
-        else:
-            replace(cells, outcome_magnitudes=magnitudes)
-    assert raised.value.code == "estimation.cuped_linear.invalid_evidence"
+    merged = parts[0]
+    for part in parts[1:]:
+        merged = merged.merge(part)
+    complete = categorical_cells(**values, identity=("ordinary-partitions",))
+    expected = fit_cuped_multicovariate(
+        y,
+        arms,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"category": np.repeat("same", len(arms))},
+        kinds={"category": "categorical"},
+    )
+    _assert_scale_free_parity(fit_categorical_cells(merged, control="c"), expected)
+    assert merged.counts == complete.counts
 
 
-def test_categorical_fit_identity_binds_outcome_magnitudes(monkeypatch):
+def test_categorical_fit_identity_binds_outcome_references(monkeypatch):
     from increment.estimation.cuped import cells as cells_module
 
     identities = []
@@ -1109,10 +1160,12 @@ def test_categorical_fit_identity_binds_outcome_magnitudes(monkeypatch):
 
     monkeypatch.setattr(cells_module, "finalize_fit", capture)
     cells = cells_module.categorical_cells(**_crossed_category_case(), identity=("identity",))
-    doubled = replace(
+    shifted = replace(
         cells,
-        outcome_magnitudes=[[2.0 * value for value in row] for row in cells.outcome_magnitudes],
+        outcome_references=[
+            [reference + 1.0 for reference in row] for row in cells.outcome_references
+        ],
     )
     cells_module.fit_categorical_cells(cells, control="c")
-    cells_module.fit_categorical_cells(doubled, control="c")
+    cells_module.fit_categorical_cells(shifted, control="c")
     assert identities[0] != identities[1]

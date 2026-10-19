@@ -300,6 +300,14 @@ class SqlPanelSource:
     def context(self) -> SourceContext:
         return self._context
 
+    @property
+    def population(self) -> Literal["assigned"]:
+        return "assigned"
+
+    @property
+    def trigger_name(self) -> str | None:
+        return self.context.trigger_name
+
     @classmethod
     def from_frame_via_memtable(
         cls,

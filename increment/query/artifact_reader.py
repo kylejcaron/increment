@@ -25,6 +25,7 @@ from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
+    CUPEDEvidenceExportSource,
     invalid_compliance_state,
     raise_legacy_compliance_state,
     validate_compliance_design_match,
@@ -2557,10 +2558,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 representation="implicit",
                 design=self.context.design,
             )
-        population = getattr(self, "_population", "assigned")
+        population = self.population
         identity = source_identity(self)
         portable = portable_cuped_rows(
-            self,
+            cast(CUPEDEvidenceExportSource, self),
             requests,
             categorical_cells=lambda metric, method: categorical_request_cells(
                 self, metric, method, population=population

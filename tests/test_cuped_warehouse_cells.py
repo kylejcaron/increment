@@ -62,7 +62,7 @@ def _metric(ratio=False):
     return MeanMetric(name="outcome", entity="unit", fact="num", aggregation="sum")
 
 
-def _request(arm_width=1):
+def _request(arm_width=1, covariate_names=("segment", "device")):
     from increment.estimation.engine import Method
     from increment.query.cuped import _ResolvedCupedRequest
 
@@ -71,10 +71,7 @@ def _request(arm_width=1):
         control="c" * arm_width,
         arm_order=("c" * arm_width, "t" * arm_width),
         method=Method.cuped_multicovariate(
-            covariates=[
-                CupedCovariate(name="segment", kind="categorical"),
-                CupedCovariate(name="device", kind="categorical"),
-            ]
+            covariates=[CupedCovariate(name=name, kind="categorical") for name in covariate_names]
         ),
     )
 
@@ -284,52 +281,64 @@ def test_categorical_encoded_bound_accounts_for_long_arm_labels():
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
 
 
-@pytest.mark.parametrize("ratio", [False, True])
-def test_categorical_warehouse_magnitudes_match_local_evidence(ratio):
-    from increment.estimation.cuped.cells import categorical_cells
-
-    frame = _cells_frame((41, 29, 37, 33), ratio=ratio)
-    cells, _ = _produce(frame)
-    local = categorical_cells(
-        None if ratio else frame.y.to_numpy(),
-        frame.group_id.to_numpy(),
-        control="c",
-        arm_order=("c", "t"),
-        covariates={name: frame[name].to_numpy() for name in ("segment", "device")},
-        numerator=frame.y.to_numpy() if ratio else None,
-        denominator=frame.y_den.to_numpy() if ratio else None,
-        identity=("snapshot", "outcome", "assigned"),
-    )
-    assert cells.outcome_exponents == local.outcome_exponents
-    assert np.asarray(cells.outcome_magnitudes) == pytest.approx(
-        np.asarray(local.outcome_magnitudes), rel=1e-14, abs=0
-    )
-
-
-def test_categorical_warehouse_accepts_truthful_dominated_outcome_magnitudes():
-    values = np.concatenate(([1e15], np.full(100_000, 1e-5)))
+def test_categorical_warehouse_transfer_omits_absolute_outcome_sums():
+    values = [1.0] * 7 + [-0.125]
     frame = pd.DataFrame(
-        {
-            "group_id": ["c"] * len(values) + ["t"] * len(values),
-            "segment": ["A"] * (2 * len(values)),
-            "device": ["desktop"] * (2 * len(values)),
-            "y": np.concatenate((values, values)),
-        }
+        [
+            {
+                "unit_id": f"{arm}-{i}",
+                "group_id": arm,
+                "segment": "A",
+                "device": "desktop",
+                "y": value,
+            }
+            for arm in ("c", "t")
+            for i, value in enumerate(values)
+        ]
     )
-    from increment.query._cuped_cells import categorical_cells_from_relation
+    _cells, transfers = _produce(frame)
+    transferred_columns = {column for columns, _rows in transfers for column in columns}
+    assert not any(
+        "magnitude" in column.lower() or column.lower().startswith("abs_")
+        for column in transferred_columns
+    )
 
-    con = ibis.duckdb.connect(threads=2)
-    con.create_table("units", obj=frame)
-    try:
-        cells = categorical_cells_from_relation(
-            con.table("units"),
-            lambda expression: con.to_pyarrow(expression),
-            metric=_metric(),
-            request=_request(),
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "magnitude_0",
+        "_base_norm_0",
+        "_rank_0",
+        "exponent_0",
+        "exponent_1",
+        "_centered_0",
+        "_arm_count",
+        "_residual_0",
+    ],
+)
+def test_generated_warehouse_names_preserve_covariate_alias_parity(alias):
+    frame = _cells_frame((41, 29, 37, 33), ratio=True)
+    expected, _ = _produce(frame)
+    aliased = frame.rename(columns={"segment": alias})
+    actual, _ = _produce(
+        aliased,
+        request=_request(covariate_names=(alias, "device")),
+    )
+    assert actual.patterns == expected.patterns
+    assert actual.levels == expected.levels
+    assert actual.counts == expected.counts
+    for field in (
+        "outcome_references",
+        "centered_first_moments",
+        "symmetric_cross_moments",
+    ):
+        assert np.asarray(getattr(actual, field)) == pytest.approx(
+            np.asarray(getattr(expected, field)), rel=1e-14, abs=1e-14
         )
-    finally:
-        con.disconnect()
-    assert cells.outcome_magnitudes[0][0] > 0
+    actual_fit = fit_categorical_cells(actual, control="c")
+    expected_fit = fit_categorical_cells(expected, control="c")
+    assert actual_fit.adjusted_means == pytest.approx(expected_fit.adjusted_means)
 
 
 @pytest.mark.parametrize(
@@ -653,6 +662,26 @@ def test_categorical_warehouse_export_replays_without_unit_transfer(
         assert getattr(lift, field) == pytest.approx(
             getattr(reference, field), rel=1e-10, abs=1e-12
         )
+
+
+def test_native_format13_export_uses_one_readout_snapshot(
+    categorical_sources, tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    native, _artifact, _request = categorical_sources
+    original_snapshot = type(native).readout_snapshot
+    snapshots = []
+
+    @contextmanager
+    def tracked_snapshot(self, **kwargs):
+        with original_snapshot(self, **kwargs) as pinned:
+            snapshots.append(pinned)
+            yield pinned
+
+    monkeypatch.setattr(type(native), "readout_snapshot", tracked_snapshot)
+    native.export_moments(tmp_path / "snapshot.parquet")
+    assert len(snapshots) == 1
 
 
 @pytest.mark.parametrize("categorical_sources", [True], indirect=True)

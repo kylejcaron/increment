@@ -27,9 +27,8 @@ from increment.estimation.cuped.types import (
 )
 from increment.estimation.variance import ratio_denominator_precision
 
-# Partition centering, unpartitioned centering, stored roundings and the merge
-# arithmetic together err by at most about ten units in the last place of each
-# arm's absolute component sum.
+# Partition centering, unpartitioned centering, stored roundings and merge
+# arithmetic together stay within a conservative multiple of machine epsilon.
 _MERGE_ERROR = 2.0**-49
 _MERGE_TOLERANCE = 2.0**-36
 _MERGE_ROUTE = (
@@ -96,28 +95,25 @@ def categorical_cells(
     counts = np.zeros((len(order), len(patterns)), dtype=np.int64)
     references = np.zeros((len(outcomes), len(order)))
     exponents = [[0] * len(order) for _ in outcomes]
-    magnitudes = [[0.0] * len(order) for _ in outcomes]
     first = np.zeros((len(order), len(outcomes), len(patterns)))
     scatter = np.zeros((len(order), len(outcomes), len(outcomes), len(patterns)))
     for a, arm_rows in enumerate(indices):
         if not len(arm_rows):
             continue
+        grouped_rows = [[] for _ in patterns]
+        for row in arm_rows:
+            grouped_rows[codes[row]].append(row)
         bases = []
+        shifts = []
         for f, values in enumerate(outcomes):
             arm_values = values[arm_rows]
             exponents[f][a] = math.frexp(float(np.max(np.abs(arm_values))))[1]
-            magnitudes[f][a] = math.fsum(np.abs(np.ldexp(arm_values, -exponents[f][a])))
             offset, centered = _arm_offset(arm_values)
             references[f, a] = offset + _arm_mean(centered)
             bases.append(offset)
-        # Center exactly as the per-unit fitter does, then rebase the exact cell
-        # sums once onto the transferred arm-mean reference.
-        shifts = [
-            math.ldexp(references[f, a], -exponents[f][a]) - math.ldexp(bases[f], -exponents[f][a])
-            for f in range(len(outcomes))
-        ]
-        for k in range(len(patterns)):
-            selected = arm_rows[codes[arm_rows] == k]
+            shifts.append(references[f, a] - offset)
+        for k, grouped in enumerate(grouped_rows):
+            selected = np.asarray(grouped, dtype=int)
             count = len(selected)
             counts[a, k] = count
             if not count:
@@ -131,8 +127,8 @@ def categorical_cells(
             )
             sums = np.array([math.fsum(values) for values in centered])
             first[a, :, k] = [
-                math.fsum((total, -count * shift))
-                for total, shift in zip(sums, shifts, strict=True)
+                math.fsum((sums[f], -count * math.ldexp(shifts[f], -exponents[f][a])))
+                for f in range(len(outcomes))
             ]
             centered -= sums[:, None] / count
             scatter[a, :, :, k] = centered @ centered.T
@@ -153,7 +149,6 @@ def categorical_cells(
         outcome_references=_freeze_payload(references),
         centered_first_moments=_freeze_payload(first),
         outcome_exponents=_freeze_payload(exponents),
-        outcome_magnitudes=_freeze_payload(magnitudes),
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=tuple(covariates),
     )
@@ -203,7 +198,6 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
     ]
     counts = np.zeros((arm_count, len(patterns)), dtype=np.int64)
     references = np.zeros((components, arm_count))
-    magnitudes = [[0.0] * arm_count for _ in range(components)]
     first = np.zeros((arm_count, components, len(patterns)))
     scatter = np.zeros((arm_count, components, components, len(patterns)))
     labels = ("numerator", "denominator") if components == 2 else ("outcome",)
@@ -216,22 +210,18 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
         for f in range(components):
             exponent = exponents[f][a]
             total = math.fsum(_arm_sum_terms(parts, a, f, exponent))
-            magnitude = math.fsum(
-                math.ldexp(part.outcome_magnitudes[f][a], part.outcome_exponents[f][a] - exponent)
-                for part in parts
-            )
-            if len(parts) == 2 and _MERGE_ERROR * magnitude > _MERGE_TOLERANCE * abs(total):
+            uncertainty, bound = _merge_error_bound(parts, a, f, exponent, units)
+            if uncertainty > _MERGE_TOLERANCE * abs(total):
                 _fail(
                     "estimation.cuped_linear.merge_precision",
                     arm=left.arms[a],
                     component=labels[f],
-                    bound=math.ldexp(_MERGE_ERROR * magnitude / units, exponent),
+                    bound=bound,
                     mean=math.ldexp(total / units, exponent),
                     route=_MERGE_ROUTE,
                 )
             means.append(total / units)
             references[f, a] = math.ldexp(means[f], exponent)
-            magnitudes[f][a] = magnitude
         for k, pattern in enumerate(patterns):
             entries = []
             for part, lookup, part_cross in zip((left, right), lookups, cross_moments, strict=True):
@@ -300,7 +290,6 @@ def _merge_cells(left: CategoricalCells, right: CategoricalCells) -> Categorical
         symmetric_cross_moments=_freeze_payload(scatter),
         covariate_names=left.covariate_names,
         outcome_exponents=_freeze_payload(exponents),
-        outcome_magnitudes=_freeze_payload(magnitudes),
     )
 
 
@@ -315,6 +304,49 @@ def _arm_sum_terms(parts, arm, component, exponent):
                 terms.extend(_two_product(count, reference))
                 terms.append(math.ldexp(part.centered_first_moments[arm][component][old], shift))
     return terms
+
+
+def _arm_square_terms(parts, arm, component, exponent):
+    """Reconstruct squared outcome sums from the retained arm moments."""
+    terms = []
+    for part in parts:
+        shift = part.outcome_exponents[component][arm] - exponent
+        reference = math.ldexp(part.outcome_references[component][arm], -exponent)
+        for k, count in enumerate(part.counts[arm]):
+            if not count:
+                continue
+            first = math.ldexp(part.centered_first_moments[arm][component][k], shift)
+            scatter = math.ldexp(
+                part.symmetric_cross_moments[arm][component][component][k],
+                2 * shift,
+            )
+            terms.extend(
+                (
+                    count * reference * reference,
+                    2.0 * reference * first,
+                    first * first / count,
+                    scatter,
+                )
+            )
+    return terms
+
+
+def _merge_error_bound(parts, arm, component, exponent, units):
+    if len(parts) != 2:
+        return 0.0, 0.0
+    square_terms = _arm_square_terms(parts, arm, component, exponent)
+    square_sum = math.fsum(square_terms)
+    operations = 128.0 * units * 2.0**-53
+    if operations >= 0.5:
+        return math.inf, math.inf
+    # The Cauchy bound uses reconstructed second moments; inflate their sum for
+    # rounding in every retained reference, first-moment and scatter term.
+    rounding_slack = (operations / (1.0 - operations)) * math.fsum(
+        abs(term) for term in square_terms
+    )
+    magnitude = math.sqrt(units * max(0.0, square_sum + rounding_slack))
+    uncertainty = _MERGE_ERROR * magnitude
+    return uncertainty, math.ldexp(uncertainty / units, exponent)
 
 
 def select_cell_arms(cells: CategoricalCells, arms: Sequence[object]) -> CategoricalCells:
@@ -370,9 +402,6 @@ def select_cell_arms(cells: CategoricalCells, arms: Sequence[object]) -> Categor
         covariate_names=cells.covariate_names,
         outcome_exponents=_freeze_payload(
             [[cells.outcome_exponents[f][a] for a in index] for f in components]
-        ),
-        outcome_magnitudes=_freeze_payload(
-            [[cells.outcome_magnitudes[f][a] for a in index] for f in components]
         ),
     )
 
@@ -514,7 +543,6 @@ def fit_categorical_cells(cells: CategoricalCells, *, control) -> Multicovariate
         cells.centered_first_moments,
         cells.symmetric_cross_moments,
         cells.outcome_exponents,
-        cells.outcome_magnitudes,
     )
     state = FitState(
         identity=identity,

@@ -14,7 +14,10 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
-from typing import Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+
+if TYPE_CHECKING:
+    from increment._source_types import CUPEDEvidenceExportSource
 
 from increment._canonical import CanonicalJSONError, canonical_json_bytes
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
@@ -28,7 +31,17 @@ EvidenceKind = Literal["scalar_moments", "categorical_cells"]
 _KINDS: tuple[EvidenceKind, ...] = ("scalar_moments", "categorical_cells")
 _RESERVED_KINDS = ("fitted_multicovariate",)
 _PAYLOAD_FIELDS = frozenset(
-    {"version", "kind", "metric", "method", "population", "breakout", "source_sha256", "evidence"}
+    {
+        "version",
+        "kind",
+        "metric",
+        "method",
+        "population",
+        "trigger_name",
+        "breakout",
+        "source_sha256",
+        "evidence",
+    }
 )
 _POPULATIONS = ("assigned", "triggered")
 _COUNT_FIELDS = frozenset({"n", "successes", "winsor_n", "winsor_n_lower", "winsor_n_upper"})
@@ -39,7 +52,6 @@ _CELL_FLOAT_FIELDS = (
     "outcome_references",
     "centered_first_moments",
     "symmetric_cross_moments",
-    "outcome_magnitudes",
 )
 _CELL_FIELDS = frozenset(field.name for field in fields(CategoricalCells)) - {"identity"}
 
@@ -87,6 +99,7 @@ class CupedEvidence:
     population: str
     source_sha256: str
     payload_sha256: str
+    trigger_name: str | None = None
     rows: tuple[Mapping[str, object], ...] = ()
     cells: CategoricalCells | None = None
 
@@ -126,6 +139,7 @@ def _payload(
     method: Any,
     *,
     population: str,
+    trigger_name: str | None,
     source: Mapping[str, object],
     evidence: Mapping[str, object],
 ) -> str:
@@ -135,6 +149,7 @@ def _payload(
         "metric": metric,
         "method": json.loads(method_key(method)),
         "population": population,
+        "trigger_name": trigger_name,
         "breakout": None,
         "source_sha256": source_sha256(source),
         "evidence": evidence,
@@ -151,6 +166,7 @@ def scalar_payload(
     rows: Sequence[Mapping[str, object]],
     *,
     population: str,
+    trigger_name: str | None = None,
     source: Mapping[str, object],
 ):
     declaration = tuple(method.covariates or ())
@@ -164,6 +180,7 @@ def scalar_payload(
         metric,
         method,
         population=population,
+        trigger_name=trigger_name,
         source=source,
         evidence={"rows": [{**dict(row), **metadata} for row in rows]},
     )
@@ -175,6 +192,7 @@ def categorical_payload(
     cells: CategoricalCells,
     *,
     population: str,
+    trigger_name: str | None = None,
     source: Mapping[str, object],
 ) -> str:
     evidence = {name: getattr(cells, name) for name in sorted(_CELL_FIELDS)}
@@ -183,6 +201,7 @@ def categorical_payload(
         metric,
         method,
         population=population,
+        trigger_name=trigger_name,
         source=source,
         evidence=evidence,
     )
@@ -281,6 +300,7 @@ def _decode_scalar_evidence(
     metric: str,
     method_key_value: str,
     population: str,
+    trigger_name: str | None,
     source: str,
 ) -> CupedEvidence:
     if (
@@ -319,7 +339,14 @@ def _decode_scalar_evidence(
     }
     digest = hashlib.sha256(canonical_json_bytes(digest_body)).hexdigest()
     return CupedEvidence(
-        "scalar_moments", metric, method_key_value, population, source, digest, rows=rows
+        "scalar_moments",
+        metric,
+        method_key_value,
+        population,
+        source,
+        digest,
+        trigger_name=trigger_name,
+        rows=rows,
     )
 
 
@@ -329,6 +356,7 @@ def _decode_categorical_evidence(
     metric: str,
     method_key_value: str,
     population: str,
+    trigger_name: str | None,
     source: str,
     digest: str,
 ) -> CupedEvidence:
@@ -342,7 +370,14 @@ def _decode_categorical_evidence(
     if tuple(metadata[0] for metadata in cells.null_metadata) != missing:
         invalid_evidence("categorical evidence missing policies differ from the method")
     return CupedEvidence(
-        "categorical_cells", metric, method_key_value, population, source, digest, cells=cells
+        "categorical_cells",
+        metric,
+        method_key_value,
+        population,
+        source,
+        digest,
+        trigger_name=trigger_name,
+        cells=cells,
     )
 
 
@@ -356,6 +391,7 @@ def parse_cuped_evidence(payload: object) -> CupedEvidence:
         invalid_evidence("payload is not JSON")
     if not isinstance(body, dict):
         invalid_evidence("payload must be a JSON object")
+    _normalize_float_fields(body)
     try:
         canonical = canonical_json_bytes(body).decode()
     except CanonicalJSONError as exc:
@@ -377,6 +413,11 @@ def parse_cuped_evidence(payload: object) -> CupedEvidence:
         invalid_evidence("payload metric must be a non-empty name")
     if population not in _POPULATIONS:
         invalid_evidence(f"payload population must be one of {_POPULATIONS}; got {population!r}")
+    trigger_name = body["trigger_name"]
+    if trigger_name is not None and (not isinstance(trigger_name, str) or not trigger_name):
+        invalid_evidence("payload trigger_name must be a non-empty name or null")
+    if population == "triggered" and trigger_name is None:
+        invalid_evidence("triggered evidence must preserve its trigger identity")
     if body["breakout"] is not None:
         invalid_evidence(
             "version-1 payloads describe whole-population evidence; breakout must be null"
@@ -394,11 +435,47 @@ def parse_cuped_evidence(payload: object) -> CupedEvidence:
     digest = hashlib.sha256(payload.encode()).hexdigest()
     if kind == "scalar_moments":
         return _decode_scalar_evidence(
-            evidence, body, declarations, metric, key, population, source
+            evidence, body, declarations, metric, key, population, trigger_name, source
         )
     return _decode_categorical_evidence(
-        evidence, declarations, metric, key, population, source, digest
+        evidence, declarations, metric, key, population, trigger_name, source, digest
     )
+
+
+def _normalize_float_fields(body: dict[str, object]) -> None:
+    """Restore schema-declared floats before canonical JSON validation."""
+    evidence = body.get("evidence")
+    if not isinstance(evidence, dict):
+        return
+    evidence = cast("dict[str, object]", evidence)
+    kind = body.get("kind")
+    if kind == "scalar_moments":
+        rows = evidence.get("rows")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row = cast("dict[str, object]", row)
+                for key, value in tuple(row.items()):
+                    if (
+                        key not in _COUNT_FIELDS
+                        and key not in _TEXT_FIELDS
+                        and isinstance(value, int)
+                        and not isinstance(value, bool)
+                    ):
+                        row[key] = float(value)
+    elif kind == "categorical_cells":
+
+        def normalize(value: object) -> object:
+            if isinstance(value, list):
+                return [normalize(item) for item in value]
+            if isinstance(value, int) and not isinstance(value, bool):
+                return float(value)
+            return value
+
+        for field in _CELL_FLOAT_FIELDS:
+            if field in evidence:
+                evidence[field] = normalize(evidence[field])
 
 
 def local_categorical_cells(source: Any, metric: Any, method: Any) -> CategoricalCells:
@@ -425,7 +502,9 @@ def local_categorical_cells(source: Any, metric: Any, method: Any) -> Categorica
     return categorical_cells(
         None if ratio else y,
         np.asarray(groups, dtype=object),
-        identity=categorical_identity(metric.name, method_key(method), _population(source)),
+        identity=categorical_identity(
+            metric.name, method_key(method), _source_coordinates(source)[0]
+        ),
         control=control,
         arm_order=arm_order,
         covariates={
@@ -440,8 +519,16 @@ def local_categorical_cells(source: Any, metric: Any, method: Any) -> Categorica
     )
 
 
-def _population(source: Any) -> str:
-    return str(getattr(source, "population", "assigned"))
+def _source_coordinates(source: CUPEDEvidenceExportSource) -> tuple[str, str | None]:
+    population = source.population
+    trigger_name = source.trigger_name
+    if population not in _POPULATIONS:
+        invalid_evidence("source population cannot be preserved in portable CUPED evidence")
+    if trigger_name is not None and (not isinstance(trigger_name, str) or not trigger_name):
+        invalid_evidence("source trigger identity cannot be preserved in portable CUPED evidence")
+    if population == "triggered" and trigger_name is None:
+        invalid_evidence("triggered evidence requires a preserved trigger identity")
+    return population, trigger_name
 
 
 PortableRequest = tuple[Any, tuple[Any, ...], tuple[Any, ...]]
@@ -479,7 +566,7 @@ def portable_requests(
 
 
 def portable_cuped_rows(
-    source: Any,
+    source: CUPEDEvidenceExportSource,
     requests: Sequence[PortableRequest],
     *,
     categorical_cells: Callable[[Any, Any], CategoricalCells] | None,
@@ -495,7 +582,7 @@ def portable_cuped_rows(
 
     if identity is None:
         identity = source_identity(source)
-    population = _population(source)
+    population, trigger_name = _source_coordinates(source)
     cells: list[list[CategoricalCells]] = []
     for metric, _, categorical in requests:
         if not categorical:
@@ -513,7 +600,12 @@ def portable_cuped_rows(
                 {
                     "record_kind": CUPED_EVIDENCE_RECORD,
                     CUPED_EVIDENCE_FIELD: scalar_payload(
-                        metric.name, method, family, population=population, source=identity
+                        metric.name,
+                        method,
+                        family,
+                        population=population,
+                        trigger_name=trigger_name,
+                        source=identity,
                     ),
                 }
             )
@@ -522,7 +614,12 @@ def portable_cuped_rows(
                 {
                     "record_kind": CUPED_EVIDENCE_RECORD,
                     CUPED_EVIDENCE_FIELD: categorical_payload(
-                        metric.name, method, evidence, population=population, source=identity
+                        metric.name,
+                        method,
+                        evidence,
+                        population=population,
+                        trigger_name=trigger_name,
+                        source=identity,
                     ),
                 }
             )

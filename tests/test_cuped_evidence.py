@@ -302,8 +302,11 @@ _MALFORMED = {
     "format thirteen without envelopes": lambda rows: [
         row for row in rows if row.get("record_kind") != "cuped_evidence"
     ],
+    "empty null metadata entry": lambda rows: _replace_payload(
+        rows, lambda p: p["evidence"]["null_metadata"].__setitem__(0, [])
+    ),
     "invalid cells": lambda rows: _replace_payload(
-        rows, lambda p: p["evidence"]["outcome_magnitudes"][0].__setitem__(0, -1.0)
+        rows, lambda p: p["evidence"]["counts"][0].__setitem__(0, -1)
     ),
 }
 
@@ -370,13 +373,9 @@ def test_evidence_payload_must_match_its_declared_method(tmp_path, mismatch):
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
-def test_cancellation_magnitude_underreport_is_rejected_on_envelope_import():
-    from increment._cuped_evidence import categorical_payload, parse_cuped_evidence
-    from increment.estimation.cuped.cells import categorical_cells
+def test_cancellation_partitions_refuse_merge_without_absolute_sums():
+    from increment.estimation.cuped.cells import _merge_cells, categorical_cells
 
-    method = Method.cuped_multicovariate(
-        name="category", covariates=CupedCovariate(name="category", kind="categorical")
-    )
     parts = []
     for k in (2.0, 3.0):
         outcomes = np.array([-1e100, 1e100, 1.0, -1e100, 1e100, k])
@@ -391,33 +390,8 @@ def test_cancellation_magnitude_underreport_is_rejected_on_envelope_import():
                 covariates={"category": np.repeat("constant", 6)},
             )
         )
-    left, right = parts
-    payload = categorical_payload(
-        "outcome",
-        method,
-        left,
-        population="assigned",
-        source={"source": "counterexample"},
-    )
-    body = json.loads(payload)
-    for arm, _values in enumerate(body["evidence"]["outcome_magnitudes"][0]):
-        count = sum(body["evidence"]["counts"][arm])
-        reference = math.ldexp(
-            body["evidence"]["outcome_references"][0][arm],
-            -body["evidence"]["outcome_exponents"][0][arm],
-        )
-        total = math.fsum(
-            [
-                count * reference,
-                *body["evidence"]["centered_first_moments"][arm][0],
-            ]
-        )
-        body["evidence"]["outcome_magnitudes"][0][arm] = abs(total)
-    with pytest.raises(CodedError) as raised:
-        parse_cuped_evidence(canonical_json_bytes(body).decode())
-    assert raised.value.code == "moments.cuped_evidence.invalid"
     with pytest.raises(CodedError) as merged:
-        left.merge(right)
+        _merge_cells(*parts)
     assert merged.value.code == "estimation.cuped_linear.merge_precision"
 
 
@@ -437,7 +411,6 @@ def test_ratio_categorical_component_count_is_rejected_on_admission(tmp_path):
             [[arm[0][0]]] for arm in cells["symmetric_cross_moments"]
         ]
         cells["outcome_exponents"] = [cells["outcome_exponents"][0]]
-        cells["outcome_magnitudes"] = [cells["outcome_magnitudes"][0]]
 
     rows[index] = _rewrite(rows[index], drop_denominator)
     with pytest.raises(CodedError) as raised:
@@ -494,6 +467,120 @@ def test_changed_request_without_matching_evidence_refuses(tmp_path, family, rep
     with pytest.raises(CodedError) as raised:
         Analysis.from_moments(rows, metrics=[changed], control="control", experiment_id="compact")
     assert raised.value.code == code
+
+
+def test_large_float_categorical_moment_round_trips_above_exact_integer_range():
+
+    from dataclasses import replace
+
+    from increment._cuped_evidence import categorical_payload, parse_cuped_evidence
+    from increment.estimation.cuped.cells import categorical_cells
+
+    method = Method.cuped_multicovariate(
+        name="large",
+        covariates=CupedCovariate(name="segment", kind="categorical"),
+    )
+    cells = categorical_cells(
+        np.array([1.0, 2.0, 3.0, 4.0]),
+        np.array(["control", "control", "treatment", "treatment"]),
+        identity=("large",),
+        control="control",
+        arm_order=("control", "treatment"),
+        covariates={"segment": np.repeat("A", 4)},
+    )
+    cells = replace(
+        cells,
+        symmetric_cross_moments=(
+            (((1e16,),),),
+            (((1e16,),),),
+        ),
+    )
+    payload = categorical_payload(
+        "outcome",
+        method,
+        cells,
+        population="assigned",
+        source={"source": "large-float"},
+    )
+    reloaded = parse_cuped_evidence(payload).cells
+    assert reloaded is not None
+    assert reloaded.symmetric_cross_moments == cells.symmetric_cross_moments
+
+
+def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
+    from types import SimpleNamespace
+
+    from increment._cuped_evidence import parse_cuped_evidence, portable_cuped_rows
+    from increment.estimation.cuped.cells import categorical_cells
+
+    class TriggeredAdapter:
+        _population = "triggered"
+        context = SimpleNamespace(trigger_name="activation")
+
+        @property
+        def population(self):
+            return self._population
+
+        @property
+        def trigger_name(self):
+            return self.context.trigger_name
+
+        def moments_for_method(self, metric, method, *, by=()):
+            return []
+
+    source = TriggeredAdapter()
+    method = Method.cuped_multicovariate(
+        covariates=(CupedCovariate(name="segment", kind="categorical"),)
+    )
+    metric = SimpleNamespace(name="outcome")
+    cells = categorical_cells(
+        np.array([1.0, 2.0, 1.5, 2.5]),
+        np.array(["control", "control", "treatment", "treatment"]),
+        identity=("triggered",),
+        control="control",
+        arm_order=("control", "treatment"),
+        covariates={"segment": np.repeat("all", 4)},
+    )
+    rows = portable_cuped_rows(
+        source,
+        [(metric, (), (method,))],
+        categorical_cells=lambda _metric, _method: cells,
+        identity={"source_id": "snapshot"},
+    )
+    envelope = next(row for row in rows if row["record_kind"] == "cuped_evidence")
+    decoded = parse_cuped_evidence(envelope["cuped_evidence"])
+    assert (decoded.population, decoded.trigger_name) == ("triggered", "activation")
+
+    missing_trigger = TriggeredAdapter()
+    missing_trigger.context = SimpleNamespace(trigger_name=None)
+    with pytest.raises(CodedError) as refusal:
+        portable_cuped_rows(
+            missing_trigger,
+            [(metric, (), (method,))],
+            categorical_cells=lambda _metric, _method: cells,
+            identity={"source_id": "snapshot"},
+        )
+    assert refusal.value.code == "moments.cuped_evidence.invalid"
+
+
+def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
+    from increment.sources import MomentsSource
+
+    analysis, spec = _case(family="categorical")
+    try:
+        rows = _export_rows(analysis, tmp_path, "triggered.parquet")[1]
+    finally:
+        analysis.close()
+    for row in rows:
+        if row.get("record_kind") != "cuped_evidence":
+            continue
+        payload = json.loads(row["cuped_evidence"])
+        payload["population"] = "triggered"
+        payload["trigger_name"] = "activation"
+        row["cuped_evidence"] = canonical_json_bytes(payload).decode()
+    cube = MomentsSource(rows, metrics=[spec], study_id="compact")
+    assert cube.population == "triggered"
+    assert cube.context.trigger_name == "activation"
 
 
 def test_equivalent_requests_with_different_labels_share_one_envelope(tmp_path):

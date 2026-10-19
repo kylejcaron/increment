@@ -544,7 +544,6 @@ def test_overflowing_scalar_moments_refuse_with_the_moment_code(tmp_path, ingres
             ingress=ingress,
             tmp_path=tmp_path,
         )
-    assert "Rescale the values" in str(raised.value)
     assert raised.value.code == "estimation.armstats.arm_stats.group_summary_moment"
     assert raised.value.context["name"] == "cy2"
     assert raised.value.context["metric"] == "outcome"
