@@ -25,7 +25,7 @@ from integration.warehouse_execution._suite import (
 pytestmark = pytest.mark.warehouse_bigquery
 
 
-def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
+def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
     from io import BytesIO
     from uuid import uuid4
 
@@ -99,7 +99,7 @@ def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
         )
         assert (
             expected.content_sha256
-            == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+            == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
         )
         assert actual.content_sha256 == expected.content_sha256
     finally:
@@ -107,7 +107,7 @@ def test_bigquery_format2_digest_matches_duckdb(bigquery_con, monkeypatch):
         bigquery_con.drop_table(table_name, force=True)
 
 
-def test_bigquery_float17g_matches_pinned_duckdb_binary64(bigquery_con):
+def test_bigquery_float64_token_matches_pinned_python_binary64(bigquery_con):
     from integration.warehouse_execution._float_tokens import run_float_token_probe
 
     run_float_token_probe(bigquery_con, dialect="bigquery")

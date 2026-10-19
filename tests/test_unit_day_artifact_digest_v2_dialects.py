@@ -89,70 +89,47 @@ def test_row_token_compiles_without_backend_specific_sql(dialect):
     ibis.to_sql(_TABLE.select(tok=token), dialect=dialect)
 
 
-def test_postgres_float_token_uses_ieee_bytes_and_explicit_17_digit_rounding():
-    table = ibis.table({"value": "float64"}, name="rows")
-    token = _row_token_expr(table, [("value", 3, "float")], dialect="postgres")
-    sql = str(ibis.to_sql(table.select(token=token), dialect="postgres"))
-    assert "FLOAT8SEND(" in sql
-    assert "GET_BYTE(" in sql
-    assert "DIV(" in sql
-    assert "%" in sql
-    assert "TRIM_SCALE(" in sql
-
-
-@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-def test_cloud_float17g_uses_exact_integer_limb_formatter(dialect):
-    table = ibis.table({"value": "float64"}, name="rows")
-    payload = _float_payload_expr(table.value, dialect=dialect)
-    sql = str(ibis.to_sql(table.select(payload=payload), dialect=dialect))
+@pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
+def test_float64_binary_token_compiles_as_a_scalar(dialect):
     import sqlglot
 
+    table = ibis.table({"value": "float64"}, name="rows")
+    payload = _float_payload_expr(table.value, dialect=dialect, digest_format=4)
+    sql = str(ibis.to_sql(table.select(payload=payload), dialect=dialect))
     sqlglot.parse_one(sql, read=dialect)
-    assert "LAG(" in sql
-    assert "FORMAT(" not in sql
-    assert "TO_CHAR(" not in sql
+    assert "WITH " not in sql.upper()
+    assert "LAG(" not in sql.upper()
+    assert "E+" not in sql.upper()
 
 
-@pytest.mark.integration
-def test_integer_limb_float17g_matches_native_duckdb():
+def test_float64_binary_tokens_match_python_for_all_pinned_values():
     import json
-    import math
     import struct
     from pathlib import Path
 
-    import numpy as np
     import pyarrow as pa
 
-    from increment.query._artifact_float import _float17g_sql
+    from increment.query._artifact_float import float64_token_py
 
-    fixture = json.loads((Path(__file__).parent / "fixtures/artifact_float17g.json").read_text())
-    pinned = [struct.unpack(">d", bytes.fromhex(case["bits"]))[0] for case in fixture["cases"]]
-    powers = [
-        neighbour
-        for exponent in range(-1074, 1024)
-        for value in (math.ldexp(1.0, exponent),)
-        for neighbour in (math.nextafter(value, 0.0), value, math.nextafter(value, math.inf))
-    ]
-    values = np.concatenate(
-        [
-            np.random.default_rng(173).bit_generator.random_raw(10_000).view(np.float64),
-            pinned,
-            powers,
-        ]
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/artifact_float64_cases.json").read_text()
     )
-    finite = values[np.isfinite(values)]
-    con = ibis.duckdb.connect()
+    values = [struct.unpack(">d", bytes.fromhex(case["bits"]))[0] for case in fixture["cases"]]
+    table = ibis.duckdb.connect()
     try:
-        con.create_table("float_limb_spec", pa.table({"value": finite}))
-        sql = _float17g_sql('"value"', dialect="duckdb")
-        rows = con.raw_sql(
-            f"SELECT value, {sql} AS actual, printf('%.17g', value) AS expected "
-            "FROM float_limb_spec"
-        ).fetchall()
-        for value, actual, expected in rows:
-            assert actual == expected, value
+        source = table.create_table("float64_token_spec", pa.table({"value": values}))
+        expected = [float64_token_py(value) for value in values]
+        actual = table.to_pyarrow(
+            source.select(
+                token=_float_payload_expr(source.value, dialect="duckdb", digest_format=4)
+            )
+        )["token"].to_pylist()
+        assert actual == expected
+        assert float64_token_py(1.0) == "4503599627370496p-52"
+        assert float64_token_py(float.fromhex("0x0.0000000000001p-1022")) == "1p-1074"
+        assert float64_token_py(-0.0) == "-0"
     finally:
-        con.disconnect()
+        table.disconnect()
 
 
 @pytest.mark.parametrize(

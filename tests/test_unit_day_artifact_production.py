@@ -1126,8 +1126,8 @@ def test_same_role_relations_keep_distinct_locators_and_snapshot_reads_second() 
                 ]
             ),
         )
-        assert first_dimension_ref.digest_format == 2
-        assert second_dimension_ref.digest_format == 2
+        assert first_dimension_ref.digest_format == 4
+        assert second_dimension_ref.digest_format == 4
         assert second_dimension_ref.relation.name.endswith("breakout_dimension_2")
         _, _, first_def_sha, first_src_sha = _breakout_definition_hashes("first_dim", "facts")
         _, _, second_def_sha, second_src_sha = _breakout_definition_hashes("second_dim", "facts")

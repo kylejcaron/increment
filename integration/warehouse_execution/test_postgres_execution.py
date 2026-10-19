@@ -210,9 +210,8 @@ def test_postgres_timestamp_tokens_preserve_epoch_microseconds(postgres_con):
         postgres_con.drop_table(name, force=True)
 
 
-def test_postgres_format2_digest_matches_duckdb(postgres_con):
-    """Exercise format-2 hashing on native PostgreSQL values, including its
-    built-in SHA-256 path (without requiring pgcrypto)."""
+def test_postgres_format4_digest_matches_duckdb(postgres_con):
+    """Exercise format-4 hashing on native PostgreSQL values using its built-in SHA-256 path."""
     import ibis
 
     from increment.query.artifact_digest import digest_relation_sql_v2
@@ -245,7 +244,7 @@ def test_postgres_format2_digest_matches_duckdb(postgres_con):
         )
         assert (
             expected.content_sha256
-            == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+            == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
         )
         from increment.query.artifact_digest import _row_token_expr
 
@@ -279,7 +278,7 @@ def test_postgres_format2_digest_matches_duckdb(postgres_con):
             postgres_con.drop_table(pg_table.get_name(), force=True)
 
 
-def test_postgres_float17g_matches_duckdb_random_binary64(postgres_con):
+def test_postgres_float64_token_matches_duckdb_random_binary64(postgres_con):
     from integration.warehouse_execution._float_tokens import run_float_token_probe
 
     run_float_token_probe(postgres_con, dialect="postgres", random_count=10_000)

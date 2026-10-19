@@ -43,7 +43,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
-from increment.query._artifact_float import _CloudFloat17g, register_cloud_float17g
+from increment.query._artifact_float import _Float64Token, register_float64_token
 
 if TYPE_CHECKING:
     import ibis.expr.types as ir
@@ -52,14 +52,14 @@ _DIGEST_BATCH_ROWS = 4096
 
 DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT
 
-# `digest_relation_sql_v2` (SQL text tokens) and `digest_relation_bucketed`
-# (`canonical_row_bytes`) share this v2 domain but not format ids: a stored
-# `digest_format`, never the connected backend, selects the verify codec.
-# DOMAIN_ROOT stays fixed: manifest, context, request and extension hashes embed it.
+# SQL digest formats use the same v2 domain and row-token framing. Format 2
+# is retained only for verifying existing DuckDB relations; format 4 replaces
+# its decimal float payload with an exact binary64 significand/exponent token.
 _DOMAIN_ROOT_V2 = b"increment.unit-day-artifact\x00v2\x00"
 
-#: `digest_relation_sql_v2`'s row encoding: SQL text tokens.
-SQL_DIGEST_FORMAT = 2
+#: `digest_relation_sql_v2`'s current SQL text-token encoding.
+SQL_DIGEST_FORMAT = 4
+_SQL_DIGEST_FORMAT_V2 = 2
 #: `digest_relation_bucketed`'s row encoding: binary `canonical_row_bytes`.
 BUCKETED_DIGEST_FORMAT = 3
 
@@ -1001,8 +1001,6 @@ def digest_relation_bucketed(
 
 _SQL_DIGEST_BACKENDS = frozenset({"duckdb", "postgres", "snowflake", "bigquery"})
 
-# The format-2 digest path is enabled only for backends covered by live
-# parity probes in their warehouse execution suite.
 _SQL_DIGEST_SHA256: dict[str, Callable[[ir.StringValue], ir.StringValue]] = {}
 # Same hash as 32 raw bytes, and its lowercase-hex rendering. Row hashes are
 # held in binary (half the width of hex) while waiting to be aggregated.
@@ -1017,15 +1015,6 @@ class _Sha2Binary(ops.Value):
     bits: ops.Value[dt.Integer]
 
     dtype = dt.binary
-    shape = rlz.shape_like("arg")
-
-
-class _PostgresFloat17g(ops.Value):
-    """Render float8 exactly like DuckDB's `printf('%.17g', value)`."""
-
-    arg: ops.Value[dt.Floating]
-
-    dtype = dt.string
     shape = rlz.shape_like("arg")
 
 
@@ -1046,76 +1035,9 @@ def _compile_postgres_epoch_micros(_compiler: object, _op: _PostgresEpochMicros,
     )
 
 
-def _compile_postgres_float17g(_compiler: object, _op: _PostgresFloat17g, *, arg: Any):
-    import sqlglot as sg
-
-    value = arg.sql(dialect="postgres")
-    # |x| = D * 10**-scale, with integer D. Division/remainder, not a
-    # fixed-scale decimal division, decide the exact half-even rounding.
-    sql = f"""(
-      SELECT (CASE WHEN sign <> 0 THEN '-' ELSE '' END) ||
-        CASE WHEN coefficient = 0 THEN '0'
-          WHEN exponent10 < -4 OR exponent10 >= 17 THEN
-            left(digits, 1) ||
-            CASE WHEN length(digits) > 1 THEN '.' || substr(digits, 2) ELSE '' END ||
-            'e' || CASE WHEN exponent10 < 0 THEN '-' ELSE '+' END ||
-            lpad(abs(exponent10)::text, greatest(2, length(abs(exponent10)::text)), '0')
-          WHEN exponent10 < 0 THEN '0.' || repeat('0', -exponent10 - 1) || digits
-          WHEN length(digits) <= exponent10 + 1 THEN
-            digits || repeat('0', exponent10 + 1 - length(digits))
-          ELSE left(digits, exponent10 + 1) || '.' || substr(digits, exponent10 + 2)
-        END
-      FROM (
-        SELECT sign, coefficient,
-          exp10 + CASE WHEN coefficient = 100000000000000000 THEN 1 ELSE 0 END AS exponent10,
-          rtrim(trim_scale(coefficient)::text, '0') AS digits
-        FROM (
-          SELECT sign, exp10,
-            whole + CASE WHEN 2 * remainder > divisor
-              OR (2 * remainder = divisor AND mod(whole, 2) = 1)
-              THEN 1 ELSE 0 END AS coefficient
-          FROM (
-            SELECT sign, exp10, divisor, div(integer_value, divisor) AS whole,
-              mod(integer_value, divisor) AS remainder
-            FROM (
-              SELECT sign, length(trim_scale(integer_value)::text) - 1 - scale AS exp10,
-                integer_value, power(10::numeric,
-                  greatest(length(trim_scale(integer_value)::text) - 17, 0)) AS divisor
-              FROM (
-                SELECT sign, greatest(-exponent2, 0) AS scale,
-                  mantissa::numeric * power(
-                    CASE WHEN exponent2 < 0 THEN 5::numeric ELSE 2::numeric END,
-                    abs(exponent2)) AS integer_value
-                FROM (
-                  SELECT (get_byte(raw, 0) & 128) AS sign,
-                    CASE WHEN expbits = 0 THEN -1074 ELSE expbits - 1075 END AS exponent2,
-                    fraction + CASE WHEN expbits = 0 THEN 0 ELSE 4503599627370496 END AS mantissa
-                  FROM (
-                    SELECT raw,
-                      (get_byte(raw, 0) & 127) * 16 + (get_byte(raw, 1) >> 4) AS expbits,
-                      (get_byte(raw, 1) & 15)::bigint * 281474976710656
-                        + get_byte(raw, 2)::bigint * 1099511627776
-                        + get_byte(raw, 3)::bigint * 4294967296
-                        + get_byte(raw, 4)::bigint * 16777216
-                        + get_byte(raw, 5)::bigint * 65536
-                        + get_byte(raw, 6)::bigint * 256
-                        + get_byte(raw, 7)::bigint AS fraction
-                    FROM (SELECT float8send({value}) AS raw) AS source_bits
-                  ) AS decoded
-                ) AS binary_value
-              ) AS exact_decimal
-            ) AS scaled_value
-          ) AS quotient_remainder
-        ) AS rounded_value
-      ) AS fmt
-    )"""
-    return sg.parse_one(f"SELECT {sql}", read="postgres").expressions[0]
-
-
 def _register_postgres_digest_ops() -> None:
     from ibis.backends.sql.compilers.postgres import PostgresCompiler
 
-    PostgresCompiler.visit__PostgresFloat17g = _compile_postgres_float17g  # ty: ignore[unresolved-attribute]
     PostgresCompiler.visit__PostgresEpochMicros = _compile_postgres_epoch_micros  # ty: ignore[unresolved-attribute]
 
 
@@ -1193,7 +1115,9 @@ def _register_sha256_backends() -> None:
 
 _register_sha256_backends()
 
-# Format-2 floats share DuckDB's exact 17-significant-digit, half-even spelling.
+# Format 2 remains readable only on DuckDB; format 4 uses exact binary64
+# significand/exponent tokens on every SQL digest backend.
+_SQL_DIGEST_FLOAT_TOKEN_V2: dict[str, Callable[[ir.FloatingValue], ir.StringValue]] = {}
 _SQL_DIGEST_FLOAT_TOKEN: dict[str, Callable[[ir.FloatingValue], ir.StringValue]] = {}
 
 
@@ -1201,17 +1125,14 @@ def _register_float_token_backends() -> None:
     @ibis.udf.scalar.builtin(name="printf")
     def _duckdb_printf17g(fmt: str, x: float) -> str: ...  # ty: ignore[empty-body]
 
-    _SQL_DIGEST_FLOAT_TOKEN["duckdb"] = lambda col: _duckdb_printf17g(  # ty: ignore[invalid-assignment]
+    _SQL_DIGEST_FLOAT_TOKEN_V2["duckdb"] = lambda col: _duckdb_printf17g(  # ty: ignore[invalid-assignment]
         "%.17g", col
     )
-    register_cloud_float17g()
-    for dialect in ("snowflake", "bigquery"):
-        _SQL_DIGEST_FLOAT_TOKEN[dialect] = lambda col: _CloudFloat17g(
+    register_float64_token()
+    for dialect in ("duckdb", "snowflake", "bigquery", "postgres"):
+        _SQL_DIGEST_FLOAT_TOKEN[dialect] = lambda col: _Float64Token(
             cast("ops.Value[dt.Floating]", col.op())
         ).to_expr()
-    _SQL_DIGEST_FLOAT_TOKEN["postgres"] = lambda col: _PostgresFloat17g(
-        cast("ops.Value[dt.Floating]", col.op())
-    ).to_expr()
 
 
 _register_float_token_backends()
@@ -1263,13 +1184,25 @@ def _sql_binary_hex_expr(col: ir.BinaryValue, *, dialect: str) -> ir.StringValue
     return _SQL_DIGEST_BINARY_HEX[dialect](col)
 
 
-def _float_payload_expr(col: ir.FloatingValue, *, dialect: str) -> ir.StringValue:
-    """Canonical float payload including DuckDB's spellings for non-finite values."""
-    finite = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
+def _float_payload_expr(
+    col: ir.FloatingValue, *, dialect: str, digest_format: int = SQL_DIGEST_FORMAT
+) -> ir.StringValue:
+    """Canonical float payload including the digest version's special values."""
+    if digest_format == _SQL_DIGEST_FORMAT_V2:
+        if dialect != "duckdb":
+            _raise(
+                "artifact.digest.rows",
+                constraint="format 2 float verification is supported only on DuckDB",
+                value={"backend": dialect},
+                route="verify format-2 relations on DuckDB or republish with format 4",
+            )
+        finite = _SQL_DIGEST_FLOAT_TOKEN_V2[dialect](col)
+    else:
+        finite = _SQL_DIGEST_FLOAT_TOKEN[dialect](col)
     return col.isnan().ifelse(
         ibis.literal("nan", type="string"),
         col.isinf().ifelse(
-            (col < 0).ifelse(  # ty: ignore[unsupported-operator]
+            (col < ibis.literal(0.0)).ifelse(
                 ibis.literal("-inf", type="string"),
                 ibis.literal("inf", type="string"),
             ),
@@ -1283,7 +1216,7 @@ def _row_token_expr(
     tagged_fields: Sequence[tuple[str, int, str]],
     *,
     dialect: str,
-    float_payload_columns: dict[str, str] | None = None,
+    digest_format: int = SQL_DIGEST_FORMAT,
 ) -> ir.StringValue:
     """One `tag(2 hex) + len(16-digit decimal, zero-padded) + payload`
     token per field, concatenated in schema order."""
@@ -1291,11 +1224,7 @@ def _row_token_expr(
     for name, tag, kind in tagged_fields:
         col = table[name]
         if kind == "float":
-            payload = (
-                table[float_payload_columns[name]]
-                if float_payload_columns is not None and name in float_payload_columns
-                else _float_payload_expr(col, dialect=dialect)
-            )
+            payload = _float_payload_expr(col, dialect=dialect, digest_format=digest_format)
         elif kind == "timestamp":
             payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
         else:
@@ -1373,24 +1302,35 @@ def _assert_cells_valid_sql(
 
 
 def digest_relation_sql_v2(
-    con: Any, table: ir.Table, role: str, schema: object, *, primary_key: Sequence[str] = ()
+    con: Any,
+    table: ir.Table,
+    role: str,
+    schema: object,
+    *,
+    primary_key: Sequence[str] = (),
+    digest_format: int = SQL_DIGEST_FORMAT,
 ) -> RelationDigests:
-    """SQL fast path (gated to `_SQL_DIGEST_BACKENDS`). Row hashes are
-    materialized once, as 32 raw bytes, into a temporary table; bucket digests
-    are then aggregated over their lowercase hex, one bucket range at a time.
-    An ordered string aggregate buffers its whole input, so ranges are sized
-    to ~`_DIGEST_ROWS_PER_PASS` rows without hashing any row twice. All of it
-    stays inside the backend's own memory manager (which may spill), never
-    the Python heap: only the populated buckets' (bucket_index, bucket_digest) pairs --
-    at most 4096 rows -- cross the client boundary. Raises
-    artifact.digest.primary_key before hashing if `table` has a NULL or
-    duplicate primary key value."""
+    """SQL digest in the v2 domain: format 2 for DuckDB verification, format 4 for writes."""
     if con.name not in _SQL_DIGEST_BACKENDS:
         _raise(
             "artifact.digest.rows",
-            constraint="SQL digest v2 runs only on live-verified backends",
+            constraint="SQL digest runs only on enabled backends",
             value={"backend": con.name, "enabled": tuple(sorted(_SQL_DIGEST_BACKENDS))},
             route="digest this backend's relation with digest_relation_bucketed",
+        )
+    if digest_format not in {_SQL_DIGEST_FORMAT_V2, SQL_DIGEST_FORMAT}:
+        _raise(
+            "artifact.digest.rows",
+            constraint="SQL digest supports formats 2 and 4",
+            value=digest_format,
+            route="use format 2 for DuckDB verification or publish with format 4",
+        )
+    if digest_format == _SQL_DIGEST_FORMAT_V2 and con.name != "duckdb":
+        _raise(
+            "artifact.digest.rows",
+            constraint="format 2 is a DuckDB-only verify codec",
+            value={"backend": con.name},
+            route="verify format-2 relations on DuckDB or republish with format 4",
         )
     fields = _fields(schema)
     pk = tuple(primary_key)
@@ -1412,29 +1352,7 @@ def digest_relation_sql_v2(
     sh = schema_sha256(role, schema)
     kinds = {DigestType.FLOAT64: "float", DigestType.TIMESTAMP_UTC_US: "timestamp"}
     tagged_fields = [(f.name, int(f.type_tag), kinds.get(f.type_tag, "other")) for f in fields]
-    digest_source = table
-    float_fields = [name for name, _tag, kind in tagged_fields if kind == "float"]
-    payload_columns: dict[str, str] = {}
-    payload_table_name: str | None = None
-    if con.name in {"snowflake", "bigquery"} and float_fields:
-        payload_columns = {
-            name: f"__incr_float_payload_{index}" for index, name in enumerate(float_fields)
-        }
-        staged = table.select(
-            *table.columns,
-            **{
-                payload_columns[name]: _float_payload_expr(table[name], dialect=con.name)
-                for name in float_fields
-            },
-        )
-        payload_table_name = f"incr_payload_{uuid.uuid4().hex}"
-        digest_source = con.create_table(payload_table_name, staged, temp=True)
-    row_token = _row_token_expr(
-        digest_source,
-        tagged_fields,
-        dialect=con.name,
-        float_payload_columns=payload_columns or None,
-    )
+    row_token = _row_token_expr(table, tagged_fields, dialect=con.name, digest_format=digest_format)
 
     def sha256_hex(col: ir.StringValue) -> ir.StringValue:
         return _sql_digest_sha256_expr(col, dialect=con.name)
@@ -1442,9 +1360,7 @@ def digest_relation_sql_v2(
     hashed_name = f"incr_digest_{uuid.uuid4().hex}"
     hashed = None
     try:
-        row_hashes = digest_source.select(
-            h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name)
-        )
+        row_hashes = table.select(h=_sql_digest_sha256_binary_expr(row_token, dialect=con.name))
         hashed = con.create_table(hashed_name, row_hashes, temp=True)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
@@ -1472,8 +1388,6 @@ def digest_relation_sql_v2(
     finally:
         if hashed is not None:
             con.drop_table(hashed_name, force=True)
-        if payload_table_name is not None:
-            con.drop_table(payload_table_name, force=True)
     bucketed = sum(record["n"] for record in rows)
     if bucketed != row_count:
         _raise(
@@ -1495,9 +1409,7 @@ def digest_relation_sql_v2(
         + _u64(row_count, None, _ROW_COUNT)
         + bytes(pairs)
     ).hexdigest()
-    return RelationDigests(
-        role, sh, ch, row_count, schema_raw, None, digest_format=SQL_DIGEST_FORMAT
-    )
+    return RelationDigests(role, sh, ch, row_count, schema_raw, None, digest_format=digest_format)
 
 
 def canonical_json_bytes(value: object) -> bytes:

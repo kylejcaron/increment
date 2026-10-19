@@ -2551,7 +2551,7 @@ def test_publish_and_open_complete_under_a_tight_duckdb_memory_limit(
     free = unconstrained_million_row_publication
     limited = _publish_and_open_exposures(tmp_path, 1_000_000, memory_limit="64MB")
     assert limited["verified_rows"] == 1_000_000
-    assert limited["exposures"].digest_format == 2
+    assert limited["exposures"].digest_format == 4
     assert limited["exposures"].content_sha256 == free["exposures"].content_sha256
 
 
@@ -2597,7 +2597,7 @@ def test_publication_validates_statistics_with_bounded_sql_reduction(monkeypatch
             ARTIFACT_RELATION_SCHEMAS["measure_stats"],
             primary_key=ARTIFACT_RELATION_PRIMARY_KEYS["measure_stats"],
         )
-        assert measure.digest_format == 2
+        assert measure.digest_format == 4
         assert recomputed.content_sha256 == measure.content_sha256
         assert manifest.last_ds == max(row["ds"] for row in rows)
     finally:

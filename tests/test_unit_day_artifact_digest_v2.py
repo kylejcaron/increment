@@ -1,9 +1,8 @@
-"""Format-2/3 unit-day artifact content digest: an order-independent hash
-tree (SHA-256 per row, bucketed by row hash, ordered-concat within each
-bucket, hashed again across buckets in bucket order), computed either in
-SQL (format 2, DuckDB and PostgreSQL) or via one client-side pass with no external
-sort (format 3): the two hash different row encodings, so they carry
-distinct format ids."""
+"""Unit-day artifact content digest formats 2, 3, and 4 use an order-independent
+hash tree (SHA-256 per row, bucketed by row hash, ordered-concat within each
+bucket, hashed again across buckets in bucket order). SQL format 4 is used for
+all enabled backends; SQL format 2 verifies existing DuckDB relations; format 3
+uses one client-side pass with a different row encoding."""
 
 from __future__ import annotations
 
@@ -50,7 +49,7 @@ def test_sql_digest_is_order_independent(con):
     )
     assert forward.content_sha256 == backward.content_sha256
     assert forward.row_count == backward.row_count == 3
-    assert forward.digest_format == 2
+    assert forward.digest_format == 4
 
 
 _PORTABLE_SCHEMA = (
@@ -130,9 +129,8 @@ def _portable_digest_rows():
     ]
 
 
-def test_sql_digest_format2_portable_edge_relation_is_pinned(con):
-    """The format-2 oracle pins the portable float, integer, text, NULL,
-    date, timestamp, and boolean encodings to one DuckDB-produced digest."""
+def test_sql_digest_format2_duckdb_verify_codec_stays_pinned(con):
+    """Existing DuckDB relations retain the format-2 decimal-float verifier."""
     schema = ibis.schema(
         {
             "id": "int64",
@@ -145,13 +143,38 @@ def test_sql_digest_format2_portable_edge_relation_is_pinned(con):
         }
     )
     table = con.create_table(
-        "portable_digest_spec", ibis.memtable(_portable_digest_rows(), schema=schema)
+        "portable_digest_v2_spec", ibis.memtable(_portable_digest_rows(), schema=schema)
+    )
+    digest = digest_relation_sql_v2(
+        con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",), digest_format=2
+    )
+    assert digest.digest_format == 2
+    assert (
+        digest.content_sha256 == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+    )
+
+
+def test_sql_digest_format4_portable_edge_relation_is_pinned(con):
+    schema = ibis.schema(
+        {
+            "id": "int64",
+            "text": "string",
+            "integer": "int64",
+            "float": "float64",
+            "date": "date",
+            "timestamp": "timestamp('UTC')",
+            "boolean": "boolean",
+        }
+    )
+    table = con.create_table(
+        "portable_digest_v4_spec", ibis.memtable(_portable_digest_rows(), schema=schema)
     )
     digest = digest_relation_sql_v2(
         con, table, "portable_spec", _PORTABLE_SCHEMA, primary_key=("id",)
     )
+    assert digest.digest_format == 4
     assert (
-        digest.content_sha256 == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+        digest.content_sha256 == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
     )
 
 

@@ -61,7 +61,7 @@ def test_artifact_manifest_index_namespace_contract(snowflake_con):
     run_artifact_namespace_probe(snowflake_con, dialect="snowflake")
 
 
-def test_snowflake_format2_digest_matches_duckdb(snowflake_con, monkeypatch):
+def test_snowflake_format4_digest_matches_duckdb(snowflake_con, monkeypatch):
     import ibis
     import pyarrow as pa
 
@@ -119,7 +119,7 @@ def test_snowflake_format2_digest_matches_duckdb(snowflake_con, monkeypatch):
         )
         assert (
             expected.content_sha256
-            == "23ef04d1d818703fb52d9d5eae6032fac25b4cbae5b754abb578043fabc168ec"
+            == "ba21a1e1512f6130d7438ea7f75e65237725c92fa9775f9a3065fd251d8c9724"
         )
         assert actual.content_sha256 == expected.content_sha256
     finally:
@@ -127,7 +127,7 @@ def test_snowflake_format2_digest_matches_duckdb(snowflake_con, monkeypatch):
         snowflake_con.drop_table(pg_name, force=True)
 
 
-def test_snowflake_float17g_matches_pinned_duckdb_binary64(snowflake_con):
+def test_snowflake_float64_token_matches_pinned_python_binary64(snowflake_con):
     from integration.warehouse_execution._float_tokens import run_float_token_probe
 
     run_float_token_probe(snowflake_con, dialect="snowflake")

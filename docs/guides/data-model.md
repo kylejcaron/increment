@@ -659,7 +659,7 @@ Definitions-backed analysis has two persistence boundaries:
 | Call | What it does |
 |---|---|
 | `analysis.materialize()` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
-| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with context format 2 and the backend's relation-digest format. DuckDB uses digest format 2, which the warehouse reader verifies. PostgreSQL, Snowflake, and BigQuery use digest format 3 and are refused by this branch's reader with `query.session.warehouse_artifact.verification_unavailable`; use the definitions-backed route or republish after a reader supporting that backend's digest is available. |
+| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
 A refresh keeps `artifact_id` but creates a new `generation_id`, and must use
 the same compiled context as the pinned prior generation. Completeness is only
@@ -706,24 +706,23 @@ publication time, and experiment end are not completeness proofs.
     and semantic role.
 
     The warehouse store persists each relation before hashing the persisted
-    rows. Format-2 SQL verification is enabled for DuckDB and PostgreSQL.
-    Only bounded hash/count summaries return to Python; per-unit hashing stays
-    in the warehouse. Unsupported historical relation formats are refused
-    before unit transfer when the backend cannot verify them.
-    `RelationDigests.rows_bytes` is `None` on the SQL route;
+    rows. Format-4 SQL verification is enabled for DuckDB, PostgreSQL,
+    Snowflake, and BigQuery. Format 2 remains a verify-only codec for existing
+    DuckDB relations. Only bounded hash/count summaries return to Python;
+    per-unit hashing stays in the warehouse. Unsupported historical relation
+    formats are refused before unit transfer when the backend cannot verify
+    them. `RelationDigests.rows_bytes` is `None` on the SQL route;
     `digest_relation()` still includes the canonical row bytes.
 
-    Format 2 uses DuckDB's `%.17g` float spelling: exact binary64 values are
-    rounded half-even to 17 significant decimal digits, then trailing zeros
-    are removed and scientific notation is used below exponent -4 or from
-    exponent 17. PostgreSQL decodes `float8send` into an exact decimal integer
-    and scale before rounding. Snowflake and BigQuery use exact decimal
-    integer limbs to avoid their fixed decimal precision limits; their SQL
-    verifiers remain disabled pending live backend validation.
-    PostgreSQL timestamp tokens use numeric `EXTRACT(EPOCH)` before conversion
-    to integer microseconds, without passing through floating-point seconds.
-    Text hash inputs are converted explicitly to UTF-8 bytes, so backslashes
-    remain literal text rather than PostgreSQL bytea escape sequences.
+    Format 4 encodes a finite binary64 value as its sign, exact decimal integer
+    significand, `p`, and exact binary exponent; zero retains its sign and
+    subnormals use the fixed exponent -1074. NaN and infinity retain their
+    canonical spellings. This avoids backend decimal expansion and is unique
+    for each finite IEEE-754 value. PostgreSQL timestamp tokens use numeric
+    `EXTRACT(EPOCH)` before conversion to integer microseconds, without passing
+    through floating-point seconds. Text hash inputs are converted explicitly
+    to UTF-8 bytes, so backslashes remain literal text rather than PostgreSQL
+    bytea escape sequences.
 
     Exposure metadata and integrity checks use SQL reductions, joins, and
     anti-joins rather than per-unit Python collections. Explicit row APIs such

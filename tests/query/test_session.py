@@ -955,7 +955,7 @@ def test_streaming_store_hashes_persisted_execution_and_cleans_snapshot(monkeypa
         with store.open_snapshot(ref) as snapshot:
             table = snapshot.verify_relation(measure, expected_role="measure_stats")
             rows = arrow(table).to_pylist()
-            assert measure.digest_format == 2
+            assert measure.digest_format == 4
             expected = digest_relation_sql_v2(
                 con,
                 table,
@@ -1003,8 +1003,8 @@ def test_streaming_snapshot_isolates_post_verification_external_mutation():
 
 @pytest.mark.slow
 def test_streaming_store_failed_write_drops_unregistered_relation(monkeypatch):
-    """format-2's SQL digest is one function call (no separate fetch-then-hash
-    streaming stages to fail independently), so a single injection point
+    """Format-4 SQL digesting is one function call (no separate fetch-and-hash
+    stages to fail independently), so a single injection point
     stands in for the old fetch/digest split: any exception raised while
     computing the digest must still drop the newly created table and leave
     no visible manifest."""
@@ -1064,7 +1064,7 @@ def test_empty_snapshot_refuses_incorrect_column_types(monkeypatch, reopen, colu
 @pytest.mark.slow
 @pytest.mark.parametrize("failure", ["digest", "mismatch", "body"])
 def test_streaming_snapshot_failure_cleans_private_tables(monkeypatch, failure):
-    """format-2's SQL digest is one function call, so "fetch" and "digest"
+    """Format-4 SQL digesting is one function call, so "fetch" and "digest"
     collapse into one injection point (patching digest_relation_sql_v2)."""
     from duckdb import CatalogException
 
