@@ -939,7 +939,7 @@ def test_categorical_decode_preserves_trigger_identity():
     for trigger_name in ("activation", "purchase"):
         rows = portable_cuped_rows(
             TriggeredAdapter(trigger_name),
-            [(metric, (), (method,))],
+            [(metric, (), (method,), ())],
             categorical_cells=lambda _metric, _method: cells,
             identity={"source_id": "snapshot"},
         )
