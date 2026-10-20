@@ -1114,23 +1114,101 @@ def test_v3_trigger_population_count_mismatch_is_refused(
     reference = native.publish_unit_day_artifact(
         store, extensions=_extensions(context, "assignment_counts", "trigger_population")
     )
+    original_open_snapshot = store.open_snapshot
+
+    class TamperedAssignmentSnapshot:
+        def __init__(self, snapshot: Any) -> None:
+            self.snapshot = snapshot
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.snapshot, name)
+
+        def verify_relation(self, relation: Any, *, expected_role: str) -> Any:
+            table = self.snapshot.verify_relation(relation, expected_role=expected_role)
+            if expected_role == "assignment_counts":
+                return table.mutate(
+                    n_units=ibis.ifelse(
+                        table.population == "assigned", table.n_units + 1, table.n_units
+                    )
+                )
+            return table
+
+    @contextmanager
+    def open_snapshot_with_tampering(reference: Any):
+        with original_open_snapshot(reference) as snapshot:
+            yield TamperedAssignmentSnapshot(snapshot)
+
+    monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
     source = _artifact_source(store, reference, context)
+    triggered = source.triggered_source()
     try:
-        original_read = source._read_extension
-
-        def corrupted_read(extension: Any, *, request: Any) -> list[dict[str, Any]]:
-            rows = original_read(extension, request=request)
-            if extension.kind == "assignment_counts":
-                for row in rows:
-                    if row["population"] == "triggered":
-                        row["n_units"] += 1
-            return rows
-
-        monkeypatch.setattr(source, "_read_extension", corrupted_read)
         with pytest.raises(ArtifactContractError) as raised:
-            source.triggered_counts()
+            triggered.triggered_counts()
         assert raised.value.code == "artifact.extension.invalid"
     finally:
+        triggered.close()
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.slow
+def test_triggered_site_volume_semantic_validation_runs_on_verified_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definitions = _definitions(
+        tmp_path, trigger="session_start", site_volume_only=True, sitewide_count=True
+    )
+    _connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
+    reference = native.publish_unit_day_artifact(
+        store,
+        extensions=_extensions(
+            context,
+            "site_volume",
+            "trigger_population",
+            "trigger_measure_stats",
+            "assignment_counts",
+        ),
+    )
+    original_open_snapshot = store.open_snapshot
+
+    verified_roles: list[str] = []
+
+    class OutOfRangeSiteVolumeSnapshot:
+        def __init__(self, snapshot: Any) -> None:
+            self.snapshot = snapshot
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.snapshot, name)
+
+        def verify_relation(self, relation: Any, *, expected_role: str) -> Any:
+            verified_roles.append(expected_role)
+            verified = self.snapshot.verify_relation(relation, expected_role=expected_role)
+            if expected_role == "site_volume":
+                return verified.mutate(ds=verified.ds + ibis.interval(days=1000))
+            return verified
+
+    @contextmanager
+    def open_snapshot_with_tampering(ref: Any):
+        with original_open_snapshot(ref) as snapshot:
+            yield OutOfRangeSiteVolumeSnapshot(snapshot)
+
+    monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_tampering)
+    source = _artifact_source(store, reference, context)
+    triggered = source.triggered_source()
+    metric = next(metric for metric in native.metrics if metric.name == "purchase_count")
+    try:
+        with pytest.raises(ArtifactContractError) as raised:
+            triggered.sitewide_evidence(metric, population="triggered")
+        assert raised.value.code == "artifact.extension.invalid"
+        assert "site_volume" in verified_roles
+    finally:
+        triggered.close()
         source.close()
         native.close()
 
@@ -2473,12 +2551,12 @@ def test_publish_and_open_complete_under_a_tight_duckdb_memory_limit(
     free = unconstrained_million_row_publication
     limited = _publish_and_open_exposures(tmp_path, 1_000_000, memory_limit="64MB")
     assert limited["verified_rows"] == 1_000_000
-    assert limited["exposures"].digest_format == 2
+    assert limited["exposures"].digest_format == 4
     assert limited["exposures"].content_sha256 == free["exposures"].content_sha256
 
 
 @pytest.mark.slow
-def test_streaming_publication_validates_batches_without_full_stats_fetch(monkeypatch):
+def test_publication_validates_statistics_with_bounded_sql_reduction(monkeypatch):
     from increment.query import artifact_publish as module
     from increment.query.artifact_digest import digest_relation_sql_v2
 
@@ -2486,30 +2564,30 @@ def test_streaming_publication_validates_batches_without_full_stats_fetch(monkey
         definitions=Path(__file__).resolve().parents[1] / "examples" / "definitions"
     )
     arrow = con.to_pyarrow
-    validate = module.validate_unit_day_aggregate_rows
-    batch_sizes = []
+    validated_columns = []
 
     def guarded(expression, **kwargs):
-        # Scalar aggregates (counts) have no columns and are always allowed.
         columns = getattr(expression, "columns", ())
-        assert "n_events" not in columns, "statistics fetched in full"
+        assert "unit_id" not in columns, "unit statistics fetched in full"
+        assert "measure_key" not in columns, "unit statistics fetched in full"
         return arrow(expression, **kwargs)
 
-    def checked(rows):
-        assert len(rows) <= 128
-        batch_sizes.append(len(rows))
-        validate(rows)
+    original = module.ArtifactPublisher._validate_stats_relation
+
+    def checked(self, stats):
+        validated_columns.append(tuple(stats.schema().names))
+        return original(self, stats)
 
     monkeypatch.setattr(con, "to_pyarrow", guarded)
-    monkeypatch.setattr(module, "_DIGEST_BATCH_ROWS", 128)
-    monkeypatch.setattr(module, "validate_unit_day_aggregate_rows", checked)
+    monkeypatch.setattr(module.ArtifactPublisher, "_validate_stats_relation", checked)
     try:
         ref = native.publish_unit_day_artifact(store)
         with store.open_snapshot(ref) as snapshot:
             manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
         measure = manifest.base.measure_stats
-        assert len(batch_sizes) > 1
-        assert sum(batch_sizes) == measure.row_count
+        assert validated_columns
+        monkeypatch.setattr(con, "to_pyarrow", arrow)
+        assert all("unit_id" in columns for columns in validated_columns)
         stored = con.table(measure.relation.name, database="artifacts")
         rows = arrow(stored).to_pylist()
         recomputed = digest_relation_sql_v2(
@@ -2519,7 +2597,7 @@ def test_streaming_publication_validates_batches_without_full_stats_fetch(monkey
             ARTIFACT_RELATION_SCHEMAS["measure_stats"],
             primary_key=ARTIFACT_RELATION_PRIMARY_KEYS["measure_stats"],
         )
-        assert measure.digest_format == 2
+        assert measure.digest_format == 4
         assert recomputed.content_sha256 == measure.content_sha256
         assert manifest.last_ds == max(row["ds"] for row in rows)
     finally:
@@ -2549,7 +2627,7 @@ def test_publication_keeps_validated_stats_when_source_changes(
         )
         baseline_rows = con.to_pyarrow(baseline_stats).to_pylist()
     baseline = Analysis.from_unit_day_artifact(store, baseline_ref, expected_context=context)
-    validate = ArtifactPublisher._validate_stats_batches
+    validate = ArtifactPublisher._validate_stats_relation
     validated_rows = []
     columns = ["unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"]
 
@@ -2562,7 +2640,7 @@ def test_publication_keeps_validated_stats_when_source_changes(
         )
         return last_ds
 
-    monkeypatch.setattr(ArtifactPublisher, "_validate_stats_batches", validate_then_change)
+    monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", validate_then_change)
     adopted = None
     try:
         ref = native.publish_unit_day_artifact(store)
@@ -2623,7 +2701,7 @@ def test_publication_cleans_materialized_inputs_and_stats(monkeypatch, tmp_path,
 
     monkeypatch.setattr(con, "create_table", tracked)
     if failure == "validation":
-        monkeypatch.setattr(ArtifactPublisher, "_validate_stats_batches", broken)
+        monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", broken)
     elif failure == "publication":
         monkeypatch.setattr(store, "_write_relation", broken)
     try:

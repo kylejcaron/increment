@@ -659,7 +659,7 @@ Definitions-backed analysis has two persistence boundaries:
 | Call | What it does |
 |---|---|
 | `analysis.materialize()` | Rebuilds a session-local copy of the unit-day core from current warehouse data (TEMP relations on the current connection). Every call rescans the source unless `store="none"` or no metrics are declared; qualifying readouts rebuild per call (`"always"` from the first call, `"auto"` from the second), and nested reductions reuse that operation's copy, not an earlier call's. Not a portable artifact, and not an atomic snapshot across several source tables. |
-| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable format-1 artifact generation through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
+| `analysis.publish_unit_day_artifact(store, extensions=(), refresh_of=None)` | Builds the canonical core once and publishes an immutable artifact generation with the format-2 context and format-4 relation digests through the store, returning a `UnitDayArtifactRef`. A later process adopts it with `Analysis.from_unit_day_artifact(store, ref, expected_context=...)` without rebuilding facts or exposures. |
 
 A refresh keeps `artifact_id` but creates a new `generation_id`, and must use
 the same compiled context as the pinned prior generation. Completeness is only
@@ -706,19 +706,37 @@ publication time, and experiment end are not completeness proofs.
     and semantic role.
 
     The warehouse store persists each relation before hashing the persisted
-    rows. Digesting uses bounded Arrow batches and a disk-backed canonical
-    merge sort, so hashes do not depend on warehouse collation and remain
-    byte-identical to buffered digests. Streaming `RelationDigests.rows_bytes`
-    is `None`; buffered `digest_relation()` still includes the canonical row
-    bytes. These bounds apply to Python digest batches, not total process
-    memory: exposure metadata still uses one row per unit, warehouse query
-    buffers may grow, and `unit_frame()` materializes the requested row-level
-    data.
+    rows. Format-4 SQL verification is enabled for DuckDB, PostgreSQL,
+    Snowflake, and BigQuery. Format 2 remains a verify-only codec for existing
+    DuckDB relations. Only bounded hash/count summaries return to Python;
+    per-unit hashing stays in the warehouse. Unsupported historical relation
+    formats are refused before unit transfer when the backend cannot verify
+    them. `RelationDigests.rows_bytes` is `None` on the SQL route;
+    `digest_relation()` still includes the canonical row bytes.
 
-    Adoption verifies a private temporary copy of each relation and keeps
+    Format 4 encodes a finite binary64 value as its sign, exact decimal integer
+    significand, `p`, and exact binary exponent. The token preserves the sign
+    of a stored zero, and subnormals use the fixed exponent -1074. Some ingestion
+    paths, including BigQuery Parquet loads, may normalize source `-0.0` to
+    stored `+0.0`; digests represent stored relation content. NaN and infinity
+    retain their canonical spellings. Date tokens use explicit ISO `YYYY-MM-DD`
+    rather than session output settings. Binary64 tokens avoid backend decimal
+    expansion and are unique for each finite IEEE-754 value. PostgreSQL
+    `EXTRACT(EPOCH)` before conversion to integer microseconds, without passing
+    through floating-point seconds. Text hash inputs are converted explicitly
+    to UTF-8 bytes, so backslashes remain literal text rather than PostgreSQL
+    bytea escape sequences.
+
+    Exposure metadata and integrity checks use SQL reductions, joins, and
+    anti-joins rather than per-unit Python collections. Explicit row APIs such
+    as `unit_frame()` still materialize the requested row-level data, and
+    backend-owned query buffers may grow with relation size.
+
+    Adoption verifies each relation against the pinned snapshot and keeps
     reductions warehouse-backed. Later external writes to a published table
     cannot alter that verified copy; closing the read handle removes its
     private tables.
+
 
 ??? info "Recovering from a failed publication"
     If an exception is raised after the manifest is published, the publication
@@ -947,8 +965,16 @@ ref distribution and store authorization are the authenticity boundary.
     supported versions. Republish from trusted definitions to obtain a
     format-2 artifact; the refusal never upgrades an old context. Existing
     artifacts are not deleted and credentials are not rotated automatically.
-    Relation digest versions are independent of the context format and remain
-    readable.
+    Relation digest formats are independent of the context format. Publication
+    on DuckDB, PostgreSQL, Snowflake and BigQuery writes digest format 4, which
+    the warehouse reader verifies on each of them; format 2 remains verifiable
+    on DuckDB for existing artifacts. Formats 1 and 3, and format 2 on other
+    backends, are refused with
+    `query.session.warehouse_artifact.verification_unavailable` and structured
+    relation/format context. Format 1 remains available only to the explicit
+    historical local codec. Republish from trusted definitions to produce a
+    warehouse-verifiable artifact; this does not upgrade an existing manifest
+    or transfer its unverified rows.
 
     Relation schema/content and manifest digests use the same domain root,
     role-specific markers, schema bytes, row count, and rows sorted by primary

@@ -44,7 +44,10 @@ from increment.query.artifact_contract import (
     open_trusted_manifest_snapshot,
     unit_day_artifact_extension_catalog,
 )
-from increment.query.artifact_extensions import read_extension, read_unit_covariate
+from increment.query.artifact_extensions import (
+    read_extension,
+    verify_extension_relation,
+)
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
@@ -714,8 +717,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         *,
         expected_context: ArtifactContext,
         metrics: Sequence[MetricSpec] | Mapping[str, str] | None = None,
-        population_units: frozenset[str] | None = None,
-        trigger_anchors: Mapping[str, dt.datetime] | None = None,
+        population_units: frozenset[str] | ir.Table | None = None,
+        trigger_anchors: ir.Table | None = None,
     ) -> None:
         super().__init__(
             store,
@@ -760,7 +763,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
 
         validate_source_mapping(source_context, self._sequential_observation_mapping())
         self._population_units = population_units
-        self._trigger_anchors = dict(trigger_anchors or {})
+        self._trigger_anchors = trigger_anchors
         self._population: Literal["assigned", "triggered"] = (
             "assigned" if population_units is None else "triggered"
         )
@@ -938,7 +941,9 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                     "operation": "triggered_source",
                 },
             )
-        rows = self._read_extension(extension, request=_artifact_request(extension))
+        relation = self._verified_extension_relation(
+            extension, request=_artifact_request(extension)
+        )
         binding = next(
             item for item in self._manifest.metric_measures if item.metric_name == metric.name
         )
@@ -969,58 +974,59 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                     },
                 )
             window_days_by_key = {binding.measure_key: metric.window_days}
-        expected = set(window_days_by_key)
-        offset = self._artifact_experiment.day_boundary_offset
-        cutoff_day = (extension.observation_cutoff_ts + offset).date()
-        for row in rows:
-            unit_id = str(row["unit_id"])
-            anchor = self._trigger_anchors.get(unit_id)
-            if anchor is None or row["measure_key"] not in expected:
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "trigger-measure row is outside its membership or measure domain",
-                    context={
-                        "extension_kind": "trigger_measure_stats",
-                        "operation": "triggered_source",
-                    },
-                )
-            trigger_day = (anchor + offset).date()
-            window_days = window_days_by_key[row["measure_key"]]
-            observation_horizon = self._artifact_experiment.observation_horizon_day
-            if (
-                row["ds"] < trigger_day
-                or (
-                    window_days is not None
-                    and row["ds"] >= trigger_day + dt.timedelta(days=window_days)
-                )
-                or (observation_horizon is not None and row["ds"] > observation_horizon)
-                or row["ds"] > cutoff_day
-            ):
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "trigger-measure date is outside its trigger-relative window or pinned cutoff",
-                    context={
-                        "extension_kind": "trigger_measure_stats",
-                        "operation": "triggered_source",
-                    },
-                )
-        relation = self._snapshot.verify_relation(
-            extension.relation, expected_role="trigger_measure_stats"
+        anchors = self._verify_trigger_population(operation="triggered_source")
+        outside = relation.anti_join(
+            anchors.select("experiment_id", "unit_id").distinct(),
+            ["experiment_id", "unit_id"],
         )
+        outside_count = _artifact_rows(
+            self._snapshot.execute(outside.aggregate(n_invalid=outside.count()))
+        )[0]["n_invalid"]
+        if outside_count:
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger-measure row is outside its membership or measure domain",
+                context={
+                    "extension_kind": "trigger_measure_stats",
+                    "operation": "triggered_source",
+                },
+            )
+        joined = relation.join(
+            anchors.select("experiment_id", "unit_id", "first_trigger_ts"),
+            ["experiment_id", "unit_id"],
+        )
+        trigger_day = _local_date(joined.first_trigger_ts, self._artifact_experiment)
+        cutoff_day = (
+            extension.observation_cutoff_ts + self._artifact_experiment.day_boundary_offset
+        ).date()
+        valid = ibis.literal(False)
+        for measure_key, window_days in window_days_by_key.items():
+            in_window = joined.ds >= trigger_day
+            if window_days is not None:
+                in_window = in_window & (joined.ds < trigger_day + ibis.interval(days=window_days))
+            valid = valid | ((joined.measure_key == measure_key) & in_window)
+        observation_horizon = self._artifact_experiment.observation_horizon_day
+        if observation_horizon is not None:
+            valid = valid & (joined.ds <= observation_horizon)
+        valid = valid & (joined.ds <= cutoff_day)
+        invalid_count = _artifact_rows(
+            self._snapshot.execute(joined.aggregate(n_invalid=(~valid).cast("int64").sum()))
+        )[0]["n_invalid"]
+        if invalid_count:
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger-measure date is outside its trigger-relative window or pinned cutoff",
+                context={
+                    "extension_kind": "trigger_measure_stats",
+                    "operation": "triggered_source",
+                },
+            )
         observed_edge, certified_edge = self.triggered_observation_edges(metric)
         return relation, observed_edge, certified_edge
 
     def _triggered_reduction_inputs(self, metric: Metric) -> _TriggeredReductionInputs:
         relation, observed_edge, certified_edge = self._trigger_measure_table(metric)
-        trigger_extension = self._extension(
-            {
-                "kind": "trigger_population",
-                "trigger_name": self._artifact_experiment.trigger,
-            }
-        )
-        anchors = self._snapshot.verify_relation(
-            trigger_extension.relation, expected_role="trigger_population"
-        )
+        anchors = self._verify_trigger_population(operation="triggered_source")
         assignments = self._ensure("exposures")
         joined = assignments.join(
             anchors,
@@ -1064,7 +1070,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         cluster: str | None = None,
         cluster_table: ir.Table | None = None,
         pre_stats: ir.Table | None = None,
-        population_units: frozenset[str] | None = None,
+        population_units: frozenset[str] | ir.Table | None = None,
         completed_windows_only: bool = False,
         calendar_end: dt.date | None = None,
     ) -> list[dict[str, Any]]:
@@ -1103,8 +1109,40 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     def _read_extension(
         self, extension: Any, *, request: Mapping[str, Any] | None = None
     ) -> list[Mapping[str, Any]]:
+        if isinstance(self._population_units, ir.Table):
+            if extension.kind in {"assignment_counts", "site_volume"}:
+                return list(
+                    read_extension(
+                        self._snapshot,
+                        extension,
+                        request=request,
+                        context=self._manifest.context,
+                        experiment_id=self._manifest.experiment_id,
+                        exposure_relation=self._ensure("exposures"),
+                    )
+                )
+            relation = self._verified_extension_relation(
+                extension, request=request or _artifact_request(extension)
+            )
+            membership = self._population_units.select("experiment_id", "unit_id").distinct()
+            if extension.kind == "trigger_measure_stats":
+                outside = relation.anti_join(membership, ["experiment_id", "unit_id"])
+                outside_count = _artifact_rows(
+                    self._snapshot.execute(outside.aggregate(n_invalid=outside.count()))
+                )[0]["n_invalid"]
+                if outside_count:
+                    raise ArtifactContractError(
+                        "artifact.extension.invalid",
+                        "trigger-measure rows are not a subset of trigger membership",
+                        context={
+                            "extension_kind": extension.kind,
+                            "operation": "triggered_source",
+                        },
+                    )
+            if extension.kind not in {"site_volume", "assignment_counts"}:
+                relation = relation.semi_join(membership, ["experiment_id", "unit_id"])
+            return cast(list[Mapping[str, Any]], _artifact_rows(self._snapshot.execute(relation)))
         exposures = self._ensure("exposures")
-        exposure_rows = _artifact_rows(self._snapshot.execute(exposures))
         result = list(
             read_extension(
                 self._snapshot,
@@ -1112,7 +1150,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 request=request,
                 context=self._manifest.context,
                 experiment_id=self._manifest.experiment_id,
-                exposure_keys={(row["experiment_id"], row["unit_id"]) for row in exposure_rows},
+                exposure_relation=exposures,
             )
         )
         if extension.kind == "trigger_measure_stats" and self._population_units is not None:
@@ -1128,6 +1166,21 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         }:
             result = [row for row in result if str(row.get("unit_id")) in self._population_units]
         return result
+
+    def _verified_extension_relation(
+        self, extension: Any, *, request: Mapping[str, Any] | None = None
+    ) -> ir.Table:
+        return cast(
+            ir.Table,
+            verify_extension_relation(
+                self._snapshot,
+                extension,
+                request=request,
+                context=self._manifest.context,
+                experiment_id=self._manifest.experiment_id,
+                exposure_relation=self._ensure("exposures"),
+            ),
+        )
 
     def _trigger_population_rows(
         self, *, operation: str = "triggered_counts"
@@ -1148,26 +1201,45 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return rows
 
-    def _validate_trigger_population_counts(
-        self, count_rows: Sequence[Mapping[str, Any]], trigger_rows: Sequence[Mapping[str, Any]]
-    ) -> None:
-        exposures_by_unit = {
-            str(row["unit_id"]): str(row["group_id"]) for row in self._exposure_rows()
+    def _verify_trigger_population(self, *, operation: str) -> ir.Table:
+        extension = self._extension(
+            {"kind": "trigger_population", "trigger_name": self._artifact_experiment.trigger}
+        )
+        relation = self._verified_extension_relation(
+            extension, request=_artifact_request(extension)
+        )
+        after_cutoff = relation.first_trigger_ts > extension.observation_cutoff_ts
+        invalid_count = _artifact_rows(
+            self._snapshot.execute(relation.aggregate(n_invalid=after_cutoff.cast("int64").sum()))
+        )[0]["n_invalid"]
+        if invalid_count:
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger membership contains an event after the pinned observation cutoff",
+                context={
+                    "extension_kind": "trigger_population",
+                    "operation": operation,
+                    "route": "republish from trusted definitions with matching trigger evidence",
+                },
+            )
+        return relation
+
+    def _trigger_group_counts(self, *, operation: str) -> dict[str, int]:
+        membership = self._verify_trigger_population(operation=operation)
+        exposures = self._ensure("exposures")
+        joined = membership.join(
+            exposures.select("experiment_id", "unit_id", "group_id"),
+            ["experiment_id", "unit_id"],
+        )
+        summary = joined.group_by("group_id").aggregate(n_units=joined.unit_id.count())
+        return {
+            str(row["group_id"]): int(row["n_units"])
+            for row in _artifact_rows(self._snapshot.execute(summary))
         }
-        observed: dict[str, int] = {}
-        for row in trigger_rows:
-            group_id = exposures_by_unit.get(str(row["unit_id"]))
-            if group_id is None:
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "trigger membership is not contained in the assigned population",
-                    context={
-                        "extension_kind": "trigger_population",
-                        "operation": "triggered_counts",
-                        "route": "republish from trusted definitions with matching trigger evidence",
-                    },
-                )
-            observed[group_id] = observed.get(group_id, 0) + 1
+
+    def _validate_trigger_population_counts(
+        self, count_rows: Sequence[Mapping[str, Any]], observed: Mapping[str, int]
+    ) -> None:
         declared = {
             str(row["group_id"]): int(row["n_units"])
             for row in count_rows
@@ -1186,20 +1258,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
 
     def _dimension_table(self, extension: Any, request: Mapping[str, Any]) -> Any:
-        rows = self._read_extension(extension, request=request)
+        relation = self._verified_extension_relation(extension, request=request)
         kind = extension.kind
         value_field = "factor_value" if kind == "factor_dimension" else "dimension_value"
         name = request["property_name"]
-        return ibis.memtable(
-            [
-                {
-                    "unit_id": row["unit_id"],
-                    name: None if row.get("value_is_missing") else row[value_field],
-                }
-                for row in rows
-            ],
-            schema={"unit_id": "string", name: "string"},
-        )
+        value = ibis.ifelse(
+            relation.value_is_missing, ibis.null().cast("string"), relation[value_field]
+        ).name(name)
+        return relation.select("unit_id", value)
 
     def _cluster_table(self) -> ir.Table | None:
         """Resolve declared cluster identities for total-grain reductions."""
@@ -1208,31 +1274,16 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         cluster_extension = self._extension(
             {"kind": "cluster_identity", "cluster_name": self.context.cluster}
         )
-        cluster_rows = self._read_extension(
+        relation = self._verified_extension_relation(
             cluster_extension, request=_artifact_request(cluster_extension)
         )
-        return ibis.memtable(
-            [
-                {"unit_id": row["unit_id"], self.context.cluster: row["cluster_id"]}
-                for row in cluster_rows
-            ],
-            schema={"unit_id": "string", self.context.cluster: "string"},
-        )
+        return relation.select("unit_id", relation.cluster_id.name(self.context.cluster))
 
     def _cuped_pre_stats(self, metric: Metric) -> Any:
         """Resolve *metric*'s `cuped_preperiod` extension into a covariate table."""
         cuped = self._extension({"kind": "cuped_preperiod", "metric_name": metric.name})
-        pre_rows = self._read_extension(cuped, request=_artifact_request(cuped))
-        return self._covariate_table(
-            [
-                {
-                    "experiment_id": row["experiment_id"],
-                    "unit_id": row["unit_id"],
-                    "sum_value": row["x"],
-                }
-                for row in pre_rows
-            ]
-        )
+        relation = self._verified_extension_relation(cuped, request=_artifact_request(cuped))
+        return relation.select("experiment_id", "unit_id", sum_value=relation.x)
 
     def _preflight_cluster_grain(self, grain: Grain, *, operation: str) -> None:
         if self.context.cluster is not None and grain != "total":
@@ -1339,41 +1390,34 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         requested = [name for name in dict.fromkeys(covariates) if name != "cluster_id"]
         metric = self.validated_metric(metric)
         extensions = {name: self._covariate_extension(metric.name, name) for name in requested}
-        if self._population_units is None:
-            base = self._unit_frame(
-                metric,
-                cluster=cluster,
-                resolve_cluster=self._cluster_table,
-                population_units=self._population_units,
-                outcome_stage=outcome_stage,
-            )
-        else:
-            base = self._unit_frame(
-                metric,
-                cluster=cluster,
-                resolve_cluster=self._cluster_table,
-                population_units=self._population_units,
-                outcome_stage=outcome_stage,
-                trigger_inputs=self._triggered_reduction_inputs(metric),
-            )
-        if not extensions:
-            return base
-        import narwhals as nw
-
-        frame = nw.from_native(cast(Any, base), eager_only=True)
-        unit_ids = [str(unit) for unit in frame["unit_id"].to_list()]
+        covariate_tables: dict[str, tuple[ir.Table, str, str | None]] = {}
         for name, extension in extensions.items():
-            rows = self._read_extension(extension, request=_artifact_request(extension))
-            frame = frame.with_columns(
-                read_unit_covariate(
-                    extension,
-                    rows,
-                    name=name,
-                    unit_ids=unit_ids,
-                    implementation=frame.implementation,
-                )
+            relation = self._verified_extension_relation(
+                extension, request=_artifact_request(extension)
             )
-        return frame.to_native()
+            field = "level" if extension.kind == "unit_covariate_level" else "value"
+            available = (
+                "has_preperiod_events" if extension.kind == "cuped_measure_covariate" else None
+            )
+            covariate_tables[name] = (relation, field, available)
+        if self._population_units is None:
+            return self._unit_frame(
+                metric,
+                cluster=cluster,
+                resolve_cluster=self._cluster_table,
+                population_units=self._population_units,
+                outcome_stage=outcome_stage,
+                covariate_tables=covariate_tables,
+            )
+        return self._unit_frame(
+            metric,
+            cluster=cluster,
+            resolve_cluster=self._cluster_table,
+            population_units=self._population_units,
+            outcome_stage=outcome_stage,
+            trigger_inputs=self._triggered_reduction_inputs(metric),
+            covariate_tables=covariate_tables,
+        )
 
     @property
     def scalar_bindings(self):
@@ -1422,12 +1466,21 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             return self.moments(metric, grain="total", include_covariate=True)
         covariate = covariates[0]
         extension = self._covariate_extension(metric.name, covariate.name)
-        extension_rows = self._read_extension(extension, request=_artifact_request(extension))
-        values = [
-            None if row.get("value_is_missing") else row.get("value") for row in extension_rows
-        ]
+        covariate_relation = self._verified_extension_relation(
+            extension, request=_artifact_request(extension)
+        )
+        if self._population_units is not None:
+            covariate_relation = restrict_to_units(covariate_relation, self._population_units)
+        is_missing = covariate_relation.value.isnull()
+        if "value_is_missing" in covariate_relation.columns:
+            is_missing = is_missing | covariate_relation.value_is_missing
+        summary = covariate_relation.aggregate(
+            missing_count=is_missing.cast("int64").sum(),
+            observed_count=(~is_missing).cast("int64").sum(),
+        )
+        stats = _artifact_rows(self._snapshot.execute(summary))[0]
+        missing_count = int(stats["missing_count"] or 0)
         missing_policy = getattr(covariate, "missing", "zero")
-        missing_count = sum(value is None for value in values)
         if missing_policy == "refuse" and missing_count:
             from increment._frame_validation import _raise as frame_raise
 
@@ -1438,8 +1491,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 n_missing=missing_count,
             )
         if missing_policy in ("impute", "impute-indicator"):
-            observed = [value for value in values if value is not None]
-            if not observed:
+            if not stats["observed_count"]:
                 from increment._frame_validation import _raise as frame_raise
 
                 frame_raise(
@@ -1447,18 +1499,23 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                     metric=metric.name,
                     covariate=covariate.name,
                 )
-            mean_value = sum(observed) / len(observed)
-            values = [mean_value if value is None else value for value in values]
-        pre_stats = self._covariate_table(
-            [
-                {
-                    "experiment_id": row["experiment_id"],
-                    "unit_id": row["unit_id"],
-                    "sum_value": value,
-                }
-                for row, value in zip(extension_rows, values, strict=True)
-            ]
-        )
+            observed_relation = covariate_relation.filter(~is_missing)
+            mean_value = _artifact_rows(
+                self._snapshot.execute(
+                    observed_relation.aggregate(mean_value=observed_relation.value.mean())
+                )
+            )[0]["mean_value"]
+            pre_stats = covariate_relation.select(
+                "experiment_id",
+                "unit_id",
+                ibis.ifelse(is_missing, mean_value, covariate_relation.value).name("sum_value"),
+            )
+        else:
+            pre_stats = covariate_relation.select(
+                "experiment_id",
+                "unit_id",
+                ibis.ifelse(is_missing, ibis.null(), covariate_relation.value).name("sum_value"),
+            )
         return self._reduce(
             trusted,
             "total",
@@ -1892,7 +1949,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     ) -> None:
         """Validate requested populations against the pinned artifact evidence."""
         if "triggered" in populations and self._population_units is None:
-            self._trigger_population_rows(operation=operation)
+            self._verify_trigger_population(operation=operation)
 
     def breakout_summaries(
         self,
@@ -2077,8 +2134,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
         )
         rows = self._read_extension(extension, request=_artifact_request(extension))
-        trigger_rows = self._trigger_population_rows()
-        self._validate_trigger_population_counts(rows, trigger_rows)
+        observed = self._trigger_group_counts(operation="triggered_counts")
+        self._validate_trigger_population_counts(rows, observed)
         counts = {
             str(row["group_id"]): int(row["n_randomization_units"])
             for row in rows
@@ -2108,7 +2165,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         }
 
     def triggered_source(self) -> MomentSource:
-        rows = self._trigger_population_rows()
+        membership = self._verify_trigger_population(operation="triggered_source")
         return _ArtifactFacadeSource(
             self._store,
             self._lifecycle,
@@ -2116,8 +2173,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             self._manifest,
             expected_context=self._expected_context,
             metrics=self._metrics_arg,
-            population_units=frozenset(str(row["unit_id"]) for row in rows),
-            trigger_anchors={str(row["unit_id"]): row["first_trigger_ts"] for row in rows},
+            population_units=membership,
+            trigger_anchors=membership,
         )
 
     def _triggered_sitewide_preflight(
@@ -2271,28 +2328,39 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         else:
             site_total = by_measure.get(binding.measure_key, 0.0)
             site_den = None
-        from collections import Counter
-
-        exposures = self._exposure_rows()
-        group_by_unit = {
-            str(row["unit_id"]): str(row["group_id"])
-            for row in exposures
-            if row.get("group_id") is not None
+        exposures = self._ensure("exposures")
+        assigned = (
+            exposures.filter(exposures.group_id.notnull())
+            .group_by("group_id")
+            .aggregate(n_units=exposures.unit_id.count())
+        )
+        assigned_counts = {
+            str(row["group_id"]): int(row["n_units"])
+            for row in _artifact_rows(self._snapshot.execute(assigned))
         }
-        assigned_counts = dict(Counter(group_by_unit.values()))
         population_counts = assigned_counts.copy()
         membership_cutoff = None
+        member_ids: ir.Table | None = None
         if population == "triggered":
             count_rows = self._read_extension(
                 count_extension, request=_artifact_request(count_extension)
             )
             membership_cutoff = trigger_extension.observation_cutoff_ts
-            trigger_rows = self._trigger_population_rows(operation="sitewide_evidence")
-            self._validate_trigger_population_counts(count_rows, trigger_rows)
-            member_ids = frozenset(str(row["unit_id"]) for row in trigger_rows)
-            population_counts = dict(
-                Counter(group_by_unit[unit] for unit in member_ids if unit in group_by_unit)
+            member_ids = self._verify_trigger_population(operation="sitewide_evidence")
+            joined_members = member_ids.join(
+                exposures.select("experiment_id", "unit_id", "group_id"),
+                ["experiment_id", "unit_id"],
             )
+            trigger_summary = joined_members.group_by("group_id").aggregate(
+                n_units=joined_members.unit_id.count()
+            )
+            trigger_counts = {
+                str(row["group_id"]): int(row["n_units"])
+                for row in _artifact_rows(self._snapshot.execute(trigger_summary))
+                if row["group_id"] is not None
+            }
+            self._validate_trigger_population_counts(count_rows, trigger_counts)
+            population_counts = trigger_counts
             for group_id in assigned_counts:
                 population_counts.setdefault(group_id, 0)
             # Artifact relation/generation checks bind base and extension relations to
@@ -2312,21 +2380,22 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         cluster_counts = None
         unit_counts = None
         if self.context.cluster is not None:
-            cluster_extension = self._extension(
-                {"kind": "cluster_identity", "cluster_name": self.context.cluster}
-            )
-            cluster_rows = self._read_extension(
-                cluster_extension, request=_artifact_request(cluster_extension)
-            )
-            clusters_by_group: dict[str, set[str]] = {}
-            units_by_group: dict[str, set[str]] = {}
-            for row in cluster_rows:
-                unit_id = str(row["unit_id"])
-                group = group_by_unit[unit_id]
-                clusters_by_group.setdefault(group, set()).add(str(row["cluster_id"]))
-                units_by_group.setdefault(group, set()).add(unit_id)
-            cluster_counts = {group: len(values) for group, values in clusters_by_group.items()}
-            unit_counts = {group: len(values) for group, values in units_by_group.items()}
+            if cluster_table is not None:
+                clustered = exposures.join(cluster_table, "unit_id")
+                if member_ids is not None:
+                    clustered = clustered.semi_join(
+                        member_ids.select("experiment_id", "unit_id"),
+                        ["experiment_id", "unit_id"],
+                    )
+                summary = clustered.group_by("group_id").aggregate(
+                    n_clusters=clustered[self.context.cluster].nunique(),
+                    n_units=clustered.unit_id.nunique(),
+                )
+                summary_rows = _artifact_rows(self._snapshot.execute(summary))
+                cluster_counts = {
+                    str(row["group_id"]): int(row["n_clusters"]) for row in summary_rows
+                }
+                unit_counts = {str(row["group_id"]): int(row["n_units"]) for row in summary_rows}
         return SitewideEvidence(
             metric=metric,
             site_total=site_total,

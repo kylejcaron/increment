@@ -601,10 +601,11 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "from_unit_day_artifact_supported",
             "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_unit_day_artifact",
-            "published mixed-covariate extensions are adopted with the same per-unit outcomes",
+            "format-4 artifact extensions are SQL-verified; mixed-covariate inference retains its per-unit transfer limitation",
             "supported",
             evidence=(
                 "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
+                "tests/test_unit_day_artifact_facade.py::test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers",
             ),
         ),
         _e(

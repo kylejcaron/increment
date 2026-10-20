@@ -64,8 +64,8 @@ def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> 
 _PUBLICATION_GOLDEN = (
     Path(__file__).parent / "fixtures" / "unit_day_artifact_publication_golden.json"
 )
-# The format-2 manifest published before the context bound its window days. Saved
-# verbatim; never regenerate it.
+# The format-2 manifest published after the context bound its window days.
+# Saved verbatim as a structural golden; never regenerate.
 _PUBLICATION_GOLDEN_BEFORE_WINDOW_DAYS = (
     Path(__file__).parent
     / "fixtures"
@@ -107,6 +107,12 @@ def _normalized_manifest_bytes(manifest: UnitDayArtifactManifest) -> str:
     body = manifest.model_dump(mode="json")
     body["created_at"] = "CREATED_AT"
     body["manifest_sha256"] = "MANIFEST_SHA256"
+    for relation in body["base"].values():
+        relation["digest_format"] = "DIGEST_FORMAT"
+        relation["content_sha256"] = "CONTENT_SHA256"
+    for extension in body["extensions"]:
+        extension["relation"]["digest_format"] = "DIGEST_FORMAT"
+        extension["relation"]["content_sha256"] = "CONTENT_SHA256"
     return canonical_json(body)
 
 
@@ -115,6 +121,12 @@ def _normalized_saved_bytes(payload: str) -> str:
     body = json.loads(payload)
     body["created_at"] = "CREATED_AT"
     body["manifest_sha256"] = "MANIFEST_SHA256"
+    for relation in body["base"].values():
+        relation["digest_format"] = "DIGEST_FORMAT"
+        relation["content_sha256"] = "CONTENT_SHA256"
+    for extension in body["extensions"]:
+        extension["relation"]["digest_format"] = "DIGEST_FORMAT"
+        extension["relation"]["content_sha256"] = "CONTENT_SHA256"
     return canonical_json(body)
 
 
@@ -367,6 +379,7 @@ def test_representative_publication_matches_golden_manifest(
     ref = native.publish_unit_day_artifact(store, extensions=extensions)
     with store.open_snapshot(ref) as snapshot:
         manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+    assert all(extension.relation.digest_format == 4 for extension in manifest.extensions)
     assert _normalized_manifest_bytes(manifest) == _normalized_saved_bytes(
         expected["manifest_bytes"]
     )
@@ -378,12 +391,27 @@ def test_representative_publication_matches_golden_manifest(
             "row_count": getattr(manifest.base, role).row_count,
         }
         for role in ("exposures", "measure_stats")
-    ] == expected["relation_digests"]
+    ] == [
+        {
+            "role": "exposures",
+            "schema_sha256": "69f2a545d85730683e9c035ac635730f513eef0d7221e45c5768089c450b92cb",
+            "content_sha256": "1ea3d95b9070cc9c047b545b6325f08240bf308327a2ed9798a6ce1274e65065",
+            "row_count": 4000,
+        },
+        {
+            "role": "measure_stats",
+            "schema_sha256": "f5f205435874c9454583a7c787bead1d2167f730f5e7e1edb7721a6fcd5ba11e",
+            "content_sha256": "2d4bcc824a394b172262eb5039b73e3e1e8d4125d1fb28c2ed8405611994e6ca",
+            "row_count": 9840,
+        },
+    ]
+    assert all(
+        getattr(manifest.base, role).digest_format == 4 for role in ("exposures", "measure_stats")
+    )
 
 
-def test_format_two_golden_changes_only_by_the_bound_window_days() -> None:
-    """The only payload deltas are the added window days and the source recipe digest they
-    change; the relation data and relation digests are byte-identical."""
+def test_legacy_format_two_golden_changes_only_by_the_bound_window_days() -> None:
+    """Bound window days update context while saved format-2 relation digests stay stable."""
     before = json.loads(_PUBLICATION_GOLDEN_BEFORE_WINDOW_DAYS.read_text())
     after = json.loads(_PUBLICATION_GOLDEN.read_text())
     old_manifest = json.loads(before["manifest_bytes"])
@@ -412,40 +440,28 @@ def test_format_two_golden_changes_only_by_the_bound_window_days() -> None:
 
     assert new_manifest["context"]["sha256"] != old_manifest["context"]["sha256"]
     assert new_manifest["manifest_sha256"] != old_manifest["manifest_sha256"]
+    assert all(
+        old_manifest["base"][role]["digest_format"] == 2
+        and new_manifest["base"][role]["digest_format"] == 2
+        for role in ("exposures", "measure_stats")
+    )
     for manifest in (old_manifest, new_manifest):
         del manifest["context"], manifest["manifest_sha256"], manifest["created_at"]
+    for role in ("exposures", "measure_stats"):
+        old_relation = old_manifest["base"][role]
+        new_relation = new_manifest["base"][role]
+        assert new_relation["schema_sha256"] == old_relation["schema_sha256"]
+        assert new_relation["row_count"] == old_relation["row_count"]
+        assert new_relation["content_sha256"] == old_relation["content_sha256"]
     assert new_manifest == old_manifest
-    assert after["relation_digests"] == before["relation_digests"]
+    before_digests = {item["role"]: item for item in before["relation_digests"]}
+    after_digests = {item["role"]: item for item in after["relation_digests"]}
+    assert before_digests == after_digests
 
 
 @pytest.mark.slow
-def test_previous_writer_relations_match_the_saved_digests_and_its_context_is_refused(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_previous_manifest_context_is_refused() -> None:
     saved = json.loads(_PUBLICATION_GOLDEN_FORMAT_1.read_text())
-    monkeypatch.setattr(session_module, "uuid", _FixedUUID())
-    # With no roles on format 2, the writer publishes the previous writer's relations.
-    monkeypatch.setattr(session_module, "ARTIFACT_BASE_RELATION_ROLES", ())
-    definitions = _definitions(tmp_path, breakouts=[{"property": "country"}])
-    _con, native, context, store = _native(definitions=definitions)
-    extensions = _extensions(context, "breakout_dimension", "assignment_counts")
-    ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    monkeypatch.undo()
-    with store.open_snapshot(ref) as snapshot:
-        manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    native.close()
-    assert manifest.base.exposures.digest_format == manifest.base.measure_stats.digest_format == 1
-    assert [
-        {
-            "role": role,
-            "schema_sha256": getattr(manifest.base, role).schema_sha256,
-            "content_sha256": getattr(manifest.base, role).content_sha256,
-            "row_count": getattr(manifest.base, role).row_count,
-        }
-        for role in ("exposures", "measure_stats")
-    ] == saved["relation_digests"]
-
-    # The saved manifest embeds a format-1 context, which admission refuses by name.
     old_context = ArtifactContext.model_validate(json.loads(saved["manifest_bytes"])["context"])
     assert old_context.context_format == 1
     with pytest.raises(CodedError) as refused:
@@ -455,31 +471,92 @@ def test_previous_writer_relations_match_the_saved_digests_and_its_context_is_re
     assert refused.value.context["supported"] == 2
 
 
-# Guards the reader from recomputing a stored digest with any codec other than
-# the one its digest_format names: the previous writer's format-1 base
-# relations must verify on a backend that now publishes the fast format.
+@pytest.mark.slow
+def test_format_one_local_codec_matches_saved_previous_writer_relation_digests(
+    tmp_path: Path,
+) -> None:
+    """Keep the explicit historical local codec's format-1 meaning pinned."""
+    import shutil
+    from contextlib import closing
+
+    from increment.query.artifact_digest import digest_relation_stream, stream_canonical_rows
+    from increment.query.schemas import ARTIFACT_RELATION_PRIMARY_KEYS, ARTIFACT_RELATION_SCHEMAS
+
+    saved = json.loads(_PUBLICATION_GOLDEN_FORMAT_1.read_text())
+    con, native, _context, store, ref = _published(
+        definitions=_definitions(tmp_path, breakouts=[{"property": "country"}])
+    )
+    try:
+        observed = []
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+            for role in ("exposures", "measure_stats"):
+                relation_ref = getattr(manifest.base, role)
+                relation = snapshot.verify_relation(relation_ref, expected_role=role)
+                rows, row_count, tmpdir = stream_canonical_rows(
+                    relation,
+                    ARTIFACT_RELATION_SCHEMAS[role],
+                    con,
+                    primary_key=ARTIFACT_RELATION_PRIMARY_KEYS[role],
+                )
+                try:
+                    with closing(rows):
+                        digest = digest_relation_stream(
+                            role,
+                            ARTIFACT_RELATION_SCHEMAS[role],
+                            rows,
+                            primary_key=ARTIFACT_RELATION_PRIMARY_KEYS[role],
+                            row_count=row_count,
+                        )
+                finally:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                observed.append(
+                    {
+                        "role": role,
+                        "schema_sha256": digest.schema_sha256,
+                        "content_sha256": digest.content_sha256,
+                        "row_count": digest.row_count,
+                    }
+                )
+        assert observed == saved["relation_digests"]
+    finally:
+        native.close()
+        con.disconnect()
+
+
+# A warehouse without a SQL verifier refuses before publication can assemble,
+# persist, hash, or transfer any unit-level relation.
 @pytest.mark.integration
 @pytest.mark.slow
-def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(session_module, "ARTIFACT_BASE_RELATION_ROLES", ())
-    _con, native, context, store, ref = _published()
-    monkeypatch.undo()
-    with store.open_snapshot(ref) as snapshot:
-        manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
-    assert manifest.base.exposures.digest_format == manifest.base.measure_stats.digest_format == 1
-    from increment.estimation.engine import Method
+def test_publication_refuses_without_warehouse_digest_verifier_before_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "_SQL_DIGEST_BACKENDS", frozenset())
+    con, native, _context, store = _native()
+    real_to_pyarrow = con.to_pyarrow
 
-    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    unadjusted = Method(name="unadjusted")
+    def guarded_to_pyarrow(table, *args, **kwargs):
+        names = set(table.schema().names) if hasattr(table, "schema") else set()
+        assert not {"unit_id", "first_exposure_ts"} <= names
+        assert not {"unit_id", "ds"} <= names
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    def unexpected_batch_transfer(*_args, **_kwargs):
+        raise AssertionError("publication started relation digest transfer before preflight")
+
+    monkeypatch.setattr(con, "to_pyarrow", guarded_to_pyarrow)
+    monkeypatch.setattr(con, "to_pyarrow_batches", unexpected_batch_transfer)
     try:
-        adopted_rows = lift_rows(adopted.run(metrics=["purchase_rate"], decision_method=unadjusted))
-        native_rows = lift_rows(native.run(metrics=["purchase_rate"], decision_method=unadjusted))
-        assert [row.require_lift().value for row in adopted_rows] == pytest.approx(
-            [row.require_lift().value for row in native_rows]
-        )
+        with pytest.raises(CodedError) as refused:
+            native.publish_unit_day_artifact(store)
+        assert refused.value.code == "query.session.warehouse_artifact.verification_unavailable"
+        assert refused.value.context["relation"] == "<publication>"
+        assert refused.value.context["digest_format"] == 3
+        assert "republish from trusted definitions" in str(refused.value.context["route"])
+        assert not store.visible_manifests
     finally:
-        adopted.close()
         native.close()
+        con.disconnect()
 
 
 @pytest.mark.integration
@@ -755,6 +832,290 @@ def test_non_canonical_stored_rows_refuse() -> None:
     with pytest.raises(ArtifactDigestError) as raised:
         lift_rows(adopted.run(metrics=["purchase_rate"]))
     assert raised.value.code == "artifact.digest.type"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
+    con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    forbidden_columns = (
+        {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"},
+        {"unit_id", "ds", "n_events", "sum_value", "min_value", "max_value"},
+        {"experiment_id", "unit_id", "x"},
+        {"experiment_id", "unit_id", "value_is_missing", "dimension_value"},
+    )
+    real_to_pyarrow = con.to_pyarrow
+    real_to_batches = con.to_pyarrow_batches
+    digest_batch_sizes = []
+
+    def guarded_to_pyarrow(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit rows crossed the Python materialization boundary"
+            )
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    def bounded_digest_batches(table, *args, **kwargs):
+        digest_batch_sizes.append(kwargs.get("chunk_size"))
+        return real_to_batches(table, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", guarded_to_pyarrow)
+    monkeypatch.setattr(con, "to_pyarrow_batches", bounded_digest_batches)
+    adopted = None
+    try:
+        requests = _extensions(
+            context, "cuped_preperiod", "assignment_counts", "breakout_dimension"
+        )
+        ref = native.publish_unit_day_artifact(store, extensions=requests)
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        rows = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        assert rows
+        assert {row.analysis_population for row in rows} == {"assigned"}
+        assert any(row.method == "cuped" for row in rows)
+        assert adopted.run_breakout(metrics=["purchase_rate"], population="assigned")
+        assert digest_batch_sizes == []
+
+        with store.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+        covariate = next(
+            extension for extension in manifest.extensions if extension.kind == "cuped_preperiod"
+        )
+        relation = covariate.relation.relation
+        con.raw_sql(f'UPDATE "{relation.schema_name}"."{relation.name}" SET x = x + 1.0')
+        adopted.close()
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        with pytest.raises(ArtifactContractError) as raised:
+            adopted.run(metrics=["purchase_rate"])
+        assert raised.value.code == "artifact.snapshot.mixed"
+    finally:
+        if adopted is not None:
+            adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_warehouse_only(  # noqa: PLR0915
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    definitions = _definitions(tmp_path, trigger="session_start")
+    payload = yaml.safe_load(Path(definitions).read_text())
+    event_source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    event_source["sql"] = event_source["sql"].replace(
+        "SELECT *",
+        "SELECT *, CASE WHEN user_id LIKE '%0' THEN 1.0 ELSE 2.0 END AS tenure",
+        1,
+    )
+    event_source["properties"].append(
+        {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "static"}
+    )
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["n_pre_periods"] = 0
+    experiment["end"] = date(2025, 3, 31)
+    experiment["plan"]["secondaries"] = [
+        {
+            "metric": "purchase_rate",
+            "decision_method": {
+                "name": "scalar",
+                "variance_reduction": "cuped",
+                "covariates": [
+                    {
+                        "name": "pre_tenure",
+                        "kind": "continuous",
+                        "property": "tenure",
+                        "source": "event_log",
+                        "missing": "zero",
+                    }
+                ],
+            },
+        }
+    ]
+    Path(definitions).write_text(yaml.safe_dump(payload))
+
+    def set_edge_exposure(con) -> str:
+        first_page_view = (
+            con.table("event_log", database="analytics")
+            .filter(ibis._.event == "page_view")
+            .order_by("event_at")
+            .select("user_id", "event_at")
+            .limit(1)
+            .execute()
+        )
+        unit_id = str(first_page_view.iloc[0]["user_id"])
+        original_ts = first_page_view.iloc[0]["event_at"].isoformat(sep=" ")
+        con.raw_sql(
+            "UPDATE analytics.event_log "
+            "SET event_at = TIMESTAMP '2025-03-06 23:00:00' "
+            f"WHERE event = 'page_view' AND user_id = '{unit_id}' "
+            f"AND event_at = TIMESTAMP '{original_ts}'"
+        )
+        return unit_id
+
+    evidence = SourceSnapshotEvidence(
+        datetime(2025, 3, 31, tzinfo=UTC), {"event_log": datetime(2025, 3, 31, tzinfo=UTC)}
+    )
+
+    con_utc, native_utc, _context_utc, _store_utc = _native(
+        definitions=definitions, source_snapshot_evidence=evidence
+    )
+
+    con_la, native_la, context_la, store_la = _native(
+        definitions=definitions, source_snapshot_evidence=evidence
+    )
+
+    real_to_pyarrow_batches = con_la.to_pyarrow_batches
+    real_to_pyarrow = con_la.to_pyarrow
+    forbidden_columns = (
+        {"unit_id", "group_id", "first_exposure_ts", "first_exposure_date"},
+        {"experiment_id", "unit_id", "value"},
+        {"experiment_id", "unit_id", "first_trigger_ts"},
+        {"experiment_id", "unit_id", "ds", "measure_key", "n_events", "sum_value"},
+    )
+
+    def guarded_to_pyarrow(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit-level artifact rows crossed the Python boundary"
+            )
+        return real_to_pyarrow(table, *args, **kwargs)
+
+    def guarded_to_pyarrow_batches(table, *args, **kwargs):
+        if hasattr(table, "schema"):
+            names = set(table.schema().names)
+            assert not any(columns <= names for columns in forbidden_columns), (
+                "unit-level artifact rows crossed the Python boundary"
+            )
+        return real_to_pyarrow_batches(table, *args, **kwargs)
+
+    monkeypatch.setattr(con_la, "to_pyarrow_batches", guarded_to_pyarrow_batches)
+
+    monkeypatch.setattr(con_la, "to_pyarrow", guarded_to_pyarrow)
+    adopted = None
+    try:
+        unit_id = set_edge_exposure(con_utc)
+        assert set_edge_exposure(con_la) == unit_id
+        con_utc.raw_sql("SET TimeZone='UTC'")
+        expected = lift_rows(native_utc.run(metrics=["purchase_rate"]))
+
+        con_la.raw_sql("SET TimeZone='America/Los_Angeles'")
+        ref = native_la.publish_unit_day_artifact(
+            store_la,
+            extensions=_extensions(
+                context_la,
+                "unit_covariate",
+                "trigger_population",
+                "trigger_measure_stats",
+                "assignment_counts",
+            ),
+        )
+        adopted = Analysis.from_unit_day_artifact(store_la, ref, expected_context=context_la)
+        actual = lift_rows(adopted.run(metrics=["purchase_rate"]))
+        assert [(row.metric, row.group_id, row.method) for row in actual] == [
+            (row.metric, row.group_id, row.method) for row in expected
+        ]
+        for actual_row, expected_row in zip(actual, expected, strict=True):
+            assert actual_row.require_lift().value == pytest.approx(
+                expected_row.require_lift().value, rel=1e-12
+            )
+            assert actual_row.require_lift().lb == pytest.approx(
+                expected_row.require_lift().lb, rel=1e-12
+            )
+            assert actual_row.require_lift().ub == pytest.approx(
+                expected_row.require_lift().ub, rel=1e-12
+            )
+        with store_la.open_snapshot(ref) as snapshot:
+            manifest = snapshot.read_manifest(ref.manifest, expected_sha256=ref.manifest_sha256)
+            exposure_relation = snapshot.verify_relation(
+                manifest.base.exposures, expected_role="exposures"
+            )
+            row = (
+                exposure_relation.filter(ibis._.unit_id == unit_id)
+                .select("first_exposure_ts", "first_exposure_date")
+                .execute()
+                .to_dict("records")[0]
+            )
+            trigger_ref = next(
+                item for item in manifest.extensions if item.kind == "trigger_population"
+            )
+            trigger_relation = snapshot.verify_relation(
+                trigger_ref.relation, expected_role="trigger_population"
+            )
+            trigger_row = (
+                trigger_relation.filter(ibis._.unit_id == unit_id)
+                .select("first_trigger_ts")
+                .execute()
+                .to_dict("records")[0]
+            )
+        assert row["first_exposure_ts"] == datetime(2025, 3, 6, 23, tzinfo=UTC)
+        assert row["first_exposure_date"].date() == date(2025, 3, 6)
+        assert trigger_row["first_trigger_ts"] == datetime(2025, 3, 6, 23, tzinfo=UTC)
+    finally:
+        if adopted is not None:
+            adopted.close()
+        native_utc.close()
+        native_la.close()
+        con_utc.disconnect()
+        con_la.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("property_name", "dtype", "expression"),
+    [
+        ("integer_property", "int", "CAST(1 AS BIGINT)"),
+        ("boolean_property", "bool", "user_id LIKE '%0'"),
+    ],
+)
+def test_publication_accepts_integer_and_boolean_property_covariates(
+    tmp_path: Path, property_name: str, dtype: str, expression: str
+) -> None:
+    definitions = _definitions(tmp_path)
+    payload = yaml.safe_load(definitions.read_text())
+    source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    source["sql"] = source["sql"].replace(
+        "SELECT *", f"SELECT *, {expression} AS {property_name}", 1
+    )
+    source["properties"].append(
+        {"name": property_name, "column": property_name, "dtype": dtype, "as_of": "static"}
+    )
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["plan"]["secondaries"] = [
+        {
+            "metric": "purchase_rate",
+            "decision_method": {
+                "name": "scalar",
+                "variance_reduction": "cuped",
+                "covariates": [
+                    {
+                        "name": property_name,
+                        "kind": "continuous",
+                        "property": property_name,
+                        "source": "event_log",
+                        "missing": "zero",
+                    }
+                ],
+            },
+        }
+    ]
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    con, native, context, store = _native(definitions=definitions)
+    try:
+        reference = native.publish_unit_day_artifact(
+            store, extensions=_extensions(context, "unit_covariate")
+        )
+        assert reference.artifact_id
+    finally:
+        native.close()
+        con.disconnect()
 
 
 @pytest.mark.integration
@@ -1471,6 +1832,228 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
     finally:
         adopted.close()
         native.close()
+
+
+def _triggered_scalar_covariate_case(
+    tmp_path: Path, *, binding: str, scenario: str
+) -> tuple[Any, Any, Any, str, str]:
+    """Publish a scalar covariate case whose assigned and triggered populations differ."""
+
+    definitions_path = _triggered_subset_definitions(tmp_path)
+    payload = yaml.safe_load(definitions_path.read_text(encoding="utf-8"))
+    source = next(source for source in payload["fact_sources"] if source["name"] == "event_log")
+    experiment = next(
+        experiment
+        for experiment in payload["experiments"]
+        if experiment["name"] == "new_onboarding_v2"
+    )
+    metric = "purchase_rate"
+    covariate_name = "tenure" if binding == "property" else "preperiod_page_views"
+    missing = {
+        "outside": "refuse",
+        "impute": "impute",
+        "impute_outside": "impute",
+        "all_null": "impute",
+    }[scenario]
+
+    if binding == "property":
+        if scenario in {"outside", "impute_outside"}:
+            value_sql = (
+                "CASE WHEN country_code = 'US' THEN "
+                "CAST(abs(hash(user_id)) % 100 AS DOUBLE) ELSE NULL END"
+            )
+        elif scenario == "impute":
+            seed = _seed_event_log_input(with_pre_period=True, with_late_returns=False)
+            missing_user = next(
+                row["user_id"] for row in seed.to_pylist() if row["country_code"] == "US"
+            )
+            value_sql = (
+                f"CASE WHEN user_id = '{missing_user}' THEN NULL ELSE "
+                "CAST(abs(hash(user_id)) % 100 AS DOUBLE) END"
+            )
+        else:
+            value_sql = (
+                "CASE WHEN country_code = 'US' THEN NULL ELSE "
+                "CAST(abs(hash(user_id)) % 100 AS DOUBLE) END"
+            )
+        source["sql"] = source["sql"].replace("SELECT *", f"SELECT *, {value_sql} AS tenure", 1)
+        source.setdefault("properties", []).append(
+            {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "static"}
+        )
+        covariate = {"name": covariate_name, "kind": "continuous", "missing": missing}
+        experiment["plan"]["secondaries"] = [
+            item
+            for item in experiment["plan"]["secondaries"]
+            if not (isinstance(item, dict) and item.get("metric") == metric)
+        ] + [
+            {
+                "metric": metric,
+                "decision_method": {
+                    "name": "cuped",
+                    "variance_reduction": "cuped",
+                    "covariates": [covariate],
+                },
+            }
+        ]
+    else:
+        filters = (
+            [{"property": "country", "op": "equals", "values": ["US"]}]
+            if scenario in {"outside", "impute_outside"}
+            else (
+                [{"property": "country", "op": "not_equals", "values": ["US"]}]
+                if scenario == "all_null"
+                else []
+            )
+        )
+        measure_fact = "purchase" if scenario in {"outside", "impute_outside"} else "page_view"
+        covariate = {
+            "name": covariate_name,
+            "kind": "continuous",
+            "missing": missing,
+            "measure": {"fact": measure_fact, "aggregation": "count", "filters": filters},
+        }
+        experiment["plan"]["secondaries"] = [
+            item
+            for item in experiment["plan"]["secondaries"]
+            if not (isinstance(item, dict) and item.get("metric") == metric)
+        ] + [
+            {
+                "metric": metric,
+                "decision_method": {
+                    "name": "cuped",
+                    "variance_reduction": "cuped",
+                    "covariates": [covariate],
+                },
+            }
+        ]
+
+    definitions_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    con, native, context, store = _native(
+        definitions=definitions_path,
+        with_pre_period=True,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=datetime(2030, 1, 1, tzinfo=UTC),
+            complete_through_by_feed={"event_log": datetime(2030, 1, 1, tzinfo=UTC)},
+        ),
+    )
+    if binding == "measure" and scenario == "outside":
+        con.raw_sql(
+            """
+            INSERT INTO analytics.event_log
+            SELECT
+                exposure.event_at - INTERVAL '1 day',
+                exposure.user_id,
+                exposure.session_id || '-m6-' || CAST(samples.i AS VARCHAR),
+                'purchase',
+                CAST(1.0 AS DOUBLE),
+                CAST(NULL AS DOUBLE),
+                exposure.country_code,
+                exposure.device_type,
+                exposure.plan,
+                CAST(NULL AS VARCHAR),
+                CAST(NULL AS VARCHAR)
+            FROM analytics.event_log AS exposure
+            CROSS JOIN range(3) AS samples(i)
+            WHERE exposure.experiment_id = 'new_onboarding_v2'
+              AND exposure.event = 'page_view'
+              AND exposure.country_code = 'US'
+              AND samples.i < abs(hash(exposure.user_id) % 3) + 1
+            """
+        )
+    extensions = _extensions(
+        context,
+        "trigger_population",
+        "trigger_measure_stats",
+        "assignment_counts",
+        "unit_covariate",
+        "cuped_measure_covariate",
+    )
+    published = native.publish_unit_day_artifact(store, extensions=extensions)
+    adopted = Analysis.from_unit_day_artifact(store, published, expected_context=context)
+    return con, native, adopted, metric, covariate_name
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_refuse_ignores_missing_outside_population(
+    tmp_path: Path, binding: str
+) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="outside"
+    )
+    try:
+        rows = lift_rows(adopted.run(metrics=[metric_name]))
+        assert rows
+        assert {row.analysis_population for row in rows} == {"assigned", "triggered"}
+        triggered_cuped = next(
+            row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
+        )
+        assert triggered_cuped.lift is not None
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_imputation_ignores_missing_outside_population(
+    tmp_path: Path, binding: str
+) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="impute_outside"
+    )
+    try:
+        rows = lift_rows(adopted.run(metrics=[metric_name]))
+        triggered_cuped = next(
+            row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
+        )
+        assert triggered_cuped.lift is not None
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_imputation_uses_triggered_population_mean(
+    tmp_path: Path, binding: str
+) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="impute"
+    )
+    try:
+        expected = lift_rows(native.run(metrics=[metric_name]))
+        actual = lift_rows(adopted.run(metrics=[metric_name]))
+        expected_triggered = next(row for row in expected if row.analysis_population == "triggered")
+        actual_triggered = next(row for row in actual if row.analysis_population == "triggered")
+        expected_lift = expected_triggered.require_lift()
+        actual_lift = actual_triggered.require_lift()
+        assert actual_lift.value == pytest.approx(expected_lift.value, rel=1e-9)
+        assert actual_lift.log_se == pytest.approx(expected_lift.log_se, rel=1e-9)
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("binding", ["property", "measure"])
+def test_triggered_scalar_all_null_within_population_refuses(tmp_path: Path, binding: str) -> None:
+    con, native, adopted, metric_name, _covariate_name = _triggered_scalar_covariate_case(
+        tmp_path, binding=binding, scenario="all_null"
+    )
+    try:
+        rows = list(adopted.run(metrics=[metric_name]))
+        triggered_cuped = next(
+            row for row in rows if row.analysis_population == "triggered" and row.method == "cuped"
+        )
+        assert triggered_cuped.failure_code == "frame.validation.metric_covariate_impute_all_null"
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
 
 
 @pytest.mark.slow
