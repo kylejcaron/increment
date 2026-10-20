@@ -104,9 +104,7 @@ def _power_two_l2_scales(  # noqa: PLR0915
     for index, square_name in enumerate(square_names):
         maximum = moment_table[f"_qr_norm_max_{index}"]
         square_sum = moment_table[square_name]
-        maximum_exponent, scaled_norm, valid = _component_exponent_parts(
-            maximum, square_sum, dialect=dialect
-        )
+        maximum_exponent, scaled_norm, valid = _component_exponent_parts(maximum, square_sum)
         normalized_fields[f"_qr_max_exponent_{index}"] = maximum_exponent
         normalized_fields[f"_qr_scaled_norm_{index}"] = scaled_norm
         normalized_fields[f"_qr_valid_{index}"] = valid
@@ -1536,7 +1534,6 @@ class _QRDesignEncoder:
         execute: Callable[[ir.Table], object],
     ):
         self.transformed = relation
-        self.dialect = relation.get_backend().name
         self.arms = arms
         self.row_identity_columns = row_identity_columns
         self.execute = execute
@@ -1600,7 +1597,7 @@ class _QRDesignEncoder:
             else value.cast("float64")
         )
         if value.type().is_floating():
-            is_nan, is_inf = nonfinite_parts(numeric, dialect=self.dialect)
+            is_nan, is_inf = nonfinite_parts(numeric)
             nonfinite = is_inf & ~numeric.isnull()
             nonfinite_count = _rows(
                 self.execute(
@@ -1781,15 +1778,13 @@ class _QRDesignEncoder:
             value = self.transformed[name]
             mask = value.isnull()
             if value.type().is_floating():
-                is_nan, _is_inf = nonfinite_parts(value.cast("float64"), dialect=self.dialect)
+                is_nan, _is_inf = nonfinite_parts(value.cast("float64"))
                 mask = mask | is_nan
             for owners in shared:
                 representative = self.transformed[owners[0]]
                 representative_mask = representative.isnull()
                 if representative.type().is_floating():
-                    is_nan, _is_inf = nonfinite_parts(
-                        representative.cast("float64"), dialect=self.dialect
-                    )
+                    is_nan, _is_inf = nonfinite_parts(representative.cast("float64"))
                     representative_mask = representative_mask | is_nan
                 differences = _rows(
                     self.execute(
@@ -1813,7 +1808,7 @@ class _QRDesignEncoder:
             value = self.transformed[owners[0]]
             indicator_value = value.isnull()
             if value.type().is_floating():
-                is_nan, _is_inf = nonfinite_parts(value.cast("float64"), dialect=self.dialect)
+                is_nan, _is_inf = nonfinite_parts(value.cast("float64"))
                 indicator_value = indicator_value | is_nan
             counts = _rows(
                 self.execute(
@@ -1994,7 +1989,7 @@ def prepare_qr_factor_input(  # noqa: PLR0915
             if raw_value.type().is_boolean()
             else raw_value.cast("float64")
         )
-        is_nan, is_inf = nonfinite_parts(value, dialect=relation.get_backend().name)
+        is_nan, is_inf = nonfinite_parts(value)
         outcome_nonfinite = value.isnull() | is_nan | is_inf
         raw_stats = _rows(
             execute(
@@ -2011,7 +2006,7 @@ def prepare_qr_factor_input(  # noqa: PLR0915
             ibis.ifelse(relation["group_id"] == arm, offset, 0.0)
             for arm, offset in zip(arms, component_offsets, strict=True)
         )
-        centered_nan, centered_inf = nonfinite_parts(centered, dialect=relation.get_backend().name)
+        centered_nan, centered_inf = nonfinite_parts(centered)
         centered_nonfinite = _rows(
             execute(
                 relation.aggregate(

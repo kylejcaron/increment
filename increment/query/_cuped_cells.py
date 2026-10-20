@@ -84,7 +84,7 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
             if raw.type().is_boolean()
             else raw.cast("float64"),
         )
-        is_nan, is_inf = nonfinite_parts(value, dialect=dialect)
+        is_nan, is_inf = nonfinite_parts(value)
         nonfinite = is_inf
         if component in outcome_components:
             nonfinite = nonfinite | is_nan
@@ -147,7 +147,6 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
         maximum_exponent, scaled_norm, valid = _component_exponent_parts(
             stats_table[f"_magnitude_max_{index}"],
             stats_table[f"_magnitude_squares_{index}"],
-            dialect=dialect,
         )
         count = stats_table[f"_magnitude_count_{index}"].cast("float64")
         safe_count = (count > 0).ifelse(count, 1.0)
@@ -340,7 +339,7 @@ def _median_overflows(centered, exponent):
     return ((exponent == 1024) & (magnitude >= 1.0)) | ((exponent == 1023) & (magnitude >= 2.0))
 
 
-def _component_exponent_parts(maximum, sum_squares, *, dialect: str | None = None):
+def _component_exponent_parts(maximum, sum_squares):
     """Scale by the arm's L2 norm while keeping its maximum SQL-local.
 
     With ``m=max(abs(v))`` and ``q=sum((v/m)**2)``, the norm is ``m*sqrt(q)``.
@@ -351,7 +350,7 @@ def _component_exponent_parts(maximum, sum_squares, *, dialect: str | None = Non
     ``2**-36`` range checks therefore keep their existing bounds.
     """
     maximum = cast(ir.FloatingValue, maximum.cast("float64").fill_null(0.0))
-    is_nan, is_inf = nonfinite_parts(maximum, dialect=dialect)
+    is_nan, is_inf = nonfinite_parts(maximum)
     valid = (cast(Any, maximum) > 0) & ~is_nan & ~is_inf
     max_exponent = ibis.ifelse(valid, (maximum.log2().floor() + 1).clip(upper=1024), 0).cast(
         "int64"

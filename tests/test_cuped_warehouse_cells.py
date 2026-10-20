@@ -16,17 +16,26 @@ from increment.semantics.models import CupedCovariate, MeanMetric, Measure, Rati
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("dialect", ["snowflake", "bigquery", "postgres", "duckdb"])
-def test_cuped_nonfinite_parts_compile_for_supported_dialects(dialect: str) -> None:
+def test_cuped_nonfinite_parts_compile_for_supported_dialects() -> None:
     from increment.query._nonfinite import nonfinite_parts
 
-    table = ibis.table({"value": "float64"}, name="finite_values")
-    is_nan, is_inf = nonfinite_parts(table.value, dialect=dialect)
-    sql = ibis.to_sql(table.select(is_nan=is_nan, is_inf=is_inf), dialect=dialect).upper()
-
-    if dialect == "snowflake":
-        assert "IS_NAN(" not in sql
-        assert "IS_INF(" not in sql
+    con = ibis.duckdb.connect()
+    con.create_table("finite_values", ibis.memtable({"value": [1.0]}))
+    table = con.table("finite_values")
+    is_nan, is_inf = nonfinite_parts(table.value)
+    for dialect in ("snowflake", "bigquery", "postgres", "duckdb"):
+        sql = ibis.to_sql(table.select(nan_flag=is_nan, inf_flag=is_inf), dialect=dialect).upper()
+        if dialect == "snowflake":
+            assert "IS_NAN(" not in sql
+            assert "IS_INF(" not in sql
+            assert "'NAN'" in sql and "ABS(" in sql
+        elif dialect == "bigquery":
+            assert "IS_NAN(" in sql
+        elif dialect == "duckdb":
+            assert "ISNAN(" in sql or "IS_NAN(" in sql
+        else:
+            assert "'NAN'" in sql
+    con.disconnect()
 
 
 def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:
@@ -38,7 +47,7 @@ def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:
         "UNION ALL SELECT CAST('Infinity' AS DOUBLE) "
         "UNION ALL SELECT CAST('-Infinity' AS DOUBLE) UNION ALL SELECT NULL"
     )
-    is_nan, is_inf = nonfinite_parts(table.value, dialect="duckdb")
+    is_nan, is_inf = nonfinite_parts(table.value)
 
     assert table.select(is_nan=is_nan, is_inf=is_inf).to_pyarrow().to_pylist() == [
         {"is_nan": False, "is_inf": False},
