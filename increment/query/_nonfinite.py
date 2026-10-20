@@ -18,11 +18,9 @@ class _IsNaN(ops.Value):
     shape = rlz.shape_like("arg")
 
 
-def _compile_is_nan(compiler: Any, _op: _IsNaN, *, arg: Any) -> Any:
+def _is_nan_sql(dialect: str, value: str) -> Any:
     import sqlglot.expressions as sge
 
-    dialect = compiler.dialect
-    value = arg.sql(dialect=dialect)
     if dialect == "snowflake":
         sql = f"({value}) = 'NaN'::FLOAT"
     elif dialect == "postgres":
@@ -32,6 +30,10 @@ def _compile_is_nan(compiler: Any, _op: _IsNaN, *, arg: Any) -> Any:
     else:
         sql = f"ISNAN({value})"
     return sge.Var(this=sql)
+
+
+def _compile_is_nan(compiler: Any, _op: _IsNaN, *, arg: Any) -> Any:
+    return _is_nan_sql(compiler.dialect, arg.sql(dialect=compiler.dialect))
 
 
 def register_is_nan() -> None:

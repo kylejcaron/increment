@@ -227,28 +227,45 @@ def _transpile_captured_raw_sql(expression, dialect):
     """Transpile DuckDB SQL embedded in captured raw-query operations."""
     import sqlglot
     from ibis.expr import operations as ops
+    from sqlglot import exp
+
+    from increment.query._nonfinite import _is_nan_sql
+
+    def transpile(query, description):
+        if dialect == "snowflake":
+            statements = sqlglot.parse(query, read="duckdb")
+            if len(statements) != 1:
+                raise ValueError(
+                    f"captured CUPED SQL {description} must transpile to one statement, "
+                    f"got {len(statements)}"
+                )
+            statement = statements[0]
+            for is_nan in tuple(statement.find_all(exp.IsNan)):
+                value = is_nan.this.sql(dialect=dialect)
+                is_nan.replace(_is_nan_sql(dialect, value))
+            return statement.sql(dialect=dialect)
+
+        statements = sqlglot.transpile(query, read="duckdb", write=dialect)
+        if len(statements) != 1:
+            raise ValueError(
+                f"captured CUPED SQL {description} must transpile to one statement, "
+                f"got {len(statements)}"
+            )
+        return statements[0]
 
     root = expression.op()
     replacements = {}
     for operation in root.find(ops.SQLQueryResult):
-        statements = sqlglot.transpile(operation.query, read="duckdb", write=dialect)
-        if len(statements) != 1:
-            raise ValueError(
-                "captured CUPED SQL query result must transpile to one statement, "
-                f"got {len(statements)}"
-            )
         replacements[operation] = ops.SQLQueryResult(
-            query=statements[0], schema=operation.schema, source=operation.source
+            query=transpile(operation.query, "query result"),
+            schema=operation.schema,
+            source=operation.source,
         )
     for operation in root.find(ops.SQLStringView):
-        statements = sqlglot.transpile(operation.query, read="duckdb", write=dialect)
-        if len(statements) != 1:
-            raise ValueError(
-                "captured CUPED SQL string view must transpile to one statement, "
-                f"got {len(statements)}"
-            )
         replacements[operation] = ops.SQLStringView(
-            parent=operation.parent, query=statements[0], schema=operation.schema
+            parent=operation.parent,
+            query=transpile(operation.query, "string view"),
+            schema=operation.schema,
         )
     return root.replace(replacements).to_expr() if replacements else expression
 

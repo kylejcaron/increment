@@ -24,6 +24,8 @@ def test_registered_warehouse_statements_compile_offline(dialect):
         if not isinstance(expression, str):
             assert expression.schema().names
         sql = case.compile(expression)
+        if dialect == "snowflake":
+            assert "IS_NAN" not in sql.upper(), case.name
         statement_lengths[case.name] = len(sql)
         assert sql.strip(), case.name
         assert statement_lengths[case.name] <= 1_000_000, (
@@ -76,6 +78,28 @@ def test_captured_statement_uses_schema_at_capture_time(monkeypatch):
     case = _compile._captured_statement_case(expression, "bigquery", 0)
 
     assert case.schemas["_cuped_qr_stage"] == schema
+
+
+def test_captured_snowflake_isnan_uses_portable_comparison():
+    import ibis
+    from ibis.expr import operations as ops
+
+    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+
+    connection = ibis.duckdb.connect()
+    expression = connection.sql(
+        "SELECT ISNAN(value) AS nonfinite FROM source",
+        schema=ibis.schema({"nonfinite": "boolean"}),
+    )
+
+    translated = _transpile_captured_raw_sql(expression, "snowflake")
+
+    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
+    sql = ibis.to_sql(translated, dialect="snowflake")
+
+    assert "IS_NAN" not in query.upper()
+    assert "'NaN'::FLOAT" in query
+    assert "IS_NAN" not in sql.upper()
 
 
 class _CapturingCursor:
