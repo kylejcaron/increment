@@ -387,11 +387,16 @@ def _rows(value):
 
 
 def _scratch_columns(components):
-    columns = {"_arm_count", "_sigma"}
+    columns = {"_arm_count", "_sigma", "n"}
     for f in range(components):
         columns.update(
             {
                 f"_max_{f}",
+                f"_norm_max_{f}",
+                f"_sum_squares_{f}",
+                f"_max_exponent_{f}",
+                f"_scaled_norm_{f}",
+                f"_norm_valid_{f}",
                 f"exponent_{f}",
                 f"_rank_{f}",
                 f"_median_{f}",

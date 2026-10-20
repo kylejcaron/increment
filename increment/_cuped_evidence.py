@@ -119,9 +119,11 @@ def source_sha256(identity: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
 
 
-def categorical_identity(metric: str, key: str, population: str) -> tuple[object, ...]:
-    """Evidence identity shared by partitions of one request, independent of the source."""
-    return ("cuped_evidence", metric, population, None, key)
+def categorical_identity(
+    metric: str, key: str, population: str, trigger_name: str | None = None
+) -> tuple[object, ...]:
+    """Evidence identity shared by partitions of one request and trigger."""
+    return ("cuped_evidence", metric, population, trigger_name, key)
 
 
 def categorical_request(method: Any) -> bool:
@@ -362,7 +364,9 @@ def _decode_categorical_evidence(
 ) -> CupedEvidence:
     if not declarations or any(item["kind"] != "categorical" for item in declarations):
         invalid_evidence("categorical evidence method must declare categorical covariates only")
-    cells = _cells(evidence, categorical_identity(metric, method_key_value, population))
+    cells = _cells(
+        evidence, categorical_identity(metric, method_key_value, population, trigger_name)
+    )
     names = tuple(item["name"] for item in declarations)
     missing = tuple(item["missing"] for item in declarations)
     if cells.covariate_names != names:
@@ -499,11 +503,15 @@ def local_categorical_cells(source: Any, metric: Any, method: Any) -> Categorica
     arm_order = (control, *sorted(set(groups) - {control}))
     ratio = getattr(metric, "type", None) == "ratio"
     y = np.asarray(frame.get_column("y").to_list(), dtype=float)
+    population, trigger_name = _source_coordinates(source)
     return categorical_cells(
         None if ratio else y,
         np.asarray(groups, dtype=object),
         identity=categorical_identity(
-            metric.name, method_key(method), _source_coordinates(source)[0]
+            metric.name,
+            method_key(method),
+            population,
+            trigger_name,
         ),
         control=control,
         arm_order=arm_order,

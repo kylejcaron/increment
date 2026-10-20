@@ -61,7 +61,9 @@ def categorical_request_cells(
     """
     control = str(source.context.design.control_group)
     request = _ResolvedCupedRequest(
-        identity=categorical_identity(metric.name, method_key(method), population),
+        identity=categorical_identity(
+            metric.name, method_key(method), population, source.trigger_name
+        ),
         control=control,
         arm_order=(control,),
         method=method,

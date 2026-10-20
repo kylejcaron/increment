@@ -1076,18 +1076,25 @@ def _cube_evidence(
         if key in seen:
             duplicate_evidence(*key)
         seen.add(key)
-        ordinary_arms = {
-            str(row.get("group_id")) for row in rows if str(row.get("metric")) == item.metric
-        }
+        ordinary_rows = [row for row in rows if str(row.get("metric")) == item.metric]
+        ordinary_counts = {str(row.get("group_id")): row.get("n") for row in ordinary_rows}
         if item.kind == "scalar_moments":
             evidence_arms = {str(row.get("group_id")) for row in item.rows}
+            evidence_counts = {str(row.get("group_id")): row.get("n") for row in item.rows}
         else:
             if item.cells is None:
                 invalid_evidence("categorical envelope has no decoded cells")
             evidence_arms = {str(arm) for arm in item.cells.arms}
-        if evidence_arms != ordinary_arms:
+            evidence_counts = {
+                str(arm): sum(item.cells.counts[index]) for index, arm in enumerate(item.cells.arms)
+            }
+        if evidence_arms != set(ordinary_counts):
             invalid_evidence(
                 f"envelope arm roster differs from ordinary rows for metric {item.metric!r}"
+            )
+        if evidence_counts != ordinary_counts:
+            invalid_evidence(
+                f"envelope arm counts differ from ordinary rows for metric {item.metric!r}"
             )
         _validate_moment_experiment_identity([*rows, *item.rows])
         arms: set[str] = set()

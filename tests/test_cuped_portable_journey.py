@@ -86,7 +86,7 @@ def _events(units) -> list[dict[str, Any]]:
     return events
 
 
-def _definitions(tmp_path, *, fixed_caps: bool):
+def _definitions(tmp_path, *, fixed_caps: bool, covariate_name: str = "country"):
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml
 
     data = yaml.safe_load(
@@ -110,10 +110,12 @@ def _definitions(tmp_path, *, fixed_caps: bool):
         }
     )
     decision = _CATEGORICAL.model_dump(mode="json", exclude_none=True)
+    decision["covariates"][0]["name"] = covariate_name
     plan = data["experiments"][0]["plan"]
     plan["primary"]["decision_method"] = decision
     plan["primary"]["sensitivity_methods"] = [_COMPANION.model_dump(mode="json", exclude_none=True)]
-    plan["guardrails"] = [{"metric": "revenue_per_spend", "decision_method": decision}]
+    guardrail = dict(decision)
+    plan["guardrails"] = [{"metric": "revenue_per_spend", "decision_method": guardrail}]
     plan.pop("secondaries")
     path = tmp_path / "portable.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -186,6 +188,58 @@ def _cells(rows):
     return {
         (row.metric, row.method, row.group_id): row for row in rows if isinstance(row, LiftEstimate)
     }
+
+
+@pytest.mark.parametrize("ingress", ["definitions", "artifact"])
+def test_categorical_covariate_named_n_exports_identically(tmp_path, ingress):
+    analyses = []
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", obj=pa.Table.from_pylist(_events(_units())))
+    try:
+        for name in ("country", "n"):
+            path = _definitions(tmp_path, fixed_caps=False, covariate_name=name)
+            native = Analysis.from_definitions("mixed_cuped", path, connection)
+            adopted = None
+            try:
+                source = native
+                if ingress == "artifact":
+                    adopted, _ = _publish(connection, native)
+                    source = adopted
+                expected = _cells(native.run())
+                destination = tmp_path / f"{ingress}-{name}.parquet"
+                source.export(destination)
+                rows = pq.read_table(destination).to_pylist()
+                design = _design(path)
+                restored = Analysis.from_moments(
+                    rows, metrics=_specs(), design=design, experiment_id="mixed_cuped"
+                )
+                try:
+                    analyses.append((_cells(restored.run()), expected))
+                finally:
+                    restored.close()
+            finally:
+                if adopted is not None:
+                    adopted.close()
+                native.close()
+    finally:
+        connection.disconnect()
+    reference = analyses[0][1]
+    for _, expected in analyses[1:]:
+        assert expected.keys() == reference.keys()
+        for key, row in reference.items():
+            comparison = expected[key]
+            for field in ("value", "log_se", "lb", "ub"):
+                assert getattr(comparison.require_lift(), field) == pytest.approx(
+                    getattr(row.require_lift(), field), rel=1e-10, abs=1e-12
+                )
+    for actual, expected in analyses:
+        assert actual.keys() == expected.keys()
+        for key, row in expected.items():
+            replayed = actual[key]
+            for field in ("value", "log_se", "lb", "ub"):
+                assert getattr(replayed.require_lift(), field) == pytest.approx(
+                    getattr(row.require_lift(), field), rel=1e-10, abs=1e-12
+                )
 
 
 @pytest.mark.parametrize("ingress", ["artifact", "definitions"])

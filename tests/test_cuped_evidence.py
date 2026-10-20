@@ -347,6 +347,39 @@ def test_categorical_envelope_arm_roster_must_match_ordinary_rows(tmp_path):
     assert raised.value.code == "moments.cuped_evidence.invalid"
 
 
+def test_categorical_cell_counts_must_match_ordinary_rows(tmp_path):
+    rows, spec = _categorical_rows(tmp_path)
+    index = _first_envelope(rows, "categorical_cells")
+    rows[index] = _rewrite(
+        rows[index],
+        lambda payload: payload["evidence"]["counts"][0].__setitem__(
+            0, payload["evidence"]["counts"][0][0] + 1
+        ),
+    )
+    with pytest.raises(CodedError) as raised:
+        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
+def test_scalar_envelope_counts_must_match_ordinary_rows(tmp_path):
+    rows, spec = _categorical_rows(tmp_path)
+    index = next(
+        position
+        for position, row in enumerate(rows)
+        if row.get("record_kind") == "cuped_evidence"
+        and json.loads(row["cuped_evidence"])["kind"] == "scalar_moments"
+    )
+    rows[index] = _rewrite(
+        rows[index],
+        lambda payload: payload["evidence"]["rows"][0].__setitem__(
+            "n", payload["evidence"]["rows"][0]["n"] + 1
+        ),
+    )
+    with pytest.raises(CodedError) as raised:
+        Analysis.from_moments(rows, metrics=[spec], control="control", experiment_id="compact")
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
 @pytest.mark.parametrize("mismatch", ["scalar rows", "categorical covariate"])
 def test_evidence_payload_must_match_its_declared_method(tmp_path, mismatch):
     rows, spec = _categorical_rows(tmp_path)
@@ -505,6 +538,62 @@ def test_large_float_categorical_moment_round_trips_above_exact_integer_range():
     reloaded = parse_cuped_evidence(payload).cells
     assert reloaded is not None
     assert reloaded.symmetric_cross_moments == cells.symmetric_cross_moments
+
+
+def test_categorical_decode_preserves_trigger_identity():
+    from types import SimpleNamespace
+
+    from increment._cuped_evidence import (
+        categorical_identity,
+        method_key,
+        parse_cuped_evidence,
+        portable_cuped_rows,
+    )
+    from increment.errors import InvalidRequestError
+    from increment.estimation.cuped.cells import categorical_cells
+
+    class TriggeredAdapter:
+        _population = "triggered"
+
+        def __init__(self, trigger_name):
+            self.context = SimpleNamespace(trigger_name=trigger_name)
+
+        @property
+        def population(self):
+            return self._population
+
+        @property
+        def trigger_name(self):
+            return self.context.trigger_name
+
+        def moments_for_method(self, metric, method, *, by=()):
+            return []
+
+    method = Method.cuped_multicovariate(
+        covariates=(CupedCovariate(name="segment", kind="categorical"),)
+    )
+    metric = SimpleNamespace(name="outcome")
+    cells = categorical_cells(
+        np.array([1.0, 2.0, 1.5, 2.5]),
+        np.array(["control", "control", "treatment", "treatment"]),
+        identity=categorical_identity("outcome", method_key(method), "triggered"),
+        control="control",
+        arm_order=("control", "treatment"),
+        covariates={"segment": np.repeat("all", 4)},
+    )
+    decoded = []
+    for trigger_name in ("activation", "purchase"):
+        rows = portable_cuped_rows(
+            TriggeredAdapter(trigger_name),
+            [(metric, (), (method,))],
+            categorical_cells=lambda _metric, _method: cells,
+            identity={"source_id": "snapshot"},
+        )
+        envelope = next(row for row in rows if row["record_kind"] == "cuped_evidence")
+        decoded.append(parse_cuped_evidence(envelope["cuped_evidence"]).cells)
+    assert decoded[0] is not None and decoded[1] is not None
+    with pytest.raises(InvalidRequestError):
+        decoded[0].merge(decoded[1])
 
 
 def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
