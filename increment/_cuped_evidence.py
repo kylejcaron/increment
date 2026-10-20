@@ -240,9 +240,11 @@ def categorical_payload(
 def _wire_value(value: object) -> object:
     from enum import Enum
 
+    from increment.estimation.cuped.encoding import categorical_missing_wire_value
+
+    if (missing_category := categorical_missing_wire_value(value)) is not None:
+        return missing_category
     if isinstance(value, Enum):
-        if value.__class__.__name__ == "CategoricalMissing":
-            return {"$categorical_missing": value.value}
         invalid_evidence(f"fitted evidence cannot encode {type(value).__name__}")
     if isinstance(value, float) and not math.isfinite(value):
         return {"$float": "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")}

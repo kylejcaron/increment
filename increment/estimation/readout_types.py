@@ -984,7 +984,18 @@ def _restore_collection(collection_type, rows, metadata, source, sequential_snap
 
 
 def _digest_json_bytes(value):
-    return canonical_digest_bytes(value)
+    from increment.estimation.cuped.encoding import categorical_missing_wire_value
+
+    def normalize(item):
+        if (missing_category := categorical_missing_wire_value(item)) is not None:
+            return missing_category
+        if isinstance(item, Mapping):
+            return {key: normalize(nested) for key, nested in item.items()}
+        if isinstance(item, (tuple, list)):
+            return [normalize(nested) for nested in item]
+        return item
+
+    return canonical_digest_bytes(normalize(value))
 
 
 def _digest_scalar_bytes(value: object) -> bytes | None:

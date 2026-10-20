@@ -21,6 +21,13 @@ class CategoricalMissing(Enum):
 MISSING_CATEGORY = CategoricalMissing.VALUE
 
 
+def categorical_missing_wire_value(value: object) -> dict[str, str] | None:
+    """Return the canonical portable spelling of the typed missing category."""
+    if isinstance(value, CategoricalMissing):
+        return {"$categorical_missing": value.value}
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class MulticovariateCupedLayout:
     names: tuple[str, ...]
