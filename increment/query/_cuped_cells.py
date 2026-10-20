@@ -16,6 +16,7 @@ from increment.errors import CapabilityError, RefusalSpec, refuse
 from increment.estimation.cuped._numeric import _fail
 from increment.estimation.cuped.cells import _pattern_key
 from increment.estimation.cuped.types import CategoricalCells, _freeze_payload
+from increment.query._nonfinite import nonfinite_parts
 
 if TYPE_CHECKING:
     from increment.query.cuped import _ResolvedCupedRequest
@@ -74,6 +75,7 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
     outcome_components = {"outcome", "numerator", "denominator"}
     component_values: list[Any] = []
     maxima_fields: dict[str, Any] = {}
+    dialect = relation.get_backend().name
     for index, (component, name) in enumerate(components):
         raw = relation[name]
         value = cast(
@@ -82,13 +84,14 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
             if raw.type().is_boolean()
             else raw.cast("float64"),
         )
-        nonfinite = value.isinf()
+        is_nan, is_inf = nonfinite_parts(value, dialect=dialect)
+        nonfinite = is_inf
         if component in outcome_components:
-            nonfinite = nonfinite | value.isnan()
+            nonfinite = nonfinite | is_nan
         else:
             value = cast(
                 ir.FloatingValue,
-                ibis.ifelse(value.isnan(), ibis.null().cast("float64"), value),
+                ibis.ifelse(is_nan, ibis.null().cast("float64"), value),
             )
         component_values.append(value)
         maxima_fields[f"_magnitude_nonfinite_{index}"] = cast(
@@ -144,6 +147,7 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
         maximum_exponent, scaled_norm, valid = _component_exponent_parts(
             stats_table[f"_magnitude_max_{index}"],
             stats_table[f"_magnitude_squares_{index}"],
+            dialect=dialect,
         )
         count = stats_table[f"_magnitude_count_{index}"].cast("float64")
         safe_count = (count > 0).ifelse(count, 1.0)
@@ -336,7 +340,7 @@ def _median_overflows(centered, exponent):
     return ((exponent == 1024) & (magnitude >= 1.0)) | ((exponent == 1023) & (magnitude >= 2.0))
 
 
-def _component_exponent_parts(maximum, sum_squares):
+def _component_exponent_parts(maximum, sum_squares, *, dialect: str | None = None):
     """Scale by the arm's L2 norm while keeping its maximum SQL-local.
 
     With ``m=max(abs(v))`` and ``q=sum((v/m)**2)``, the norm is ``m*sqrt(q)``.
@@ -347,7 +351,8 @@ def _component_exponent_parts(maximum, sum_squares):
     ``2**-36`` range checks therefore keep their existing bounds.
     """
     maximum = cast(ir.FloatingValue, maximum.cast("float64").fill_null(0.0))
-    valid = (cast(Any, maximum) > 0) & ~maximum.isnan() & ~maximum.isinf()
+    is_nan, is_inf = nonfinite_parts(maximum, dialect=dialect)
+    valid = (cast(Any, maximum) > 0) & ~is_nan & ~is_inf
     max_exponent = ibis.ifelse(valid, (maximum.log2().floor() + 1).clip(upper=1024), 0).cast(
         "int64"
     )
@@ -503,7 +508,8 @@ def _cell_relation(relation, names, outcomes):
     aggregates = {"n": centered.count()}
     for f, name in enumerate(outcomes):
         value = centered[name].cast("float64")
-        finite = value.notnull() & ~value.isnan() & ~value.isinf()
+        is_nan, is_inf = nonfinite_parts(value)
+        finite = value.notnull() & ~is_nan & ~is_inf
         total, remainder = _compensated(centered[f"_offset_{f}"], centered["_sigma"])
         count = centered.count()
         arm_count = centered["_arm_count"].min()
@@ -551,9 +557,8 @@ def _preflight(cells, names, components, request, metric):
     for f in range(components):
         scatter = cells[f"cross_{f}_{f}"]
         error = 64 * np.finfo(float).eps * cells.n * cells[f"max_centered_{f}"] ** 2
-        positive.append(
-            cells[f"distinct_{f}"] & (scatter > error) & ~scatter.isnan() & ~scatter.isinf()
-        )
+        is_nan, is_inf = nonfinite_parts(scatter)
+        positive.append(cells[f"distinct_{f}"] & (scatter > error) & ~is_nan & ~is_inf)
         contributors.append(cells[f"contributors_{f}"])
     label_bytes = ibis.literal(0, type="int64")
     for name in ("group_id", *names):

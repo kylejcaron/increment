@@ -17,6 +17,7 @@ from increment.estimation.cuped._numeric import _fail
 from increment.estimation.cuped.multicovariate import M1_MAX_LEVERAGE
 from increment.estimation.cuped.types import FitState, InferenceSummary, ProjectionSpec
 from increment.query._cuped_cells import _rows
+from increment.query._nonfinite import nonfinite_parts
 
 FloatMatrix = tuple[tuple[float, ...], ...]
 
@@ -103,7 +104,9 @@ def _power_two_l2_scales(  # noqa: PLR0915
     for index, square_name in enumerate(square_names):
         maximum = moment_table[f"_qr_norm_max_{index}"]
         square_sum = moment_table[square_name]
-        maximum_exponent, scaled_norm, valid = _component_exponent_parts(maximum, square_sum)
+        maximum_exponent, scaled_norm, valid = _component_exponent_parts(
+            maximum, square_sum, dialect=dialect
+        )
         normalized_fields[f"_qr_max_exponent_{index}"] = maximum_exponent
         normalized_fields[f"_qr_scaled_norm_{index}"] = scaled_norm
         normalized_fields[f"_qr_valid_{index}"] = valid
@@ -1533,6 +1536,7 @@ class _QRDesignEncoder:
         execute: Callable[[ir.Table], object],
     ):
         self.transformed = relation
+        self.dialect = relation.get_backend().name
         self.arms = arms
         self.row_identity_columns = row_identity_columns
         self.execute = execute
@@ -1596,7 +1600,8 @@ class _QRDesignEncoder:
             else value.cast("float64")
         )
         if value.type().is_floating():
-            nonfinite = numeric.isinf() & ~numeric.isnull()
+            is_nan, is_inf = nonfinite_parts(numeric, dialect=self.dialect)
+            nonfinite = is_inf & ~numeric.isnull()
             nonfinite_count = _rows(
                 self.execute(
                     self.transformed.aggregate(
@@ -1606,7 +1611,7 @@ class _QRDesignEncoder:
             )[0]["_qr_nonfinite"]
             if nonfinite_count:
                 _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
-            null = null | numeric.isnan()
+            null = null | is_nan
         if policy == "refuse":
             missing_count = _rows(
                 self.execute(
@@ -1776,14 +1781,16 @@ class _QRDesignEncoder:
             value = self.transformed[name]
             mask = value.isnull()
             if value.type().is_floating():
-                mask = mask | value.cast("float64").isnan()
+                is_nan, _is_inf = nonfinite_parts(value.cast("float64"), dialect=self.dialect)
+                mask = mask | is_nan
             for owners in shared:
                 representative = self.transformed[owners[0]]
                 representative_mask = representative.isnull()
                 if representative.type().is_floating():
-                    representative_mask = (
-                        representative_mask | representative.cast("float64").isnan()
+                    is_nan, _is_inf = nonfinite_parts(
+                        representative.cast("float64"), dialect=self.dialect
                     )
+                    representative_mask = representative_mask | is_nan
                 differences = _rows(
                     self.execute(
                         self.transformed.aggregate(
@@ -1806,7 +1813,8 @@ class _QRDesignEncoder:
             value = self.transformed[owners[0]]
             indicator_value = value.isnull()
             if value.type().is_floating():
-                indicator_value = indicator_value | value.cast("float64").isnan()
+                is_nan, _is_inf = nonfinite_parts(value.cast("float64"), dialect=self.dialect)
+                indicator_value = indicator_value | is_nan
             counts = _rows(
                 self.execute(
                     self.transformed.aggregate(
@@ -1986,7 +1994,8 @@ def prepare_qr_factor_input(  # noqa: PLR0915
             if raw_value.type().is_boolean()
             else raw_value.cast("float64")
         )
-        outcome_nonfinite = value.isnull() | value.isnan() | value.isinf()
+        is_nan, is_inf = nonfinite_parts(value, dialect=relation.get_backend().name)
+        outcome_nonfinite = value.isnull() | is_nan | is_inf
         raw_stats = _rows(
             execute(
                 relation.aggregate(
@@ -2002,10 +2011,11 @@ def prepare_qr_factor_input(  # noqa: PLR0915
             ibis.ifelse(relation["group_id"] == arm, offset, 0.0)
             for arm, offset in zip(arms, component_offsets, strict=True)
         )
+        centered_nan, centered_inf = nonfinite_parts(centered, dialect=relation.get_backend().name)
         centered_nonfinite = _rows(
             execute(
                 relation.aggregate(
-                    _qr_centered_nonfinite=(centered.isnan() | centered.isinf())
+                    _qr_centered_nonfinite=cast(Any, centered_nan | centered_inf)
                     .ifelse(1, 0)
                     .cast("int64")
                     .sum()

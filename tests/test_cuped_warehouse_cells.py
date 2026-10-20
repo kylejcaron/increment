@@ -16,6 +16,40 @@ from increment.semantics.models import CupedCovariate, MeanMetric, Measure, Rati
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery", "postgres", "duckdb"])
+def test_cuped_nonfinite_parts_compile_for_supported_dialects(dialect: str) -> None:
+    from increment.query._nonfinite import nonfinite_parts
+
+    table = ibis.table({"value": "float64"}, name="finite_values")
+    is_nan, is_inf = nonfinite_parts(table.value, dialect=dialect)
+    sql = ibis.to_sql(table.select(is_nan=is_nan, is_inf=is_inf), dialect=dialect).upper()
+
+    if dialect == "snowflake":
+        assert "IS_NAN(" not in sql
+        assert "IS_INF(" not in sql
+
+
+def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:
+    from increment.query._nonfinite import nonfinite_parts
+
+    con = ibis.duckdb.connect()
+    table = con.sql(
+        "SELECT 1.0 AS value UNION ALL SELECT CAST('NaN' AS DOUBLE) "
+        "UNION ALL SELECT CAST('Infinity' AS DOUBLE) "
+        "UNION ALL SELECT CAST('-Infinity' AS DOUBLE) UNION ALL SELECT NULL"
+    )
+    is_nan, is_inf = nonfinite_parts(table.value, dialect="duckdb")
+
+    assert table.select(is_nan=is_nan, is_inf=is_inf).to_pyarrow().to_pylist() == [
+        {"is_nan": False, "is_inf": False},
+        {"is_nan": True, "is_inf": False},
+        {"is_nan": False, "is_inf": True},
+        {"is_nan": False, "is_inf": True},
+        {"is_nan": None, "is_inf": None},
+    ]
+    con.disconnect()
+
+
 def _cells_frame(
     counts,
     *,

@@ -50,6 +50,7 @@ from increment.query.artifact_digest import (
     digest_relation_bucketed,
     digest_relation_sql_v2,
     digest_relation_stream,
+    fetch_bounded_arrow,
     stream_canonical_rows,
 )
 from increment.query.artifact_digest import REFUSALS as DIGEST_REFUSALS
@@ -1201,7 +1202,7 @@ class WarehouseArtifactStore:
             ref.generation_id,
             read_manifest,
             verify_relation,
-            lambda expression: self._con.to_pyarrow(expression),
+            lambda expression: fetch_bounded_arrow(self._con, expression),
             lambda expression: record_batches(self._con, expression),
             self.qr_scratch,
         )
@@ -1377,15 +1378,55 @@ class _MaterializedRelation:
     schema: str | None
 
 
+def _drop_materialized_relations(
+    con: SQLBackend, relations: tuple[_MaterializedRelation, ...]
+) -> None:
+    if not relations:
+        return
+    if len(relations) == 1:
+        relation = relations[0]
+        database = (
+            (relation.catalog, relation.schema)
+            if relation.catalog is not None and relation.schema is not None
+            else relation.schema or relation.catalog
+        )
+        con.drop_table(relation.name, database=database, force=True)
+        return
+    if con.name == "snowflake":
+        for relation in relations:
+            database = (
+                (relation.catalog, relation.schema)
+                if relation.catalog is not None and relation.schema is not None
+                else relation.schema or relation.catalog
+            )
+            con.drop_table(relation.name, database=database, force=True)
+        return
+    names = tuple(
+        sqlglot.table(
+            relation.name,
+            db=relation.schema,
+            catalog=relation.catalog,
+            quoted=True,
+        ).sql(dialect=con.name)
+        for relation in relations
+    )
+    drops = tuple(f"DROP TABLE IF EXISTS {name}" for name in names)
+    sql = (
+        "; ".join(drops)
+        if con.name in {"bigquery", "duckdb"}
+        else f"DROP TABLE IF EXISTS {', '.join(names)}"
+    )
+    cast(Any, con).raw_sql(sql)
+
+
 class _WarehouseQrScratch:
     """Own two alternating TEMP relations for one warehouse QR execution."""
 
     def __init__(self, session: _QrScratchSession) -> None:
         self._session = session
-        self._active: _MaterializedRelation | None = None
+        self._work_slots: dict[int, _MaterializedRelation] = {}
         self._pinned: list[_MaterializedRelation] = []
         self._next_slot = 0
-        self._counter = 0
 
     def materialize_input(self, expression: ir.Table) -> ir.Table:
         """Retain one input relation outside the two alternating work slots."""
@@ -1401,25 +1442,32 @@ class _WarehouseQrScratch:
         return result
 
     def materialize_next(self, expression: ir.Table) -> ir.Table:
-        """Create the next relation before releasing the current work relation."""
-        name = f"_cuped_qr_{self._session._suffix}_{self._next_slot}_{self._counter}"
-        self._next_slot = 1 - self._next_slot
-        self._counter += 1
-        result = self._session.materialize_table(name, expression, required=True)
+        """Replace the next TEMP work slot while retaining the other slot."""
+        slot = self._next_slot
+        self._next_slot = 1 - slot
+        name = f"_cuped_qr_{self._session._suffix}_{slot}"
+        previous = self._work_slots.get(slot)
+        replace = previous is not None
+        if previous is not None and self._session._con.name == "postgres":
+            if not self._drop(previous):
+                _raise(
+                    "query.session.qr_scratch_cleanup_failed",
+                    relations=self.leftovers,
+                    route=f"restore DROP privileges on {self._session._con.name} and retry",
+                )
+            self._work_slots.pop(slot)
+            previous = None
+            replace = False
+        result = self._session.materialize_table(name, expression, required=True, replace=replace)
         locator = next(
             (item for item in reversed(self._session._materialized) if item.requested_name == name),
             None,
         )
         if locator is None:
             _raise("query.session.snapshot.materialization_failed")
-        previous = self._active
-        self._active = locator
-        if previous is not None and not self._drop(previous):
-            _raise(
-                "query.session.qr_scratch_cleanup_failed",
-                relations=self.leftovers,
-                route=f"restore DROP privileges on {self._session._con.name} and retry",
-            )
+        if previous is not None:
+            self._session._materialized.remove(previous)
+        self._work_slots[slot] = locator
         return result
 
     @property
@@ -1431,13 +1479,21 @@ class _WarehouseQrScratch:
         )
 
     def close(self) -> None:
-        if self._active is not None:
-            active = self._active
-            if self._drop(active):
-                self._active = None
-        for pinned in tuple(self._pinned):
-            if self._drop(pinned):
-                self._pinned.remove(pinned)
+        relations = (*self._work_slots.values(), *self._pinned)
+        try:
+            self._session._drop_materialized_relations(tuple(relations))
+        except Exception:
+            for slot, relation in tuple(self._work_slots.items()):
+                if self._drop(relation):
+                    self._work_slots.pop(slot)
+            for pinned in tuple(self._pinned):
+                if self._drop(pinned):
+                    self._pinned.remove(pinned)
+        else:
+            for relation in relations:
+                self._session._materialized.remove(relation)
+            self._work_slots.clear()
+            self._pinned.clear()
 
     def _drop(self, locator: _MaterializedRelation) -> bool:
         try:
@@ -1477,9 +1533,15 @@ class _QrScratchSession(Protocol):
     _materialized: list[_MaterializedRelation]
     _suffix: str
 
-    def materialize_table(self, name: str, expr: ir.Table, *, required: bool) -> ir.Table: ...
+    def materialize_table(
+        self, name: str, expr: ir.Table, *, required: bool, replace: bool = False
+    ) -> ir.Table: ...
 
     def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None: ...
+
+    def _drop_materialized_relations(
+        self, relations: tuple[_MaterializedRelation, ...]
+    ) -> None: ...
 
 
 @contextmanager
@@ -1496,7 +1558,9 @@ class _WarehouseArtifactQrSession:
         self._suffix = uuid.uuid4().hex[:12]
         self._materialized: list[_MaterializedRelation] = []
 
-    def materialize_table(self, name: str, expr: ir.Table, *, required: bool) -> ir.Table:
+    def materialize_table(
+        self, name: str, expr: ir.Table, *, required: bool, replace: bool = False
+    ) -> ir.Table:
         if not required:
             _raise("query.session.snapshot.materialization_failed")
         created = None
@@ -1506,6 +1570,9 @@ class _WarehouseArtifactQrSession:
             else _MaterializedRelation(name, name, None, None)
         )
         try:
+            create_kwargs: dict[str, Any] = {"temp": True}
+            if replace:
+                create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
                 catalog = getattr(self._con, "current_catalog", None)
                 schema = getattr(self._con, "current_database", None)
@@ -1513,9 +1580,8 @@ class _WarehouseArtifactQrSession:
                     _raise("query.session.materialization_namespace", backend=self._con.name)
                 database = sqlglot.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
-                created = self._con.create_table(name, expr, temp=True, database=database)
-            else:
-                created = self._con.create_table(name, expr, temp=True)
+                create_kwargs["database"] = database
+            created = self._con.create_table(name, expr, **create_kwargs)
             operation = created.op()
             catalog = operation.namespace.catalog
             schema = operation.namespace.database
@@ -1553,6 +1619,9 @@ class _WarehouseArtifactQrSession:
             else relation.schema or relation.catalog
         )
         self._con.drop_table(relation.name, database=database, force=True)
+
+    def _drop_materialized_relations(self, relations: tuple[_MaterializedRelation, ...]) -> None:
+        _drop_materialized_relations(self._con, relations)
 
 
 @contextmanager
@@ -1645,18 +1714,15 @@ class WarehouseSession:
         convert to Python records or derive a new Arrow table; pandas writes replace
         or copy Arrow-backed columns rather than mutating cached buffers in place.
         """
-        if (
-            not self._is_captured_expression(expression)
-            or params is not None
-            or limit is not None
-            or kwargs
-        ):
+        if params is not None or limit is not None or kwargs:
             return cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
+        if not self._is_captured_expression(expression):
+            return fetch_bounded_arrow(self._con, expression)
         operation = expression.op()
         result = self._arrow_results.get(operation)
         if result is not None:
             return result
-        result = cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
+        result = fetch_bounded_arrow(self._con, expression)
         result_size = getattr(result, "nbytes", None)
         if (
             isinstance(result_size, int)
@@ -1832,7 +1898,14 @@ class WarehouseSession:
                 return None
         return _MaterializedRelation(requested_name, op.name, catalog, schema)
 
-    def materialize_table(self, name: str, expr: ir.Table, *, required: bool = False) -> ir.Table:
+    def materialize_table(
+        self,
+        name: str,
+        expr: ir.Table,
+        *,
+        required: bool = False,
+        replace: bool = False,
+    ) -> ir.Table:
         """``con.create_table(temp=True)``, degrading to unmaterialized on failure.
 
         Optional materialization warns and falls back on failure. Required
@@ -1845,6 +1918,9 @@ class WarehouseSession:
         created = None
         cleanup = None
         try:
+            create_kwargs: dict[str, Any] = {"temp": True}
+            if replace:
+                create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
                 import sqlglot as sg
 
@@ -1855,9 +1931,8 @@ class WarehouseSession:
                 # Pin creation so cleanup never depends on a later namespace lookup.
                 database = sg.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
-                created = self._con.create_table(name, expr, temp=True, database=database)
-            else:
-                created = self._con.create_table(name, expr, temp=True)
+                create_kwargs["database"] = database
+            created = self._con.create_table(name, expr, **create_kwargs)
             op = created.op()
             if self._con.name == "postgres":
                 # pg_temp addresses only this connection's TEMP schema.
@@ -1891,6 +1966,9 @@ class WarehouseSession:
             else relation.schema or relation.catalog
         )
         self._con.drop_table(relation.name, database=database, force=True)
+
+    def _drop_materialized_relations(self, relations: tuple[_MaterializedRelation, ...]) -> None:
+        _drop_materialized_relations(self._con, relations)
 
     def drop_materialized(self) -> None:
         """Drop every TEMP table this session materialized (best-effort) and draw a fresh name suffix.

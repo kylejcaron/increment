@@ -67,6 +67,42 @@ def _positive_diagonal(r, rhs):
     return signs[:, None] * r, signs[:, None] * rhs
 
 
+def test_qr_scratch_reuses_two_temp_relations_without_intermediate_drops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    connection = ibis.duckdb.connect()
+    connection.create_table("scratch_source", obj=[{"x": 1}])
+    connection.create_table("factor_input", obj=[{"x": 1}])
+    session = _scratch_session(connection, tmp_path)
+    drop_calls = []
+    drop_statements = []
+    original_drop = connection.drop_table
+    original_raw_sql = connection.raw_sql
+
+    def tracked_drop(*args, **kwargs):
+        drop_calls.append(args[0])
+        return original_drop(*args, **kwargs)
+
+    def tracked_raw_sql(sql, *args, **kwargs):
+        if "DROP TABLE" in str(sql).upper():
+            drop_statements.append(str(sql))
+        return original_raw_sql(sql, *args, **kwargs)
+
+    monkeypatch.setattr(connection, "drop_table", tracked_drop)
+    monkeypatch.setattr(connection, "raw_sql", tracked_raw_sql)
+    try:
+        with session.qr_scratch() as scratch:
+            first = scratch.materialize_next(connection.table("factor_input"))
+            second = scratch.materialize_next(first.mutate(x=first.x + 1))
+            third = scratch.materialize_next(second.mutate(x=second.x + 1))
+            assert third.execute().to_dict("records") == [{"x": 3}]
+        assert drop_calls == []
+        assert len(drop_statements) == 1
+        assert len(drop_statements[0].split(";")) == 2
+    finally:
+        connection.disconnect()
+
+
 @pytest.mark.parametrize("p", [1, 4, 20, 50])
 def test_duckdb_householder_factor_matches_numpy(p, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
@@ -1096,12 +1132,13 @@ def test_qr_scratch_pins_input_while_alternating_work_relations(tmp_path):
     try:
         with session.qr_scratch() as scratch:
             pinned = scratch.materialize_input(relation)
+            relation = pinned
             assert len(session.materialized_names) == 1
-            for _ in range(4):
-                relation = scratch.materialize_next(pinned.mutate(x=pinned.x + 1.0))
-                assert len(session.materialized_names) == 2
+            for index in range(4):
+                relation = scratch.materialize_next(relation.mutate(x=relation.x + 1.0))
+                assert len(session.materialized_names) == min(index + 2, 3)
                 assert connection.to_pyarrow(pinned).num_rows == 2
-            assert len(session.materialized_names) == 2
+            assert len(session.materialized_names) == 3
         assert session.materialized_names == []
     finally:
         session.drop_materialized()

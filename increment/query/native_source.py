@@ -1188,7 +1188,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 grouped = population.group_by(label)
             else:
                 grouped = population
-            counts = self._con.to_pyarrow(
+            counts = self._session.fetch_arrow(
                 grouped.aggregate(
                     n_missing=population[covariate.name].isnull().cast("int64").sum(),
                     n_observed=population[covariate.name].count(),

@@ -75,7 +75,7 @@ def test_digest_scratch_cleanup_targets_created_namespace(
 def test_bigquery_digest_fetch_disables_storage_api():
     import pyarrow as pa
 
-    from increment.query.artifact_digest import _digest_to_pyarrow
+    from increment.query.artifact_digest import fetch_bounded_arrow
 
     relation = ibis.table({"value": "int64"}, name="source")
     expr = relation.aggregate(total=relation.value.count())
@@ -103,7 +103,7 @@ def test_bigquery_digest_fetch_disables_storage_api():
             return self.query
 
     con = Connection()
-    actual = _digest_to_pyarrow(con, expr)
+    actual = fetch_bounded_arrow(con, expr)
 
     assert actual.to_pylist() == [{"total": 3}]
     assert con.sql == "SELECT COUNT(value) AS total FROM source"
