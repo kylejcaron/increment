@@ -150,28 +150,37 @@ The mixed-catalog checkpoint scenario compares the modeled conversion's rows and
 - Float tolerance is 1e-9 relative with a 1e-9 absolute floor; the matrix runs on DuckDB in memory. A divergence found only on PostgreSQL, Snowflake or BigQuery is outside this ticket (CONTRIBUTING, Backend verification).
 - Refusal before data load is not asserted per cell; the gate order is pinned by `tests/test_refusal_uniqueness.py` and `tests/test_source_capabilities.py`.
 
-## Mixed-covariate CUPED slice
+## Mixed-covariate CUPED acceptance rows
 
-The `mixed-cuped-linear-fixed-horizon` case is separate from the 3,584-cell scalar method matrix. The fixed-horizon parity fixture uses the same 120 per-unit rows (60 per arm): revenue mean as primary, revenue/orders ratio as guardrail, and signups conversion as secondary. The supported row-comparison ingresses are `from_unit_summary`, `from_unit_panel`, `from_definitions`, and published-then-adopted `from_unit_day_artifact`. Those routes compare emitted results and retained evidence/scope through shared identity validation and normalization; the fixture includes numeric and categorical covariates plus missing pre-period history with impute-indicator.
+The dedicated QR rows are separate from the scalar method cross product. The continuous/mixed
+row `mixed-cuped-multicovariate-fixed-horizon` runs mean and ratio outcomes with method-owned
+continuous and categorical covariates, impute-indicator missingness, decision roles, and the
+format-13 `fitted_multicovariate` export/replay path. The six attempted constructors are
+definitions, adopted unit-day artifact, unit summary, unit panel, switchback panel and portable
+moments: definitions/artifact/summary/panel and moments replay are compared; switchback is
+explicitly refused with `source.frame.switchback.metric`.
+Portable moments replay carries the fitted identity and reuses the stored QR fit at a different
+alpha. The companion
+`categorical-cuped-moments-format-13` row continues to exercise categorical joint-cell
+evidence and breakout dimensions; its known missing-level digest issue is not evidence for
+continuous/mixed QR support.
 
-The same four ingresses compare exact `estimation.cuped_linear.support_region` (M1) and `estimation.cuped_linear.level_support` failures. `from_moments` and `from_switchback_panel` are attempted and assert, before acquisition, `facade.analysis_config.cuped_linear_moments` and `source.frame.switchback.metric`, respectively.
+The continuous/mixed QR row applies fixed winsorization caps and impute-indicator missingness.
+Categorical breakouts are exercised across the supported definition/artifact/panel paths, with
+the unit-summary and moments routes refusing to invent per-unit segment evidence. The nullable
+segment estimate is pinned by
+`tests/test_cuped_breakout_review.py::test_public_breakout_null_segment_uses_its_unit_rows`.
+Fitted-envelope replay changes alpha while preserving the point estimate and fit-derived
+standard error. Separate QR producer boundary tests cover a withheld nonpositive ratio arm,
+`query.cuped.magnitude_range`, and `estimation.cuped_linear.nonfinite`:
+`tests/test_warehouse_cuped_qr.py::test_ratio_qr_withholds_nonpositive_arm_before_fit`,
+`test_qr_tiny_mean_large_denominator_spread_refuses_magnitude_range`, and
+`test_qr_encoder_refuses_infinite_covariates_with_coded_error`. The surrounding direct
+cross-ingress support and refusal journeys are in `tests/test_warehouse_cuped_parity.py` and
+`tests/test_cuped_portable_journey.py`.
 
-The additional `categorical-cuped-moments-format-13` parity case requests a categorical-only mixed CUPED mean and ratio with a missing category under `impute-indicator`, plus breakout rows across the six ingress paths. Definitions, adopted artifacts and panels produce the two-metric by two-region breakout rows; unit-summary and moments replay refuse with `facade.analysis.operation`, and switchback refuses with `source.frame.switchback.metric`. The definitions route exports and replays format-13 `categorical_cells` evidence; its ordinary rows remain one row per metric/arm. This does not claim continuous/mixed QR replay: `mixed-cuped-multicovariate-fixed-horizon` continues to refuse that request from moments pending T7. Categorical mean/ratio replay and bounded transfer checks are also exercised by `tests/test_cuped_portable_journey.py`.
-
-`test_scalar_cuped_composes_with_mixed_cuped_on_all_four_ingresses` measures scalar CUPED with mixed CUPED on each supported route. Frames declare scalar covariates on `Method.cuped(covariates=...)` and include the same name in `MetricSpec.decision_method`; definitions additionally require `n_pre_periods > 0`, and artifacts need the `cuped_preperiod` extension. The distinct nonmember frame declaration refuses with `frame.metric.scalar_and_set_covariates`.
-
-`test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingresses` exercises fixed lower and upper bounds on all four supported routes and compares rows and retained scope. Percentile winsorization remains unfinished with `estimation.engine.cuped_linear_winsorization`.
-
-The generated capability table records the complete ingress-by-interaction dispositions:
-
-| Interaction | Summary | Panel | Definitions | Unit-day artifact | Other constructors |
-|---|---|---|---|---|---|
-| Scalar CUPED | Supported; same covariate name in scalar and mixed declarations | Supported; same covariate name in scalar and mixed declarations | Supported with positive `n_pre_periods` and mixed bindings | Supported when the published artifact includes `cuped_preperiod` | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Ratio | Supported | Supported | Supported | Supported | Categorical-only format-13 evidence is supported; continuous/mixed QR replay is source-limited pending T7; switchback is source-limited (`source.frame.switchback.metric`) |
-| Clustering | Unfinished (`estimation.engine.cuped_linear_cluster`) | Source-limited (`source.frame_panel.cluster_grain`) | Unfinished (`estimation.engine.cuped_linear_cluster`) | Unfinished (`estimation.engine.cuped_linear_cluster`) | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Sequential | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Unfinished (`estimation.engine.cuped_linear_sequential`, tracked by kata 6rhs) | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Fixed-value winsorization | Supported with lower and upper bounds | Supported with lower and upper bounds | Supported with lower and upper bounds | Supported with lower and upper bounds | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Percentile winsorization | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Unfinished (`estimation.engine.cuped_linear_winsorization`) | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Breakouts | Source-limited (`facade.analysis.operation`) | Supported | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Multiplicity roles | Supported | Supported | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
-| Triggered population | Source-limited (`facade.analysis.trigger_unsupported`) | Source-limited (`facade.analysis.trigger_unsupported`) | Supported | Supported | Moments source-limited (`facade.analysis_config.cuped_linear_moments`); switchback source-limited (`source.frame.switchback.metric`) |
+The generated capability table records scalar CUPED separately from mixed CUPED: fixed-horizon
+QR is supported for definitions, unit-day artifacts, unit summaries and unit panels, while
+format-13 fitted evidence supports continuous/mixed moments replay and categorical cells retain
+their own aggregate replay contract. Clustering, sequential, percentile winsorization and
+triggered-population status are unchanged.

@@ -42,6 +42,21 @@ def test_parity_case_ids_are_unique():
     assert len(ids) == len(set(ids)), f"duplicate parity case ids: {ids}"
 
 
+def test_qr_cuped_rows_cover_six_ingresses_and_record_unavailable_sources():
+    from tests.parity_harness.declarations import PARITY_DECLARATIONS
+    from tests.parity_harness.matrix import (
+        QR_CUPED_INGRESSES,
+        QR_CUPED_ROWS,
+        QR_CUPED_SOURCE_REFUSALS,
+    )
+
+    case_ids = {case.id for case in PARITY_CASES}
+    assert set(QR_CUPED_ROWS) <= case_ids
+    declaration = PARITY_DECLARATIONS["mixed-cuped-multicovariate-fixed-horizon"]
+    assert set(declaration.attempted) == set(QR_CUPED_INGRESSES)
+    assert dict(declaration.refusals) == QR_CUPED_SOURCE_REFUSALS
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
     "constructor",

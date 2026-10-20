@@ -620,15 +620,14 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             ),
         ),
         _e(
-            "from_moments_source_limited",
-            "Analysis.run() mixed-covariate mean with a continuous covariate",
+            "from_moments_fitted_supported",
+            "Analysis.run() continuous/mixed-covariate mean/ratio",
             "from_moments",
-            "aggregate moments contain no per-unit continuous covariates",
-            "source_limited",
-            reason="portable moments carry joint cells only for categorical-only requests; use a unit source",
-            stage="construction",
+            "format-13 fitted_multicovariate evidence replays the retained QR fit at a changed alpha",
+            "supported",
             evidence=(
-                "tests/test_cuped_covariate_sources.py::test_from_moments_refuses_multicovariate_with_unit_source_route",
+                "tests/parity_harness/cases.py::_mixed_cuped_multicovariate_case",
+                "tests/test_cuped_portable_journey.py::test_fitted_envelope_replays_across_frame_native_and_artifact_sources",
             ),
         ),
         _e(

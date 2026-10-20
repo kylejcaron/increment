@@ -9073,30 +9073,64 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
     )
 
 
-def _mixed_cuped_multicovariate_case() -> ParityCase:
-    """Mixed-covariate CUPED parity on four unit ingresses and two source refusals."""
+def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
+    """Continuous QR mean/ratio parity and fitted-evidence replay across the six ingresses."""
+    import json
+
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
+    from increment.semantics.assignment import IndependentBernoulliOrder
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import Winsorization
     from tests.parity_harness import matrix_cases, matrix_data
-    from tests.warehouse_cuped_cases import (
-        mixed_cuped_definitions_yaml,
-        mixed_cuped_event_rows,
-    )
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
     units = matrix_data.linear_cuped_rows()
     events = mixed_cuped_event_rows(units)
+
+    def method():
+        return Method.cuped_multicovariate(
+            name="linear",
+            covariates=(
+                CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+                CupedCovariate(name="country", kind="categorical"),
+                CupedCovariate(name="device", kind="categorical"),
+                CupedCovariate(name="new_user", kind="categorical"),
+            ),
+        )
+
+    metrics = [
+        MetricSpec(
+            name="revenue",
+            decision_method=method(),
+            winsorization=Winsorization(lower_value=7.0, upper_value=11.0),
+        ),
+        MetricSpec(
+            name="rpo",
+            type="ratio",
+            numerator="revenue",
+            denominator="orders",
+            preferred_direction="increase",
+            decision_method=method(),
+        ),
+        MetricSpec(
+            name="signups",
+            type="conversion",
+            value_column="signup_conversion",
+            decision_method=method(),
+        ),
+    ]
+    plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 
     def definition_analysis(*, artifact: bool) -> Analysis:
         con = ds.duckdb_connection(events)
         try:
             with tempfile.TemporaryDirectory(prefix="increment-linear-cuped-") as directory:
                 path = Path(directory) / "mixed_cuped.yaml"
-                path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
+                path.write_text(
+                    mixed_cuped_definitions_yaml("mixed_events", fixed_winsorization=True)
+                )
                 con.create_table("mixed_events", obj=events)
                 native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
             return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
@@ -9104,25 +9138,50 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
             con.disconnect()
             raise
 
-    def source_limited_moments() -> Analysis:
-        spec = MetricSpec(
-            name="revenue",
-            decision_method=Method.cuped_multicovariate(
-                name="linear",
-                covariates=CupedCovariate(name="prior", kind="continuous"),
-            ),
-        )
-        return Analysis.from_moments([], metrics=[spec], control="control")
+    def moments_replay(*, alpha: float | None = None) -> Analysis:
+        from increment.semantics.loader import load
 
-    def different_design_switchback() -> Analysis:
-        spec = MetricSpec(
-            name="revenue",
-            decision_method=Method.cuped_multicovariate(
-                name="linear",
-                covariates=CupedCovariate(name="prior", kind="continuous"),
-            ),
-        )
-        from increment.semantics.design import Randomized
+        native = definition_analysis(artifact=False)
+        try:
+            with tempfile.TemporaryDirectory(prefix="increment-fitted-cuped-") as directory:
+                definition_path = Path(directory) / "mixed_cuped.yaml"
+                definition_path.write_text(
+                    mixed_cuped_definitions_yaml("mixed_events", fixed_winsorization=True)
+                )
+                experiment = load(definition_path).experiment("mixed_cuped")
+                assert experiment is not None
+
+                def replay_metric(spec: MetricSpec) -> MetricSpec:
+                    bound_method = experiment.bindings[spec.name].decision_method
+                    assert bound_method is not None
+                    return spec.model_copy(
+                        update={"decision_method": Method.model_validate(bound_method.model_dump())}
+                    )
+
+                replay_metrics = [replay_metric(spec) for spec in metrics]
+                moments_path = Path(directory) / "fitted.parquet"
+                native.export(moments_path)
+                payload = pq.read_table(moments_path).to_pylist()
+                envelopes = [
+                    json.loads(row["cuped_evidence"])
+                    for row in payload
+                    if row.get("record_kind") == "cuped_evidence"
+                ]
+                assert {item["kind"] for item in envelopes} == {"fitted_multicovariate"}
+                replay_plan = plan if alpha is None else plan.model_copy(update={"alpha": alpha})
+                return Analysis.from_moments(
+                    payload,
+                    metrics=replay_metrics,
+                    design=design,
+                    plan=replay_plan,
+                    experiment_id="mixed_cuped",
+                )
+        finally:
+            native.close()
+
+    def source_limited_switchback() -> Analysis:
+        from increment.semantics.assignment import SwitchbackAssignment, SwitchbackWindow
+        from increment.semantics.design import Randomized as SwitchbackDesign
 
         return Analysis.from_switchback_panel(
             pd.DataFrame(),
@@ -9131,8 +9190,8 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
             period="period",
             step="step",
             group="group",
-            metrics=[spec],
-            identification=Randomized(
+            metrics=metrics,
+            identification=SwitchbackDesign(
                 control_group="control",
                 allocation={"control": 0.5, "treatment": 0.5},
             ),
@@ -9142,25 +9201,43 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
             ),
         )
 
+    def fitted_alpha_probe(name: str, analysis: Analysis) -> None:
+        from increment.estimation.results import LiftEstimate
+
+        if name != "from_moments":
+            return
+        baseline_rows = analysis.run(metrics=("revenue",))
+        assert len(baseline_rows) == 1 and isinstance(baseline_rows[0], LiftEstimate)
+        baseline = baseline_rows[0].require_lift()
+        changed = moments_replay(alpha=0.2)
+        try:
+            replayed_rows = changed.run(metrics=("revenue",))
+            assert len(replayed_rows) == 1 and isinstance(replayed_rows[0], LiftEstimate)
+            replayed = replayed_rows[0].require_lift()
+            assert replayed.value == pytest.approx(baseline.value, rel=1e-10, abs=1e-12)
+            assert replayed.log_se == pytest.approx(baseline.log_se, rel=1e-10, abs=1e-12)
+            assert replayed.lb != baseline.lb or replayed.ub != baseline.ub
+        finally:
+            changed.close()
+
     return ParityCase(
         id="mixed-cuped-multicovariate-fixed-horizon",
         build={
             "from_definitions": lambda: definition_analysis(artifact=False),
             "from_unit_day_artifact": lambda: definition_analysis(artifact=True),
-            "from_unit_summary": lambda: matrix_cases.linear_cuped_frame_case(units, panel=False),
-            "from_unit_panel": lambda: matrix_cases.linear_cuped_frame_case(units, panel=True),
-            "from_switchback_panel": different_design_switchback,
-            "from_moments": source_limited_moments,
+            "from_unit_summary": lambda: matrix_cases.linear_cuped_frame_case(
+                units, panel=False, fixed_winsorization=True
+            ),
+            "from_unit_panel": lambda: matrix_cases.linear_cuped_frame_case(
+                units, panel=True, fixed_winsorization=True
+            ),
+            "from_switchback_panel": source_limited_switchback,
+            "from_moments": moments_replay,
         },
+        source_probe=fitted_alpha_probe,
         metrics=("revenue", "rpo", "signups"),
-        waive={
-            "from_switchback_panel": "SOURCE: switchback is a different design.",
-            "from_moments": "SOURCE: moments cannot supply per-unit covariates.",
-        },
-        waived_refusal_codes={
-            "from_switchback_panel": "source.frame.switchback.metric",
-            "from_moments": "facade.analysis_config.cuped_linear_moments",
-        },
+        waive={"from_switchback_panel": "SOURCE: switchback is a different design."},
+        waived_refusal_codes={"from_switchback_panel": "source.frame.switchback.metric"},
     )
 
 
