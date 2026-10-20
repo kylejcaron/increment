@@ -107,14 +107,15 @@ def _digest_builder(key, stage, fields_override=None):
 
 
 _CAPTURED_CUPED_EXPRESSIONS = None
+_CAPTURED_CUPED_MATERIALIZATIONS = None
 _CAPTURED_CUPED_SCHEMAS = {}
 _CAPTURED_CUPED_EXPRESSION_SCHEMAS = []
 
 
 def _capture_public_cuped_expressions():  # noqa: PLR0915
     """Capture DuckDB SQL emitted by public CUPED readouts and CTAS operations."""
-    global _CAPTURED_CUPED_EXPRESSIONS, _CAPTURED_CUPED_SCHEMAS
-    global _CAPTURED_CUPED_EXPRESSION_SCHEMAS
+    global _CAPTURED_CUPED_EXPRESSIONS, _CAPTURED_CUPED_MATERIALIZATIONS
+    global _CAPTURED_CUPED_SCHEMAS, _CAPTURED_CUPED_EXPRESSION_SCHEMAS
     if _CAPTURED_CUPED_EXPRESSIONS is not None:
         return _CAPTURED_CUPED_EXPRESSIONS
 
@@ -149,6 +150,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
                     "region": None if index % 6 == 0 else ("east", "west")[index % 2],
                 }
             )
+    materializations = []
     expressions = []
     con = ibis.duckdb.connect()
     event_name = "cuped_compile_events"
@@ -166,6 +168,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
 
     def capture_create_table(backend, name, obj=None, *args, **kwargs):
         if backend is con and isinstance(obj, ir.Table):
+            materializations.append((obj, dict(_CAPTURED_CUPED_SCHEMAS)))
             _CAPTURED_CUPED_SCHEMAS[str(name)] = obj.schema()
         return original_create_table(backend, name, obj, *args, **kwargs)
 
@@ -220,6 +223,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
         con.drop_table(event_name, force=True)
         con.disconnect()
     _CAPTURED_CUPED_EXPRESSIONS = tuple(expressions)
+    _CAPTURED_CUPED_MATERIALIZATIONS = tuple(materializations)
     return _CAPTURED_CUPED_EXPRESSIONS
 
 
@@ -243,6 +247,9 @@ def _transpile_captured_raw_sql(expression, dialect):
             for is_nan in tuple(statement.find_all(exp.IsNan)):
                 value = is_nan.this.sql(dialect=dialect)
                 is_nan.replace(_is_nan_sql(dialect, value))
+            for is_inf in tuple(statement.find_all(exp.IsInf)):
+                infinity = exp.Cast(this=exp.Literal.string("Inf"), to=exp.DataType.build("DOUBLE"))
+                is_inf.replace(exp.EQ(this=exp.Abs(this=is_inf.this.copy()), expression=infinity))
             return statement.sql(dialect=dialect)
 
         statements = sqlglot.transpile(query, read="duckdb", write=dialect)
@@ -270,7 +277,14 @@ def _transpile_captured_raw_sql(expression, dialect):
     return root.replace(replacements).to_expr() if replacements else expression
 
 
-def _captured_statement_case(expression, dialect, index):
+def _captured_statement_case(
+    expression,
+    dialect,
+    index,
+    *,
+    schema_snapshot=None,
+    statement_kind="readout",
+):
     import sqlglot
     from ibis.expr import operations as ops
     from sqlglot import exp
@@ -279,7 +293,9 @@ def _captured_statement_case(expression, dialect, index):
     rendered = str(ibis.to_sql(target_expression, dialect=dialect))
     query = sqlglot.parse_one(rendered, read=dialect)
     cte_names = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
-    relation_schemas = dict(_CAPTURED_CUPED_EXPRESSION_SCHEMAS[index])
+    if schema_snapshot is None:
+        schema_snapshot = _CAPTURED_CUPED_EXPRESSION_SCHEMAS[index]
+    relation_schemas = dict(schema_snapshot)
     relation_schemas.update(
         {
             relation.name: relation.schema
@@ -287,10 +303,11 @@ def _captured_statement_case(expression, dialect, index):
             if relation.name not in cte_names
         }
     )
+    relation_schemas.update(
+        {relation.name: relation.schema for relation in expression.op().find(ops.InMemoryTable)}
+    )
     table_refs = {table.name for table in query.find_all(exp.Table) if table.name not in cte_names}
     schemas = {name: relation_schemas[name] for name in sorted(table_refs)}
-    if not schemas:
-        return None
 
     def build(table_names, _dialect):
         statement = sqlglot.parse_one(rendered, read=dialect)
@@ -304,7 +321,7 @@ def _captured_statement_case(expression, dialect, index):
         return statement.sql(dialect=dialect)
 
     return CompileCase(
-        f"cuped.readout.{index:04d}",
+        f"cuped.{statement_kind}.{index:04d}",
         schemas,
         build,
         {name: f"incr_compile_{name}_{uuid4().hex[:12]}" for name in schemas},
@@ -315,9 +332,17 @@ def _captured_statement_case(expression, dialect, index):
 def _captured_cuped_statement_cases(dialect):
     cases = []
     for index, expression in enumerate(_capture_public_cuped_expressions()):
-        case = _captured_statement_case(expression, dialect, index)
-        if case is not None:
-            cases.append(case)
+        cases.append(_captured_statement_case(expression, dialect, index))
+    for index, (expression, schema_snapshot) in enumerate(_CAPTURED_CUPED_MATERIALIZATIONS):
+        cases.append(
+            _captured_statement_case(
+                expression,
+                dialect,
+                index,
+                schema_snapshot=schema_snapshot,
+                statement_kind="materialize",
+            )
+        )
     return cases
 
 

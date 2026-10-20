@@ -93,13 +93,38 @@ def test_captured_snowflake_isnan_uses_portable_comparison():
     )
 
     translated = _transpile_captured_raw_sql(expression, "snowflake")
-
     query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
     sql = ibis.to_sql(translated, dialect="snowflake")
 
     assert "IS_NAN" not in query.upper()
     assert "'NaN'::FLOAT" in query
     assert "IS_NAN" not in sql.upper()
+
+
+def test_captured_snowflake_isinf_uses_absolute_infinity_comparison():
+    import ibis
+    from ibis.expr import operations as ops
+
+    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+
+    connection = ibis.duckdb.connect()
+    expression = connection.sql(
+        "SELECT ISINF(value) AS infinite FROM source",
+        schema=ibis.schema({"infinite": "boolean"}),
+    )
+
+    translated = _transpile_captured_raw_sql(expression, "snowflake")
+    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
+
+    assert "IS_INF" not in query.upper()
+    assert "ABS(" in query.upper()
+    assert "INF" in query.upper()
+
+
+def test_captured_materializations_are_compile_cases():
+    cases = compile_statement_cases("snowflake")
+
+    assert any(case.name.startswith("cuped.materialize.") for case in cases)
 
 
 class _CapturingCursor:

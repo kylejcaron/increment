@@ -538,59 +538,61 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
             *[CupedCovariate(name=name, kind="categorical") for name in category_names],
         ]
     )
-    local = Analysis.from_unit_summary(
-        frame(units),
-        unit="user_id",
-        group="variant",
-        metrics=[
-            MetricSpec(name="revenue", decision_method=categorical_method),
-            MetricSpec(
-                name="rpo",
-                type="ratio",
-                numerator="revenue",
-                denominator="orders",
-                preferred_direction="increase",
-                decision_method=qr_method,
-            ),
-        ],
-        plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
-        design=Randomized(control_group="control", allocation=dict.fromkeys(arms, 1 / 3)),
-    )
-    con.create_table(event_name, obj=events, overwrite=True)
-    native = Analysis.from_definitions("mixed_cuped", definitions_path, con)
-    definitions = load(definitions_path)
-    experiment = definitions.experiment("mixed_cuped")
-    assert experiment is not None
-    artifact_namespace = f"cuped_{uuid4().hex[:12]}"
-    store = WarehouseArtifactStore(con, schema_name=artifact_namespace)
-    context = artifact_context(definitions, experiment, "error")
-    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
-    artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
-    adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+    local = native = adopted = None
+    artifact_namespace = None
     scratch_relations = []
-    fetch_arrow = WarehouseSession.fetch_arrow
-    materialize_table = WarehouseSession.materialize_table
-    transferred = []
-
-    def bounded_fetch(session, expression, **kwargs):
-        result = fetch_arrow(session, expression, **kwargs)
-        names = tuple(result.schema.names)
-        assert "user_id" not in names and "unit_id" not in names
-        assert result.num_rows <= 4096
-        transferred.append((names, result.num_rows))
-        return result
-
-    def capture_qr_materializations(session, name, expression, *, required, **kwargs):
-        relation = materialize_table(session, name, expression, required=required, **kwargs)
-        if name.startswith("_cuped_qr_"):
-            scratch_relations.append(relation)
-        return relation
-
-    _guard_no_unit_keyed_transfers(monkeypatch)
-    monkeypatch.setattr(WarehouseSession, "fetch_arrow", bounded_fetch)
-    monkeypatch.setattr(WarehouseSession, "materialize_table", capture_qr_materializations)
     tiny_name = None
     try:
+        local = Analysis.from_unit_summary(
+            frame(units),
+            unit="user_id",
+            group="variant",
+            metrics=[
+                MetricSpec(name="revenue", decision_method=categorical_method),
+                MetricSpec(
+                    name="rpo",
+                    type="ratio",
+                    numerator="revenue",
+                    denominator="orders",
+                    preferred_direction="increase",
+                    decision_method=qr_method,
+                ),
+            ],
+            plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
+            design=Randomized(control_group="control", allocation=dict.fromkeys(arms, 1 / 3)),
+        )
+        con.create_table(event_name, obj=events, overwrite=True)
+        native = Analysis.from_definitions("mixed_cuped", definitions_path, con)
+        definitions = load(definitions_path)
+        experiment = definitions.experiment("mixed_cuped")
+        assert experiment is not None
+        artifact_namespace = f"cuped_{uuid4().hex[:12]}"
+        store = WarehouseArtifactStore(con, schema_name=artifact_namespace)
+        context = artifact_context(definitions, experiment, "error")
+        extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+        artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
+        adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+        fetch_arrow = WarehouseSession.fetch_arrow
+        materialize_table = WarehouseSession.materialize_table
+        transferred = []
+
+        def bounded_fetch(session, expression, **kwargs):
+            result = fetch_arrow(session, expression, **kwargs)
+            names = tuple(result.schema.names)
+            assert "user_id" not in names and "unit_id" not in names
+            assert result.num_rows <= 4096
+            transferred.append((names, result.num_rows))
+            return result
+
+        def capture_qr_materializations(session, name, expression, *, required, **kwargs):
+            relation = materialize_table(session, name, expression, required=required, **kwargs)
+            if name.startswith("_cuped_qr_"):
+                scratch_relations.append(relation)
+            return relation
+
+        _guard_no_unit_keyed_transfers(monkeypatch)
+        monkeypatch.setattr(WarehouseSession, "fetch_arrow", bounded_fetch)
+        monkeypatch.setattr(WarehouseSession, "materialize_table", capture_qr_materializations)
         outputs = [
             analysis.run(metrics=["revenue", "rpo"]) for analysis in (local, native, adopted)
         ]
@@ -644,11 +646,40 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
         finally:
             refused.close()
     finally:
-        local.close()
-        native.close()
-        adopted.close()
+        for analysis in (adopted, native, local):
+            if analysis is not None:
+                analysis.close()
         _assert_materializations_absent(con, scratch_relations)
         con.drop_table(event_name, force=True)
         if tiny_name is not None:
             con.drop_table(tiny_name, force=True)
-        _drop_scratch_namespace(con, artifact_namespace, catalog=con.current_catalog)
+        if artifact_namespace is not None:
+            _drop_scratch_namespace(con, artifact_namespace, catalog=con.current_catalog)
+
+
+def test_mixed_cuped_probe_cleans_source_table_when_setup_fails(tmp_path, monkeypatch):
+    import ibis
+
+    from integration.warehouse_execution import _suite
+
+    backend = ibis.duckdb.connect()
+
+    class Connection:
+        current_catalog = "local"
+        current_database = "local"
+
+        def __getattr__(self, name):
+            return getattr(backend, name)
+
+    def fail_native_setup(cls, *_args, **_kwargs):
+        raise RuntimeError("native setup failed")
+
+    monkeypatch.setattr(Analysis, "from_definitions", classmethod(fail_native_setup))
+    monkeypatch.setattr(_suite, "_drop_scratch_namespace", lambda *_args, **_kwargs: None)
+    before = set(backend.list_tables())
+
+    with pytest.raises(RuntimeError, match="native setup failed"):
+        _run_cloud_mixed_cuped_probe(Connection(), "snowflake", tmp_path, monkeypatch)
+
+    assert set(backend.list_tables()) == before
+    backend.disconnect()

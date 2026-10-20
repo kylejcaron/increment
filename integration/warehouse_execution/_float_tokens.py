@@ -110,6 +110,7 @@ def run_float_token_probe(con, *, dialect: str, random_count: int = 500) -> None
                 )
             ).to_pylist()
             expected = source_expected
+        expected.sort(key=lambda row: row["id"])
         actual.sort(key=lambda row: row["id"])
         if len(actual) != len(expected):
             raise AssertionError(
