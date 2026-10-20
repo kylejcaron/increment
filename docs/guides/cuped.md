@@ -778,11 +778,12 @@ guarantee.
 
 ### Warehouse magnitude range
 
-Native and artifact warehouse routes bound each arm's root-mean-square
+Native and artifact warehouse routes require each arm's root-mean-square
 magnitude for every outcome component (including a ratio denominator) and
-continuous covariate to $[10^{-50}, 10^{50}]$. Outside that range they refuse
-with `query.cuped.magnitude_range`, before transferring unit values; the
-structured context identifies the metric, component, arm, and violated bound.
+continuous covariate to be zero or within $[10^{-50}, 10^{50}]$. A nonzero
+magnitude outside that range refuses with `query.cuped.magnitude_range`, before
+transferring unit values; the structured context identifies the metric,
+component, arm, and violated bound.
 DuckDB, PostgreSQL, Snowflake, and BigQuery execution use this same support
 envelope. Rescale the inputs or explicitly choose the local per-unit route
 with `Analysis.from_unit_summary` or `Analysis.from_unit_panel`; the warehouse

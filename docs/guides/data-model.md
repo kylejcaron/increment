@@ -991,9 +991,10 @@ envelopes when an export needs them: scalar-family and categorical-cell
 evidence, or a fitted continuous/mixed multicovariate QR state. Fitted
 continuous/mixed envelopes replay from `Analysis.from_moments`, including
 reintervalization at a changed alpha, but do not refit the model (see
-The reader also accepts earlier fixed-horizon formats 10 and 11 and
-sequential checkpoint formats 9 and 10. Formats above 13 are refused with `moments.format.unsupported_future`;
-fixed-horizon formats 1–8
+[Portable CUPED evidence](cuped.md#portable-cuped-evidence)). The reader also
+accepts earlier fixed-horizon formats 10 and 11 and sequential checkpoint
+formats 9 and 10. Formats above 13 are refused with
+`moments.format.unsupported_future`; fixed-horizon formats 1–8
 with `moments.format.unsupported_legacy`. `from_moments` is separate from the
 unit-day artifact boundary.
 
