@@ -1735,8 +1735,8 @@ class MomentsSource(SequentialSourceMixin):
         if control != state.control or tuple(arm_order) != tuple(state.identity[6]):
             invalid_evidence("fitted evidence arm or control scope differs from the requested fit")
         from increment._cuped_evidence import (
-            _FittedCupedFitEvidence,
             finalize_fitted_multicovariate,
+            warehouse_cuped_fit_evidence,
         )
 
         withheld = []
@@ -1753,11 +1753,9 @@ class MomentsSource(SequentialSourceMixin):
             )
         fit = finalize_fitted_multicovariate(state, summary)
         result = (state, summary, fit) if return_components else fit
-        if withheld:
-            return state.identity, _FittedCupedFitEvidence(
-                result, tuple(arm_order), tuple(withheld)
-            )
-        return state.identity, result
+        return state.identity, warehouse_cuped_fit_evidence(
+            result, tuple(arm_order), tuple(withheld)
+        )
 
     def _restore_checkpoint(
         self,

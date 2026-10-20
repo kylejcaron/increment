@@ -2182,13 +2182,11 @@ def test_qr_encoder_routes_more_than_200_levels_with_coded_refusal():
 def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):
     from contextlib import contextmanager
 
-    from increment.errors import CodedError
     from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.estimation.engine import Method, estimate_cuped_linear_fit
     from increment.frame import CupedCovariate
     from increment.query.cuped import (
         _ResolvedCupedRequest,
-        _WarehouseCupedFitEvidence,
         fit_multicovariate_source,
     )
     from increment.semantics.models import Measure, RatioMetric
@@ -2237,12 +2235,9 @@ def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):
             )
 
     try:
-        evidence = cast(
-            _WarehouseCupedFitEvidence,
-            fit_multicovariate_source(Source(), metric, request),
-        )
+        evidence = fit_multicovariate_source(Source(), metric, request)
         assert evidence.arm_order == arms
-        withheld = cast(dict[str, CodedError], dict(evidence.withheld))
+        withheld = dict(evidence.withheld)
         assert invalid_arm in withheld
         assert withheld[invalid_arm].code == (
             "estimation.variance.ratio_moments_nonpositive_denominator_mean"

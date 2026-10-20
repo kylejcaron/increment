@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
-from increment._cuped_evidence import categorical_identity, method_key
+from increment._cuped_evidence import (
+    _WarehouseCupedFitEvidence,
+    categorical_identity,
+    method_key,
+    warehouse_cuped_fit_evidence,
+)
 from increment.estimation.cuped.cells import fit_categorical_cells
 from increment.estimation.cuped.types import _freeze_payload
 from increment.query._cuped_cells import (
@@ -19,7 +24,6 @@ from increment.query._cuped_cells import (
 if TYPE_CHECKING:
     from increment.estimation.cuped.types import (
         CategoricalCells,
-        MulticovariateCupedFit,
     )
     from increment.estimation.engine import Method
 
@@ -39,13 +43,6 @@ class _ResolvedCupedRequest:
     def __post_init__(self):
         object.__setattr__(self, "identity", _freeze_payload(self.identity))
         object.__setattr__(self, "arm_order", tuple(self.arm_order))
-
-
-@dataclass(frozen=True, slots=True)
-class _WarehouseCupedFitEvidence:
-    fit: MulticovariateCupedFit | None
-    arm_order: tuple[str, ...]
-    withheld: tuple[tuple[str, object], ...] = ()
 
 
 def _require_compact_request(source, metric, method: Method) -> None:
@@ -169,7 +166,7 @@ def _known_cells_outcome_domain(source, metric, relation, outcomes) -> bool:
 
 def fit_multicovariate_source(
     source, metric, request: _ResolvedCupedRequest, *, return_components: bool = False
-) -> MulticovariateCupedFit | _WarehouseCupedFitEvidence | tuple[Any, Any, Any]:
+) -> _WarehouseCupedFitEvidence:
     """Fit from bounded categorical cells or stable warehouse QR evidence."""
     from increment.errors import CodedError
     from increment.query._cuped_cells import REFUSALS as CELL_REFUSALS
@@ -226,7 +223,9 @@ def fit_multicovariate_source(
                     withheld[arm] = exc
             admitted = tuple(arm for arm in request.arm_order if arm not in withheld)
             if request.control in withheld or len(admitted) < 2:
-                return _WarehouseCupedFitEvidence(None, request.arm_order, tuple(withheld.items()))
+                return warehouse_cuped_fit_evidence(
+                    None, request.arm_order, tuple(withheld.items())
+                )
             relation = relation.filter(relation["group_id"].isin(admitted))
             fitted_request = replace(
                 request,
@@ -245,7 +244,7 @@ def fit_multicovariate_source(
                     ),
                     control=fitted_request.control,
                 )
-                return _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
+                return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
             except CodedError as exc:
                 if exc.code not in CELL_REFUSALS:
                     raise
@@ -259,7 +258,7 @@ def fit_multicovariate_source(
                 return_components=return_components,
                 magnitude_checked=True,
             )
-        return _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
+        return warehouse_cuped_fit_evidence(fit, request.arm_order, tuple(withheld.items()))
 
 
 def _portable_categorical_domain(source, metric, method, population) -> None:
