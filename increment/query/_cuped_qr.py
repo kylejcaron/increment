@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -28,15 +28,37 @@ def _sum_sql(expressions: Iterable[Any]) -> Any:
     return total
 
 
-def _power_two_l2_scales(
+def _power_two_l2_scales(  # noqa: PLR0915
     relation: ir.Table,
     expressions: Sequence[Any],
     *,
     execute: Callable[[ir.Table], object],
     zero_as_zero: bool = False,
+    max_statement_chars: int = 80_000,
+    square_sums: list[float] | None = None,
 ) -> tuple[float, ...]:
-    """Return power-of-two L2 scales, keeping all row maxima SQL-local."""
-    from increment.query._cuped_cells import _component_exponent_parts
+    """Return power-of-two L2 scales, keeping row maxima inside SQL."""
+    chunk_size = max(1, max_statement_chars // 4096)
+    if len(expressions) > chunk_size:
+        scales: list[float] = []
+        accumulated_squares: list[float] = []
+        for start in range(0, len(expressions), chunk_size):
+            chunk_squares: list[float] | None = [] if square_sums is not None else None
+            scales.extend(
+                _power_two_l2_scales(
+                    relation,
+                    expressions[start : start + chunk_size],
+                    execute=execute,
+                    zero_as_zero=zero_as_zero,
+                    max_statement_chars=max_statement_chars,
+                    square_sums=chunk_squares,
+                )
+            )
+            if chunk_squares is not None:
+                accumulated_squares.extend(chunk_squares)
+        if square_sums is not None:
+            square_sums.extend(accumulated_squares)
+        return tuple(scales)
 
     maximum_names = tuple(f"_qr_scale_max_{index}" for index in range(len(expressions)))
     square_names = tuple(f"_qr_scale_squares_{index}" for index in range(len(expressions)))
@@ -59,59 +81,132 @@ def _power_two_l2_scales(
             .sum()
         )
     moments = scaled.aggregate(**moment_fields)
-    exponents = {}
-    valid_fields = {}
+
+    from sqlglot import exp
+
+    from increment.query._cuped_cells import _component_exponent_parts
+
+    backend = relation.get_backend()
+    dialect = backend.name
+
+    def cte_name(name: str) -> str:
+        return exp.to_identifier(name).sql(dialect=dialect, identify=True)
+
+    moments_sql = ibis.to_sql(moments, dialect=dialect)
+    moment_schema = {
+        **{f"_qr_norm_max_{index}": "float64" for index in range(len(expressions))},
+        **dict.fromkeys(square_names, "float64"),
+    }
+    moment_table = ibis.table(moment_schema, name="_qr_moments")
+    normalized_fields = {}
+    normalized_schema = {}
     for index, square_name in enumerate(square_names):
-        maximum_exponent, scaled_norm, valid = _component_exponent_parts(
-            moments[f"_qr_norm_max_{index}"], moments[square_name]
+        maximum = moment_table[f"_qr_norm_max_{index}"]
+        square_sum = moment_table[square_name]
+        maximum_exponent, scaled_norm, valid = _component_exponent_parts(maximum, square_sum)
+        normalized_fields[f"_qr_max_exponent_{index}"] = maximum_exponent
+        normalized_fields[f"_qr_scaled_norm_{index}"] = scaled_norm
+        normalized_fields[f"_qr_valid_{index}"] = valid
+        normalized_fields[f"_qr_zero_{index}"] = maximum == 0
+        normalized_schema.update(
+            {
+                f"_qr_max_exponent_{index}": "int64",
+                f"_qr_scaled_norm_{index}": "float64",
+                f"_qr_valid_{index}": "boolean",
+                f"_qr_zero_{index}": "boolean",
+            }
         )
-        valid_fields[f"_qr_scale_valid_{index}"] = valid | (moments[f"_qr_norm_max_{index}"] == 0)
-        exponents[f"_qr_scale_exponent_{index}"] = ibis.ifelse(
-            moments[f"_qr_norm_max_{index}"] == 0,
+    normalized_query = ibis.to_sql(moment_table.select(**normalized_fields), dialect=dialect)
+
+    normalized_table = ibis.table(normalized_schema, name="_qr_normalized")
+    scale_fields = {}
+    scale_schema = {}
+    for index in range(len(expressions)):
+        zero = normalized_table[f"_qr_zero_{index}"]
+        exponent = ibis.ifelse(
+            zero,
             0,
-            (maximum_exponent + scaled_norm.log2().floor() + 1).clip(upper=1023),
+            (
+                normalized_table[f"_qr_max_exponent_{index}"]
+                + normalized_table[f"_qr_scaled_norm_{index}"].log2().floor()
+                + 1
+            ).clip(upper=1023),
         ).cast("int64")
-    bounded = moments.mutate(**valid_fields, **exponents)
-    result = _rows(
-        execute(
-            bounded.select(
-                **{
-                    **{
-                        f"scale_{index}": ibis.ifelse(
-                            bounded[f"_qr_scale_valid_{index}"],
-                            bounded[f"_qr_scale_exponent_{index}"],
-                            0,
-                        )
-                        for index in range(len(expressions))
-                    },
-                    **{
-                        f"zero_{index}": bounded[f"_qr_norm_max_{index}"] == 0
-                        for index in range(len(expressions))
-                    },
+        bounded_exponent = ibis.ifelse(
+            normalized_table[f"_qr_valid_{index}"] | zero, exponent, 0
+        ).cast("int64")
+        scale_fields[f"scale_{index}"] = bounded_exponent
+        scale_schema[f"scale_{index}"] = "int64"
+        if zero_as_zero:
+            scale_fields[f"zero_{index}"] = zero
+            scale_schema[f"zero_{index}"] = "boolean"
+    scale_query = ibis.to_sql(normalized_table.select(**scale_fields), dialect=dialect)
+
+    scale_table = ibis.table(scale_schema, name="_qr_scales")
+    if square_sums is not None:
+        value_names = tuple(f"_qr_scale_value_{index}" for index in range(len(expressions)))
+        values = relation.mutate(
+            **{
+                name: expression.cast("float64")
+                for name, expression in zip(value_names, expressions, strict=True)
+            }
+        )
+        joined = values.cross_join(scale_table)
+        result_fields: dict[str, Any] = {
+            f"scale_{index}": joined[f"scale_{index}"].min() for index in range(len(expressions))
+        }
+        result_schema = {f"scale_{index}": "int64" for index in range(len(expressions))}
+        if zero_as_zero:
+            result_fields.update(
+                {
+                    f"zero_{index}": joined[f"zero_{index}"].ifelse(1, 0).cast("int64").min()
+                    for index in range(len(expressions))
                 }
             )
+            result_schema.update({f"zero_{index}": "int64" for index in range(len(expressions))})
+        result_fields.update(
+            {
+                f"squares_{index}": (joined[name] / (2.0 ** joined[f"scale_{index}"])).pow(2).sum()
+                for index, name in enumerate(value_names)
+            }
         )
-    )[0]
+        result_schema.update({f"squares_{index}": "float64" for index in range(len(expressions))})
+        result = joined.aggregate(**result_fields)
+    else:
+        result_fields: dict[str, Any] = {
+            f"scale_{index}": scale_table[f"scale_{index}"].min()
+            for index in range(len(expressions))
+        }
+        result_schema = {f"scale_{index}": "int64" for index in range(len(expressions))}
+        if zero_as_zero:
+            result_fields.update(
+                {
+                    f"zero_{index}": scale_table[f"zero_{index}"].ifelse(1, 0).cast("int64").min()
+                    for index in range(len(expressions))
+                }
+            )
+            result_schema.update({f"zero_{index}": "int64" for index in range(len(expressions))})
+        result = scale_table.aggregate(**result_fields)
+
+    result_sql = ibis.to_sql(result, dialect=dialect)
+    sql = (
+        f"WITH {cte_name('_qr_moments')} AS ({moments_sql}), "
+        f"{cte_name('_qr_normalized')} AS ({normalized_query}), "
+        f"{cte_name('_qr_scales')} AS ({scale_query}) {result_sql}"
+    )
+    query = backend.sql(sql, schema=ibis.schema(result_schema))
+    row = _rows(execute(query))[0]
     scales = []
     for index in range(len(expressions)):
-        if zero_as_zero and bool(result[f"zero_{index}"]):
+        if zero_as_zero and bool(row[f"zero_{index}"]):
             scales.append(0.0)
-            continue
-        scale = math.ldexp(1.0, int(result[f"scale_{index}"]))
-        scales.append(scale if scale else math.ldexp(1.0, -1074))
+        else:
+            exponent = int(row[f"scale_{index}"])
+            scale = math.ldexp(1.0, exponent)
+            scales.append(scale if scale else math.ldexp(1.0, -1074))
+    if square_sums is not None:
+        square_sums.extend(float(row[f"squares_{index}"]) for index in range(len(expressions)))
     return tuple(scales)
-
-
-def _power_two_l2_scale(
-    relation: ir.Table,
-    expression: Any,
-    *,
-    execute: Callable[[ir.Table], object],
-    zero_as_zero: bool = False,
-) -> float:
-    return _power_two_l2_scales(
-        relation, (expression,), execute=execute, zero_as_zero=zero_as_zero
-    )[0]
 
 
 def _stable_arm_means(
@@ -246,20 +341,28 @@ def warehouse_qr_unit_summary(  # noqa: PLR0913
         products[design_columns[index]] * products[f"_qr_inverse_{index}"]
         for index in range(len(design_columns))
     )
-    products = scratch.materialize_next(
-        products.select(
-            *row_identity_columns,
-            "_qr_q_index",
-            _qr_q_value=q_value,
-        )
+    products = products.select(
+        *row_identity_columns,
+        "_qr_q_index",
+        _qr_q_value=q_value,
     )
-    wide = products.group_by(*row_identity_columns).aggregate(
+    product_table = ibis.table(products.schema(), name="_qr_q_products")
+    wide = product_table.group_by(*row_identity_columns).aggregate(
         **{
-            name: products._qr_q_value.max(where=products._qr_q_index == index)
+            name: product_table._qr_q_value.max(where=product_table._qr_q_index == index)
             for index, name in enumerate(q_columns)
         }
     )
-    wide = scratch.materialize_next(wide)
+    from sqlglot import exp
+
+    backend = relation.get_backend()
+    dialect = backend.name
+    cte_name = exp.to_identifier("_qr_q_products").sql(dialect=dialect, identify=True)
+    wide_sql = (
+        f"WITH {cte_name} AS ({ibis.to_sql(products, dialect=dialect)}) "
+        f"{ibis.to_sql(wide, dialect=dialect)}"
+    )
+    wide = scratch.materialize_next(backend.sql(wide_sql, schema=wide.schema()))
     working = relation.join(wide, row_identity_columns)
     leverage = _sum_sql(working[name] * working[name] for name in q_columns)
     working = working.mutate(_qr_h=leverage)
@@ -312,6 +415,8 @@ def _aggregate_matrix(
     execute: Callable[[ir.Table], object],
     square_weight: Any | None = None,
     max_statement_chars: int = 80_000,
+    extra_fields: Mapping[str, Any] | None = None,
+    extra_results: dict[str, float] | None = None,
 ) -> FloatMatrix | tuple[FloatMatrix, FloatMatrix]:
     """Reduce a matrix in bounded one-row warehouse transfers."""
     rows = len(left)
@@ -329,7 +434,11 @@ def _aggregate_matrix(
                 fields[f"_qr_m_{row_index}_{column_index}"] = product.sum()
                 if second is not None:
                     fields[f"_qr_w_{row_index}_{column_index}"] = (square_weight * product).sum()
+        if start == 0 and extra_fields:
+            fields.update(extra_fields)
         record = _rows(execute(relation.aggregate(**fields)))[0]
+        if start == 0 and extra_results is not None and extra_fields:
+            extra_results.update({name: float(record[name]) for name in extra_fields})
         for row_index in range(start, stop):
             for column_index in range(columns):
                 first[row_index, column_index] = float(record[f"_qr_m_{row_index}_{column_index}"])
@@ -342,6 +451,38 @@ def _aggregate_matrix(
         return first_result
     second_result = tuple(tuple(float(value) for value in row) for row in second)
     return first_result, second_result
+
+
+def _aggregate_grouped_matrix(
+    relation: ir.Table,
+    group_column: str,
+    values: Sequence[Any],
+    *,
+    execute: Callable[[ir.Table], object],
+    max_statement_chars: int = 80_000,
+) -> dict[str, FloatMatrix]:
+    """Reduce all group matrices in bounded statements."""
+    width = len(values)
+    row_batch = max(1, max_statement_chars // max(1, width * 64))
+    matrices: dict[str, np.ndarray] = {}
+    for start in range(0, width, row_batch):
+        stop = min(start + row_batch, width)
+        fields = {
+            f"_qr_m_{row}_{column}": (values[row] * values[column]).sum()
+            for row in range(start, stop)
+            for column in range(width)
+        }
+        records = _rows(execute(relation.group_by(group_column).aggregate(**fields)))
+        for record in records:
+            group = str(record[group_column])
+            matrix = matrices.setdefault(group, np.zeros((width, width), dtype=float))
+            for row in range(start, stop):
+                for column in range(width):
+                    matrix[row, column] = float(record[f"_qr_m_{row}_{column}"])
+    return {
+        group: tuple(tuple(float(value) for value in row) for row in matrix)
+        for group, matrix in matrices.items()
+    }
 
 
 def _sum_scaled_parts(parts: Sequence[tuple[float, int]]) -> float:
@@ -614,13 +755,10 @@ def _warehouse_hc2_scores(
             )
     scored = cast(ir.Table, scratch.materialize_next(relation.mutate(**score_values)))
     flat_scores = tuple(scored[name] for family in score_names for name in family)
+    covariance_by_arm = _aggregate_grouped_matrix(scored, "group_id", flat_scores, execute=execute)
     covariance_parts = [[[] for _ in flat_scores] for _ in flat_scores]
     for source_index, source_arm in enumerate(arms):
-        source = scored.filter(scored["group_id"] == source_arm)
-        normalized_covariance = cast(
-            FloatMatrix,
-            _aggregate_matrix(source, flat_scores, flat_scores, execute=execute),
-        )
+        normalized_covariance = covariance_by_arm[str(source_arm)]
         for left in range(len(flat_scores)):
             left_family = left // len(arms)
             for right in range(len(flat_scores)):
@@ -676,14 +814,7 @@ def _warehouse_bm_component(
             **dict(zip(feature_names, features, strict=True)),
         )
     )
-    record = _rows(
-        execute(
-            current.aggregate(
-                _qr_s2=current._qr_t2.sum(),
-                _qr_s4=current._qr_t2.pow(2).sum(),
-            )
-        )
-    )[0]
+    moments: dict[str, float] = {}
     feature = tuple(current[name] for name in feature_names)
     gram, weighted_gram = cast(
         tuple[FloatMatrix, FloatMatrix],
@@ -693,15 +824,102 @@ def _warehouse_bm_component(
             feature,
             execute=execute,
             square_weight=current._qr_t2,
+            extra_fields={
+                "_qr_s2": current._qr_t2.sum(),
+                "_qr_s4": current._qr_t2.pow(2).sum(),
+            },
+            extra_results=moments,
         ),
     )
     return (
         current,
-        float(record["_qr_s2"]),
-        float(record["_qr_s4"]),
+        moments["_qr_s2"],
+        moments["_qr_s4"],
         gram,
         weighted_gram,
     )
+
+
+def _bm_component_score(
+    relation: ir.Table,
+    contrast: np.ndarray,
+    common_scale: float,
+    factor: QRFactor,
+    design_scales: np.ndarray,
+    sqrt_weight_column: str,
+    q_columns: Sequence[str],
+    width: int,
+) -> Any:
+    coefficient = solve_triangular(
+        np.asarray(factor.triangular_factor, dtype=float).T,
+        (contrast / common_scale) / design_scales,
+        lower=True,
+        check_finite=False,
+    )
+    q = tuple(relation[name] for name in q_columns)
+    sqrt_weight = relation[sqrt_weight_column]
+    root_residual = (ibis.literal(1.0) - relation._qr_h).sqrt()
+    return (
+        sqrt_weight
+        * _sum_sql(q[index] * float(coefficient[index]) for index in range(width))
+        / root_residual
+    )
+
+
+def _aggregate_bm_batch(
+    relation: ir.Table,
+    jobs: Sequence[tuple[str, Sequence[str]]],
+    *,
+    execute: Callable[[ir.Table], object],
+    max_statement_chars: int = 80_000,
+) -> tuple[tuple[float, float, FloatMatrix, FloatMatrix], ...]:
+    matrix_width = len(jobs[0][1])
+    descriptors: list[tuple[int, str, int, int, Any]] = []
+    for job_index, (t2_name, feature_names) in enumerate(jobs):
+        t2 = relation[t2_name]
+        descriptors.extend(
+            (
+                (job_index, "s2", 0, 0, t2.sum()),
+                (job_index, "s4", 0, 0, t2.pow(2).sum()),
+            )
+        )
+        for row, left_name in enumerate(feature_names):
+            for column in range(row, matrix_width):
+                product = relation[left_name] * relation[feature_names[column]]
+                descriptors.append((job_index, "g", row, column, product.sum()))
+                descriptors.append((job_index, "g2", row, column, (t2 * product).sum()))
+    values: dict[tuple[int, str, int, int], list[float]] = {}
+    batch_size = max(1, max_statement_chars // 90)
+    for start in range(0, len(descriptors), batch_size):
+        batch = descriptors[start : start + batch_size]
+        fields = {
+            f"_qr_bm_{index}": expression
+            for index, (_job, _kind, _row, _column, expression) in enumerate(batch)
+        }
+        records = _rows(execute(relation.group_by("group_id").aggregate(**fields)))
+        for index, (job, kind, row, column, _expression) in enumerate(batch):
+            values[(job, kind, row, column)] = [
+                float(record[f"_qr_bm_{index}"] or 0.0) for record in records
+            ]
+    results = []
+    for job_index in range(len(jobs)):
+        matrix = np.zeros((matrix_width, matrix_width), dtype=float)
+        weighted = np.zeros_like(matrix)
+        for row in range(matrix_width):
+            for column in range(row, matrix_width):
+                gram_value = math.fsum(values[(job_index, "g", row, column)])
+                weighted_value = math.fsum(values[(job_index, "g2", row, column)])
+                matrix[row, column] = matrix[column, row] = gram_value
+                weighted[row, column] = weighted[column, row] = weighted_value
+        results.append(
+            (
+                math.fsum(values[(job_index, "s2", 0, 0)]),
+                math.fsum(values[(job_index, "s4", 0, 0)]),
+                tuple(tuple(float(value) for value in row) for row in matrix),
+                tuple(tuple(float(value) for value in row) for row in weighted),
+            )
+        )
+    return tuple(results)
 
 
 def _sum_scaled_square_parts(parts: Sequence[tuple[float, int]]) -> tuple[float, int]:
@@ -715,7 +933,7 @@ def _sum_scaled_square_parts(parts: Sequence[tuple[float, int]]) -> tuple[float,
     return scaled_sum, common_exponent
 
 
-def _warehouse_projection_reductions(  # noqa: PLR0915
+def _warehouse_projection_reductions(
     state: FitState,
     current: ir.Table,
     score_names: Sequence[Sequence[str]],
@@ -735,7 +953,7 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
     tuple[tuple[tuple[tuple[float, ...], ...], ...], ...],
     tuple[bool, ...],
 ]:
-    arms = tuple(state.eligible_arms)
+    arms = tuple(str(arm) for arm in state.eligible_arms)
     width = len(arms) + state.p
     q_columns = tuple(f"_qr_q_{index}" for index in range(width))
     base_columns = tuple(
@@ -749,7 +967,143 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
     g_rows = []
     g2_rows = []
     unavailable_specs = []
-    for spec, estimate in zip(projection_specs, projection_estimates, strict=True):
+    flat_score_names = tuple(name for family in score_names for name in family)
+    base_component_scales = _power_two_l2_scales(
+        current,
+        tuple(
+            ibis.ifelse(current["group_id"] == arm, current[name], 0.0)
+            for arm in arms
+            for name in flat_score_names
+        ),
+        execute=execute,
+        zero_as_zero=True,
+    )
+    base_scale_lookup = {
+        (arm, name): base_component_scales[arm_index * len(flat_score_names) + score_index]
+        for arm_index, arm in enumerate(arms)
+        for score_index, name in enumerate(flat_score_names)
+    }
+    projection_fields = {}
+    projection_score_meta: dict[tuple[int, int], tuple[str, int]] = {}
+    for spec_index, spec in enumerate(projection_specs):
+        if not spec.available:
+            continue
+        if spec.kind == "ratio":
+            coefficients = _ratio_score_coefficients(state, spec, arms)
+        elif spec.kind == "relative":
+            coefficients = _relative_score_coefficients(state, spec, arms)
+        else:
+            coefficients = _absolute_score_coefficients(spec, arms)
+        component_count = 2 if spec.kind == "ratio" else 1
+        for source_index, source_arm in enumerate(arms):
+            term_parts = []
+            for (family, target_arm), (mantissa, derivative_exponent) in coefficients.items():
+                if family >= component_count or mantissa == 0.0:
+                    continue
+                name = score_names[family][target_arm]
+                component_scale = base_scale_lookup[(source_arm, name)]
+                if component_scale == 0.0:
+                    continue
+                component_exponent = math.frexp(component_scale)[1] - 1
+                term_parts.append(
+                    (
+                        name,
+                        mantissa,
+                        derivative_exponent
+                        + int(outcome_arm_exponents[family][source_index])
+                        + component_exponent,
+                        component_scale,
+                    )
+                )
+            if not term_parts:
+                continue
+            common_exponent = max(item[2] for item in term_parts)
+            score_name = f"_qr_projection_score_{spec_index}_{source_index}"
+            score = _sum_sql(
+                (current[name] / component_scale) * math.ldexp(mantissa, exponent - common_exponent)
+                for name, mantissa, exponent, component_scale in term_parts
+            )
+            projection_fields[score_name] = ibis.ifelse(
+                current["group_id"] == source_arm, score, 0.0
+            )
+            projection_score_meta[(spec_index, source_index)] = (score_name, common_exponent)
+    projection_score_squares = []
+    if projection_fields:
+        current = scratch.materialize_next(current.mutate(**projection_fields))
+        projection_score_names = tuple(projection_fields)
+        projection_scales = _power_two_l2_scales(
+            current,
+            tuple(current[name] for name in projection_score_names),
+            execute=execute,
+            zero_as_zero=True,
+            square_sums=projection_score_squares,
+        )
+        projection_scale_lookup = {
+            (spec_index, source_index): (
+                projection_scales[index],
+                projection_score_squares[index],
+            )
+            for index, (spec_index, source_index) in enumerate(projection_score_meta)
+        }
+    else:
+        projection_scale_lookup = {}
+    return _warehouse_bm_projection_reductions(
+        state=state,
+        current=current,
+        projection_specs=projection_specs,
+        projection_estimates=projection_estimates,
+        factor=factor,
+        design_scales=design_scales,
+        outcome_arm_exponents=outcome_arm_exponents,
+        sqrt_weight_column=sqrt_weight_column,
+        execute=execute,
+        scratch=scratch,
+        arms=arms,
+        width=width,
+        q_columns=q_columns,
+        base_columns=base_columns,
+        projection_score_meta=projection_score_meta,
+        projection_scale_lookup=projection_scale_lookup,
+        records=records,
+        s2_rows=s2_rows,
+        s4_rows=s4_rows,
+        g_rows=g_rows,
+        g2_rows=g2_rows,
+        unavailable_specs=unavailable_specs,
+    )
+
+
+def _warehouse_bm_projection_reductions(  # noqa: PLR0913, PLR0915
+    *,
+    state: FitState,
+    current: ir.Table,
+    projection_specs: Sequence[ProjectionSpec],
+    projection_estimates: Sequence[float],
+    factor: QRFactor,
+    design_scales: np.ndarray,
+    outcome_arm_exponents: Sequence[Sequence[int]],
+    sqrt_weight_column: str,
+    execute: Callable[[ir.Table], object],
+    scratch,
+    arms: Sequence[str],
+    width: int,
+    q_columns: Sequence[str],
+    base_columns: Sequence[str],
+    projection_score_meta: Mapping[tuple[int, int], tuple[str, int]],
+    projection_scale_lookup: Mapping[tuple[int, int], tuple[float, float]],
+    records: list[Any],
+    s2_rows: list[Any],
+    s4_rows: list[Any],
+    g_rows: list[Any],
+    g2_rows: list[Any],
+    unavailable_specs: list[bool],
+):
+    bm_score_fields = {}
+    bm_jobs: list[tuple[str, str, tuple[str, ...]]] = []
+    bm_jobs_by_spec: dict[int, list[int | None]] = {}
+    for spec_index, (spec, estimate) in enumerate(
+        zip(projection_specs, projection_estimates, strict=True)
+    ):
         identity = tuple(spec.identity)
         scale_name = str(identity[len(state.identity) + 3])
         component_count = 2 if spec.kind == "ratio" else 1
@@ -773,62 +1127,18 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
             g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
             unavailable_specs.append(True)
             continue
-        if spec.kind == "ratio":
-            projection_coefficients = _ratio_score_coefficients(state, spec, arms)
-        elif spec.kind == "relative":
-            projection_coefficients = _relative_score_coefficients(state, spec, arms)
-        else:
-            projection_coefficients = _absolute_score_coefficients(spec, arms)
         unavailable_specs.append(False)
         arm_square_parts = []
-        for source_index, source_arm in enumerate(arms):
-            source_relation = current.filter(current["group_id"] == source_arm)
-            term_parts = []
-            for (family, target_arm), (
-                mantissa,
-                derivative_exponent,
-            ) in projection_coefficients.items():
-                if family >= component_count or mantissa == 0.0:
-                    continue
-                name = score_names[family][target_arm]
-                component_scale = _power_two_l2_scale(
-                    source_relation, current[name], execute=execute, zero_as_zero=True
-                )
-                if component_scale == 0.0:
-                    continue
-                component_exponent = math.frexp(component_scale)[1] - 1
-                term_parts.append(
-                    (
-                        family,
-                        name,
-                        mantissa,
-                        derivative_exponent
-                        + int(outcome_arm_exponents[family][source_index])
-                        + component_exponent,
-                        component_scale,
-                    )
-                )
-            if not term_parts:
+        for source_index in range(len(arms)):
+            score_meta = projection_score_meta.get((spec_index, source_index))
+            if score_meta is None:
                 continue
-            common_exponent = max(exponent for _, _, _, exponent, _ in term_parts)
-            score = _sum_sql(
-                (current[name] / component_scale) * math.ldexp(mantissa, exponent - common_exponent)
-                for _, name, mantissa, exponent, component_scale in term_parts
-            )
-            normalized_score_scale = _power_two_l2_scale(
-                source_relation, score, execute=execute, zero_as_zero=True
-            )
+            _score_name, common_exponent = score_meta
+            normalized_score_scale, score_sum = projection_scale_lookup[(spec_index, source_index)]
             if normalized_score_scale != 0.0:
-                score_sum = _rows(
-                    execute(
-                        source_relation.aggregate(
-                            _qr_scaled_score_square=(score / normalized_score_scale).pow(2).sum()
-                        )
-                    )
-                )[0]
                 arm_square_parts.append(
                     (
-                        float(score_sum["_qr_scaled_score_square"]),
+                        score_sum,
                         common_exponent + math.frexp(normalized_score_scale)[1] - 1,
                     )
                 )
@@ -878,11 +1188,14 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
             for family in range(component_count)
         )
         common_scale = max(float(np.max(np.abs(value), initial=0.0)) for value in contrasts)
-        reductions = []
-        for _family, contrast in enumerate(contrasts):
-            current, s2, s4, gram, weighted_gram = _warehouse_bm_component(
+        job_indices: list[int | None] = []
+        for contrast in contrasts:
+            if common_scale == 0.0:
+                job_indices.append(None)
+                continue
+            job_index = len(bm_jobs)
+            score = _bm_component_score(
                 current,
-                base_columns,
                 contrast,
                 common_scale,
                 factor,
@@ -890,14 +1203,69 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
                 sqrt_weight_column,
                 q_columns,
                 width,
-                execute,
-                scratch,
             )
-            reductions.append((current, s2, s4, gram, weighted_gram))
-        s2_rows.append(tuple(item[1] for item in reductions))
-        s4_rows.append(tuple(item[2] for item in reductions))
-        g_rows.append(tuple(item[3] for item in reductions))
-        g2_rows.append(tuple(item[4] for item in reductions))
+            t2_name = f"_qr_bm_t2_{job_index}"
+            score_name = f"_qr_bm_score_{job_index}"
+            feature_names = tuple(f"_qr_bm_f_{job_index}_{index}" for index in range(2 * width))
+            bm_score_fields[t2_name] = score.pow(2)
+            bm_score_fields[score_name] = score
+            bm_jobs.append((t2_name, score_name, feature_names))
+            job_indices.append(job_index)
+        bm_jobs_by_spec[spec_index] = job_indices
+        zero_matrix = tuple(tuple(0.0 for _ in range(2 * width)) for _ in range(2 * width))
+        s2_rows.append(tuple(0.0 for _ in range(component_count)))
+        s4_rows.append(tuple(0.0 for _ in range(component_count)))
+        g_rows.append(tuple(zero_matrix for _ in range(component_count)))
+        g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
+    bm_results = ()
+    if bm_score_fields:
+        score_relation = scratch.materialize_next(
+            current.select(*base_columns).mutate(**bm_score_fields)
+        )
+        bm_feature_fields = {}
+        aggregate_jobs = []
+        for t2_name, score_name, feature_names in bm_jobs:
+            score = score_relation[score_name]
+            sqrt_weight = score_relation[sqrt_weight_column]
+            q = tuple(score_relation[name] for name in q_columns)
+            features = tuple(score * sqrt_weight * value for value in q) + tuple(
+                score * value / sqrt_weight for value in q
+            )
+            bm_feature_fields.update(dict(zip(feature_names, features, strict=True)))
+            aggregate_jobs.append((t2_name, feature_names))
+        bm_relation = scratch.materialize_next(
+            score_relation.mutate(**bm_feature_fields).select(
+                *base_columns,
+                *(name for name, _, _ in bm_jobs),
+                *(name for _, _, feature_names in bm_jobs for name in feature_names),
+            )
+        )
+        bm_results = _aggregate_bm_batch(bm_relation, aggregate_jobs, execute=execute)
+    for spec_index, job_indices in bm_jobs_by_spec.items():
+        for component_index, job_index in enumerate(job_indices):
+            if job_index is None:
+                continue
+            s2, s4, gram, weighted_gram = bm_results[job_index]
+            s2_rows[spec_index] = (
+                *s2_rows[spec_index][:component_index],
+                s2,
+                *s2_rows[spec_index][component_index + 1 :],
+            )
+            s4_rows[spec_index] = (
+                *s4_rows[spec_index][:component_index],
+                s4,
+                *s4_rows[spec_index][component_index + 1 :],
+            )
+            g_rows[spec_index] = (
+                *g_rows[spec_index][:component_index],
+                gram,
+                *g_rows[spec_index][component_index + 1 :],
+            )
+            g2_rows[spec_index] = (
+                *g2_rows[spec_index][:component_index],
+                weighted_gram,
+                *g2_rows[spec_index][component_index + 1 :],
+            )
     return (
         tuple(records),
         tuple(s2_rows),
@@ -1472,7 +1840,8 @@ class _QRDesignEncoder:
                     **{
                         f"_qr_mean_{index}": self.transformed[column].mean()
                         for index, column in enumerate(self.query_columns)
-                    }
+                    },
+                    _qr_n=self.transformed.count(),
                 )
             )
         )
@@ -1481,12 +1850,7 @@ class _QRDesignEncoder:
             tuple(float(means_by_arm[arm][f"_qr_mean_{index}"]) for arm in self.arms)
             for index in range(len(self.query_columns))
         )
-        counts = _rows(
-            self.execute(
-                self.transformed.group_by("group_id").aggregate(_qr_n=self.transformed.count())
-            )
-        )
-        count_lookup = {str(row["group_id"]): int(row["_qr_n"]) for row in counts}
+        count_lookup = {str(row["group_id"]): int(row["_qr_n"]) for row in means_rows}
         total = sum(count_lookup[arm] for arm in self.arms)
         anchors = tuple(
             math.fsum(
@@ -1537,7 +1901,7 @@ class QRPreparedRelation:
     outcome_arm_exponents: tuple[tuple[int, ...], ...]
 
 
-def prepare_qr_factor_input(
+def prepare_qr_factor_input(  # noqa: PLR0915
     encoded: EncodedQRDesign,
     *,
     outcome_columns: Sequence[str],
@@ -1661,27 +2025,35 @@ def prepare_qr_factor_input(
     relation = relation.mutate(**fields, _qr_sqrt_weight=sqrt_weight, **outcome_fields)
     outcome_names = tuple(f"_qr_outcome_centered_{index}" for index in range(len(outcome_columns)))
     raw_design_columns = (*arm_columns, *weighted_covariate_columns)
-    design_scales = tuple(
-        _power_two_l2_scale(relation, relation[name], execute=execute)
-        for name in raw_design_columns
+    design_expressions = tuple(relation[name] for name in raw_design_columns)
+    outcome_expressions = tuple(relation[outcome] for outcome in outcome_names)
+    numeric_outcomes = tuple(
+        relation[source_name].ifelse(ibis.literal(1), ibis.literal(0)).cast("float64")
+        if relation[source_name].type().is_boolean()
+        else relation[source_name]
+        for source_name in outcome_columns
     )
-    outcome_scales = tuple(
-        _power_two_l2_scale(relation, relation[outcome], execute=execute)
-        for outcome in outcome_names
+    arm_outcome_expressions = tuple(
+        ibis.ifelse(relation["group_id"] == arm, outcome, 0.0)
+        for outcome in numeric_outcomes
+        for arm in arms
     )
+    all_scales = _power_two_l2_scales(
+        relation,
+        (*design_expressions, *outcome_expressions, *arm_outcome_expressions),
+        execute=execute,
+    )
+    design_scale_count = len(design_expressions)
+    outcome_scale_count = len(outcome_expressions)
+    design_scales = all_scales[:design_scale_count]
+    outcome_scales = all_scales[design_scale_count : design_scale_count + outcome_scale_count]
+    arm_outcome_scales = all_scales[design_scale_count + outcome_scale_count :]
     outcome_arm_exponents = tuple(
         tuple(
-            math.frexp(
-                _power_two_l2_scale(
-                    relation.filter(relation["group_id"] == arm),
-                    relation[source_name],
-                    execute=execute,
-                )
-            )[1]
-            - 1
-            for arm in arms
+            math.frexp(arm_outcome_scales[component * len(arms) + arm_index])[1] - 1
+            for arm_index in range(len(arms))
         )
-        for source_name in outcome_columns
+        for component in range(len(outcome_columns))
     )
     from increment.query._cuped_cells import _binary_normalize
 
@@ -1767,6 +2139,15 @@ def fit_warehouse_qr(  # noqa: PLR0915
         arms=arms,
         row_identity_columns=row_identity_columns,
         execute=execute,
+    )
+    encoded = EncodedQRDesign(
+        scratch.materialize_input(encoded.relation),
+        encoded.layout,
+        encoded.columns,
+        encoded.offsets,
+        encoded.scales,
+        encoded.centered_means,
+        encoded.anchor,
     )
     outcome_columns = ("y", "y_den") if metric.type == "ratio" else ("y",)
     prepared = prepare_qr_factor_input(

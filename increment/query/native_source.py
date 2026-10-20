@@ -306,6 +306,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             tuple[str, Metric] | tuple[str, Metric, tuple[Metric, ...]],
             tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar],
         ] = {}
+        self._cuped_relation_cache: dict[tuple[str, str, dt.date | None], Table] = {}
         self._reduction_calls = 0
         self._reduction_batch_depth = 0
         self._assignment_validation_depth = 0
@@ -393,6 +394,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._session.drop_materialized()
         self._materialized = False
         self._panel_cache = {}
+        self._cuped_relation_cache = {}
 
     def _mixed_assignment_snapshot(self, exposure_events: Table) -> tuple[int, int, int]:
         """Count mixed and NULL assignments with one bounded aggregate."""
@@ -4192,6 +4194,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 )
                 if component_domain(measure, datatype) == "unknown":
                     general_qr_required(metric, "outcome_domain")
+            cache_key = (
+                metric.name,
+                repr(request.identity),
+                pinned._fixed_event_horizon,
+            )
+            cached = pinned._cuped_relation_cache.get(cache_key)
+            if cached is not None:
+                yield cached, pinned._session.fetch_arrow, pinned._session.qr_scratch
+                return
             with pinned._unit_relation(
                 metric,
                 covariates=tuple(item.name for item in request.method.covariates or ()),
@@ -4229,6 +4240,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                             canonical_dimension_value(relation["__qr_breakout_value"])
                             == request.breakout_value
                         )
+                table_name = pinned._session.temp_name(
+                    "cuped_qr_relation", str(len(pinned._cuped_relation_cache))
+                )
+                relation = pinned._session.materialize_table(table_name, relation, required=True)
+                pinned._cuped_relation_cache[cache_key] = relation
                 yield relation, execute, pinned._session.qr_scratch
 
     def unit_frame(
@@ -4468,6 +4484,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._union_horizon_cache = None
         self._union_horizon_metric_cache = {}
         self._panel_cache = {}
+        self._cuped_relation_cache = {}
         self._reduction_calls = 0
         self._materialized = False
         self._reduction_batch_depth = 0

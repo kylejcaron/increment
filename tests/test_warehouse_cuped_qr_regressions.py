@@ -26,6 +26,7 @@ def _fit_pair(
     scratch_statements=None,
     arms: tuple[str, ...] = ARMS,
     categorical: bool = False,
+    statement_log=None,
 ):
     groups = [str(row["group_id"]) for row in rows]
     x_values = [float(row["x"]) for row in rows]
@@ -70,14 +71,30 @@ def _fit_pair(
     )
     original_create = type(connection).create_table
 
-    def record_scratch_sql(backend, name, expression, *args, **kwargs):
-        if str(name).startswith("_cuped_qr_") and scratch_statements is not None:
-            scratch_statements.append(ibis.to_sql(expression, dialect="duckdb"))
+    def record_scratch_sql(backend, name, expression=None, *args, **kwargs):
+        if str(name).startswith("_cuped_qr_") and expression is not None:
+            sql = ibis.to_sql(expression, dialect="duckdb")
+            if scratch_statements is not None:
+                scratch_statements.append(sql)
+            if statement_log is not None:
+                statement_log.append(sql)
+        if expression is None:
+            return original_create(backend, name, *args, **kwargs)
         return original_create(backend, name, expression, *args, **kwargs)
 
     type(connection).create_table = record_scratch_sql
+    original_drop = type(connection).drop_table
+
+    def record_scratch_drop(backend, name, *args, **kwargs):
+        if str(name).startswith("_cuped_qr_") and statement_log is not None:
+            statement_log.append("")
+        return original_drop(backend, name, *args, **kwargs)
+
+    type(connection).drop_table = record_scratch_drop
 
     def execute(expression):
+        if statement_log is not None:
+            statement_log.append(ibis.to_sql(expression, dialect="duckdb"))
         result = connection.to_pyarrow(expression)
         if transfers is not None:
             transfers.extend(result.to_pylist())
@@ -95,6 +112,7 @@ def _fit_pair(
         return local, actual
     finally:
         type(connection).create_table = original_create
+        type(connection).drop_table = original_drop
         session.drop_materialized()
         connection.disconnect()
 
@@ -548,3 +566,40 @@ def test_artifact_assigned_breakout_uses_single_canonical_escape(tmp_path):
         adopted.close()
         native.close()
         connection.disconnect()
+
+
+def test_warehouse_qr_p4_three_arm_fit_has_bounded_statements_and_sql(tmp_path):
+    rows = _mixed_scale_rows(0)
+    categories = ("north", "south", "west", "east")
+    for index, row in enumerate(rows):
+        row["category"] = categories[index % len(categories)]
+    statements = []
+    _fit_pair(
+        rows,
+        ratio=False,
+        tmp_path=tmp_path,
+        arms=("control", "variant-a", "variant-b"),
+        categorical=True,
+        statement_log=statements,
+    )
+    phases = {
+        "magnitude": ("_magnitude",),
+        "encoder/metadata": ("_qr_covariate", "_qr_category", "_qr_scale"),
+        "factor stages": ("_qr_dot_", "_qr_v2", "_qr_alpha"),
+        "staging": ("_qr_inverse", "_qr_q_"),
+        "leverage": ("_qr_h", "_qr_residual"),
+        "HC2": ("_qr_hc2",),
+        "projections": ("_qr_projection_score",),
+        "BM": ("_qr_bm_",),
+    }
+    counts = {
+        phase: sum(any(term in str(sql).lower() for term in terms) for sql in statements)
+        for phase, terms in phases.items()
+    }
+    assert len(statements) < 60, (
+        f"statements={len(statements)}, max_sql={max(map(len, statements))}, phases={counts}"
+    )
+    assert max(map(len, statements)) < 200_000
+    bm_statements = [sql for sql in statements if "_qr_bm_" in str(sql).lower()]
+    assert bm_statements
+    assert max(map(len, bm_statements)) <= 80_000

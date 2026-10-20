@@ -1383,8 +1383,22 @@ class _WarehouseQrScratch:
     def __init__(self, session: _QrScratchSession) -> None:
         self._session = session
         self._active: _MaterializedRelation | None = None
+        self._pinned: list[_MaterializedRelation] = []
         self._next_slot = 0
         self._counter = 0
+
+    def materialize_input(self, expression: ir.Table) -> ir.Table:
+        """Retain one input relation outside the two alternating work slots."""
+        name = f"_cuped_qr_{self._session._suffix}_input"
+        result = self._session.materialize_table(name, expression, required=True)
+        locator = next(
+            (item for item in reversed(self._session._materialized) if item.requested_name == name),
+            None,
+        )
+        if locator is None:
+            _raise("query.session.snapshot.materialization_failed")
+        self._pinned.append(locator)
+        return result
 
     def materialize_next(self, expression: ir.Table) -> ir.Table:
         """Create the next relation before releasing the current work relation."""
@@ -1421,6 +1435,9 @@ class _WarehouseQrScratch:
             active = self._active
             if self._drop(active):
                 self._active = None
+        for pinned in tuple(self._pinned):
+            if self._drop(pinned):
+                self._pinned.remove(pinned)
 
     def _drop(self, locator: _MaterializedRelation) -> bool:
         try:

@@ -61,7 +61,7 @@ def general_qr_required(metric, reason: str, **detail: object) -> NoReturn:
     )
 
 
-def require_warehouse_magnitude_range(
+def require_warehouse_magnitude_range(  # noqa: PLR0915
     relation: ir.Table,
     *,
     metric: str,
@@ -69,103 +69,169 @@ def require_warehouse_magnitude_range(
     execute,
 ) -> None:
     names = tuple(name for _, name in components)
-    minimum_mantissa, minimum_exponent = math.frexp(_MAGNITUDE_MIN)
-    maximum_mantissa, maximum_bound_exponent = math.frexp(_MAGNITUDE_MAX)
     if not names:
         return
     outcome_components = {"outcome", "numerator", "denominator"}
-    component_values = []
-    nonfinite_fields = {}
+    component_values: list[Any] = []
+    maxima_fields: dict[str, Any] = {}
     for index, (component, name) in enumerate(components):
         raw = relation[name]
-        value = raw.ifelse(1, 0).cast("float64") if raw.type().is_boolean() else raw.cast("float64")
+        value = cast(
+            ir.FloatingValue,
+            raw.ifelse(ibis.literal(1), ibis.literal(0)).cast("float64")
+            if raw.type().is_boolean()
+            else raw.cast("float64"),
+        )
         nonfinite = value.isinf()
         if component in outcome_components:
             nonfinite = nonfinite | value.isnan()
         else:
-            value = ibis.ifelse(value.isnan(), ibis.null().cast("float64"), value)
+            value = cast(
+                ir.FloatingValue,
+                ibis.ifelse(value.isnan(), ibis.null().cast("float64"), value),
+            )
         component_values.append(value)
-        nonfinite_fields[f"_magnitude_nonfinite_{index}"] = (
-            nonfinite.ifelse(1, 0).cast("int64").sum()
+        maxima_fields[f"_magnitude_nonfinite_{index}"] = cast(
+            Any, nonfinite.ifelse(ibis.literal(1), ibis.literal(0)).cast("int64")
+        ).sum()
+        maxima_fields[f"_magnitude_max_{index}"] = cast(Any, value).abs().max()
+
+    maxima = relation.group_by("group_id").aggregate(**maxima_fields)
+    maxima_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{f"_magnitude_nonfinite_{index}": "int64" for index in range(len(components))},
+        **{f"_magnitude_max_{index}": "float64" for index in range(len(components))},
+    }
+    maxima_table = ibis.table(maxima_schema, name="_magnitude_maxima")
+    joined = relation.join(
+        maxima_table,
+        [relation.group_id.identical_to(maxima_table.group_id)],
+    )
+    stats_fields: dict[str, Any] = {}
+    for index, value in enumerate(component_values):
+        maximum = maxima_table[f"_magnitude_max_{index}"]
+        safe_maximum = (maximum > 0).ifelse(maximum, 1.0)
+        stats_fields[f"_magnitude_nonfinite_{index}"] = maxima_table[
+            f"_magnitude_nonfinite_{index}"
+        ].max()
+        stats_fields[f"_magnitude_max_{index}"] = maximum.max()
+        stats_fields[f"_magnitude_squares_{index}"] = (value / safe_maximum).pow(2).sum()
+        stats_fields[f"_magnitude_count_{index}"] = value.count()
+    stats = joined.group_by("group_id").aggregate(**stats_fields)
+
+    stats_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{
+            field: "int64"
+            for index in range(len(components))
+            for field in (
+                f"_magnitude_nonfinite_{index}",
+                f"_magnitude_count_{index}",
+            )
+        },
+        **{
+            field: "float64"
+            for index in range(len(components))
+            for field in (
+                f"_magnitude_max_{index}",
+                f"_magnitude_squares_{index}",
+            )
+        },
+    }
+    stats_table = ibis.table(stats_schema, name="_magnitude_stats")
+    normalized_fields: dict[str, Any] = {}
+    for index in range(len(components)):
+        maximum_exponent, scaled_norm, valid = _component_exponent_parts(
+            stats_table[f"_magnitude_max_{index}"],
+            stats_table[f"_magnitude_squares_{index}"],
         )
-    nonfinite_stats = relation.group_by("group_id").aggregate(**nonfinite_fields)
-    for row in _rows(execute(nonfinite_stats)):
+        count = stats_table[f"_magnitude_count_{index}"].cast("float64")
+        safe_count = (count > 0).ifelse(count, 1.0)
+        rms_factor = scaled_norm / safe_count.sqrt()
+        normalized_fields[f"_magnitude_nonfinite_{index}"] = stats_table[
+            f"_magnitude_nonfinite_{index}"
+        ]
+        normalized_fields[f"_magnitude_max_exponent_{index}"] = maximum_exponent
+        normalized_fields[f"_magnitude_rms_factor_{index}"] = rms_factor
+        normalized_fields[f"_magnitude_valid_{index}"] = valid & (count > 0)
+    normalized = stats_table.select("group_id", **normalized_fields)
+
+    minimum_mantissa, minimum_exponent = math.frexp(_MAGNITUDE_MIN)
+    maximum_mantissa, maximum_bound_exponent = math.frexp(_MAGNITUDE_MAX)
+    normalized_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{f"_magnitude_nonfinite_{index}": "int64" for index in range(len(components))},
+        **{
+            field: dtype
+            for index in range(len(components))
+            for field, dtype in (
+                (f"_magnitude_max_exponent_{index}", "int64"),
+                (f"_magnitude_rms_factor_{index}", "float64"),
+                (f"_magnitude_valid_{index}", "boolean"),
+            )
+        },
+    }
+    normalized_table = ibis.table(normalized_schema, name="_magnitude_normalized")
+    decision_fields: dict[str, Any] = {}
+    for index in range(len(components)):
+        factor = normalized_table[f"_magnitude_rms_factor_{index}"]
+        adjustment = factor.log2().floor().cast("int64") + 1
+        exponent = normalized_table[f"_magnitude_max_exponent_{index}"] + adjustment
+        mantissa = _binary_normalize(factor, adjustment)
+        valid = normalized_table[f"_magnitude_valid_{index}"] & (factor > 0)
+        decision_fields[f"_magnitude_nonfinite_{index}"] = normalized_table[
+            f"_magnitude_nonfinite_{index}"
+        ]
+        decision_fields[f"_magnitude_low_{index}"] = valid & (
+            (exponent < minimum_exponent)
+            | ((exponent == minimum_exponent) & (mantissa < minimum_mantissa))
+        )
+        decision_fields[f"_magnitude_high_{index}"] = valid & (
+            (exponent > maximum_bound_exponent)
+            | ((exponent == maximum_bound_exponent) & (mantissa > maximum_mantissa))
+        )
+    decisions = normalized_table.select("group_id", **decision_fields)
+
+    from sqlglot import exp
+
+    backend = relation.get_backend()
+    dialect = backend.name
+
+    def cte(name: str, expression: ir.Table) -> str:
+        identifier = exp.to_identifier(name).sql(dialect=dialect, identify=True)
+        return f"{identifier} AS ({ibis.to_sql(expression, dialect=dialect)})"
+
+    sql = (
+        "WITH "
+        + ", ".join(
+            (
+                cte("_magnitude_maxima", maxima),
+                cte("_magnitude_stats", stats),
+                cte("_magnitude_normalized", normalized),
+            )
+        )
+        + " "
+        + ibis.to_sql(decisions, dialect=dialect)
+    )
+    output_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{
+            field: dtype
+            for index in range(len(components))
+            for field, dtype in (
+                (f"_magnitude_nonfinite_{index}", "int64"),
+                (f"_magnitude_low_{index}", "boolean"),
+                (f"_magnitude_high_{index}", "boolean"),
+            )
+        },
+    }
+    result = backend.sql(sql, schema=ibis.schema(output_schema))
+    summary_rows = _rows(execute(result))
+    for row in summary_rows:
         for index, (_component, name) in enumerate(components):
             if row[f"_magnitude_nonfinite_{index}"]:
                 _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
-    value_names = tuple(f"_magnitude_value_{index}" for index in range(len(names)))
-    relation = relation.mutate(**dict(zip(value_names, component_values, strict=True)))
-    maxima = relation.group_by("group_id").aggregate(
-        **{
-            f"_magnitude_max_{index}": relation[field].abs().max()
-            for index, field in enumerate(value_names)
-        }
-    )
-    scaled = _join_on(relation, maxima, ("group_id",))
-    stats = scaled.group_by("group_id").aggregate(
-        **{
-            field: expression
-            for index, name in enumerate(value_names)
-            for field, expression in (
-                (
-                    f"_magnitude_max_{index}",
-                    scaled[f"_magnitude_max_{index}"].max(),
-                ),
-                (
-                    f"_magnitude_squares_{index}",
-                    (
-                        scaled[name]
-                        / ibis.ifelse(
-                            scaled[f"_magnitude_max_{index}"] > 0,
-                            scaled[f"_magnitude_max_{index}"],
-                            1.0,
-                        )
-                    )
-                    .pow(2)
-                    .sum(),
-                ),
-                (f"_magnitude_count_{index}", scaled[name].count()),
-            )
-        }
-    )
-    decisions = {}
-    for index, _component in enumerate(components):
-        maximum = cast(
-            ir.FloatingValue,
-            stats[f"_magnitude_max_{index}"].cast("float64").fill_null(0.0),
-        )
-        nonfinite = maximum.isnan() | maximum.isinf()
-        valid = (cast(Any, maximum) > 0.0) & ~nonfinite
-        safe_maximum = cast(ir.FloatingValue, ibis.ifelse(valid, maximum, 1.0))
-        maximum_exponent = ibis.ifelse(valid, safe_maximum.log2().floor() + 1, 0).cast("int64")
-        scaled_maximum = _binary_normalize(safe_maximum, maximum_exponent)
-        count = stats[f"_magnitude_count_{index}"].cast("float64")
-        safe_count = cast(ir.FloatingValue, ibis.ifelse(count > 0.0, count, 1.0).cast("float64"))
-        square_sum = cast(
-            ir.FloatingValue,
-            stats[f"_magnitude_squares_{index}"].cast("float64").fill_null(0.0),
-        )
-        rms_factor = scaled_maximum * square_sum.sqrt() / safe_count.sqrt()
-        nonzero = valid & (rms_factor > 0.0)
-        safe_factor = cast(ir.FloatingValue, ibis.ifelse(nonzero, rms_factor, 1.0))
-        adjustment = (safe_factor.log2().floor() + 1).cast("int64")
-        rms_exponent = maximum_exponent + adjustment
-        rms_mantissa = _binary_normalize(safe_factor, adjustment)
-        lower = nonzero & (
-            (cast(Any, rms_exponent) < minimum_exponent)
-            | ((rms_exponent == minimum_exponent) & (rms_mantissa < minimum_mantissa))
-        )
-        upper = nonfinite | (
-            nonzero
-            & (
-                (cast(Any, rms_exponent) > maximum_bound_exponent)
-                | ((rms_exponent == maximum_bound_exponent) & (rms_mantissa > maximum_mantissa))
-            )
-        )
-        decisions[f"_magnitude_low_{index}"] = lower
-        decisions[f"_magnitude_high_{index}"] = upper
-    rows = _rows(execute(stats.select("group_id", **decisions)))
-    for row in rows:
+    for row in summary_rows:
         for index, (component, _name) in enumerate(components):
             if row[f"_magnitude_low_{index}"]:
                 refuse(

@@ -56,10 +56,10 @@ def _assert_no_transferred_extreme(expression):
     for projection in statement.expressions:
         selected = projection.this if isinstance(projection, sqlglot.exp.Alias) else projection
         if type(selected).__name__ in {"AnyValue", "First", "Max", "Median", "Min"}:
-            assert isinstance(projection, sqlglot.exp.Alias) and projection.alias in {
-                "_qr_max_leverage",
-                "_qr_mean_exponent",
-            }, sql
+            assert isinstance(projection, sqlglot.exp.Alias) and (
+                projection.alias in {"_qr_max_leverage", "_qr_mean_exponent"}
+                or projection.alias.startswith(("scale_", "zero_"))
+            ), sql
 
 
 def _positive_diagonal(r, rhs):
@@ -443,7 +443,7 @@ def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkey
                 execute=connection.to_pyarrow,
                 scratch=scratch,
             )
-        assert len(statements) >= 4
+        assert len(statements) >= 3
         assert max(map(len, statements)) < 100_000
     finally:
         session.drop_materialized()
@@ -551,10 +551,10 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
     session = _scratch_session(connection, tmp_path)
 
     def guarded_execute(expression):
-        assert type(expression.op()).__name__ in {"Aggregate", "Project"}
+        assert type(expression.op()).__name__ in {"Aggregate", "Project", "SQLQueryResult"}
         _assert_no_transferred_extreme(expression)
         result = connection.to_pyarrow(expression)
-        assert result.num_rows <= 1
+        assert result.num_rows <= len(arms_order)
         assert "unit_id" not in result.column_names
         return result
 
@@ -863,10 +863,10 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
     session = _scratch_session(connection, tmp_path)
 
     def guarded_execute(expression):
-        assert type(expression.op()).__name__ in {"Aggregate", "Project"}
+        assert type(expression.op()).__name__ in {"Aggregate", "Project", "SQLQueryResult"}
         _assert_no_transferred_extreme(expression)
         result = connection.to_pyarrow(expression)
-        assert result.num_rows <= 1
+        assert result.num_rows <= len(arms_order)
         assert "unit_id" not in result.column_names
         return result
 
@@ -1088,16 +1088,20 @@ def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(perturbation, tmp_pa
         connection.disconnect()
 
 
-def test_qr_scratch_alternates_and_cleans_materialized_relations(tmp_path):
+def test_qr_scratch_pins_input_while_alternating_work_relations(tmp_path):
     connection = ibis.duckdb.connect()
     connection.create_table("scratch_source", obj=[{"x": 1.0}, {"x": 2.0}])
     session = _scratch_session(connection, tmp_path)
     relation = connection.table("scratch_source")
     try:
         with session.qr_scratch() as scratch:
+            pinned = scratch.materialize_input(relation)
+            assert len(session.materialized_names) == 1
             for _ in range(4):
-                relation = scratch.materialize_next(relation.mutate(x=relation.x + 1.0))
-                assert len(session.materialized_names) == 1
+                relation = scratch.materialize_next(pinned.mutate(x=pinned.x + 1.0))
+                assert len(session.materialized_names) == 2
+                assert connection.to_pyarrow(pinned).num_rows == 2
+            assert len(session.materialized_names) == 2
         assert session.materialized_names == []
     finally:
         session.drop_materialized()
