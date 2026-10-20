@@ -113,6 +113,34 @@ def test_bigquery_digest_fetch_disables_storage_api():
     }
 
 
+def test_bigquery_bounded_fetch_registers_memtable_before_query():
+    from increment.query.artifact_digest import fetch_bounded_arrow
+
+    expression = ibis.memtable({"_": [0]}).mutate(_as_of=ibis.literal("2025-01-01"))
+
+    class Connection:
+        name = "bigquery"
+
+        def __init__(self):
+            self.events = []
+
+        def to_pyarrow(self, expr):
+            from ibis.expr import operations as ops
+
+            self.events.extend(
+                ("register", item.name) for item in expr.op().find(ops.InMemoryTable)
+            )
+            self.events.append(("query", expr))
+            return object()
+
+    connection = Connection()
+    fetch_bounded_arrow(connection, expression)
+
+    assert connection.events[0][0] == "register"
+    assert connection.events[-1][0] == "query"
+    assert connection.events[-1][1] is expression
+
+
 _TABLE = ibis.table(
     {"id": "int64", "name": "string", "amount": "float64", "raw": "binary"}, name="rows"
 )

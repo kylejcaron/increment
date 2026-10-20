@@ -509,6 +509,42 @@ def test_bm_feature_batches_respect_postgres_column_budget_at_p203():
     )
 
 
+@pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
+def test_qr_factor_aggregates_compile_without_filter(dialect, tmp_path):
+    from increment.query._cuped_qr import factor_design_relation
+
+    rows = [
+        {"unit_id": f"u{index}", "x0": float(index + 1), "x1": float(index % 2), "y": float(index)}
+        for index in range(6)
+    ]
+    connection = ibis.duckdb.connect()
+    connection.create_table("filter_compile_input", obj=rows)
+    session = _scratch_session(connection, tmp_path)
+    compiled = []
+
+    def execute(expression):
+        compiled.append(ibis.to_sql(expression, dialect=dialect))
+        return connection.to_pyarrow(expression)
+
+    try:
+        with session.qr_scratch() as scratch:
+            factor_design_relation(
+                connection.table("filter_compile_input"),
+                design_columns=("x0", "x1"),
+                rhs_columns=("y",),
+                order_columns=("unit_id",),
+                execute=execute,
+                scratch=scratch,
+            )
+        assert compiled
+        assert all(
+            "FILTER(" not in sql.upper() and "FILTER (" not in sql.upper() for sql in compiled
+        )
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
 def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noqa: PLR0915
     tmp_path,
 ):
@@ -1468,6 +1504,147 @@ def _assert_fit_coordinates_equal(left_rows, right_rows):
             rtol=1e-9,
             atol=1e-11,
         )
+
+
+def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_path):
+    import datetime as dt
+
+    import pyarrow as pa
+    import yaml
+
+    from increment import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import AnalysisPlan
+
+    rng = np.random.default_rng(20261021)
+    arms = ("control", "variant-a", "variant-b")
+    covariate_names = tuple(f"x{index}" for index in range(34))
+    units = []
+    events = []
+    exposure = dt.datetime(2025, 1, 10, 8)
+    pre = dt.datetime(2025, 1, 7, 9)
+    post = dt.datetime(2025, 1, 11, 9)
+    for arm_index, arm in enumerate(arms):
+        for index in range(64):
+            values = rng.normal(size=len(covariate_names))
+            revenue = 12.0 + arm_index * 0.4 + 0.7 * values[0] + rng.normal(scale=0.3)
+            orders = float(5 + index % 4)
+            unit_id = f"{arm}-{index}"
+            unit = {
+                "user_id": unit_id,
+                "variant": arm,
+                "revenue": revenue,
+                "orders": orders,
+                **dict(zip(covariate_names, values.tolist(), strict=True)),
+            }
+            units.append(unit)
+            events.extend(
+                (
+                    {
+                        "user_id": unit_id,
+                        "ts": exposure,
+                        "event": "enrolled",
+                        "experiment_id": "mixed_cuped",
+                        "group_id": arm,
+                        "value": None,
+                        **dict.fromkeys(covariate_names),
+                    },
+                    {
+                        "user_id": unit_id,
+                        "ts": pre,
+                        "event": "history",
+                        "experiment_id": None,
+                        "group_id": None,
+                        "value": None,
+                        **dict(zip(covariate_names, values.tolist(), strict=True)),
+                    },
+                    {
+                        "user_id": unit_id,
+                        "ts": post,
+                        "event": "revenue",
+                        "experiment_id": None,
+                        "group_id": None,
+                        "value": revenue,
+                        **dict.fromkeys(covariate_names),
+                    },
+                )
+            )
+            events.extend(
+                {
+                    "user_id": unit_id,
+                    "ts": post + dt.timedelta(minutes=minute),
+                    "event": "order",
+                    "experiment_id": None,
+                    "group_id": None,
+                    "value": None,
+                    **dict.fromkeys(covariate_names),
+                }
+                for minute in range(int(orders))
+            )
+
+    definitions = yaml.safe_load(mixed_cuped_definitions_yaml("qr_many_covariates"))
+    fact_source = definitions["fact_sources"][0]
+    fact_source["properties"].extend(
+        {
+            "name": name,
+            "column": name,
+            "dtype": "float",
+            "as_of": "pre_exposure",
+        }
+        for name in covariate_names
+    )
+    experiment = definitions["experiments"][0]
+    experiment["allocation"] = dict.fromkeys(arms, 1 / len(arms))
+    declarations = [
+        {"name": name, "kind": "continuous", "property": name, "source": "events"}
+        for name in covariate_names
+    ]
+    method = experiment["plan"]["guardrails"][0]["decision_method"]
+    method["covariates"] = declarations
+    experiment["plan"] = {"primary": {"metric": "rpo", "decision_method": method}}
+    definitions_path = tmp_path / "qr-many-covariates.yaml"
+    definitions_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+
+    local_method = Method.cuped_multicovariate(
+        covariates=[CupedCovariate(name=name, kind="continuous") for name in covariate_names]
+    )
+    local = Analysis.from_unit_summary(
+        pa.Table.from_pylist(units),
+        unit="user_id",
+        group="variant",
+        metrics=[
+            MetricSpec(
+                name="rpo",
+                type="ratio",
+                numerator="revenue",
+                denominator="orders",
+                decision_method=local_method,
+            )
+        ],
+        plan=AnalysisPlan(primary="rpo"),
+        design=Randomized(control_group="control", allocation=dict.fromkeys(arms, 1 / len(arms))),
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_many_covariates", obj=events)
+    warehouse = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    try:
+        actual = cast(list[LiftEstimate], warehouse.run(metrics=["rpo"]))
+        expected = cast(list[LiftEstimate], local.run(metrics=["rpo"]))
+        actual_rows = {(row.metric, row.group_id): row for row in actual}
+        expected_rows = {(row.metric, row.group_id): row for row in expected}
+        assert actual_rows.keys() == expected_rows.keys()
+        for key, row in actual_rows.items():
+            reference = expected_rows[key]
+            assert row.sampling_reason_code == reference.sampling_reason_code
+            if row.sampling_reason_code is None:
+                assert row.lift is not None and reference.lift is not None
+                assert row.lift.value == pytest.approx(reference.lift.value, rel=1e-9, abs=1e-11)
+                assert row.lift.log_se == pytest.approx(reference.lift.log_se, rel=1e-9, abs=1e-11)
+    finally:
+        warehouse.close()
+        local.close()
+        connection.disconnect()
 
 
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])

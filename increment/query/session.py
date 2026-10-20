@@ -1428,9 +1428,9 @@ class _WarehouseQrScratch:
         self._pinned: list[_MaterializedRelation] = []
         self._next_slot = 0
 
-    def materialize_input(self, expression: ir.Table) -> ir.Table:
-        """Retain one input relation outside the two alternating work slots."""
-        name = f"_cuped_qr_{self._session._suffix}_input"
+    def materialize_input(self, expression: ir.Table, *, label: str = "input") -> ir.Table:
+        """Retain an input relation outside the two alternating work slots."""
+        name = f"_cuped_qr_{self._session._suffix}_{label}"
         result = self._session.materialize_table(name, expression, required=True)
         locator = next(
             (item for item in reversed(self._session._materialized) if item.requested_name == name),

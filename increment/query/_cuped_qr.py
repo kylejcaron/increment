@@ -348,9 +348,17 @@ def warehouse_qr_unit_summary(  # noqa: PLR0913
         _qr_q_value=q_value,
     )
     product_table = ibis.table(products.schema(), name="_qr_q_products")
+    # Each unit/index pair is unique, so conditional sums pivot q-values into columns.
     wide = product_table.group_by(*row_identity_columns).aggregate(
         **{
-            name: product_table._qr_q_value.max(where=product_table._qr_q_index == index)
+            name: cast(
+                Any,
+                ibis.ifelse(
+                    product_table._qr_q_index == index,
+                    product_table._qr_q_value,
+                    0.0,
+                ),
+            ).sum()
             for index, name in enumerate(q_columns)
         }
     )
@@ -1165,8 +1173,9 @@ def _warehouse_bm_projection_reductions(  # noqa: PLR0913, PLR0915
         g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
     bm_results: list[tuple[float, float, FloatMatrix, FloatMatrix]] = []
     if bm_score_fields:
-        score_relation = scratch.materialize_next(
-            current.select(*base_columns).mutate(**bm_score_fields)
+        score_relation = scratch.materialize_input(
+            current.select(*base_columns).mutate(**bm_score_fields),
+            label="bm_scores",
         )
         for job_batch in _bm_job_batches(bm_jobs, width=width, base_columns=base_columns):
             t2_names = tuple(name for name, _, _ in job_batch)
@@ -1343,16 +1352,19 @@ def factor_design_relation(
         diagonal = work._qr_row == column_index
         max_stats = work.filter(remaining).aggregate(
             _qr_max=column.abs().max(),
-            _qr_leading=column.max(where=diagonal),
+            _qr_leading=cast(Any, ibis.ifelse(diagonal, column, ibis.null())).max(),
         )
         scaled = work.cross_join(max_stats)
         safe_maximum = ibis.ifelse(max_stats._qr_max > 0.0, max_stats._qr_max, 1.0)
         square_stats = scaled.aggregate(
-            _qr_scaled_square_sum=(
-                (scaled[column_name] / safe_maximum)
-                .pow(2)
-                .sum(where=scaled._qr_row >= column_index)
-            )
+            _qr_scaled_square_sum=cast(
+                Any,
+                ibis.ifelse(
+                    scaled._qr_row >= column_index,
+                    (scaled[column_name] / safe_maximum).pow(2),
+                    0.0,
+                ),
+            ).sum()
         )
         norm_stats = max_stats.cross_join(square_stats).mutate(
             _qr_norm=ibis.ifelse(
@@ -1400,16 +1412,20 @@ def factor_design_relation(
         work = scratch.materialize_next(updated.mutate(**changes).select("_qr_row", *all_columns))
 
     final_fields = {
-        f"_qr_r_{row}_{column}": work[design_columns[column]]
-        .max(where=work._qr_row == row)
+        f"_qr_r_{row}_{column}": cast(
+            Any, ibis.ifelse(work._qr_row == row, work[design_columns[column]], ibis.null())
+        )
+        .max()
         .fill_null(0.0)
         for row in range(width)
         for column in range(row, width)
     }
     final_fields.update(
         {
-            f"_qr_rhs_{row}_{component}": work[rhs_columns[component]]
-            .max(where=work._qr_row == row)
+            f"_qr_rhs_{row}_{component}": cast(
+                Any, ibis.ifelse(work._qr_row == row, work[rhs_columns[component]], ibis.null())
+            )
+            .max()
             .fill_null(0.0)
             for row in range(width)
             for component in range(len(rhs_columns))

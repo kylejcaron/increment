@@ -441,9 +441,14 @@ def _cell_relation(relation, names, outcomes):
     # The per-unit fitter's offset: the upper median, kept inside the warehouse.
     medians = relation.group_by("group_id").aggregate(
         **{
-            f"_median_{f}": relation[name]
-            .cast("float64")
-            .max(where=relation[f"_rank_{f}"] == relation["_arm_count"] // 2)
+            f"_median_{f}": cast(
+                Any,
+                ibis.ifelse(
+                    relation[f"_rank_{f}"] == relation["_arm_count"] // 2,
+                    relation[name].cast("float64"),
+                    ibis.null(),
+                ),
+            ).max()
             for f, name in enumerate(outcomes)
         }
     )
@@ -594,7 +599,9 @@ def _preflight(cells, names, components, request, metric):
         scatter_positive=cast(ir.BooleanColumn, ibis.and_(*positive)).all(),
         encoded_bytes=encoded_bytes,
         **{
-            f"range_arm_{f}": cells.group_id.min(where=~cells[f"_precise_{f}"])
+            f"range_arm_{f}": cast(
+                Any, ibis.ifelse(~cells[f"_precise_{f}"], cells.group_id, ibis.null())
+            ).min()
             for f in range(components)
         },
     )

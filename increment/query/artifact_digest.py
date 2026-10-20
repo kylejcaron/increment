@@ -1256,6 +1256,9 @@ def fetch_bounded_arrow(con: Any, expr: ir.Expr) -> Any:
     """Fetch a bounded result, bypassing the BigQuery Storage API client."""
     if con.name != "bigquery":
         return con.to_pyarrow(expr)
+    operation = expr.op()
+    if operation.find(ops.InMemoryTable) or operation.find(ops.Impure):
+        return con.to_pyarrow(expr)
     table_expr = expr.as_table()
     result = con.raw_sql(con.compile(table_expr))
     arrow = result.to_arrow(create_bqstorage_client=False, progress_bar_type=None)

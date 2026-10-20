@@ -38,6 +38,32 @@ def test_cuped_nonfinite_parts_compile_for_supported_dialects() -> None:
     con.disconnect()
 
 
+@pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
+def test_cell_aggregates_compile_without_filter_clause(dialect) -> None:
+    from types import SimpleNamespace
+
+    from increment.query._cuped_cells import _cell_relation, _preflight
+
+    relation = ibis.memtable(
+        [
+            {"group_id": "control", "segment": "a", "y": 1.0},
+            {"group_id": "control", "segment": "b", "y": 2.0},
+            {"group_id": "treatment", "segment": "a", "y": 1.5},
+            {"group_id": "treatment", "segment": "b", "y": 2.5},
+        ]
+    )
+    cells = _cell_relation(relation, ("segment",), ("y",))
+    request = SimpleNamespace(
+        identity=("test",),
+        method=SimpleNamespace(model_dump=lambda **kwargs: {}),
+    )
+    metric = SimpleNamespace(model_dump=lambda **kwargs: {})
+    expression = _preflight(cells, ("segment",), 1, request, metric)
+
+    sql = ibis.to_sql(expression, dialect=dialect).upper()
+    assert "FILTER(" not in sql and "FILTER (" not in sql
+
+
 def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:
     from increment.query._nonfinite import nonfinite_parts
 
