@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import ibis
 import ibis.expr.types as ir
@@ -50,6 +50,7 @@ from increment.query.artifact_digest import (
     digest_relation_bucketed,
     digest_relation_sql_v2,
     digest_relation_stream,
+    fetch_bounded_arrow,
     stream_canonical_rows,
 )
 from increment.query.artifact_digest import REFUSALS as DIGEST_REFUSALS
@@ -89,6 +90,15 @@ _REFUSALS = refusals(
             "query.session.snapshot.materialization_failed",
             CapabilityError,
             template="source snapshot requires warehouse TEMP tables; live fallback is forbidden",
+        ),
+        "query.session.qr_scratch_cleanup_failed": RefusalSpec(
+            "query.session.qr_scratch_cleanup_failed",
+            CapabilityError,
+            template=(
+                "warehouse QR scratch cleanup failed; retained relations are listed for "
+                "manual removal: {relations}"
+            ),
+            keys=frozenset({"relations", "route"}),
         ),
         "query.session.materialization_namespace": RefusalSpec(
             "query.session.materialization_namespace",
@@ -356,6 +366,10 @@ class WarehouseArtifactStore:
         self._validate_namespace()
         self._ensure_metadata_table()
         self._ensure_dropped_table()
+
+    def qr_scratch(self):
+        """Return a scoped scratch owner for computations over a pinned artifact snapshot."""
+        return _warehouse_artifact_qr_scratch(self._con)
 
     def preflight_publication(self) -> None:
         """Require warehouse-side digest verification before source assembly."""
@@ -1188,8 +1202,9 @@ class WarehouseArtifactStore:
             ref.generation_id,
             read_manifest,
             verify_relation,
-            lambda expression: self._con.to_pyarrow(expression),
+            lambda expression: fetch_bounded_arrow(self._con, expression),
             lambda expression: record_batches(self._con, expression),
+            self.qr_scratch,
         )
         validate_snapshot_identity(snapshot, ref)
         try:
@@ -1363,6 +1378,259 @@ class _MaterializedRelation:
     schema: str | None
 
 
+def _drop_materialized_relations(
+    con: SQLBackend, relations: tuple[_MaterializedRelation, ...]
+) -> None:
+    if not relations:
+        return
+    if len(relations) == 1:
+        relation = relations[0]
+        database = (
+            (relation.catalog, relation.schema)
+            if relation.catalog is not None and relation.schema is not None
+            else relation.schema or relation.catalog
+        )
+        con.drop_table(relation.name, database=database, force=True)
+        return
+    if con.name == "snowflake":
+        for relation in relations:
+            database = (
+                (relation.catalog, relation.schema)
+                if relation.catalog is not None and relation.schema is not None
+                else relation.schema or relation.catalog
+            )
+            con.drop_table(relation.name, database=database, force=True)
+        return
+    names = tuple(
+        sqlglot.table(
+            relation.name,
+            db=relation.schema,
+            catalog=relation.catalog,
+            quoted=True,
+        ).sql(dialect=con.name)
+        for relation in relations
+    )
+    drops = tuple(f"DROP TABLE IF EXISTS {name}" for name in names)
+    sql = (
+        "; ".join(drops)
+        if con.name in {"bigquery", "duckdb"}
+        else f"DROP TABLE IF EXISTS {', '.join(names)}"
+    )
+    cast(Any, con).raw_sql(sql)
+
+
+class _WarehouseQrScratch:
+    """Own two alternating TEMP relations for one warehouse QR execution."""
+
+    def __init__(self, session: _QrScratchSession) -> None:
+        self._session = session
+        self._work_slots: dict[int, _MaterializedRelation] = {}
+        self._pinned: list[_MaterializedRelation] = []
+        self._next_slot = 0
+
+    def materialize_input(self, expression: ir.Table, *, label: str = "input") -> ir.Table:
+        """Retain an input relation outside the two alternating work slots."""
+        name = f"_cuped_qr_{self._session._suffix}_{label}"
+        result = self._session.materialize_table(name, expression, required=True)
+        locator = next(
+            (item for item in reversed(self._session._materialized) if item.requested_name == name),
+            None,
+        )
+        if locator is None:
+            _raise("query.session.snapshot.materialization_failed")
+        self._pinned.append(locator)
+        return result
+
+    def materialize_next(self, expression: ir.Table) -> ir.Table:
+        """Replace the next TEMP work slot while retaining the other slot."""
+        slot = self._next_slot
+        self._next_slot = 1 - slot
+        name = f"_cuped_qr_{self._session._suffix}_{slot}"
+        previous = self._work_slots.get(slot)
+        replace = previous is not None
+        if previous is not None and self._session._con.name == "postgres":
+            if not self._drop(previous):
+                _raise(
+                    "query.session.qr_scratch_cleanup_failed",
+                    relations=self.leftovers,
+                    route=f"restore DROP privileges on {self._session._con.name} and retry",
+                )
+            self._work_slots.pop(slot)
+            previous = None
+            replace = False
+        result = self._session.materialize_table(name, expression, required=True, replace=replace)
+        locator = next(
+            (item for item in reversed(self._session._materialized) if item.requested_name == name),
+            None,
+        )
+        if locator is None:
+            _raise("query.session.snapshot.materialization_failed")
+        if previous is not None:
+            self._session._materialized.remove(previous)
+        self._work_slots[slot] = locator
+        return result
+
+    @property
+    def leftovers(self) -> tuple[tuple[str | None, str | None, str], ...]:
+        return tuple(
+            (item.catalog, item.schema, item.name)
+            for item in self._session._materialized
+            if item.requested_name.startswith(f"_cuped_qr_{self._session._suffix}_")
+        )
+
+    def close(self) -> None:
+        relations = (*self._work_slots.values(), *self._pinned)
+        try:
+            self._session._drop_materialized_relations(tuple(relations))
+        except Exception:
+            for slot, relation in tuple(self._work_slots.items()):
+                if self._drop(relation):
+                    self._work_slots.pop(slot)
+            for pinned in tuple(self._pinned):
+                if self._drop(pinned):
+                    self._pinned.remove(pinned)
+        else:
+            for relation in relations:
+                self._session._materialized.remove(relation)
+            self._work_slots.clear()
+            self._pinned.clear()
+
+    def _drop(self, locator: _MaterializedRelation) -> bool:
+        try:
+            self._session._drop_materialized_relation(locator)
+        except Exception:
+            return False
+        self._session._materialized.remove(locator)
+        return True
+
+    def __enter__(self) -> _WarehouseQrScratch:
+        return self
+
+    def __exit__(self, _exc_type, exc, _traceback) -> bool:
+        self.close()
+        leftovers = self.leftovers
+        if leftovers:
+            names = tuple(
+                f"{catalog + '.' if catalog else ''}{schema + '.' if schema else ''}{name}"
+                for catalog, schema, name in leftovers
+            )
+            if exc is not None:
+                raise _raise(
+                    "query.session.qr_scratch_cleanup_failed",
+                    relations=names,
+                    route=f"drop the listed relations with {self._session._con.name} and retry",
+                ) from exc
+            _raise(
+                "query.session.qr_scratch_cleanup_failed",
+                relations=names,
+                route=f"drop the listed relations with {self._session._con.name} and retry",
+            )
+        return False
+
+
+class _QrScratchSession(Protocol):
+    _con: SQLBackend
+    _materialized: list[_MaterializedRelation]
+    _suffix: str
+
+    def materialize_table(
+        self, name: str, expr: ir.Table, *, required: bool, replace: bool = False
+    ) -> ir.Table: ...
+
+    def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None: ...
+
+    def _drop_materialized_relations(
+        self, relations: tuple[_MaterializedRelation, ...]
+    ) -> None: ...
+
+
+@contextmanager
+def _warehouse_qr_scratch(session: _QrScratchSession) -> Iterator[_WarehouseQrScratch]:
+    with _WarehouseQrScratch(session) as scratch:
+        yield scratch
+
+
+class _WarehouseArtifactQrSession:
+    """Connection-only materialization owner for immutable artifact snapshots."""
+
+    def __init__(self, con: SQLBackend) -> None:
+        self._con = con
+        self._suffix = uuid.uuid4().hex[:12]
+        self._materialized: list[_MaterializedRelation] = []
+
+    def materialize_table(
+        self, name: str, expr: ir.Table, *, required: bool, replace: bool = False
+    ) -> ir.Table:
+        if not required:
+            _raise("query.session.snapshot.materialization_failed")
+        created = None
+        cleanup = (
+            _MaterializedRelation(name, name, None, "pg_temp")
+            if self._con.name == "postgres"
+            else _MaterializedRelation(name, name, None, None)
+        )
+        try:
+            create_kwargs: dict[str, Any] = {"temp": True}
+            if replace:
+                create_kwargs["overwrite"] = True
+            if self._con.name == "snowflake":
+                catalog = getattr(self._con, "current_catalog", None)
+                schema = getattr(self._con, "current_database", None)
+                if not catalog or not schema:
+                    _raise("query.session.materialization_namespace", backend=self._con.name)
+                database = sqlglot.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
+                cleanup = _MaterializedRelation(name, name, catalog, schema)
+                create_kwargs["database"] = database
+            created = self._con.create_table(name, expr, **create_kwargs)
+            operation = created.op()
+            catalog = operation.namespace.catalog
+            schema = operation.namespace.database
+            if self._con.name == "postgres":
+                rows = self._con.to_pyarrow(
+                    self._con.sql(
+                        "SELECT nspname FROM pg_catalog.pg_namespace "
+                        "WHERE oid = pg_my_temp_schema()"
+                    )
+                ).to_pylist()
+                schema = rows[0]["nspname"] if rows else None
+                if not isinstance(schema, str) or not schema.startswith("pg_temp_"):
+                    _raise("query.session.snapshot.materialization_failed")
+                catalog = None
+            elif self._con.name == "snowflake":
+                catalog = catalog or getattr(self._con, "current_catalog", None)
+                schema = schema or getattr(self._con, "current_database", None)
+            if not catalog and not schema:
+                _raise("query.session.snapshot.materialization_failed")
+            locator = _MaterializedRelation(name, operation.name, catalog, schema)
+            self._materialized.append(locator)
+            return created
+        except Exception:
+            if created is not None and cleanup is not None:
+                try:
+                    self._drop_materialized_relation(cleanup)
+                except Exception:
+                    self._materialized.append(cleanup)
+            _raise("query.session.snapshot.materialization_failed")
+
+    def _drop_materialized_relation(self, relation: _MaterializedRelation) -> None:
+        database = (
+            (relation.catalog, relation.schema)
+            if relation.catalog is not None and relation.schema is not None
+            else relation.schema or relation.catalog
+        )
+        self._con.drop_table(relation.name, database=database, force=True)
+
+    def _drop_materialized_relations(self, relations: tuple[_MaterializedRelation, ...]) -> None:
+        _drop_materialized_relations(self._con, relations)
+
+
+@contextmanager
+def _warehouse_artifact_qr_scratch(con: SQLBackend) -> Iterator[_WarehouseQrScratch]:
+    session = _WarehouseArtifactQrSession(con)
+    with _WarehouseQrScratch(session) as scratch:
+        yield scratch
+
+
 class WarehouseSession:
     """One ibis connection's fact-table cache and TEMP-table mechanics.
 
@@ -1390,6 +1658,7 @@ class WarehouseSession:
         self._arrow_results: dict[Any, Any] = {}
         self._arrow_cache_bytes = 0
         self._captured_relations: frozenset[Any] | None = None
+        self._postgres_temp_privilege_checked = False
 
     @property
     def con(self) -> SQLBackend:
@@ -1398,6 +1667,10 @@ class WarehouseSession:
     @property
     def defs(self) -> Definitions:
         return self._defs
+
+    def qr_scratch(self):
+        """Return a scoped owner for at most two alternating QR work relations."""
+        return _warehouse_qr_scratch(self)
 
     @property
     def source_snapshot_evidence(self) -> SourceSnapshotEvidence | None:
@@ -1441,18 +1714,15 @@ class WarehouseSession:
         convert to Python records or derive a new Arrow table; pandas writes replace
         or copy Arrow-backed columns rather than mutating cached buffers in place.
         """
-        if (
-            not self._is_captured_expression(expression)
-            or params is not None
-            or limit is not None
-            or kwargs
-        ):
+        if params is not None or limit is not None or kwargs:
             return cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
+        if not self._is_captured_expression(expression):
+            return fetch_bounded_arrow(self._con, expression)
         operation = expression.op()
         result = self._arrow_results.get(operation)
         if result is not None:
             return result
-        result = cast(Any, self._con).to_pyarrow(expression, params=params, limit=limit, **kwargs)
+        result = fetch_bounded_arrow(self._con, expression)
         result_size = getattr(result, "nbytes", None)
         if (
             isinstance(result_size, int)
@@ -1466,6 +1736,14 @@ class WarehouseSession:
 
     def source_sql(self, sql: str) -> Table:
         """Resolve source SQL against this operation's captured inputs, if any."""
+        if self._con.name == "postgres" and not self._postgres_temp_privilege_checked:
+            with cast(Any, self._con).raw_sql(
+                "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
+            ) as cursor:
+                has_temp_privilege = cursor.fetchone()[0]
+            self._postgres_temp_privilege_checked = True
+            if not has_temp_privilege:
+                _raise("query.session.snapshot.materialization_failed")
         if self._source_tables is not None:
             if sql not in self._source_tables:
                 _raise("query.session.snapshot.source_missing")
@@ -1620,7 +1898,14 @@ class WarehouseSession:
                 return None
         return _MaterializedRelation(requested_name, op.name, catalog, schema)
 
-    def materialize_table(self, name: str, expr: ir.Table, *, required: bool = False) -> ir.Table:
+    def materialize_table(
+        self,
+        name: str,
+        expr: ir.Table,
+        *,
+        required: bool = False,
+        replace: bool = False,
+    ) -> ir.Table:
         """``con.create_table(temp=True)``, degrading to unmaterialized on failure.
 
         Optional materialization warns and falls back on failure. Required
@@ -1633,6 +1918,9 @@ class WarehouseSession:
         created = None
         cleanup = None
         try:
+            create_kwargs: dict[str, Any] = {"temp": True}
+            if replace:
+                create_kwargs["overwrite"] = True
             if self._con.name == "snowflake":
                 import sqlglot as sg
 
@@ -1643,9 +1931,8 @@ class WarehouseSession:
                 # Pin creation so cleanup never depends on a later namespace lookup.
                 database = sg.table(schema, db=catalog, quoted=True).sql(dialect="snowflake")
                 cleanup = _MaterializedRelation(name, name, catalog, schema)
-                created = self._con.create_table(name, expr, temp=True, database=database)
-            else:
-                created = self._con.create_table(name, expr, temp=True)
+                create_kwargs["database"] = database
+            created = self._con.create_table(name, expr, **create_kwargs)
             op = created.op()
             if self._con.name == "postgres":
                 # pg_temp addresses only this connection's TEMP schema.
@@ -1679,6 +1966,9 @@ class WarehouseSession:
             else relation.schema or relation.catalog
         )
         self._con.drop_table(relation.name, database=database, force=True)
+
+    def _drop_materialized_relations(self, relations: tuple[_MaterializedRelation, ...]) -> None:
+        _drop_materialized_relations(self._con, relations)
 
     def drop_materialized(self) -> None:
         """Drop every TEMP table this session materialized (best-effort) and draw a fresh name suffix.

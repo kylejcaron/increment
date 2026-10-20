@@ -5,28 +5,128 @@ import sqlglot
 
 from integration.warehouse_execution._compile import (
     _inline_empty_ctes,
+    compile_case_names,
     compile_statement_cases,
+    fixed_compile_cases,
 )
 
+# Each worker captures the public readouts once; shards spread rendering across workers.
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+_SHARDS = 8
 
+
+@pytest.mark.parametrize("shard", range(_SHARDS))
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-def test_registered_warehouse_statements_compile_offline(dialect):
-    cases = compile_statement_cases(dialect)
+def test_registered_warehouse_statements_compile_offline(dialect, shard):
+    cases = compile_statement_cases(dialect, shard=(shard, _SHARDS))
 
     assert cases
     assert len({case.name for case in cases}) == len(cases)
     for case in cases:
         expression = case.build(case.table_names)
-        assert expression.schema().names
+        if not isinstance(expression, str):
+            assert expression.schema().names
         sql = case.compile(expression)
+        if dialect == "snowflake":
+            assert "IS_NAN" not in sql.upper(), case.name
         assert sql.strip(), case.name
+        assert len(sql) <= 1_000_000, (
+            f"{dialect} statement exceeds the query-length limit: {case.name} ({len(sql)} characters)"
+        )
         for statement in (sql, _inline_empty_ctes(sql, case)):
             ast = sqlglot.parse_one(statement, read=dialect)
+            if dialect == "bigquery":
+                schema_columns = {
+                    column for schema in case.schemas.values() for column in schema.keys()
+                }
+                quoted_columns = {
+                    literal.this
+                    for literal in ast.find_all(sqlglot.exp.Literal)
+                    if literal.is_string and literal.this in schema_columns
+                }
+                assert not quoted_columns, (
+                    f"{case.name}: quoted identifier literals {quoted_columns}"
+                )
             ctes = {cte.alias for cte in ast.find_all(sqlglot.exp.CTE)}
             referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
             sources = set(case.table_names.values())
             assert referenced <= sources | ctes, case.name
             assert sources <= referenced | ctes, case.name
+
+
+def test_registered_names_are_unique_and_include_captured_materializations():
+    names = compile_case_names("snowflake")
+
+    assert len(names) == len(set(names))
+    assert any(name.startswith("cuped.materialize.") for name in names)
+    assert any(name.startswith("cuped.readout.") for name in names)
+
+
+def test_captured_statement_uses_schema_at_capture_time(monkeypatch):
+    import ibis
+
+    from integration.warehouse_execution import _compile
+
+    schema = ibis.schema({"_qr_projection_score_0_0": "float64"})
+    connection = ibis.duckdb.connect()
+    expression = connection.sql(
+        "SELECT _qr_projection_score_0_0 FROM _cuped_qr_stage", schema=schema
+    )
+    monkeypatch.setattr(
+        _compile,
+        "_CAPTURED_CUPED_EXPRESSION_SCHEMAS",
+        [{"_cuped_qr_stage": schema}],
+    )
+    monkeypatch.setattr(
+        _compile,
+        "_CAPTURED_CUPED_SCHEMAS",
+        {"_cuped_qr_stage": ibis.schema({"unit_id": "string"})},
+    )
+
+    case = _compile._captured_statement_case(expression, "bigquery", 0)
+
+    assert case.schemas["_cuped_qr_stage"] == schema
+
+
+def test_captured_snowflake_isnan_uses_portable_comparison():
+    import ibis
+    from ibis.expr import operations as ops
+
+    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+
+    connection = ibis.duckdb.connect()
+    expression = connection.sql(
+        "SELECT ISNAN(value) AS nonfinite FROM source",
+        schema=ibis.schema({"nonfinite": "boolean"}),
+    )
+
+    translated = _transpile_captured_raw_sql(expression, "snowflake")
+    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
+    sql = ibis.to_sql(translated, dialect="snowflake")
+
+    assert "IS_NAN" not in query.upper()
+    assert "'NaN'::FLOAT" in query
+    assert "IS_NAN" not in sql.upper()
+
+
+def test_captured_snowflake_isinf_uses_absolute_infinity_comparison():
+    import ibis
+    from ibis.expr import operations as ops
+
+    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+
+    connection = ibis.duckdb.connect()
+    expression = connection.sql(
+        "SELECT ISINF(value) AS infinite FROM source",
+        schema=ibis.schema({"infinite": "boolean"}),
+    )
+
+    translated = _transpile_captured_raw_sql(expression, "snowflake")
+    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
+
+    assert "IS_INF" not in query.upper()
+    assert "ABS(" in query.upper()
+    assert "INF" in query.upper()
 
 
 class _CapturingCursor:
@@ -70,9 +170,7 @@ def test_schema_only_ddl_matches_rendered_table_identifier(dialect):
     )
 
     case = next(
-        case
-        for case in compile_statement_cases(dialect)
-        if case.name == "digest.exposures.row_token"
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_token"
     )
     if dialect == "snowflake":
         connection = _CapturingSnowflakeConnection()

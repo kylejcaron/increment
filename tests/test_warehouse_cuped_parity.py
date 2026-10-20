@@ -594,7 +594,7 @@ def test_fixed_value_winsorization_with_both_bounds_matches_all_supported_ingres
 
 
 @pytest.mark.slow
-def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path):
+def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path, monkeypatch):
     from increment import Analysis
     from increment.errors import CodedError
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
@@ -627,6 +627,18 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
     )
     summary = matrix_cases.linear_cuped_frame_case(units, panel=False)
     panel = matrix_cases.linear_cuped_frame_case(units, panel=True, breakout=True)
+    from increment.query import source as artifact_source
+    from increment.query.native_source import DefinitionsMomentSource
+    from tests.test_warehouse_cuped_qr import _guard_no_unit_keyed_transfers
+
+    def forbidden_unit_transfer(*args, **kwargs):
+        pytest.fail("warehouse mixed-CUPED breakout used a per-unit frame")
+
+    monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_transfer)
+    monkeypatch.setattr(
+        artifact_source._ArtifactFacadeSource, "unit_frame", forbidden_unit_transfer
+    )
+    _guard_no_unit_keyed_transfers(monkeypatch)
     try:
         with pytest.raises(CodedError) as raised:
             summary.run_breakout()

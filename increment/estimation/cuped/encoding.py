@@ -9,7 +9,7 @@ from enum import Enum
 import numpy as np
 
 from increment.estimation._adjust.encoding import is_null
-from increment.estimation.cuped._numeric import _fail
+from increment.estimation.cuped._numeric import _arm_mean, _fail
 
 
 class CategoricalMissing(Enum):
@@ -19,6 +19,13 @@ class CategoricalMissing(Enum):
 
 
 MISSING_CATEGORY = CategoricalMissing.VALUE
+
+
+def categorical_missing_wire_value(value: object) -> dict[str, str] | None:
+    """Return the canonical portable spelling of the typed missing category."""
+    if isinstance(value, CategoricalMissing):
+        return {"$categorical_missing": value.value}
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +69,28 @@ def _categorical_values(raw, raw_values, n):
     return values, np.fromiter((is_null(value) for value in values), bool, n)
 
 
-def _encode_covariates(groups, indices, order, covariates, kinds, missing, multiplicities=None):
+def _aggregate_l2_scale_exponent(values: np.ndarray) -> int:
+    maximum = float(np.max(np.abs(values), initial=0.0))
+    if maximum == 0.0:
+        return 0
+    max_exponent = math.frexp(maximum)[1]
+    scaled_maximum = math.ldexp(maximum, -max_exponent)
+    sum_squares = math.fsum(float(value / maximum) ** 2 for value in values)
+    scaled_norm = scaled_maximum * math.sqrt(sum_squares)
+    return min(max_exponent + math.floor(math.log2(scaled_norm)) + 1, 1023)
+
+
+def _encode_covariates(
+    groups,
+    indices,
+    order,
+    covariates,
+    kinds,
+    missing,
+    multiplicities=None,
+    *,
+    aggregate_coordinates=False,
+):
     n = len(groups)
     columns, column_names, transforms = [], [], []
     structural, references, levels = [], [], []
@@ -97,6 +125,7 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing, multi
                 references,
                 levels,
                 masks,
+                aggregate_coordinates=aggregate_coordinates,
             )
             if transform is not None:
                 transforms.append(transform)
@@ -164,7 +193,18 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing, multi
 
 
 def _encode_numeric(
-    name, values, null, indices, columns, column_names, structural, references, levels, masks
+    name,
+    values,
+    null,
+    indices,
+    columns,
+    column_names,
+    structural,
+    references,
+    levels,
+    masks,
+    *,
+    aggregate_coordinates=False,
 ):
     if values.dtype.kind in "biuf":
         numeric = np.asarray(values, dtype=float)
@@ -196,6 +236,30 @@ def _encode_numeric(
             masks[key][1].append(name)
         else:
             masks[key] = (null.astype(float), [name])
+    if np.ptp(numeric) == 0:
+        structural.append(name)
+        return None
+    if aggregate_coordinates:
+        offsets = []
+        centered = np.empty_like(numeric)
+        for group in indices:
+            offset = _arm_mean(numeric[group])
+            offsets.append(offset)
+            centered[group] = numeric[group] - offset
+        if not np.isfinite(centered).all():
+            offsets = [0.0] * len(indices)
+            centered = numeric.copy()
+        if not np.any(centered):
+            columns.append(centered)
+            column_names.append(name)
+            return tuple(offsets), 1.0
+        exponent = _aggregate_l2_scale_exponent(centered)
+        scale = math.ldexp(1.0, exponent)
+        if scale == 0.0:
+            scale = math.ldexp(1.0, -1074)
+        columns.append(centered / scale)
+        column_names.append(name)
+        return tuple(offsets), scale
     offsets = []
     centered = np.empty_like(numeric)
     for group in indices:
@@ -208,9 +272,6 @@ def _encode_numeric(
         centered = numeric.copy()
     scale = float(np.max(np.abs(centered), initial=0.0))
     if scale == 0:
-        if np.ptp(numeric) == 0:
-            structural.append(name)
-            return None
         columns.append(centered)
         column_names.append(name)
         return tuple(offsets), 1.0

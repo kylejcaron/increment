@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from increment import Analysis, Method
-from increment.errors import CapabilityError, CodedError
+from increment.errors import CodedError
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.semantics.models import CupedCovariateBinding
@@ -315,7 +315,7 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
 
 
 @pytest.mark.parametrize("ingress", ["artifact", "definitions"])
-def test_fixed_caps_route_the_portable_export_to_general_qr_without_transfer(
+def test_fixed_caps_export_fits_with_warehouse_qr_and_replays_without_unit_transfer(
     tmp_path, monkeypatch, ingress
 ):
     path = _definitions(tmp_path, fixed_caps=True)
@@ -324,23 +324,153 @@ def test_fixed_caps_route_the_portable_export_to_general_qr_without_transfer(
     native = Analysis.from_definitions("mixed_cuped", path, con)
     adopted = None
     try:
-        capped = _cells(native.run())[("revenue", "segments", "treatment")]
+        expected = _cells(native.run())
+        capped = expected[("revenue", "segments", "treatment")]
         assert np.isfinite(capped.require_lift().value)
-        _guard_unit_transfers(monkeypatch, con, outcome_cells=False)
+        _guard_unit_transfers(monkeypatch, con, outcome_cells=True)
         source = native
         if ingress == "artifact":
             adopted, _ = _publish(con, native)
             source = adopted
         destination = tmp_path / "capped.parquet"
-        with pytest.raises(CapabilityError) as raised:
-            source.export(destination)
+        source.export(destination)
+        rows = pq.read_table(destination).to_pylist()
+        assert {row["moments_format"] for row in rows} == {13}
+        envelopes = [
+            json.loads(row["cuped_evidence"])
+            for row in rows
+            if row.get("record_kind") == "cuped_evidence"
+        ]
+        assert any(payload["kind"] == "fitted_multicovariate" for payload in envelopes)
+        from increment.semantics.models import Winsorization
+
+        metrics = _specs()
+        metrics[0] = MetricSpec(
+            name="revenue",
+            winsorization=Winsorization(lower_value=7.0, upper_value=11.0),
+        )
+        restored = Analysis.from_moments(
+            rows, metrics=metrics, design=_design(path), experiment_id="mixed_cuped"
+        )
+        try:
+            actual = _cells(restored.run())
+        finally:
+            restored.close()
     finally:
         if adopted is not None:
             adopted.close()
         native.close()
         con.disconnect()
-    assert raised.value.code == "query.cuped.general_qr_required"
-    assert raised.value.context["reason"] == "outcome_domain"
-    route = raised.value.context["route"]
-    assert isinstance(route, str) and "from_unit_summary" in route
-    assert not destination.exists()
+    assert actual.keys() == expected.keys()
+    for key, row in expected.items():
+        replayed = actual[key]
+        for field in ("value", "log_se", "lb", "ub"):
+            assert getattr(replayed.require_lift(), field) == pytest.approx(
+                getattr(row.require_lift(), field), rel=1e-10, abs=1e-12
+            )
+        for field in ("abs_diff", "abs_se", "abs_lb", "abs_ub"):
+            assert getattr(replayed, field) == pytest.approx(
+                getattr(row, field), rel=1e-10, abs=1e-12
+            )
+
+
+def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_path, monkeypatch):
+    import datetime as dt
+
+    from increment.semantics.design import Randomized
+    from increment.semantics.loader import load
+    from increment.semantics.models import AnalysisPlan
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml
+
+    units = _units()
+    path = tmp_path / "mixed.yaml"
+    path.write_text(mixed_cuped_definitions_yaml("events"))
+    experiment = load(path).experiment("mixed_cuped")
+    assert experiment is not None
+    binding = experiment.bindings["revenue"]
+    assert binding.decision_method is not None
+    method = Method.model_validate(binding.decision_method.model_dump())
+    design = experiment.resolved_design()
+    frame_metric = MetricSpec(name="revenue", decision_method=method)
+    frame_design = Randomized(
+        control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+    )
+    frame_plan = AnalysisPlan(primary="revenue")
+    summary = Analysis.from_unit_summary(
+        pa.Table.from_pylist(units),
+        unit="user_id",
+        group="variant",
+        metrics=[frame_metric],
+        design=frame_design,
+        plan=frame_plan,
+    )
+    panel_rows = [{**row, "day": dt.date(2025, 1, 10)} for row in units]
+    panel = Analysis.from_unit_panel(
+        pa.Table.from_pylist(panel_rows),
+        unit="user_id",
+        group="variant",
+        date="day",
+        metrics=[frame_metric],
+        design=frame_design,
+        plan=frame_plan,
+    )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(_events(units)))
+    native = Analysis.from_definitions("mixed_cuped", path, con)
+    adopted = None
+    try:
+        native_rows = _cells(native.run(metrics=["revenue"]))
+        _guard_unit_transfers(monkeypatch, con, outcome_cells=True)
+        adopted, _ = _publish(con, native)
+        sources = (summary, panel, native, adopted)
+        for index, source in enumerate(sources):
+            expected = (
+                native_rows if source is native or source is adopted else _cells(source.run())
+            )
+            assert expected.keys() == native_rows.keys()
+            for key, row in expected.items():
+                reference = native_rows[key]
+                for field in ("value", "log_se", "lb", "ub"):
+                    assert getattr(row.require_lift(), field) == pytest.approx(
+                        getattr(reference.require_lift(), field), rel=1e-10, abs=1e-12
+                    )
+            destination = tmp_path / f"fitted-{index}.parquet"
+            source.export(destination)
+            rows = pq.read_table(destination).to_pylist()
+            assert {row["moments_format"] for row in rows} == {13}
+            envelopes = [
+                json.loads(row["cuped_evidence"])
+                for row in rows
+                if row.get("record_kind") == "cuped_evidence"
+            ]
+            fitted = [
+                payload
+                for payload in envelopes
+                if payload["kind"] == "fitted_multicovariate" and payload["metric"] == "revenue"
+            ]
+            assert len(fitted) == 1
+            restored = Analysis.from_moments(
+                rows,
+                metrics=[frame_metric],
+                design=design,
+                plan=AnalysisPlan(primary="revenue"),
+                experiment_id="mixed_cuped",
+            )
+            try:
+                actual = _cells(restored.run(metrics=["revenue"]))
+            finally:
+                restored.close()
+            assert actual.keys() == expected.keys()
+            for key, row in expected.items():
+                replayed = actual[key]
+                for field in ("value", "log_se", "lb", "ub"):
+                    assert getattr(replayed.require_lift(), field) == pytest.approx(
+                        getattr(row.require_lift(), field), rel=1e-10, abs=1e-12
+                    )
+    finally:
+        if adopted is not None:
+            adopted.close()
+        summary.close()
+        panel.close()
+        native.close()
+        con.disconnect()

@@ -137,13 +137,14 @@ jobs:
       group: compile-snowflake-backend
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
-      - run: uv run --with nox nox -s tests_warehouse_compile_snowflake
+      # Compile statements in parallel; each pytest worker opens its own connection.
+      - run: uv run --with nox nox -s tests_warehouse_compile_snowflake -- -n 4
         env:
           INCREMENT_TEST_SNOWFLAKE_ACCOUNT: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_ACCOUNT }}
           INCREMENT_TEST_SNOWFLAKE_USER: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_USER }}
@@ -158,7 +159,7 @@ jobs:
       group: compile-bigquery-backend
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -167,7 +168,7 @@ jobs:
       - name: Write service-account key
         run: printf '%s' "$SA_KEY" > "$RUNNER_TEMP/gcp-sa.json"
         env: {SA_KEY: "${{ secrets.INCREMENT_TEST_BIGQUERY_SA_KEY }}"}
-      - run: uv run --with nox nox -s tests_warehouse_compile_bigquery
+      - run: uv run --with nox nox -s tests_warehouse_compile_bigquery -- -n 4
         env:
           INCREMENT_TEST_BIGQUERY_PROJECT: ${{ secrets.INCREMENT_TEST_BIGQUERY_PROJECT }}
           INCREMENT_TEST_BIGQUERY_DATASET: ${{ secrets.INCREMENT_TEST_BIGQUERY_DATASET }}

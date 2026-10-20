@@ -572,6 +572,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             _cuped_linear_unavailable_row,
             estimate_cuped_linear,
             estimate_cuped_linear_cells,
+            estimate_cuped_linear_fit,
         )
 
         linear_methods = [
@@ -639,6 +640,24 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                         else {},
                         advisories=cached_bundle.advisories,
                     )
+                elif (warehouse_fit := evidence.warehouse_fit_for(method)) is not None:
+                    linear = estimate_cuped_linear_fit(
+                        metric,
+                        warehouse_fit,
+                        arm_order=(
+                            design.control_group,
+                            *sorted(evidence.observed_arms - {design.control_group}),
+                        ),
+                        control_group=design.control_group,
+                        method=method,
+                        method_role=method_roles[method.name],
+                        alpha=alpha_for,
+                        alternative=test.alternative,
+                        null_abs=getattr(test, "null_abs", None),
+                        null_lift=getattr(test, "null_lift", 0.0),
+                        prior=config.prior,
+                    )
+                    linear_cache[cache_key] = (linear, None)
                 elif (retained := evidence.categorical_for(method)) is not None:
                     linear = estimate_cuped_linear_cells(
                         metric,

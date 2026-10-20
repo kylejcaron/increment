@@ -776,6 +776,16 @@ pooled-covariate-anchor uncertainty, with a Bell–McCaffrey Student-t
 reference. This is an explicit procedure, not a finite-sample or sequential
 guarantee.
 
+### Warehouse magnitude range
+
+Warehouse-backed CUPED producers require each arm's root-mean-square magnitude
+for every outcome component (including a ratio denominator) and continuous
+covariate to be zero or within $[10^{-50}, 10^{50}]$. A value outside this
+range is refused with `query.cuped.magnitude_range` before fitting or outcome
+transfer. Rescale the values by changing units, or fit from explicitly supplied
+per-unit data with `Analysis.from_unit_summary` or `Analysis.from_unit_panel`.
+This warehouse bound does not change the local per-unit fitters.
+
 ### Combining scalar and mixed CUPED
 
 Both procedures can be emitted for the same metric. Declare the covariate on
@@ -980,10 +990,11 @@ whole-population fit is supported. Assigned and triggered results retain
 their own populations; aggregate and per-unit evidence share one source
 snapshot, including the resolved fact source of each breakout.
 Native and artifact readouts of a mixed method still fit from per-unit
-warehouse evidence; their moment exports never transfer units.
-The mixed fit centers and scales each arm itself, so it stays available when
-an arm's ordinary centered second moments overflow the float range (centered
-outcomes near $10^{154}$ or larger).
+warehouse evidence; their moment exports never transfer units. Before fitting,
+the producer checks the per-arm RMS magnitude against the warehouse range
+above, so out-of-range values refuse before any outcome transfer. Within that
+range, the mixed fit centers and scales each arm itself instead of
+constructing raw centered second moments.
 Unadjusted and scalar CUPED rows read those moments and refuse with
 `estimation.armstats.arm_stats.group_summary_moment`, naming the metric, arm,
 and moment; rescale the values to use them. An overflowed denominator third

@@ -1127,10 +1127,13 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
             if row.group_id == "treatment" and row.method == "linear"
         )
         source = _native_source(analysis)
-        original = type(source).unit_frame
+
+        from increment.query import cuped as cuped_query
+
+        original = cuped_query.fit_multicovariate_source
         mutated = False
 
-        def mutate_before_units(self, *args, **kwargs):
+        def mutate_before_fit(source, metric, request, **kwargs):
             nonlocal mutated
             if not mutated:
                 mutated = True
@@ -1138,9 +1141,13 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
                     "UPDATE cov_events SET revenue = revenue * 2 "
                     "WHERE event = 'purchase' AND user_id BETWEEN 'u10' AND 'u19'"
                 )
-            return original(self, *args, **kwargs)
+            return original(source, metric, request, **kwargs)
 
-        monkeypatch.setattr(type(source), "unit_frame", mutate_before_units)
+        def no_unit_frame(*args, **kwargs):
+            pytest.fail("mixed warehouse CUPED must not load a unit frame")
+
+        monkeypatch.setattr(cuped_query, "fit_multicovariate_source", mutate_before_fit)
+        monkeypatch.setattr(type(source), "unit_frame", no_unit_frame)
         after = next(
             row.require_lift()
             for row in cast(

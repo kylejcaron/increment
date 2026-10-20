@@ -209,11 +209,8 @@ CUPED_LINEAR_INTERACTIONS = (
             (
                 "from_moments",
                 InteractionDisposition(
-                    "unfinished",
-                    "query.cuped.general_qr_required",
-                    "Warehouse exports of bounded outcomes need general warehouse QR, which is not implemented; supply per-unit data through from_unit_summary or from_unit_panel.",
-                    "construction",
-                    f"{_JOURNEY}::test_fixed_caps_route_the_portable_export_to_general_qr_without_transfer",
+                    "supported",
+                    evidence=f"{_JOURNEY}::test_fixed_caps_export_fits_with_warehouse_qr_and_replays_without_unit_transfer",
                 ),
             ),
         ),

@@ -3772,6 +3772,61 @@ def estimate_cuped_linear_cells(
     )
 
 
+def estimate_cuped_linear_fit(
+    metric: Metric,
+    fit: Any,
+    *,
+    arm_order: Sequence[str] | None = None,
+    control_group: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    alpha: float,
+    alternative: str,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+    prior: Prior | None = None,
+) -> Any:
+    """Project a finalized compact fit without reacquiring per-unit observations."""
+    refusals = _cuped_linear_refusals(
+        metric,
+        method,
+        method_role,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        prior=prior,
+    )
+    results, cuped_failures, refuse_arm = refusals
+    withheld = dict(getattr(fit, "withheld", ()))
+    resolved_order = tuple(map(str, getattr(fit, "arm_order", arm_order or ())))
+    if withheld:
+        resolved_order = _withhold_refused_arms(
+            withheld,
+            resolved_order,
+            control_group=control_group,
+            refuse_arm=refuse_arm,
+        )
+        if not resolved_order:
+            return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    fit = getattr(fit, "fit", fit)
+    if fit is None:
+        return _lift_decision_bundle(results, inference=None, cuped_failures=cuped_failures)
+    return _project_cuped_linear(
+        fit,
+        metric,
+        resolved_order,
+        control_group=control_group,
+        method=method,
+        method_role=method_role,
+        alpha=alpha,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        prior=prior,
+        refusals=(results, cuped_failures, refuse_arm),
+    )
+
+
 _LinearRefusals = tuple[
     list[LiftEstimate],
     list[tuple[Any, ...]],

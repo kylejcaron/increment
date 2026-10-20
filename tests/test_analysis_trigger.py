@@ -3301,6 +3301,45 @@ def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_p
         con.disconnect()
 
 
+def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_artifact(
+    tmp_path,
+):
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    analysis, con = _country_analysis(
+        tmp_path,
+        (
+            ("C-literal", "C", "__null__", 17),
+            ("T-literal", "T", "__null__", 17),
+            ("C-null", "C", None, 17),
+            ("T-null", "T", None, 17),
+        ),
+    )
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            con,
+            analysis,
+            kinds=(
+                "breakout_dimension",
+                "trigger_population",
+                "assignment_counts",
+                "trigger_measure_stats",
+            ),
+        )
+        expected = {"__null__", "\\__null__"}
+        for source in (analysis, adopted):
+            rows = source.run_daily(dimension="country", population="triggered")
+            assert rows
+            assert {row.dimension_value for row in rows} == expected
+    finally:
+        if adopted is not None:
+            _close_parity_analysis(adopted)
+        else:
+            analysis.close()
+        con.disconnect()
+
+
 def test_triggered_lift_marks_treatment_when_control_segment_is_unavailable(tmp_path):
     analysis, con = _country_analysis(
         tmp_path,
