@@ -117,3 +117,28 @@ def test_negative_control_is_registered_and_renders_offline(dialect):
     referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
     assert referenced <= set(case.table_names.values())
     assert set(case.table_names.values()) <= referenced
+
+
+@pytest.mark.parametrize(
+    ("dialect", "module_name", "test_name"),
+    [
+        (
+            "snowflake",
+            "integration.warehouse_execution.test_snowflake_compile",
+            "test_snowflake_statement_compiles",
+        ),
+        (
+            "bigquery",
+            "integration.warehouse_execution.test_bigquery_compile",
+            "test_bigquery_statement_compiles",
+        ),
+    ],
+)
+def test_cloud_compile_cases_match_the_offline_registry(dialect, module_name, test_name):
+    from importlib import import_module
+
+    cloud_test = getattr(import_module(module_name), test_name)
+    mark = next(mark for mark in cloud_test.pytestmark if mark.name == "parametrize")
+    cloud_cases = mark.args[1]
+    expected = {case.name for case in compile_statement_cases(dialect)}
+    assert {case.name for case in cloud_cases} == expected
