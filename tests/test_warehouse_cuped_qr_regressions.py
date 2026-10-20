@@ -28,6 +28,8 @@ def _fit_pair(
     arms: tuple[str, ...] = ARMS,
     categorical: bool = False,
     statement_log=None,
+    missing_policy=None,
+    sql_nan: bool = False,
     local_failure=None,
 ):
     groups = [str(row["group_id"]) for row in rows]
@@ -35,7 +37,7 @@ def _fit_pair(
     y_values = [float(row["y"]) for row in rows]
     covariates = {"x": x_values}
     kinds = {"x": "continuous"}
-    declarations = [CupedCovariate(name="x", kind="continuous")]
+    declarations = [CupedCovariate(name="x", kind="continuous", missing=missing_policy or "refuse")]
     if categorical:
         covariates["category"] = [str(row["category"]) for row in rows]
         kinds["category"] = "categorical"
@@ -52,6 +54,7 @@ def _fit_pair(
                 kinds=kinds,
                 numerator=y_values,
                 denominator=[float(row["y_den"]) for row in rows],
+                missing={"x": missing_policy} if missing_policy else None,
             )
         else:
             local = fit_cuped_multicovariate(
@@ -61,6 +64,7 @@ def _fit_pair(
                 arm_order=arms,
                 covariates=covariates,
                 kinds=kinds,
+                missing={"x": missing_policy} if missing_policy else None,
             )
     except Exception as error:
         if local_failure is None or getattr(error, "code", None) != local_failure:
@@ -110,8 +114,11 @@ def _fit_pair(
 
     try:
         with session.qr_scratch() as scratch:
+            relation = connection.table("probe_input")
+            if sql_nan:
+                relation = relation.mutate(x=ibis.literal(float("nan")).cast("float64"))
             actual = fit_warehouse_qr(
-                connection.table("probe_input"),
+                relation,
                 metric=SimpleNamespace(name="probe", type="ratio" if ratio else "mean"),
                 request=request,
                 execute=execute,
@@ -619,7 +626,8 @@ def test_warehouse_qr_p4_three_arm_fit_has_bounded_statements_and_sql(tmp_path):
 
 
 @pytest.mark.parametrize("offset", [1.0e12, 1.0e15])
-def test_relative_projection_preserves_small_effect_at_large_offset(offset, tmp_path):
+@pytest.mark.parametrize("ratio", [False, True])
+def test_relative_projection_preserves_small_effect_at_large_offset(offset, ratio, tmp_path):
     rows = []
     for arm, shift in (("control", 0.0), ("treatment", 1.0)):
         for index in range(64):
@@ -629,9 +637,10 @@ def test_relative_projection_preserves_small_effect_at_large_offset(offset, tmp_
                     "group_id": arm,
                     "x": float(index % 11),
                     "y": offset + shift + float(index % 7),
+                    "y_den": 1.0 + 0.01 * math.sin(index),
                 }
             )
-    local, actual = _fit_pair(rows, ratio=False, tmp_path=tmp_path)
+    local, actual = _fit_pair(rows, ratio=ratio, tmp_path=tmp_path)
     for expected_projection, observed_projection in zip(
         local._projections, actual._projections, strict=True
     ):
@@ -787,3 +796,43 @@ def test_native_readout_relative_lift_matches_local_at_large_offset(offset, tmp_
         warehouse.close()
         local.close()
         connection.disconnect()
+
+
+@pytest.mark.parametrize("ratio", [False, True])
+def test_far_apart_positive_means_match_local_relative_projection(ratio, tmp_path):
+    rows = [
+        {
+            "unit_id": f"{arm}-{index:03d}",
+            "group_id": arm,
+            "x": float(index % 13),
+            "y": ((1.0 if arm == "control" else 1.0e-20) * (1.0 + 0.1 * math.sin(index))),
+            "y_den": 1.0 + 0.05 * math.cos(index),
+        }
+        for arm in ARMS
+        for index in range(64)
+    ]
+    local, actual = _fit_pair(rows, ratio=ratio, tmp_path=tmp_path)
+    for expected, observed in zip(local._projections, actual._projections, strict=True):
+        assert observed[4] == pytest.approx(expected[4], rel=1e-8, abs=1e-12)
+
+
+def test_all_nan_imputed_covariate_matches_local_constant_drop(tmp_path):
+    rows = [
+        {
+            "unit_id": f"{arm}-{index:03d}",
+            "group_id": arm,
+            "x": float("nan"),
+            "y": float(index % 7 + (arm == "treatment")),
+        }
+        for arm in ARMS
+        for index in range(64)
+    ]
+    local, actual = _fit_pair(
+        rows,
+        ratio=False,
+        tmp_path=tmp_path,
+        missing_policy="impute-indicator",
+        sql_nan=True,
+    )
+    assert actual.theta == pytest.approx(local.theta)
+    assert actual.adjusted_means == pytest.approx(local.adjusted_means)

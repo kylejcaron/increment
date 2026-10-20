@@ -1645,11 +1645,12 @@ class _QRDesignEncoder:
             raw_centered = safe
             exponent, valid, nonzero = scale_exponent(raw_centered)
         if not nonzero:
+            safe_relation = self.transformed.mutate(_qr_safe=safe)
             global_range = _rows(
                 self.execute(
-                    self.transformed.aggregate(
-                        _qr_min=numeric.min(),
-                        _qr_max=numeric.max(),
+                    safe_relation.aggregate(
+                        _qr_min=safe_relation._qr_safe.min(),
+                        _qr_max=safe_relation._qr_safe.max(),
                     )
                 )
             )[0]
@@ -2081,6 +2082,71 @@ def prepare_qr_factor_input(  # noqa: PLR0915
     )
 
 
+def _ratio_projection_specs(state, mean_matrix, arms, treatment, control):
+    from increment.estimation.cuped._numeric import _log_cross_ratio
+    from increment.estimation.cuped.types import ProjectionSpec
+
+    arm_count = len(arms)
+    specs = []
+    estimates = []
+    for scale in ("log", "absolute"):
+        for arm, comparison in ((treatment, control), (control, treatment)):
+            ai, ci = arms.index(arm), arms.index(comparison)
+            nt, nd = float(mean_matrix[0, ai]), float(mean_matrix[1, ai])
+            nc, cd = float(mean_matrix[0, ci]), float(mean_matrix[1, ci])
+            scaled_means = tuple(
+                (mantissa, 0.0, exponent)
+                for value in (nt, nd, nc, cd)
+                for mantissa, exponent in (math.frexp(value),)
+            )
+            log_estimate, excess = _log_cross_ratio(*scaled_means)
+            if scale == "log":
+                jacobian_terms = (
+                    (ai, (1.0,), (nt,), 1.0),
+                    (ci, (1.0,), (nc,), -1.0),
+                    (arm_count + ai, (1.0,), (nd,), -1.0),
+                    (arm_count + ci, (1.0,), (cd,), 1.0),
+                )
+                estimate = log_estimate
+            else:
+                jacobian_terms = (
+                    (ai, (1.0,), (nd,), 1.0),
+                    (ci, (1.0,), (cd,), -1.0),
+                    (arm_count + ai, (nt,), (nd, nd), -1.0),
+                    (arm_count + ci, (nc,), (cd, cd), 1.0),
+                )
+                with np.errstate(over="ignore", invalid="ignore"):
+                    treatment_ratio = _stable_ratio(nt, nd)
+                    control_ratio = _stable_ratio(nc, cd)
+                    estimate = (
+                        excess * control_ratio
+                        if excess is not None
+                        else treatment_ratio - control_ratio
+                    )
+            jacobian_values, jacobian_scale, jacobian_exponent = _normalize_projection_jacobian(
+                jacobian_terms, 2 * arm_count
+            )
+            available = math.isfinite(float(estimate))
+            if not available:
+                jacobian_values = tuple(0.0 for _ in jacobian_values)
+                jacobian_scale, jacobian_exponent = 1.0, 0
+            specs.append(
+                ProjectionSpec(
+                    identity=state.identity + ("ratio", arm, comparison, scale),
+                    kind="ratio",
+                    jacobian=jacobian_values,
+                    scale=jacobian_scale,
+                    divisor=1.0,
+                    exponent=jacobian_exponent,
+                    arm=arm,
+                    control=comparison,
+                    available=available,
+                )
+            )
+            estimates.append(float(estimate))
+    return specs, estimates
+
+
 def fit_warehouse_qr(  # noqa: PLR0915
     relation: ir.Table,
     *,
@@ -2383,62 +2449,21 @@ def fit_warehouse_qr(  # noqa: PLR0915
                         )
                     )
                     contrast = adjusted_contrast(0, ai, ci)
-                    estimates.append(math.log1p(contrast / float(mean_matrix[0, ci])))
+                    arm_mean = float(mean_matrix[0, ai])
+                    comparison_mean = float(mean_matrix[0, ci])
+                    if min(arm_mean, comparison_mean) * 2 >= max(arm_mean, comparison_mean):
+                        estimate = math.log1p(contrast / comparison_mean)
+                    else:
+                        estimate = math.log(arm_mean) - math.log(comparison_mean)
+                    estimates.append(estimate)
             if len(outcome_columns) == 2 and np.all(
                 mean_matrix[:, [treatment_index, control_index]] > 0
             ):
-                for scale in ("log", "absolute"):
-                    for arm, comparison in ((treatment, control), (control, treatment)):
-                        ai, ci = arms.index(arm), arms.index(comparison)
-                        nt, nd = float(mean_matrix[0, ai]), float(mean_matrix[1, ai])
-                        nc, cd = float(mean_matrix[0, ci]), float(mean_matrix[1, ci])
-                        numerator_contrast = adjusted_contrast(0, ai, ci)
-                        denominator_contrast = adjusted_contrast(1, ai, ci)
-                        relative_numerator = numerator_contrast / nc
-                        relative_denominator = denominator_contrast / cd
-                        if scale == "log":
-                            jacobian_terms = (
-                                (ai, (1.0,), (nt,), 1.0),
-                                (ci, (1.0,), (nc,), -1.0),
-                                (arm_count + ai, (1.0,), (nd,), -1.0),
-                                (arm_count + ci, (1.0,), (cd,), 1.0),
-                            )
-                            estimate = math.log1p(relative_numerator) - math.log1p(
-                                relative_denominator
-                            )
-                        else:
-                            jacobian_terms = (
-                                (ai, (1.0,), (nd,), 1.0),
-                                (ci, (1.0,), (cd,), -1.0),
-                                (arm_count + ai, (nt,), (nd, nd), -1.0),
-                                (arm_count + ci, (nc,), (cd, cd), 1.0),
-                            )
-                            with np.errstate(over="ignore", invalid="ignore"):
-                                estimate = _stable_ratio(nc, cd) * (
-                                    (relative_numerator - relative_denominator)
-                                    / (1.0 + relative_denominator)
-                                )
-                        jacobian_values, jacobian_scale, jacobian_exponent = (
-                            _normalize_projection_jacobian(jacobian_terms, 2 * arm_count)
-                        )
-                        available = math.isfinite(float(estimate))
-                        if not available:
-                            jacobian_values = tuple(0.0 for _ in jacobian_values)
-                            jacobian_scale, jacobian_exponent = 1.0, 0
-                        specs.append(
-                            ProjectionSpec(
-                                identity=state.identity + ("ratio", arm, comparison, scale),
-                                kind="ratio",
-                                jacobian=jacobian_values,
-                                scale=jacobian_scale,
-                                divisor=1.0,
-                                exponent=jacobian_exponent,
-                                arm=arm,
-                                control=comparison,
-                                available=available,
-                            )
-                        )
-                        estimates.append(float(estimate))
+                ratio_specs, ratio_estimates = _ratio_projection_specs(
+                    state, mean_matrix, arms, treatment, control
+                )
+                specs.extend(ratio_specs)
+                estimates.extend(ratio_estimates)
     unit_summary = warehouse_qr_unit_summary(
         prepared.relation,
         factor,
