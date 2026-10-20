@@ -34,15 +34,18 @@ def test_low_rank_trace_identity_matches_dense_residual_operator():
 def test_frozen_fixtures_agree_with_independent_construction():
     manifest = json.loads((_ROOT / "fixtures" / "cuped_linear.json").read_text())
     data = json.loads((_ROOT / "data" / "cuped_linear.json").read_text())
+    tolerance = manifest["tolerance"]
     for case in manifest["cases"]:
         inp = data[case["id"]]
         x = np.asarray(inp["encoded_x"], dtype=float)
         arms = np.asarray(inp["arms"])
         outcomes = np.asarray(inp["outcomes"], dtype=float)
         expected = reference(x, arms, outcomes, case["scale"])
-        assert expected["condition_number"] < manifest["tolerance"]["maximum_condition_number"]
+        assert expected["condition_number"] < tolerance["maximum_condition_number"]
         for field in ("estimate", "se", "dof", "lower", "upper"):
-            assert expected[field] == pytest.approx(case[field], rel=1e-12, abs=1e-12)
+            assert expected[field] == pytest.approx(
+                case[field], rel=tolerance["rel"], abs=tolerance["abs"]
+            ), (case["id"], field)
         fit = fit_cuped_multicovariate(
             outcomes[0] if len(outcomes) == 1 else None,
             arms,
@@ -63,7 +66,7 @@ def test_frozen_fixtures_agree_with_independent_construction():
         )
         for field in ("estimate", "se", "dof", "lower", "upper"):
             assert getattr(projection, field) == pytest.approx(
-                case[field], rel=manifest["tolerance"]["rel"], abs=manifest["tolerance"]["abs"]
+                case[field], rel=tolerance["rel"], abs=tolerance["abs"]
             ), (case["id"], field)
         assert fit.adjusted_means == pytest.approx(expected["adjusted_means"], abs=1e-11)
         assert fit.leverage_trace == pytest.approx(2 + x.shape[1], abs=1e-11)
