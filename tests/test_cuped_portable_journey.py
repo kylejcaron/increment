@@ -48,7 +48,7 @@ _EXPLICIT_COMPANION = Method.cuped(
 _OUTCOME_CELL = re.compile(r"(ref|first|cross)_\d")
 
 
-def _units() -> list[dict[str, Any]]:
+def _units(*, missing_country: bool = True) -> list[dict[str, Any]]:
     """Unequal crossed categories; spend is a continuous per-unit ratio denominator."""
     units = []
     for a, arm in enumerate(("control", "treatment")):
@@ -66,7 +66,11 @@ def _units() -> list[dict[str, Any]]:
                         "pre_revenue": 7.5 + 0.2 * pattern + 0.8 * noise + 0.05 * (i % 5),
                         "history_b": 2.0 + 0.1 * pattern + 0.6 * math.cos(0.3 * i + a),
                         "region": "north" if i % 2 else "south",
-                        "country": None if i % 11 == 0 else ("A" if pattern < 2 else "B"),
+                        "country": (
+                            None
+                            if missing_country and i % 11 == 0
+                            else ("A" if pattern < 2 else "B")
+                        ),
                         "device": "mobile" if pattern % 2 else "desktop",
                         "new_user": "no",
                     }
@@ -411,7 +415,7 @@ def test_fitted_envelope_replays_across_frame_native_and_artifact_sources(tmp_pa
     from increment.semantics.models import AnalysisPlan
     from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml
 
-    units = _units()
+    units = _units(missing_country=False)
     path = tmp_path / "mixed.yaml"
     path.write_text(mixed_cuped_definitions_yaml("events"))
     experiment = load(path).experiment("mixed_cuped")
