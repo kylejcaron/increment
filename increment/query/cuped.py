@@ -234,7 +234,11 @@ def fit_multicovariate_source(
                 arm_order=admitted,
                 identity=request.identity + ("admitted_arms", admitted),
             )
-        if categorical_only and not _known_cells_outcome_domain(source, metric, relation, outcomes):
+        if (
+            categorical_only
+            and not return_components
+            and not _known_cells_outcome_domain(source, metric, relation, outcomes)
+        ):
             try:
                 fit = fit_categorical_cells(
                     categorical_cells_from_relation(

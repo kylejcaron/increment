@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import cast
 
 import ibis
 import pytest
 
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, CodedError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate
@@ -27,6 +28,7 @@ def _fit_pair(
     arms: tuple[str, ...] = ARMS,
     categorical: bool = False,
     statement_log=None,
+    local_failure=None,
 ):
     groups = [str(row["group_id"]) for row in rows]
     x_values = [float(row["x"]) for row in rows]
@@ -38,26 +40,32 @@ def _fit_pair(
         covariates["category"] = [str(row["category"]) for row in rows]
         kinds["category"] = "categorical"
         declarations.append(CupedCovariate(name="category", kind="categorical"))
-    if ratio:
-        local = fit_cuped_multicovariate(
-            None,
-            groups,
-            control=arms[0],
-            arm_order=arms,
-            covariates=covariates,
-            kinds=kinds,
-            numerator=y_values,
-            denominator=[float(row["y_den"]) for row in rows],
-        )
-    else:
-        local = fit_cuped_multicovariate(
-            y_values,
-            groups,
-            control=arms[0],
-            arm_order=arms,
-            covariates=covariates,
-            kinds=kinds,
-        )
+    local_error = None
+    try:
+        if ratio:
+            local = fit_cuped_multicovariate(
+                None,
+                groups,
+                control=arms[0],
+                arm_order=arms,
+                covariates=covariates,
+                kinds=kinds,
+                numerator=y_values,
+                denominator=[float(row["y_den"]) for row in rows],
+            )
+        else:
+            local = fit_cuped_multicovariate(
+                y_values,
+                groups,
+                control=arms[0],
+                arm_order=arms,
+                covariates=covariates,
+                kinds=kinds,
+            )
+    except Exception as error:
+        if local_failure is None or getattr(error, "code", None) != local_failure:
+            raise
+        local, local_error = None, error
     connection = ibis.duckdb.connect()
     connection.create_table("probe_input", obj=rows)
     connection.create_table("scratch_source", obj=[{"x": 1.0}])
@@ -109,7 +117,7 @@ def _fit_pair(
                 execute=execute,
                 scratch=scratch,
             )
-        return local, actual
+        return (local_error if local_error is not None else local), actual
     finally:
         type(connection).create_table = original_create
         type(connection).drop_table = original_drop
@@ -608,3 +616,174 @@ def test_warehouse_qr_p4_three_arm_fit_has_bounded_statements_and_sql(tmp_path):
     bm_statements = [sql for sql in statements if "_qr_bm_" in str(sql).lower()]
     assert bm_statements
     assert max(map(len, bm_statements)) <= 80_000
+
+
+@pytest.mark.parametrize("offset", [1.0e12, 1.0e15])
+def test_relative_projection_preserves_small_effect_at_large_offset(offset, tmp_path):
+    rows = []
+    for arm, shift in (("control", 0.0), ("treatment", 1.0)):
+        for index in range(64):
+            rows.append(
+                {
+                    "unit_id": f"{arm}-{index:03d}",
+                    "group_id": arm,
+                    "x": float(index % 11),
+                    "y": offset + shift + float(index % 7),
+                }
+            )
+    local, actual = _fit_pair(rows, ratio=False, tmp_path=tmp_path)
+    for expected_projection, observed_projection in zip(
+        local._projections, actual._projections, strict=True
+    ):
+        assert observed_projection[4] == pytest.approx(expected_projection[4], rel=1e-8, abs=1e-18)
+        if observed_projection[0] == "relative":
+            assert observed_projection[4] != 0.0
+
+
+def test_arm_confounded_constant_covariate_refuses_like_local_fit(tmp_path):
+    rows = [
+        {
+            "unit_id": f"{arm}-{index:03d}",
+            "group_id": arm,
+            "x": 1.0 if arm == "control" else 2.0,
+            "y": float(index + (arm == "treatment")),
+        }
+        for arm in ARMS
+        for index in range(64)
+    ]
+    with pytest.raises(CodedError) as error:
+        _fit_pair(
+            rows,
+            ratio=False,
+            tmp_path=tmp_path,
+            local_failure="estimation.cuped_linear.rank_deficiency",
+        )
+    assert error.value.code == "estimation.cuped_linear.rank_deficiency"
+
+
+def test_globally_constant_covariate_is_dropped_like_local_fit(tmp_path):
+    rows = [
+        {
+            "unit_id": f"{arm}-{index:03d}",
+            "group_id": arm,
+            "x": 1.0,
+            "y": float(index + (arm == "treatment")),
+        }
+        for arm in ARMS
+        for index in range(64)
+    ]
+    local, actual = _fit_pair(rows, ratio=False, tmp_path=tmp_path)
+    assert actual.theta == pytest.approx(local.theta)
+    assert actual.adjusted_means == pytest.approx(local.adjusted_means)
+
+
+def test_categorical_cardinality_refuses_before_transferring_labels(tmp_path):
+    rows = [
+        {
+            "unit_id": f"{arm}-{category}-{repeat}",
+            "group_id": arm,
+            "x": float(category + repeat),
+            "y": float(category % 9 + repeat),
+            "category": f"level-{category:03d}",
+        }
+        for arm in ARMS
+        for category in range(201)
+        for repeat in range(2)
+    ]
+    transfers = []
+    with pytest.raises(CapabilityError) as error:
+        _fit_pair(
+            rows,
+            ratio=False,
+            categorical=True,
+            tmp_path=tmp_path,
+            transfers=transfers,
+            local_failure="estimation.cuped_linear.support_region",
+        )
+    assert error.value.code == "query.cuped.general_qr_required"
+    assert all("category" not in row for row in transfers)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_globally_constant_covariate_parity_across_native_artifact_and_local(tmp_path):
+    from increment import Analysis
+    from increment.estimation.results import LiftEstimate
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    units = matrix_data.linear_cuped_rows(n_per_arm=64)
+    for unit in units:
+        unit["pre_revenue"] = 1.0
+    connection = ibis.duckdb.connect()
+    connection.create_table("constant_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "constant_covariate.yaml"
+    definitions_path.write_text(mixed_cuped_definitions_yaml("constant_events"))
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    store = WarehouseArtifactStore(connection, schema_name="constant_qr_artifacts")
+    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+    reference = native.publish_unit_day_artifact(store, extensions=extensions)
+    artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    local = matrix_cases.linear_cuped_frame_case(units, panel=False)
+    try:
+        expected = {
+            row.method: row for row in cast(list[LiftEstimate], local.run(metrics=["revenue"]))
+        }
+        for analysis in (native, artifact):
+            actual = {
+                row.method: row
+                for row in cast(list[LiftEstimate], analysis.run(metrics=["revenue"]))
+            }
+            assert actual.keys() == expected.keys()
+            for method, row in actual.items():
+                actual_lift, expected_lift = row.lift, expected[method].lift
+                assert actual_lift is not None and expected_lift is not None
+                assert actual_lift.value == pytest.approx(expected_lift.value)
+    finally:
+        local.close()
+        artifact.close()
+        native.close()
+        connection.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize("offset", [1.0e12, 1.0e15])
+def test_native_readout_relative_lift_matches_local_at_large_offset(offset, tmp_path):
+    from increment import Analysis
+    from increment.estimation.results import LiftEstimate
+    from tests.parity_harness import matrix_cases, matrix_data
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    units = matrix_data.linear_cuped_rows(n_per_arm=64)
+    for unit in units:
+        unit["revenue"] = offset + (1.0 if unit["variant"] == "treatment" else 0.0)
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_events", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / "large_offset.yaml"
+    definitions_path.write_text(mixed_cuped_definitions_yaml("qr_events"))
+    warehouse = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    local = matrix_cases.linear_cuped_frame_case(units, panel=False)
+    try:
+        actual = cast(list[LiftEstimate], warehouse.run(metrics=["revenue"]))
+        expected = cast(list[LiftEstimate], local.run(metrics=["revenue"]))
+        observed = {row.method: row for row in actual}["linear"]
+        reference = {row.method: row for row in expected}["linear"]
+        assert observed.lift is not None and reference.lift is not None
+        for field in ("value", "lb", "ub"):
+            assert getattr(observed.lift, field) == pytest.approx(
+                getattr(reference.lift, field), rel=1e-6, abs=1e-18
+            )
+        assert observed.lift.value != 0.0
+    finally:
+        warehouse.close()
+        local.close()
+        connection.disconnect()

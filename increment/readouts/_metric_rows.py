@@ -376,30 +376,40 @@ def _load_metric_rows(  # noqa: PLR0915
         )
 
     retained_cells = _retained_categorical_evidence(src, metric, methods)
+    retained = ()
+    cell_arms = frozenset()
+    categorical_components = ()
     if retained_cells is not None:
-        retained, cell_arms, components = retained_cells
-        if decision_is_linear:
-            decision_components += tuple(
-                item for item in components if item[0] == f"categorical_cells:{methods[0].name}"
+        retained, cell_arms, categorical_components = retained_cells
+        retained_names = {name for name, _evidence in retained}
+        mixed_names = {
+            method.name for method in methods if method.variance_reduction == "cuped_multicovariate"
+        }
+        if mixed_names <= retained_names:
+            if decision_is_linear:
+                decision_components += tuple(
+                    item
+                    for item in categorical_components
+                    if item[0] == f"categorical_cells:{methods[0].name}"
+                )
+            return MetricRows(
+                rows=tuple(rows),
+                unit_frame=None,
+                observed_arms=observed | cell_arms,
+                n_treatment_arms=len((observed | cell_arms) - {control_group}),
+                evidence_kind="mixed_rows",
+                evidence_sha256="",
+                evidence_count=moments_count + len(categorical_components),
+                decision_evidence_components=decision_components,
+                evidence_components=(
+                    ("moments_rows", moments_sha256, moments_count),
+                    *categorical_components,
+                    *method_components,
+                ),
+                method_rows=method_rows,
+                method_refusals=tuple(method_refusals),
+                categorical_evidence=retained,
             )
-        return MetricRows(
-            rows=tuple(rows),
-            unit_frame=None,
-            observed_arms=observed | cell_arms,
-            n_treatment_arms=len((observed | cell_arms) - {control_group}),
-            evidence_kind="mixed_rows",
-            evidence_sha256="",
-            evidence_count=moments_count + len(components),
-            decision_evidence_components=decision_components,
-            evidence_components=(
-                ("moments_rows", moments_sha256, moments_count),
-                *components,
-                *method_components,
-            ),
-            method_rows=method_rows,
-            method_refusals=tuple(method_refusals),
-            categorical_evidence=retained,
-        )
     warehouse_fits: list[tuple[str, Any]] = []
     warehouse_fit_identities = []
     fit_source = (
@@ -413,8 +423,12 @@ def _load_metric_rows(  # noqa: PLR0915
         from increment._canonical import canonical_json_bytes
         from increment._source_identity import source_identity
 
+        retained_names = {name for name, _evidence in retained}
         for method in methods:
-            if getattr(method, "variance_reduction", None) != "cuped_multicovariate":
+            if (
+                getattr(method, "variance_reduction", None) != "cuped_multicovariate"
+                or method.name in retained_names
+            ):
                 continue
             request_identity = (
                 "warehouse-cuped-fit-v1",
@@ -487,29 +501,36 @@ def _load_metric_rows(  # noqa: PLR0915
             )
             for (name, fit), identity in zip(warehouse_fits, warehouse_fit_identities, strict=True)
         )
+        evidence_components = (*categorical_components, *fit_components)
+        decision_method_name = methods[0].name if methods else None
         return MetricRows(
             rows=tuple(rows),
             unit_frame=None,
-            observed_arms=observed,
-            n_treatment_arms=len(observed - {control_group}),
+            observed_arms=observed | cell_arms,
+            n_treatment_arms=len((observed | cell_arms) - {control_group}),
             evidence_kind="mixed_rows",
             evidence_sha256="",
-            evidence_count=moments_count + len(fit_components),
+            evidence_count=moments_count + len(evidence_components),
             decision_evidence_components=(
                 decision_components
                 + tuple(
                     item
-                    for item in fit_components
-                    if methods and item[0] == f"warehouse_qr:{methods[0].name}"
+                    for item in evidence_components
+                    if item[0]
+                    in {
+                        f"warehouse_qr:{decision_method_name}",
+                        f"categorical_cells:{decision_method_name}",
+                    }
                 )
             ),
             evidence_components=(
                 ("moments_rows", moments_sha256, moments_count),
-                *fit_components,
+                *evidence_components,
                 *method_components,
             ),
             method_rows=method_rows,
             method_refusals=tuple(method_refusals),
+            categorical_evidence=retained,
             warehouse_cuped_fits=tuple(warehouse_fits),
         )
 
@@ -554,11 +575,13 @@ def _retained_categorical_evidence(
     if not isinstance(src, CategoricalEvidenceSource):
         return None
     retained = tuple(
-        (method.name, src.categorical_evidence(metric, method))
+        (method.name, evidence)
         for method in methods
         if method.variance_reduction == "cuped_multicovariate"
+        for evidence in (src.categorical_evidence(metric, method),)
+        if evidence is not None
     )
-    if not retained or any(evidence is None for _, evidence in retained):
+    if not retained:
         return None
     cell_arms = frozenset(
         str(arm)
@@ -570,6 +593,66 @@ def _retained_categorical_evidence(
         (f"categorical_cells:{name}", evidence.payload_sha256, 1) for name, evidence in retained
     )
     return retained, cell_arms, components
+
+
+def _breakout_fit_record(identity: tuple[object, ...], evidence: Any) -> dict[str, Any]:
+    if isinstance(evidence, CodedError):
+        return {"fit_identity": identity, "failure": evidence.code, "fit": None}
+    fitted = getattr(evidence, "fit", evidence)
+    withheld = tuple(
+        (arm, refusal.code, dict(refusal.context))
+        for arm, refusal in getattr(evidence, "withheld", ())
+    )
+    if fitted is None:
+        return {"fit_identity": identity, "withheld": withheld, "fit": None}
+    fit_values = {
+        "arm_order": fitted.arm_order,
+        "control": fitted.control,
+        "n_by_arm": fitted.n_by_arm,
+        "adjusted_means": fitted.adjusted_means,
+        "theta": fitted.theta,
+        "anchor": fitted.anchor,
+        "layout": tuple(
+            getattr(fitted.layout, field) for field in fitted.layout.__dataclass_fields__
+        ),
+        "covariance": fitted.covariance,
+        "dof": fitted.dof,
+        "n_min": fitted.n_min,
+        "p": fitted.p,
+        "max_leverage": fitted.max_leverage,
+        "mean_leverage": fitted.mean_leverage,
+        "leverage_trace": fitted.leverage_trace,
+        "is_ratio": fitted.is_ratio,
+    }
+    projections = []
+    for arm in fitted.arm_order:
+        if arm == fitted.control:
+            continue
+        try:
+            projection = (
+                fitted.ratio(arm, control=fitted.control)
+                if fitted.is_ratio
+                else fitted.relative(arm, control=fitted.control)
+            )
+        except CodedError as exc:
+            projections.append((arm, exc.code, dict(exc.context)))
+        else:
+            projections.append(
+                (
+                    arm,
+                    projection.estimate,
+                    projection.se,
+                    projection.dof,
+                    projection.lower,
+                    projection.upper,
+                )
+            )
+    return {
+        "fit_identity": identity,
+        "withheld": withheld,
+        "fit": fit_values,
+        "projections": tuple(projections),
+    }
 
 
 def _load_breakout_metric_rows(
@@ -691,17 +774,11 @@ def _load_breakout_metric_rows(
         method_components.append(
             (f"scalar_method:{method.name}", *_rows_raw_digest_and_arms(records)[1:])
         )
+
     warehouse_components = tuple(
         (
             f"warehouse_qr_breakout:{name}:{fit_dimension}:{value}",
-            _rows_raw_digest_and_arms(
-                (
-                    {
-                        "fit_identity": identity,
-                        "failure": getattr(fit, "code", None),
-                    },
-                )
-            )[1],
+            _rows_raw_digest_and_arms((_breakout_fit_record(identity, fit),))[1],
             1,
         )
         for name, fit_dimension, value, fit, identity in warehouse_breakout_fits

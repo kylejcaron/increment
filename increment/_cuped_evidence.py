@@ -1015,6 +1015,7 @@ def _local_multicovariate_evidence(
     arm_order: tuple[str, ...],
     population: str,
 ) -> tuple[tuple[object, ...], tuple[FitState, InferenceSummary, MulticovariateCupedFit]]:
+    import math
     from dataclasses import replace
 
     import narwhals as nw
@@ -1029,22 +1030,70 @@ def _local_multicovariate_evidence(
     frame = nw.from_native(source.unit_frame(metric, covariates=names), eager_only=True)
     columns = unit_frame_covariate_columns(names)
     ratio = metric.type == "ratio"
+    groups = tuple(str(group) for group in frame["group_id"].to_list())
+    numerator_values = np.asarray(frame["y"].to_list(), dtype=float)
+    denominator_values = np.asarray(frame["y_den"].to_list(), dtype=float) if ratio else None
+    withheld_by_arm = {}
+    if ratio:
+        from increment.errors import CodedError
+        from increment.estimation.variance import require_positive_denominator_mean
+
+        assert denominator_values is not None
+        for arm in arm_order:
+            values = [
+                float(value)
+                for value, group in zip(denominator_values, groups, strict=True)
+                if group == arm
+            ]
+            if not values:
+                continue
+            mean = math.fsum(values) / len(values)
+            try:
+                require_positive_denominator_mean(metric=metric.name, group_id=str(arm), d_bar=mean)
+            except CodedError as exc:
+                withheld_by_arm[str(arm)] = exc
+    admitted = tuple(arm for arm in arm_order if str(arm) not in withheld_by_arm)
+    if ratio and withheld_by_arm and (control in withheld_by_arm or len(admitted) < 2):
+        raise next(withheld_by_arm[arm] for arm in arm_order if str(arm) in withheld_by_arm)
+    selected = np.asarray([group in admitted for group in groups], dtype=bool)
+    groups = tuple(group for group, keep in zip(groups, selected, strict=True) if keep)
     state, summary, fit = fit_cuped_multicovariate(
-        None if ratio else np.asarray(frame["y"].to_list(), dtype=float),
-        frame["group_id"].to_list(),
+        None if ratio else numerator_values[selected],
+        groups,
         control=control,
-        arm_order=arm_order,
+        arm_order=admitted,
         covariates={
-            item.name: np.asarray(frame[columns[item.name]].to_list(), dtype=object)
+            item.name: np.asarray(frame[columns[item.name]].to_list(), dtype=object)[selected]
             for item in declarations
         },
         kinds={item.name: item.kind for item in declarations},
         missing={item.name: item.missing for item in declarations},
-        numerator=np.asarray(frame["y"].to_list(), dtype=float) if ratio else None,
-        denominator=np.asarray(frame["y_den"].to_list(), dtype=float) if ratio else None,
+        numerator=numerator_values[selected] if ratio else None,
+        denominator=denominator_values[selected]
+        if ratio and denominator_values is not None
+        else None,
         return_components=True,
         _portable_coordinates=True,
     )
+    if withheld_by_arm:
+        state = replace(
+            state,
+            withheld_arms=tuple(arm for arm in arm_order if str(arm) in withheld_by_arm),
+            refusal_contexts=tuple(
+                (
+                    arm,
+                    tuple(
+                        sorted(
+                            {
+                                "code": error.code,
+                                **dict(error.context),
+                            }.items()
+                        )
+                    ),
+                )
+                for arm, error in withheld_by_arm.items()
+            ),
+        )
     identity = (
         "warehouse-cuped-fit-v1",
         metric.name,

@@ -1644,9 +1644,21 @@ class _QRDesignEncoder:
             arm_offsets = tuple(0.0 for _ in self.arms)
             raw_centered = safe
             exponent, valid, nonzero = scale_exponent(raw_centered)
-        if not valid:
-            _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
         if not nonzero:
+            global_range = _rows(
+                self.execute(
+                    self.transformed.aggregate(
+                        _qr_min=numeric.min(),
+                        _qr_max=numeric.max(),
+                    )
+                )
+            )[0]
+            if global_range["_qr_min"] != global_range["_qr_max"]:
+                _fail(
+                    "estimation.cuped_linear.rank_deficiency",
+                    columns=(name,),
+                    partners=(),
+                )
             self.structural.append(name)
             self.levels.append(None)
             self.references.append(0.0)
@@ -1673,6 +1685,18 @@ class _QRDesignEncoder:
     ) -> None:
         from increment.query._cuped_cells import general_qr_required
 
+        cardinality = _rows(
+            self.execute(
+                self.transformed.aggregate(
+                    _qr_level_count=value.nunique(),
+                    _qr_has_missing=null.any(),
+                )
+            )
+        )[0]
+        if int(cardinality["_qr_level_count"]) + int(bool(cardinality["_qr_has_missing"])) > 200:
+            from types import SimpleNamespace
+
+            general_qr_required(SimpleNamespace(name=name), "categorical_levels", covariate=name)
         values = _rows(self.execute(self.transformed.select(name).distinct()))
         observed = {None if row[name] is None else str(row[name]) for row in values}
         category_levels = tuple(sorted(value for value in observed if value is not None))
@@ -1697,10 +1721,6 @@ class _QRDesignEncoder:
             key = missing_category if label is None else label
             frequencies[key] = frequencies.get(key, 0) + int(row["_qr_count"])
             by_arm_level[(str(row["group_id"]), key)] = int(row["_qr_count"])
-        if len(full_levels) > 200:
-            from types import SimpleNamespace
-
-            general_qr_required(SimpleNamespace(name=name), "categorical_levels", covariate=name)
         for level in full_levels:
             observed_counts = {arm: by_arm_level.get((arm, level), 0) for arm in self.arms}
             if any(count < 2 for count in observed_counts.values()):
@@ -2160,7 +2180,9 @@ def fit_warehouse_qr(  # noqa: PLR0915
         for component in range(len(outcome_columns))
     )
     adjusted_means = []
+    adjustments = []
     for component in range(len(outcome_columns)):
+        component_adjustments = []
         for arm_index in range(arm_count):
             difference = tuple(
                 math.fsum(
@@ -2179,7 +2201,20 @@ def fit_warehouse_qr(  # noqa: PLR0915
                 slopes[component][index] * difference[index]
                 for index in range(len(encoded.columns))
             )
+            component_adjustments.append(adjustment)
             adjusted_means.append(component_means[component][arm_index] - adjustment)
+        adjustments.append(tuple(component_adjustments))
+
+    def adjusted_contrast(component: int, arm_index: int, comparison_index: int) -> float:
+        return math.fsum(
+            (
+                component_means[component][arm_index],
+                -component_means[component][comparison_index],
+                -adjustments[component][arm_index],
+                adjustments[component][comparison_index],
+            )
+        )
+
     denominator_support = ()
     if metric.type == "ratio":
         from increment.query._cuped_cells import (
@@ -2317,9 +2352,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
                         available=True,
                     )
                 )
-                estimates.append(
-                    float(mean_matrix[0, arms.index(arm)] - mean_matrix[0, arms.index(comparison)])
-                )
+                estimates.append(adjusted_contrast(0, arms.index(arm), arms.index(comparison)))
             if np.all(mean_matrix[0, [treatment_index, control_index]] > 0):
                 from increment.estimation.cuped.multicovariate import _LinearCupedCalculator
 
@@ -2349,9 +2382,8 @@ def fit_warehouse_qr(  # noqa: PLR0915
                             available=True,
                         )
                     )
-                    estimates.append(
-                        float(math.log(mean_matrix[0, ai]) - math.log(mean_matrix[0, ci]))
-                    )
+                    contrast = adjusted_contrast(0, ai, ci)
+                    estimates.append(math.log1p(contrast / float(mean_matrix[0, ci])))
             if len(outcome_columns) == 2 and np.all(
                 mean_matrix[:, [treatment_index, control_index]] > 0
             ):
@@ -2360,6 +2392,10 @@ def fit_warehouse_qr(  # noqa: PLR0915
                         ai, ci = arms.index(arm), arms.index(comparison)
                         nt, nd = float(mean_matrix[0, ai]), float(mean_matrix[1, ai])
                         nc, cd = float(mean_matrix[0, ci]), float(mean_matrix[1, ci])
+                        numerator_contrast = adjusted_contrast(0, ai, ci)
+                        denominator_contrast = adjusted_contrast(1, ai, ci)
+                        relative_numerator = numerator_contrast / nc
+                        relative_denominator = denominator_contrast / cd
                         if scale == "log":
                             jacobian_terms = (
                                 (ai, (1.0,), (nt,), 1.0),
@@ -2367,10 +2403,10 @@ def fit_warehouse_qr(  # noqa: PLR0915
                                 (arm_count + ai, (1.0,), (nd,), -1.0),
                                 (arm_count + ci, (1.0,), (cd,), 1.0),
                             )
-                            estimate = math.log(nt) - math.log(nd) - math.log(nc) + math.log(cd)
+                            estimate = math.log1p(relative_numerator) - math.log1p(
+                                relative_denominator
+                            )
                         else:
-                            treatment_ratio = _stable_ratio(nt, nd)
-                            control_ratio = _stable_ratio(nc, cd)
                             jacobian_terms = (
                                 (ai, (1.0,), (nd,), 1.0),
                                 (ci, (1.0,), (cd,), -1.0),
@@ -2378,7 +2414,10 @@ def fit_warehouse_qr(  # noqa: PLR0915
                                 (arm_count + ci, (nc,), (cd, cd), 1.0),
                             )
                             with np.errstate(over="ignore", invalid="ignore"):
-                                estimate = treatment_ratio - control_ratio
+                                estimate = _stable_ratio(nc, cd) * (
+                                    (relative_numerator - relative_denominator)
+                                    / (1.0 + relative_denominator)
+                                )
                         jacobian_values, jacobian_scale, jacobian_exponent = (
                             _normalize_projection_jacobian(jacobian_terms, 2 * arm_count)
                         )
