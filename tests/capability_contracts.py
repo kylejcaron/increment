@@ -141,9 +141,9 @@ class MethodInteraction:
 _JOURNEY = "tests/test_cuped_portable_journey.py"
 _PORTABLE_CATEGORICAL = InteractionDisposition(
     "supported",
-    route_forward="Categorical-only mixed requests replay from format-13 joint cells; continuous mixed covariates refuse with facade.analysis_config.cuped_linear_moments.",
+    route_forward="Format-13 fitted_multicovariate evidence supports continuous/mixed QR replay with a changed alpha; categorical-only requests retain joint-cell replay.",
     stage="read",
-    evidence=f"{_JOURNEY}::test_definitions_artifact_moments_journey_replays_companions_without_unit_transfer",
+    evidence="tests/test_cuped_portable_journey.py::test_fitted_envelope_replays_across_frame_native_and_artifact_sources",
 )
 
 

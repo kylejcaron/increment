@@ -110,6 +110,16 @@ def test_every_cell_is_dispositioned_and_its_split_explained():
     )
 
 
+def test_qr_cuped_ingress_contract_is_enumerated_separately_from_scalar_cells():
+    from tests.capability_contracts import CONSTRUCTORS
+
+    assert matrix.QR_CUPED_INGRESSES == CONSTRUCTORS
+    assert matrix.QR_CUPED_SOURCE_REFUSALS == {
+        "from_switchback_panel": "source.frame.switchback.metric"
+    }
+    assert "mixed-cuped-multicovariate-fixed-horizon" in matrix.QR_CUPED_ROWS
+
+
 def test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_reads_it():
     """An observational design has no quantile estimator, so every matched-arm ingress that
     can declare the request refuses it with the shared readout-seam code, never a number and

@@ -279,7 +279,8 @@ def test_breakout_snapshot_identity_tracks_aggregate_fit_evidence(tmp_path):
 
     definitions = _definitions(tmp_path, fixed_caps=False)
     config = yaml.safe_load(definitions.read_text())
-    config["experiments"][0]["plan"]["primary"]["decision_method"] = Method.cuped_multicovariate(
+    primary = config["experiments"][0]["plan"]["primary"]
+    primary["decision_method"] = Method.cuped_multicovariate(
         name="continuous",
         covariates=(
             CupedCovariateBinding(
@@ -287,6 +288,7 @@ def test_breakout_snapshot_identity_tracks_aggregate_fit_evidence(tmp_path):
             ),
         ),
     ).model_dump(mode="json", exclude_none=True)
+    primary["sensitivity_methods"] = []
     definitions.write_text(yaml.safe_dump(config))
     units = _units()
     con = ibis.duckdb.connect()

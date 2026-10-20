@@ -123,6 +123,23 @@ LINEAR_CUPED_INTERACTIONS = {
     "triggered_population": ("supported", None),
 }
 
+# Dedicated T7 QR acceptance rows are outside the scalar-option cross product below.
+QR_CUPED_ROWS = (
+    "mixed-cuped-multicovariate-fixed-horizon",
+    "categorical-cuped-moments-format-13",
+)
+QR_CUPED_INGRESSES = (
+    "from_definitions",
+    "from_unit_day_artifact",
+    "from_unit_summary",
+    "from_unit_panel",
+    "from_switchback_panel",
+    "from_moments",
+)
+QR_CUPED_SOURCE_REFUSALS = {
+    "from_switchback_panel": "source.frame.switchback.metric",
+}
+
 
 @dataclass(frozen=True)
 class Cell:

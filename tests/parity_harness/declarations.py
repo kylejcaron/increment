@@ -1029,6 +1029,18 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
             ),
         ),
+        "categorical-cuped-moments-format-13": ParityDeclaration(
+            attempted=(
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_moments",
+                "from_switchback_panel",
+            ),
+            waive=(("from_switchback_panel", "SOURCE: switchback is a different design."),),
+            refusals=(("from_switchback_panel", "source.frame.switchback.metric"),),
+        ),
         "mean_ratio_conversion_cuped_fixed_horizon": ParityDeclaration(
             attempted=(
                 "from_definitions",
@@ -1962,6 +1974,18 @@ _merged_declarations.update(
         "winsor-percentile-zero-inclusive-3-arm": PARITY_DECLARATIONS[
             "winsor-percentile-zero-inclusive-2-arm"
         ],
+        "mixed-cuped-multicovariate-fixed-horizon": ParityDeclaration(
+            attempted=(
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_moments",
+                "from_switchback_panel",
+            ),
+            waive=(("from_switchback_panel", "SOURCE: switchback is a different design."),),
+            refusals=(("from_switchback_panel", "source.frame.switchback.metric"),),
+        ),
     }
 )
 for _consumer_declarations in (_SCALAR_DECLARATIONS, _AUXILIARY_DECLARATIONS):
