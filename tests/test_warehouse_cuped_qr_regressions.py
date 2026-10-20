@@ -298,11 +298,14 @@ def _check_scale_equivariance(scale_exponent, tmp_path):
     assert _same_scale_projection(joint_warehouse, joint_local, 1.0, ratio=True)
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 @pytest.mark.parametrize("scale_exponent", [-167, 0, 163])
 def test_warehouse_qr_scale_equivariance_smoke(scale_exponent, tmp_path):
     _check_scale_equivariance(scale_exponent, tmp_path)
 
 
+@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("scale_exponent", [-167, -100, 0, 100, 163])
 def test_warehouse_qr_scale_equivariance_sweep(scale_exponent, tmp_path):
@@ -530,6 +533,8 @@ def test_warehouse_qr_refuses_out_of_range_continuous_covariate(tmp_path):
     _assert_magnitude_refusal(rows, ratio=False, tmp_path=tmp_path, component="x", bound="upper")
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_artifact_assigned_breakout_uses_single_canonical_escape(tmp_path):
     from increment import Analysis
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog

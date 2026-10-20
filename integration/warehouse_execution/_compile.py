@@ -329,21 +329,32 @@ def _captured_statement_case(
     )
 
 
-def _captured_cuped_statement_cases(dialect):
-    cases = []
-    for index, expression in enumerate(_capture_public_cuped_expressions()):
-        cases.append(_captured_statement_case(expression, dialect, index))
-    for index, (expression, schema_snapshot) in enumerate(_CAPTURED_CUPED_MATERIALIZATIONS):
-        cases.append(
-            _captured_statement_case(
-                expression,
-                dialect,
-                index,
-                schema_snapshot=schema_snapshot,
-                statement_kind="materialize",
-            )
+def _captured_cuped_statement_cases(dialect, shard=None):
+    """Render captured CUPED statements; ``shard=(k, n)`` keeps every n-th one from k."""
+    captured = [
+        (expression, index, None, "readout")
+        for index, expression in enumerate(_capture_public_cuped_expressions())
+    ]
+    captured.extend(
+        (expression, index, schema_snapshot, "materialize")
+        for index, (expression, schema_snapshot) in enumerate(_CAPTURED_CUPED_MATERIALIZATIONS)
+    )
+    if shard is not None:
+        offset, count = shard
+        captured = captured[offset::count]
+    return [
+        _captured_statement_case(
+            expression, dialect, index, schema_snapshot=schema_snapshot, statement_kind=kind
         )
-    return cases
+        for expression, index, schema_snapshot, kind in captured
+    ]
+
+
+def _captured_cuped_case_names():
+    expressions = _capture_public_cuped_expressions()
+    return [f"cuped.readout.{index:04d}" for index in range(len(expressions))] + [
+        f"cuped.materialize.{index:04d}" for index in range(len(_CAPTURED_CUPED_MATERIALIZATIONS))
+    ]
 
 
 def _register(cases, dialect, name, schemas, builder):
@@ -551,14 +562,28 @@ _UPTAKE_SCHEMA = (
 )
 
 
-def compile_statement_cases(dialect: str) -> list[CompileCase]:
-    """Return named production-generated SQL expressions for one SQL dialect."""
-    return list(_statement_cases(dialect))
+def compile_statement_cases(
+    dialect: str, shard: tuple[int, int] | None = None
+) -> list[CompileCase]:
+    """Return named production-generated SQL expressions for one SQL dialect.
+
+    ``shard=(k, n)`` renders only the k-th of n disjoint slices; the fixed cases
+    belong to slice 0. The union over k equals the unsharded registry.
+    """
+    if shard is None:
+        return [*fixed_compile_cases(dialect), *_captured_cuped_statement_cases(dialect)]
+    fixed = fixed_compile_cases(dialect) if shard[0] == 0 else []
+    return [*fixed, *_captured_cuped_statement_cases(dialect, shard)]
+
+
+def compile_case_names(dialect: str) -> list[str]:
+    """Return every registered case name without rendering captured statements."""
+    return [case.name for case in fixed_compile_cases(dialect)] + _captured_cuped_case_names()
 
 
 @cache
-def _statement_cases(dialect: str) -> tuple[CompileCase, ...]:
-    # Capturing the CUPED readouts runs public DuckDB readouts; do it once per process.
+def fixed_compile_cases(dialect: str) -> tuple[CompileCase, ...]:
+    """Return the hand-registered digest, adoption and publication cases."""
     if dialect not in {"snowflake", "bigquery"}:
         raise ValueError(f"unsupported compile dialect {dialect!r}")
     from increment.query.schemas import UNIT_DAY_ARTIFACT_RELATION_SCHEMAS
@@ -615,7 +640,6 @@ def _statement_cases(dialect: str) -> tuple[CompileCase, ...]:
         },
         _uptake_validation_builder,
     )
-    cases.extend(_captured_cuped_statement_cases(dialect))
     return tuple(cases)
 
 

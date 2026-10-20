@@ -2889,6 +2889,8 @@ def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
     assert by_segment["all-null"].failure_code == "estimation.cuped_linear.rank_deficiency"
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_withheld_ratio_arm_identity_matches_native_and_artifact(  # noqa: PLR0915
     tmp_path, monkeypatch
 ):

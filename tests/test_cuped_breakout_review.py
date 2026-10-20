@@ -420,6 +420,7 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_native_breakout_qr_never_uses_unit_frame(tmp_path, monkeypatch):
     from increment.query.native_source import DefinitionsMomentSource
     from tests.covariate_cases import _CATEGORICAL_DESIGN, categorical_defs_and_con

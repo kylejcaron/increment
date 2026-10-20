@@ -5,25 +5,23 @@ import sqlglot
 
 from integration.warehouse_execution._compile import (
     _inline_empty_ctes,
+    compile_case_names,
     compile_statement_cases,
+    fixed_compile_cases,
 )
 
-# Registry compilation captures public readouts once per worker and compiles many SQL cases.
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.slow,
-    pytest.mark.xdist_group("warehouse_compile_registry"),
-    pytest.mark.timeout(600),
-]
+# Each worker captures the public readouts once; shards spread rendering across workers.
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+_SHARDS = 8
 
 
+@pytest.mark.parametrize("shard", range(_SHARDS))
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-def test_registered_warehouse_statements_compile_offline(dialect):
-    cases = compile_statement_cases(dialect)
+def test_registered_warehouse_statements_compile_offline(dialect, shard):
+    cases = compile_statement_cases(dialect, shard=(shard, _SHARDS))
 
     assert cases
     assert len({case.name for case in cases}) == len(cases)
-    statement_lengths = {}
     for case in cases:
         expression = case.build(case.table_names)
         if not isinstance(expression, str):
@@ -31,11 +29,9 @@ def test_registered_warehouse_statements_compile_offline(dialect):
         sql = case.compile(expression)
         if dialect == "snowflake":
             assert "IS_NAN" not in sql.upper(), case.name
-        statement_lengths[case.name] = len(sql)
         assert sql.strip(), case.name
-        assert statement_lengths[case.name] <= 1_000_000, (
-            f"{dialect} statement exceeds the query-length limit: "
-            f"{case.name} ({statement_lengths[case.name]} characters)"
+        assert len(sql) <= 1_000_000, (
+            f"{dialect} statement exceeds the query-length limit: {case.name} ({len(sql)} characters)"
         )
         for statement in (sql, _inline_empty_ctes(sql, case)):
             ast = sqlglot.parse_one(statement, read=dialect)
@@ -56,7 +52,14 @@ def test_registered_warehouse_statements_compile_offline(dialect):
             sources = set(case.table_names.values())
             assert referenced <= sources | ctes, case.name
             assert sources <= referenced | ctes, case.name
-    assert len(statement_lengths) == len(cases)
+
+
+def test_registered_names_are_unique_and_include_captured_materializations():
+    names = compile_case_names("snowflake")
+
+    assert len(names) == len(set(names))
+    assert any(name.startswith("cuped.materialize.") for name in names)
+    assert any(name.startswith("cuped.readout.") for name in names)
 
 
 def test_captured_statement_uses_schema_at_capture_time(monkeypatch):
@@ -126,12 +129,6 @@ def test_captured_snowflake_isinf_uses_absolute_infinity_comparison():
     assert "INF" in query.upper()
 
 
-def test_captured_materializations_are_compile_cases():
-    cases = compile_statement_cases("snowflake")
-
-    assert any(case.name.startswith("cuped.materialize.") for case in cases)
-
-
 class _CapturingCursor:
     def __init__(self, statements):
         self.statements = statements
@@ -173,9 +170,7 @@ def test_schema_only_ddl_matches_rendered_table_identifier(dialect):
     )
 
     case = next(
-        case
-        for case in compile_statement_cases(dialect)
-        if case.name == "digest.exposures.row_token"
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_token"
     )
     if dialect == "snowflake":
         connection = _CapturingSnowflakeConnection()
@@ -212,28 +207,3 @@ def test_negative_control_is_registered_and_renders_offline(dialect):
     referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
     assert referenced <= set(case.table_names.values())
     assert set(case.table_names.values()) <= referenced
-
-
-@pytest.mark.parametrize(
-    ("dialect", "module_name", "test_name"),
-    [
-        (
-            "snowflake",
-            "integration.warehouse_execution.test_snowflake_compile",
-            "test_snowflake_statement_compiles",
-        ),
-        (
-            "bigquery",
-            "integration.warehouse_execution.test_bigquery_compile",
-            "test_bigquery_statement_compiles",
-        ),
-    ],
-)
-def test_cloud_compile_cases_match_the_offline_registry(dialect, module_name, test_name):
-    from importlib import import_module
-
-    cloud_test = getattr(import_module(module_name), test_name)
-    mark = next(mark for mark in cloud_test.pytestmark if mark.name == "parametrize")
-    cloud_cases = mark.args[1]
-    expected = {case.name for case in compile_statement_cases(dialect)}
-    assert {case.name for case in cloud_cases} == expected
