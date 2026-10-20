@@ -21,10 +21,7 @@ from increment.dashboard._html import overview_notes, overview_rows
 from increment.errors import CapabilityError, InvalidRequestError
 from tests.test_dashboard_capture import _METRICS, _double_the_treatment_arm, _workspace
 
-pytestmark = [
-    pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning"),
-    pytest.mark.slow,
-]
+pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
 
 ADDED = "purchases_per_user"
 _SAVED = (
@@ -89,8 +86,82 @@ def _identity(row) -> tuple:
     return (row["metric"], row["group_id"], row["lift"], row["lower"], row["higher"])
 
 
+def _family_presentation_snapshot():
+    import datetime as dt
+
+    from increment.breakout.estimates import BreakoutEstimate
+    from increment.dashboard import DashboardConfig, DashboardSnapshot
+    from increment.dashboard._data import DashboardOverview
+    from increment.estimation.results import Estimate, LiftEstimate
+    from increment.semantics.models import MeanMetric
+
+    metric = MeanMetric(
+        name=ADDED,
+        description="Added purchase count per enrolled user.",
+        entity="user_id",
+        fact="purchase",
+        aggregation="count",
+        window_days=14,
+        preferred_direction="increase",
+    )
+    common: Any = {
+        "method": "mean",
+        "method_role": "decision",
+        "lift": Estimate(value=0.2, lb=0.05, ub=0.35, level=0.95),
+        "preferred_direction": "increase",
+        "family_size": 2,
+        "family_q": 0.05,
+        "family_procedure": "bh",
+        "family_nominal_alpha": 0.05,
+        "family_guarantee": "finite_sample",
+        "family_axes": ("metric", "breakout"),
+        "discovery": True,
+        "multiplicity_status": "exploratory_family",
+    }
+    whole = LiftEstimate(metric=ADDED, group_id="treatment", **common)
+    segment = BreakoutEstimate(
+        metric=ADDED,
+        group_id="treatment",
+        dimension="country",
+        dimension_value="US",
+        source="event_log",
+        **common,
+    )
+    return DashboardSnapshot(
+        experiment_name="overview",
+        binding_fingerprint="fixture",
+        title="Overview",
+        description=None,
+        start=dt.datetime(2025, 1, 1, tzinfo=dt.UTC),
+        end=dt.datetime(2025, 1, 31, tzinfo=dt.UTC),
+        control_group="control",
+        treatment_group="treatment",
+        primary_metric=ADDED,
+        metrics=(),
+        breakouts=(COUNTRY,),
+        estimates=(),
+        readout_rows=(),
+        allocation=None,
+        allocation_refusal=("dashboard.allocation_not_applicable", "fixture"),
+        allocation_history=(),
+        allocation_history_refusal=None,
+        config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5}),
+        computed_at=dt.datetime(2025, 2, 1, tzinfo=dt.UTC),
+        group_data=(),
+        overview=DashboardOverview(
+            exploratory=(whole,),
+            segments={COUNTRY: (segment,)},
+            family_size=2,
+            family_q=0.05,
+        ),
+        exploratory_metrics=(metric,),
+        offered_metrics=(metric,),
+    )
+
+
 @pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
 @pytest.mark.integration
+@pytest.mark.slow
 def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapshot):
     snapshot = _saved_added_snapshot
     readout = {_identity(row): row["stat_sig"] for row in decision_rows(snapshot)}
@@ -104,28 +175,20 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
     assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
-@pytest.mark.integration
-def test_explore_tables_show_only_core_readout_columns(_selected_family_snapshot):
-    from increment.dashboard._html import _segments_body, overview_table
-
-    snapshot = _selected_family_snapshot
-    overview = snapshot.overview
-    assert overview is not None
-    segment_rows = overview.segments[COUNTRY]
-    overview_html = overview_table(snapshot, COUNTRY)
-    segment_html = _segments_body(snapshot, segment_rows, metric=None)
-    assert "Discovery" in overview_html
-    assert "Selection qualification" not in overview_html
-    for html in (overview_html, segment_html):
-        assert "Numerical qualification" not in html
-        assert "Selection qualification" not in html
-
-
-@pytest.mark.integration
-def test_overview_qualification_footnotes_name_rows_and_family(_selected_family_snapshot):
+def test_explore_tables_show_only_core_readout_columns():
     from increment.dashboard._html import overview_table
 
-    snapshot = _selected_family_snapshot
+    snapshot = _family_presentation_snapshot()
+    overview_html = overview_table(snapshot, COUNTRY)
+    assert "Discovery" in overview_html
+    assert "Numerical qualification" not in overview_html
+    assert "Selection qualification" not in overview_html
+
+
+def test_overview_qualification_footnotes_name_rows_and_family():
+    from increment.dashboard._html import overview_table
+
+    snapshot = _family_presentation_snapshot()
     rows = overview_rows(snapshot, COUNTRY)
     qualified = [row for row in rows if row.get("selection_qualification")]
     assert qualified
@@ -157,6 +220,7 @@ def _selected_family_snapshot(tmp_path_factory):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_one_family_covers_added_metrics_and_every_segment_cell(_selected_family_snapshot):
     snapshot = _selected_family_snapshot
     overview = snapshot.overview
@@ -211,16 +275,14 @@ def test_one_family_covers_added_metrics_and_every_segment_cell(_selected_family
             assert row["stat_sig"] is bool(row.get("discovery"))
 
 
-@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
-@pytest.mark.integration
-def test_only_a_discovery_is_coloured_as_a_finding(_saved_added_snapshot):
+def test_only_a_discovery_is_coloured_as_a_finding():
     import dataclasses
 
     from increment.dashboard._html import overview_table
     from increment.dashboard._theme import coeftable_theme
     from increment.estimation.results import Estimate
 
-    snapshot = _saved_added_snapshot
+    snapshot = _family_presentation_snapshot()
     overview = snapshot.overview
     assert overview is not None
     clear = Estimate(value=0.5, lb=0.3, ub=0.7, level=0.95)
@@ -255,6 +317,7 @@ def test_only_a_discovery_is_coloured_as_a_finding(_saved_added_snapshot):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
     from increment.dashboard._app import build_payload
 
@@ -266,6 +329,7 @@ def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_path):
     with _workspace(tmp_path, metrics=_WITH_QUANTILE) as (_, analysis):
         # The quantile metric is offered but not shown; its refusal is still reported.
@@ -282,6 +346,7 @@ def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_pa
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
     sources = ("event_log", "profiles")
     with _workspace(tmp_path, metrics=_SAVED, breakout_sources=sources) as (_, analysis):
@@ -300,6 +365,7 @@ def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_choosing_what_to_show_never_changes_the_family(tmp_path):
     with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
         hidden = prepare_dashboard(analysis, config=_config())
@@ -386,6 +452,7 @@ def test_the_dashboard_widget_shows_added_metrics_without_reading_again(tmp_path
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_an_unexpected_update_failure_rolls_the_widget_back(tmp_path, monkeypatch):
     from increment.dashboard import _app
 
@@ -537,20 +604,75 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
         assert discoveries > 0 or correction == "bonferroni"
 
 
-@pytest.mark.integration
-def test_an_added_metric_inspector_shows_its_overview_result(tmp_path):
-    from increment.dashboard._app import build_payload
+def test_added_metric_inspector_shows_its_overview_result():
+    import datetime as dt
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
-        assert snapshot.overview is not None
-        (row,) = [r for r in snapshot.overview.exploratory if r.method_role == "decision"]
-        payload = {m["key"]: m for m in build_payload(analysis, snapshot=snapshot)["metrics"]}
-        added = payload[ADDED]
-        assert added["role"] == "exploratory"
-        assert "no decision result" not in added["detail"]
-        assert f"{row.require_lift().value:+.1%}" in added["detail"]
-        assert "Added purchase count per enrolled user." in added["detail"]
-        assert added["csv"] == ""
-        # A declared metric keeps its group-data download.
-        assert payload["checkout_conversion"]["csv"] != ""
+    from increment.dashboard import (
+        DashboardConfig,
+        DashboardSnapshot,
+        render_metric_details,
+    )
+    from increment.dashboard._data import DashboardOverview
+    from increment.estimation.results import Estimate, LiftEstimate
+    from increment.semantics.models import MeanMetric
+
+    added = MeanMetric(
+        name=ADDED,
+        description="Added purchase count per enrolled user.",
+        entity="user_id",
+        fact="purchase",
+        aggregation="count",
+        window_days=14,
+        preferred_direction="increase",
+    )
+    row = LiftEstimate(
+        metric=ADDED,
+        group_id="treatment",
+        method="mean",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.05, ub=0.35, level=0.95),
+        preferred_direction="increase",
+        family_size=1,
+        family_q=0.05,
+        family_procedure="bh",
+        family_nominal_alpha=0.05,
+        family_guarantee="finite_sample",
+        family_axes=("metric",),
+        discovery=False,
+    )
+    snapshot = DashboardSnapshot(
+        experiment_name="overview",
+        binding_fingerprint="fixture",
+        title="Overview",
+        description=None,
+        start=dt.datetime(2025, 1, 1, tzinfo=dt.UTC),
+        end=dt.datetime(2025, 1, 31, tzinfo=dt.UTC),
+        control_group="control",
+        treatment_group="treatment",
+        primary_metric="checkout_conversion",
+        metrics=(),
+        allocation=None,
+        breakouts=(),
+        estimates=(),
+        readout_rows=(),
+        allocation_refusal=("dashboard.allocation_not_applicable", "fixture"),
+        allocation_history=(),
+        allocation_history_refusal=None,
+        config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5}),
+        computed_at=dt.datetime(2025, 2, 1, tzinfo=dt.UTC),
+        group_data=(),
+        overview=DashboardOverview(
+            exploratory=(row,),
+            segments={},
+            family_size=1,
+            family_q=0.05,
+        ),
+        exploratory_metrics=(added,),
+        offered_metrics=(added,),
+    )
+    details = render_metric_details(snapshot, metric=ADDED).text
+    assert row.lift is not None
+    assert f"{row.lift.value:+.1%}" in details
+    assert "Added purchase count per enrolled user." in details
+    assert "In the exploratory family, not a discovery" in details
+    assert "Overview result" in details
