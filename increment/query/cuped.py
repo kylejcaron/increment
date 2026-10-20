@@ -184,6 +184,28 @@ def fit_multicovariate_source(
             "outcome_domain" if known_outcome_domain(metric) else "source_relation_unavailable",
         )
     with relation_factory(metric, request) as (relation, execute, scratch_factory):
+        relation = relation.filter(relation.group_id.isin(request.arm_order))
+        declarations = tuple(request.method.covariates or ())
+        from increment.query._cuped_cells import require_warehouse_magnitude_range
+
+        outcome_components = (
+            (("numerator", "y"), ("denominator", "y_den"))
+            if metric.type == "ratio"
+            else (("outcome", "y"),)
+        )
+        require_warehouse_magnitude_range(
+            relation,
+            metric=metric.name,
+            components=(
+                *outcome_components,
+                *(
+                    (declaration.name, declaration.name)
+                    for declaration in declarations
+                    if declaration.kind == "continuous"
+                ),
+            ),
+            execute=execute,
+        )
         categorical_only = all(
             item.kind == "categorical" for item in request.method.covariates or ()
         )
@@ -215,7 +237,11 @@ def fit_multicovariate_source(
             try:
                 fit = fit_categorical_cells(
                     categorical_cells_from_relation(
-                        relation, execute, metric=metric, request=fitted_request
+                        relation,
+                        execute,
+                        metric=metric,
+                        request=fitted_request,
+                        magnitude_checked=True,
                     ),
                     control=fitted_request.control,
                 )
@@ -234,6 +260,7 @@ def fit_multicovariate_source(
                 request=fitted_request,
                 execute=execute,
                 scratch=scratch,
+                magnitude_checked=True,
             )
         return (
             _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))

@@ -212,8 +212,9 @@ def test_duckdb_qr_coefficients_and_unit_quantities_match_local_fit(tmp_path):
     rows = [
         {
             "unit_id": f"unit-{index:04d}",
-            "arm": str(arms[index]),
+            "group_id": str(arms[index]),
             "sqrt_weight": float(sqrt_weights[index]),
+            "arm": str(arms[index]),
             "y_fit": float(y_fit[index]),
             "rhs": float(rhs[index]),
             **{
@@ -258,6 +259,9 @@ def test_duckdb_qr_coefficients_and_unit_quantities_match_local_fit(tmp_path):
                 sqrt_weight_column="sqrt_weight",
                 row_identity_columns=("unit_id",),
                 design_scales=tuple(design_scales),
+                arms=arms_order,
+                outcome_arm_exponents=((0, 0, 0),),
+                centered_outcome_means=((0.0, 0.0, 0.0),),
                 coefficients=coefficients,
                 execute=bounded_execute,
                 scratch=scratch,
@@ -327,7 +331,8 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
     design_columns = tuple(f"d{index}" for index in range(design.shape[1]))
     rows = [
         {
-            "unit_id": f"unit-{index:02d}",
+            "unit_id": f"unit-{index:04d}",
+            "group_id": str(arms[index]),
             "sqrt_weight": sqrt_weight,
             "y_fit": float(y_fit[index]),
             "rhs": float(rhs[index]),
@@ -373,6 +378,9 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
                 sqrt_weight_column="sqrt_weight",
                 row_identity_columns=("unit_id",),
                 design_scales=tuple(design_scales),
+                arms=arms_order,
+                outcome_arm_exponents=((0, 0),),
+                centered_outcome_means=((0.0, 0.0),),
                 coefficients=coefficients,
                 execute=bounded_execute,
                 scratch=scratch,
@@ -394,6 +402,7 @@ def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkey
         "unit_id": "one",
         "sqrt_weight": 1.0,
         "y_fit": 1.0,
+        "group_id": "arm",
         **{name: float(index + 1) / width for index, name in enumerate(design_columns)},
     }
     connection = ibis.duckdb.connect()
@@ -426,6 +435,9 @@ def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkey
                 sqrt_weight_column="sqrt_weight",
                 row_identity_columns=("unit_id",),
                 design_scales=(1.0,) * width,
+                arms=("arm",),
+                outcome_arm_exponents=((0,),),
+                centered_outcome_means=((0.0,),),
                 coefficients=((0.0,) * width,),
                 execute=connection.to_pyarrow,
                 scratch=scratch,
@@ -501,6 +513,10 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
     y_fit = np.asarray(
         [float(y[row]) - outcome_means[arm] for arm, rows in enumerate(indices) for row in rows]
     )
+    outcome_arm_exponents = (
+        tuple(math.frexp(float(np.linalg.norm(y_fit[index])))[1] for index in indices),
+    )
+    centered_outcome_means = ((0.0, 0.0),)
     sqrt_weight = 1.0 / np.sqrt(len(indices[0]) * (len(indices[0]) - 1))
     sqrt_weights = np.full(len(y), sqrt_weight)
     design_unscaled = np.zeros((len(y), len(arms_order) + 1))
@@ -515,6 +531,7 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
     rows = [
         {
             "unit_id": f"unit-{index:04d}",
+            "group_id": str(arm_values[index]),
             "arm_index": int(arm_values[index] == "treatment"),
             "sqrt_weight": float(sqrt_weights[index]),
             "x_centered": float(centered[index]),
@@ -565,6 +582,9 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
                 sqrt_weight_column="sqrt_weight",
                 row_identity_columns=("unit_id",),
                 design_scales=tuple(design_scales),
+                arms=arms_order,
+                outcome_arm_exponents=outcome_arm_exponents,
+                centered_outcome_means=centered_outcome_means,
                 coefficients=coefficients,
                 execute=guarded_execute,
                 scratch=scratch,
@@ -656,6 +676,7 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
                 covariate_columns=("x_centered",),
                 projection_specs=projection_specs,
                 projection_estimates=tuple(item.estimate for item in projections),
+                outcome_arm_exponents=outcome_arm_exponents,
                 execute=guarded_execute,
                 scratch=scratch,
             )
@@ -802,6 +823,11 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
         )
         for values in outcome_arrays
     )
+    outcome_arm_exponents = tuple(
+        tuple(math.frexp(float(np.linalg.norm(values[index])))[1] for index in indices)
+        for values in outcome_centers
+    )
+    centered_outcome_means = tuple(tuple(0.0 for _ in arms_order) for _ in outcome_centers)
     sqrt_weight = 1.0 / np.sqrt(len(indices[0]) * (len(indices[0]) - 1))
     sqrt_weights = np.full(len(arm_values), sqrt_weight)
     design_unscaled = np.zeros((len(arm_values), len(arms_order) + 1))
@@ -817,6 +843,7 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
     rows = [
         {
             "unit_id": f"unit-{index:04d}",
+            "group_id": str(arm_values[index]),
             "sqrt_weight": float(sqrt_weights[index]),
             "x_centered": float(centered[index]),
             "num_fit": float(outcome_centers[0][index]),
@@ -867,6 +894,9 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
                 sqrt_weight_column="sqrt_weight",
                 row_identity_columns=("unit_id",),
                 design_scales=tuple(design_scales),
+                arms=arms_order,
+                outcome_arm_exponents=outcome_arm_exponents,
+                centered_outcome_means=centered_outcome_means,
                 coefficients=coefficients,
                 execute=guarded_execute,
                 scratch=scratch,
@@ -947,6 +977,7 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
                 covariate_columns=("x_centered",),
                 projection_specs=specs,
                 projection_estimates=tuple(item.estimate for item in projections),
+                outcome_arm_exponents=outcome_arm_exponents,
                 execute=guarded_execute,
                 scratch=scratch,
             )
@@ -1704,7 +1735,7 @@ def test_unchanged_warehouse_qr_requests_keep_stable_identity():
     assert first.identity != changed.identity
 
 
-@pytest.mark.parametrize("denominator_scale", (1.0e-150, 1.0e-200, 1.0e-310))
+@pytest.mark.parametrize("denominator_scale", (1.0e-50, 1.0e-40, 1.0e-20))
 def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scale, tmp_path):
     from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.estimation.engine import Method
@@ -1783,19 +1814,13 @@ def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scal
             actual._projections, local._projections, strict=True
         ):
             assert actual_projection[:4] == local_projection[:4]
-            if denominator_scale == 1.0e-310 and actual_projection[3] == "absolute":
-                assert all(math.isnan(value) for value in actual_projection[4:])
-                assert all(math.isnan(value) for value in local_projection[4:])
-            else:
-                assert actual_projection[4:] == pytest.approx(
-                    local_projection[4:], rel=1e-9, abs=1e-12
-                )
+            assert actual_projection[4:] == pytest.approx(local_projection[4:], rel=1e-9, abs=1e-12)
     finally:
         session.drop_materialized()
         connection.disconnect()
 
 
-def test_qr_tiny_mean_large_denominator_spread_refuses_support_like_local_fit(tmp_path):
+def test_qr_tiny_mean_large_denominator_spread_refuses_magnitude_range(tmp_path):
     from increment.errors import CodedError
     from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.estimation.engine import Method
@@ -1872,18 +1897,10 @@ def test_qr_tiny_mean_large_denominator_spread_refuses_support_like_local_fit(tm
                     execute=guarded_execute,
                     scratch=scratch,
                 )
-        assert actual_error.value.code == local_error.value.code
-        assert actual_error.value.context["region"] == local_error.value.context["region"]
-        actual_violations = cast(
-            tuple[tuple[str, float, float], ...], actual_error.value.context["violations"]
-        )
-        local_violations = cast(
-            tuple[tuple[str, float, float], ...], local_error.value.context["violations"]
-        )
-        actual_violation = actual_violations[0]
-        local_violation = local_violations[0]
-        assert actual_violation[0] == local_violation[0] == "ratio_denominator_precision"
-        assert actual_violation[1:] == pytest.approx(local_violation[1:], rel=1e-12)
+        assert actual_error.value.code == "query.cuped.magnitude_range"
+        assert actual_error.value.context["metric"] == "ratio"
+        assert actual_error.value.context["component"] == "denominator"
+        assert actual_error.value.context["bound"] == "lower"
     finally:
         session.drop_materialized()
         connection.disconnect()

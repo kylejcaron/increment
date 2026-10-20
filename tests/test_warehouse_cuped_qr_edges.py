@@ -6,11 +6,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import ibis
-import numpy as np
 import pytest
 
 from increment.errors import CodedError
-from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate
 from increment.query._cuped_qr import encode_qr_covariates, fit_warehouse_qr
@@ -36,7 +34,7 @@ ARMS = ("control", "treatment")
         "original_optional_absolute",
     ],
 )
-def test_qr_extreme_scales_match_local_inference(case, tmp_path):  # noqa: PLR0915
+def test_qr_extreme_scales_refuse_out_of_range_rms(case, tmp_path):
     ratio = case.endswith("den_support") or case in {"wide_ratio", "original_optional_absolute"}
     rows = []
     for arm_index, arm in enumerate(ARMS):
@@ -76,33 +74,6 @@ def test_qr_extreme_scales_match_local_inference(case, tmp_path):  # noqa: PLR09
 
     method = Method.cuped_multicovariate(covariates=[CupedCovariate(name="x", kind="continuous")])
     metric = SimpleNamespace(name="probe", type="ratio" if ratio else "mean")
-    groups = [str(row["group_id"]) for row in rows]
-    covariates = {"x": [float(row["x"]) for row in rows]}
-    local_error = None
-    try:
-        if ratio:
-            local = fit_cuped_multicovariate(
-                None,
-                groups,
-                control=ARMS[0],
-                arm_order=ARMS,
-                covariates=covariates,
-                kinds={"x": "continuous"},
-                numerator=[float(row["y"]) for row in rows],
-                denominator=[float(row["y_den"]) for row in rows],
-            )
-        else:
-            local = fit_cuped_multicovariate(
-                [float(row["y"]) for row in rows],
-                groups,
-                control=ARMS[0],
-                arm_order=ARMS,
-                covariates=covariates,
-                kinds={"x": "continuous"},
-            )
-    except CodedError as error:
-        local_error = error
-
     con = ibis.duckdb.connect()
     con.create_table("probe_input", obj=rows)
     con.create_table("scratch_source", obj=[{"x": 1.0}])
@@ -111,56 +82,45 @@ def test_qr_extreme_scales_match_local_inference(case, tmp_path):  # noqa: PLR09
         identity=("scale-parity", case), control=ARMS[0], arm_order=ARMS, method=method
     )
 
-    def execute(expression):
-        return con.to_pyarrow(expression)
+    transfers = []
 
+    def execute(expression):
+        result = con.to_pyarrow(expression)
+        transfers.extend(result.to_pylist())
+        return result
+
+    expected_component, expected_bound = {
+        "overflow_mean": ("outcome", "upper"),
+        "cancelling_extremes": ("outcome", "upper"),
+        "overflow_constant_covariate": ("x", "upper"),
+        "tiny_relative": ("outcome", "lower"),
+        "score_1e-200": ("outcome", "lower"),
+        "score_1e200": ("outcome", "upper"),
+        "tiny_den_support": ("numerator", "lower"),
+        "large_den_support": ("denominator", "upper"),
+        "zero_score": ("outcome", "lower"),
+        "wide_ratio": ("numerator", "upper"),
+        "original_optional_absolute": ("numerator", "upper"),
+    }[case]
     try:
-        if local_error is not None:
-            with pytest.raises(CodedError) as actual_error:
-                with session.qr_scratch() as scratch:
-                    fit_warehouse_qr(
-                        con.table("probe_input"),
-                        metric=metric,
-                        request=request,
-                        execute=execute,
-                        scratch=scratch,
-                    )
-            assert actual_error.value.code == local_error.code
-            assert actual_error.value.context["region"] == local_error.context["region"]
-            return
-        with session.qr_scratch() as scratch:
-            actual = fit_warehouse_qr(
-                con.table("probe_input"),
-                metric=metric,
-                request=request,
-                execute=execute,
-                scratch=scratch,
-            )
-        if case in {"overflow_mean", "cancelling_extremes"}:
-            for arm_index, arm in enumerate(ARMS):
-                values = [float(row["y"]) for row in rows if row["group_id"] == arm]
-                target = math.fsum(value / len(values) for value in values)
-                for fit in (actual, local):
-                    observed = fit.adjusted_means[arm_index]
-                    assert abs(observed - target) <= 4 * math.ulp(max(abs(v) for v in values))
-                    if case == "cancelling_extremes" and fit is actual:
-                        assert math.isclose(observed, (0.8, 1.6)[arm_index], rel_tol=1e-12), (
-                            actual.adjusted_means
-                        )
-            for observed, expected in zip(actual._projections, local._projections, strict=True):
-                assert observed[:4] == expected[:4]
-                assert tuple(math.isfinite(value) for value in observed[5:]) == tuple(
-                    math.isfinite(value) for value in expected[5:]
+        with pytest.raises(CodedError) as actual_error:
+            with session.qr_scratch() as scratch:
+                fit_warehouse_qr(
+                    con.table("probe_input"),
+                    metric=metric,
+                    request=request,
+                    execute=execute,
+                    scratch=scratch,
                 )
-        else:
-            np.testing.assert_allclose(
-                actual.adjusted_means, local.adjusted_means, rtol=1e-9, atol=0
-            )
-            for observed, expected in zip(actual._projections, local._projections, strict=True):
-                assert observed[:4] == expected[:4]
-                np.testing.assert_allclose(
-                    observed[4:], expected[4:], rtol=1e-7, atol=0, equal_nan=True
-                )
+        assert actual_error.value.code == "query.cuped.magnitude_range"
+        assert actual_error.value.context["component"] == expected_component
+        assert actual_error.value.context["bound"] == expected_bound
+        assert {row["group_id"] for row in transfers} == set(ARMS)
+        assert all(
+            all(name == "group_id" or name.startswith("_magnitude_") for name in row)
+            for row in transfers
+        )
+        assert all(not {"unit_id", "x", "y", "y_den"} & set(row) for row in transfers)
     finally:
         session.drop_materialized()
         con.disconnect()

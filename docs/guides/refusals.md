@@ -41,6 +41,13 @@ diagnostic. A triggered readout refusal does not license interpreting the
 assigned-population result as a triggered-population estimate. See
 [reading results](reading-results.md) for interpretation and next actions.
 
+Warehouse-backed CUPED can refuse with `query.cuped.magnitude_range` when an
+arm's root-mean-square outcome component (including a ratio denominator) or
+continuous covariate is outside `[1e-50, 1e50]`. The refusal context identifies
+the metric, arm, component, and bound. Change units to rescale the values, or
+use explicitly supplied per-unit data with `Analysis.from_unit_summary` or
+`Analysis.from_unit_panel`; local per-unit fitters are unchanged.
+
 ## Recover from a missing sequential allocation
 
 Automatic sequential registration fixes its inference boundary using the
