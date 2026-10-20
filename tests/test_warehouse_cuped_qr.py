@@ -1526,7 +1526,7 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
     pre = dt.datetime(2025, 1, 7, 9)
     post = dt.datetime(2025, 1, 11, 9)
     for arm_index, arm in enumerate(arms):
-        for index in range(64):
+        for index in range(200):
             values = rng.normal(size=len(covariate_names))
             revenue = 12.0 + arm_index * 0.4 + 0.7 * values[0] + rng.normal(scale=0.3)
             orders = float(5 + index % 4)
@@ -1636,11 +1636,12 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
         assert actual_rows.keys() == expected_rows.keys()
         for key, row in actual_rows.items():
             reference = expected_rows[key]
-            assert row.sampling_reason_code == reference.sampling_reason_code
-            if row.sampling_reason_code is None:
-                assert row.lift is not None and reference.lift is not None
-                assert row.lift.value == pytest.approx(reference.lift.value, rel=1e-9, abs=1e-11)
-                assert row.lift.log_se == pytest.approx(reference.lift.log_se, rel=1e-9, abs=1e-11)
+            assert row.sampling_reason_code is None
+            assert reference.sampling_reason_code is None
+            assert row.lift is not None and reference.lift is not None
+            assert row.lift.value == pytest.approx(reference.lift.value, rel=1e-9, abs=1e-11)
+            assert row.lift.log_se == pytest.approx(reference.lift.log_se, rel=1e-9, abs=1e-11)
+            assert row.dof == pytest.approx(reference.dof, rel=1e-9, abs=1e-11)
     finally:
         warehouse.close()
         local.close()
