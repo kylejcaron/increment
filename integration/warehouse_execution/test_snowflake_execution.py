@@ -428,14 +428,27 @@ def test_artifact_explicit_catalog_path(snowflake_con):
     run_artifact_explicit_catalog_probe(snowflake_con, dialect="snowflake")
 
 
-@pytest.mark.parametrize("route", ["categorical_cells", "general_qr"])
+@pytest.fixture(scope="module")
+def _snowflake_mixed_cuped_probe(snowflake_con, tmp_path_factory):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return _run_cloud_mixed_cuped_probe(
+            snowflake_con,
+            "snowflake",
+            tmp_path_factory.mktemp("snowflake-mixed-cuped"),
+            monkeypatch,
+        )
+
+
+# Prior Snowflake probes needed >300s per route; 1800s leaves room for the
+# shared native, adopted, and magnitude-refusal readouts in this module fixture.
+@pytest.mark.timeout(1800, method="signal")
 def test_snowflake_mixed_cuped_matches_local_with_native_and_artifact(
-    snowflake_con, tmp_path, monkeypatch, route
+    _snowflake_mixed_cuped_probe,
 ):
-    _run_cloud_mixed_cuped_probe(snowflake_con, "snowflake", tmp_path, monkeypatch, route)
+    assert _snowflake_mixed_cuped_probe is None
 
 
-def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch, route):  # noqa: PLR0915
+def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: PLR0915
     import datetime as dt
     import math
 
@@ -480,13 +493,10 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch, route):  #
                     "region": None if index % 6 == 0 else ("east", "west")[index % 2],
                 }
             )
-    if route == "general_qr":
-        for row in units:
-            if int(row["user_id"].rsplit("-", 1)[1]) % 5 == 0:
-                row["pre_revenue"] = math.nan
-    events = mixed_cuped_event_rows(units)
-    if route == "general_qr":
-        events = pa.Table.from_pylist(events)
+    for row in units:
+        if int(row["user_id"].rsplit("-", 1)[1]) % 5 == 0:
+            row["pre_revenue"] = math.nan
+    events = pa.Table.from_pylist(mixed_cuped_event_rows(units))
     event_name = f"events_mixed_{uuid4().hex[:12]}"
     event_ref = _qualified_table_identifier(con, dialect, event_name)
     definitions_data = yaml.safe_load(
@@ -495,45 +505,52 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch, route):  #
     experiment_def = definitions_data["experiments"][0]
     experiment_def["allocation"] = dict.fromkeys(arms, 1 / 3)
     category_names = ("country", "device")
-    covariates = [
+    categorical_covariates = [
         {"name": name, "kind": "categorical", "property": name, "source": "events"}
         for name in category_names
     ]
-    local_covariates = [CupedCovariate(name=name, kind="categorical") for name in category_names]
-    if route == "general_qr":
-        continuous = {
+    qr_covariates = [
+        {
             "name": "pre_revenue",
             "kind": "continuous",
             "property": "pre_revenue",
             "source": "events",
             "missing": "impute-indicator",
-        }
-        covariates.insert(0, continuous)
-        local_covariates.insert(
-            0, CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator")
-        )
+        },
+        *categorical_covariates,
+    ]
     for role in ("primary", "guardrails", "secondaries"):
         entries = experiment_def["plan"][role]
         if isinstance(entries, dict):
             entries = [entries]
         for entry in entries:
-            entry["decision_method"]["covariates"] = covariates
-    definitions_path = tmp_path / f"{dialect}-mixed-{route}.yaml"
+            entry["decision_method"]["covariates"] = (
+                categorical_covariates if entry["metric"] == "revenue" else qr_covariates
+            )
+    definitions_path = tmp_path / f"{dialect}-mixed.yaml"
     definitions_path.write_text(yaml.safe_dump(definitions_data, sort_keys=False))
-    method = Method.cuped_multicovariate(covariates=local_covariates)
+    categorical_method = Method.cuped_multicovariate(
+        covariates=[CupedCovariate(name=name, kind="categorical") for name in category_names]
+    )
+    qr_method = Method.cuped_multicovariate(
+        covariates=[
+            CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+            *[CupedCovariate(name=name, kind="categorical") for name in category_names],
+        ]
+    )
     local = Analysis.from_unit_summary(
         frame(units),
         unit="user_id",
         group="variant",
         metrics=[
-            MetricSpec(name="revenue", decision_method=method),
+            MetricSpec(name="revenue", decision_method=categorical_method),
             MetricSpec(
                 name="rpo",
                 type="ratio",
                 numerator="revenue",
                 denominator="orders",
                 preferred_direction="increase",
-                decision_method=method,
+                decision_method=qr_method,
             ),
         ],
         plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
@@ -615,7 +632,9 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch, route):  #
             if isinstance(entries, dict):
                 entries = [entries]
             for entry in entries:
-                entry["decision_method"]["covariates"] = covariates
+                entry["decision_method"]["covariates"] = (
+                    categorical_covariates if entry["metric"] == "revenue" else qr_covariates
+                )
         tiny_path.write_text(yaml.safe_dump(tiny_data, sort_keys=False))
         refused = Analysis.from_definitions("mixed_cuped", tiny_path, con)
         try:
@@ -629,6 +648,7 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch, route):  #
         native.close()
         adopted.close()
         _assert_materializations_absent(con, scratch_relations)
+        con.drop_table(event_name, force=True)
         if tiny_name is not None:
             con.drop_table(tiny_name, force=True)
         _drop_scratch_namespace(con, artifact_namespace, catalog=con.current_catalog)

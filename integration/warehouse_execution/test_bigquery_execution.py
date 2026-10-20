@@ -324,12 +324,25 @@ def test_artifact_explicit_catalog_path(bigquery_con):
     run_artifact_explicit_catalog_probe(bigquery_con, dialect="bigquery")
 
 
-@pytest.mark.parametrize("route", ["categorical_cells", "general_qr"])
-def test_bigquery_mixed_cuped_matches_local_with_native_and_artifact(
-    bigquery_con, tmp_path, monkeypatch, route
-):
+@pytest.fixture(scope="module")
+def _bigquery_mixed_cuped_probe(bigquery_con, tmp_path_factory):
     from integration.warehouse_execution.test_snowflake_execution import (
         _run_cloud_mixed_cuped_probe,
     )
 
-    _run_cloud_mixed_cuped_probe(bigquery_con, "bigquery", tmp_path, monkeypatch, route)
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return _run_cloud_mixed_cuped_probe(
+            bigquery_con,
+            "bigquery",
+            tmp_path_factory.mktemp("bigquery-mixed-cuped"),
+            monkeypatch,
+        )
+
+
+# Prior BigQuery readouts took up to 501s per case; allow 1800s for this
+# module-scoped fixture's shared native, adopted, and refusal readouts.
+@pytest.mark.timeout(1800, method="signal")
+def test_bigquery_mixed_cuped_matches_local_with_native_and_artifact(
+    _bigquery_mixed_cuped_probe,
+):
+    assert _bigquery_mixed_cuped_probe is None
