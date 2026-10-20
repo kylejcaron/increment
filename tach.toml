@@ -70,6 +70,11 @@ depends_on = ["increment.compatibility"]
 path = "increment._source_operations"
 depends_on = ["increment.errors"]
 
+
+[[modules]]
+path = "increment._health"
+depends_on = ["increment._source_operations", "increment.estimation"]
+
 [[modules]]
 path = "increment._plan_compatibility"
 depends_on = ["increment._literals", "increment.errors"]
@@ -482,6 +487,7 @@ depends_on = [
   "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.switchback",
   "increment.sequential_source", "increment.sequential_state",
+  "increment._health",
 ]
 
 [[modules]]
