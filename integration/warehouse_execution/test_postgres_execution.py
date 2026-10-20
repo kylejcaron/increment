@@ -47,7 +47,8 @@ def postgres_nonpublic_con(postgres_con):
     finally:
         with postgres_con.raw_sql("RESET search_path"):
             pass
-        postgres_con.drop_database(schema, force=True)
+        with postgres_con.raw_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'):
+            pass
 
 
 def test_materialized_cache_reflects_true_correction(postgres_nonpublic_con, monkeypatch):
@@ -96,8 +97,10 @@ def test_materialized_cache_detects_skipped_cleanup(postgres_nonpublic_con, monk
     [(True, False), (True, True), (False, False), (False, True)],
     ids=["clustered", "clustered-failed-adoption", "breakout", "breakout-failed-adoption"],
 )
-def test_artifact_publish_adopt_parity(postgres_con, monkeypatch, clustered, fail_adoption):
-    con = postgres_con
+def test_artifact_publish_adopt_parity(
+    postgres_nonpublic_con, monkeypatch, clustered, fail_adoption
+):
+    con = postgres_nonpublic_con
     WarehouseArtifactStore(con)
     metadata = ("ud_manifest_index", "ud_manifest_dropped")
     real_to_pyarrow = con.to_pyarrow
@@ -390,14 +393,14 @@ def test_conversion_calendar_trend(postgres_con):
         con.drop_table(name, force=True)
 
 
-def test_denied_temp_creation_fails_the_gate(postgres_con, monkeypatch):
+def test_denied_temp_creation_fails_the_gate(postgres_nonpublic_con, monkeypatch):
     """A denied CREATE TEMP TABLE privilege must not be swallowed as a
     passing store='always' run. ``WarehouseSession.materialize_table``
     degrades a create failure to an unmaterialized live expression and
     warns; this suite's project-wide ``filterwarnings = ["error", ...]``
     promotes that warning to a hard failure, and the probe's own
     required-materialization check would catch it even if it didn't."""
-    con = postgres_con
+    con = postgres_nonpublic_con
     create_table = con.create_table
 
     def deny_temp(name, *args, **kwargs):
@@ -412,13 +415,13 @@ def test_denied_temp_creation_fails_the_gate(postgres_con, monkeypatch):
         run_materialized_cache_correction_probe(con, dialect="postgres", monkeypatch=monkeypatch)
 
 
-def test_partial_materialization_fails_the_gate(postgres_con, monkeypatch):
+def test_partial_materialization_fails_the_gate(postgres_nonpublic_con, monkeypatch):
     """``store='always'`` must materialize BOTH the spine and
     revenue-stats TEMP tables on every readout. If only the spine lands
     (e.g. the backend denies just the stats create mid-flight), the
     gate must catch the partial materialization rather than treat spine
     alone as sufficient."""
-    con = postgres_con
+    con = postgres_nonpublic_con
     create_table = con.create_table
 
     def deny_stats_temp(name, *args, **kwargs):
@@ -431,11 +434,11 @@ def test_partial_materialization_fails_the_gate(postgres_con, monkeypatch):
         run_materialized_cache_correction_probe(con, dialect="postgres", monkeypatch=monkeypatch)
 
 
-def test_duplicate_spine_creation_without_stats_fails_the_gate(postgres_con, monkeypatch):
+def test_duplicate_spine_creation_without_stats_fails_the_gate(postgres_nonpublic_con, monkeypatch):
     """Two physical spine materializations cannot substitute for a
     missing revenue-stats materialization -- the two required roles are
     checked independently by name prefix, never satisfied by volume."""
-    con = postgres_con
+    con = postgres_nonpublic_con
     create_table = con.create_table
     duplicates: list[str] = []
 
@@ -462,12 +465,12 @@ def test_duplicate_spine_creation_without_stats_fails_the_gate(postgres_con, mon
             con.drop_table(name, force=True)
 
 
-def test_extra_unrelated_temp_creation_does_not_fail_the_gate(postgres_con, monkeypatch):
+def test_extra_unrelated_temp_creation_does_not_fail_the_gate(postgres_nonpublic_con, monkeypatch):
     """An extra, unrelated TEMP table created alongside the required
     spine/revenue-stats materializations must not trip the required
     -role check: only the two named roles are required, extra
     relations are tolerated."""
-    con = postgres_con
+    con = postgres_nonpublic_con
     create_table = con.create_table
     decoys: list[str] = []
 
