@@ -166,6 +166,98 @@ def _cell_builder(stage):
     return build
 
 
+def _magnitude_builder(stage, kind):
+    def build(table_names, dialect):
+        from increment.query._cuped_cells import require_warehouse_magnitude_range
+
+        relation = ibis.table(
+            {
+                "group_id": "string",
+                "outcome": "float64",
+                "numerator": "float64",
+                "denominator": "float64",
+            },
+            name=table_names["units"],
+        )
+        captured = []
+
+        def record(expression):
+            captured.append(expression)
+            import pandas as pd
+
+            if len(captured) == 1:
+                rows = [
+                    {
+                        "group_id": "control",
+                        **{f"_magnitude_nonfinite_{i}": 0 for i in range(len(components))},
+                    }
+                ]
+            else:
+                rows = [
+                    {
+                        "group_id": "control",
+                        **{f"_magnitude_low_{i}": False for i in range(len(components))},
+                        **{f"_magnitude_high_{i}": False for i in range(len(components))},
+                    }
+                ]
+            return pd.DataFrame(rows)
+
+        if kind == "mean":
+            components = (("outcome", "outcome"),)
+        else:
+            components = (("numerator", "numerator"), ("denominator", "denominator"))
+        require_warehouse_magnitude_range(
+            relation,
+            metric=f"compile_{kind}",
+            components=components,
+            execute=record,
+        )
+        return captured[stage]
+
+    return build
+
+
+def _qr_factor_builder(stage):
+    def build(table_names, dialect):
+        import pandas as pd
+
+        from increment.query._cuped_qr import factor_design_relation
+
+        relation = ibis.table(
+            {
+                "unit_id": "string",
+                "group_id": "string",
+                "_qr_d0": "float64",
+                "_qr_y0": "float64",
+            },
+            name=table_names["units"],
+        )
+        materialized = []
+        reductions = []
+
+        class Scratch:
+            def materialize_next(self, expression):
+                materialized.append(expression)
+                return expression
+
+        def execute(expression):
+            reductions.append(expression)
+            return pd.DataFrame([{"_qr_r_0_0": 1.0, "_qr_rhs_0_0": 1.0}])
+
+        factor_design_relation(
+            relation,
+            design_columns=("_qr_d0",),
+            rhs_columns=("_qr_y0",),
+            order_columns=("unit_id",),
+            execute=execute,
+            scratch=Scratch(),
+        )
+        expressions = (*materialized, *reductions)
+        return expressions[stage]
+
+    return build
+
+
 def _register(cases, dialect, name, schemas, builder):
     names = {key: f"incr_compile_{key}_{uuid4().hex[:12]}" for key in schemas}
     cases.append(CompileCase(name, schemas, builder, names, dialect))
@@ -447,6 +539,45 @@ def compile_statement_cases(dialect: str) -> list[CompileCase]:
             f"categorical.{stage}",
             {"unit_cells": cell_schema},
             _cell_builder(stage),
+        )
+    magnitude_schema = {
+        "units": ibis.schema(
+            {
+                "group_id": "string",
+                "outcome": "float64",
+                "numerator": "float64",
+                "denominator": "float64",
+            }
+        )
+    }
+    for kind in ("mean", "ratio"):
+        for stage, stage_name in enumerate(("nonfinite", "magnitude_bounds")):
+            _register(
+                cases,
+                dialect,
+                f"categorical.{kind}.{stage_name}",
+                magnitude_schema,
+                _magnitude_builder(stage, kind),
+            )
+    qr_schema = {
+        "units": ibis.schema(
+            {
+                "unit_id": "string",
+                "group_id": "string",
+                "_qr_d0": "float64",
+                "_qr_y0": "float64",
+            }
+        )
+    }
+    for stage, stage_name in enumerate(
+        ("weighted_design", "householder_update", "factor_reduction")
+    ):
+        _register(
+            cases,
+            dialect,
+            f"qr.factor.{stage_name}",
+            qr_schema,
+            _qr_factor_builder(stage),
         )
     return cases
 

@@ -15,11 +15,17 @@ def test_registered_warehouse_statements_compile_offline(dialect):
 
     assert cases
     assert len({case.name for case in cases}) == len(cases)
+    statement_lengths = {}
     for case in cases:
         expression = case.build(case.table_names)
         assert expression.schema().names
         sql = case.compile(expression)
+        statement_lengths[case.name] = len(sql)
         assert sql.strip(), case.name
+        assert statement_lengths[case.name] <= 1_000_000, (
+            f"{dialect} statement exceeds the query-length limit: "
+            f"{case.name} ({statement_lengths[case.name]} characters)"
+        )
         for statement in (sql, _inline_empty_ctes(sql, case)):
             ast = sqlglot.parse_one(statement, read=dialect)
             ctes = {cte.alias for cte in ast.find_all(sqlglot.exp.CTE)}
@@ -27,6 +33,7 @@ def test_registered_warehouse_statements_compile_offline(dialect):
             sources = set(case.table_names.values())
             assert referenced <= sources | ctes, case.name
             assert sources <= referenced | ctes, case.name
+    assert len(statement_lengths) == len(cases)
 
 
 class _CapturingCursor:
