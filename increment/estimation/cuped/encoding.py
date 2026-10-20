@@ -240,8 +240,12 @@ def _encode_numeric(
             offsets = [0.0] * len(indices)
             centered = numeric.copy()
         if not np.any(centered):
-            structural.append(name)
-            return None
+            if np.ptp(numeric) == 0:
+                structural.append(name)
+                return None
+            columns.append(centered)
+            column_names.append(name)
+            return tuple(offsets), 1.0
         exponent = _aggregate_l2_scale_exponent(centered)
         scale = math.ldexp(1.0, exponent)
         if scale == 0.0:

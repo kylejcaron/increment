@@ -223,6 +223,58 @@ def test_local_fitted_envelope_uses_aggregate_encoder_coordinates(fitted_evidenc
     assert norm <= scale <= 2 * norm
 
 
+def test_local_fitted_export_preserves_arm_only_rank_refusal(tmp_path):
+    from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
+
+    rows = [
+        {
+            "unit": f"{arm}-{index}",
+            "arm": arm,
+            "outcome": float(index + (arm == "treatment")),
+            "history_a": float(arm == "treatment"),
+            "segment": "A" if index % 2 == 0 else "B",
+        }
+        for arm in ("control", "treatment")
+        for index in range(20)
+    ]
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    metric = MetricSpec(name="outcome", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="rank-refusal",
+        metrics=[metric],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        with pytest.raises(CodedError) as runtime:
+            fit_cuped_multicovariate(
+                [row["outcome"] for row in rows],
+                [row["arm"] for row in rows],
+                control="control",
+                arm_order=("control", "treatment"),
+                covariates={
+                    "history_a": [row["history_a"] for row in rows],
+                    "segment": [row["segment"] for row in rows],
+                },
+                kinds={"history_a": "continuous", "segment": "categorical"},
+            )
+        with pytest.raises(CodedError) as portable:
+            analysis.export(tmp_path / "rank-refusal.parquet")
+        assert runtime.value.code == "estimation.cuped_linear.rank_deficiency"
+        assert portable.value.code == runtime.value.code
+    finally:
+        analysis.close()
+
+
 _FITTED_SEQUENCE_PATHS = (
     ("fit_state", "identity"),
     ("fit_state", "eligible_arms"),
