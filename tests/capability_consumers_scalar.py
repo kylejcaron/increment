@@ -591,7 +591,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "from_definitions_supported",
             "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_definitions",
-            "same per-unit mean, ratio, categorical and missing-history data",
+            "same per-unit mean, ratio, categorical and missing-history data; warehouse QR keeps unit values in place and leaves only the bounded triangular solve and fit finalization client-side (verified on DuckDB, PostgreSQL, Snowflake and BigQuery)",
             "supported",
             evidence=(
                 "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",
@@ -601,7 +601,7 @@ MIXED_CUPED_FIXED_HORIZON = ConsumerContract(
             "from_unit_day_artifact_supported",
             "Analysis.run() mixed-covariate mean/ratio/conversion",
             "from_unit_day_artifact",
-            "format-4 artifact extensions are SQL-verified; mixed-covariate inference retains its per-unit transfer limitation",
+            "format-4 artifact extensions are SQL-verified; native QR keeps unit values in the warehouse and leaves only the bounded triangular solve and fit finalization client-side (verified on DuckDB, PostgreSQL, Snowflake and BigQuery)",
             "supported",
             evidence=(
                 "tests/test_warehouse_cuped_parity.py::test_mixed_cuped_mean_ratio_conversion_rows_match_all_supported_ingresses",

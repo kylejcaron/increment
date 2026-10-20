@@ -778,13 +778,16 @@ guarantee.
 
 ### Warehouse magnitude range
 
-Warehouse-backed CUPED producers require each arm's root-mean-square magnitude
-for every outcome component (including a ratio denominator) and continuous
-covariate to be zero or within $[10^{-50}, 10^{50}]$. A value outside this
-range is refused with `query.cuped.magnitude_range` before fitting or outcome
-transfer. Rescale the values by changing units, or fit from explicitly supplied
-per-unit data with `Analysis.from_unit_summary` or `Analysis.from_unit_panel`.
-This warehouse bound does not change the local per-unit fitters.
+Native and artifact warehouse routes bound each arm's root-mean-square
+magnitude for every outcome component (including a ratio denominator) and
+continuous covariate to $[10^{-50}, 10^{50}]$. Outside that range they refuse
+with `query.cuped.magnitude_range`, before transferring unit values; the
+structured context identifies the metric, component, arm, and violated bound.
+DuckDB, PostgreSQL, Snowflake, and BigQuery execution use this same support
+envelope. Rescale the inputs or explicitly choose the local per-unit route
+with `Analysis.from_unit_summary` or `Analysis.from_unit_panel`; the warehouse
+route never falls back to transferring units. The bound does not change the
+local per-unit fitters.
 
 ### Combining scalar and mixed CUPED
 
@@ -1087,67 +1090,73 @@ Compression alone is not a disclosure guard. Two binary covariates with
 per-arm pattern counts `(999, 1, 1, 999)` reduce 4000 units to eight cells,
 yet four cells would directly reveal singleton outcomes. Two-contributor
 first/second moments reconstruct an unordered pair; zero scatter reveals
-the common component value even with many contributors. These cases do
-not transfer outcome cells. Until general warehouse QR is available,
-`query.cuped.general_qr_required` identifies the reason and the alternative
-of explicitly supplying local per-unit data through `from_unit_summary`
-or `from_unit_panel`. The producer never downloads units automatically,
-merges or suppresses categories, or changes the inferential procedure.
+the common component value even with many contributors. These cases do not
+transfer outcome cells. `query.cuped.general_qr_required` routes the whole
+request to the general warehouse QR producer; it does not require local
+per-unit data. The anchored, scaled QR fit and unit-dependent inference
+reductions stay in the warehouse. Only the bounded triangular solve and fit
+finalization run on the client; unit rows never leave the warehouse. The
+producer never downloads units, merges or suppresses categories, or changes
+the inferential procedure.
 The guards do not provide differential privacy or protection against
 arbitrary side information.
 
 ### Portable CUPED evidence
 
-A moment export stays in format 12 when every metric has at most one scalar
-family and no categorical-only `cuped_multicovariate` request. Otherwise it is
-format 13: ordinary rows carry outcome moments only, unique per metric and
-arm, and each distinct request has one `record_kind="cuped_evidence"` row whose
+A moments export stays in format 12 when every metric has at most one scalar
+family and no `cuped_multicovariate` request. Otherwise it uses format 13:
+ordinary rows carry outcome moments only, unique per metric and arm, and each
+distinct request has one `record_kind="cuped_evidence"` row whose
 `cuped_evidence` column holds a canonical JSON payload:
 
 ```text
-{"version": 1, "kind": "scalar_moments" | "categorical_cells", "metric": ...,
- "method": <declaration without its label>, "population": "assigned" | "triggered",
- "breakout": null, "source_sha256": ..., "evidence": {...}}
+{"version": 1, "kind": "scalar_moments" | "categorical_cells" | "fitted_multicovariate",
+ "metric": ..., "method": <declaration without its label>,
+ "population": "assigned" | "triggered", "breakout": null,
+ "source_sha256": ..., "evidence": {...}}
 ```
 
 `scalar_moments` evidence holds the family's per-arm moment rows;
-`categorical_cells` evidence holds the joint cells above. Requests that differ
-only by label share one envelope, and `source_sha256` binds each envelope to
-the cube's source identity. Before estimation, `from_moments` refuses an
-unknown payload version or kind with `moments.cuped_evidence.unsupported`,
-repeated envelopes with `moments.cuped_evidence.duplicate`, and unknown or
-missing fields, noncanonical bytes, conflicting or invalid evidence, a
-mismatched source, metric, population or breakout, envelopes outside format
-13, or format 13 without envelopes with `moments.cuped_evidence.invalid`. A
-request the cube carries no evidence for refuses with
-`readout.scalar_method_evidence` for a scalar family and
-`facade.analysis_config.cuped_linear_moments` for a mixed method.
+`categorical_cells` holds the joint cells above; and
+`fitted_multicovariate` holds the retained QR fit state and compact inference
+summary. Requests that differ only by label share one envelope, and
+`source_sha256` binds each envelope to the cube's source identity. Before
+estimation, `from_moments` refuses an unknown version or kind with
+`moments.cuped_evidence.unsupported`, duplicate envelopes with
+`moments.cuped_evidence.duplicate`, and malformed, noncanonical, conflicting,
+source-mismatched or invalid evidence with `moments.cuped_evidence.invalid`.
+A request without matching evidence refuses with `readout.scalar_method_evidence`
+for a scalar family or `facade.analysis_config.cuped_linear_moments` for mixed
+CUPED.
 
-Replay selects scalar evidence by request identity and fits categorical
+Replay selects scalar evidence by request identity and fits categorical-cell
 evidence with the unit route's estimator, ratio arm withholding, and
-projections. Categorical replay identifies its aggregate evidence, so its
-snapshot differs from the unit-source run; scalar-only replay keeps the
-unit-source snapshot. Categorical evidence identity is the metric, population,
-breakout, and request, independent of the producing source, so partitions of
-one request merge; scalar envelopes merge as centered moments.
+projections. Fitted evidence reuses the saved QR fit and inference reductions;
+changing alpha re-intervalizes the result without refitting or transferring
+units. Categorical evidence identity is the metric, population, breakout, and
+request, independent of the producing source; compatible partitions merge.
+Scalar envelopes merge as centered moments.
 
-Native and artifact exports reduce categorical requests in the warehouse
-under the guards above or refuse with `query.cuped.general_qr_required`.
-Mixed methods with continuous covariates have no compact evidence and are
-omitted from every export, as in format 12. A native `moments_source` builds
-the same envelopes for several scalar families and leaves mixed requests to
-the live source.
+Native definitions and adopted artifact sources fit continuous/mixed requests
+with anchored, scaled warehouse QR; they export format-13
+`fitted_multicovariate` envelopes, including for fixed-cap and other bounded
+outcomes. Eligible categorical requests use guarded joint cells; guard misses
+route to general warehouse QR instead of refusing or downloading units.
+DuckDB, PostgreSQL, Snowflake, and BigQuery have verified execution support.
+The QR factorization and unit-dependent inference reductions remain
+warehouse-side; only the bounded triangular solve and fit finalization run on
+the client.
 
 From definitions or an adopted unit-day artifact, `analysis.export(path)`
 writes the cube. Reload its rows with `Analysis.from_moments`, passing each
 metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
-design: the embedded plan supplies the declared decision and sensitivity
-methods, including scalar companions, so the replayed estimates, intervals,
-and roles match the source run. The cube has no breakout dimension, so
-`run_breakout` on it refuses with `facade.analysis.operation`. A metric with
-fixed winsorization caps, or any other bounded or discrete outcome, sends the
-whole export to `query.cuped.general_qr_required` before outcome cells leave
-the warehouse; run that request on the unit source instead.
+design: the embedded plan supplies the decision and sensitivity methods,
+including scalar companions, so estimates, intervals and roles replay. The
+cube has no breakout dimension, so `run_breakout` refuses with
+`facade.analysis.operation`. Warehouse-backed QR also enforces the per-arm
+component/covariate magnitude range $[10^{-50}, 10^{50}]`; violations refuse
+with `query.cuped.magnitude_range` before any unit values can leave the
+warehouse.
 
 ## The math
 

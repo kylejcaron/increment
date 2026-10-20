@@ -139,6 +139,8 @@ def test_secondary_cuped_fcr_reintervalizes_without_refitting(ingress):
     assert q05.note == q20.note
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_complete_cuped_yaml_guide_examples_execute(tmp_path):
     """Execute both experiment YAML examples in the guide against real DuckDB facts."""
     import datetime as dt

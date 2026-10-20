@@ -9408,8 +9408,12 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
             ),
         )
 
+    breakout_reference: dict[tuple[str, object], dict[str, object]] | None = None
+
     def breakout_probe(name: str, analysis: Analysis) -> None:
+        nonlocal breakout_reference
         from increment.errors import CodedError
+        from tests.parity_harness.comparison import nested_close
 
         if name in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
             breakout_rows = analysis.run_breakout()
@@ -9418,6 +9422,34 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
                 for metric in ("revenue", "revenue_per_spend")
                 for region in ("east", "west")
             }
+            current = {
+                (row.metric, row.dimension_value): {
+                    "available": row.lift is not None,
+                    "value": None if row.lift is None else row.lift.value,
+                    "log_se": None if row.lift is None else row.lift.log_se,
+                    "lower": None if row.lift is None else row.lift.lb,
+                    "upper": None if row.lift is None else row.lift.ub,
+                    "absolute_difference": row.abs_diff,
+                    "absolute_se": row.abs_se,
+                    "absolute_lower": row.abs_lb,
+                    "absolute_upper": row.abs_ub,
+                    "excluded": row.excluded,
+                    "failure_code": row.failure_code,
+                    "failure_context": row.failure_context,
+                    "n_control": row.n_control,
+                    "n_treat": row.n_treat,
+                    "sampling_available": row.sampling_available,
+                    "sampling_reason_code": row.sampling_reason_code,
+                    "sampling_reason_context": row.sampling_reason_context,
+                }
+                for row in breakout_rows
+            }
+            if breakout_reference is None:
+                breakout_reference = current
+            else:
+                assert nested_close(breakout_reference, current), (
+                    f"{name} breakout estimates, intervals, or availability differ"
+                )
             return
         with pytest.raises(CodedError) as raised:
             analysis.run_breakout()
