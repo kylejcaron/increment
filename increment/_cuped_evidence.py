@@ -1083,21 +1083,36 @@ def portable_cuped_rows(
 ) -> list[dict[str, object]]:
     """Ordinary outcome rows plus portable scalar, cell and fitted evidence."""
     from increment._source_identity import source_identity
+    from increment.errors import CodedError
     from increment.estimation.engine import Method
 
     if identity is None:
         identity = source_identity(source)
     population, trigger_name = _source_coordinates(source)
-    cells: list[list[CategoricalCells]] = []
-    for metric, _, categorical, _ in requests:
-        if not categorical:
-            cells.append([])
-            continue
-        if categorical_cells is None:
-            raise AssertionError("categorical requests need a joint-cell producer")
-        cells.append([categorical_cells(metric, method) for method in categorical])
     rows: list[dict[str, object]] = []
-    for (metric, scalar, categorical, fitted), produced in zip(requests, cells, strict=True):
+    for metric, scalar, categorical, fitted in requests:
+        cell_evidence: list[tuple[Any, CategoricalCells]] = []
+        fitted_methods = list(fitted)
+        for method in categorical:
+            if categorical_cells is None:
+                raise AssertionError("categorical requests need a joint-cell producer")
+            try:
+                evidence = categorical_cells(metric, method)
+            except CodedError as exc:
+                if exc.code != "query.cuped.general_qr_required" or exc.context.get(
+                    "reason"
+                ) not in {
+                    "cell_count",
+                    "compression",
+                    "component_contributors",
+                    "component_scatter",
+                    "component_range",
+                    "encoded_bytes",
+                }:
+                    raise
+                fitted_methods.append(method)
+            else:
+                cell_evidence.append((method, evidence))
         ordinary_rows = [
             dict(row) for row in source.moments_for_method(metric, Method.unadjusted())
         ]
@@ -1117,7 +1132,7 @@ def portable_cuped_rows(
                     ),
                 }
             )
-        for method, evidence in zip(categorical, produced, strict=True):
+        for method, evidence in cell_evidence:
             rows.append(
                 {
                     "record_kind": CUPED_EVIDENCE_RECORD,
@@ -1131,7 +1146,7 @@ def portable_cuped_rows(
                     ),
                 }
             )
-        for method in fitted:
+        for method in fitted_methods:
             arms = tuple(
                 str(row["group_id"]) for row in ordinary_rows if row.get("group_id") is not None
             )

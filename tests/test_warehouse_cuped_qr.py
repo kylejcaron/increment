@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import cast
+from typing import Any, cast
 
 import ibis
 import numpy as np
@@ -1506,6 +1506,8 @@ def _assert_fit_coordinates_equal(left_rows, right_rows):
         )
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_path):
     import datetime as dt
 
@@ -1648,6 +1650,172 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
         connection.disconnect()
 
 
+@pytest.mark.parametrize(
+    ("fixture", "reason"),
+    [
+        ("sparse_cells", "component_contributors"),
+        ("insufficient_compression", "compression"),
+        ("zero_within_cell_scatter", "component_scatter"),
+    ],
+)
+@pytest.mark.parametrize("ingress", ["native", "artifact"])
+@pytest.mark.integration
+@pytest.mark.slow
+def test_categorical_export_guard_misses_replay_from_fitted_qr(  # noqa: PLR0915
+    fixture, reason, ingress, tmp_path, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+
+    import pyarrow.parquet as pq
+    import yaml
+
+    from increment import Method
+    from increment.errors import CodedError
+    from increment.frame import MetricSpec
+    from increment.query._cuped_cells import categorical_cells_from_relation
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.loader import load
+    from increment.semantics.models import AnalysisPlan
+
+    count = (
+        20
+        if fixture == "insufficient_compression"
+        else 60
+        if fixture == "zero_within_cell_scatter"
+        else 200
+    )
+    units = matrix_data.linear_cuped_rows(n_per_arm=count)
+    for row in units:
+        index = int(row["user_id"][1:])
+        if fixture == "sparse_cells":
+            row["country"] = "rare" if index < 2 else f"level-{index % 3}"
+        else:
+            row["country"] = f"level-{index % 3}"
+        if fixture == "zero_within_cell_scatter":
+            category = int(row["country"].split("-")[1])
+            row["revenue"] = float(10 + category + (2 if row["variant"] == "treatment" else 0))
+    connection = ibis.duckdb.connect()
+    connection.create_table(f"qr_{fixture}", obj=mixed_cuped_event_rows(units))
+    definitions_path = tmp_path / f"{fixture}.yaml"
+    definitions = yaml.safe_load(mixed_cuped_definitions_yaml(f"qr_{fixture}"))
+    experiment_data = definitions["experiments"][0]
+    method_data = experiment_data["plan"]["guardrails"][0]["decision_method"]
+    method_data["covariates"] = [
+        {"name": "country", "kind": "categorical", "property": "country", "source": "events"}
+    ]
+    experiment_data["plan"] = {"primary": {"metric": "revenue", "decision_method": method_data}}
+    definitions_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    definition_set = load(definitions_path)
+    experiment = definition_set.experiment("mixed_cuped")
+    metric = definition_set.metric("revenue")
+    assert experiment is not None and metric is not None
+    binding = experiment.bindings["revenue"]
+    assert binding.decision_method is not None
+    method = Method.model_validate(binding.decision_method.model_dump())
+    cell_relation = connection.create_table(
+        f"cells_{fixture}",
+        obj=[
+            {"group_id": row["variant"], "country": row["country"], "y": row["revenue"]}
+            for row in units
+        ],
+    )
+    request = cast(
+        Any,
+        SimpleNamespace(
+            identity=("categorical-export", fixture),
+            control="control",
+            arm_order=("control", "treatment"),
+            method=method,
+            population="assigned",
+            breakout_dimension=None,
+            breakout_source=None,
+            breakout_value=None,
+            breakout_is_null=False,
+        ),
+    )
+    with pytest.raises(CodedError) as cell_refusal:
+        categorical_cells_from_relation(
+            cell_relation,
+            connection.to_pyarrow,
+            metric=metric,
+            request=request,
+        )
+    assert cell_refusal.value.code == "query.cuped.general_qr_required"
+    assert cell_refusal.value.context["reason"] == reason
+
+    artifact = None
+    if ingress == "artifact":
+        store = WarehouseArtifactStore(connection, schema_name=f"qr_{fixture}_artifact")
+        context = artifact_context(definition_set, experiment, "error")
+        extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+        reference = native.publish_unit_day_artifact(store, extensions=extensions)
+        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        source = artifact
+    else:
+        source = native
+
+    def forbidden_unit_transfer(*args, **kwargs):
+        pytest.fail("categorical QR export transferred unit-keyed data")
+
+    monkeypatch.setattr(DefinitionsMomentSource, "unit_frame", forbidden_unit_transfer)
+    _guard_no_unit_keyed_transfers(monkeypatch)
+    try:
+        actual = cast(list[LiftEstimate], source.run(metrics=["revenue"]))
+        destination = tmp_path / f"{ingress}-{fixture}.parquet"
+        source.export(destination)
+        exported = pq.read_table(destination).to_pylist()
+        envelopes = [
+            json.loads(row["cuped_evidence"])
+            for row in exported
+            if row.get("record_kind") == "cuped_evidence"
+        ]
+        assert [payload["kind"] for payload in envelopes] == ["fitted_multicovariate"]
+
+        binding = experiment.bindings["revenue"]
+        assert binding.decision_method is not None
+        metric_spec = MetricSpec(
+            name="revenue",
+            type="mean",
+            decision_method=Method.model_validate(binding.decision_method.model_dump()),
+        )
+        replay = Analysis.from_moments(
+            exported,
+            metrics=[metric_spec],
+            design=experiment.resolved_design(),
+            plan=AnalysisPlan(primary="revenue"),
+        )
+        try:
+            replay_rows = cast(list[LiftEstimate], replay.run(metrics=["revenue"]))
+            actual_rows = {(row.metric, row.group_id): row for row in actual}
+            replay_by_key = {(row.metric, row.group_id): row for row in replay_rows}
+            assert replay_by_key.keys() == actual_rows.keys()
+            for key, row in replay_by_key.items():
+                reference = actual_rows[key]
+                assert row.sampling_reason_code is None
+                assert reference.sampling_reason_code is None
+                assert row.require_lift().value == pytest.approx(
+                    reference.require_lift().value, rel=1e-10, abs=1e-11
+                )
+                assert row.require_lift().log_se == pytest.approx(
+                    reference.require_lift().log_se, rel=1e-10, abs=1e-11
+                )
+                assert row.dof == pytest.approx(reference.dof, rel=1e-10, abs=1e-11)
+        finally:
+            replay.close()
+    finally:
+        if artifact is not None:
+            artifact.close()
+        native.close()
+        connection.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])
 def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_path, monkeypatch):
     units = matrix_data.linear_cuped_rows()
@@ -1773,6 +1941,8 @@ def _assert_fit_replay(source, metric, binding, design, expected, destination):
     return exported
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])
 def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
     metric, tmp_path, monkeypatch
