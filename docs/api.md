@@ -69,7 +69,7 @@ moments, artifact, and checkpoint formats.
 
     | Format | Written by | Read by `from_moments` |
     |---|---|---|
-    | 13 | Fixed-horizon `export` when a metric needs method-scoped CUPED evidence: several scalar families or a categorical-only multicovariate request | Yes |
+    | 13 | Fixed-horizon `export` when method-scoped CUPED evidence is needed: scalar families, categorical cells, or fitted continuous/mixed multicovariate QR state | Yes |
     | 12 | Fixed-horizon `export`; source identity, exact counts, ratio denominator third moment `cden3` | Yes |
     | 11 | Prior fixed-horizon export; source identity and exact counts | Yes; ratio denominator-skew coverage is unavailable |
     | 10 | Earlier fixed-horizon export or current sequential checkpoint export | Yes; fixed-horizon ratio denominator-skew coverage is unavailable |
@@ -295,12 +295,17 @@ continuous covariate. See the runnable
 
 Multicovariate CUPED uses HC2 uncertainty and a Bell–McCaffrey Student-t
 approximation, unlike scalar `cuped`, which retains its separate
-Welch–Satterthwaite method. It is fixed-horizon only. It requires per-unit
-covariate evidence, so `from_moments` cannot use it; clustered assignment and
-sequential inference are unsupported. Fits outside M1 are returned as
-unavailable with `estimation.cuped_linear.support_region`, not silently
-replaced by an unadjusted result. Ratio fits also enforce the M1 raw
-denominator-precision bound. See [M1 and statistical limits](guides/cuped.md#mixed-numeric-and-categorical-covariates).
+Welch–Satterthwaite method. It is fixed-horizon only. Native definitions and
+verified unit-day artifacts fit continuous/mixed models in the warehouse
+without transferring unit rows; only the small triangular solve and
+finalization run client-side. A fitted continuous/mixed fit can be exported in
+a format-13 fitted envelope and replayed from `Analysis.from_moments`, including
+reintervalization at a changed alpha. A moments cube cannot refit a model or
+reconstruct a missing fitted envelope. Clustered assignment and sequential
+inference are unsupported. Fits outside M1 are returned as unavailable with
+`estimation.cuped_linear.support_region`, not silently replaced by an
+unadjusted result. Ratio fits also enforce the M1 raw denominator-precision
+bound. See [M1 and statistical limits](guides/cuped.md#mixed-numeric-and-categorical-covariates).
 
 The preregistered coverage campaign in `calibration/cuped_linear.py` has not
 been run; its coverage is not established. External-prediction training

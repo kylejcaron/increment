@@ -54,6 +54,7 @@ from increment.semantics.design import (
 )
 from increment.semantics.models import (
     AnalysisPlan,
+    CupedCovariateBinding,
     Definitions,
     ExperimentMetric,
     InferenceSpec,
@@ -9072,30 +9073,64 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
     )
 
 
-def _mixed_cuped_multicovariate_case() -> ParityCase:
-    """Mixed-covariate CUPED parity on four unit ingresses and two source refusals."""
+def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
+    """Continuous QR mean/ratio parity and fitted-evidence replay across the six ingresses."""
+    import json
+
     from increment.estimation.engine import Method
     from increment.frame import CupedCovariate
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
+    from increment.semantics.assignment import IndependentBernoulliOrder
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import Winsorization
     from tests.parity_harness import matrix_cases, matrix_data
-    from tests.warehouse_cuped_cases import (
-        mixed_cuped_definitions_yaml,
-        mixed_cuped_event_rows,
-    )
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
 
     units = matrix_data.linear_cuped_rows()
     events = mixed_cuped_event_rows(units)
+
+    def method():
+        return Method.cuped_multicovariate(
+            name="linear",
+            covariates=(
+                CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+                CupedCovariate(name="country", kind="categorical"),
+                CupedCovariate(name="device", kind="categorical"),
+                CupedCovariate(name="new_user", kind="categorical"),
+            ),
+        )
+
+    metrics = [
+        MetricSpec(
+            name="revenue",
+            decision_method=method(),
+            winsorization=Winsorization(lower_value=7.0, upper_value=11.0),
+        ),
+        MetricSpec(
+            name="rpo",
+            type="ratio",
+            numerator="revenue",
+            denominator="orders",
+            preferred_direction="increase",
+            decision_method=method(),
+        ),
+        MetricSpec(
+            name="signups",
+            type="conversion",
+            value_column="signup_conversion",
+            decision_method=method(),
+        ),
+    ]
+    plan = AnalysisPlan(primary="revenue", guardrails=("rpo",), secondaries=("signups",))
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 
     def definition_analysis(*, artifact: bool) -> Analysis:
         con = ds.duckdb_connection(events)
         try:
             with tempfile.TemporaryDirectory(prefix="increment-linear-cuped-") as directory:
                 path = Path(directory) / "mixed_cuped.yaml"
-                path.write_text(mixed_cuped_definitions_yaml("mixed_events"))
+                path.write_text(
+                    mixed_cuped_definitions_yaml("mixed_events", fixed_winsorization=True)
+                )
                 con.create_table("mixed_events", obj=events)
                 native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
             return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
@@ -9103,25 +9138,50 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
             con.disconnect()
             raise
 
-    def source_limited_moments() -> Analysis:
-        spec = MetricSpec(
-            name="revenue",
-            decision_method=Method.cuped_multicovariate(
-                name="linear",
-                covariates=CupedCovariate(name="prior", kind="continuous"),
-            ),
-        )
-        return Analysis.from_moments([], metrics=[spec], control="control")
+    def moments_replay(*, alpha: float | None = None) -> Analysis:
+        from increment.semantics.loader import load
 
-    def different_design_switchback() -> Analysis:
-        spec = MetricSpec(
-            name="revenue",
-            decision_method=Method.cuped_multicovariate(
-                name="linear",
-                covariates=CupedCovariate(name="prior", kind="continuous"),
-            ),
-        )
-        from increment.semantics.design import Randomized
+        native = definition_analysis(artifact=False)
+        try:
+            with tempfile.TemporaryDirectory(prefix="increment-fitted-cuped-") as directory:
+                definition_path = Path(directory) / "mixed_cuped.yaml"
+                definition_path.write_text(
+                    mixed_cuped_definitions_yaml("mixed_events", fixed_winsorization=True)
+                )
+                experiment = load(definition_path).experiment("mixed_cuped")
+                assert experiment is not None
+
+                def replay_metric(spec: MetricSpec) -> MetricSpec:
+                    bound_method = experiment.bindings[spec.name].decision_method
+                    assert bound_method is not None
+                    return spec.model_copy(
+                        update={"decision_method": Method.model_validate(bound_method.model_dump())}
+                    )
+
+                replay_metrics = [replay_metric(spec) for spec in metrics]
+                moments_path = Path(directory) / "fitted.parquet"
+                native.export(moments_path)
+                payload = pq.read_table(moments_path).to_pylist()
+                envelopes = [
+                    json.loads(row["cuped_evidence"])
+                    for row in payload
+                    if row.get("record_kind") == "cuped_evidence"
+                ]
+                assert {item["kind"] for item in envelopes} == {"fitted_multicovariate"}
+                replay_plan = plan if alpha is None else plan.model_copy(update={"alpha": alpha})
+                return Analysis.from_moments(
+                    payload,
+                    metrics=replay_metrics,
+                    design=design,
+                    plan=replay_plan,
+                    experiment_id="mixed_cuped",
+                )
+        finally:
+            native.close()
+
+    def source_limited_switchback() -> Analysis:
+        from increment.semantics.assignment import SwitchbackAssignment, SwitchbackWindow
+        from increment.semantics.design import Randomized as SwitchbackDesign
 
         return Analysis.from_switchback_panel(
             pd.DataFrame(),
@@ -9130,8 +9190,8 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
             period="period",
             step="step",
             group="group",
-            metrics=[spec],
-            identification=Randomized(
+            metrics=metrics,
+            identification=SwitchbackDesign(
                 control_group="control",
                 allocation={"control": 0.5, "treatment": 0.5},
             ),
@@ -9141,29 +9201,279 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
             ),
         )
 
+    def fitted_alpha_probe(name: str, analysis: Analysis) -> None:
+        from increment.estimation.results import LiftEstimate
+
+        if name != "from_moments":
+            return
+        baseline_rows = analysis.run(metrics=("revenue",))
+        assert len(baseline_rows) == 1 and isinstance(baseline_rows[0], LiftEstimate)
+        baseline = baseline_rows[0].require_lift()
+        changed = moments_replay(alpha=0.2)
+        try:
+            replayed_rows = changed.run(metrics=("revenue",))
+            assert len(replayed_rows) == 1 and isinstance(replayed_rows[0], LiftEstimate)
+            replayed = replayed_rows[0].require_lift()
+            assert replayed.value == pytest.approx(baseline.value, rel=1e-10, abs=1e-12)
+            assert replayed.log_se == pytest.approx(baseline.log_se, rel=1e-10, abs=1e-12)
+            assert replayed.lb != baseline.lb or replayed.ub != baseline.ub
+        finally:
+            changed.close()
+
     return ParityCase(
         id="mixed-cuped-multicovariate-fixed-horizon",
         build={
             "from_definitions": lambda: definition_analysis(artifact=False),
             "from_unit_day_artifact": lambda: definition_analysis(artifact=True),
-            "from_unit_summary": lambda: matrix_cases.linear_cuped_frame_case(units, panel=False),
-            "from_unit_panel": lambda: matrix_cases.linear_cuped_frame_case(units, panel=True),
-            "from_switchback_panel": different_design_switchback,
-            "from_moments": source_limited_moments,
+            "from_unit_summary": lambda: matrix_cases.linear_cuped_frame_case(
+                units, panel=False, fixed_winsorization=True
+            ),
+            "from_unit_panel": lambda: matrix_cases.linear_cuped_frame_case(
+                units, panel=True, fixed_winsorization=True
+            ),
+            "from_switchback_panel": source_limited_switchback,
+            "from_moments": moments_replay,
         },
+        source_probe=fitted_alpha_probe,
         metrics=("revenue", "rpo", "signups"),
-        waive={
-            "from_switchback_panel": "SOURCE: switchback is a different design.",
-            "from_moments": "SOURCE: moments cannot supply per-unit covariates.",
+        waive={"from_switchback_panel": "SOURCE: switchback is a different design."},
+        waived_refusal_codes={"from_switchback_panel": "source.frame.switchback.metric"},
+    )
+
+
+def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
+    """Categorical mixed CUPED mean/ratio, including the format-13 moments route."""
+    import yaml
+
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from tests.parity_harness import matrix_data
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    rows = copy.deepcopy(matrix_data.linear_cuped_rows())
+    for row in rows:
+        if row["user_id"][-1].isdigit() and int(row["user_id"][1:]) % 11 == 0:
+            row["country"] = None
+        row["spend"] = 3.0 + 0.1 * row["orders"] + 0.03 * row["revenue"]
+    method = Method.cuped_multicovariate(
+        name="country",
+        covariates=CupedCovariateBinding(
+            name="country",
+            kind="categorical",
+            property="country",
+            source="events",
+            missing="impute-indicator",
+        ),
+    )
+    metrics = (
+        MetricSpec(name="revenue", decision_method=method),
+        MetricSpec(
+            name="revenue_per_spend",
+            type="ratio",
+            numerator="revenue",
+            denominator="spend",
+            preferred_direction="increase",
+            decision_method=method,
+        ),
+    )
+    plan = AnalysisPlan(
+        primary="revenue", guardrails=(ExperimentMetric(metric="revenue_per_spend"),)
+    )
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+    events = mixed_cuped_event_rows(rows)
+    outcome_time = dt.datetime(2025, 1, 11, 9)
+    events.extend(
+        {
+            **dict.fromkeys(events[0]),
+            "user_id": row["user_id"],
+            "ts": outcome_time,
+            "event": "spend",
+            "value": row["spend"],
+        }
+        for row in rows
+    )
+
+    def frame_analysis(*, panel: bool) -> Analysis:
+        if panel:
+            panel_rows = []
+            for row in rows:
+                for day in (dt.date(2025, 1, 10), dt.date(2025, 1, 11)):
+                    panel_rows.append(
+                        {
+                            **row,
+                            "date": day,
+                            "revenue": row["revenue"] / 2,
+                            "spend": row["spend"] / 2,
+                            "orders": row["orders"] / 2,
+                        }
+                    )
+            return Analysis.from_unit_panel(
+                pd.DataFrame(panel_rows),
+                unit="user_id",
+                group="variant",
+                date="date",
+                metrics=metrics,
+                plan=plan,
+                design=design,
+                breakouts=("region",),
+            )
+        return Analysis.from_unit_summary(
+            pd.DataFrame(rows),
+            unit="user_id",
+            group="variant",
+            metrics=metrics,
+            plan=plan,
+            design=design,
+        )
+
+    def definition_analysis(*, artifact: bool = False, breakout: bool = False) -> Analysis:
+        con = ds.duckdb_connection(events)
+        # Rewrite the current plan's mixed method to the categorical-only identity.
+        with tempfile.TemporaryDirectory(prefix="increment-categorical-cuped-") as directory:
+            path = Path(directory) / "categorical.yaml"
+            document = yaml.safe_load(mixed_cuped_definitions_yaml("events", breakout=breakout))
+            document["fact_sources"][0]["facts"].append({"name": "spend", "column": "value"})
+            document["metrics"].append(
+                {
+                    "name": "revenue_per_spend",
+                    "type": "ratio",
+                    "entity": "user_id",
+                    "numerator": {"fact": "revenue", "aggregation": "sum", "window_days": 2},
+                    "denominator": {"fact": "spend", "aggregation": "sum", "window_days": 2},
+                    "preferred_direction": "increase",
+                }
+            )
+            experiment = document["experiments"][0]
+            method_data = method.model_dump(mode="json", exclude_none=True)
+            configured_plan = experiment["plan"]
+            configured_plan["primary"]["decision_method"] = method_data
+            configured_plan["guardrails"] = [
+                {"metric": "revenue_per_spend", "decision_method": method_data}
+            ]
+            configured_plan.pop("secondaries")
+            path.write_text(yaml.safe_dump(document))
+            try:
+                native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
+            except BaseException:
+                con.disconnect()
+                raise
+        return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
+
+    def moments_analysis() -> Analysis:
+        import json
+
+        with tempfile.TemporaryDirectory(prefix="increment-categorical-moments-") as directory:
+            native = definition_analysis()
+            try:
+                path = Path(directory) / "categorical.parquet"
+                native.export(path)
+                table = pq.read_table(path)
+                payload = table.to_pylist()
+                assert {row["moments_format"] for row in payload} == {13}
+                assert table.schema.metadata[b"increment.moments_format"] == b"13"
+                assert {
+                    json.loads(row["cuped_evidence"])["kind"]
+                    for row in payload
+                    if row.get("record_kind") == "cuped_evidence"
+                } == {"categorical_cells"}
+            finally:
+                native.close()
+        return Analysis.from_moments(
+            payload,
+            metrics=metrics,
+            design=design,
+            experiment_id="mixed_cuped",
+        )
+
+    def switchback_analysis() -> Analysis:
+        from increment.semantics.design import Randomized as SwitchbackDesign
+
+        return Analysis.from_switchback_panel(
+            pd.DataFrame(),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics=metrics,
+            identification=SwitchbackDesign(
+                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+
+    breakout_reference: dict[tuple[str, object], dict[str, object]] | None = None
+
+    def breakout_probe(name: str, analysis: Analysis) -> None:
+        nonlocal breakout_reference
+        from increment.errors import CodedError
+        from tests.parity_harness.comparison import nested_close
+
+        if name in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
+            breakout_rows = analysis.run_breakout()
+            assert {(row.metric, row.dimension_value) for row in breakout_rows} == {
+                (metric, region)
+                for metric in ("revenue", "revenue_per_spend")
+                for region in ("east", "west")
+            }
+            current = {
+                (row.metric, row.dimension_value): {
+                    "available": row.lift is not None,
+                    "value": None if row.lift is None else row.lift.value,
+                    "log_se": None if row.lift is None else row.lift.log_se,
+                    "lower": None if row.lift is None else row.lift.lb,
+                    "upper": None if row.lift is None else row.lift.ub,
+                    "absolute_difference": row.abs_diff,
+                    "absolute_se": row.abs_se,
+                    "absolute_lower": row.abs_lb,
+                    "absolute_upper": row.abs_ub,
+                    "excluded": row.excluded,
+                    "failure_code": row.failure_code,
+                    "failure_context": row.failure_context,
+                    "n_control": row.n_control,
+                    "n_treat": row.n_treat,
+                    "sampling_available": row.sampling_available,
+                    "sampling_reason_code": row.sampling_reason_code,
+                    "sampling_reason_context": row.sampling_reason_context,
+                }
+                for row in breakout_rows
+            }
+            if breakout_reference is None:
+                breakout_reference = current
+            else:
+                assert nested_close(breakout_reference, current), (
+                    f"{name} breakout estimates, intervals, or availability differ"
+                )
+            return
+        with pytest.raises(CodedError) as raised:
+            analysis.run_breakout()
+        assert raised.value.code == "facade.analysis.operation"
+
+    return ParityCase(
+        id="categorical-cuped-moments-format-13",
+        build={
+            "from_definitions": lambda: definition_analysis(breakout=True),
+            "from_unit_day_artifact": lambda: definition_analysis(artifact=True, breakout=True),
+            "from_unit_summary": lambda: frame_analysis(panel=False),
+            "from_unit_panel": lambda: frame_analysis(panel=True),
+            "from_moments": moments_analysis,
+            "from_switchback_panel": switchback_analysis,
         },
-        waived_refusal_codes={
-            "from_switchback_panel": "source.frame.switchback.metric",
-            "from_moments": "facade.analysis_config.cuped_linear_moments",
-        },
+        metrics=("revenue", "revenue_per_spend"),
+        source_probe=breakout_probe,
+        waive={"from_switchback_panel": "SOURCE: switchback is a different design."},
+        waived_refusal_codes={"from_switchback_panel": "source.frame.switchback.metric"},
     )
 
 
 PARITY_CASES: tuple[ParityCase, ...] = (
+    _categorical_cuped_moments_case(),
     _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),

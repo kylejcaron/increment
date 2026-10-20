@@ -107,7 +107,6 @@ SUPPORT_REQUIREMENTS = MappingProxyType(
 # this relative tolerance is not a violation.
 DENOMINATOR_PRECISION_TOLERANCE = 1e-12
 SUPPORT_REGION_CODE = "estimation.cuped_linear.support_region"
-PUBLIC_ROUTE_UNFINISHED_CODE = "estimation.engine.cuped_linear_unfinished"
 
 
 class PrerequisiteError(CodedError):
@@ -707,7 +706,7 @@ def _support_region_probe() -> dict:
 
 
 def _public_route_probe() -> dict:
-    """Run the smallest public cuped_linear analysis; the unfinished code means no route."""
+    """Run the smallest public multicovariate CUPED analysis."""
     import pandas as pd
 
     from increment import Analysis, AnalysisPlan, Method
@@ -739,12 +738,7 @@ def _public_route_probe() -> dict:
         metrics=[metric],
         plan=AnalysisPlan(primary="outcome"),
     )
-    try:
-        rows = analysis.run()
-    except CodedError as error:
-        if error.code != PUBLIC_ROUTE_UNFINISHED_CODE:
-            raise
-        return {"refusal": error.code, "satisfied": False}
+    rows = analysis.run()
     returned = isinstance(rows, LiftEstimates) and any(row.metric == "outcome" for row in rows)
     return {"refusal": None, "satisfied": bool(returned)}
 
@@ -762,7 +756,7 @@ PREREQUISITES = MappingProxyType(
             _support_region_probe,
         ),
         "public_route": Prerequisite(
-            "Analysis.run() with Method.cuped_multicovariate(name='linear', covariates=...) returns LiftEstimates rows instead of {PUBLIC_ROUTE_UNFINISHED_CODE}; the FCP families and the public D7 sentinel select and reinterval through it",
+            "Analysis.run() with Method.cuped_multicovariate(name='linear', covariates=...) returns LiftEstimates rows; the FCP families and the public D7 sentinel select and reinterval through it",
             _public_route_probe,
         ),
     }

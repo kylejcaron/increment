@@ -26,7 +26,11 @@ _CATEGORICAL = Method.cuped_multicovariate(
     name="segments",
     covariates=(
         CupedCovariateBinding(
-            name="country", kind="categorical", property="country", source="events"
+            name="country",
+            kind="categorical",
+            property="country",
+            source="events",
+            missing="impute-indicator",
         ),
         CupedCovariateBinding(
             name="device", kind="categorical", property="device", source="events"
@@ -34,6 +38,12 @@ _CATEGORICAL = Method.cuped_multicovariate(
     ),
 )
 _COMPANION = Method.cuped(name="cuped")
+_EXPLICIT_COMPANION = Method.cuped(
+    name="history_b",
+    covariates=CupedCovariateBinding(
+        name="history_b", kind="continuous", property="history_b", source="events"
+    ),
+)
 # Columns of transferred joint-cell outcome aggregates: ref_<f>, first_<f>, cross_<f>_<g>.
 _OUTCOME_CELL = re.compile(r"(ref|first|cross)_\d")
 
@@ -54,8 +64,9 @@ def _units() -> list[dict[str, Any]]:
                         "orders": 1,
                         "signups": 0,
                         "pre_revenue": 7.5 + 0.2 * pattern + 0.8 * noise + 0.05 * (i % 5),
+                        "history_b": 2.0 + 0.1 * pattern + 0.6 * math.cos(0.3 * i + a),
                         "region": "north" if i % 2 else "south",
-                        "country": "A" if pattern < 2 else "B",
+                        "country": None if i % 11 == 0 else ("A" if pattern < 2 else "B"),
                         "device": "mobile" if pattern % 2 else "desktop",
                         "new_user": "no",
                     }
@@ -67,6 +78,11 @@ def _events(units) -> list[dict[str, Any]]:
     from tests.warehouse_cuped_cases import mixed_cuped_event_rows
 
     events = mixed_cuped_event_rows(units)
+    by_user = {unit["user_id"]: unit for unit in units}
+    for event in events:
+        event["history_b"] = (
+            by_user[event["user_id"]]["history_b"] if event["event"] == "history" else None
+        )
     outcome = next(
         row["ts"]
         for row in events
@@ -99,6 +115,14 @@ def _definitions(tmp_path, *, fixed_caps: bool, covariate_name: str = "country")
         )
     )
     data["fact_sources"][0]["facts"].append({"name": "spend", "column": "value"})
+    data["fact_sources"][0]["properties"].append(
+        {
+            "name": "history_b",
+            "column": "history_b",
+            "dtype": "float",
+            "as_of": "pre_exposure",
+        }
+    )
     data["metrics"].append(
         {
             "name": "revenue_per_spend",
@@ -111,9 +135,11 @@ def _definitions(tmp_path, *, fixed_caps: bool, covariate_name: str = "country")
     )
     decision = _CATEGORICAL.model_dump(mode="json", exclude_none=True)
     decision["covariates"][0]["name"] = covariate_name
+    companion = _COMPANION.model_dump(mode="json", exclude_none=True)
+    explicit_companion = _EXPLICIT_COMPANION.model_dump(mode="json", exclude_none=True)
     plan = data["experiments"][0]["plan"]
     plan["primary"]["decision_method"] = decision
-    plan["primary"]["sensitivity_methods"] = [_COMPANION.model_dump(mode="json", exclude_none=True)]
+    plan["primary"]["sensitivity_methods"] = [companion, explicit_companion]
     guardrail = dict(decision)
     plan["guardrails"] = [{"metric": "revenue_per_spend", "decision_method": guardrail}]
     plan.pop("secondaries")
@@ -256,6 +282,7 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
         assert set(expected) == {
             ("revenue", "segments", "treatment"),
             ("revenue", "cuped", "treatment"),
+            ("revenue", "history_b", "treatment"),
             ("revenue_per_spend", "segments", "treatment"),
         }
         transferred = _guard_unit_transfers(monkeypatch, con, outcome_cells=True)
@@ -267,8 +294,9 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
             source = native
         destination = tmp_path / "portable.parquet"
         source.export(destination)
-        # The joint cells crossed the same guarded connection that refuses unit rows.
+        # Joint cells and both method-scoped scalar families cross only as aggregates.
         assert any(_OUTCOME_CELL.match(name) for names in transferred for name in names)
+        assert all("unit_id" not in names for names in transferred)
         rows = pq.read_table(destination).to_pylist()
         assert {row["moments_format"] for row in rows} == {13}
         envelopes = sorted(
@@ -282,6 +310,7 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
         assert envelopes == [
             ("categorical_cells", "revenue"),
             ("categorical_cells", "revenue_per_spend"),
+            ("scalar_moments", "revenue"),
             ("scalar_moments", "revenue"),
         ]
         design = _design(path)

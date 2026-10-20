@@ -584,7 +584,7 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
             A: (_consumer("mixed-cuped-fixed-horizon", "from_unit_day_artifact_supported"),),
             M: (
                 _consumer("mixed-cuped-fixed-horizon", "from_moments_categorical_supported"),
-                _consumer("mixed-cuped-fixed-horizon", "from_moments_source_limited"),
+                _consumer("mixed-cuped-fixed-horizon", "from_moments_fitted_supported"),
             ),
             SB: (_consumer("mixed-cuped-fixed-horizon", "switchback_source_limited"),),
         },
