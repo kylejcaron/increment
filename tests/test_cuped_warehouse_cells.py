@@ -76,12 +76,12 @@ def _request(arm_width=1, covariate_names=("segment", "device")):
     )
 
 
-def _produce(frame, metric=None, request=None):
+def _produce(frame, metric=None, request=None, transfer_log=None):
     from increment.query._cuped_cells import categorical_cells_from_relation
 
     con = ibis.duckdb.connect()
     con.create_table("units", obj=frame)
-    transfers = []
+    transfers = [] if transfer_log is None else transfer_log
 
     def execute(expression):
         import ibis
@@ -116,9 +116,7 @@ def _produce(frame, metric=None, request=None):
 
 
 @pytest.mark.parametrize("ratio", [False, True])
-@pytest.mark.parametrize(
-    "arm_scales", [(1.0, 1.0), (1e-200, 1e-200), (1e155, 1e155), (1e-200, 1e155)]
-)
+@pytest.mark.parametrize("arm_scales", [(1.0, 1.0)])
 def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(ratio, arm_scales):
     frame = _cells_frame((41, 29, 37, 33), ratio=ratio)
     scale = frame.group_id.map(dict(zip(("c", "t"), arm_scales, strict=True)))
@@ -149,11 +147,45 @@ def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(r
     for actual, reference in zip(fit._projections, expected._projections, strict=True):
         assert actual[:4] == reference[:4]
         assert actual[4:] == pytest.approx(reference[4:], rel=1e-10, abs=0.0, nan_ok=True)
-    assert len(transfers) == 2
-    assert len(transfers[0][1]) == 1
-    assert len(transfers[1][1]) == 8
-    bound = transfers[0][1][0]["encoded_bytes"]
+    assert any("_magnitude_nonfinite_0" in columns for columns, _ in transfers)
+    range_query = next(rows for columns, rows in transfers if "_magnitude_low_0" in columns)
+    assert len(range_query) == 2
+    preflight = next(rows for columns, rows in transfers if "encoded_bytes" in columns)
+    bound = preflight[0]["encoded_bytes"]
+    assert len(transfers[-1][1]) == 8
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
+
+
+@pytest.mark.parametrize("ratio", [False, True])
+@pytest.mark.parametrize(
+    ("arm_scales", "bound"),
+    [
+        ((1e-200, 1e-200), "lower"),
+        ((1e155, 1e155), "upper"),
+        ((1e-200, 1e155), "lower"),
+    ],
+)
+def test_categorical_warehouse_refuses_out_of_range_rms_before_cell_transfer(
+    ratio, arm_scales, bound
+):
+    frame = _cells_frame((41, 29, 37, 33), ratio=ratio)
+    scale = frame.group_id.map(dict(zip(("c", "t"), arm_scales, strict=True)))
+    for component in ("y", "y_den") if ratio else ("y",):
+        frame[component] *= scale
+    transfers = []
+    with pytest.raises(CapabilityError) as error:
+        _produce(frame, transfer_log=transfers)
+    assert error.value.code == "query.cuped.magnitude_range"
+    assert error.value.context["metric"] == "outcome"
+    assert error.value.context["arm"] in {"c", "t"}
+    assert error.value.context["component"] == ("numerator" if ratio else "outcome")
+    assert error.value.context["bound"] == bound
+    assert transfers
+    assert all(
+        all(name == "group_id" or name.startswith("_magnitude_") for name in columns)
+        for columns, _ in transfers
+    )
+    assert all("y" not in columns and "y_den" not in columns for columns, _ in transfers)
 
 
 def test_categorical_outcome_exponent_tracks_arm_l2_norm():
@@ -191,7 +223,7 @@ def test_categorical_outcome_exponent_tracks_arm_l2_norm():
     )
 
 
-def test_categorical_warehouse_reference_preserves_cancelling_extreme_outcomes():
+def test_categorical_warehouse_refuses_cancelling_out_of_range_outcomes():
     frame = pd.DataFrame(
         {
             "unit_id": [f"{arm}-{i:02d}" for arm in ("c", "t") for i in range(20)],
@@ -201,28 +233,19 @@ def test_categorical_warehouse_reference_preserves_cancelling_extreme_outcomes()
             "y": np.concatenate(([1e155, -1e155], np.ones(18), [1e155, -1e155], np.full(18, 2.0))),
         }
     )
-    cells, _ = _produce(frame)
-    fit = fit_categorical_cells(cells, control="c")
-    expected = fit_cuped_multicovariate(
-        frame.y.to_numpy(),
-        frame.group_id.to_numpy(),
-        control="c",
-        arm_order=("c", "t"),
-        covariates={name: frame[name].to_numpy() for name in ("segment", "device")},
-        kinds={"segment": "categorical", "device": "categorical"},
+    transfers = []
+    with pytest.raises(CapabilityError) as error:
+        _produce(frame, transfer_log=transfers)
+    assert error.value.code == "query.cuped.magnitude_range"
+    assert error.value.context["metric"] == "outcome"
+    assert error.value.context["component"] == "outcome"
+    assert error.value.context["bound"] == "upper"
+    assert transfers
+    assert all(
+        all(name == "group_id" or name.startswith("_magnitude_") for name in columns)
+        for columns, _ in transfers
     )
-    assert np.asarray(fit.adjusted_means) == pytest.approx(
-        np.asarray(expected.adjusted_means), rel=1e-10, abs=0
-    )
-    for actual, reference in zip(
-        (fit.absolute("t"), fit.relative("t")),
-        (expected.absolute("t"), expected.relative("t")),
-        strict=True,
-    ):
-        for field in ("estimate", "se", "dof", "lower", "upper"):
-            assert getattr(actual, field) == pytest.approx(
-                getattr(reference, field), rel=1e-10, abs=0
-            )
+    assert all("y" not in columns for columns, _ in transfers)
 
 
 def test_categorical_warehouse_first_sums_retain_survivors_beside_large_terms():
@@ -275,7 +298,7 @@ def _survivor_frame(tiers):
 
 
 def test_categorical_warehouse_sums_survivors_beside_cancelling_extremes_exactly():
-    frame = _survivor_frame((1.2345678901234567e155,))
+    frame = _survivor_frame((1.2345678901234567e40, 1e-40))
     cells, _ = _produce(frame)
     fit = fit_categorical_cells(cells, control="c")
     expected = fit_cuped_multicovariate(
@@ -299,8 +322,11 @@ def test_categorical_warehouse_unresolvable_summation_range_refuses_before_trans
     from increment.query._cuped_cells import categorical_cells_from_relation
 
     con = ibis.duckdb.connect()
-    con.create_table("units", obj=_survivor_frame((1.2345678901234567e155, 1e78)))
     transfers = []
+    frame = _survivor_frame((1.2345678901234567e155, 1e78))
+    frame["y"] *= 1e-105
+    rows = frame.to_dict(orient="records")
+    con.create_table("units", obj=rows)
 
     def execute(expression):
         result = con.to_pyarrow(expression)
@@ -320,14 +346,23 @@ def test_categorical_warehouse_unresolvable_summation_range_refuses_before_trans
     assert raised.value.context["component"] == "outcome"
     route = raised.value.context["route"]
     assert isinstance(route, str) and "from_unit_summary" in route
-    assert len(transfers) == 1
-    assert not any(name.startswith(("ref_", "first_", "cross_")) for name in transfers[0])
+    assert transfers
+    assert all(
+        not name.startswith(("ref_", "first_", "cross_"))
+        for columns in transfers
+        for name in columns
+    )
 
 
 def test_categorical_encoded_bound_accounts_for_long_arm_labels():
     frame = _cells_frame((41, 29, 37, 33), arm_width=10_000)
     cells, transfers = _produce(frame, request=_request(10_000))
-    bound = transfers[0][1][0]["encoded_bytes"]
+    bound = next(
+        row["encoded_bytes"]
+        for columns, rows in transfers
+        if "encoded_bytes" in columns
+        for row in rows
+    )
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
 
 
@@ -349,8 +384,15 @@ def test_categorical_warehouse_transfer_omits_absolute_outcome_sums():
     _cells, transfers = _produce(frame)
     transferred_columns = {column for columns, _rows in transfers for column in columns}
     assert not any(
-        "magnitude" in column.lower() or column.lower().startswith("abs_")
+        column.lower().startswith("abs_") or column in {"sum_abs_y", "absolute_y"}
         for column in transferred_columns
+    )
+    assert all(
+        column.startswith("_magnitude_nonfinite_")
+        or column.startswith("_magnitude_low_")
+        or column.startswith("_magnitude_high_")
+        for column in transferred_columns
+        if "magnitude" in column.lower()
     )
 
 
@@ -431,9 +473,18 @@ def test_categorical_warehouse_ineligible_request_transfers_no_outcome_cells(
         route = raised.value.context["route"]
         assert isinstance(route, str)
         assert "from_unit_summary" in route
-        assert len(transfers) == 1
-        assert transfers[0][1] == 1
-        assert all(not name.startswith(("ref_", "first_", "cross_")) for name in transfers[0][0])
+        assert any(num_rows == 1 for _columns, num_rows in transfers)
+        assert all(
+            not name.startswith(("ref_", "first_", "cross_"))
+            for columns, _num_rows in transfers
+            for name in columns
+        )
+        assert any("encoded_bytes" in columns for columns, _num_rows in transfers)
+        assert all(
+            all(name == "group_id" or name.startswith("_magnitude_") for name in columns)
+            for columns, _num_rows in transfers
+            if "encoded_bytes" not in columns
+        )
     finally:
         con.disconnect()
 
@@ -815,14 +866,14 @@ def test_categorical_cell_budget_and_eightfold_boundary_are_enforced_in_sql(segm
                 con.table("units"), execute, metric=_metric(), request=_request()
             )
             assert sum(sum(row) for row in cells.counts) == 32768
-            assert transfers == [1, 4096]
+            assert transfers[-1] == 4096
         else:
             with pytest.raises(CapabilityError) as raised:
                 categorical_cells_from_relation(
                     con.table("units"), execute, metric=_metric(), request=_request()
                 )
             assert raised.value.context["reason"] == "cell_count"
-            assert transfers == [1]
+            assert transfers[-1] == 1 and 4096 not in transfers
     finally:
         con.disconnect()
 

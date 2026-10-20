@@ -42,7 +42,7 @@ def _power_two_l2_scales(
     square_names = tuple(f"_qr_scale_squares_{index}" for index in range(len(expressions)))
     maxima = relation.aggregate(
         **{
-            name: expression.abs().max()
+            name: expression.cast("float64").abs().max()
             for name, expression in zip(maximum_names, expressions, strict=True)
         }
     )
@@ -51,9 +51,10 @@ def _power_two_l2_scales(
     for index, (maximum_name, square_name, expression) in enumerate(
         zip(maximum_names, square_names, expressions, strict=True)
     ):
+        numeric = expression.cast("float64")
         moment_fields[f"_qr_norm_max_{index}"] = scaled[maximum_name].max()
         moment_fields[square_name] = (
-            (expression / ibis.ifelse(scaled[maximum_name] > 0, scaled[maximum_name], 1.0))
+            (numeric / ibis.ifelse(scaled[maximum_name] > 0, scaled[maximum_name], 1.0))
             .pow(2)
             .sum()
         )
@@ -202,7 +203,7 @@ def solve_qr_coefficients(
     )
 
 
-def warehouse_qr_unit_summary(
+def warehouse_qr_unit_summary(  # noqa: PLR0913
     relation: ir.Table,
     factor: QRFactor,
     *,
@@ -211,6 +212,9 @@ def warehouse_qr_unit_summary(
     sqrt_weight_column: str,
     row_identity_columns: Sequence[str],
     design_scales: Sequence[float],
+    arms: Sequence[object],
+    outcome_arm_exponents: Sequence[Sequence[int]],
+    centered_outcome_means: Sequence[Sequence[float]],
     coefficients: Sequence[Sequence[float]],
     execute: Callable[[ir.Table], object],
     scratch,
@@ -259,16 +263,29 @@ def warehouse_qr_unit_summary(
     working = relation.join(wide, row_identity_columns)
     leverage = _sum_sql(working[name] * working[name] for name in q_columns)
     working = working.mutate(_qr_h=leverage)
+    from increment.query._cuped_cells import _binary_normalize
+
     design_scales = tuple(float(value) for value in design_scales)
     residuals = {}
     for component, outcome_column in enumerate(outcome_columns):
-        prediction = _sum_sql(
-            working[name]
-            * ibis.literal(design_scales[index] * float(coefficients[component][index]))
-            / working[sqrt_weight_column]
-            for index, name in enumerate(design_columns)
-        )
-        residuals[f"_qr_residual_{component}"] = working[outcome_column] - prediction
+        arm_residuals = []
+        for arm_index, arm in enumerate(arms):
+            exponent = int(outcome_arm_exponents[component][arm_index])
+            prediction = _binary_normalize(
+                ibis.literal(float(centered_outcome_means[component][arm_index])), exponent
+            ) + _sum_sql(
+                working[name]
+                * design_scales[index]
+                * _binary_normalize(ibis.literal(float(coefficients[component][index])), exponent)
+                / working[sqrt_weight_column]
+                for index, name in enumerate(design_columns)
+                if index >= len(arms)
+            )
+            normalized_outcome = _binary_normalize(working[outcome_column], exponent)
+            arm_residuals.append(
+                ibis.ifelse(working["group_id"] == arm, normalized_outcome - prediction, 0.0)
+            )
+        residuals[f"_qr_residual_{component}"] = _sum_sql(arm_residuals)
     working = working.mutate(**residuals)
     evidence = scratch.materialize_next(working)
     record = _rows(
@@ -327,6 +344,20 @@ def _aggregate_matrix(
     return first_result, second_result
 
 
+def _sum_scaled_parts(parts: Sequence[tuple[float, int]]) -> float:
+    nonzero = tuple((value, exponent) for value, exponent in parts if value != 0.0)
+    if not nonzero:
+        return 0.0
+    common_exponent = max(exponent for _, exponent in nonzero)
+    mantissa = math.fsum(
+        math.ldexp(value, exponent - common_exponent) for value, exponent in nonzero
+    )
+    try:
+        return math.ldexp(mantissa, common_exponent)
+    except OverflowError:
+        return math.copysign(float("inf"), mantissa)
+
+
 def _stable_offset_difference(value: float, reference: float, scale: float) -> float:
     exponent = max(
         (math.frexp(abs(item))[1] for item in (value, reference, scale) if item != 0.0),
@@ -379,27 +410,6 @@ def _stable_ratio(numerator: float, denominator: float) -> float:
         return math.copysign(float("inf"), numerator_mantissa * denominator_mantissa)
 
 
-def _stable_product_ratio(
-    numerators: Sequence[float], denominators: Sequence[float], exponent: int = 0
-) -> float:
-    mantissa = 1.0
-    shift = exponent
-    for value in numerators:
-        fraction, part_exponent = math.frexp(value)
-        mantissa *= fraction
-        shift += part_exponent
-    for value in denominators:
-        fraction, part_exponent = math.frexp(value)
-        mantissa /= fraction
-        shift -= part_exponent
-    mantissa, part_exponent = math.frexp(mantissa)
-    shift += part_exponent
-    try:
-        return math.ldexp(mantissa, shift)
-    except OverflowError:
-        return math.copysign(float("inf"), mantissa)
-
-
 def _product_ratio_parts(
     numerators: Sequence[float], denominators: Sequence[float], weight: float
 ) -> tuple[float, int]:
@@ -417,26 +427,36 @@ def _product_ratio_parts(
     return mantissa, exponent + shift
 
 
-def _combine_projection_score_parts(terms):
-    nonzero = [part for part in terms if part[2] != 0.0]
-    if not nonzero:
-        return {}, 0.0
-    scale_exponent = max(exponent for _, _, _, exponent in nonzero)
-    scale_mantissa = max(
-        abs(mantissa) for _, _, mantissa, exponent in nonzero if exponent == scale_exponent
-    )
-    coefficients = {
-        (family, arm): math.ldexp(mantissa / scale_mantissa, exponent - scale_exponent)
-        for family, arm, mantissa, exponent in nonzero
-    }
+def _scaled_score_summary(
+    projection_mantissa: float,
+    projection_exponent: int,
+    normalized_score_scale: float,
+    scaled_square_sum: float,
+) -> tuple[float, float]:
+    """Rebase score evidence so neither factor has to hold the physical scale."""
+    if projection_mantissa == 0.0 or normalized_score_scale == 0.0 or scaled_square_sum == 0.0:
+        return 0.0, 0.0
+    mantissa, exponent = math.frexp(projection_mantissa * normalized_score_scale)
+    exponent += projection_exponent
+    se_mantissa, se_shift = math.frexp(mantissa * math.sqrt(scaled_square_sum))
+    se_exponent = exponent + se_shift
+    scale_exponent = max(-1074, min(1023, se_exponent - 1))
     try:
-        scale = math.ldexp(scale_mantissa, scale_exponent)
+        score_scale = math.ldexp(1.0, scale_exponent)
     except OverflowError:
-        scale = float("inf")
-    return coefficients, scale
+        return float("inf"), float("inf")
+    square_exponent = 2 * (exponent - scale_exponent)
+    try:
+        square_sum = math.ldexp(mantissa * mantissa * scaled_square_sum, square_exponent)
+        final_se = math.ldexp(se_mantissa, se_exponent)
+    except OverflowError:
+        return float("inf"), float("inf")
+    if not math.isfinite(final_se):
+        return float("inf"), float("inf")
+    return score_scale, square_sum
 
 
-def _relative_score_coefficients(state, spec, score_column_scales, arms):
+def _relative_score_coefficients(state, spec, arms):
     means = np.asarray(state.adjusted_means, dtype=float)
     treatment = arms.index(spec.arm)
     control = arms.index(spec.control)
@@ -444,23 +464,14 @@ def _relative_score_coefficients(state, spec, score_column_scales, arms):
         (0, treatment, (1.0,), (float(means[treatment]),), 1.0),
         (0, control, (1.0,), (float(means[control]),), -1.0),
     )
-    parts = []
-    for family, arm, numerators, denominators, sign in terms:
-        score_scale = float(score_column_scales[f"_qr_hc2_{family}_{arm}"])
-        if score_scale == 0.0:
-            continue
-        parts.append(
-            (
-                family,
-                arm,
-                *_product_ratio_parts(numerators, denominators, sign * score_scale),
-            )
-        )
-    return _combine_projection_score_parts(parts)
+    return {
+        (family, arm): _product_ratio_parts(numerators, denominators, sign)
+        for family, arm, numerators, denominators, sign in terms
+    }
 
 
-def _ratio_score_coefficients(state, spec, score_column_scales, arms):
-    """Scale each ratio derivative together with its matching score L2 scale."""
+def _ratio_score_coefficients(state, spec, arms):
+    """Return per-component ratio derivative mantissas and binary exponents."""
     scale_name = str(spec.identity[-1])
     means = np.asarray(state.adjusted_means, dtype=float).reshape(2, len(arms))
     ai, ci = arms.index(spec.arm), arms.index(spec.control)
@@ -476,23 +487,29 @@ def _ratio_score_coefficients(state, spec, score_column_scales, arms):
     else:
         terms = (
             (0, ai, (1.0,), (nd,), 1.0),
-            (0, ci, (1.0,), (cd,), -1.0),
             (1, ai, (nt,), (nd, nd), -1.0),
+            (0, ci, (1.0,), (cd,), -1.0),
             (1, ci, (nc,), (cd, cd), 1.0),
         )
-    parts = []
-    for family, arm, numerators, denominators, sign in terms:
-        score_scale = float(score_column_scales[f"_qr_hc2_{family}_{arm}"])
-        if score_scale == 0.0:
-            continue
-        parts.append(
-            (
-                family,
-                arm,
-                *_product_ratio_parts(numerators, denominators, sign * score_scale),
+    return {
+        (family, arm): _product_ratio_parts(numerators, denominators, sign)
+        for family, arm, numerators, denominators, sign in terms
+    }
+
+
+def _absolute_score_coefficients(spec, arms):
+    jacobian = tuple(float(value) for value in spec.jacobian)
+    coefficients = {}
+    for family in range(1):
+        for arm in range(len(arms)):
+            mantissa, exponent = _product_ratio_parts(
+                (jacobian[family * len(arms) + arm], float(spec.scale)),
+                (float(spec.divisor),),
+                1.0,
             )
-        )
-    return _combine_projection_score_parts(parts)
+            if mantissa:
+                coefficients[(family, arm)] = (mantissa, exponent + int(spec.exponent))
+    return coefficients
 
 
 def _contrast_covariates(state: FitState, jacobian: np.ndarray) -> np.ndarray:
@@ -539,9 +556,12 @@ def _warehouse_hc2_scores(
     design_scales: np.ndarray,
     sqrt_weight_column: str,
     covariate_columns: Sequence[str],
+    outcome_arm_exponents: Sequence[Sequence[int]],
     execute: Callable[[ir.Table], object],
     scratch,
 ) -> tuple[ir.Table, tuple[tuple[str, ...], ...], tuple[tuple[float, ...], ...]]:
+    from increment.query._cuped_cells import _binary_normalize
+
     arms = tuple(state.eligible_arms)
     counts = tuple(state.counts)
     width = len(arms) + state.p
@@ -552,8 +572,19 @@ def _warehouse_hc2_scores(
     slopes = np.asarray(state.slopes, dtype=float)
     covariate_fitted = tuple(
         _sum_sql(
-            relation[covariate_columns[index]] * float(slopes[family, index])
-            for index in range(state.p)
+            ibis.ifelse(
+                relation["group_id"] == arm,
+                _sum_sql(
+                    relation[covariate_columns[index]]
+                    * _binary_normalize(
+                        ibis.literal(float(slopes[family, index])),
+                        int(outcome_arm_exponents[family][arm_index]),
+                    )
+                    for index in range(state.p)
+                ),
+                0.0,
+            )
+            for arm_index, arm in enumerate(arms)
         )
         for family in range(families)
     )
@@ -563,7 +594,7 @@ def _warehouse_hc2_scores(
     score_values = {}
     triangular = np.asarray(factor.triangular_factor, dtype=float)
     for family in range(families):
-        residual = relation[f"_qr_residual_{family}"]
+        normalized_residual = relation[f"_qr_residual_{family}"]
         for arm in range(len(arms)):
             jacobian = np.zeros(len(arms), dtype=float)
             jacobian[arm] = 1.0
@@ -578,13 +609,29 @@ def _warehouse_hc2_scores(
                 q[index] * float(coefficient[index]) for index in range(width)
             )
             score_values[score_names[family][arm]] = (
-                influence * residual / root_residual
+                influence * normalized_residual / root_residual
                 + float(jacobian.sum() / sum(counts)) * covariate_fitted[family]
             )
     scored = cast(ir.Table, scratch.materialize_next(relation.mutate(**score_values)))
     flat_scores = tuple(scored[name] for family in score_names for name in family)
-    covariance = cast(
-        FloatMatrix, _aggregate_matrix(scored, flat_scores, flat_scores, execute=execute)
+    covariance_parts = [[[] for _ in flat_scores] for _ in flat_scores]
+    for source_index, source_arm in enumerate(arms):
+        source = scored.filter(scored["group_id"] == source_arm)
+        normalized_covariance = cast(
+            FloatMatrix,
+            _aggregate_matrix(source, flat_scores, flat_scores, execute=execute),
+        )
+        for left in range(len(flat_scores)):
+            left_family = left // len(arms)
+            for right in range(len(flat_scores)):
+                right_family = right // len(arms)
+                exponent = int(outcome_arm_exponents[left_family][source_index]) + int(
+                    outcome_arm_exponents[right_family][source_index]
+                )
+                covariance_parts[left][right].append((normalized_covariance[left][right], exponent))
+    covariance = tuple(
+        tuple(_sum_scaled_parts(covariance_parts[left][right]) for right in range(len(flat_scores)))
+        for left in range(len(flat_scores))
     )
     return scored, score_names, covariance
 
@@ -657,6 +704,17 @@ def _warehouse_bm_component(
     )
 
 
+def _sum_scaled_square_parts(parts: Sequence[tuple[float, int]]) -> tuple[float, int]:
+    nonzero = tuple((value, exponent) for value, exponent in parts if value > 0.0)
+    if not nonzero:
+        return 0.0, 0
+    common_exponent = max(exponent for _, exponent in nonzero)
+    scaled_sum = math.fsum(
+        math.ldexp(value, 2 * (exponent - common_exponent)) for value, exponent in nonzero
+    )
+    return scaled_sum, common_exponent
+
+
 def _warehouse_projection_reductions(  # noqa: PLR0915
     state: FitState,
     current: ir.Table,
@@ -665,6 +723,7 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
     projection_estimates: Sequence[float],
     factor: QRFactor,
     design_scales: np.ndarray,
+    outcome_arm_exponents: Sequence[Sequence[int]],
     sqrt_weight_column: str,
     execute: Callable[[ir.Table], object],
     scratch,
@@ -690,19 +749,6 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
     g_rows = []
     g2_rows = []
     unavailable_specs = []
-    score_column_names = tuple(name for family in score_names for name in family)
-    score_column_scales = dict(
-        zip(
-            score_column_names,
-            _power_two_l2_scales(
-                current,
-                tuple(current[name] for name in score_column_names),
-                execute=execute,
-                zero_as_zero=True,
-            ),
-            strict=True,
-        )
-    )
     for spec, estimate in zip(projection_specs, projection_estimates, strict=True):
         identity = tuple(spec.identity)
         scale_name = str(identity[len(state.identity) + 3])
@@ -727,74 +773,69 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
             g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
             unavailable_specs.append(True)
             continue
-        projection_coefficients = None
-        projection_scale = 1.0
         if spec.kind == "ratio":
-            projection_coefficients, projection_scale = _ratio_score_coefficients(
-                state, spec, score_column_scales, arms
-            )
+            projection_coefficients = _ratio_score_coefficients(state, spec, arms)
         elif spec.kind == "relative":
-            projection_coefficients, projection_scale = _relative_score_coefficients(
-                state, spec, score_column_scales, arms
-            )
-        if not math.isfinite(projection_scale):
-            zero_matrix = tuple(tuple(0.0 for _ in range(2 * width)) for _ in range(2 * width))
-            records.append(
-                (
-                    spec.kind,
-                    spec.arm,
-                    spec.control,
-                    scale_name,
-                    estimate,
-                    float("nan"),
-                    float("nan"),
-                )
-            )
-            s2_rows.append(tuple(0.0 for _ in range(component_count)))
-            s4_rows.append(tuple(0.0 for _ in range(component_count)))
-            g_rows.append(tuple(zero_matrix for _ in range(component_count)))
-            g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
-            unavailable_specs.append(True)
-            continue
-        unavailable_specs.append(False)
-        score_terms = []
-        for family in range(component_count):
-            for arm in range(len(arms)):
-                name = score_names[family][arm]
-                column_scale = score_column_scales[name]
-                if column_scale == 0.0:
-                    continue
-                if projection_coefficients is None:
-                    coefficient = _stable_product_ratio(
-                        (
-                            float(jacobian[family * len(arms) + arm]),
-                            float(spec.scale),
-                            column_scale,
-                        ),
-                        (float(spec.divisor),),
-                        int(spec.exponent),
-                    )
-                else:
-                    coefficient = projection_coefficients.get((family, arm), 0.0)
-                score_terms.append((current[name] / column_scale) * coefficient)
-        if score_terms:
-            score = _sum_sql(score_terms)
-            normalized_score_scale = _power_two_l2_scale(
-                current, score, execute=execute, zero_as_zero=True
-            )
-            safe_score_scale = normalized_score_scale if normalized_score_scale > 0.0 else 1.0
-            score_sum = _rows(
-                execute(
-                    current.aggregate(
-                        _qr_scaled_score_square=(score / safe_score_scale).pow(2).sum()
-                    )
-                )
-            )[0]
-            scaled_square_sum = float(score_sum["_qr_scaled_score_square"])
+            projection_coefficients = _relative_score_coefficients(state, spec, arms)
         else:
-            normalized_score_scale = 0.0
-            scaled_square_sum = 0.0
-        score_scale = projection_scale * normalized_score_scale
+            projection_coefficients = _absolute_score_coefficients(spec, arms)
+        unavailable_specs.append(False)
+        arm_square_parts = []
+        for source_index, source_arm in enumerate(arms):
+            source_relation = current.filter(current["group_id"] == source_arm)
+            term_parts = []
+            for (family, target_arm), (
+                mantissa,
+                derivative_exponent,
+            ) in projection_coefficients.items():
+                if family >= component_count or mantissa == 0.0:
+                    continue
+                name = score_names[family][target_arm]
+                component_scale = _power_two_l2_scale(
+                    source_relation, current[name], execute=execute, zero_as_zero=True
+                )
+                if component_scale == 0.0:
+                    continue
+                component_exponent = math.frexp(component_scale)[1] - 1
+                term_parts.append(
+                    (
+                        family,
+                        name,
+                        mantissa,
+                        derivative_exponent
+                        + int(outcome_arm_exponents[family][source_index])
+                        + component_exponent,
+                        component_scale,
+                    )
+                )
+            if not term_parts:
+                continue
+            common_exponent = max(exponent for _, _, _, exponent, _ in term_parts)
+            score = _sum_sql(
+                (current[name] / component_scale) * math.ldexp(mantissa, exponent - common_exponent)
+                for _, name, mantissa, exponent, component_scale in term_parts
+            )
+            normalized_score_scale = _power_two_l2_scale(
+                source_relation, score, execute=execute, zero_as_zero=True
+            )
+            if normalized_score_scale != 0.0:
+                score_sum = _rows(
+                    execute(
+                        source_relation.aggregate(
+                            _qr_scaled_score_square=(score / normalized_score_scale).pow(2).sum()
+                        )
+                    )
+                )[0]
+                arm_square_parts.append(
+                    (
+                        float(score_sum["_qr_scaled_score_square"]),
+                        common_exponent + math.frexp(normalized_score_scale)[1] - 1,
+                    )
+                )
+        combined_square_sum, combined_exponent = _sum_scaled_square_parts(arm_square_parts)
+        score_scale, scaled_square_sum = _scaled_score_summary(
+            1.0, combined_exponent, 1.0, combined_square_sum
+        )
         if not math.isfinite(score_scale) or not math.isfinite(scaled_square_sum):
             records.append(
                 (
@@ -838,7 +879,7 @@ def _warehouse_projection_reductions(  # noqa: PLR0915
         )
         common_scale = max(float(np.max(np.abs(value), initial=0.0)) for value in contrasts)
         reductions = []
-        for contrast in contrasts:
+        for _family, contrast in enumerate(contrasts):
             current, s2, s4, gram, weighted_gram = _warehouse_bm_component(
                 current,
                 base_columns,
@@ -878,6 +919,7 @@ def warehouse_inference_summary(
     projection_specs: Sequence[ProjectionSpec],
     projection_estimates: Sequence[float],
     execute: Callable[[ir.Table], object],
+    outcome_arm_exponents: Sequence[Sequence[int]],
     scratch,
 ) -> InferenceSummary:
     from dataclasses import replace
@@ -898,6 +940,7 @@ def warehouse_inference_summary(
         design_scale_array,
         sqrt_weight_column,
         tuple(covariate_columns),
+        outcome_arm_exponents,
         execute,
         scratch,
     )
@@ -920,6 +963,7 @@ def warehouse_inference_summary(
         projection_estimates,
         factor,
         design_scale_array,
+        outcome_arm_exponents,
         sqrt_weight_column,
         execute,
         scratch,
@@ -1478,6 +1522,7 @@ class QRPreparedRelation:
     counts: tuple[int, ...]
     outcome_offsets: tuple[tuple[float, ...], ...]
     centered_outcome_means: tuple[tuple[float, ...], ...]
+    outcome_arm_exponents: tuple[tuple[int, ...], ...]
 
 
 def prepare_qr_factor_input(
@@ -1604,12 +1649,22 @@ def prepare_qr_factor_input(
         for name in raw_design_columns
     )
     outcome_scales = tuple(
-        _power_two_l2_scale(
-            relation,
-            relation["_qr_sqrt_weight"] * relation[outcome],
-            execute=execute,
-        )
+        _power_two_l2_scale(relation, relation[outcome], execute=execute)
         for outcome in outcome_names
+    )
+    outcome_arm_exponents = tuple(
+        tuple(
+            math.frexp(
+                _power_two_l2_scale(
+                    relation.filter(relation["group_id"] == arm),
+                    relation[source_name],
+                    execute=execute,
+                )
+            )[1]
+            - 1
+            for arm in arms
+        )
+        for source_name in outcome_columns
     )
     from increment.query._cuped_cells import _binary_normalize
 
@@ -1623,9 +1678,9 @@ def prepare_qr_factor_input(
             )
         },
         **{
-            rhs: _binary_normalize(
-                relation["_qr_sqrt_weight"] * relation[outcome],
-                math.frexp(scale)[1] - 1,
+            rhs: (
+                _binary_normalize(relation[outcome], math.frexp(scale)[1] - 1)
+                * relation["_qr_sqrt_weight"]
             )
             for rhs, outcome, scale in zip(rhs_names, outcome_names, outcome_scales, strict=True)
         },
@@ -1642,6 +1697,7 @@ def prepare_qr_factor_input(
         counts,
         tuple(offsets),
         tuple(centered_means),
+        outcome_arm_exponents,
     )
 
 
@@ -1653,6 +1709,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
     execute: Callable[[ir.Table], object],
     scratch,
     return_components: bool = False,
+    magnitude_checked: bool = False,
 ) -> Any:
     """Fit and finalize a mixed CUPED model from a retained warehouse relation."""
     from increment.estimation.cuped._numeric import _fail
@@ -1665,6 +1722,27 @@ def fit_warehouse_qr(  # noqa: PLR0915
         _fail("estimation.cuped_linear.control_missing", control=request.control)
     relation = relation.filter(relation["group_id"].isin(arms))
     declarations = tuple(request.method.covariates or ())
+    from increment.query._cuped_cells import require_warehouse_magnitude_range
+
+    outcome_components = (
+        (("numerator", "y"), ("denominator", "y_den"))
+        if metric.type == "ratio"
+        else (("outcome", "y"),)
+    )
+    if not magnitude_checked:
+        require_warehouse_magnitude_range(
+            relation,
+            metric=metric.name,
+            components=(
+                *outcome_components,
+                *(
+                    (declaration.name, declaration.name)
+                    for declaration in declarations
+                    if declaration.kind == "continuous"
+                ),
+            ),
+            execute=execute,
+        )
     row_identity_columns = ("unit_id",)
     encoded = encode_qr_covariates(
         relation,
@@ -1961,6 +2039,9 @@ def fit_warehouse_qr(  # noqa: PLR0915
         sqrt_weight_column=prepared.sqrt_weight_column,
         row_identity_columns=row_identity_columns,
         design_scales=prepared.design_scales,
+        arms=arms,
+        outcome_arm_exponents=prepared.outcome_arm_exponents,
+        centered_outcome_means=prepared.centered_outcome_means,
         coefficients=coefficients,
         execute=execute,
         scratch=scratch,
@@ -1974,6 +2055,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
         covariate_columns=prepared.covariate_columns,
         projection_specs=tuple(specs),
         projection_estimates=tuple(estimates),
+        outcome_arm_exponents=prepared.outcome_arm_exponents,
         execute=execute,
         scratch=scratch,
     )
