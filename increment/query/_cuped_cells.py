@@ -73,31 +73,39 @@ def require_warehouse_magnitude_range(
     maximum_mantissa, maximum_bound_exponent = math.frexp(_MAGNITUDE_MAX)
     if not names:
         return
-    nonfinite_stats = relation.group_by("group_id").aggregate(
-        **{
-            f"_magnitude_nonfinite_{index}": (
-                (relation[name].cast("float64").isnan() | relation[name].cast("float64").isinf())
-                .cast("int64")
-                .sum()
-            )
-            for index, name in enumerate(names)
-        }
-    )
+    outcome_components = {"outcome", "numerator", "denominator"}
+    component_values = []
+    nonfinite_fields = {}
+    for index, (component, name) in enumerate(components):
+        raw = relation[name]
+        value = raw.ifelse(1, 0).cast("float64") if raw.type().is_boolean() else raw.cast("float64")
+        nonfinite = value.isinf()
+        if component in outcome_components:
+            nonfinite = nonfinite | value.isnan()
+        else:
+            value = ibis.ifelse(value.isnan(), ibis.null().cast("float64"), value)
+        component_values.append(value)
+        nonfinite_fields[f"_magnitude_nonfinite_{index}"] = (
+            nonfinite.ifelse(1, 0).cast("int64").sum()
+        )
+    nonfinite_stats = relation.group_by("group_id").aggregate(**nonfinite_fields)
     for row in _rows(execute(nonfinite_stats)):
         for index, (_component, name) in enumerate(components):
             if row[f"_magnitude_nonfinite_{index}"]:
                 _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
+    value_names = tuple(f"_magnitude_value_{index}" for index in range(len(names)))
+    relation = relation.mutate(**dict(zip(value_names, component_values, strict=True)))
     maxima = relation.group_by("group_id").aggregate(
         **{
-            f"_magnitude_max_{index}": relation[name].cast("float64").abs().max()
-            for index, name in enumerate(names)
+            f"_magnitude_max_{index}": relation[field].abs().max()
+            for index, field in enumerate(value_names)
         }
     )
     scaled = _join_on(relation, maxima, ("group_id",))
     stats = scaled.group_by("group_id").aggregate(
         **{
             field: expression
-            for index, name in enumerate(names)
+            for index, name in enumerate(value_names)
             for field, expression in (
                 (
                     f"_magnitude_max_{index}",
@@ -106,7 +114,7 @@ def require_warehouse_magnitude_range(
                 (
                     f"_magnitude_squares_{index}",
                     (
-                        scaled[name].cast("float64")
+                        scaled[name]
                         / ibis.ifelse(
                             scaled[f"_magnitude_max_{index}"] > 0,
                             scaled[f"_magnitude_max_{index}"],
@@ -432,21 +440,21 @@ def _cell_relation(relation, names, outcomes):
         finite = value.notnull() & ~value.isnan() & ~value.isinf()
         total, remainder = _compensated(centered[f"_offset_{f}"], centered["_sigma"])
         count = centered.count()
-        arm_count = centered["_arm_count"].first()
-        base = centered[f"_base_norm_{f}"].first()
+        arm_count = centered["_arm_count"].min()
+        base = centered[f"_base_norm_{f}"].min()
         aggregates.update(
             {
-                f"ref_{f}": centered[f"ref_{f}"].first(),
-                f"exponent_{f}": centered[f"exponent_{f}"].first(),
+                f"ref_{f}": centered[f"ref_{f}"].min(),
+                f"exponent_{f}": centered[f"exponent_{f}"].min(),
                 f"_sum_{f}": total,
-                f"first_{f}": total - count * centered[f"_shift_{f}"].first(),
+                f"first_{f}": total - count * centered[f"_shift_{f}"].min(),
                 f"_precise_{f}": _resolved(count, remainder, count * base + total)
                 & _resolved(
                     arm_count,
-                    centered[f"_arm_remainder_{f}"].first(),
-                    arm_count * base + centered[f"_arm_sum_{f}"].first(),
+                    centered[f"_arm_remainder_{f}"].min(),
+                    arm_count * base + centered[f"_arm_sum_{f}"].min(),
                 ),
-                f"contributors_{f}": finite.cast("int64").sum(),
+                f"contributors_{f}": finite.ifelse(1, 0).cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
                 f"max_centered_{f}": centered[f"_offset_{f}"].abs().max(),
             }

@@ -1572,6 +1572,7 @@ class WarehouseSession:
         self._arrow_results: dict[Any, Any] = {}
         self._arrow_cache_bytes = 0
         self._captured_relations: frozenset[Any] | None = None
+        self._postgres_temp_privilege_checked = False
 
     @property
     def con(self) -> SQLBackend:
@@ -1652,6 +1653,14 @@ class WarehouseSession:
 
     def source_sql(self, sql: str) -> Table:
         """Resolve source SQL against this operation's captured inputs, if any."""
+        if self._con.name == "postgres" and not self._postgres_temp_privilege_checked:
+            with cast(Any, self._con).raw_sql(
+                "SELECT has_database_privilege(current_user, current_database(), 'TEMP')"
+            ) as cursor:
+                has_temp_privilege = cursor.fetchone()[0]
+            self._postgres_temp_privilege_checked = True
+            if not has_temp_privilege:
+                _raise("query.session.snapshot.materialization_failed")
         if self._source_tables is not None:
             if sql not in self._source_tables:
                 _raise("query.session.snapshot.source_missing")

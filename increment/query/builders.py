@@ -673,9 +673,12 @@ def metric_events(
     # inflate n_events while adding nothing to sum_value, biasing avg down.
     col_name = value_column or "value"
     filtered = filtered.filter(filtered[col_name].notnull())
+    value = filtered[col_name]
+    if value.type().is_boolean():
+        value = value.ifelse(1, 0)
     return filtered.mutate(
         metric=ibis.literal(metric.name),
-        value=filtered[col_name].cast("float64"),
+        value=value.cast("float64"),
     ).select("unit_id", "ts", "metric", "value", *keep)
 
 
@@ -1331,6 +1334,9 @@ def unit_day_panel(
 
     # Collapse to one row per unit x day, keeping the mergeable sufficient
     # state a caller may need to recombine under any declared aggregation.
+    value = joined.value
+    if value.type().is_boolean():
+        value = value.ifelse(1, 0)
     collapse = joined.group_by(
         [
             "unit_id",
@@ -1342,9 +1348,9 @@ def unit_day_panel(
         ]
     ).agg(
         n_events=joined.value.count(),
-        sum_value=joined.value.sum(),
-        min_value=joined.value.min(),
-        max_value=joined.value.max(),
+        sum_value=value.sum(),
+        min_value=value.min(),
+        max_value=value.max(),
     )
 
     # ── Fill nulls and stamp the metric name ────────────────────────

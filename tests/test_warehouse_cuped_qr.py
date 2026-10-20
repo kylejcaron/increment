@@ -56,9 +56,10 @@ def _assert_no_transferred_extreme(expression):
     for projection in statement.expressions:
         selected = projection.this if isinstance(projection, sqlglot.exp.Alias) else projection
         if type(selected).__name__ in {"AnyValue", "First", "Max", "Median", "Min"}:
-            assert (
-                isinstance(projection, sqlglot.exp.Alias) and projection.alias == "_qr_max_leverage"
-            ), sql
+            assert isinstance(projection, sqlglot.exp.Alias) and projection.alias in {
+                "_qr_max_leverage",
+                "_qr_mean_exponent",
+            }, sql
 
 
 def _positive_diagonal(r, rhs):
@@ -2475,3 +2476,122 @@ def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
         )
     assert by_segment["all-null"].failure_code == local_error.value.code
     assert by_segment["all-null"].failure_code == "estimation.cuped_linear.rank_deficiency"
+
+
+def test_withheld_ratio_arm_identity_matches_native_and_artifact(  # noqa: PLR0915
+    tmp_path, monkeypatch
+):
+    import pyarrow as pa
+    import yaml
+
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.plan import AnalysisPlan
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.design import Randomized
+    from increment.semantics.loader import load
+
+    arms = ("control", "treatment", "withheld")
+    units = []
+    for arm_index, arm in enumerate(arms):
+        for index in range(48):
+            units.append(
+                {
+                    "user_id": f"{arm}-{index:03d}",
+                    "variant": arm,
+                    "revenue": float(4 + arm_index + index % 7),
+                    "orders": 0.0 if arm == "withheld" else float(1 + index % 4),
+                    "pre_revenue": None if index % 9 == 0 else float(8 + index % 13),
+                    "region": None if index % 6 == 0 else ("east" if index % 2 == 0 else "west"),
+                    "country": ("north", "south", "west")[index % 3],
+                    "device": ("mobile", "desktop")[index % 2],
+                    "new_user": "new" if index % 4 == 0 else "existing",
+                    "signups": float(index % 9),
+                }
+            )
+    events = mixed_cuped_event_rows(units)
+    definitions = yaml.safe_load(mixed_cuped_definitions_yaml("qr_ratio_withheld"))
+    experiment = definitions["experiments"][0]
+    experiment["allocation"] = dict.fromkeys(arms, 1 / 3)
+    experiment["plan"] = {"primary": {"metric": "rpo", **experiment["plan"]["guardrails"][0]}}
+    definitions_path = tmp_path / "qr-ratio-withheld.yaml"
+    definitions_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+
+    covariates = [
+        CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+        CupedCovariate(name="country", kind="categorical"),
+        CupedCovariate(name="device", kind="categorical"),
+        CupedCovariate(name="new_user", kind="categorical"),
+    ]
+    method = Method.cuped_multicovariate(covariates=covariates)
+    local = Analysis.from_unit_summary(
+        pa.Table.from_pylist(units),
+        unit="user_id",
+        group="variant",
+        metrics=[
+            MetricSpec(
+                name="rpo",
+                type="ratio",
+                numerator="revenue",
+                denominator="orders",
+                preferred_direction="increase",
+                decision_method=method,
+            )
+        ],
+        plan=AnalysisPlan(primary="rpo"),
+        design=Randomized(
+            control_group="control",
+            allocation=dict.fromkeys(arms, 1 / 3),
+        ),
+    )
+    connection = ibis.duckdb.connect()
+    connection.create_table("qr_ratio_withheld", obj=events)
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, connection)
+    artifact = None
+    try:
+        definition_set = load(definitions_path)
+        experiment = definition_set.experiment("mixed_cuped")
+        assert experiment is not None
+        store = WarehouseArtifactStore(connection, schema_name="qr_ratio_withheld_artifact")
+        context = artifact_context(definition_set, experiment, "error")
+        extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+        reference = native.publish_unit_day_artifact(store, extensions=extensions)
+        artifact = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        _guard_no_unit_keyed_transfers(monkeypatch)
+
+        import warnings
+
+        from increment.errors import IncrementWarning
+
+        def run_with_withheld_notice(analysis):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", IncrementWarning)
+                rows = cast(list[LiftEstimate], analysis.run(metrics=["rpo"]))
+            assert any(
+                isinstance(warning.message, IncrementWarning)
+                and warning.message.code == "readouts.run.cell_refused"
+                and warning.message.context["group_id"] == "withheld"
+                for warning in caught
+            )
+            return {row.group_id: row for row in rows}
+
+        expected = run_with_withheld_notice(local)
+        for analysis in (native, artifact):
+            actual = run_with_withheld_notice(analysis)
+            assert actual.keys() == expected.keys()
+            for group_id, row in expected.items():
+                result = actual[group_id]
+                assert result.sampling_reason_code == row.sampling_reason_code
+                if row.lift is not None:
+                    assert result.lift is not None
+                    assert result.lift.value == pytest.approx(row.lift.value, rel=1e-9, abs=1e-11)
+                    assert result.lift.log_se == pytest.approx(row.lift.log_se, rel=1e-9, abs=1e-11)
+                    assert result.dof == pytest.approx(row.dof, rel=1e-9, abs=1e-11)
+    finally:
+        local.close()
+        if artifact is not None:
+            artifact.close()
+        native.close()
+        connection.disconnect()

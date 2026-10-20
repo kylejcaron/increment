@@ -442,39 +442,47 @@ def _load_metric_rows(  # noqa: PLR0915
             except CodedError as exc:
                 warehouse_fit_identities.append(request_identity)
                 warehouse_fits.append((method.name, exc))
+
+        def fit_evidence_record(identity, evidence):
+            if isinstance(evidence, CodedError):
+                return {
+                    "fit_identity": identity,
+                    "failure": evidence.code,
+                    "fit": None,
+                }
+            fitted = evidence.fit
+            return {
+                "fit_identity": identity,
+                "arm_order": evidence.arm_order,
+                "withheld": tuple((arm, refusal.code) for arm, refusal in evidence.withheld),
+                "fit": None
+                if fitted is None
+                else {
+                    "arm_order": fitted.arm_order,
+                    "control": fitted.control,
+                    "n_by_arm": fitted.n_by_arm,
+                    "adjusted_means": fitted.adjusted_means,
+                    "theta": fitted.theta,
+                    "anchor": fitted.anchor,
+                    "layout": tuple(
+                        getattr(fitted.layout, field)
+                        for field in fitted.layout.__dataclass_fields__
+                    ),
+                    "covariance": fitted.covariance,
+                    "dof": fitted.dof,
+                    "n_min": fitted.n_min,
+                    "p": fitted.p,
+                    "max_leverage": fitted.max_leverage,
+                    "mean_leverage": fitted.mean_leverage,
+                    "leverage_trace": fitted.leverage_trace,
+                    "is_ratio": fitted.is_ratio,
+                },
+            }
+
         fit_components = tuple(
             (
                 f"warehouse_qr:{name}",
-                _rows_raw_digest_and_arms(
-                    (
-                        {
-                            "fit_identity": identity,
-                            "failure": getattr(fit, "code", None),
-                            "fit": None
-                            if isinstance(fit, CodedError)
-                            else {
-                                "arm_order": fit.arm_order,
-                                "control": fit.control,
-                                "n_by_arm": fit.n_by_arm,
-                                "adjusted_means": fit.adjusted_means,
-                                "theta": fit.theta,
-                                "anchor": fit.anchor,
-                                "layout": tuple(
-                                    getattr(fit.layout, field)
-                                    for field in fit.layout.__dataclass_fields__
-                                ),
-                                "covariance": fit.covariance,
-                                "dof": fit.dof,
-                                "n_min": fit.n_min,
-                                "p": fit.p,
-                                "max_leverage": fit.max_leverage,
-                                "mean_leverage": fit.mean_leverage,
-                                "leverage_trace": fit.leverage_trace,
-                                "is_ratio": fit.is_ratio,
-                            },
-                        },
-                    )
-                )[1],
+                _rows_raw_digest_and_arms((fit_evidence_record(identity, fit),))[1],
                 1,
             )
             for (name, fit), identity in zip(warehouse_fits, warehouse_fit_identities, strict=True)

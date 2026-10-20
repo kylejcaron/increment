@@ -155,7 +155,7 @@ def _stable_arm_means(
     total, _ = _compensated(normalized._qr_mean_norm, normalized._qr_mean_sigma)
     means = normalized.group_by("group_id").aggregate(
         _qr_mean_scaled=total / normalized.count(),
-        _qr_mean_exponent=normalized._qr_mean_exponent.mean(),
+        _qr_mean_exponent=normalized._qr_mean_exponent.min(),
     )
     rows = _rows(execute(means))
     return {
@@ -1222,12 +1222,17 @@ class _QRDesignEncoder:
         )
 
     def _continuous(self, name: str, policy: str, value: Any, null: Any) -> None:
-        numeric = value.cast("float64")
+        numeric = (
+            value.ifelse(1, 0).cast("float64")
+            if value.type().is_boolean()
+            else value.cast("float64")
+        )
         if value.type().is_floating():
+            nonfinite = numeric.isinf() & ~numeric.isnull()
             nonfinite_count = _rows(
                 self.execute(
                     self.transformed.aggregate(
-                        _qr_nonfinite=((numeric.isinf() & ~numeric.isnull()).cast("int64").sum())
+                        _qr_nonfinite=nonfinite.ifelse(1, 0).cast("int64").sum()
                     )
                 )
             )[0]["_qr_nonfinite"]
@@ -1236,7 +1241,9 @@ class _QRDesignEncoder:
             null = null | numeric.isnan()
         if policy == "refuse":
             missing_count = _rows(
-                self.execute(self.transformed.aggregate(_qr_missing=null.cast("int64").sum()))
+                self.execute(
+                    self.transformed.aggregate(_qr_missing=null.ifelse(1, 0).cast("int64").sum())
+                )
             )[0]["_qr_missing"]
             if missing_count:
                 _fail("estimation.cuped_linear.missing_refused", name=name)
@@ -1244,7 +1251,7 @@ class _QRDesignEncoder:
             counts = _rows(
                 self.execute(
                     self.transformed.group_by("group_id").aggregate(
-                        _qr_missing=null.cast("int64").sum(),
+                        _qr_missing=null.ifelse(1, 0).cast("int64").sum(),
                         _qr_count=self.transformed.count(),
                     )
                 )
@@ -1384,10 +1391,10 @@ class _QRDesignEncoder:
             shown = "<typed-missing>" if level is missing_category else repr(level)
             query_name = f"_qr_covariate_{self.counter}"
             encoded = (
-                null.cast("float64")
+                null.ifelse(1, 0)
                 if level is missing_category
-                else (value.cast("string") == str(level)).cast("float64")
-            )
+                else (value.cast("string") == str(level)).ifelse(1, 0)
+            ).cast("float64")
             self.transformed = self.transformed.mutate(**{query_name: encoded})
             self.query_columns.append(query_name)
             self.encoded_columns.append(f"{name}[{shown}]")
@@ -1412,7 +1419,10 @@ class _QRDesignEncoder:
                 differences = _rows(
                     self.execute(
                         self.transformed.aggregate(
-                            _qr_different=(mask != representative_mask).cast("int64").sum()
+                            _qr_different=(mask != representative_mask)
+                            .ifelse(1, 0)
+                            .cast("int64")
+                            .sum()
                         )
                     )
                 )[0]["_qr_different"]
@@ -1432,7 +1442,7 @@ class _QRDesignEncoder:
             counts = _rows(
                 self.execute(
                     self.transformed.aggregate(
-                        _qr_missing=indicator_value.cast("int64").sum(),
+                        _qr_missing=indicator_value.ifelse(1, 0).cast("int64").sum(),
                         _qr_count=self.transformed.count(),
                     )
                 )
@@ -1443,7 +1453,7 @@ class _QRDesignEncoder:
             ):
                 continue
             self.transformed = self.transformed.mutate(
-                **{query_name: indicator_value.cast("float64")}
+                **{query_name: indicator_value.ifelse(1, 0).cast("float64")}
             )
             self.query_columns.append(query_name)
             self.encoded_columns.append(indicator_name)
@@ -1606,13 +1616,17 @@ def prepare_qr_factor_input(
     centered_means: list[tuple[float, ...]] = []
     outcome_fields = {}
     for component, source_name in enumerate(outcome_columns):
-        value = relation[source_name].cast("float64")
+        raw_value = relation[source_name]
+        value = (
+            raw_value.ifelse(1, 0).cast("float64")
+            if raw_value.type().is_boolean()
+            else raw_value.cast("float64")
+        )
+        outcome_nonfinite = value.isnull() | value.isnan() | value.isinf()
         raw_stats = _rows(
             execute(
                 relation.aggregate(
-                    _qr_outcome_nonfinite=(
-                        (value.isnull() | value.isnan() | value.isinf()).cast("int64").sum()
-                    )
+                    _qr_outcome_nonfinite=outcome_nonfinite.ifelse(1, 0).cast("int64").sum()
                 )
             )
         )[0]
@@ -1627,9 +1641,10 @@ def prepare_qr_factor_input(
         centered_nonfinite = _rows(
             execute(
                 relation.aggregate(
-                    _qr_centered_nonfinite=(
-                        (centered.isnan() | centered.isinf()).cast("int64").sum()
-                    )
+                    _qr_centered_nonfinite=(centered.isnan() | centered.isinf())
+                    .ifelse(1, 0)
+                    .cast("int64")
+                    .sum()
                 )
             )
         )[0]["_qr_centered_nonfinite"]

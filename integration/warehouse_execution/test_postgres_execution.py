@@ -893,3 +893,485 @@ def test_artifact_abort_after_manifest_leaves_nothing_visible(postgres_con):
 def test_artifact_explicit_catalog_path(postgres_con):
     """PostgreSQL has no scratch catalog, so this is the schema-only path."""
     run_artifact_explicit_catalog_probe(postgres_con, dialect="postgres")
+
+
+def _postgres_mixed_cuped_rows(n_per_arm: int = 48):
+    rows = []
+    for arm_index, arm in enumerate(("control", "treatment", "withheld")):
+        for i in range(n_per_arm):
+            rows.append(
+                {
+                    "user_id": f"{arm}-{i}",
+                    "variant": arm,
+                    "date": dt.date(2025, 1, 10),
+                    "revenue": float(4 + (i % 7) + arm_index * 1.25 + (i % 3) * 0.17),
+                    "orders": 0.0 if arm == "withheld" else float(1 + i % 4),
+                    "pre_revenue": None if i % 9 == 0 else float(8 + i % 13 + arm_index),
+                    "country": ("north", "south", "west")[i % 3],
+                    "device": ("mobile", "desktop")[i % 2],
+                    "new_user": "new" if i % 4 == 0 else "existing",
+                    "signups": float((i * 7 + arm_index) % 9),
+                    "region": None if i % 6 == 0 else ("east", "west")[i % 2],
+                }
+            )
+    return rows
+
+
+@pytest.mark.timeout(1200)  # Native and adopted QR breakout parity needs extra time.
+@pytest.mark.parametrize("route", ["categorical_cells", "general_qr"])
+def test_postgres_mixed_cuped_definitions_and_artifact_match_local_and_duckdb(  # noqa: C901, PLR0915
+    postgres_con, tmp_path, monkeypatch, route
+):
+    """Both warehouse fitters preserve mixed CUPED semantics without unit transfers."""
+    import math
+
+    import ibis
+    import pyarrow as pa
+    import yaml
+
+    from increment import Analysis
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.plan import AnalysisPlan
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.design import Randomized
+    from increment.semantics.loader import load
+    from tests.parity_harness.matrix_data import frame
+    from tests.test_warehouse_cuped_qr import _guard_no_unit_keyed_transfers
+    from tests.warehouse_cuped_cases import (
+        mixed_cuped_definitions_yaml,
+        mixed_cuped_event_rows,
+    )
+
+    event_relation = '"events mixed"'
+    units = _postgres_mixed_cuped_rows(n_per_arm=96)
+    if route == "general_qr":
+        for row in units:
+            if int(row["user_id"].rsplit("-", 1)[1]) % 5 == 0:
+                row["pre_revenue"] = math.nan
+    events = mixed_cuped_event_rows(units)
+    if route == "general_qr":
+        events = pa.Table.from_pylist(events)
+        assert (
+            sum(
+                value is not None and math.isnan(value)
+                for value in events.column("pre_revenue").to_pylist()
+            )
+            > 0
+        )
+    definitions_data = yaml.safe_load(
+        mixed_cuped_definitions_yaml(event_relation, breakout=True).replace(
+            "dialect: duckdb", "dialect: postgres"
+        )
+    )
+    experiment_def = definitions_data["experiments"][0]
+    experiment_def["allocation"] = {"control": 1 / 3, "treatment": 1 / 3, "withheld": 1 / 3}
+    categorical_names = ("country", "device", "new_user")
+    covariates = [
+        {"name": name, "kind": "categorical", "property": name, "source": "events"}
+        for name in categorical_names
+    ]
+    if route == "general_qr":
+        covariates.insert(
+            0,
+            {
+                "name": "pre_revenue",
+                "kind": "continuous",
+                "property": "pre_revenue",
+                "source": "events",
+                "missing": "impute-indicator",
+            },
+        )
+    plan = experiment_def["plan"]
+    for role in ("primary", "guardrails", "secondaries"):
+        entries = plan[role]
+        if isinstance(entries, dict):
+            entries = [entries]
+        for entry in entries:
+            entry["decision_method"]["covariates"] = covariates
+    definitions_path = tmp_path / f"postgres-mixed-{route}.yaml"
+    definitions_path.write_text(yaml.safe_dump(definitions_data, sort_keys=False))
+
+    categorical = [CupedCovariate(name=name, kind="categorical") for name in categorical_names]
+    local_covariates = (
+        categorical
+        if route == "categorical_cells"
+        else [
+            CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+            *categorical,
+        ]
+    )
+    method = Method.cuped_multicovariate(covariates=local_covariates)
+    local = Analysis.from_unit_summary(
+        frame(units),
+        unit="user_id",
+        group="variant",
+        metrics=[
+            MetricSpec(name="revenue", decision_method=method),
+            MetricSpec(
+                name="rpo",
+                type="ratio",
+                numerator="revenue",
+                denominator="orders",
+                preferred_direction="increase",
+                decision_method=method,
+            ),
+        ],
+        plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 1 / 3, "treatment": 1 / 3, "withheld": 1 / 3},
+        ),
+        breakouts=("region",),
+    )
+    duckdb = ibis.duckdb.connect()
+    duckdb.create_table("events mixed", obj=events)
+    postgres_con.create_table("events mixed", obj=events, overwrite=True)
+    postgres_source = Analysis.from_definitions("mixed_cuped", definitions_path, postgres_con)
+    duckdb_source = Analysis.from_definitions("mixed_cuped", definitions_path, duckdb)
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("mixed_cuped")
+    assert experiment is not None
+    artifact_schema = f"cuped_{uuid4().hex[:12]}"
+    store = WarehouseArtifactStore(postgres_con, schema_name=artifact_schema)
+    context = artifact_context(definitions, experiment, "error")
+    extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+    artifact_ref = postgres_source.publish_unit_day_artifact(store, extensions=extensions)
+    adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+
+    _guard_no_unit_keyed_transfers(monkeypatch)
+    from increment.errors import CodedError, IncrementWarning
+    from increment.query.session import WarehouseSession
+
+    transferred = []
+    fetch_arrow = WarehouseSession.fetch_arrow
+
+    def bounded_fetch(session, expression, **kwargs):
+        result = fetch_arrow(session, expression, **kwargs)
+        names = tuple(result.schema.names)
+        assert "user_id" not in names and "unit_id" not in names
+        assert result.num_rows <= 4096
+        transferred.append((names, result.num_rows))
+        return result
+
+    monkeypatch.setattr(WarehouseSession, "fetch_arrow", bounded_fetch)
+
+    def qr_scratch_names():
+        with postgres_con.raw_sql(
+            "SELECT tablename FROM pg_catalog.pg_tables "
+            "WHERE schemaname = (SELECT nspname FROM pg_catalog.pg_namespace "
+            "WHERE oid = pg_my_temp_schema()) "
+            "AND left(tablename, 10) = '_cuped_qr_'"
+        ) as cursor:
+            return tuple(sorted(row[0] for row in cursor.fetchall()))
+
+    def run_with_expected_withholding(analysis, *, breakout=False):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", IncrementWarning)
+            if breakout:
+                rows = analysis.run_breakout(metrics=["revenue", "rpo"])
+            else:
+                rows = analysis.run(metrics=["revenue", "rpo"])
+        if not breakout:
+            assert any(warning.message.code == "readouts.run.cell_refused" for warning in caught)
+        return rows
+
+    scratch_before = qr_scratch_names()
+    if route == "general_qr":
+        failed = Analysis.from_definitions("mixed_cuped", definitions_path, postgres_con)
+        create_table = postgres_con.create_table
+        create_count = 0
+
+        def fail_second_qr_relation(name, *args, **kwargs):
+            nonlocal create_count
+            if name.startswith("_cuped_qr_"):
+                create_count += 1
+                if create_count == 2:
+                    raise RuntimeError("injected PostgreSQL QR scratch failure")
+            return create_table(name, *args, **kwargs)
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(postgres_con, "create_table", fail_second_qr_relation)
+                with pytest.raises(CodedError) as refusal:
+                    failed.run(metrics=["revenue"])
+                assert refusal.value.code == "query.session.snapshot.materialization_failed"
+            assert create_count == 2
+            assert qr_scratch_names() == scratch_before
+        finally:
+            failed.close()
+
+    results = []
+    try:
+        assert qr_scratch_names() == scratch_before
+        for analysis in (local, duckdb_source, postgres_source, adopted):
+            rows = run_with_expected_withholding(analysis)
+            if analysis in (postgres_source, adopted):
+                assert qr_scratch_names() == scratch_before
+            results.append({(row.metric, row.group_id, row.method_role): row for row in rows})
+        assert transferred
+        assert all(result.keys() == results[0].keys() for result in results[1:]), [
+            (sorted(set(result) - set(results[0])), sorted(set(results[0]) - set(result)))
+            for result in results[1:]
+        ]
+        assert {key[0] for key in results[0]} == {"revenue", "rpo"}
+        assert any(
+            key[0] == "rpo" and key[1] == "withheld" and row.sampling_reason_code is not None
+            for key, row in results[0].items()
+        )
+        for key, expected in results[0].items():
+            for result in results[1:]:
+                actual = result[key]
+                assert actual.sampling_reason_code == expected.sampling_reason_code
+                if expected.lift is None:
+                    assert actual.lift is None
+                    continue
+                assert actual.lift is not None
+                for field in ("value", "log_se", "lb", "ub"):
+                    assert getattr(actual.lift, field) == pytest.approx(
+                        getattr(expected.lift, field), rel=1e-9, abs=1e-11
+                    )
+                assert actual.dof == pytest.approx(expected.dof, rel=1e-9, abs=1e-11)
+
+        # Breakout checks include a true SQL NULL segment and preserve the local fit.
+        local_breakout = run_with_expected_withholding(local, breakout=True)
+        assert any(
+            row.metric == "rpo" and row.group_id == "withheld" and row.sampling_reason_code
+            for row in local_breakout
+        )
+        for analysis in (duckdb_source, postgres_source, adopted):
+            actual_rows = run_with_expected_withholding(analysis, breakout=True)
+            assert any(
+                row.metric == "rpo" and row.group_id == "withheld" and row.sampling_reason_code
+                for row in actual_rows
+            )
+            expected = {
+                (row.metric, row.dimension_value, row.group_id): row for row in local_breakout
+            }
+            actual = {(row.metric, row.dimension_value, row.group_id): row for row in actual_rows}
+            assert actual.keys() == expected.keys()
+            assert {row.dimension_value for row in actual_rows} >= {"__null__"}
+            for key, expected_row in expected.items():
+                actual_row = actual[key]
+                assert actual_row.sampling_reason_code == expected_row.sampling_reason_code
+                if expected_row.lift is not None:
+                    assert actual_row.lift is not None
+                    for field in ("value", "log_se", "lb", "ub"):
+                        assert getattr(actual_row.lift, field) == pytest.approx(
+                            getattr(expected_row.lift, field), rel=1e-9, abs=1e-11
+                        )
+                    assert actual_row.dof == pytest.approx(expected_row.dof, rel=1e-9, abs=1e-11)
+    finally:
+        local.close()
+        duckdb_source.close()
+        postgres_source.close()
+        adopted.close()
+        from integration.warehouse_execution._suite import _drop_scratch_namespace
+
+        duckdb.disconnect()
+        postgres_con.drop_table("events mixed", force=True)
+        _drop_scratch_namespace(postgres_con, artifact_schema)
+
+
+def test_postgres_cuped_without_temp_privilege_refuses_before_unit_transfer(
+    postgres_con, tmp_path, monkeypatch
+):
+    """A real role without TEMP cannot bypass required QR scratch ownership."""
+    import os
+
+    import ibis
+    import psycopg
+    import yaml
+
+    from increment import Analysis
+    from increment.errors import CodedError
+    from increment.query.session import WarehouseSession
+    from tests.parity_harness.matrix_data import linear_cuped_rows
+    from tests.warehouse_cuped_cases import (
+        mixed_cuped_definitions_yaml,
+        mixed_cuped_event_rows,
+    )
+
+    suffix = uuid4().hex[:10]
+    database = f"cuped_no_temp_{suffix}"
+    role = f"cuped_role_{suffix}"
+    password = uuid4().hex
+    env = os.environ
+    admin = psycopg.connect(
+        host=env["INCREMENT_TEST_POSTGRES_HOST"],
+        port=int(env["INCREMENT_TEST_POSTGRES_PORT"]),
+        user=env["INCREMENT_TEST_POSTGRES_USER"],
+        password=env["INCREMENT_TEST_POSTGRES_PASSWORD"],
+        dbname=env["INCREMENT_TEST_POSTGRES_DB"],
+        autocommit=True,
+    )
+    database_admin = restricted = analysis = None
+    try:
+        admin.execute(f'CREATE DATABASE "{database}"')
+        admin.execute(f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'")
+        admin.execute(f'REVOKE TEMPORARY ON DATABASE "{database}" FROM PUBLIC')
+        database_admin = ibis.postgres.connect(
+            host=env["INCREMENT_TEST_POSTGRES_HOST"],
+            port=int(env["INCREMENT_TEST_POSTGRES_PORT"]),
+            user=env["INCREMENT_TEST_POSTGRES_USER"],
+            password=env["INCREMENT_TEST_POSTGRES_PASSWORD"],
+            database=database,
+        )
+        restricted = ibis.postgres.connect(
+            host=env["INCREMENT_TEST_POSTGRES_HOST"],
+            port=int(env["INCREMENT_TEST_POSTGRES_PORT"]),
+            user=role,
+            password=password,
+            database=database,
+        )
+        assert database_admin is not None and restricted is not None
+        units = linear_cuped_rows()
+        database_admin.create_table("events", obj=mixed_cuped_event_rows(units))
+        with database_admin.raw_sql(f'GRANT SELECT ON TABLE public.events TO "{role}"'):
+            pass
+        assert (
+            admin.execute(
+                "SELECT has_database_privilege(%s, %s, 'TEMP')",
+                (role, database),
+            ).fetchone()[0]
+            is False
+        )
+
+        data = yaml.safe_load(
+            mixed_cuped_definitions_yaml("events").replace("dialect: duckdb", "dialect: postgres")
+        )
+        definitions_path = tmp_path / "no-temp-cuped.yaml"
+        definitions_path.write_text(yaml.safe_dump(data, sort_keys=False))
+        analysis = Analysis.from_definitions("mixed_cuped", definitions_path, restricted)
+
+        transfers = []
+        fetch_arrow = WarehouseSession.fetch_arrow
+
+        def count_transfer(session, expression, **kwargs):
+            result = fetch_arrow(session, expression, **kwargs)
+            transfers.append(tuple(result.schema.names))
+            return result
+
+        monkeypatch.setattr(WarehouseSession, "fetch_arrow", count_transfer)
+        with pytest.raises(CodedError) as refusal:
+            analysis.run(metrics=["revenue"])
+        assert refusal.value.code == "query.session.snapshot.materialization_failed"
+        assert not any("user_id" in names or "unit_id" in names for names in transfers)
+        with database_admin.raw_sql(
+            "SELECT count(*) FROM pg_catalog.pg_tables "
+            "WHERE schemaname = (SELECT nspname FROM pg_catalog.pg_namespace "
+            "WHERE oid = pg_my_temp_schema()) "
+            "AND left(tablename, 10) = '_cuped_qr_'"
+        ) as cursor:
+            assert cursor.fetchone()[0] == 0
+    finally:
+        if analysis is not None:
+            analysis.close()
+        if restricted is not None:
+            restricted.disconnect()
+        if database_admin is not None:
+            database_admin.disconnect()
+        admin.execute(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+        admin.execute(f'DROP ROLE IF EXISTS "{role}"')
+        admin.close()
+
+
+@pytest.mark.warehouse_postgres
+def test_postgres_boolean_mean_metric_matches_duckdb_and_local_fit(postgres_con, tmp_path):
+    """A boolean-valued mean traverses the native PostgreSQL readout and CUPED fit."""
+    import ibis
+    import yaml
+
+    from increment import Analysis
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.plan import AnalysisPlan
+    from increment.semantics.design import Randomized
+    from tests.parity_harness.matrix_data import frame
+    from tests.warehouse_cuped_cases import (
+        mixed_cuped_definitions_yaml,
+        mixed_cuped_event_rows,
+    )
+
+    units = [
+        {**row, "active_value": (index % 3) != 0}
+        for index, row in enumerate(_postgres_mixed_cuped_rows(96))
+        if row["variant"] != "withheld"
+    ]
+    events = mixed_cuped_event_rows(units)
+    for event in events:
+        event["active_value"] = None
+    for row in units:
+        events.append(
+            {
+                **dict.fromkeys(events[0]),
+                "user_id": row["user_id"],
+                "ts": dt.datetime(2025, 1, 11, 9),
+                "event": "active",
+                "active_value": row["active_value"],
+            }
+        )
+
+    definitions = yaml.safe_load(
+        mixed_cuped_definitions_yaml('"events boolean"').replace(
+            "dialect: duckdb", "dialect: postgres"
+        )
+    )
+    definitions["fact_sources"][0]["facts"].append({"name": "active", "column": "active_value"})
+    definitions["metrics"].append(
+        {
+            "name": "active_rate",
+            "type": "mean",
+            "entity": "user_id",
+            "fact": "active",
+            "aggregation": "sum",
+            "window_days": 2,
+        }
+    )
+    experiment = definitions["experiments"][0]
+    experiment["plan"]["primary"]["metric"] = "active_rate"
+    experiment["plan"]["primary"]["decision_method"]["covariates"] = [
+        {"name": "country", "kind": "categorical", "property": "country", "source": "events"}
+    ]
+    definitions_path = tmp_path / "postgres-boolean-mean.yaml"
+    definitions_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+
+    method = Method.cuped_multicovariate(
+        covariates=[CupedCovariate(name="country", kind="categorical")]
+    )
+    local = Analysis.from_unit_summary(
+        frame(units),
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="active_value", type="mean", decision_method=method)],
+        plan=AnalysisPlan(primary="active_value"),
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+    )
+    duckdb = ibis.duckdb.connect()
+    duckdb.create_table("events boolean", obj=events)
+    postgres_con.create_table("events boolean", obj=events, overwrite=True)
+    native = Analysis.from_definitions("mixed_cuped", definitions_path, postgres_con)
+    oracle = Analysis.from_definitions("mixed_cuped", definitions_path, duckdb)
+    try:
+        actual = {}
+        for name, analysis in (("local", local), ("duckdb", oracle), ("postgres", native)):
+            metric_name = "active_value" if name == "local" else "active_rate"
+            rows = analysis.run(metrics=[metric_name])
+            actual[name] = {row.group_id: row for row in rows}
+        assert actual["postgres"].keys() == actual["duckdb"].keys() == actual["local"].keys()
+        for group_id, expected in actual["local"].items():
+            for name in ("duckdb", "postgres"):
+                row = actual[name][group_id]
+                assert row.lift is not None and expected.lift is not None
+                assert row.lift.value == pytest.approx(expected.lift.value, rel=1e-9, abs=1e-11)
+                assert row.dof == pytest.approx(expected.dof, rel=1e-9, abs=1e-11)
+    finally:
+        local.close()
+        oracle.close()
+        native.close()
+        duckdb.disconnect()
+        postgres_con.drop_table("events boolean", force=True)

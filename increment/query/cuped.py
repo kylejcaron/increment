@@ -245,11 +245,7 @@ def fit_multicovariate_source(
                     ),
                     control=fitted_request.control,
                 )
-                return (
-                    _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
-                    if withheld
-                    else fit
-                )
+                return _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
             except CodedError as exc:
                 if exc.code not in CELL_REFUSALS:
                     raise
@@ -263,11 +259,7 @@ def fit_multicovariate_source(
                 return_components=return_components,
                 magnitude_checked=True,
             )
-        return (
-            _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
-            if withheld
-            else fit
-        )
+        return _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
 
 
 def _portable_categorical_domain(source, metric, method, population) -> None:
