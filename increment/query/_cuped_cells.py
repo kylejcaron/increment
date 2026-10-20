@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, NoReturn, cast
+import math
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import ibis
 import ibis.expr.types as ir
@@ -11,8 +13,10 @@ import narwhals as nw
 import numpy as np
 
 from increment.errors import CapabilityError, RefusalSpec, refuse
+from increment.estimation.cuped._numeric import _fail
 from increment.estimation.cuped.cells import _pattern_key
 from increment.estimation.cuped.types import CategoricalCells, _freeze_payload
+from increment.query._nonfinite import nonfinite_parts
 
 if TYPE_CHECKING:
     from increment.query.cuped import _ResolvedCupedRequest
@@ -32,6 +36,21 @@ _GENERAL_QR = RefusalSpec(
 )
 REFUSALS = {_GENERAL_QR.code: _GENERAL_QR}
 
+_MAGNITUDE_RANGE = RefusalSpec(
+    "query.cuped.magnitude_range",
+    CapabilityError,
+    template=(
+        "Metric {metric!r} has {component} in arm {arm!r} outside the warehouse CUPED "
+        "RMS magnitude range [1e-50, 1e50] (bound: {bound}); rescale the values "
+        "(change units) or fit from explicitly supplied per-unit data with "
+        "Analysis.from_unit_summary or Analysis.from_unit_panel."
+    ),
+    keys=frozenset({"metric", "arm", "component", "bound"}),
+)
+_MAGNITUDE_MIN = 1e-50
+_MAGNITUDE_MAX = 1e50
+REFUSALS[_MAGNITUDE_RANGE.code] = _MAGNITUDE_RANGE
+
 
 def general_qr_required(metric, reason: str, **detail: object) -> NoReturn:
     refuse(
@@ -43,6 +62,197 @@ def general_qr_required(metric, reason: str, **detail: object) -> NoReturn:
     )
 
 
+def require_warehouse_magnitude_range(  # noqa: PLR0915
+    relation: ir.Table,
+    *,
+    metric: str,
+    components: Sequence[tuple[str, str, str]],
+    execute,
+) -> None:
+    names = tuple(name for _, _, name in components)
+    if not names:
+        return
+    component_values: list[Any] = []
+    maxima_fields: dict[str, Any] = {}
+    dialect = relation.get_backend().name
+    for index, (role, _component, name) in enumerate(components):
+        raw = relation[name]
+        value = cast(
+            ir.FloatingValue,
+            raw.ifelse(ibis.literal(1), ibis.literal(0)).cast("float64")
+            if raw.type().is_boolean()
+            else raw.cast("float64"),
+        )
+        is_nan, is_inf = nonfinite_parts(value)
+        nonfinite = is_inf
+        if role == "outcome":
+            nonfinite = nonfinite | is_nan
+        else:
+            value = cast(
+                ir.FloatingValue,
+                ibis.ifelse(is_nan, ibis.null().cast("float64"), value),
+            )
+        component_values.append(value)
+        maxima_fields[f"_magnitude_nonfinite_{index}"] = cast(
+            Any, nonfinite.ifelse(ibis.literal(1), ibis.literal(0)).cast("int64")
+        ).sum()
+        maxima_fields[f"_magnitude_max_{index}"] = cast(Any, value).abs().max()
+
+    maxima = relation.group_by("group_id").aggregate(**maxima_fields)
+    maxima_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{f"_magnitude_nonfinite_{index}": "int64" for index in range(len(components))},
+        **{f"_magnitude_max_{index}": "float64" for index in range(len(components))},
+    }
+    maxima_table = ibis.table(maxima_schema, name="_magnitude_maxima")
+    joined = relation.join(
+        maxima_table,
+        [relation.group_id.identical_to(maxima_table.group_id)],
+    )
+    stats_fields: dict[str, Any] = {}
+    for index, value in enumerate(component_values):
+        maximum = maxima_table[f"_magnitude_max_{index}"]
+        safe_maximum = (maximum > 0).ifelse(maximum, 1.0)
+        stats_fields[f"_magnitude_nonfinite_{index}"] = maxima_table[
+            f"_magnitude_nonfinite_{index}"
+        ].max()
+        stats_fields[f"_magnitude_max_{index}"] = maximum.max()
+        stats_fields[f"_magnitude_squares_{index}"] = (value / safe_maximum).pow(2).sum()
+        stats_fields[f"_magnitude_count_{index}"] = value.count()
+    stats = joined.group_by("group_id").aggregate(**stats_fields)
+
+    stats_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{
+            field: "int64"
+            for index in range(len(components))
+            for field in (
+                f"_magnitude_nonfinite_{index}",
+                f"_magnitude_count_{index}",
+            )
+        },
+        **{
+            field: "float64"
+            for index in range(len(components))
+            for field in (
+                f"_magnitude_max_{index}",
+                f"_magnitude_squares_{index}",
+            )
+        },
+    }
+    stats_table = ibis.table(stats_schema, name="_magnitude_stats")
+    normalized_fields: dict[str, Any] = {}
+    for index in range(len(components)):
+        maximum_exponent, scaled_norm, valid = _component_exponent_parts(
+            stats_table[f"_magnitude_max_{index}"],
+            stats_table[f"_magnitude_squares_{index}"],
+        )
+        count = stats_table[f"_magnitude_count_{index}"].cast("float64")
+        safe_count = (count > 0).ifelse(count, 1.0)
+        rms_factor = scaled_norm / safe_count.sqrt()
+        normalized_fields[f"_magnitude_nonfinite_{index}"] = stats_table[
+            f"_magnitude_nonfinite_{index}"
+        ]
+        normalized_fields[f"_magnitude_max_exponent_{index}"] = maximum_exponent
+        normalized_fields[f"_magnitude_rms_factor_{index}"] = rms_factor
+        normalized_fields[f"_magnitude_valid_{index}"] = valid & (count > 0)
+    normalized = stats_table.select("group_id", **normalized_fields)
+
+    minimum_mantissa, minimum_exponent = math.frexp(_MAGNITUDE_MIN)
+    maximum_mantissa, maximum_bound_exponent = math.frexp(_MAGNITUDE_MAX)
+    normalized_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{f"_magnitude_nonfinite_{index}": "int64" for index in range(len(components))},
+        **{
+            field: dtype
+            for index in range(len(components))
+            for field, dtype in (
+                (f"_magnitude_max_exponent_{index}", "int64"),
+                (f"_magnitude_rms_factor_{index}", "float64"),
+                (f"_magnitude_valid_{index}", "boolean"),
+            )
+        },
+    }
+    normalized_table = ibis.table(normalized_schema, name="_magnitude_normalized")
+    decision_fields: dict[str, Any] = {}
+    for index in range(len(components)):
+        factor = normalized_table[f"_magnitude_rms_factor_{index}"]
+        adjustment = factor.log2().floor().cast("int64") + 1
+        exponent = normalized_table[f"_magnitude_max_exponent_{index}"] + adjustment
+        mantissa = _binary_normalize(factor, adjustment)
+        valid = normalized_table[f"_magnitude_valid_{index}"] & (factor > 0)
+        decision_fields[f"_magnitude_nonfinite_{index}"] = normalized_table[
+            f"_magnitude_nonfinite_{index}"
+        ]
+        decision_fields[f"_magnitude_low_{index}"] = valid & (
+            (exponent < minimum_exponent)
+            | ((exponent == minimum_exponent) & (mantissa < minimum_mantissa))
+        )
+        decision_fields[f"_magnitude_high_{index}"] = valid & (
+            (exponent > maximum_bound_exponent)
+            | ((exponent == maximum_bound_exponent) & (mantissa > maximum_mantissa))
+        )
+    decisions = normalized_table.select("group_id", **decision_fields)
+
+    from sqlglot import exp
+
+    backend = relation.get_backend()
+    dialect = backend.name
+
+    def cte(name: str, expression: ir.Table) -> str:
+        identifier = exp.to_identifier(name).sql(dialect=dialect, identify=True)
+        return f"{identifier} AS ({ibis.to_sql(expression, dialect=dialect)})"
+
+    sql = (
+        "WITH "
+        + ", ".join(
+            (
+                cte("_magnitude_maxima", maxima),
+                cte("_magnitude_stats", stats),
+                cte("_magnitude_normalized", normalized),
+            )
+        )
+        + " "
+        + ibis.to_sql(decisions, dialect=dialect)
+    )
+    output_schema = {
+        "group_id": relation.schema()["group_id"],
+        **{
+            field: dtype
+            for index in range(len(components))
+            for field, dtype in (
+                (f"_magnitude_nonfinite_{index}", "int64"),
+                (f"_magnitude_low_{index}", "boolean"),
+                (f"_magnitude_high_{index}", "boolean"),
+            )
+        },
+    }
+    result = backend.sql(sql, schema=ibis.schema(output_schema))
+    summary_rows = _rows(execute(result))
+    for row in summary_rows:
+        for index, (_role, _component, name) in enumerate(components):
+            if row[f"_magnitude_nonfinite_{index}"]:
+                _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
+    for row in summary_rows:
+        for index, (_role, component, _name) in enumerate(components):
+            if row[f"_magnitude_low_{index}"]:
+                refuse(
+                    _MAGNITUDE_RANGE,
+                    metric=metric,
+                    arm=row["group_id"],
+                    component=component,
+                    bound="lower",
+                )
+            if row[f"_magnitude_high_{index}"]:
+                refuse(
+                    _MAGNITUDE_RANGE,
+                    metric=metric,
+                    arm=row["group_id"],
+                    component=component,
+                    bound="upper",
+                )
+
+
 def known_outcome_domain(metric):
     if metric.type not in ("mean", "ratio") or getattr(metric, "winsorization", None) is not None:
         return True
@@ -51,6 +261,13 @@ def known_outcome_domain(metric):
         getattr(measure, "aggregation", None) in ("count", "count_distinct", "any")
         for measure in measures
     )
+
+
+def known_qr_outcome_domain(metric):
+    """Whether QR is ruled out by declarations before inspecting source columns."""
+    if metric.type not in ("mean", "ratio", "conversion"):
+        return True
+    return bool(getattr(getattr(metric, "winsorization", None), "has_percentile", False))
 
 
 def _known_outcome_domain(metric, relation, outcomes):
@@ -131,8 +348,9 @@ def _component_exponent_parts(maximum, sum_squares):
     outcome is at most one and offsets at most two; the compensated-sum and
     ``2**-36`` range checks therefore keep their existing bounds.
     """
-    maximum = maximum.fill_null(0.0)
-    valid = (maximum > 0) & ~maximum.isnan() & ~maximum.isinf()
+    maximum = cast(ir.FloatingValue, maximum.cast("float64").fill_null(0.0))
+    is_nan, is_inf = nonfinite_parts(maximum)
+    valid = (cast(Any, maximum) > 0) & ~is_nan & ~is_inf
     max_exponent = ibis.ifelse(valid, (maximum.log2().floor() + 1).clip(upper=1024), 0).cast(
         "int64"
     )
@@ -223,9 +441,14 @@ def _cell_relation(relation, names, outcomes):
     # The per-unit fitter's offset: the upper median, kept inside the warehouse.
     medians = relation.group_by("group_id").aggregate(
         **{
-            f"_median_{f}": relation[name]
-            .cast("float64")
-            .max(where=relation[f"_rank_{f}"] == relation["_arm_count"] // 2)
+            f"_median_{f}": cast(
+                Any,
+                ibis.ifelse(
+                    relation[f"_rank_{f}"] == relation["_arm_count"] // 2,
+                    relation[name].cast("float64"),
+                    ibis.null(),
+                ),
+            ).max()
             for f, name in enumerate(outcomes)
         }
     )
@@ -288,24 +511,25 @@ def _cell_relation(relation, names, outcomes):
     aggregates = {"n": centered.count()}
     for f, name in enumerate(outcomes):
         value = centered[name].cast("float64")
-        finite = value.notnull() & ~value.isnan() & ~value.isinf()
+        is_nan, is_inf = nonfinite_parts(value)
+        finite = value.notnull() & ~is_nan & ~is_inf
         total, remainder = _compensated(centered[f"_offset_{f}"], centered["_sigma"])
         count = centered.count()
-        arm_count = centered["_arm_count"].first()
-        base = centered[f"_base_norm_{f}"].first()
+        arm_count = centered["_arm_count"].min()
+        base = centered[f"_base_norm_{f}"].min()
         aggregates.update(
             {
-                f"ref_{f}": centered[f"ref_{f}"].first(),
-                f"exponent_{f}": centered[f"exponent_{f}"].first(),
+                f"ref_{f}": centered[f"ref_{f}"].min(),
+                f"exponent_{f}": centered[f"exponent_{f}"].min(),
                 f"_sum_{f}": total,
-                f"first_{f}": total - count * centered[f"_shift_{f}"].first(),
+                f"first_{f}": total - count * centered[f"_shift_{f}"].min(),
                 f"_precise_{f}": _resolved(count, remainder, count * base + total)
                 & _resolved(
                     arm_count,
-                    centered[f"_arm_remainder_{f}"].first(),
-                    arm_count * base + centered[f"_arm_sum_{f}"].first(),
+                    centered[f"_arm_remainder_{f}"].min(),
+                    arm_count * base + centered[f"_arm_sum_{f}"].min(),
                 ),
-                f"contributors_{f}": finite.cast("int64").sum(),
+                f"contributors_{f}": finite.ifelse(1, 0).cast("int64").sum(),
                 f"distinct_{f}": value.min() < value.max(),
                 f"max_centered_{f}": centered[f"_offset_{f}"].abs().max(),
             }
@@ -336,9 +560,8 @@ def _preflight(cells, names, components, request, metric):
     for f in range(components):
         scatter = cells[f"cross_{f}_{f}"]
         error = 64 * np.finfo(float).eps * cells.n * cells[f"max_centered_{f}"] ** 2
-        positive.append(
-            cells[f"distinct_{f}"] & (scatter > error) & ~scatter.isnan() & ~scatter.isinf()
-        )
+        is_nan, is_inf = nonfinite_parts(scatter)
+        positive.append(cells[f"distinct_{f}"] & (scatter > error) & ~is_nan & ~is_inf)
         contributors.append(cells[f"contributors_{f}"])
     label_bytes = ibis.literal(0, type="int64")
     for name in ("group_id", *names):
@@ -376,7 +599,9 @@ def _preflight(cells, names, components, request, metric):
         scatter_positive=cast(ir.BooleanColumn, ibis.and_(*positive)).all(),
         encoded_bytes=encoded_bytes,
         **{
-            f"range_arm_{f}": cells.group_id.min(where=~cells[f"_precise_{f}"])
+            f"range_arm_{f}": cast(
+                Any, ibis.ifelse(~cells[f"_precise_{f}"], cells.group_id, ibis.null())
+            ).min()
             for f in range(components)
         },
     )
@@ -440,9 +665,8 @@ def _rename_scratch_inputs(relation, names, components):
 
 
 def categorical_cells_from_relation(
-    relation, execute, *, metric, request: _ResolvedCupedRequest
+    relation, execute, *, metric, request: _ResolvedCupedRequest, magnitude_checked=False
 ) -> CategoricalCells:
-    """Reduce a pinned unit relation; only eligible joint aggregates may cross the boundary."""
     declarations = request.method.covariates or ()
     if any(item.kind != "categorical" for item in declarations):
         general_qr_required(metric, "continuous_covariates")
@@ -452,6 +676,20 @@ def categorical_cells_from_relation(
         general_qr_required(metric, "outcome_domain")
     relation, query_names = _rename_scratch_inputs(relation, names, len(outcomes))
     relation = relation.filter(relation.group_id.isin(request.arm_order))
+    if not magnitude_checked:
+        require_warehouse_magnitude_range(
+            relation,
+            metric=metric.name,
+            components=tuple(
+                ("outcome", label, outcome)
+                for label, outcome in zip(
+                    ("numerator", "denominator") if metric.type == "ratio" else ("outcome",),
+                    outcomes,
+                    strict=True,
+                )
+            ),
+            execute=execute,
+        )
     cells = _cell_relation(relation, query_names, outcomes)
     preflight = _rows(execute(_preflight(cells, query_names, len(outcomes), request, metric)))[0]
     count = int(preflight["cell_count"])

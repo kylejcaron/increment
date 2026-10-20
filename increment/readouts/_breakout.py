@@ -335,12 +335,11 @@ def _load_cuped_breakout_frames(
     dict[str, dict[str, Literal["decision", "sensitivity"]]],
     list[dict[str, Any]],
 ]:
-    """Per-unit evidence for every mixed-CUPED metric, split by segment.
+    """Retain per-segment fit evidence for mixed-CUPED metrics.
 
-    Also returns one provenance component per acquired frame (its canonical
-    digest and row count), so the readout's source identity covers the
-    per-unit outcomes, covariate values and segment labels the cells were
-    fitted on, as the headline route does.
+    Local sources without a relational CUPED route retain their historical
+    frame path; warehouse sources fit each segment through their scoped
+    relation and transfer only compact evidence.
     """
     from increment.readouts._source_digest import component
 
@@ -357,12 +356,16 @@ def _load_cuped_breakout_frames(
     from increment.readouts._metric_rows import _frame_digest_and_arms
     from increment.sources import BreakoutMomentsSource
 
+    fit_source = getattr(src, "_source", src)
+
     for config in configs:
         name = config.metric.name
         if any(
             method.variance_reduction == "cuped_multicovariate"
             for method in methods_by_metric[name]
         ):
+            if getattr(fit_source, "cuped_relation", None) is not None:
+                continue
             names = tuple(item.name for item in config.covariates)
             column = breakout_dimension_column(names)
             if isinstance(src, BreakoutMomentsSource):
@@ -555,8 +558,8 @@ def breakout(
             dimension=dimension,
             source_name=source_name,
             sequential_snapshot=sequential_snapshot,
-            # Mixed-CUPED cells are fitted on per-unit evidence whose float
-            # values the row digest excludes; its own digest is source provenance.
+            # Local fallback frames contribute their own provenance; warehouse
+            # fits are bound to the source and breakout request identity.
             source_components=unit_evidence,
         )
 
@@ -599,9 +602,30 @@ def breakout(
             methods_by_metric[metric.name],
             dimension=dimension,
             control_group=design.control_group,
+            source_name=source_name,
+            population=analysis_population,
         )
         for metric in selected
     }
+    from increment.readouts._source_digest import component
+
+    for metric_name, evidence in method_evidence.items():
+        for name, sha256, count in evidence.evidence_components:
+            if not name.startswith("warehouse_qr_breakout:"):
+                continue
+            unit_evidence.append(
+                {
+                    **component(
+                        kind=name,
+                        metric=metric_name,
+                        population=analysis_population,
+                        source=source_name,
+                        dimension=dimension,
+                        sha256=sha256,
+                    ),
+                    "count": count,
+                }
+            )
     if design.mechanism == "encouragement":
         requested_estimands = estimands if estimands is not None else ESTIMANDS
         unknown = set(requested_estimands) - set(ESTIMANDS)

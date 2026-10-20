@@ -2268,7 +2268,7 @@ def _rekey_segment_computation(
     )
 
 
-def _estimate_lift_computation_or_reason(
+def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
     *,
     metric: Metric,
     summary: list[Mapping[str, Any]],
@@ -2281,6 +2281,7 @@ def _estimate_lift_computation_or_reason(
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     unit_frame: Any | None = None,
     covariates: Sequence[Any] = (),
+    warehouse_fits: Mapping[str, Any] | None = None,
     family_member: bool = False,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
@@ -2290,18 +2291,19 @@ def _estimate_lift_computation_or_reason(
         method for method in methods or () if method.variance_reduction == "cuped_multicovariate"
     ]
     if linear_methods:
-        from increment.estimation.engine import estimate_cuped_linear
+        from increment.estimation.engine import estimate_cuped_linear_fit
 
-        if unit_frame is None:
+        if warehouse_fits is None and unit_frame is None:
             return None, "per-unit evidence is unavailable for this breakout cell"
-        # The slice gate has already excluded rows (few units, nonpositive means) from
-        # ``summary``; the fit sees exactly the arms that gate admitted.
-        admitted = [str(row["group_id"]) for row in summary if str(row["metric"]) == metric.name]
-        unit_frame = (
-            nw.from_native(unit_frame, eager_only=True)
-            .filter(nw.col("group_id").cast(nw.String).is_in(admitted))
-            .to_native()
-        )
+        if unit_frame is not None:
+            admitted = [
+                str(row["group_id"]) for row in summary if str(row["metric"]) == metric.name
+            ]
+            unit_frame = (
+                nw.from_native(unit_frame, eager_only=True)
+                .filter(nw.col("group_id").cast(nw.String).is_in(admitted))
+                .to_native()
+            )
         results: list[LiftEstimate] = []
         failures: dict[Any, Any] = {}
         evidence: dict[Any, Any] = {}
@@ -2342,20 +2344,40 @@ def _estimate_lift_computation_or_reason(
                         advisories=bundle.advisories,
                     )
                 else:
-                    bundle = estimate_cuped_linear(
-                        metric,
-                        unit_frame,
-                        control_group=control_group,
-                        method=method,
-                        method_role=role,
-                        covariates=method.covariates or covariates,
-                        covariate_columns=unit_frame_covariate_columns(
-                            tuple(item.name for item in covariates)
-                        ),
-                        alpha=alpha,
-                        alternative=alternative,
-                        prior=prior,
+                    warehouse_fit = (
+                        None if warehouse_fits is None else warehouse_fits.get(method.name)
                     )
+                    if isinstance(warehouse_fit, CodedError):
+                        raise warehouse_fit
+                    if warehouse_fit is not None:
+                        bundle = estimate_cuped_linear_fit(
+                            metric,
+                            warehouse_fit,
+                            arm_order=warehouse_fit.arm_order,
+                            control_group=control_group,
+                            method=method,
+                            method_role=role,
+                            alpha=alpha,
+                            alternative=alternative,
+                            prior=prior,
+                        )
+                    else:
+                        from increment.estimation.engine import estimate_cuped_linear
+
+                        bundle = estimate_cuped_linear(
+                            metric,
+                            unit_frame,
+                            control_group=control_group,
+                            method=method,
+                            method_role=role,
+                            covariates=method.covariates or covariates,
+                            covariate_columns=unit_frame_covariate_columns(
+                                tuple(item.name for item in covariates)
+                            ),
+                            alpha=alpha,
+                            alternative=alternative,
+                            prior=prior,
+                        )
                     cache[cache_key] = (bundle, None)
                 results.extend(bundle.results)
                 evidence.update(bundle.evidence)
@@ -2367,13 +2389,22 @@ def _estimate_lift_computation_or_reason(
                 ):
                     raise
                 cache.setdefault(cache_key, (None, exc))
-                groups = {
-                    str(value)
-                    for value in nw.from_native(unit_frame, eager_only=True)
-                    .get_column("group_id")
-                    .to_list()
-                    if str(value) != control_group
-                }
+                groups = (
+                    {
+                        str(row["group_id"])
+                        for row in summary
+                        if str(row["metric"]) == metric.name
+                        and str(row["group_id"]) != control_group
+                    }
+                    if unit_frame is None
+                    else {
+                        str(value)
+                        for value in nw.from_native(unit_frame, eager_only=True)
+                        .get_column("group_id")
+                        .to_list()
+                        if str(value) != control_group
+                    }
+                )
                 for group_id in sorted(groups):
                     results.append(
                         _cuped_linear_unavailable_row(
@@ -3418,6 +3449,19 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         else None
                     ),
                     covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
+                    warehouse_fits=(
+                        {
+                            method.name: cast(Any, metric_evidence).warehouse_breakout_fit_for(
+                                method,
+                                dimension=context.dimension,
+                                dimension_value=context.segment_value,
+                            )
+                            for method in method_group
+                        }
+                        if metric_evidence is not None
+                        and hasattr(metric_evidence, "warehouse_breakout_fit_for")
+                        else None
+                    ),
                     family_member=context.family_member,
                 )
                 if computation is not None:

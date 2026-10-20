@@ -59,7 +59,7 @@ def postgres_con(postgres_connect):
         con.disconnect()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def snowflake_con():
     import ibis
 
@@ -122,7 +122,7 @@ def snowflake_con():
         con.disconnect()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def bigquery_con():
     import ibis
 

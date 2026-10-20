@@ -75,6 +75,24 @@ class TriggeredPopulationSource:
     ) -> list[dict[str, Any]]:
         return self._source.moments_for_method(metric, method, by=by, population="triggered")
 
+    def fit_cuped_multicovariate(
+        self,
+        metric: Metric,
+        method: Any,
+        *,
+        control: str,
+        arm_order: Sequence[str],
+        **kwargs: Any,
+    ) -> Any:
+        kwargs["population"] = "triggered"
+        return self._source.fit_cuped_multicovariate(
+            metric,
+            method,
+            control=control,
+            arm_order=arm_order,
+            **kwargs,
+        )
+
     def unit_frame(
         self,
         metric: Metric,

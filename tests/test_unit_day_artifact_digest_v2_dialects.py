@@ -75,7 +75,7 @@ def test_digest_scratch_cleanup_targets_created_namespace(
 def test_bigquery_digest_fetch_disables_storage_api():
     import pyarrow as pa
 
-    from increment.query.artifact_digest import _digest_to_pyarrow
+    from increment.query.artifact_digest import fetch_bounded_arrow
 
     relation = ibis.table({"value": "int64"}, name="source")
     expr = relation.aggregate(total=relation.value.count())
@@ -103,7 +103,7 @@ def test_bigquery_digest_fetch_disables_storage_api():
             return self.query
 
     con = Connection()
-    actual = _digest_to_pyarrow(con, expr)
+    actual = fetch_bounded_arrow(con, expr)
 
     assert actual.to_pylist() == [{"total": 3}]
     assert con.sql == "SELECT COUNT(value) AS total FROM source"
@@ -111,6 +111,34 @@ def test_bigquery_digest_fetch_disables_storage_api():
         "create_bqstorage_client": False,
         "progress_bar_type": None,
     }
+
+
+def test_bigquery_bounded_fetch_registers_memtable_before_query():
+    from increment.query.artifact_digest import fetch_bounded_arrow
+
+    expression = ibis.memtable({"_": [0]}).mutate(_as_of=ibis.literal("2025-01-01"))
+
+    class Connection:
+        name = "bigquery"
+
+        def __init__(self):
+            self.events = []
+
+        def to_pyarrow(self, expr):
+            from ibis.expr import operations as ops
+
+            self.events.extend(
+                ("register", item.name) for item in expr.op().find(ops.InMemoryTable)
+            )
+            self.events.append(("query", expr))
+            return object()
+
+    connection = Connection()
+    fetch_bounded_arrow(connection, expression)
+
+    assert connection.events[0][0] == "register"
+    assert connection.events[-1][0] == "query"
+    assert connection.events[-1][1] is expression
 
 
 _TABLE = ibis.table(

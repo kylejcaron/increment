@@ -1218,3 +1218,29 @@ def test_locator_refusals_carry_the_rejected_value_in_their_context() -> None:
     )
     assert wrong_role.code == "artifact.refresh.invalid_ref"
     assert dict(wrong_role.context) == {"role": "measure_stats"}
+
+
+def test_bigquery_bounded_fetch_avoids_storage_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pyarrow as pa
+
+    con, session = _session()
+    monkeypatch.setattr(con, "name", "bigquery")
+    query_options: dict[str, Any] = {}
+
+    class QueryJob:
+        def to_arrow(self, **kwargs: Any) -> pa.Table:
+            query_options.update(kwargs)
+            return pa.table({"total": [6]})
+
+    monkeypatch.setattr(con, "raw_sql", lambda _sql: QueryJob())
+
+    def unexpected_to_pyarrow(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("BigQuery bounded fetch used the Storage API-backed backend fetch")
+
+    monkeypatch.setattr(con, "to_pyarrow", unexpected_to_pyarrow)
+    table = con.table("t")
+    result = session.fetch_arrow(table.aggregate(total=table.x.sum()))
+
+    assert result.to_pylist() == [{"total": 6}]
+    assert query_options == {"create_bqstorage_client": False, "progress_bar_type": None}
+    con.disconnect()

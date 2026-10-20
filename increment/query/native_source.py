@@ -306,6 +306,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             tuple[str, Metric] | tuple[str, Metric, tuple[Metric, ...]],
             tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar],
         ] = {}
+        self._cuped_relation_cache: dict[tuple[str, str, dt.date | None], Table] = {}
         self._reduction_calls = 0
         self._reduction_batch_depth = 0
         self._assignment_validation_depth = 0
@@ -393,6 +394,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._session.drop_materialized()
         self._materialized = False
         self._panel_cache = {}
+        self._cuped_relation_cache = {}
 
     def _mixed_assignment_snapshot(self, exposure_events: Table) -> tuple[int, int, int]:
         """Count mixed and NULL assignments with one bounded aggregate."""
@@ -1186,7 +1188,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 grouped = population.group_by(label)
             else:
                 grouped = population
-            counts = self._con.to_pyarrow(
+            counts = self._session.fetch_arrow(
                 grouped.aggregate(
                     n_missing=population[covariate.name].isnull().cast("int64").sum(),
                     n_observed=population[covariate.name].count(),
@@ -3665,7 +3667,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
-        from increment.query.cuped import categorical_request_cells
+        from increment.query.cuped import (
+            categorical_request_cells,
+            portable_qr_requests,
+        )
         from increment.sources import stamp_fixed_rows, write_moments_table
 
         identity_record = source_identity(self)
@@ -3675,10 +3680,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         if requests is not None:
             with self.readout_snapshot(
-                metrics=tuple(metric for metric, _, _ in requests),
+                metrics=tuple(metric for metric, _, _, _ in requests),
                 population="assigned",
                 configs=self.context.configs,
             ) as pinned:
+                requests = portable_qr_requests(pinned, requests, population="assigned")
                 pinned_identity = source_identity(pinned)
                 pinned_identity_payload = json.dumps(
                     pinned_identity, sort_keys=True, separators=(",", ":")
@@ -4121,6 +4127,51 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return units.join(dimensions, keys="unit_id", join_type="left outer")
 
+    def fit_cuped_multicovariate(
+        self,
+        metric: Metric,
+        method,
+        *,
+        control: str,
+        arm_order: tuple[str, ...],
+        population: Literal["assigned", "triggered"] = "assigned",
+        breakout_dimension: str | None = None,
+        breakout_source: str | None = None,
+        breakout_value: str | None = None,
+        breakout_is_null: bool = False,
+        return_components: bool = False,
+    ):
+        from increment.query.cuped import fit_multicovariate_request
+
+        return fit_multicovariate_request(
+            self,
+            metric,
+            method,
+            control=control,
+            arm_order=arm_order,
+            population=population,
+            breakout_dimension=breakout_dimension,
+            breakout_source=breakout_source,
+            breakout_value=breakout_value,
+            breakout_is_null=breakout_is_null,
+            return_components=return_components,
+        )
+
+    def cuped_outcome_domains(self, metric: Metric) -> tuple[str, ...]:
+        """Return declared SQL domains for outcome components without reading rows."""
+        from increment.query._cuped_cells import component_domain
+
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        domains = []
+        for measure in components:
+            fact_source, fact = _find_fact_source(self._defs, measure.fact)
+            column = _resolve_value_column(fact_source, fact)
+            datatype = self._get_fact_table(fact_source)[column].type() if column else None
+            domains.append(component_domain(measure, datatype))
+        return tuple(domains)
+
     @contextmanager
     def cuped_relation(self, metric: Metric, request):
         """Keep the complete CUPED relation inside one pinned source execution."""
@@ -4141,14 +4192,60 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 datatype = (
                     pinned._get_fact_table(source)[column].type() if column is not None else None
                 )
-                if component_domain(measure, datatype) != "continuous":
+                if component_domain(measure, datatype) == "unknown":
                     general_qr_required(metric, "outcome_domain")
+            cache_key = (
+                metric.name,
+                repr(request.identity),
+                pinned._fixed_event_horizon,
+            )
+            cached = pinned._cuped_relation_cache.get(cache_key)
+            if cached is not None:
+                yield cached, pinned._session.fetch_arrow, pinned._session.qr_scratch
+                return
             with pinned._unit_relation(
                 metric,
                 covariates=tuple(item.name for item in request.method.covariates or ()),
                 population=request.population,
-            ) as evidence:
-                yield evidence
+            ) as (relation, execute):
+                if request.breakout_dimension is not None:
+                    from increment.semantics.models import Breakout
+
+                    breakout = Breakout(
+                        property=request.breakout_dimension,
+                        source=request.breakout_source,
+                    )
+                    exposures = (
+                        pinned._get_trigger_population(operation="breakout_cuped")
+                        if request.population == "triggered"
+                        else pinned._get_exposures()
+                    )
+                    source = _resolve_breakout_fact_source(
+                        pinned._defs, pinned._experiment, breakout
+                    )
+                    properties = pinned._build_breakout_properties_table(
+                        source, breakout.property, exposures
+                    )
+                    relation = relation.left_join(
+                        properties.select(
+                            "unit_id",
+                            **{"__qr_breakout_value": properties[breakout.property]},
+                        ),
+                        "unit_id",
+                    )
+                    if request.breakout_is_null:
+                        relation = relation.filter(relation["__qr_breakout_value"].isnull())
+                    else:
+                        relation = relation.filter(
+                            canonical_dimension_value(relation["__qr_breakout_value"])
+                            == request.breakout_value
+                        )
+                table_name = pinned._session.temp_name(
+                    "cuped_qr_relation", str(len(pinned._cuped_relation_cache))
+                )
+                relation = pinned._session.materialize_table(table_name, relation, required=True)
+                pinned._cuped_relation_cache[cache_key] = relation
+                yield relation, execute, pinned._session.qr_scratch
 
     def unit_frame(
         self,
@@ -4387,6 +4484,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         self._union_horizon_cache = None
         self._union_horizon_metric_cache = {}
         self._panel_cache = {}
+        self._cuped_relation_cache = {}
         self._reduction_calls = 0
         self._materialized = False
         self._reduction_batch_depth = 0

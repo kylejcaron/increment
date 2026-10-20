@@ -105,6 +105,360 @@ def _dumps(rows, *, exclude=frozenset()):
     return [row.model_dump(exclude=set(exclude)) for row in rows]
 
 
+def test_fitted_multicovariate_envelope_preserves_large_float_scatter(tmp_path):
+    from dataclasses import replace
+
+    from increment._cuped_evidence import (
+        fitted_multicovariate_payload,
+        parse_cuped_evidence,
+    )
+
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    spec = MetricSpec(name="outcome", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(_records()),
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="compact",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        _, rows = _export_rows(analysis, tmp_path)
+        envelope = next(
+            row["cuped_evidence"]
+            for row in rows
+            if row.get("record_kind") == "cuped_evidence"
+            and json.loads(row["cuped_evidence"])["kind"] == "fitted_multicovariate"
+        )
+        wire = json.loads(envelope)
+        evidence = parse_cuped_evidence(envelope)
+        assert evidence.fit_state is not None and evidence.inference_summary is not None
+        large_scatter = math.nextafter(1.0e16, math.inf)
+        covariance = ((large_scatter,),)
+        summary = replace(
+            evidence.inference_summary,
+            adjusted_component_covariance=covariance,
+        )
+        rewritten = fitted_multicovariate_payload(
+            spec.name,
+            method,
+            evidence.fit_state,
+            summary,
+            population=evidence.population,
+            trigger_name=evidence.trigger_name,
+            source=wire["evidence"]["fit_state"]["identity"][3],
+        )
+        restored = parse_cuped_evidence(rewritten)
+        assert restored.inference_summary is not None
+        assert restored.inference_summary.adjusted_component_covariance[0][0] == large_scatter
+        assert restored.fit_state is not None and restored.inference_summary is not None
+        rewritten_again = fitted_multicovariate_payload(
+            spec.name,
+            method,
+            restored.fit_state,
+            restored.inference_summary,
+            population=restored.population,
+            trigger_name=restored.trigger_name,
+            source=wire["evidence"]["fit_state"]["identity"][3],
+        )
+        assert rewritten_again == rewritten
+    finally:
+        analysis.close()
+
+
+def test_replay_restores_nested_snapshot_identity_mappings():
+    from increment._cuped_evidence import _restore_identity_mappings
+
+    identity_source = (
+        (
+            "source_snapshot_evidence",
+            (
+                ("observation_cutoff_ts", "2025-01-02T03:04:05+00:00"),
+                (
+                    "complete_through_by_feed",
+                    (("events", "2025-01-01T00:00:00+00:00"), ("users", None)),
+                ),
+            ),
+        ),
+    )
+
+    assert _restore_identity_mappings(identity_source, mapping_sequence=True) == {
+        "source_snapshot_evidence": {
+            "observation_cutoff_ts": "2025-01-02T03:04:05+00:00",
+            "complete_through_by_feed": {
+                "events": "2025-01-01T00:00:00+00:00",
+                "users": None,
+            },
+        }
+    }
+
+
+def test_triggered_fit_export_uses_source_warehouse_operation(monkeypatch):
+    from types import SimpleNamespace
+
+    import increment._cuped_evidence as evidence_module
+    from increment._cuped_evidence import portable_cuped_rows
+    from increment.estimation.engine import Method
+    from increment.query._native_triggered import TriggeredPopulationSource
+    from increment.semantics.models import CupedCovariate
+
+    fit_calls = []
+
+    class Source:
+        breakouts = ()
+        shape = None
+        context = SimpleNamespace(
+            design=SimpleNamespace(control_group="control"),
+            trigger_name="trigger",
+        )
+
+        @staticmethod
+        def _validate_trigger_capability(*, operation):
+            pass
+
+        @staticmethod
+        def moments_for_method(metric, method, *, by=(), population=None):
+            return [{"group_id": "control"}, {"group_id": "treatment"}]
+
+        @staticmethod
+        def unit_frame(*_args, **_kwargs):
+            raise AssertionError("triggered export transferred unit rows")
+
+        @staticmethod
+        def fit_cuped_multicovariate(metric, method, **kwargs):
+            fit_calls.append(kwargs)
+            identity = ("warehouse-fit",)
+            return identity, (SimpleNamespace(identity=identity), object(), object())
+
+    def forbidden_local_fit(*_args, **_kwargs):
+        raise AssertionError("triggered export fell back to local unit fitting")
+
+    monkeypatch.setattr(evidence_module, "_local_multicovariate_evidence", forbidden_local_fit)
+    monkeypatch.setattr(
+        evidence_module, "fitted_multicovariate_payload", lambda *args, **kwargs: "{}"
+    )
+    method = Method.cuped_multicovariate(
+        name="fitted",
+        covariates=(CupedCovariate(name="x", kind="continuous"),),
+    )
+    metric = SimpleNamespace(name="outcome")
+    source = TriggeredPopulationSource(Source())
+    rows = portable_cuped_rows(
+        source,
+        ((metric, (), (), (method,)),),
+        categorical_cells=None,
+        identity={"source": "test"},
+    )
+
+    assert fit_calls[0]["population"] == "triggered"
+    assert fit_calls[0]["return_components"] is True
+    assert rows[-1]["cuped_evidence"] == "{}"
+
+
+@pytest.fixture(scope="module")
+def fitted_evidence_payload(tmp_path_factory):
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    spec = MetricSpec(name="outcome", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(_records()),
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="compact",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        _, rows = _export_rows(analysis, tmp_path_factory.mktemp("fitted-shapes"))
+        return next(
+            json.loads(row["cuped_evidence"])
+            for row in rows
+            if row.get("record_kind") == "cuped_evidence"
+            and json.loads(row["cuped_evidence"])["kind"] == "fitted_multicovariate"
+        )
+    finally:
+        analysis.close()
+
+
+def test_local_fitted_envelope_uses_aggregate_encoder_coordinates(fitted_evidence_payload):
+    state = fitted_evidence_payload["evidence"]["fit_state"]
+    records = _records()
+    arm_order = ("control", "treatment")
+    values_by_arm = [
+        [float(row["history_a"]) for row in records if row["arm"] == arm] for arm in arm_order
+    ]
+    offsets = [math.fsum(values) / len(values) for values in values_by_arm]
+    assert state["offsets"][0] == pytest.approx(offsets, rel=1e-14, abs=1e-14)
+    centered = [
+        value - offsets[index] for index, values in enumerate(values_by_arm) for value in values
+    ]
+    norm = math.hypot(*centered)
+    scale = state["scales"][0]
+    assert math.frexp(scale)[0] == 0.5
+    assert norm <= scale <= 2 * norm
+
+
+def test_local_fitted_export_preserves_arm_only_rank_refusal(tmp_path):
+    from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
+
+    rows = [
+        {
+            "unit": f"{arm}-{index}",
+            "arm": arm,
+            "outcome": float(index + (arm == "treatment")),
+            "history_a": float(arm == "treatment"),
+            "segment": "A" if index % 2 == 0 else "B",
+        }
+        for arm in ("control", "treatment")
+        for index in range(20)
+    ]
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    metric = MetricSpec(name="outcome", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="rank-refusal",
+        metrics=[metric],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        with pytest.raises(CodedError) as runtime:
+            fit_cuped_multicovariate(
+                [row["outcome"] for row in rows],
+                [row["arm"] for row in rows],
+                control="control",
+                arm_order=("control", "treatment"),
+                covariates={
+                    "history_a": [row["history_a"] for row in rows],
+                    "segment": [row["segment"] for row in rows],
+                },
+                kinds={"history_a": "continuous", "segment": "categorical"},
+            )
+        with pytest.raises(CodedError) as portable:
+            analysis.export(tmp_path / "rank-refusal.parquet")
+        assert runtime.value.code == "estimation.cuped_linear.rank_deficiency"
+        assert portable.value.code == runtime.value.code
+    finally:
+        analysis.close()
+
+
+_FITTED_SEQUENCE_PATHS = (
+    ("fit_state", "identity"),
+    ("fit_state", "eligible_arms"),
+    ("fit_state", "withheld_arms"),
+    ("fit_state", "refusal_contexts"),
+    ("fit_state", "counts"),
+    ("fit_state", "offsets"),
+    ("fit_state", "scales"),
+    ("fit_state", "centered_means"),
+    ("fit_state", "anchor"),
+    ("fit_state", "triangular_factor"),
+    ("fit_state", "transformed_rhs"),
+    ("fit_state", "slopes"),
+    ("fit_state", "adjusted_means"),
+    ("fit_state", "theta"),
+    ("fit_state", "denominator_support"),
+    ("fit_state", "layout", "names"),
+    ("fit_state", "layout", "kinds"),
+    ("fit_state", "layout", "levels"),
+    ("fit_state", "layout", "references"),
+    ("fit_state", "layout", "encoded_columns"),
+    ("fit_state", "layout", "structural_omissions"),
+    ("fit_state", "layout", "shared_indicators"),
+    ("inference_summary", "fit_identity"),
+    ("inference_summary", "projection_identity"),
+    ("inference_summary", "refusal_witness"),
+    ("inference_summary", "adjusted_component_covariance"),
+    ("inference_summary", "scaled_projected_score_squares"),
+    ("inference_summary", "s2"),
+    ("inference_summary", "s4"),
+    ("inference_summary", "g"),
+    ("inference_summary", "g2"),
+    ("inference_summary", "u"),
+    ("inference_summary", "evidence_identity"),
+    ("inference_summary", "projection_specs"),
+    ("inference_summary", "projection_specs", 0, "identity"),
+    ("inference_summary", "projection_specs", 0, "jacobian"),
+)
+
+
+def _replace_at_path(value, path, replacement):
+    parent = value
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = replacement
+
+
+def _wrong_sequence_length(value):
+    return value[:-1] if value else [None]
+
+
+@pytest.mark.parametrize(
+    ("path", "malformation"),
+    [
+        (path, malformation)
+        for path in _FITTED_SEQUENCE_PATHS
+        for malformation in ("null", "wrong_length", "wrong_type")
+    ]
+    + [
+        (("fit_state", "identity", 6), "null"),
+        (("fit_state", "identity", 6), "wrong_type"),
+        (("fit_state", "identity", 6), "wrong_length"),
+        (("fit_state", "refusal_contexts"), "nested_wrong_length"),
+        (("inference_summary", "scaled_projected_score_squares", 0), "wrong_length"),
+        (("inference_summary", "projection_specs", 0, "identity"), "wrong_length"),
+        (("inference_summary", "projection_specs", 0, "jacobian"), "wrong_length"),
+    ],
+)
+def test_malformed_fitted_nested_shapes_refuse_with_coded_error(
+    fitted_evidence_payload, path, malformation
+):
+    from increment._cuped_evidence import parse_cuped_evidence
+
+    payload = json.loads(json.dumps(fitted_evidence_payload))
+    parent = payload["evidence"]
+    for key in path[:-1]:
+        parent = parent[key]
+    value = parent[path[-1]]
+    if malformation == "null":
+        replacement = None
+    elif malformation == "wrong_length":
+        replacement = [] if path[-1] == "jacobian" else _wrong_sequence_length(value)
+    elif malformation == "wrong_type":
+        replacement = "not-a-sequence"
+    elif malformation == "nested_wrong_length":
+        replacement = [[]]
+    else:
+        assert isinstance(value, list)
+        replacement = _wrong_sequence_length(value)
+    _replace_at_path(payload["evidence"], path, replacement)
+    with pytest.raises(CodedError) as raised:
+        parse_cuped_evidence(canonical_json_bytes(payload).decode())
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
 @pytest.mark.parametrize("ratio", [False, True])
 @pytest.mark.parametrize("family", ["scalar", "categorical", "combined"])
 def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, family):
@@ -632,7 +986,7 @@ def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
     )
     rows = portable_cuped_rows(
         source,
-        [(metric, (), (method,))],
+        [(metric, (), (method,), ())],
         categorical_cells=lambda _metric, _method: cells,
         identity={"source_id": "snapshot"},
     )
@@ -645,7 +999,7 @@ def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
     with pytest.raises(CodedError) as refusal:
         portable_cuped_rows(
             missing_trigger,
-            [(metric, (), (method,))],
+            [(metric, (), (method,), ())],
             categorical_cells=lambda _metric, _method: cells,
             identity={"source_id": "snapshot"},
         )

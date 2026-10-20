@@ -43,11 +43,32 @@ class MetricRows:
     method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
     method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
     categorical_evidence: tuple[tuple[str, Any], ...] = ()
+    warehouse_cuped_fits: tuple[tuple[str, Any], ...] = ()
+    warehouse_cuped_breakout_fits: tuple[tuple[str, str, str, Any, tuple[object, ...]], ...] = ()
 
     def categorical_for(self, method: Any) -> Any | None:
-        """Retained joint categorical evidence for one multicovariate method, if any."""
+        """Retained joint categorical evidence for one multicovariate method."""
         return next(
             (evidence for name, evidence in self.categorical_evidence if name == method.name),
+            None,
+        )
+
+    def warehouse_fit_for(self, method: Any) -> Any | None:
+        """Return this request's finalized warehouse fit, if it was acquired."""
+        return next(
+            (fit for name, fit in self.warehouse_cuped_fits if name == method.name),
+            None,
+        )
+
+    def warehouse_breakout_fit_for(
+        self, method: Any, *, dimension: str, dimension_value: str
+    ) -> Any | None:
+        return next(
+            (
+                fit
+                for name, fit_dimension, value, fit, _identity in self.warehouse_cuped_breakout_fits
+                if name == method.name and fit_dimension == dimension and value == dimension_value
+            ),
             None,
         )
 
@@ -180,7 +201,7 @@ def _decision_unit_component(frame, method, acquired_columns):
     return ("unit_evidence_rows", *_frame_digest_and_arms(projected)[1:])
 
 
-def _load_metric_rows(
+def _load_metric_rows(  # noqa: PLR0915
     src: MomentSource,
     metric: Metric,
     *,
@@ -379,6 +400,118 @@ def _load_metric_rows(
             method_refusals=tuple(method_refusals),
             categorical_evidence=retained,
         )
+    warehouse_fits: list[tuple[str, Any]] = []
+    warehouse_fit_identities = []
+    fit_source = (
+        src
+        if getattr(src, "cuped_relation", None) is not None
+        else getattr(src, "_source", None) or src
+    )
+    if has_linear and getattr(fit_source, "fit_cuped_multicovariate", None) is not None:
+        arm_order = (str(control_group), *sorted(observed - {str(control_group)}))
+        population = getattr(src, "population", "assigned")
+        from increment._canonical import canonical_json_bytes
+        from increment._source_identity import source_identity
+
+        for method in methods:
+            if getattr(method, "variance_reduction", None) != "cuped_multicovariate":
+                continue
+            request_identity = (
+                "warehouse-cuped-fit-v1",
+                metric.name,
+                population,
+                source_identity(fit_source),
+                canonical_json_bytes(method.model_dump(mode="json", exclude={"name"})).decode(),
+                str(control_group),
+                arm_order,
+                None,
+                None,
+                None,
+                False,
+            )
+            try:
+                identity, fit = cast(Any, fit_source).fit_cuped_multicovariate(
+                    metric,
+                    method,
+                    control=str(control_group),
+                    arm_order=arm_order,
+                    population=population,
+                )
+                warehouse_fit_identities.append(identity)
+                warehouse_fits.append((method.name, fit))
+            except CodedError as exc:
+                warehouse_fit_identities.append(request_identity)
+                warehouse_fits.append((method.name, exc))
+
+        def fit_evidence_record(identity, evidence):
+            if isinstance(evidence, CodedError):
+                return {
+                    "fit_identity": identity,
+                    "failure": evidence.code,
+                    "fit": None,
+                }
+            fitted = evidence.fit
+            return {
+                "fit_identity": identity,
+                "arm_order": evidence.arm_order,
+                "withheld": tuple((arm, refusal.code) for arm, refusal in evidence.withheld),
+                "fit": None
+                if fitted is None
+                else {
+                    "arm_order": fitted.arm_order,
+                    "control": fitted.control,
+                    "n_by_arm": fitted.n_by_arm,
+                    "adjusted_means": fitted.adjusted_means,
+                    "theta": fitted.theta,
+                    "anchor": fitted.anchor,
+                    "layout": tuple(
+                        getattr(fitted.layout, field)
+                        for field in fitted.layout.__dataclass_fields__
+                    ),
+                    "covariance": fitted.covariance,
+                    "dof": fitted.dof,
+                    "n_min": fitted.n_min,
+                    "p": fitted.p,
+                    "max_leverage": fitted.max_leverage,
+                    "mean_leverage": fitted.mean_leverage,
+                    "leverage_trace": fitted.leverage_trace,
+                    "is_ratio": fitted.is_ratio,
+                },
+            }
+
+        fit_components = tuple(
+            (
+                f"warehouse_qr:{name}",
+                _rows_raw_digest_and_arms((fit_evidence_record(identity, fit),))[1],
+                1,
+            )
+            for (name, fit), identity in zip(warehouse_fits, warehouse_fit_identities, strict=True)
+        )
+        return MetricRows(
+            rows=tuple(rows),
+            unit_frame=None,
+            observed_arms=observed,
+            n_treatment_arms=len(observed - {control_group}),
+            evidence_kind="mixed_rows",
+            evidence_sha256="",
+            evidence_count=moments_count + len(fit_components),
+            decision_evidence_components=(
+                decision_components
+                + tuple(
+                    item
+                    for item in fit_components
+                    if methods and item[0] == f"warehouse_qr:{methods[0].name}"
+                )
+            ),
+            evidence_components=(
+                ("moments_rows", moments_sha256, moments_count),
+                *fit_components,
+                *method_components,
+            ),
+            method_rows=method_rows,
+            method_refusals=tuple(method_refusals),
+            warehouse_cuped_fits=tuple(warehouse_fits),
+        )
 
     import narwhals as nw
 
@@ -439,7 +572,9 @@ def _retained_categorical_evidence(
     return retained, cell_arms, components
 
 
-def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group) -> MetricRows:
+def _load_breakout_metric_rows(
+    src, metric, methods, *, dimension, control_group, source_name=None, population="assigned"
+) -> MetricRows:
     """Acquire effective scalar inputs without promoting a segment failure."""
     if any(method.variance_reduction == "cuped" for method in methods) and not isinstance(
         src, ScalarBreakoutMomentSource
@@ -457,6 +592,60 @@ def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group
         if isinstance(src, ScalarBreakoutMomentSource)
         else tuple(src.moments(metric, grain="total", by=(dimension,)))
     )
+    warehouse_breakout_fits = []
+    fit_source = getattr(src, "_source", src)
+    if getattr(fit_source, "fit_cuped_multicovariate", None) is not None:
+        segment_values = sorted(
+            {"__null__" if row.get(dimension) is None else str(row[dimension]) for row in base}
+        )
+        for method in methods:
+            if method.variance_reduction != "cuped_multicovariate":
+                continue
+            for segment_value in segment_values:
+                segment_rows = tuple(
+                    row
+                    for row in base
+                    if ("__null__" if row.get(dimension) is None else str(row[dimension]))
+                    == segment_value
+                )
+                from increment.breakout.estimates import _partition_nonpositive_mean_rows
+
+                admitted_rows = _partition_nonpositive_mean_rows(
+                    list(segment_rows),
+                    control_group=control_group,
+                    metric_types={metric.name: metric.type},
+                    binomial_gate_exempt_metrics=frozenset(),
+                ).live
+                arms = sorted(
+                    {
+                        str(row["group_id"])
+                        for row in admitted_rows
+                        if row.get("group_id") is not None
+                    }
+                )
+                if control_group not in arms:
+                    continue
+                arm_order = (control_group, *(arm for arm in arms if arm != control_group))
+                is_null = segment_value == "__null__"
+                request_value = None if is_null else segment_value
+                try:
+                    identity, fit = fit_source.fit_cuped_multicovariate(
+                        metric,
+                        method,
+                        control=control_group,
+                        arm_order=arm_order,
+                        population=population,
+                        breakout_dimension=dimension,
+                        breakout_source=source_name,
+                        breakout_value=request_value,
+                        breakout_is_null=is_null,
+                    )
+                except CodedError as exc:
+                    fit = exc
+                    identity = ()
+                warehouse_breakout_fits.append(
+                    (method.name, dimension, segment_value, fit, identity)
+                )
     families = []
     failures = []
     cell_failures = []
@@ -502,7 +691,22 @@ def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group
         method_components.append(
             (f"scalar_method:{method.name}", *_rows_raw_digest_and_arms(records)[1:])
         )
-    components = (ordinary_component, *method_components)
+    warehouse_components = tuple(
+        (
+            f"warehouse_qr_breakout:{name}:{fit_dimension}:{value}",
+            _rows_raw_digest_and_arms(
+                (
+                    {
+                        "fit_identity": identity,
+                        "failure": getattr(fit, "code", None),
+                    },
+                )
+            )[1],
+            1,
+        )
+        for name, fit_dimension, value, fit, identity in warehouse_breakout_fits
+    )
+    components = (ordinary_component, *method_components, *warehouse_components)
     return MetricRows(
         rows=base,
         unit_frame=None,
@@ -510,7 +714,7 @@ def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group
         n_treatment_arms=len(observed - {control_group}),
         evidence_kind="moments_rows",
         evidence_sha256=digest,
-        evidence_count=count,
+        evidence_count=count + len(warehouse_components),
         decision_evidence_components=(
             ordinary_component,
             *(
@@ -523,4 +727,5 @@ def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group
         method_rows=tuple(families),
         method_refusals=tuple(failures),
         method_cell_refusals=tuple(cell_failures),
+        warehouse_cuped_breakout_fits=tuple(warehouse_breakout_fits),
     )

@@ -321,9 +321,10 @@ class ImmutableArtifactSnapshot:
     artifact_id: UUID
     generation_id: UUID
     _read_manifest: Callable[[RelationLocator, str], UnitDayArtifactManifest]
-    _verify_relation: Callable[[ArtifactRelationRef, RelationRole], ir.Table]
+    _verify_relation: Callable[[ArtifactRelationRef, str], ir.Table]
     _execute: Callable[[ir.Table], IntoDataFrame]
     _batches: Callable[[ir.Table], object] | None = None
+    _qr_scratch: Callable[[], AbstractContextManager[Any]] | None = None
 
     def read_manifest(
         self, locator: RelationLocator, *, expected_sha256: str
@@ -344,6 +345,9 @@ class ImmutableArtifactSnapshot:
                 "route.unsupported", "artifact store has no bounded sequential record reader"
             )
         return self._batches(expression)
+
+    def qr_scratch(self) -> AbstractContextManager[Any] | None:
+        return self._qr_scratch() if self._qr_scratch is not None else None
 
 
 @dataclass(frozen=True, slots=True)

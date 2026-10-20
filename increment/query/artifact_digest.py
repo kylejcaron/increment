@@ -1252,9 +1252,12 @@ def _row_token_expr(
     return expr
 
 
-def _digest_to_pyarrow(con: Any, expr: ir.Expr) -> Any:
-    """Fetch a bounded digest result without BigQuery Storage API overhead."""
+def fetch_bounded_arrow(con: Any, expr: ir.Expr) -> Any:
+    """Fetch a bounded result, bypassing the BigQuery Storage API client."""
     if con.name != "bigquery":
+        return con.to_pyarrow(expr)
+    operation = expr.op()
+    if operation.find(ops.InMemoryTable) or operation.find(ops.Impure):
         return con.to_pyarrow(expr)
     table_expr = expr.as_table()
     result = con.raw_sql(con.compile(table_expr))
@@ -1271,7 +1274,7 @@ def _assert_unique_primary_key_sql(con: Any, table: ir.Table, pk: Sequence[str],
     keys = [table[name] for name in pk]
     ranked = table.select(_key_rank=ibis.row_number().over(group_by=keys, order_by=keys))
     dup_count = int(
-        _digest_to_pyarrow(con, ranked.filter(ranked["_key_rank"] == 1).count()).as_py()
+        fetch_bounded_arrow(con, ranked.filter(ranked["_key_rank"] == 1).count()).as_py()
     )
     if dup_count:
         _raise(
@@ -1305,7 +1308,7 @@ def _assert_cells_valid_sql(
     metrics = [expr.name(name) for name, expr in checks.items() if expr is not None]
     if not metrics:
         return
-    counts = _digest_to_pyarrow(con, table.aggregate(metrics)).to_pylist()[0]
+    counts = fetch_bounded_arrow(con, table.aggregate(metrics)).to_pylist()[0]
     if counts.get("pk_nulls"):
         _raise(
             "artifact.digest.primary_key",
@@ -1376,7 +1379,7 @@ def digest_relation_sql_v2(
     pk = tuple(primary_key)
     _check_primary_key(fields, pk)
     if not pk:
-        counted = int(_digest_to_pyarrow(con, table.count()).as_py())
+        counted = int(fetch_bounded_arrow(con, table.count()).as_py())
         if counted > 1:
             _raise(
                 "artifact.digest.primary_key",
@@ -1408,7 +1411,7 @@ def digest_relation_sql_v2(
         hashed = con.create_table(hashed_name, row_hashes, temp=True)
         hex_hashes = hashed.select(h=_sql_binary_hex_expr(hashed.h, dialect=con.name))
         buckets = hex_hashes.select(bucket=hex_hashes.h.substr(0, _BUCKET_HEX_LEN), h=hex_hashes.h)
-        row_count = int(_digest_to_pyarrow(con, hashed.count()).as_py())
+        row_count = int(fetch_bounded_arrow(con, hashed.count()).as_py())
         rows: list[dict[str, Any]] = []
         step = 16**_BUCKET_HEX_LEN // _digest_passes(row_count)
         for start in range(0, 16**_BUCKET_HEX_LEN, step):
@@ -1428,7 +1431,7 @@ def digest_relation_sql_v2(
                 )
                 .order_by("bucket")
             )
-            rows.extend(_digest_to_pyarrow(con, bucket_digests).to_pylist())
+            rows.extend(fetch_bounded_arrow(con, bucket_digests).to_pylist())
     finally:
         if hashed is not None:
             _drop_sql_digest_hash_table(con, hashed)

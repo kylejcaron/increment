@@ -25,6 +25,61 @@ from integration.warehouse_execution._suite import (
 pytestmark = pytest.mark.warehouse_bigquery
 
 
+def test_bigquery_float_token_probe_matches_rows_by_id(monkeypatch):
+    import struct
+    from types import SimpleNamespace
+
+    from increment.query._artifact_float import float64_token_py
+    from integration.warehouse_execution import _float_tokens
+
+    values = (1.0, 2.0)
+    cases = [{"bits": struct.pack(">d", value).hex()} for value in values]
+    monkeypatch.setattr(_float_tokens, "float_token_cases", lambda **_kwargs: cases)
+    monkeypatch.setattr(_float_tokens, "_float_payload_expr", lambda *args, **kwargs: "token")
+    rows = [
+        {
+            "id": index,
+            "value": value,
+            "reciprocal": 1.0 / value,
+            "token": float64_token_py(value),
+        }
+        for index, value in reversed(tuple(enumerate(values)))
+    ]
+
+    class Client:
+        def load_table_from_file(self, *_args, **_kwargs):
+            return SimpleNamespace(result=lambda: None)
+
+    class Table:
+        id = object()
+        value = object()
+        reciprocal = object()
+
+        def select(self, **_kwargs):
+            return self
+
+    class Connection:
+        current_catalog = "project"
+        current_database = "dataset"
+        client = Client()
+
+        def sql(self, _query):
+            return Table()
+
+        def to_pyarrow(self, _expression):
+            return SimpleNamespace(to_pylist=lambda: rows)
+
+        def raw_sql(self, _query):
+            return SimpleNamespace(
+                to_arrow=lambda **_kwargs: SimpleNamespace(to_pylist=lambda: [{"token": "-0"}])
+            )
+
+        def drop_table(self, *_args, **_kwargs):
+            return None
+
+    _float_tokens.run_float_token_probe(Connection(), dialect="bigquery")
+
+
 def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
     import math
     from io import BytesIO
@@ -322,3 +377,27 @@ def test_artifact_abort_after_manifest_leaves_nothing_visible(bigquery_con):
 def test_artifact_explicit_catalog_path(bigquery_con):
     """Explicit project/dataset publication, fresh adoption and cleanup work on BigQuery."""
     run_artifact_explicit_catalog_probe(bigquery_con, dialect="bigquery")
+
+
+@pytest.fixture(scope="module")
+def _bigquery_mixed_cuped_probe(bigquery_con, tmp_path_factory):
+    from integration.warehouse_execution.test_snowflake_execution import (
+        _run_cloud_mixed_cuped_probe,
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return _run_cloud_mixed_cuped_probe(
+            bigquery_con,
+            "bigquery",
+            tmp_path_factory.mktemp("bigquery-mixed-cuped"),
+            monkeypatch,
+        )
+
+
+# Prior BigQuery readouts took up to 501s per case; allow 1800s for this
+# module-scoped fixture's shared native, adopted, and refusal readouts.
+@pytest.mark.timeout(1800, method="signal")
+def test_bigquery_mixed_cuped_matches_local_with_native_and_artifact(
+    _bigquery_mixed_cuped_probe,
+):
+    assert _bigquery_mixed_cuped_probe is None

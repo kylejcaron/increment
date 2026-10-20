@@ -100,6 +100,17 @@ if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
 
+def _restore_raw_dimension_values(
+    properties_table: ir.Table | None, name: str | None
+) -> ir.Table | None:
+    if properties_table is None or name is None:
+        return properties_table
+    value = properties_table[name].cast("string")
+    return properties_table.mutate(
+        **{name: ibis.ifelse(value.startswith("\\"), value.substr(1), value)}
+    )
+
+
 ARTIFACT_OPERATIONS: frozenset[SourceOperation] = frozenset(
     {"moments_source", "day_source", "export_moments", "unit_counts"}
 )
@@ -1255,6 +1266,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 route="request total- or unit-grain moments",
             )
         metric = self._normalize_metric(metric)
+        properties_table = _restore_raw_dimension_values(properties_table, by)
         uptake_events, uptake_window_days, has_uptake, uptake_certified_edge = self._uptake_inputs()
         exposures = (
             self._ensure("exposures") if trigger_inputs is None else trigger_inputs.exposures
@@ -2547,7 +2559,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         from increment._source_identity import source_identity
         from increment._source_types import ScalarMethodMomentSource
         from increment.decision_wire import compiled_plan_to_json
-        from increment.query.cuped import categorical_request_cells
+        from increment.query.cuped import categorical_request_cells, portable_qr_requests
         from increment.sources import stamp_fixed_rows, write_moments_table
 
         if not isinstance(self, ScalarMethodMomentSource):
@@ -2559,6 +2571,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 design=self.context.design,
             )
         population = self.population
+        requests = portable_qr_requests(self, requests, population=population)
         identity = source_identity(self)
         portable = portable_cuped_rows(
             cast(CUPEDEvidenceExportSource, self),
@@ -2568,6 +2581,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             ),
             identity=identity,
         )
+
         compliance = (
             self.compliance_summary(self.context.design)
             if isinstance(self.context.design, Encouragement)

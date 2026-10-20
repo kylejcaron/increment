@@ -199,6 +199,79 @@ def test_raw_moment_row_digest_is_pinned_and_encodes_nonfinite_moments():
     )
 
 
+def test_categorical_missing_digest_is_stable_for_unit_frame_cuped_runs():
+    import datetime as dt
+
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.semantics.design import Randomized
+
+    rows = [
+        {
+            "unit": f"{arm}-{index}",
+            "group": arm,
+            "date": dt.date(2025, 1, 1),
+            "outcome": float(index + (arm == "treatment")),
+            "category": None if index % 5 == 0 else ("a" if index % 2 else "b"),
+        }
+        for arm in ("control", "treatment")
+        for index in range(30)
+    ]
+    method = Method.cuped_multicovariate(
+        covariates=(
+            CupedCovariate(
+                name="category",
+                kind="categorical",
+                missing="impute-indicator",
+            ),
+        )
+    )
+    metrics = (MetricSpec(name="outcome", decision_method=method),)
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+
+    summary = Analysis.from_unit_summary(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="group",
+        metrics=metrics,
+        design=design,
+    )
+    panel = Analysis.from_unit_panel(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="group",
+        date="date",
+        metrics=metrics,
+        design=design,
+    )
+
+    summary_result = summary.run()
+    panel_result = panel.run()
+    assert summary_result == panel_result
+    assert summary_result
+
+    from increment.estimation.cuped.encoding import MISSING_CATEGORY
+    from increment.readouts._metric_rows import _rows_raw_digest_and_arms
+
+    fit_identity = {"layout": {"levels": (MISSING_CATEGORY,)}}
+    row = {"group_id": "control", "fit_identity": fit_identity}
+    arms, digest, count = _rows_raw_digest_and_arms((row,))
+    expected = StreamingDigest()
+    expected.update(
+        {
+            "group_id": "control",
+            "fit_identity": {
+                "layout": {"levels": ({"$categorical_missing": "typed missing category"},)}
+            },
+        }
+    )
+    assert arms == frozenset({"control"})
+    assert (digest, count) == (expected.hexdigest(), expected.count)
+
+
 def test_metadata_context_is_deeply_immutable_and_portable():
     result = IntegrityResult(
         status="not_applicable",

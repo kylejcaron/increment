@@ -426,3 +426,260 @@ def test_artifact_abort_after_manifest_leaves_nothing_visible(snowflake_con):
 def test_artifact_explicit_catalog_path(snowflake_con):
     """Explicit catalog/schema publication, fresh adoption and cleanup work on Snowflake."""
     run_artifact_explicit_catalog_probe(snowflake_con, dialect="snowflake")
+
+
+@pytest.fixture(scope="module")
+def _snowflake_mixed_cuped_probe(snowflake_con, tmp_path_factory):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return _run_cloud_mixed_cuped_probe(
+            snowflake_con,
+            "snowflake",
+            tmp_path_factory.mktemp("snowflake-mixed-cuped"),
+            monkeypatch,
+        )
+
+
+# Prior Snowflake probes needed >300s per route; 1800s leaves room for the
+# shared native, adopted, and magnitude-refusal readouts in this module fixture.
+@pytest.mark.timeout(1800, method="signal")
+def test_snowflake_mixed_cuped_matches_local_with_native_and_artifact(
+    _snowflake_mixed_cuped_probe,
+):
+    assert _snowflake_mixed_cuped_probe is None
+
+
+def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: PLR0915
+    import datetime as dt
+    import math
+
+    import pyarrow as pa
+    import yaml
+
+    from increment import Analysis
+    from increment.errors import CodedError
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.plan import AnalysisPlan
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore, WarehouseSession
+    from increment.semantics.design import Randomized
+    from increment.semantics.loader import load
+    from integration.warehouse_execution._suite import (
+        _assert_materializations_absent,
+        _drop_scratch_namespace,
+        _qualified_table_identifier,
+    )
+    from tests.parity_harness.matrix_data import frame
+    from tests.test_warehouse_cuped_qr import _guard_no_unit_keyed_transfers
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    arms = ("control", "treatment", "withheld")
+    units = []
+    for arm_index, arm in enumerate(arms):
+        for index in range(30):
+            units.append(
+                {
+                    "user_id": f"{arm}-{index}",
+                    "variant": arm,
+                    "date": dt.date(2025, 1, 10),
+                    "revenue": float(4 + index % 7 + arm_index * 1.25 + index % 3 * 0.17),
+                    "orders": float(1 + index % 4),
+                    "pre_revenue": None if index % 9 == 0 else float(8 + index % 13 + arm_index),
+                    "country": ("north", "south", "north")[index % 3],
+                    "device": ("mobile", "desktop", "desktop")[index % 3],
+                    "new_user": "new" if index % 4 == 0 else "existing",
+                    "signups": float((index * 7 + arm_index) % 9),
+                    "region": None if index % 6 == 0 else ("east", "west")[index % 2],
+                }
+            )
+    for row in units:
+        if int(row["user_id"].rsplit("-", 1)[1]) % 5 == 0:
+            row["pre_revenue"] = math.nan
+    events = pa.Table.from_pylist(mixed_cuped_event_rows(units))
+    event_name = f"events_mixed_{uuid4().hex[:12]}"
+    event_ref = _qualified_table_identifier(con, dialect, event_name)
+    definitions_data = yaml.safe_load(
+        mixed_cuped_definitions_yaml(event_ref).replace("dialect: duckdb", f"dialect: {dialect}")
+    )
+    experiment_def = definitions_data["experiments"][0]
+    experiment_def["allocation"] = dict.fromkeys(arms, 1 / 3)
+    category_names = ("country", "device")
+    categorical_covariates = [
+        {"name": name, "kind": "categorical", "property": name, "source": "events"}
+        for name in category_names
+    ]
+    qr_covariates = [
+        {
+            "name": "pre_revenue",
+            "kind": "continuous",
+            "property": "pre_revenue",
+            "source": "events",
+            "missing": "impute-indicator",
+        },
+        *categorical_covariates,
+    ]
+    for role in ("primary", "guardrails", "secondaries"):
+        entries = experiment_def["plan"][role]
+        if isinstance(entries, dict):
+            entries = [entries]
+        for entry in entries:
+            entry["decision_method"]["covariates"] = (
+                categorical_covariates if entry["metric"] == "revenue" else qr_covariates
+            )
+    definitions_path = tmp_path / f"{dialect}-mixed.yaml"
+    definitions_path.write_text(yaml.safe_dump(definitions_data, sort_keys=False))
+    categorical_method = Method.cuped_multicovariate(
+        covariates=[CupedCovariate(name=name, kind="categorical") for name in category_names]
+    )
+    qr_method = Method.cuped_multicovariate(
+        covariates=[
+            CupedCovariate(name="pre_revenue", kind="continuous", missing="impute-indicator"),
+            *[CupedCovariate(name=name, kind="categorical") for name in category_names],
+        ]
+    )
+    local = native = adopted = None
+    artifact_namespace = None
+    scratch_relations = []
+    tiny_name = None
+    try:
+        local = Analysis.from_unit_summary(
+            frame(units),
+            unit="user_id",
+            group="variant",
+            metrics=[
+                MetricSpec(name="revenue", decision_method=categorical_method),
+                MetricSpec(
+                    name="rpo",
+                    type="ratio",
+                    numerator="revenue",
+                    denominator="orders",
+                    preferred_direction="increase",
+                    decision_method=qr_method,
+                ),
+            ],
+            plan=AnalysisPlan(primary="revenue", guardrails=("rpo",)),
+            design=Randomized(control_group="control", allocation=dict.fromkeys(arms, 1 / 3)),
+        )
+        con.create_table(event_name, obj=events, overwrite=True)
+        native = Analysis.from_definitions("mixed_cuped", definitions_path, con)
+        definitions = load(definitions_path)
+        experiment = definitions.experiment("mixed_cuped")
+        assert experiment is not None
+        artifact_namespace = f"cuped_{uuid4().hex[:12]}"
+        store = WarehouseArtifactStore(con, schema_name=artifact_namespace)
+        context = artifact_context(definitions, experiment, "error")
+        extensions = [entry.request for entry in unit_day_artifact_extension_catalog(context)]
+        artifact_ref = native.publish_unit_day_artifact(store, extensions=extensions)
+        adopted = Analysis.from_unit_day_artifact(store, artifact_ref, expected_context=context)
+        fetch_arrow = WarehouseSession.fetch_arrow
+        materialize_table = WarehouseSession.materialize_table
+        transferred = []
+
+        def bounded_fetch(session, expression, **kwargs):
+            result = fetch_arrow(session, expression, **kwargs)
+            names = tuple(result.schema.names)
+            assert "user_id" not in names and "unit_id" not in names
+            assert result.num_rows <= 4096
+            transferred.append((names, result.num_rows))
+            return result
+
+        def capture_qr_materializations(session, name, expression, *, required, **kwargs):
+            relation = materialize_table(session, name, expression, required=required, **kwargs)
+            if name.startswith("_cuped_qr_"):
+                scratch_relations.append(relation)
+            return relation
+
+        _guard_no_unit_keyed_transfers(monkeypatch)
+        monkeypatch.setattr(WarehouseSession, "fetch_arrow", bounded_fetch)
+        monkeypatch.setattr(WarehouseSession, "materialize_table", capture_qr_materializations)
+        outputs = [
+            analysis.run(metrics=["revenue", "rpo"]) for analysis in (local, native, adopted)
+        ]
+        assert transferred
+        expected = {(row.metric, row.group_id, row.method_role): row for row in outputs[0]}
+        assert {row.metric for row in outputs[0]} == {"revenue", "rpo"}
+        for result in outputs[1:]:
+            actual = {(row.metric, row.group_id, row.method_role): row for row in result}
+            assert actual.keys() == expected.keys()
+            for key, reference in expected.items():
+                observed = actual[key]
+                assert observed.sampling_reason_code == reference.sampling_reason_code
+                if reference.lift is None:
+                    assert observed.lift is None
+                    continue
+                assert observed.lift is not None
+                for field in ("value", "log_se", "lb", "ub"):
+                    assert getattr(observed.lift, field) == pytest.approx(
+                        getattr(reference.lift, field), rel=1e-9, abs=1e-11
+                    )
+                assert observed.dof == pytest.approx(reference.dof, rel=1e-9, abs=1e-11)
+
+        tiny_events = mixed_cuped_event_rows(units)
+        for row in tiny_events:
+            if row["event"] == "revenue":
+                row["value"] = 1e-70
+        tiny_name = f"events_tiny_{uuid4().hex[:12]}"
+        con.create_table(tiny_name, obj=tiny_events, overwrite=True)
+        tiny_path = tmp_path / f"{dialect}-tiny.yaml"
+        tiny_data = yaml.safe_load(
+            mixed_cuped_definitions_yaml(
+                _qualified_table_identifier(con, dialect, tiny_name)
+            ).replace("dialect: duckdb", f"dialect: {dialect}")
+        )
+        tiny_experiment = tiny_data["experiments"][0]
+        tiny_experiment["allocation"] = dict.fromkeys(arms, 1 / 3)
+        for role in ("primary", "guardrails", "secondaries"):
+            entries = tiny_experiment["plan"][role]
+            if isinstance(entries, dict):
+                entries = [entries]
+            for entry in entries:
+                entry["decision_method"]["covariates"] = (
+                    categorical_covariates if entry["metric"] == "revenue" else qr_covariates
+                )
+        tiny_path.write_text(yaml.safe_dump(tiny_data, sort_keys=False))
+        refused = Analysis.from_definitions("mixed_cuped", tiny_path, con)
+        try:
+            with pytest.raises(CodedError) as raised:
+                refused.run(metrics=["revenue"])
+            assert raised.value.code == "query.cuped.magnitude_range"
+        finally:
+            refused.close()
+    finally:
+        for analysis in (adopted, native, local):
+            if analysis is not None:
+                analysis.close()
+        _assert_materializations_absent(con, scratch_relations)
+        con.drop_table(event_name, force=True)
+        if tiny_name is not None:
+            con.drop_table(tiny_name, force=True)
+        if artifact_namespace is not None:
+            _drop_scratch_namespace(con, artifact_namespace, catalog=con.current_catalog)
+
+
+def test_mixed_cuped_probe_cleans_source_table_when_setup_fails(tmp_path, monkeypatch):
+    import ibis
+
+    from integration.warehouse_execution import _suite
+
+    backend = ibis.duckdb.connect()
+
+    class Connection:
+        current_catalog = "local"
+        current_database = "local"
+
+        def __getattr__(self, name):
+            return getattr(backend, name)
+
+    def fail_native_setup(cls, *_args, **_kwargs):
+        raise RuntimeError("native setup failed")
+
+    monkeypatch.setattr(Analysis, "from_definitions", classmethod(fail_native_setup))
+    monkeypatch.setattr(_suite, "_drop_scratch_namespace", lambda *_args, **_kwargs: None)
+    before = set(backend.list_tables())
+
+    with pytest.raises(RuntimeError, match="native setup failed"):
+        _run_cloud_mixed_cuped_probe(Connection(), "snowflake", tmp_path, monkeypatch)
+
+    assert set(backend.list_tables()) == before
+    backend.disconnect()
