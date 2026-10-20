@@ -1125,6 +1125,29 @@ def _validate_day_grain_columns(
     ``unit_counts()`` before a later ``daily()``/``asof()`` call on the
     SAME source refuses it.
     """
+    from datetime import datetime
+
+    string_timestamp_offenders = []
+    for role, col in columns:
+        if not isinstance(frame.schema[col], nw.String):
+            continue
+        for value in frame.get_column(col).to_list():
+            if not isinstance(value, str) or ("T" not in value and " " not in value):
+                continue
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                continue
+            if parsed.tzinfo is not None or parsed.time().isoformat() != "00:00:00":
+                string_timestamp_offenders.append((role, col, value))
+
+    if string_timestamp_offenders:
+        refuse(
+            _DAY_GRAIN_COLUMNS,
+            columns=tuple(string_timestamp_offenders),
+            route="pass a calendar day label or a naive midnight timestamp",
+        )
+
     offenders = [
         (role, col, dtype.time_zone)
         for role, col in columns
