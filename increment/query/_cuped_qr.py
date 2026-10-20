@@ -1081,15 +1081,17 @@ def factor_design_relation(
         work = scratch.materialize_next(updated.mutate(**changes).select("_qr_row", *all_columns))
 
     final_fields = {
-        f"_qr_r_{row}_{column}": work[design_columns[column]].max(where=work._qr_row == row)
+        f"_qr_r_{row}_{column}": work[design_columns[column]]
+        .max(where=work._qr_row == row)
+        .fill_null(0.0)
         for row in range(width)
         for column in range(row, width)
     }
     final_fields.update(
         {
-            f"_qr_rhs_{row}_{component}": work[rhs_columns[component]].max(
-                where=work._qr_row == row
-            )
+            f"_qr_rhs_{row}_{component}": work[rhs_columns[component]]
+            .max(where=work._qr_row == row)
+            .fill_null(0.0)
             for row in range(width)
             for component in range(len(rhs_columns))
         }

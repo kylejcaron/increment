@@ -2287,3 +2287,191 @@ def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):
     finally:
         session.drop_materialized()
         connection.disconnect()
+
+
+def test_qr_null_factor_entries_refuse_rank_deficiency_instead_of_crashing(tmp_path):
+    from increment.errors import CodedError
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.query._cuped_qr import factor_design_relation
+
+    arms = ("control", "treatment")
+    rows = [
+        {
+            "unit_id": "c0",
+            "arm_control": 1.0,
+            "arm_treatment": 0.0,
+            "x0": 0.0,
+            "x1": 0.0,
+            "x_missing": None,
+            "x2": 0.0,
+            "y": 1.0,
+        },
+        {
+            "unit_id": "c1",
+            "arm_control": 1.0,
+            "arm_treatment": 0.0,
+            "x0": 1.0,
+            "x1": 0.0,
+            "x_missing": None,
+            "x2": 1.0,
+            "y": 2.0,
+        },
+        {
+            "unit_id": "t0",
+            "arm_control": 0.0,
+            "arm_treatment": 1.0,
+            "x0": 0.0,
+            "x1": 1.0,
+            "x_missing": None,
+            "x2": 1.0,
+            "y": 3.0,
+        },
+        {
+            "unit_id": "t1",
+            "arm_control": 0.0,
+            "arm_treatment": 1.0,
+            "x0": 1.0,
+            "x1": 1.0,
+            "x_missing": None,
+            "x2": 0.0,
+            "y": 5.0,
+        },
+    ]
+    with pytest.raises(CodedError) as local_error:
+        fit_cuped_multicovariate(
+            np.asarray([row["y"] for row in rows]),
+            np.asarray(["control", "control", "treatment", "treatment"]),
+            control="control",
+            arm_order=arms,
+            covariates={
+                name: np.asarray([row[source] for row in rows], dtype=object)
+                for name, source in (("x0", "x0"), ("x1", "x1"), ("x2", "x2"))
+            },
+            kinds={"x0": "continuous", "x1": "continuous", "x2": "continuous"},
+            missing={"x2": "impute-indicator"},
+        )
+
+    connection = ibis.duckdb.connect()
+    connection.create_table(
+        "qr_null_factor_input",
+        obj=[{name: value for name, value in row.items() if name != "x_missing"} for row in rows],
+    )
+    connection.create_table("scratch_source", obj=[{"x": 1.0}])
+    session = _scratch_session(connection, tmp_path)
+    try:
+        with pytest.raises(CodedError) as warehouse_error:
+            with session.qr_scratch() as scratch:
+                factor_design_relation(
+                    connection.table("qr_null_factor_input").mutate(
+                        x_missing=ibis.null().cast("float64")
+                    ),
+                    design_columns=(
+                        "arm_control",
+                        "arm_treatment",
+                        "x0",
+                        "x1",
+                        "x_missing",
+                        "x2",
+                    ),
+                    rhs_columns=("y",),
+                    order_columns=("unit_id",),
+                    execute=connection.to_pyarrow,
+                    scratch=scratch,
+                    covariate_start=2,
+                    covariate_names=("x0", "x1", "x_missing", "x2"),
+                )
+        assert warehouse_error.value.code == local_error.value.code
+        assert warehouse_error.value.code == "estimation.cuped_linear.rank_deficiency"
+    finally:
+        session.drop_materialized()
+        connection.disconnect()
+
+
+def test_qr_breakout_degenerate_segments_match_local_refusal_codes():
+    import pandas as pd
+
+    from increment.errors import CodedError, IncrementWarning
+    from increment.estimation.cuped import fit_cuped_multicovariate
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+
+    rows = []
+    for index in range(4):
+        rows.append(
+            {
+                "unit": f"empty-{index}",
+                "group": "control",
+                "segment": "empty-arm",
+                "outcome": float(index),
+                "x0": float(index % 2),
+                "x1": 0.0,
+                "x2": float(index % 2),
+                "category": None,
+            }
+        )
+    for arm in ("control", "treatment"):
+        for index in range(2):
+            rows.append(
+                {
+                    "unit": f"null-{arm}-{index}",
+                    "group": arm,
+                    "segment": "all-null",
+                    "outcome": float(index + (arm == "treatment")),
+                    "x0": float(index),
+                    "x1": float(index),
+                    "x2": float(1 - index),
+                    "category": None,
+                }
+            )
+    method = Method.cuped_multicovariate(
+        covariates=(
+            CupedCovariate(name="x0", kind="continuous"),
+            CupedCovariate(name="x1", kind="continuous"),
+            CupedCovariate(name="x2", kind="continuous"),
+            CupedCovariate(
+                name="category",
+                kind="categorical",
+                missing="impute-indicator",
+            ),
+        )
+    )
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="group",
+        metrics=(MetricSpec(name="outcome", decision_method=method),),
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+        ),
+        plan=AnalysisPlan(view_multiplicity=MultiplicitySpec(correction="none")),
+        breakouts=("segment",),
+    )
+    with pytest.warns(IncrementWarning):
+        results = analysis.run_breakout()
+    by_segment = {row.dimension_value: row for row in results}
+    assert set(by_segment) == {"empty-arm", "all-null"}
+    assert by_segment["empty-arm"].excluded == "no_control_arm"
+    null_rows = [row for row in rows if row["segment"] == "all-null"]
+    with pytest.raises(CodedError) as local_error:
+        fit_cuped_multicovariate(
+            np.asarray([row["outcome"] for row in null_rows]),
+            np.asarray([row["group"] for row in null_rows]),
+            control="control",
+            arm_order=("control", "treatment"),
+            covariates={
+                name: np.asarray([row[name] for row in null_rows], dtype=object)
+                for name in ("x0", "x1", "x2", "category")
+            },
+            kinds={
+                "x0": "continuous",
+                "x1": "continuous",
+                "x2": "continuous",
+                "category": "categorical",
+            },
+            missing={"category": "impute-indicator"},
+        )
+    assert by_segment["all-null"].failure_code == local_error.value.code
+    assert by_segment["all-null"].failure_code == "estimation.cuped_linear.rank_deficiency"
