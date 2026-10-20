@@ -1230,8 +1230,15 @@ def _row_token_expr(
         elif kind == "timestamp":
             payload = _SQL_DIGEST_TIMESTAMP_TOKEN[dialect](col)
         elif kind == "date":
-            # Avoid Snowflake DATE_OUTPUT_FORMAT and PostgreSQL DateStyle settings.
-            payload = col.strftime("%Y-%m-%d")
+            # Zero-padded parts avoid session date settings and dialect year formats
+            # (BigQuery's %Y does not pad years below 1000).
+            payload = (
+                col.year().cast("string").lpad(4, "0")
+                + "-"
+                + col.month().cast("string").lpad(2, "0")
+                + "-"
+                + col.day().cast("string").lpad(2, "0")
+            )
         else:
             payload = col.cast("string")
         length = payload.length().cast("string").lpad(16, "0")

@@ -185,23 +185,27 @@ def test_row_token_compiles_without_backend_specific_sql(dialect):
     ibis.to_sql(_TABLE.select(tok=token), dialect=dialect)
 
 
-@pytest.mark.parametrize(
-    "dialect,expected_fragment",
-    [
-        ("duckdb", "STRFTIME("),
-        ("snowflake", "TO_CHAR("),
-        ("bigquery", "FORMAT_DATE("),
-        ("postgres", "TO_CHAR("),
-    ],
-)
-def test_date_token_uses_explicit_iso_format(dialect, expected_fragment):
+@pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
+def test_date_token_compiles_for_every_dialect(dialect):
     import sqlglot
 
     table = ibis.table({"day": "date"}, name="rows")
     token = _row_token_expr(table, [("day", 4, "date")], dialect=dialect)
     sql = str(ibis.to_sql(table.select(tok=token), dialect=dialect))
     sqlglot.parse_one(sql, read=dialect)
-    assert expected_fragment in sql
+
+
+def test_date_token_is_zero_padded_iso_text_for_every_year():
+    import datetime as dt
+
+    import pyarrow as pa
+
+    days = [dt.date(1, 1, 1), dt.date(999, 12, 31), dt.date(1969, 12, 31), dt.date(2024, 2, 29)]
+    con = ibis.duckdb.connect()
+    table = con.create_table("rows", pa.table({"day": pa.array(days, type=pa.date32())}))
+    token = _row_token_expr(table, [("day", 4, "date")], dialect="duckdb")
+    tokens = con.to_pyarrow(table.select(tok=token)).column("tok").to_pylist()
+    assert [t[18:] for t in tokens] == [d.isoformat() for d in days]
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "snowflake", "bigquery", "postgres"])
