@@ -13,9 +13,20 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import types
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    NoReturn,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 if TYPE_CHECKING:
     from increment._source_types import CUPEDEvidenceExportSource
@@ -342,16 +353,99 @@ def _restore_wire_value(value: object) -> object:
     return value
 
 
-def _fitted_dataclass(cls: Any, value: object, *, nested: Mapping[str, Any] | None = None) -> Any:
+def _validate_fitted_union(args: tuple[Any, ...], value: object, path: str) -> None:
+    if value is None and type(None) in args:
+        return
+    for option in args:
+        if option is type(None):
+            continue
+        try:
+            _validate_fitted_wire_value(option, value, path)
+            return
+        except CodedError:
+            pass
+    invalid_evidence(f"fitted evidence {path} has an invalid type")
+
+
+def _validate_fitted_tuple(args: tuple[Any, ...], value: object, path: str) -> None:
+    if not isinstance(value, list):
+        invalid_evidence(f"fitted evidence {path} must be an array")
+    items = cast(list[object], value)
+    if args and args[-1] is Ellipsis:
+        for index, item in enumerate(items):
+            _validate_fitted_wire_value(args[0], item, f"{path}[{index}]")
+        return
+    if len(items) != len(args):
+        invalid_evidence(f"fitted evidence {path} has an invalid length")
+    for index, (item_type, item) in enumerate(zip(args, items, strict=True)):
+        _validate_fitted_wire_value(item_type, item, f"{path}[{index}]")
+
+
+def _validate_fitted_float(value: object, path: str) -> None:
+    if isinstance(value, dict) and set(value) == {"$float"}:
+        tag = cast(dict[str, object], value)["$float"]
+        if tag not in ("nan", "inf", "-inf"):
+            invalid_evidence(f"fitted evidence {path} has an invalid float tag")
+    elif not isinstance(value, (int, float)) or isinstance(value, bool):
+        invalid_evidence(f"fitted evidence {path} must be numeric")
+
+
+def _validate_fitted_wire_value(annotation: Any, value: object, path: str) -> None:
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if annotation in (Any, object):
+        return
+    if origin is Union or origin is types.UnionType:
+        _validate_fitted_union(args, value, path)
+        return
+    if origin is tuple:
+        _validate_fitted_tuple(args, value, path)
+        return
+    if annotation is float:
+        _validate_fitted_float(value, path)
+        return
+    if annotation is int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            invalid_evidence(f"fitted evidence {path} must be an integer")
+        return
+    if annotation is bool:
+        if not isinstance(value, bool):
+            invalid_evidence(f"fitted evidence {path} must be boolean")
+        return
+    if annotation is str:
+        if not isinstance(value, str):
+            invalid_evidence(f"fitted evidence {path} must be text")
+        return
+    if annotation is type(None):
+        if value is not None:
+            invalid_evidence(f"fitted evidence {path} must be null")
+        return
+    if isinstance(annotation, type) and hasattr(annotation, "__dataclass_fields__"):
+        _validate_fitted_wire_dataclass(annotation, value, path)
+
+
+def _validate_fitted_wire_dataclass(cls: Any, value: object, path: str) -> None:
     if not isinstance(value, dict):
-        invalid_evidence(f"fitted evidence {cls.__name__} must be an object")
+        invalid_evidence(f"fitted evidence {path} must be an object")
     wire_value = cast(dict[str, object], value)
-    expected = {item.name for item in fields(cls)}
-    if set(wire_value) != expected:
-        invalid_evidence(f"fitted evidence {cls.__name__} fields do not match its schema")
+    declared_fields = {item.name for item in fields(cls)}
+    if set(wire_value) != declared_fields:
+        invalid_evidence(f"fitted evidence {path} fields do not match its schema")
+    hints = get_type_hints(cls)
+    for name, annotation in hints.items():
+        _validate_fitted_wire_value(annotation, wire_value[name], f"{path}.{name}")
+
+
+def _fitted_dataclass(cls: Any, value: object, *, nested: Mapping[str, Any] | None = None) -> Any:
+    _validate_fitted_wire_dataclass(cls, value, cls.__name__)
+    wire_value = cast(dict[str, object], value)
     restored = {key: _restore_wire_value(item) for key, item in wire_value.items()}
     for key, item_cls in (nested or {}).items():
-        restored[key] = _fitted_dataclass(item_cls, wire_value[key])
+        nested_value = wire_value[key]
+        if isinstance(nested_value, list):
+            restored[key] = tuple(_fitted_dataclass(item_cls, item) for item in nested_value)
+        else:
+            restored[key] = _fitted_dataclass(item_cls, nested_value)
     try:
         return cls(**restored)
     except (TypeError, ValueError, CodedError) as exc:
@@ -378,30 +472,26 @@ def _decode_fitted_evidence(
     ):
         invalid_evidence("fitted evidence must match a declared multicovariate method")
     state_value = evidence["fit_state"]
-    if not isinstance(state_value, dict) or "layout" not in state_value:
-        invalid_evidence("fitted evidence FitState layout is missing")
+    if not isinstance(state_value, dict):
+        invalid_evidence("fitted evidence FitState must be an object")
     state_value = dict(state_value)
-    state_value["layout"] = _fitted_dataclass(MulticovariateCupedLayout, state_value["layout"])
-    state = _fitted_dataclass(FitState, state_value)
+    state = _fitted_dataclass(FitState, state_value, nested={"layout": MulticovariateCupedLayout})
     summary_value = evidence["inference_summary"]
-    if not isinstance(summary_value, dict) or not isinstance(
-        summary_value.get("projection_specs"), list
-    ):
-        invalid_evidence("fitted evidence projection specifications are missing")
-    summary_value = dict(summary_value)
-    summary_value["projection_specs"] = [
-        _fitted_dataclass(ProjectionSpec, item) for item in summary_value["projection_specs"]
-    ]
-    summary = _fitted_dataclass(InferenceSummary, summary_value)
+    if not isinstance(summary_value, dict):
+        invalid_evidence("fitted evidence InferenceSummary must be an object")
+    summary = _fitted_dataclass(
+        InferenceSummary, dict(summary_value), nested={"projection_specs": ProjectionSpec}
+    )
     refusal_arms = tuple(arm for arm, _ in state.refusal_contexts)
     if refusal_arms != tuple(state.withheld_arms) or any(
         not isinstance(dict(context).get("code"), str) for _, context in state.refusal_contexts
     ):
         invalid_evidence("fitted evidence withheld-arm refusals are inconsistent")
     identity = tuple(state.identity)
-    embedded_source = identity[3] if len(identity) > 3 else None
-    embedded_source = _restore_identity_mappings(embedded_source, mapping_sequence=True)
-    if len(identity) < 11 or identity[0] != "warehouse-cuped-fit-v1":
+    if len(identity) < 11 or not isinstance(identity[6], tuple):
+        invalid_evidence("fitted evidence identity has an invalid shape")
+    embedded_source = _restore_identity_mappings(identity[3], mapping_sequence=True)
+    if identity[0] != "warehouse-cuped-fit-v1":
         invalid_evidence("fitted evidence identity has an unknown schema")
     if identity[1] != metric or identity[2] != population:
         invalid_evidence("fitted evidence metric or population differs from its envelope")
@@ -424,6 +514,15 @@ def _decode_fitted_evidence(
     if (
         state.layout.names != declarations_names
         or state.layout.kinds != declarations_kinds
+        or not (
+            len(state.layout.names)
+            == len(state.layout.kinds)
+            == len(state.layout.levels)
+            == len(state.layout.references)
+        )
+        or len(state.anchor) != state.p
+        or len(state.theta) != len(state.slopes) * state.p
+        or len(state.layout.encoded_columns) != state.p
         or len(set(identity_arms)) != len(identity_arms)
         or set(identity_arms) != set(eligible_arms) | set(withheld_arms)
         or set(eligible_arms) & set(withheld_arms)
@@ -431,14 +530,19 @@ def _decode_fitted_evidence(
         or tuple(arm for arm in identity_arms if arm in set(withheld_arms)) != withheld_arms
     ):
         invalid_evidence("fitted evidence layout or arm roster differs from its method")
-    if (
-        summary.fit_identity != state.identity
-        or summary.evidence_identity != state.identity
-        or summary.projection_identity != state.identity + ("all-pairs-v1",)
-        or any(spec.identity[: len(identity)] != identity for spec in summary.projection_specs)
-        or len(summary.projection_specs) != len(summary.scaled_projected_score_squares)
-    ):
+    if summary.fit_identity != state.identity or summary.evidence_identity != state.identity:
         invalid_evidence("fitted evidence summary is bound to a different fit")
+    if summary.projection_identity != state.identity + ("all-pairs-v1",):
+        invalid_evidence("fitted evidence projection identity differs from its fit")
+    if any(
+        spec.identity != state.identity + (spec.kind, spec.arm, spec.control, spec.identity[-1])
+        for spec in summary.projection_specs
+    ):
+        invalid_evidence("fitted evidence projection specification has a different identity")
+    if len(summary.projection_specs) != len(summary.scaled_projected_score_squares):
+        invalid_evidence(
+            "fitted evidence projection reduction count differs from its specifications"
+        )
     return CupedEvidence(
         "fitted_multicovariate",
         metric,
@@ -915,6 +1019,7 @@ def _local_multicovariate_evidence(
         numerator=np.asarray(frame["y"].to_list(), dtype=float) if ratio else None,
         denominator=np.asarray(frame["y_den"].to_list(), dtype=float) if ratio else None,
         return_components=True,
+        _portable_coordinates=True,
     )
     identity = (
         "warehouse-cuped-fit-v1",

@@ -1341,6 +1341,39 @@ def _assert_fitted_evidence_rejections(exported, metric_spec, method, design):
             scoped_replay.close()
 
 
+def _assert_fit_coordinates_equal(left_rows, right_rows):
+    import json
+
+    from increment._cuped_evidence import parse_cuped_evidence
+
+    def state(rows):
+        envelope = next(
+            row["cuped_evidence"]
+            for row in rows
+            if row.get("record_kind") == "cuped_evidence"
+            and json.loads(row["cuped_evidence"])["kind"] == "fitted_multicovariate"
+        )
+        parsed = parse_cuped_evidence(envelope)
+        assert parsed.fit_state is not None
+        return parsed.fit_state
+
+    left = state(left_rows)
+    right = state(right_rows)
+    assert left.layout == right.layout
+    for field in (
+        "offsets",
+        "scales",
+        "centered_means",
+        "anchor",
+    ):
+        np.testing.assert_allclose(
+            np.asarray(getattr(left, field), dtype=float),
+            np.asarray(getattr(right, field), dtype=float),
+            rtol=1e-9,
+            atol=1e-11,
+        )
+
+
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])
 def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_path, monkeypatch):
     units = matrix_data.linear_cuped_rows()
@@ -1393,6 +1426,10 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
         destination = tmp_path / f"{metric}-moments.parquet"
         warehouse.export(destination)
         exported = pq.read_table(destination).to_pylist()
+        frame_destination = tmp_path / f"{metric}-frame-moments.parquet"
+        local.export(frame_destination)
+        frame_exported = pq.read_table(frame_destination).to_pylist()
+        _assert_fit_coordinates_equal(exported, frame_exported)
         assert {row["moments_format"] for row in exported} == {13}
         _assert_fitted_evidence_rejections(
             exported, metric_spec, method, experiment.resolved_design()
@@ -1459,6 +1496,7 @@ def _assert_fit_replay(source, metric, binding, design, expected, destination):
             assert row.require_lift().lb != pytest.approx(original.require_lift().lb)
     finally:
         replay.close()
+    return exported
 
 
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])
@@ -1510,7 +1548,7 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
                         getattr(reference_row.lift, field), rel=1e-9, abs=1e-11
                     )
                 assert row.dof == pytest.approx(reference_row.dof, rel=1e-9, abs=1e-11)
-        _assert_fit_replay(
+        artifact_exported = _assert_fit_replay(
             artifact,
             metric,
             experiment.bindings[metric],
@@ -1518,6 +1556,12 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
             actual,
             tmp_path / f"artifact-{metric}-moments.parquet",
         )
+        import pyarrow.parquet as pq
+
+        frame_destination = tmp_path / f"artifact-{metric}-frame-moments.parquet"
+        local.export(frame_destination)
+        frame_exported = pq.read_table(frame_destination).to_pylist()
+        _assert_fit_coordinates_equal(artifact_exported, frame_exported)
     finally:
         local.close()
         artifact.close()

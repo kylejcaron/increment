@@ -174,6 +174,150 @@ def test_fitted_multicovariate_envelope_preserves_large_float_scatter(tmp_path):
         analysis.close()
 
 
+@pytest.fixture(scope="module")
+def fitted_evidence_payload(tmp_path_factory):
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    spec = MetricSpec(name="outcome", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(_records()),
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="compact",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        _, rows = _export_rows(analysis, tmp_path_factory.mktemp("fitted-shapes"))
+        return next(
+            json.loads(row["cuped_evidence"])
+            for row in rows
+            if row.get("record_kind") == "cuped_evidence"
+            and json.loads(row["cuped_evidence"])["kind"] == "fitted_multicovariate"
+        )
+    finally:
+        analysis.close()
+
+
+def test_local_fitted_envelope_uses_aggregate_encoder_coordinates(fitted_evidence_payload):
+    state = fitted_evidence_payload["evidence"]["fit_state"]
+    records = _records()
+    arm_order = ("control", "treatment")
+    values_by_arm = [
+        [float(row["history_a"]) for row in records if row["arm"] == arm] for arm in arm_order
+    ]
+    offsets = [math.fsum(values) / len(values) for values in values_by_arm]
+    assert state["offsets"][0] == pytest.approx(offsets, rel=1e-14, abs=1e-14)
+    centered = [
+        value - offsets[index] for index, values in enumerate(values_by_arm) for value in values
+    ]
+    norm = math.hypot(*centered)
+    scale = state["scales"][0]
+    assert math.frexp(scale)[0] == 0.5
+    assert norm <= scale <= 2 * norm
+
+
+_FITTED_SEQUENCE_PATHS = (
+    ("fit_state", "identity"),
+    ("fit_state", "eligible_arms"),
+    ("fit_state", "withheld_arms"),
+    ("fit_state", "refusal_contexts"),
+    ("fit_state", "counts"),
+    ("fit_state", "offsets"),
+    ("fit_state", "scales"),
+    ("fit_state", "centered_means"),
+    ("fit_state", "anchor"),
+    ("fit_state", "triangular_factor"),
+    ("fit_state", "transformed_rhs"),
+    ("fit_state", "slopes"),
+    ("fit_state", "adjusted_means"),
+    ("fit_state", "theta"),
+    ("fit_state", "denominator_support"),
+    ("fit_state", "layout", "names"),
+    ("fit_state", "layout", "kinds"),
+    ("fit_state", "layout", "levels"),
+    ("fit_state", "layout", "references"),
+    ("fit_state", "layout", "encoded_columns"),
+    ("fit_state", "layout", "structural_omissions"),
+    ("fit_state", "layout", "shared_indicators"),
+    ("inference_summary", "fit_identity"),
+    ("inference_summary", "projection_identity"),
+    ("inference_summary", "refusal_witness"),
+    ("inference_summary", "adjusted_component_covariance"),
+    ("inference_summary", "scaled_projected_score_squares"),
+    ("inference_summary", "s2"),
+    ("inference_summary", "s4"),
+    ("inference_summary", "g"),
+    ("inference_summary", "g2"),
+    ("inference_summary", "u"),
+    ("inference_summary", "evidence_identity"),
+    ("inference_summary", "projection_specs"),
+    ("inference_summary", "projection_specs", 0, "identity"),
+    ("inference_summary", "projection_specs", 0, "jacobian"),
+)
+
+
+def _replace_at_path(value, path, replacement):
+    parent = value
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = replacement
+
+
+def _wrong_sequence_length(value):
+    return value[:-1] if value else [None]
+
+
+@pytest.mark.parametrize(
+    ("path", "malformation"),
+    [
+        (path, malformation)
+        for path in _FITTED_SEQUENCE_PATHS
+        for malformation in ("null", "wrong_length", "wrong_type")
+    ]
+    + [
+        (("fit_state", "identity", 6), "null"),
+        (("fit_state", "identity", 6), "wrong_type"),
+        (("fit_state", "identity", 6), "wrong_length"),
+        (("fit_state", "refusal_contexts"), "nested_wrong_length"),
+        (("inference_summary", "scaled_projected_score_squares", 0), "wrong_length"),
+        (("inference_summary", "projection_specs", 0, "identity"), "wrong_length"),
+        (("inference_summary", "projection_specs", 0, "jacobian"), "wrong_length"),
+    ],
+)
+def test_malformed_fitted_nested_shapes_refuse_with_coded_error(
+    fitted_evidence_payload, path, malformation
+):
+    from increment._cuped_evidence import parse_cuped_evidence
+
+    payload = json.loads(json.dumps(fitted_evidence_payload))
+    parent = payload["evidence"]
+    for key in path[:-1]:
+        parent = parent[key]
+    value = parent[path[-1]]
+    if malformation == "null":
+        replacement = None
+    elif malformation == "wrong_length":
+        replacement = [] if path[-1] == "jacobian" else _wrong_sequence_length(value)
+    elif malformation == "wrong_type":
+        replacement = "not-a-sequence"
+    elif malformation == "nested_wrong_length":
+        replacement = [[]]
+    else:
+        assert isinstance(value, list)
+        replacement = _wrong_sequence_length(value)
+    _replace_at_path(payload["evidence"], path, replacement)
+    with pytest.raises(CodedError) as raised:
+        parse_cuped_evidence(canonical_json_bytes(payload).decode())
+    assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
 @pytest.mark.parametrize("ratio", [False, True])
 @pytest.mark.parametrize("family", ["scalar", "categorical", "combined"])
 def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, family):

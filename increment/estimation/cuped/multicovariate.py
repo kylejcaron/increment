@@ -415,6 +415,7 @@ def fit_cuped_multicovariate(
     numerator: npt.ArrayLike | None = None,
     denominator: npt.ArrayLike | None = None,
     return_components: Literal[False] = False,
+    _portable_coordinates: bool = False,
 ) -> MulticovariateCupedFit: ...
 
 
@@ -431,6 +432,7 @@ def fit_cuped_multicovariate(
     numerator: npt.ArrayLike | None = None,
     denominator: npt.ArrayLike | None = None,
     return_components: Literal[True],
+    _portable_coordinates: bool = False,
 ) -> tuple[FitState, InferenceSummary, MulticovariateCupedFit]: ...
 
 
@@ -446,12 +448,19 @@ def fit_cuped_multicovariate(
     numerator: npt.ArrayLike | None = None,
     denominator: npt.ArrayLike | None = None,
     return_components: bool = False,
+    _portable_coordinates: bool = False,
 ) -> MulticovariateCupedFit | tuple[FitState, InferenceSummary, MulticovariateCupedFit]:
     groups, order, indices, counts, outcomes, covariates, kinds, missing = _validate_request(
         y, arms, control, arm_order, covariates, kinds, missing, numerator, denominator
     )
     x, layout, offsets, scales = _encode_covariates(
-        groups, indices, order, covariates, kinds, missing
+        groups,
+        indices,
+        order,
+        covariates,
+        kinds,
+        missing,
+        aggregate_coordinates=_portable_coordinates,
     )
     coordinate_offsets = (
         np.column_stack(
