@@ -836,3 +836,27 @@ def test_all_nan_imputed_covariate_matches_local_constant_drop(tmp_path):
     )
     assert actual.theta == pytest.approx(local.theta)
     assert actual.adjusted_means == pytest.approx(local.adjusted_means)
+
+
+def test_ratio_projection_preserves_adjustment_contrast_at_large_means(tmp_path):
+    rows = [
+        {
+            "unit_id": f"{arm}-{index:03d}",
+            "group_id": arm,
+            "x": float(u) + (0.02 if arm == "treatment" else 0.0),
+            "y": 1.0e15 + u + v,
+            "y_den": 1.0,
+        }
+        for arm in ARMS
+        for index in range(64)
+        for u, v in ((0, -1), (0, 1), (1, -1), (1, 1))[index % 4 : index % 4 + 1]
+    ]
+    local, actual = _fit_pair(rows, ratio=True, tmp_path=tmp_path)
+    ratio_projections = [
+        (expected, observed)
+        for expected, observed in zip(local._projections, actual._projections, strict=True)
+        if expected[0] == "ratio"
+    ]
+    assert len(ratio_projections) == 4
+    for expected, observed in ratio_projections:
+        assert observed[4] == pytest.approx(expected[4], rel=1e-8, abs=1e-18)

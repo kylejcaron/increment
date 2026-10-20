@@ -2082,8 +2082,8 @@ def prepare_qr_factor_input(  # noqa: PLR0915
     )
 
 
-def _ratio_projection_specs(state, mean_matrix, arms, treatment, control):
-    from increment.estimation.cuped._numeric import _log_cross_ratio
+def _ratio_projection_specs(state, mean_matrix, scaled_components, arms, treatment, control):
+    from increment.estimation.cuped._numeric import _log_cross_ratio, _rounded_ratio
     from increment.estimation.cuped.types import ProjectionSpec
 
     arm_count = len(arms)
@@ -2094,10 +2094,11 @@ def _ratio_projection_specs(state, mean_matrix, arms, treatment, control):
             ai, ci = arms.index(arm), arms.index(comparison)
             nt, nd = float(mean_matrix[0, ai]), float(mean_matrix[1, ai])
             nc, cd = float(mean_matrix[0, ci]), float(mean_matrix[1, ci])
-            scaled_means = tuple(
-                (mantissa, 0.0, exponent)
-                for value in (nt, nd, nc, cd)
-                for mantissa, exponent in (math.frexp(value),)
+            scaled_means = (
+                scaled_components[0][ai],
+                scaled_components[1][ai],
+                scaled_components[0][ci],
+                scaled_components[1][ci],
             )
             log_estimate, excess = _log_cross_ratio(*scaled_means)
             if scale == "log":
@@ -2116,8 +2117,12 @@ def _ratio_projection_specs(state, mean_matrix, arms, treatment, control):
                     (arm_count + ci, (nc,), (cd, cd), 1.0),
                 )
                 with np.errstate(over="ignore", invalid="ignore"):
-                    treatment_ratio = _stable_ratio(nt, nd)
-                    control_ratio = _stable_ratio(nc, cd)
+                    treatment_ratio = _rounded_ratio(
+                        scaled_components[0][ai], scaled_components[1][ai]
+                    )
+                    control_ratio = _rounded_ratio(
+                        scaled_components[0][ci], scaled_components[1][ci]
+                    )
                     estimate = (
                         excess * control_ratio
                         if excess is not None
@@ -2398,6 +2403,21 @@ def fit_warehouse_qr(  # noqa: PLR0915
     mean_matrix = np.asarray(state.adjusted_means, dtype=float).reshape(
         len(outcome_columns), arm_count
     )
+    from increment.estimation.cuped._numeric import _normalized
+
+    scaled_components = tuple(
+        tuple(
+            _normalized(
+                (
+                    prepared.outcome_offsets[component][arm_index],
+                    prepared.centered_outcome_means[component][arm_index],
+                    -adjustments[component][arm_index],
+                )
+            )
+            for arm_index in range(arm_count)
+        )
+        for component in range(len(outcome_columns))
+    )
     for treatment_index in range(1, arm_count):
         for control_index in range(treatment_index):
             treatment, control = arms[treatment_index], arms[control_index]
@@ -2460,7 +2480,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
                 mean_matrix[:, [treatment_index, control_index]] > 0
             ):
                 ratio_specs, ratio_estimates = _ratio_projection_specs(
-                    state, mean_matrix, arms, treatment, control
+                    state, mean_matrix, scaled_components, arms, treatment, control
                 )
                 specs.extend(ratio_specs)
                 estimates.extend(ratio_estimates)
