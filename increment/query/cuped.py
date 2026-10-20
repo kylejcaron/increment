@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment._cuped_evidence import categorical_identity, method_key
 from increment.estimation.cuped.cells import fit_categorical_cells
@@ -168,8 +168,8 @@ def _known_cells_outcome_domain(source, metric, relation, outcomes) -> bool:
 
 
 def fit_multicovariate_source(
-    source, metric, request: _ResolvedCupedRequest
-) -> MulticovariateCupedFit | _WarehouseCupedFitEvidence:
+    source, metric, request: _ResolvedCupedRequest, *, return_components: bool = False
+) -> MulticovariateCupedFit | _WarehouseCupedFitEvidence | tuple[Any, Any, Any]:
     """Fit from bounded categorical cells or stable warehouse QR evidence."""
     from increment.errors import CodedError
     from increment.query._cuped_cells import REFUSALS as CELL_REFUSALS
@@ -234,6 +234,7 @@ def fit_multicovariate_source(
                 request=fitted_request,
                 execute=execute,
                 scratch=scratch,
+                return_components=return_components,
             )
         return (
             _WarehouseCupedFitEvidence(fit, request.arm_order, tuple(withheld.items()))
@@ -244,8 +245,10 @@ def fit_multicovariate_source(
 
 def _portable_categorical_domain(source, metric, method, population) -> None:
     """Refuse non-cell categorical exports before any outcome aggregate is transferred."""
-    from increment.query._cuped_cells import general_qr_required
+    from increment.query._cuped_cells import general_qr_required, known_outcome_domain
 
+    if known_outcome_domain(metric):
+        general_qr_required(metric, "outcome_domain")
     control = str(source.context.design.control_group)
     request = _ResolvedCupedRequest(
         identity=categorical_identity(metric.name, method_key(method), population),
@@ -260,6 +263,29 @@ def _portable_categorical_domain(source, metric, method, population) -> None:
             general_qr_required(metric, "outcome_domain")
 
 
+def portable_qr_requests(source, requests, *, population: Literal["assigned", "triggered"]):
+    """Move categorical requests that exceed the cells contract to compact QR evidence."""
+    from increment.errors import CodedError
+    from increment.query._cuped_cells import known_qr_outcome_domain
+
+    resolved = []
+    for metric, scalar, categorical, fitted in requests:
+        cell_methods = []
+        fitted_methods = list(fitted)
+        for method in categorical:
+            try:
+                _portable_categorical_domain(source, metric, method, population)
+                _require_compact_request(source, metric, method)
+            except CodedError as exc:
+                if exc.code != "query.cuped.general_qr_required" or known_qr_outcome_domain(metric):
+                    raise
+                fitted_methods.append(method)
+            else:
+                cell_methods.append(method)
+        resolved.append((metric, scalar, tuple(cell_methods), tuple(fitted_methods)))
+    return tuple(resolved)
+
+
 def fit_multicovariate_request(
     source,
     metric,
@@ -272,6 +298,7 @@ def fit_multicovariate_request(
     breakout_source: str | None = None,
     breakout_value: str | None = None,
     breakout_is_null: bool = False,
+    return_components: bool = False,
 ):
     """Build request identity and fit through the source-owned query interface."""
     from increment.errors import CodedError
@@ -289,7 +316,9 @@ def fit_multicovariate_request(
         breakout_is_null=breakout_is_null,
     )
     try:
-        fit = fit_multicovariate_source(source, metric, request)
+        fit = fit_multicovariate_source(
+            source, metric, request, return_components=return_components
+        )
     except CodedError as exc:
         fit = exc
     return request.identity, fit

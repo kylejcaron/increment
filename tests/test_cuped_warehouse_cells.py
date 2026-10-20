@@ -665,7 +665,11 @@ def _intercept_transfers(monkeypatch, native, artifact, *, outcome_cells: bool):
     def check(columns):
         assert "unit_id" not in columns
         if not outcome_cells:
-            assert not any(name.startswith(("ref_", "first_", "cross_")) for name in columns)
+            assert not any(
+                name.startswith(("first_", "cross_"))
+                or (name.startswith("ref_") and name[4:].isdigit())
+                for name in columns
+            )
         transferred.append(tuple(columns))
 
     def fetch(session, expression, **kwargs):
@@ -754,20 +758,27 @@ def test_native_format13_export_uses_one_readout_snapshot(
 
 @pytest.mark.parametrize("categorical_sources", [True], indirect=True)
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
-def test_ineligible_categorical_export_refuses_before_outcome_transfer(
+def test_ineligible_categorical_export_uses_qr_without_cell_or_unit_transfer(
     categorical_sources, ingress, tmp_path, monkeypatch
 ):
-    native, artifact, _ = categorical_sources
+    import pyarrow.parquet as pq
+
+    native, artifact, _request = categorical_sources
     source = native if ingress == "native" else artifact
-    _intercept_transfers(monkeypatch, native, artifact, outcome_cells=False)
+    transferred = _intercept_transfers(monkeypatch, native, artifact, outcome_cells=False)
     destination = tmp_path / "categorical.parquet"
-    with pytest.raises(CapabilityError) as raised:
-        source.export_moments(destination)
-    assert raised.value.code == "query.cuped.general_qr_required"
-    assert raised.value.context["reason"] == "outcome_domain"
-    route = raised.value.context["route"]
-    assert isinstance(route, str) and "from_unit_summary" in route
-    assert not destination.exists()
+    source.export_moments(destination)
+    rows = pq.read_table(destination).to_pylist()
+    assert transferred
+    assert {row["moments_format"] for row in rows} == {13}
+    envelopes = [
+        json.loads(row["cuped_evidence"])
+        for row in rows
+        if row.get("record_kind") == "cuped_evidence"
+    ]
+    assert [(item["kind"], item["metric"]) for item in envelopes] == [
+        ("fitted_multicovariate", "revenue")
+    ]
 
 
 @pytest.mark.parametrize(("segments", "eligible"), [(64, True), (65, False)])
@@ -830,3 +841,26 @@ def test_known_outcome_domain_refusal_precedes_source_acquisition(domain):
     with pytest.raises(CapabilityError) as raised:
         fit_multicovariate_source(None, _metric().model_copy(update=updates), _request())
     assert raised.value.context["reason"] == "outcome_domain"
+
+
+def test_portable_requests_include_continuous_multicovariate_methods():
+    from types import SimpleNamespace
+
+    from increment._cuped_evidence import portable_requests
+    from increment.estimation.engine import Method
+    from increment.semantics.models import CupedCovariate
+
+    config = SimpleNamespace(
+        metric=SimpleNamespace(name="revenue"),
+        decision_method=Method.cuped_multicovariate(
+            covariates=[CupedCovariate(name="pre_revenue", kind="continuous")]
+        ),
+        sensitivity_methods=(),
+        methods_explicitly_empty=False,
+        decision_defaulted=False,
+    )
+
+    requests = portable_requests((config,), design=None, categorical=True)
+
+    assert requests is not None
+    assert len(requests) == 1

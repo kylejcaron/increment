@@ -6,7 +6,7 @@ import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -402,6 +402,7 @@ class _LinearCupedCalculator:
         return trace * trace / trace_square
 
 
+@overload
 def fit_cuped_multicovariate(
     y: npt.ArrayLike | None,
     arms: npt.ArrayLike,
@@ -413,7 +414,39 @@ def fit_cuped_multicovariate(
     missing: Mapping[str, str] | None = None,
     numerator: npt.ArrayLike | None = None,
     denominator: npt.ArrayLike | None = None,
-) -> MulticovariateCupedFit:
+    return_components: Literal[False] = False,
+) -> MulticovariateCupedFit: ...
+
+
+@overload
+def fit_cuped_multicovariate(
+    y: npt.ArrayLike | None,
+    arms: npt.ArrayLike,
+    *,
+    control: object,
+    arm_order: Sequence[object],
+    covariates: Mapping[str, npt.ArrayLike] | None = None,
+    kinds: Mapping[str, str] | None = None,
+    missing: Mapping[str, str] | None = None,
+    numerator: npt.ArrayLike | None = None,
+    denominator: npt.ArrayLike | None = None,
+    return_components: Literal[True],
+) -> tuple[FitState, InferenceSummary, MulticovariateCupedFit]: ...
+
+
+def fit_cuped_multicovariate(
+    y: npt.ArrayLike | None,
+    arms: npt.ArrayLike,
+    *,
+    control: object,
+    arm_order: Sequence[object],
+    covariates: Mapping[str, npt.ArrayLike] | None = None,
+    kinds: Mapping[str, str] | None = None,
+    missing: Mapping[str, str] | None = None,
+    numerator: npt.ArrayLike | None = None,
+    denominator: npt.ArrayLike | None = None,
+    return_components: bool = False,
+) -> MulticovariateCupedFit | tuple[FitState, InferenceSummary, MulticovariateCupedFit]:
     groups, order, indices, counts, outcomes, covariates, kinds, missing = _validate_request(
         y, arms, control, arm_order, covariates, kinds, missing, numerator, denominator
     )
@@ -439,7 +472,7 @@ def fit_cuped_multicovariate(
         groups, order, counts, outcomes, x, layout, control, coordinate_offsets
     )
     del x
-    return _finalize_local_fit(
+    state, summary, fit = _finalize_local_fit(
         groups,
         order,
         indices,
@@ -453,6 +486,7 @@ def fit_cuped_multicovariate(
         calculator,
         leverage,
     )
+    return (state, summary, fit) if return_components else fit
 
 
 def _finalize_local_fit(
@@ -512,7 +546,8 @@ def _finalize_local_fit(
     summary = _make_inference_summary(
         identity, cached, calculator, outcomes, order, leverage, _mean_covariance(calculator)
     )
-    return finalize_fit(state, summary)
+    fit = finalize_fit(state, summary)
+    return state, summary, fit
 
 
 def _make_fit_state(

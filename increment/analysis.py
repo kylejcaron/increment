@@ -1205,25 +1205,31 @@ class Analysis:
         portable_metrics: set[str] = set()
         for spec in specs:
             for item in evidence_items.get(spec.name, {}).values():
-                if item.kind != "categorical_cells":
+                if item.kind == "categorical_cells":
+                    expected_components = 2 if spec.type == "ratio" else 1
+                    actual_components = (
+                        0 if item.cells is None else len(item.cells.outcome_references)
+                    )
+                elif item.kind == "fitted_multicovariate":
+                    expected_components = 2 if spec.type == "ratio" else 1
+                    actual_components = 0 if item.fit_state is None else len(item.fit_state.slopes)
+                else:
                     continue
-                expected_components = 2 if spec.type == "ratio" else 1
-                if item.cells is None or len(item.cells.outcome_references) != expected_components:
+                if actual_components != expected_components:
                     invalid_evidence(
-                        f"categorical evidence for metric {spec.name!r} has "
-                        f"{0 if item.cells is None else len(item.cells.outcome_references)} "
-                        f"components; expected {expected_components}"
+                        f"{item.kind} evidence for metric {spec.name!r} has "
+                        f"{actual_components} components; expected {expected_components}"
                     )
             methods_for_metric = (
                 () if spec.decision_method is None else (spec.decision_method,)
             ) + spec.sensitivity_methods
             carried = evidence.get(spec.name, {})
             for method in methods_for_metric:
-                if (
-                    method.variance_reduction == "cuped_multicovariate"
-                    and carried.get(method_key(method)) != "categorical_cells"
-                ):
-                    refuse_cuped_linear_moments(spec.name)
+                carried_kind = carried.get(method_key(method))
+                if method.variance_reduction == "cuped_multicovariate":
+                    if carried_kind not in ("categorical_cells", "fitted_multicovariate"):
+                        refuse_cuped_linear_moments(spec.name)
+                    portable_metrics.add(spec.name)
             if "scalar_moments" in carried.values():
                 # Method-scoped evidence identifies each scalar family exactly.
                 for method in methods_for_metric:

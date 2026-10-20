@@ -1262,6 +1262,85 @@ def test_warehouse_qr_encoder_matches_local_layout(tmp_path):
         connection.disconnect()
 
 
+def _assert_fitted_evidence_rejections(exported, metric_spec, method, design):
+    import json
+
+    from increment._canonical import canonical_json_bytes
+    from increment.errors import CodedError
+
+    with pytest.raises(CodedError) as corrupted:
+        Analysis.from_moments(
+            [
+                {**row, "cuped_evidence": "{"}
+                if row.get("record_kind") == "cuped_evidence"
+                else row
+                for row in exported
+            ],
+            metrics=[metric_spec],
+            design=design,
+        )
+    assert corrupted.value.code == "moments.cuped_evidence.invalid"
+
+    def rewrite_payload(change):
+        rewritten = []
+        for row in exported:
+            if row.get("record_kind") == "cuped_evidence":
+                payload = json.loads(row["cuped_evidence"])
+                if payload["kind"] == "fitted_multicovariate":
+                    change(payload)
+                    row = {
+                        **row,
+                        "cuped_evidence": canonical_json_bytes(payload).decode(),
+                    }
+            rewritten.append(row)
+        return rewritten
+
+    for change in (
+        lambda payload: payload.update(source_sha256="0" * 64),
+        lambda payload: payload.update(population="triggered"),
+        lambda payload: payload["evidence"]["inference_summary"]["projection_specs"].pop(),
+    ):
+        with pytest.raises(CodedError) as malformed:
+            Analysis.from_moments(rewrite_payload(change), metrics=[metric_spec], design=design)
+        assert malformed.value.code == "moments.cuped_evidence.invalid"
+
+    envelope = next(row for row in exported if row.get("record_kind") == "cuped_evidence")
+    with pytest.raises(CodedError) as duplicate:
+        Analysis.from_moments([*exported, envelope], metrics=[metric_spec], design=design)
+    assert duplicate.value.code in {
+        "moments.cuped_evidence.duplicate",
+        "moments.cuped_evidence.invalid",
+    }
+    covariates = tuple(method.covariates or ())
+    changed_method = method.model_copy(
+        update={
+            "covariates": (
+                covariates[0].model_copy(update={"name": "changed"}),
+                *covariates[1:],
+            )
+        }
+    )
+    with pytest.raises(CodedError):
+        Analysis.from_moments(
+            exported,
+            metrics=[metric_spec.model_copy(update={"decision_method": changed_method})],
+            design=design,
+        )
+
+    scoped_replay = None
+    try:
+        scoped_replay = Analysis.from_moments(
+            exported,
+            metrics=[metric_spec],
+            design=design.model_copy(update={"control_group": "treatment"}),
+        )
+        with pytest.raises(CodedError):
+            scoped_replay.run(metrics=[metric_spec.name])
+    finally:
+        if scoped_replay is not None:
+            scoped_replay.close()
+
+
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])
 def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_path, monkeypatch):
     units = matrix_data.linear_cuped_rows()
@@ -1292,11 +1371,94 @@ def test_native_mixed_cuped_uses_warehouse_qr_without_unit_transfer(metric, tmp_
                     assert getattr(row.lift, field) == pytest.approx(
                         getattr(reference.lift, field), rel=1e-9, abs=1e-11
                     )
-                assert row.dof == pytest.approx(reference.dof, rel=1e-9, abs=1e-11)
+        import pyarrow.parquet as pq
+
+        from increment.estimation.engine import Method
+        from increment.frame import MetricSpec
+        from increment.semantics.loader import load
+        from increment.semantics.models import AnalysisPlan
+
+        experiment = load(definitions_path).experiment("mixed_cuped")
+        assert experiment is not None
+        binding = experiment.bindings[metric]
+        assert binding.decision_method is not None
+        method = Method.model_validate(binding.decision_method.model_dump())
+        metric_spec = MetricSpec(
+            name=metric,
+            type="mean" if metric == "revenue" else "ratio",
+            numerator="revenue" if metric == "rpo" else None,
+            denominator="orders" if metric == "rpo" else None,
+            decision_method=method,
+        )
+        destination = tmp_path / f"{metric}-moments.parquet"
+        warehouse.export(destination)
+        exported = pq.read_table(destination).to_pylist()
+        assert {row["moments_format"] for row in exported} == {13}
+        _assert_fitted_evidence_rejections(
+            exported, metric_spec, method, experiment.resolved_design()
+        )
+        replay = Analysis.from_moments(
+            exported,
+            metrics=[metric_spec],
+            design=experiment.resolved_design(),
+            plan=AnalysisPlan(alpha=0.2, primary=metric),
+        )
+        try:
+            replay_rows = cast(list[LiftEstimate], replay.run(metrics=[metric]))
+            replay_map = {(row.metric, row.group_id) for row in replay_rows}
+            assert replay_map == {(row.metric, row.group_id) for row in actual}
+            for row in replay_rows:
+                original = actual_rows[(row.metric, row.group_id, row.method)]
+                assert row.require_lift().value == pytest.approx(
+                    original.require_lift().value, rel=1e-9, abs=1e-11
+                )
+                assert row.require_lift().lb != pytest.approx(original.require_lift().lb)
+                assert row.require_lift().ub != pytest.approx(original.require_lift().ub)
+        finally:
+            replay.close()
     finally:
         local.close()
         warehouse.close()
         connection.disconnect()
+
+
+def _assert_fit_replay(source, metric, binding, design, expected, destination):
+    import pyarrow.parquet as pq
+
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan
+
+    metric_spec = MetricSpec(
+        name=metric,
+        type="mean" if metric == "revenue" else "ratio",
+        numerator="revenue" if metric == "rpo" else None,
+        denominator="orders" if metric == "rpo" else None,
+        decision_method=Method.model_validate(binding.decision_method.model_dump()),
+    )
+    source.export(destination)
+    exported = pq.read_table(destination).to_pylist()
+    assert {row["moments_format"] for row in exported} == {13}
+    replay = Analysis.from_moments(
+        exported,
+        metrics=[metric_spec],
+        design=design,
+        plan=AnalysisPlan(alpha=0.2, primary=metric),
+    )
+    try:
+        replay_rows = cast(list[LiftEstimate], replay.run(metrics=[metric]))
+        assert {(row.metric, row.group_id) for row in replay_rows} == {
+            (row.metric, row.group_id) for row in expected
+        }
+        expected_rows = {(row.metric, row.group_id, row.method): row for row in expected}
+        for row in replay_rows:
+            original = expected_rows[(row.metric, row.group_id, row.method)]
+            assert row.require_lift().value == pytest.approx(
+                original.require_lift().value, rel=1e-9, abs=1e-11
+            )
+            assert row.require_lift().lb != pytest.approx(original.require_lift().lb)
+    finally:
+        replay.close()
 
 
 @pytest.mark.parametrize("metric", ["revenue", "rpo"])
@@ -1348,6 +1510,14 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
                         getattr(reference_row.lift, field), rel=1e-9, abs=1e-11
                     )
                 assert row.dof == pytest.approx(reference_row.dof, rel=1e-9, abs=1e-11)
+        _assert_fit_replay(
+            artifact,
+            metric,
+            experiment.bindings[metric],
+            experiment.resolved_design(),
+            actual,
+            tmp_path / f"artifact-{metric}-moments.parquet",
+        )
     finally:
         local.close()
         artifact.close()

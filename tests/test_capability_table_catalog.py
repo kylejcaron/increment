@@ -154,7 +154,7 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
         "ratio": ("supported", ()),
         "clustering": ("source_limited", ("facade.analysis_config.cuped_linear_moments",)),
         "sequential": ("source_limited", ("facade.analysis_config.cuped_linear_moments",)),
-        "winsorization_fixed_value": ("unfinished", ("query.cuped.general_qr_required",)),
+        "winsorization_fixed_value": ("supported", ()),
         "winsorization_percentile": (
             "source_limited",
             ("facade.analysis_config.cuped_linear_moments",),

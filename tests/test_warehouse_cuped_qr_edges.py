@@ -307,7 +307,8 @@ def test_breakout_fit_uses_admitted_arm_roster(unsupported_count, tmp_path):
 
     try:
         fit = fit_multicovariate_source(Source(), metric, request)
-        assert fit.arm_order == ARMS
+        assert not isinstance(fit, CodedError)
+        assert cast(Any, fit).arm_order == ARMS
     finally:
         session.drop_materialized()
         con.disconnect()

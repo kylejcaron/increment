@@ -403,14 +403,32 @@ def _load_metric_rows(  # noqa: PLR0915
     warehouse_fits: list[tuple[str, Any]] = []
     warehouse_fit_identities = []
     fit_source = (
-        src if getattr(src, "cuped_relation", None) is not None else getattr(src, "_source", src)
+        src
+        if getattr(src, "cuped_relation", None) is not None
+        else getattr(src, "_source", None) or src
     )
     if has_linear and getattr(fit_source, "fit_cuped_multicovariate", None) is not None:
         arm_order = (str(control_group), *sorted(observed - {str(control_group)}))
         population = getattr(src, "population", "assigned")
+        from increment._canonical import canonical_json_bytes
+        from increment._source_identity import source_identity
+
         for method in methods:
             if getattr(method, "variance_reduction", None) != "cuped_multicovariate":
                 continue
+            request_identity = (
+                "warehouse-cuped-fit-v1",
+                metric.name,
+                population,
+                source_identity(fit_source),
+                canonical_json_bytes(method.model_dump(mode="json", exclude={"name"})).decode(),
+                str(control_group),
+                arm_order,
+                None,
+                None,
+                None,
+                False,
+            )
             try:
                 identity, fit = cast(Any, fit_source).fit_cuped_multicovariate(
                     metric,
@@ -422,8 +440,8 @@ def _load_metric_rows(  # noqa: PLR0915
                 warehouse_fit_identities.append(identity)
                 warehouse_fits.append((method.name, fit))
             except CodedError as exc:
+                warehouse_fit_identities.append(request_identity)
                 warehouse_fits.append((method.name, exc))
-    if warehouse_fits:
         fit_components = tuple(
             (
                 f"warehouse_qr:{name}",
@@ -432,6 +450,28 @@ def _load_metric_rows(  # noqa: PLR0915
                         {
                             "fit_identity": identity,
                             "failure": getattr(fit, "code", None),
+                            "fit": None
+                            if isinstance(fit, CodedError)
+                            else {
+                                "arm_order": fit.arm_order,
+                                "control": fit.control,
+                                "n_by_arm": fit.n_by_arm,
+                                "adjusted_means": fit.adjusted_means,
+                                "theta": fit.theta,
+                                "anchor": fit.anchor,
+                                "layout": tuple(
+                                    getattr(fit.layout, field)
+                                    for field in fit.layout.__dataclass_fields__
+                                ),
+                                "covariance": fit.covariance,
+                                "dof": fit.dof,
+                                "n_min": fit.n_min,
+                                "p": fit.p,
+                                "max_leverage": fit.max_leverage,
+                                "mean_leverage": fit.mean_leverage,
+                                "leverage_trace": fit.leverage_trace,
+                                "is_ratio": fit.is_ratio,
+                            },
                         },
                     )
                 )[1],

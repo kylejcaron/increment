@@ -22,7 +22,6 @@ from increment._cuped_evidence import (
     CUPED_EVIDENCE_FORMAT,
     CUPED_EVIDENCE_RECORD,
     CupedEvidence,
-    categorical_request,
     duplicate_evidence,
     invalid_evidence,
     local_categorical_cells,
@@ -1081,10 +1080,20 @@ def _cube_evidence(
         }
         if item.kind == "scalar_moments":
             evidence_arms = {str(row.get("group_id")) for row in item.rows}
-        else:
+        elif item.kind == "categorical_cells":
             if item.cells is None:
                 invalid_evidence("categorical envelope has no decoded cells")
             evidence_arms = {str(arm) for arm in item.cells.arms}
+        else:
+            if item.fit_state is None:
+                invalid_evidence("fitted envelope has no decoded fit state")
+            evidence_arms = {
+                str(arm) for arm in (*item.fit_state.eligible_arms, *item.fit_state.withheld_arms)
+            }
+            if len(evidence_arms) != len(
+                item.fit_state.eligible_arms + item.fit_state.withheld_arms
+            ):
+                invalid_evidence("fitted evidence contains duplicate arms")
         if evidence_arms != ordinary_arms:
             invalid_evidence(
                 f"envelope arm roster differs from ordinary rows for metric {item.metric!r}"
@@ -1683,9 +1692,9 @@ class MomentsSource(SequentialSourceMixin):
             for method in effective_methods(config, design=design):
                 evidence = self._evidence.get((name, method_key(method)))
                 if method.variance_reduction == "cuped_multicovariate":
-                    # An in-process cube may still delegate unit frames to its source.
                     if self._source is None and (
-                        evidence is None or not categorical_request(method)
+                        evidence is None
+                        or evidence.kind not in ("categorical_cells", "fitted_multicovariate")
                     ):
                         refuse_cuped_linear_moments(name)
                 elif (
@@ -1699,6 +1708,56 @@ class MomentsSource(SequentialSourceMixin):
         """The joint categorical evidence retained for this request, if any."""
         evidence = self._evidence.get((metric.name, method_key(method)))
         return evidence if evidence is not None and evidence.kind == "categorical_cells" else None
+
+    def fit_cuped_multicovariate(
+        self,
+        metric,
+        method,
+        *,
+        control: str,
+        arm_order: tuple[str, ...],
+        population: Literal["assigned", "triggered"] = "assigned",
+        return_components: bool = False,
+        **_scope,
+    ):
+        evidence = self._evidence.get((metric.name, method_key(method)))
+        if evidence is None or evidence.kind != "fitted_multicovariate":
+            from increment._analysis_config import refuse_cuped_linear_moments
+
+            refuse_cuped_linear_moments(metric.name)
+        if evidence.population != population:
+            invalid_evidence("fitted evidence population differs from the requested fit")
+        state, summary = evidence.fit_state, evidence.inference_summary
+        if state is None or summary is None:
+            invalid_evidence("fitted evidence FitState or inference summary is missing")
+        if any(value not in (None, False) for value in _scope.values()):
+            invalid_evidence("fitted evidence cannot change its breakout fit scope")
+        if control != state.control or tuple(arm_order) != tuple(state.identity[6]):
+            invalid_evidence("fitted evidence arm or control scope differs from the requested fit")
+        from increment._cuped_evidence import (
+            _FittedCupedFitEvidence,
+            finalize_fitted_multicovariate,
+        )
+
+        withheld = []
+        for arm, encoded_context in state.refusal_contexts:
+            context = dict(encoded_context)
+            code = context.pop("code")
+            withheld.append(
+                (
+                    arm,
+                    _CodedError(
+                        f"fitted CUPED evidence withheld arm {arm!r}", code=code, context=context
+                    ),
+                )
+            )
+        fit = finalize_fitted_multicovariate(state, summary)
+        result = (state, summary, fit) if return_components else fit
+        if withheld:
+            return state.identity, _FittedCupedFitEvidence(
+                result, tuple(arm_order), tuple(withheld)
+            )
+        return state.identity, result
 
     def _restore_checkpoint(
         self,

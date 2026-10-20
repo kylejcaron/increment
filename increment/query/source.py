@@ -1397,6 +1397,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         breakout_source: str | None = None,
         breakout_value: str | None = None,
         breakout_is_null: bool = False,
+        return_components: bool = False,
     ):
         from increment.query.cuped import fit_multicovariate_request
 
@@ -1411,6 +1412,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             breakout_source=breakout_source,
             breakout_value=breakout_value,
             breakout_is_null=breakout_is_null,
+            return_components=return_components,
         )
 
     @contextmanager

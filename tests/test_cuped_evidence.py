@@ -105,6 +105,75 @@ def _dumps(rows, *, exclude=frozenset()):
     return [row.model_dump(exclude=set(exclude)) for row in rows]
 
 
+def test_fitted_multicovariate_envelope_preserves_large_float_scatter(tmp_path):
+    from dataclasses import replace
+
+    from increment._cuped_evidence import (
+        fitted_multicovariate_payload,
+        parse_cuped_evidence,
+    )
+
+    method = Method.cuped_multicovariate(
+        name="mixed",
+        covariates=(
+            CupedCovariate(name="history_a", kind="continuous"),
+            CupedCovariate(name="segment", kind="categorical"),
+        ),
+    )
+    spec = MetricSpec(name="outcome", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(_records()),
+        unit="unit",
+        group="arm",
+        control="control",
+        experiment_id="compact",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        _, rows = _export_rows(analysis, tmp_path)
+        envelope = next(
+            row["cuped_evidence"]
+            for row in rows
+            if row.get("record_kind") == "cuped_evidence"
+            and json.loads(row["cuped_evidence"])["kind"] == "fitted_multicovariate"
+        )
+        wire = json.loads(envelope)
+        evidence = parse_cuped_evidence(envelope)
+        assert evidence.fit_state is not None and evidence.inference_summary is not None
+        large_scatter = math.nextafter(1.0e16, math.inf)
+        covariance = ((large_scatter,),)
+        summary = replace(
+            evidence.inference_summary,
+            adjusted_component_covariance=covariance,
+        )
+        rewritten = fitted_multicovariate_payload(
+            spec.name,
+            method,
+            evidence.fit_state,
+            summary,
+            population=evidence.population,
+            trigger_name=evidence.trigger_name,
+            source=wire["evidence"]["fit_state"]["identity"][3],
+        )
+        restored = parse_cuped_evidence(rewritten)
+        assert restored.inference_summary is not None
+        assert restored.inference_summary.adjusted_component_covariance[0][0] == large_scatter
+        assert restored.fit_state is not None and restored.inference_summary is not None
+        rewritten_again = fitted_multicovariate_payload(
+            spec.name,
+            method,
+            restored.fit_state,
+            restored.inference_summary,
+            population=restored.population,
+            trigger_name=restored.trigger_name,
+            source=wire["evidence"]["fit_state"]["identity"][3],
+        )
+        assert rewritten_again == rewritten
+    finally:
+        analysis.close()
+
+
 @pytest.mark.parametrize("ratio", [False, True])
 @pytest.mark.parametrize("family", ["scalar", "categorical", "combined"])
 def test_format13_method_scoped_export_reloads_exact_inference(tmp_path, ratio, family):
@@ -543,7 +612,7 @@ def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
     )
     rows = portable_cuped_rows(
         source,
-        [(metric, (), (method,))],
+        [(metric, (), (method,), ())],
         categorical_cells=lambda _metric, _method: cells,
         identity={"source_id": "snapshot"},
     )
@@ -556,7 +625,7 @@ def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
     with pytest.raises(CodedError) as refusal:
         portable_cuped_rows(
             missing_trigger,
-            [(metric, (), (method,))],
+            [(metric, (), (method,), ())],
             categorical_cells=lambda _metric, _method: cells,
             identity={"source_id": "snapshot"},
         )

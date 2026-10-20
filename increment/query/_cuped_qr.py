@@ -1652,6 +1652,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
     request,
     execute: Callable[[ir.Table], object],
     scratch,
+    return_components: bool = False,
 ) -> Any:
     """Fit and finalize a mixed CUPED model from a retained warehouse relation."""
     from increment.estimation.cuped._numeric import _fail
@@ -1976,4 +1977,5 @@ def fit_warehouse_qr(  # noqa: PLR0915
         execute=execute,
         scratch=scratch,
     )
-    return finalize_fit(state, summary)
+    fit = finalize_fit(state, summary)
+    return (state, summary, fit) if return_components else fit

@@ -2559,10 +2559,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         from increment._source_identity import source_identity
         from increment._source_types import ScalarMethodMomentSource
         from increment.decision_wire import compiled_plan_to_json
-        from increment.query.cuped import (
-            _portable_categorical_domain,
-            categorical_request_cells,
-        )
+        from increment.query.cuped import categorical_request_cells, portable_qr_requests
         from increment.sources import stamp_fixed_rows, write_moments_table
 
         if not isinstance(self, ScalarMethodMomentSource):
@@ -2574,9 +2571,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 design=self.context.design,
             )
         population = self.population
-        for metric, _scalar, categorical in requests:
-            for method in categorical:
-                _portable_categorical_domain(self, metric, method, population)
+        requests = portable_qr_requests(self, requests, population=population)
         identity = source_identity(self)
         portable = portable_cuped_rows(
             cast(CUPEDEvidenceExportSource, self),

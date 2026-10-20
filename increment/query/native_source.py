@@ -3666,8 +3666,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
         from increment.query.cuped import (
-            _portable_categorical_domain,
             categorical_request_cells,
+            portable_qr_requests,
         )
         from increment.sources import stamp_fixed_rows, write_moments_table
 
@@ -3678,13 +3678,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         if requests is not None:
             with self.readout_snapshot(
-                metrics=tuple(metric for metric, _, _ in requests),
+                metrics=tuple(metric for metric, _, _, _ in requests),
                 population="assigned",
                 configs=self.context.configs,
             ) as pinned:
-                for metric, _scalar, categorical in requests:
-                    for method in categorical:
-                        _portable_categorical_domain(pinned, metric, method, population="assigned")
+                requests = portable_qr_requests(pinned, requests, population="assigned")
                 pinned_identity = source_identity(pinned)
                 pinned_identity_payload = json.dumps(
                     pinned_identity, sort_keys=True, separators=(",", ":")
@@ -4139,6 +4137,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         breakout_source: str | None = None,
         breakout_value: str | None = None,
         breakout_is_null: bool = False,
+        return_components: bool = False,
     ):
         from increment.query.cuped import fit_multicovariate_request
 
@@ -4153,6 +4152,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             breakout_source=breakout_source,
             breakout_value=breakout_value,
             breakout_is_null=breakout_is_null,
+            return_components=return_components,
         )
 
     def cuped_outcome_domains(self, metric: Metric) -> tuple[str, ...]:
