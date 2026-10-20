@@ -1133,7 +1133,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
         original = cuped_query.fit_multicovariate_source
         mutated = False
 
-        def mutate_before_fit(source, metric, request):
+        def mutate_before_fit(source, metric, request, **kwargs):
             nonlocal mutated
             if not mutated:
                 mutated = True
@@ -1141,7 +1141,7 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
                     "UPDATE cov_events SET revenue = revenue * 2 "
                     "WHERE event = 'purchase' AND user_id BETWEEN 'u10' AND 'u19'"
                 )
-            return original(source, metric, request)
+            return original(source, metric, request, **kwargs)
 
         def no_unit_frame(*args, **kwargs):
             pytest.fail("mixed warehouse CUPED must not load a unit frame")
