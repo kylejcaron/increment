@@ -322,3 +322,14 @@ def test_artifact_abort_after_manifest_leaves_nothing_visible(bigquery_con):
 def test_artifact_explicit_catalog_path(bigquery_con):
     """Explicit project/dataset publication, fresh adoption and cleanup work on BigQuery."""
     run_artifact_explicit_catalog_probe(bigquery_con, dialect="bigquery")
+
+
+@pytest.mark.parametrize("route", ["categorical_cells", "general_qr"])
+def test_bigquery_mixed_cuped_matches_local_with_native_and_artifact(
+    bigquery_con, tmp_path, monkeypatch, route
+):
+    from integration.warehouse_execution.test_snowflake_execution import (
+        _run_cloud_mixed_cuped_probe,
+    )
+
+    _run_cloud_mixed_cuped_probe(bigquery_con, "bigquery", tmp_path, monkeypatch, route)
