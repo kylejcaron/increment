@@ -648,8 +648,10 @@ def test_categorical_source_fitter_uses_native_and_verified_artifact_relations(
     monkeypatch.setattr(type(artifact_source._snapshot), "execute", execute_snapshot)
     monkeypatch.setattr(type(native_source), "unit_frame", no_units)
     monkeypatch.setattr(_ArtifactFacadeSource, "unit_frame", no_units)
-    left = fit_multicovariate_source(native_source, native_source.context.metrics[0], request)
-    right = fit_multicovariate_source(artifact_source, artifact_source.context.metrics[0], request)
+    left = fit_multicovariate_source(native_source, native_source.context.metrics[0], request).fit
+    right = fit_multicovariate_source(
+        artifact_source, artifact_source.context.metrics[0], request
+    ).fit
     for name in ("theta", "adjusted_means", "covariance", "dof", "max_leverage"):
         assert np.asarray(getattr(left, name)) == pytest.approx(
             np.asarray(getattr(right, name)), rel=1e-10, abs=1e-12
@@ -698,7 +700,7 @@ def test_integer_fact_domain_routes_through_qr_without_unit_keyed_transfer(
 
     monkeypatch.setattr(WarehouseSession, "fetch_arrow", fetch)
     monkeypatch.setattr(type(artifact._snapshot), "execute", execute_snapshot)
-    actual = fit_multicovariate_source(source, metric, request)
+    actual = fit_multicovariate_source(source, metric, request).fit
     assert transferred
     for name in ("theta", "adjusted_means", "covariance", "dof", "max_leverage"):
         assert np.asarray(getattr(actual, name)) == pytest.approx(
