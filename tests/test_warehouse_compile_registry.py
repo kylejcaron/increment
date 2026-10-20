@@ -8,6 +8,9 @@ from integration.warehouse_execution._compile import (
     compile_statement_cases,
 )
 
+# Building the cases runs public DuckDB CUPED readouts to capture their statements.
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
 def test_registered_warehouse_statements_compile_offline(dialect):

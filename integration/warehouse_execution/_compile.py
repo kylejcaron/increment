@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from uuid import uuid4
 
 import ibis
@@ -507,6 +508,12 @@ _UPTAKE_SCHEMA = (
 
 def compile_statement_cases(dialect: str) -> list[CompileCase]:
     """Return named production-generated SQL expressions for one SQL dialect."""
+    return list(_statement_cases(dialect))
+
+
+@cache
+def _statement_cases(dialect: str) -> tuple[CompileCase, ...]:
+    # Capturing the CUPED readouts runs public DuckDB readouts; do it once per process.
     if dialect not in {"snowflake", "bigquery"}:
         raise ValueError(f"unsupported compile dialect {dialect!r}")
     from increment.query.schemas import UNIT_DAY_ARTIFACT_RELATION_SCHEMAS
@@ -564,7 +571,7 @@ def compile_statement_cases(dialect: str) -> list[CompileCase]:
         _uptake_validation_builder,
     )
     cases.extend(_captured_cuped_statement_cases(dialect))
-    return cases
+    return tuple(cases)
 
 
 def _ddl_type(dialect: str, data_type: dt.DataType) -> str:
