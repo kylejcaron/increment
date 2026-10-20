@@ -54,6 +54,7 @@ from increment.semantics.design import (
 )
 from increment.semantics.models import (
     AnalysisPlan,
+    CupedCovariateBinding,
     Definitions,
     ExperimentMetric,
     InferenceSpec,
@@ -9163,7 +9164,207 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:
     )
 
 
+def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
+    """Categorical mixed CUPED mean/ratio, including the format-13 moments route."""
+    import yaml
+
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from tests.parity_harness import matrix_data
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    rows = copy.deepcopy(matrix_data.linear_cuped_rows())
+    for row in rows:
+        if row["user_id"][-1].isdigit() and int(row["user_id"][1:]) % 11 == 0:
+            row["country"] = None
+        row["spend"] = 3.0 + 0.1 * row["orders"] + 0.03 * row["revenue"]
+    method = Method.cuped_multicovariate(
+        name="country",
+        covariates=CupedCovariateBinding(
+            name="country",
+            kind="categorical",
+            property="country",
+            source="events",
+            missing="impute-indicator",
+        ),
+    )
+    metrics = (
+        MetricSpec(name="revenue", decision_method=method),
+        MetricSpec(
+            name="revenue_per_spend",
+            type="ratio",
+            numerator="revenue",
+            denominator="spend",
+            preferred_direction="increase",
+            decision_method=method,
+        ),
+    )
+    plan = AnalysisPlan(
+        primary="revenue", guardrails=(ExperimentMetric(metric="revenue_per_spend"),)
+    )
+    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+    events = mixed_cuped_event_rows(rows)
+    outcome_time = dt.datetime(2025, 1, 11, 9)
+    events.extend(
+        {
+            **dict.fromkeys(events[0]),
+            "user_id": row["user_id"],
+            "ts": outcome_time,
+            "event": "spend",
+            "value": row["spend"],
+        }
+        for row in rows
+    )
+
+    def frame_analysis(*, panel: bool) -> Analysis:
+        if panel:
+            panel_rows = []
+            for row in rows:
+                for day in (dt.date(2025, 1, 10), dt.date(2025, 1, 11)):
+                    panel_rows.append(
+                        {
+                            **row,
+                            "date": day,
+                            "revenue": row["revenue"] / 2,
+                            "spend": row["spend"] / 2,
+                            "orders": row["orders"] / 2,
+                        }
+                    )
+            return Analysis.from_unit_panel(
+                pd.DataFrame(panel_rows),
+                unit="user_id",
+                group="variant",
+                date="date",
+                metrics=metrics,
+                plan=plan,
+                design=design,
+                breakouts=("region",),
+            )
+        return Analysis.from_unit_summary(
+            pd.DataFrame(rows),
+            unit="user_id",
+            group="variant",
+            metrics=metrics,
+            plan=plan,
+            design=design,
+        )
+
+    def definition_analysis(*, artifact: bool = False, breakout: bool = False) -> Analysis:
+        con = ds.duckdb_connection(events)
+        # Rewrite the current plan's mixed method to the categorical-only identity.
+        with tempfile.TemporaryDirectory(prefix="increment-categorical-cuped-") as directory:
+            path = Path(directory) / "categorical.yaml"
+            document = yaml.safe_load(mixed_cuped_definitions_yaml("events", breakout=breakout))
+            document["fact_sources"][0]["facts"].append({"name": "spend", "column": "value"})
+            document["metrics"].append(
+                {
+                    "name": "revenue_per_spend",
+                    "type": "ratio",
+                    "entity": "user_id",
+                    "numerator": {"fact": "revenue", "aggregation": "sum", "window_days": 2},
+                    "denominator": {"fact": "spend", "aggregation": "sum", "window_days": 2},
+                    "preferred_direction": "increase",
+                }
+            )
+            experiment = document["experiments"][0]
+            method_data = method.model_dump(mode="json", exclude_none=True)
+            configured_plan = experiment["plan"]
+            configured_plan["primary"]["decision_method"] = method_data
+            configured_plan["guardrails"] = [
+                {"metric": "revenue_per_spend", "decision_method": method_data}
+            ]
+            configured_plan.pop("secondaries")
+            path.write_text(yaml.safe_dump(document))
+            try:
+                native = Analysis.from_definitions("mixed_cuped", path, cast(SQLBackend, con))
+            except BaseException:
+                con.disconnect()
+                raise
+        return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
+
+    def moments_analysis() -> Analysis:
+        import json
+
+        with tempfile.TemporaryDirectory(prefix="increment-categorical-moments-") as directory:
+            native = definition_analysis()
+            try:
+                path = Path(directory) / "categorical.parquet"
+                native.export(path)
+                table = pq.read_table(path)
+                payload = table.to_pylist()
+                assert {row["moments_format"] for row in payload} == {13}
+                assert table.schema.metadata[b"increment.moments_format"] == b"13"
+                assert {
+                    json.loads(row["cuped_evidence"])["kind"]
+                    for row in payload
+                    if row.get("record_kind") == "cuped_evidence"
+                } == {"categorical_cells"}
+            finally:
+                native.close()
+        return Analysis.from_moments(
+            payload,
+            metrics=metrics,
+            design=design,
+            experiment_id="mixed_cuped",
+        )
+
+    def switchback_analysis() -> Analysis:
+        from increment.semantics.design import Randomized as SwitchbackDesign
+
+        return Analysis.from_switchback_panel(
+            pd.DataFrame(),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics=metrics,
+            identification=SwitchbackDesign(
+                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+
+    def breakout_probe(name: str, analysis: Analysis) -> None:
+        from increment.errors import CodedError
+
+        if name in {"from_definitions", "from_unit_day_artifact", "from_unit_panel"}:
+            breakout_rows = analysis.run_breakout()
+            assert {(row.metric, row.dimension_value) for row in breakout_rows} == {
+                (metric, region)
+                for metric in ("revenue", "revenue_per_spend")
+                for region in ("east", "west")
+            }
+            return
+        with pytest.raises(CodedError) as raised:
+            analysis.run_breakout()
+        assert raised.value.code == "facade.analysis.operation"
+
+    return ParityCase(
+        id="categorical-cuped-moments-format-13",
+        build={
+            "from_definitions": lambda: definition_analysis(breakout=True),
+            "from_unit_day_artifact": lambda: definition_analysis(artifact=True, breakout=True),
+            "from_unit_summary": lambda: frame_analysis(panel=False),
+            "from_unit_panel": lambda: frame_analysis(panel=True),
+            "from_moments": moments_analysis,
+            "from_switchback_panel": switchback_analysis,
+        },
+        metrics=("revenue", "revenue_per_spend"),
+        source_probe=breakout_probe,
+        waive={"from_switchback_panel": "SOURCE: switchback is a different design."},
+        waived_refusal_codes={"from_switchback_panel": "source.frame.switchback.metric"},
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
+    _categorical_cuped_moments_case(),
     _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),
