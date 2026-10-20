@@ -219,12 +219,43 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
     return _CAPTURED_CUPED_EXPRESSIONS
 
 
+def _transpile_captured_raw_sql(expression, dialect):
+    """Transpile DuckDB SQL embedded in captured raw-query operations."""
+    import sqlglot
+    from ibis.expr import operations as ops
+
+    root = expression.op()
+    replacements = {}
+    for operation in root.find(ops.SQLQueryResult):
+        statements = sqlglot.transpile(operation.query, read="duckdb", write=dialect)
+        if len(statements) != 1:
+            raise ValueError(
+                "captured CUPED SQL query result must transpile to one statement, "
+                f"got {len(statements)}"
+            )
+        replacements[operation] = ops.SQLQueryResult(
+            query=statements[0], schema=operation.schema, source=operation.source
+        )
+    for operation in root.find(ops.SQLStringView):
+        statements = sqlglot.transpile(operation.query, read="duckdb", write=dialect)
+        if len(statements) != 1:
+            raise ValueError(
+                "captured CUPED SQL string view must transpile to one statement, "
+                f"got {len(statements)}"
+            )
+        replacements[operation] = ops.SQLStringView(
+            parent=operation.parent, query=statements[0], schema=operation.schema
+        )
+    return root.replace(replacements).to_expr() if replacements else expression
+
+
 def _captured_statement_case(expression, dialect, index):
     import sqlglot
     from ibis.expr import operations as ops
     from sqlglot import exp
 
-    rendered = str(ibis.to_sql(expression, dialect=dialect))
+    target_expression = _transpile_captured_raw_sql(expression, dialect)
+    rendered = str(ibis.to_sql(target_expression, dialect=dialect))
     query = sqlglot.parse_one(rendered, read=dialect)
     cte_names = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
     relation_schemas = dict(_CAPTURED_CUPED_SCHEMAS)

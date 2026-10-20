@@ -29,6 +29,18 @@ def test_registered_warehouse_statements_compile_offline(dialect):
         )
         for statement in (sql, _inline_empty_ctes(sql, case)):
             ast = sqlglot.parse_one(statement, read=dialect)
+            if dialect == "bigquery":
+                schema_columns = {
+                    column for schema in case.schemas.values() for column in schema.keys()
+                }
+                quoted_columns = {
+                    literal.this
+                    for literal in ast.find_all(sqlglot.exp.Literal)
+                    if literal.is_string and literal.this in schema_columns
+                }
+                assert not quoted_columns, (
+                    f"{case.name}: quoted identifier literals {quoted_columns}"
+                )
             ctes = {cte.alias for cte in ast.find_all(sqlglot.exp.CTE)}
             referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
             sources = set(case.table_names.values())
