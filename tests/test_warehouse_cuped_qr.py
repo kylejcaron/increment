@@ -486,6 +486,29 @@ def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkey
         connection.disconnect()
 
 
+def test_bm_feature_batches_respect_postgres_column_budget_at_p203():
+    from increment.query._cuped_qr import _bm_job_batches
+
+    width = 23
+    base_columns = tuple(f"base_{index}" for index in range(250))
+    jobs = tuple(
+        (
+            f"t2_{job}",
+            f"score_{job}",
+            tuple(f"feature_{job}_{index}" for index in range(2 * width)),
+        )
+        for job in range(36)
+    )
+    batches = _bm_job_batches(jobs, width=width, base_columns=base_columns)
+
+    assert len(batches) > 1
+    assert tuple(job for batch in batches for job in batch) == jobs
+    assert all(
+        len(base_columns) + sum(1 + len(features) for _, _, features in batch) <= 1200
+        for batch in batches
+    )
+
+
 def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noqa: PLR0915
     tmp_path,
 ):

@@ -775,72 +775,6 @@ def _warehouse_hc2_scores(
     return scored, score_names, covariance
 
 
-def _warehouse_bm_component(
-    current: ir.Table,
-    base_columns: Sequence[str],
-    contrast: np.ndarray,
-    common_scale: float,
-    factor: QRFactor,
-    design_scales: np.ndarray,
-    sqrt_weight_column: str,
-    q_columns: Sequence[str],
-    width: int,
-    execute: Callable[[ir.Table], object],
-    scratch,
-) -> tuple[ir.Table, float, float, FloatMatrix, FloatMatrix]:
-    if common_scale == 0.0:
-        zero_matrix = tuple(tuple(0.0 for _ in range(2 * width)) for _ in range(2 * width))
-        return current, 0.0, 0.0, zero_matrix, zero_matrix
-    coefficient = solve_triangular(
-        np.asarray(factor.triangular_factor, dtype=float).T,
-        (contrast / common_scale) / design_scales,
-        lower=True,
-        check_finite=False,
-    )
-    q = tuple(current[name] for name in q_columns)
-    sqrt_weight = current[sqrt_weight_column]
-    root_residual = (ibis.literal(1.0) - current._qr_h).sqrt()
-    t = (
-        sqrt_weight
-        * _sum_sql(q[index] * float(coefficient[index]) for index in range(width))
-        / root_residual
-    )
-    feature_names = tuple(f"_qr_f_{index}" for index in range(2 * width))
-    features = tuple(t * sqrt_weight * value for value in q) + tuple(
-        t * value / sqrt_weight for value in q
-    )
-    current = scratch.materialize_next(
-        current.select(*base_columns).mutate(
-            _qr_t2=t.pow(2),
-            **dict(zip(feature_names, features, strict=True)),
-        )
-    )
-    moments: dict[str, float] = {}
-    feature = tuple(current[name] for name in feature_names)
-    gram, weighted_gram = cast(
-        tuple[FloatMatrix, FloatMatrix],
-        _aggregate_matrix(
-            current,
-            feature,
-            feature,
-            execute=execute,
-            square_weight=current._qr_t2,
-            extra_fields={
-                "_qr_s2": current._qr_t2.sum(),
-                "_qr_s4": current._qr_t2.pow(2).sum(),
-            },
-            extra_results=moments,
-        ),
-    )
-    return (
-        current,
-        moments["_qr_s2"],
-        moments["_qr_s4"],
-        gram,
-        weighted_gram,
-    )
-
-
 def _bm_component_score(
     relation: ir.Table,
     contrast: np.ndarray,
@@ -1074,6 +1008,17 @@ def _warehouse_projection_reductions(
     )
 
 
+_BM_FEATURE_COLUMN_BUDGET = 1200
+
+
+def _bm_job_batches(jobs, *, width: int, base_columns: Sequence[str]):
+    columns_per_job = 2 * width + 1
+    jobs_per_batch = max(1, (_BM_FEATURE_COLUMN_BUDGET - len(base_columns)) // columns_per_job)
+    return tuple(
+        jobs[offset : offset + jobs_per_batch] for offset in range(0, len(jobs), jobs_per_batch)
+    )
+
+
 def _warehouse_bm_projection_reductions(  # noqa: PLR0913, PLR0915
     *,
     state: FitState,
@@ -1218,30 +1163,35 @@ def _warehouse_bm_projection_reductions(  # noqa: PLR0913, PLR0915
         s4_rows.append(tuple(0.0 for _ in range(component_count)))
         g_rows.append(tuple(zero_matrix for _ in range(component_count)))
         g2_rows.append(tuple(zero_matrix for _ in range(component_count)))
-    bm_results = ()
+    bm_results: list[tuple[float, float, FloatMatrix, FloatMatrix]] = []
     if bm_score_fields:
         score_relation = scratch.materialize_next(
             current.select(*base_columns).mutate(**bm_score_fields)
         )
-        bm_feature_fields = {}
-        aggregate_jobs = []
-        for t2_name, score_name, feature_names in bm_jobs:
-            score = score_relation[score_name]
-            sqrt_weight = score_relation[sqrt_weight_column]
-            q = tuple(score_relation[name] for name in q_columns)
-            features = tuple(score * sqrt_weight * value for value in q) + tuple(
-                score * value / sqrt_weight for value in q
+        for job_batch in _bm_job_batches(bm_jobs, width=width, base_columns=base_columns):
+            t2_names = tuple(name for name, _, _ in job_batch)
+            score_names = tuple(score_name for _, score_name, _ in job_batch)
+            score_batch = score_relation.select(*base_columns, *t2_names, *score_names)
+            bm_feature_fields = {}
+            aggregate_jobs = []
+            for t2_name, score_name, feature_names in job_batch:
+                score = score_batch[score_name]
+                sqrt_weight = score_batch[sqrt_weight_column]
+                q = tuple(score_batch[name] for name in q_columns)
+                features = tuple(score * sqrt_weight * value for value in q) + tuple(
+                    score * value / sqrt_weight for value in q
+                )
+                bm_feature_fields.update(dict(zip(feature_names, features, strict=True)))
+                aggregate_jobs.append((t2_name, feature_names))
+            bm_relation = scratch.materialize_next(
+                score_batch.mutate(**bm_feature_fields).select(
+                    *base_columns,
+                    *t2_names,
+                    *(name for _, _, feature_names in job_batch for name in feature_names),
+                )
             )
-            bm_feature_fields.update(dict(zip(feature_names, features, strict=True)))
-            aggregate_jobs.append((t2_name, feature_names))
-        bm_relation = scratch.materialize_next(
-            score_relation.mutate(**bm_feature_fields).select(
-                *base_columns,
-                *(name for name, _, _ in bm_jobs),
-                *(name for _, _, feature_names in bm_jobs for name in feature_names),
-            )
-        )
-        bm_results = _aggregate_bm_batch(bm_relation, aggregate_jobs, execute=execute)
+            bm_results.extend(_aggregate_bm_batch(bm_relation, aggregate_jobs, execute=execute))
+    bm_results = list(bm_results)
     for spec_index, job_indices in bm_jobs_by_spec.items():
         for component_index, job_index in enumerate(job_indices):
             if job_index is None:
@@ -2119,9 +2069,9 @@ def fit_warehouse_qr(  # noqa: PLR0915
     from increment.query._cuped_cells import require_warehouse_magnitude_range
 
     outcome_components = (
-        (("numerator", "y"), ("denominator", "y_den"))
+        (("outcome", "numerator", "y"), ("outcome", "denominator", "y_den"))
         if metric.type == "ratio"
-        else (("outcome", "y"),)
+        else (("outcome", "outcome", "y"),)
     )
     if not magnitude_checked:
         require_warehouse_magnitude_range(
@@ -2130,7 +2080,7 @@ def fit_warehouse_qr(  # noqa: PLR0915
             components=(
                 *outcome_components,
                 *(
-                    (declaration.name, declaration.name)
+                    ("covariate", declaration.name, declaration.name)
                     for declaration in declarations
                     if declaration.kind == "continuous"
                 ),

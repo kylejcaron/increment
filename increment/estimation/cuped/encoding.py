@@ -236,6 +236,9 @@ def _encode_numeric(
             masks[key][1].append(name)
         else:
             masks[key] = (null.astype(float), [name])
+    if np.ptp(numeric) == 0:
+        structural.append(name)
+        return None
     if aggregate_coordinates:
         offsets = []
         centered = np.empty_like(numeric)
@@ -247,9 +250,6 @@ def _encode_numeric(
             offsets = [0.0] * len(indices)
             centered = numeric.copy()
         if not np.any(centered):
-            if np.ptp(numeric) == 0:
-                structural.append(name)
-                return None
             columns.append(centered)
             column_names.append(name)
             return tuple(offsets), 1.0
@@ -272,9 +272,6 @@ def _encode_numeric(
         centered = numeric.copy()
     scale = float(np.max(np.abs(centered), initial=0.0))
     if scale == 0:
-        if np.ptp(numeric) == 0:
-            structural.append(name)
-            return None
         columns.append(centered)
         column_names.append(name)
         return tuple(offsets), 1.0

@@ -486,6 +486,21 @@ def test_constant_covariates_are_disclosed_without_losing_missingness_indicators
     assert sum(fit.n_by_arm) == len(arm)
 
 
+def test_portable_coordinates_preserve_structural_constant_fractional_covariates():
+    arm = np.array(["c"] * 6 + ["t"] * 6)
+    fit = fit_cuped_multicovariate(
+        np.arange(12.0),
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"constant": np.full(12, 0.1)},
+        kinds={"constant": "continuous"},
+        _portable_coordinates=True,
+    )
+    assert fit.p == 0
+    assert fit.layout.structural_omissions == ("constant",)
+
+
 def test_three_arm_absolute_projection_uses_joint_covariance():
     rng = np.random.default_rng(872)
     arm = np.repeat(["c", "t", "other"], [9, 13, 11])

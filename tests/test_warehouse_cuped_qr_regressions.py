@@ -468,7 +468,7 @@ def test_nonfinite_refusal_precedes_magnitude_refusal():
             require_warehouse_magnitude_range(
                 connection.table("nonfinite_input"),
                 metric="probe",
-                components=(("outcome", "y"),),
+                components=(("outcome", "outcome", "y"),),
                 execute=connection.to_pyarrow,
             )
         assert error.value.code == "estimation.cuped_linear.nonfinite"

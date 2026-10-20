@@ -174,6 +174,95 @@ def test_fitted_multicovariate_envelope_preserves_large_float_scatter(tmp_path):
         analysis.close()
 
 
+def test_replay_restores_nested_snapshot_identity_mappings():
+    from increment._cuped_evidence import _restore_identity_mappings
+
+    identity_source = (
+        (
+            "source_snapshot_evidence",
+            (
+                ("observation_cutoff_ts", "2025-01-02T03:04:05+00:00"),
+                (
+                    "complete_through_by_feed",
+                    (("events", "2025-01-01T00:00:00+00:00"), ("users", None)),
+                ),
+            ),
+        ),
+    )
+
+    assert _restore_identity_mappings(identity_source, mapping_sequence=True) == {
+        "source_snapshot_evidence": {
+            "observation_cutoff_ts": "2025-01-02T03:04:05+00:00",
+            "complete_through_by_feed": {
+                "events": "2025-01-01T00:00:00+00:00",
+                "users": None,
+            },
+        }
+    }
+
+
+def test_triggered_fit_export_uses_source_warehouse_operation(monkeypatch):
+    from types import SimpleNamespace
+
+    import increment._cuped_evidence as evidence_module
+    from increment._cuped_evidence import portable_cuped_rows
+    from increment.estimation.engine import Method
+    from increment.query._native_triggered import TriggeredPopulationSource
+    from increment.semantics.models import CupedCovariate
+
+    fit_calls = []
+
+    class Source:
+        breakouts = ()
+        shape = None
+        context = SimpleNamespace(
+            design=SimpleNamespace(control_group="control"),
+            trigger_name="trigger",
+        )
+
+        @staticmethod
+        def _validate_trigger_capability(*, operation):
+            pass
+
+        @staticmethod
+        def moments_for_method(metric, method, *, by=(), population=None):
+            return [{"group_id": "control"}, {"group_id": "treatment"}]
+
+        @staticmethod
+        def unit_frame(*_args, **_kwargs):
+            raise AssertionError("triggered export transferred unit rows")
+
+        @staticmethod
+        def fit_cuped_multicovariate(metric, method, **kwargs):
+            fit_calls.append(kwargs)
+            identity = ("warehouse-fit",)
+            return identity, (SimpleNamespace(identity=identity), object(), object())
+
+    def forbidden_local_fit(*_args, **_kwargs):
+        raise AssertionError("triggered export fell back to local unit fitting")
+
+    monkeypatch.setattr(evidence_module, "_local_multicovariate_evidence", forbidden_local_fit)
+    monkeypatch.setattr(
+        evidence_module, "fitted_multicovariate_payload", lambda *args, **kwargs: "{}"
+    )
+    method = Method.cuped_multicovariate(
+        name="fitted",
+        covariates=(CupedCovariate(name="x", kind="continuous"),),
+    )
+    metric = SimpleNamespace(name="outcome")
+    source = TriggeredPopulationSource(Source())
+    rows = portable_cuped_rows(
+        source,
+        ((metric, (), (), (method,)),),
+        categorical_cells=None,
+        identity={"source": "test"},
+    )
+
+    assert fit_calls[0]["population"] == "triggered"
+    assert fit_calls[0]["return_components"] is True
+    assert rows[-1]["cuped_evidence"] == "{}"
+
+
 @pytest.fixture(scope="module")
 def fitted_evidence_payload(tmp_path_factory):
     method = Method.cuped_multicovariate(

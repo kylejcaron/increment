@@ -186,9 +186,9 @@ def fit_multicovariate_source(
         from increment.query._cuped_cells import require_warehouse_magnitude_range
 
         outcome_components = (
-            (("numerator", "y"), ("denominator", "y_den"))
+            (("outcome", "numerator", "y"), ("outcome", "denominator", "y_den"))
             if metric.type == "ratio"
-            else (("outcome", "y"),)
+            else (("outcome", "outcome", "y"),)
         )
         require_warehouse_magnitude_range(
             relation,
@@ -196,7 +196,7 @@ def fit_multicovariate_source(
             components=(
                 *outcome_components,
                 *(
-                    (declaration.name, declaration.name)
+                    ("covariate", declaration.name, declaration.name)
                     for declaration in declarations
                     if declaration.kind == "continuous"
                 ),

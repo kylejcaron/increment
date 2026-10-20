@@ -66,17 +66,16 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
     relation: ir.Table,
     *,
     metric: str,
-    components: Sequence[tuple[str, str]],
+    components: Sequence[tuple[str, str, str]],
     execute,
 ) -> None:
-    names = tuple(name for _, name in components)
+    names = tuple(name for _, _, name in components)
     if not names:
         return
-    outcome_components = {"outcome", "numerator", "denominator"}
     component_values: list[Any] = []
     maxima_fields: dict[str, Any] = {}
     dialect = relation.get_backend().name
-    for index, (component, name) in enumerate(components):
+    for index, (role, _component, name) in enumerate(components):
         raw = relation[name]
         value = cast(
             ir.FloatingValue,
@@ -86,7 +85,7 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
         )
         is_nan, is_inf = nonfinite_parts(value)
         nonfinite = is_inf
-        if component in outcome_components:
+        if role == "outcome":
             nonfinite = nonfinite | is_nan
         else:
             value = cast(
@@ -231,11 +230,11 @@ def require_warehouse_magnitude_range(  # noqa: PLR0915
     result = backend.sql(sql, schema=ibis.schema(output_schema))
     summary_rows = _rows(execute(result))
     for row in summary_rows:
-        for index, (_component, name) in enumerate(components):
+        for index, (_role, _component, name) in enumerate(components):
             if row[f"_magnitude_nonfinite_{index}"]:
                 _fail("estimation.cuped_linear.nonfinite", name=name, row=0)
     for row in summary_rows:
-        for index, (component, _name) in enumerate(components):
+        for index, (_role, component, _name) in enumerate(components):
             if row[f"_magnitude_low_{index}"]:
                 refuse(
                     _MAGNITUDE_RANGE,
@@ -670,7 +669,7 @@ def categorical_cells_from_relation(
             relation,
             metric=metric.name,
             components=tuple(
-                (label, outcome)
+                ("outcome", label, outcome)
                 for label, outcome in zip(
                     ("numerator", "denominator") if metric.type == "ratio" else ("outcome",),
                     outcomes,

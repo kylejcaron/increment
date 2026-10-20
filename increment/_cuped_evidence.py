@@ -262,6 +262,11 @@ def _wire_value(value: object) -> object:
     return value
 
 
+_IDENTITY_MAPPING_KEYS = frozenset(
+    {"artifacts", "source_snapshot_evidence", "complete_through_by_feed"}
+)
+
+
 def _restore_identity_mappings(value: object, *, mapping_sequence: bool = False) -> object:
     if isinstance(value, tuple):
         items = cast(tuple[Any, ...], value)
@@ -274,7 +279,9 @@ def _restore_identity_mappings(value: object, *, mapping_sequence: bool = False)
             )
         ):
             return {
-                key: _restore_identity_mappings(item, mapping_sequence=key == "artifacts")
+                key: _restore_identity_mappings(
+                    item, mapping_sequence=key in _IDENTITY_MAPPING_KEYS
+                )
                 for key, item in cast(tuple[tuple[str, Any], ...], items)
             }
         return tuple(
@@ -283,7 +290,7 @@ def _restore_identity_mappings(value: object, *, mapping_sequence: bool = False)
     if isinstance(value, Mapping):
         mapping = cast(Mapping[str, object], value)
         return {
-            key: _restore_identity_mappings(item, mapping_sequence=key == "artifacts")
+            key: _restore_identity_mappings(item, mapping_sequence=key in _IDENTITY_MAPPING_KEYS)
             for key, item in mapping.items()
         }
     return value

@@ -59,6 +59,28 @@ def test_cuped_nonfinite_parts_preserve_duckdb_special_value_results() -> None:
     con.disconnect()
 
 
+def test_magnitude_preflight_uses_component_role_not_covariate_name() -> None:
+    from increment.query._cuped_cells import require_warehouse_magnitude_range
+
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "role_named_covariate",
+        ibis.memtable(
+            [
+                {"group_id": "control", "outcome": float("nan")},
+                {"group_id": "treatment", "outcome": 0.5},
+            ]
+        ),
+    )
+    require_warehouse_magnitude_range(
+        con.table("role_named_covariate"),
+        metric="metric",
+        components=(("covariate", "outcome", "outcome"),),
+        execute=con.to_pyarrow,
+    )
+    con.disconnect()
+
+
 def _cells_frame(
     counts,
     *,
