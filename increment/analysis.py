@@ -1136,10 +1136,14 @@ class Analysis:
         ``moments_format=12`` stamp, integer ``n``, nullable integer
         ``successes``, the ratio denominator's third moment ``cden3`` on
         every denominator row, a source identity record, and a complete
-        embedded ``decision_plan`` on every fixed-horizon row. The earlier
-        fixed formats 10 and 11 remain readable; their ratio rows predate ``cden3``,
-        so their lift rows report the denominator-skew coverage check as
-        unavailable. Declared binary outcomes require exact success counts.
+        embedded ``decision_plan`` on every fixed-horizon row. Format 13 adds
+        method-scoped ``record_kind="cuped_evidence"`` envelopes for several
+        scalar families or categorical-only multicovariate requests; a request
+        the cube carries no evidence for is refused before estimation. The
+        earlier fixed formats 10 and 11 remain readable; their ratio rows
+        predate ``cden3``, so their lift rows report the denominator-skew
+        coverage check as unavailable. Declared binary outcomes require exact
+        success counts.
         Sequential exports use ``moments_format=10`` checkpoint envelopes
         and a version-3 sequential wire plan; the preceding sequential
         format 9 remains readable.
@@ -1186,16 +1190,50 @@ class Analysis:
             )
         specs = _coerce_source_metrics(metrics, design=design)
 
-        from increment._analysis_config import refuse_cuped_linear_moments
+        from increment._analysis_config import (
+            refuse_cuped_linear_moments,
+            refuse_missing_scalar_evidence,
+        )
+        from increment._cuped_evidence import invalid_evidence, method_key
+        from increment.sources import cuped_evidence_items
 
+        evidence_items = cuped_evidence_items(rows, require_plan=plan is None)
+        evidence = {
+            metric: {key: item.kind for key, item in items.items()}
+            for metric, items in evidence_items.items()
+        }
+        portable_metrics: set[str] = set()
         for spec in specs:
+            for item in evidence_items.get(spec.name, {}).values():
+                if item.kind != "categorical_cells":
+                    continue
+                expected_components = 2 if spec.type == "ratio" else 1
+                if item.cells is None or len(item.cells.outcome_references) != expected_components:
+                    invalid_evidence(
+                        f"categorical evidence for metric {spec.name!r} has "
+                        f"{0 if item.cells is None else len(item.cells.outcome_references)} "
+                        f"components; expected {expected_components}"
+                    )
             methods_for_metric = (
                 () if spec.decision_method is None else (spec.decision_method,)
             ) + spec.sensitivity_methods
-            if any(
-                method.variance_reduction == "cuped_multicovariate" for method in methods_for_metric
-            ):
-                refuse_cuped_linear_moments(spec.name)
+            carried = evidence.get(spec.name, {})
+            for method in methods_for_metric:
+                if (
+                    method.variance_reduction == "cuped_multicovariate"
+                    and carried.get(method_key(method)) != "categorical_cells"
+                ):
+                    refuse_cuped_linear_moments(spec.name)
+            if "scalar_moments" in carried.values():
+                # Method-scoped evidence identifies each scalar family exactly.
+                for method in methods_for_metric:
+                    if (
+                        method.variance_reduction == "cuped"
+                        and carried.get(method_key(method)) != "scalar_moments"
+                    ):
+                        refuse_missing_scalar_evidence("Analysis.from_moments", method.name)
+                portable_metrics.add(spec.name)
+                continue
             requested_covariates = {
                 covariate.name
                 for method in methods_for_metric
@@ -1237,7 +1275,7 @@ class Analysis:
         from increment._analysis_config import validate_scalar_route
 
         validate_scalar_route(
-            configs,
+            tuple(config for config in configs if config.metric.name not in portable_metrics),
             route="Analysis.from_moments",
             representation="moments",
             design=design,

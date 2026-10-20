@@ -37,6 +37,10 @@ class TriggeredPopulationSource:
         return "triggered"
 
     @property
+    def trigger_name(self) -> str | None:
+        return self.context.trigger_name
+
+    @property
     def context(self) -> SourceContext:
         return self._source.context
 

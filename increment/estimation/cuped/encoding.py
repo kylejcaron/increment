@@ -62,7 +62,7 @@ def _categorical_values(raw, raw_values, n):
     return values, np.fromiter((is_null(value) for value in values), bool, n)
 
 
-def _encode_covariates(groups, indices, order, covariates, kinds, missing):
+def _encode_covariates(groups, indices, order, covariates, kinds, missing, multiplicities=None):
     n = len(groups)
     columns, column_names, transforms = [], [], []
     structural, references, levels = [], [], []
@@ -113,6 +113,7 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing):
                 structural,
                 references,
                 levels,
+                multiplicities,
             )
             transforms.extend([((0.0,) * len(order), 1.0)] * (len(columns) - before))
     shared = []
@@ -219,7 +220,17 @@ def _encode_numeric(
 
 
 def _encode_category(
-    name, values, null, indices, order, columns, column_names, structural, references, levels
+    name,
+    values,
+    null,
+    indices,
+    order,
+    columns,
+    column_names,
+    structural,
+    references,
+    levels,
+    multiplicities=None,
 ):
     labels_values = values[~null]
     if values.dtype.kind not in "US" and any(not isinstance(value, str) for value in labels_values):
@@ -238,7 +249,9 @@ def _encode_category(
     codes_full[~null] = codes.astype(int)
     if null.any():
         codes_full[null] = len(labels)
-    ref_code = int(np.argmax(np.bincount(codes_full, minlength=len(full_levels))))
+    ref_code = int(
+        np.argmax(np.bincount(codes_full, weights=multiplicities, minlength=len(full_levels)))
+    )
     references.append(full_levels[ref_code])
     levels.append(tuple(labels) + ((MISSING_CATEGORY,) if null.any() else ()))
     if len(full_levels) <= 1:
@@ -247,10 +260,15 @@ def _encode_category(
     arm_codes = np.empty(len(values), dtype=int)
     for arm_code, idx in enumerate(indices):
         arm_codes[idx] = arm_code
-    per_arm = np.bincount(
-        codes_full * len(order) + arm_codes,
-        minlength=len(full_levels) * len(order),
-    ).reshape(len(full_levels), len(order))
+    per_arm = (
+        np.bincount(
+            codes_full * len(order) + arm_codes,
+            weights=multiplicities,
+            minlength=len(full_levels) * len(order),
+        )
+        .reshape(len(full_levels), len(order))
+        .astype(np.int64)
+    )
     deficient = np.flatnonzero(np.min(per_arm, axis=1) < 2)
     if len(deficient):
         code = int(deficient[0])

@@ -27,6 +27,12 @@ from increment._analysis_config import (
     overlay_configs,
     resolve_configs,
 )
+from increment._cuped_evidence import (
+    CUPED_EVIDENCE_FORMAT,
+    method_key,
+    portable_cuped_rows,
+    portable_requests,
+)
 from increment._frame_validation import (
     COVARIATE_COLUMN_MISSING as _NATIVE_COVARIATE_MISSING,
 )
@@ -153,6 +159,7 @@ from increment.sources import (
     BreakoutMomentsSource,
     ComplianceArm,
     ComplianceSummary,
+    CUPEDEvidenceExportSource,
     MomentSource,
     SourceContext,
     SourceOperation,
@@ -669,8 +676,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         pinned._horizon_metrics = horizon_metrics
         if configs is not None:
             pinned._context = replace(pinned._context, configs=tuple(configs))
-        if self._sequential_snapshot is not None:
-            pinned.adopt_sequential_snapshot(self._sequential_snapshot)
+        sequential_snapshot = getattr(self, "_sequential_snapshot", None)
+        if sequential_snapshot is not None:
+            pinned.adopt_sequential_snapshot(sequential_snapshot)
         return pinned
 
     def _add_observational_covariate_sources(
@@ -2478,14 +2486,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             methods=methods,
             prior=prior,
         )
-        from increment._analysis_config import validate_scalar_route
-
-        validate_scalar_route(
-            configs,
-            route="native.moments",
-            representation="export",
-            design=self._context.design,
-        )
         if population == "triggered":
             self._validate_trigger_capability(operation="moments")
         if not self._reduction_batch_depth:
@@ -2510,25 +2510,23 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
                 self._build_panel_for_metric(exposures, metric, population)
             )
-            resolved_cuped = any(
-                method.variance_reduction == "cuped"
+            families = {
+                method_key(method): method
                 for method in effective_methods(config, design=self.context.design)
-            )
-            covariate = next(
-                (
-                    covariate
-                    for method in effective_methods(config, design=self.context.design)
-                    if method.variance_reduction == "cuped"
-                    for covariate in method.covariates or ()
-                ),
-                None,
-            )
+                if method.variance_reduction == "cuped"
+            }
+            family = next(iter(families.values())) if len(families) == 1 else None
+            covariate = next(iter(family.covariates or ()), None) if family is not None else None
             pre_stats_override = (
                 self._bound_scalar_covariate_pre_stats(covariate, exposures, metric)
                 if covariate is not None
                 else None
             )
-            want_cuped = resolved_cuped if narrow_cuped else True
+            # Several scalar families cannot share one cube's x columns: the cube then
+            # carries outcome moments only, and each family is acquired by its own request.
+            want_cuped = (
+                (family is not None if narrow_cuped else True) if len(families) <= 1 else False
+            )
             summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
                 metric,
                 exposures,
@@ -3450,6 +3448,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         boundary. The cube is reduced once, stamped with the same format and
         source-level assignment counts as an export, then rehydrated through
         :class:`MomentsSource` without exposing warehouse builders or caches.
+        Several scalar families of one metric travel as format-13 envelopes;
+        mixed requests stay with this source, which serves their unit evidence.
         """
         cluster = self._context.cluster
         if cluster is not None and not isinstance(self._context.design, Encouragement):
@@ -3474,6 +3474,33 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         identity_record = source_identity(self)
         identity_payload = json.dumps(identity_record, sort_keys=True, separators=(",", ":"))
         selected = list(metrics)
+        requests = portable_requests(
+            overlay_configs(selected, self._context.configs, methods=methods, prior=prior),
+            design=self._context.design,
+            categorical=False,
+        )
+        if requests is not None:
+            from increment.sources import stamp_fixed_rows
+
+            view = self if population == "assigned" else self.triggered_source()
+            portable = portable_cuped_rows(
+                cast(CUPEDEvidenceExportSource, view),
+                requests,
+                categorical_cells=None,
+                identity=identity_record,
+            )
+            _grain, assignment_counts, unit_counts = self._counts_for_population(
+                population, operation="moments_source"
+            )
+            assignment_counts.update(unit_counts)
+            rows = stamp_fixed_rows(
+                portable,
+                version=CUPED_EVIDENCE_FORMAT,
+                identity=identity_payload,
+                counts=json.dumps(assignment_counts, sort_keys=True, separators=(",", ":")),
+                compliance=self._compliance_wire_payload(population=population),
+            )
+            return self._rehydrated_moments(rows, identity_record, view)
         cube = self._moments_for_metrics(
             methods=methods,
             selected=selected,
@@ -3526,10 +3553,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 configs=self.context.configs,
                 _source_identity_record=identity_record,
             )
+        return self._rehydrated_moments(
+            cube.to_pylist(),
+            identity_record,
+            self if population == "assigned" else self.triggered_source(),
+        )
+
+    def _rehydrated_moments(
+        self, rows: list[dict[str, Any]], identity_record: dict[str, Any], source: Any
+    ) -> MomentSource:
         from increment.sources import MomentsSource
 
         return MomentsSource(
-            cube.to_pylist(),
+            rows,
             metrics=self._metrics,
             study_id=self._experiment_name,
             bindings_by_name=self._experiment.bindings,
@@ -3539,7 +3575,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             _trusted_trigger_name=self.context.trigger_name,
             _source_snapshot_evidence=self._session.source_snapshot_evidence,
             _source_identity_record=identity_record,
-            _source=self if population == "assigned" else self.triggered_source(),
+            _source=source,
             configs=self.context.configs,
         )
 
@@ -3578,23 +3614,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
         Fixed-horizon exports carry ``group_summary`` rows, or one metric-free
         ``design_summary`` envelope, stamped ``moments_format=12`` with the
-        originating source identity. Registered sequential exports carry one
-        typed ``sequential_checkpoint`` envelope stamped ``moments_format=10``
-        with the same identity. The earlier fixed-horizon formats 10 and 11
+        originating source identity. A metric with several scalar families or
+        a categorical-only ``cuped_multicovariate`` request is exported in
+        format 13 with method-scoped evidence envelopes; categorical evidence
+        is reduced to compact cells in the warehouse, or the export refuses
+        with ``query.cuped.general_qr_required``. Registered sequential
+        exports carry one typed ``sequential_checkpoint`` envelope stamped
+        ``moments_format=10`` with the same identity. The earlier
+        fixed-horizon formats 10 and 11
         and sequential format 9 remain readable. ``from_moments`` validates
         and strips these transport columns before constructing its immutable
         context. Formats 1-8 and missing or partial
         decision-plan payloads are refused; supported inference variants and
         view policies round-trip without fallback.
         """
-        from increment._analysis_config import validate_scalar_route
-
-        validate_scalar_route(
-            self.context.configs,
-            route="native.export_moments",
-            representation="export",
-            design=self.context.design,
-        )
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
@@ -3630,12 +3663,48 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             return export_source_moments(
                 self, path, observational_refusal=self._refuse_observational_quantile
             )
+        from increment._source_identity import source_identity
+        from increment.decision_wire import compiled_plan_to_json
+        from increment.query.cuped import categorical_request_cells
+        from increment.sources import stamp_fixed_rows, write_moments_table
+
+        identity_record = source_identity(self)
+        identity_payload = json.dumps(identity_record, sort_keys=True, separators=(",", ":"))
+        requests = portable_requests(
+            self.context.configs, design=self.context.design, categorical=True
+        )
+        if requests is not None:
+            with self.readout_snapshot(
+                metrics=tuple(metric for metric, _, _ in requests),
+                population="assigned",
+                configs=self.context.configs,
+            ) as pinned:
+                pinned_identity = source_identity(pinned)
+                pinned_identity_payload = json.dumps(
+                    pinned_identity, sort_keys=True, separators=(",", ":")
+                )
+                portable = portable_cuped_rows(
+                    cast(CUPEDEvidenceExportSource, pinned),
+                    requests,
+                    categorical_cells=lambda metric, method: categorical_request_cells(
+                        pinned, metric, method, population="assigned"
+                    ),
+                    identity=pinned_identity,
+                )
+                rows = stamp_fixed_rows(
+                    portable,
+                    version=CUPED_EVIDENCE_FORMAT,
+                    plan=compiled_plan_to_json(self._context.plan),
+                    identity=pinned_identity_payload,
+                    counts=json.dumps(pinned.unit_counts(), sort_keys=True, separators=(",", ":")),
+                    compliance=cast("DefinitionsMomentSource", pinned)._compliance_wire_payload(),
+                )
+                write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
+            return
         # Import lazily because parquet export requires the live ibis session.
         import pyarrow as pa
         import pyarrow.parquet as pq
 
-        from increment._source_identity import source_identity
-        from increment.decision_wire import compiled_plan_to_json
         from increment.sources import (
             DECISION_PLAN_FIELD,
             MOMENTS_FORMAT,
@@ -3665,7 +3734,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 type=pa.string(),
             ),
         )
-        identity_payload = json.dumps(source_identity(self), sort_keys=True, separators=(",", ":"))
         moments = moments.append_column(
             SOURCE_IDENTITY_FIELD,
             pa.array([identity_payload] * moments.num_rows, type=pa.string()),
@@ -4053,6 +4121,35 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return units.join(dimensions, keys="unit_id", join_type="left outer")
 
+    @contextmanager
+    def cuped_relation(self, metric: Metric, request):
+        """Keep the complete CUPED relation inside one pinned source execution."""
+        from increment.query._cuped_cells import component_domain, general_qr_required
+
+        configs = overlay_configs(
+            (metric,), self.context.configs, methods=[request.method], prior=None
+        )
+        with self._pinned_source_execution(metrics=(metric,), configs=configs) as pinned:
+            components = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            for measure in components:
+                source, fact = _find_fact_source(pinned._defs, measure.fact)
+                column = _resolve_value_column(source, fact)
+                datatype = (
+                    pinned._get_fact_table(source)[column].type() if column is not None else None
+                )
+                if component_domain(measure, datatype) != "continuous":
+                    general_qr_required(metric, "outcome_domain")
+            with pinned._unit_relation(
+                metric,
+                covariates=tuple(item.name for item in request.method.covariates or ()),
+                population=request.population,
+            ) as evidence:
+                yield evidence
+
     def unit_frame(
         self,
         metric: Metric,
@@ -4061,6 +4158,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"] = "assigned",
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> pa.Table:
+        with self._unit_relation(
+            metric, covariates=covariates, population=population, outcome_stage=outcome_stage
+        ) as (relation, execute):
+            return cast("pa.Table", execute(relation))
+
+    @contextmanager
+    def _unit_relation(
+        self,
+        metric: Metric,
+        *,
+        covariates: Sequence[str] = (),
+        population: Literal["assigned", "triggered"] = "assigned",
+        outcome_stage: Literal["transformed", "raw"] = "transformed",
+    ):
         if outcome_stage not in ("raw", "transformed"):
             from increment.winsor import winsor_refuse
 
@@ -4139,12 +4250,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             with self._pinned_source_execution(
                 metrics=(metric,), extra_sources=extra_sources
             ) as pinned:
-                return pinned.unit_frame(
+                with pinned._unit_relation(
                     metric,
                     covariates=covariates,
                     population=population,
                     outcome_stage=outcome_stage,
-                )
+                ) as evidence:
+                    yield evidence
+                return
         with self._reduction_batch():
             exposures = (
                 self._get_trigger_population(operation="unit_frame")
@@ -4202,20 +4315,27 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                         unit_id=properties["unit_id"], **{name: properties[property_name]}
                     )
                 totals = join_unit_covariates(totals, properties, name, categorical=categorical)
-            select_cols: dict[str, Any] = {
-                "unit_id": totals["unit_id"],
-                "group_id": totals["group_id"],
-                "y": totals["y_raw"]
-                if outcome_stage == "raw" and "y_raw" in totals.columns
-                else totals["y"],
-            }
-            if isinstance(metric, RatioMetric):
-                select_cols["y_den"] = totals["y_den"]
-            for name in (*covariate_sources, *covariate_measures):
-                select_cols[name] = totals[name]
-            if cluster is not None:
-                select_cols["cluster_id"] = totals[cluster].cast("string")
-            return cast("pa.Table", self._session.fetch_arrow(totals.select(**select_cols)))
+            relation = self._project_unit_relation(
+                totals, metric, (*covariate_sources, *covariate_measures), cluster, outcome_stage
+            )
+            yield relation, self._session.fetch_arrow
+
+    @staticmethod
+    def _project_unit_relation(totals, metric, covariates, cluster, outcome_stage):
+        select_cols = {
+            "unit_id": totals["unit_id"],
+            "group_id": totals["group_id"],
+            "y": totals["y_raw"]
+            if outcome_stage == "raw" and "y_raw" in totals.columns
+            else totals["y"],
+        }
+        if isinstance(metric, RatioMetric):
+            select_cols["y_den"] = totals["y_den"]
+        for name in covariates:
+            select_cols[name] = totals[name]
+        if cluster is not None:
+            select_cols["cluster_id"] = totals[cluster].cast("string")
+        return totals.select(**select_cols)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         if grain != "total":

@@ -25,6 +25,7 @@ from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
+    CUPEDEvidenceExportSource,
     invalid_compliance_state,
     raise_legacy_compliance_state,
     validate_compliance_design_match,
@@ -1083,7 +1084,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         return _rows(self._snapshot.execute(query))
 
-    def _unit_frame(
+    def _unit_frame(self, metric: Metric, **kwargs) -> IntoDataFrame:
+        return self._snapshot.execute(self._unit_relation(metric, **kwargs))
+
+    def _unit_relation(
         self,
         metric: Metric,
         *,
@@ -1093,8 +1097,8 @@ class ArtifactMomentSource(SequentialSourceMixin):
         outcome_stage: Literal["transformed", "raw"] = "transformed",
         trigger_inputs: _TriggeredReductionInputs | None = None,
         covariate_tables: Mapping[str, tuple[ir.Table, str, str | None]] | None = None,
-    ) -> IntoDataFrame:
-        """Resolve, project, and execute a unit frame on the pinned snapshot."""
+    ) -> ir.Table:
+        """Resolve and project a unit relation on the pinned snapshot."""
         if outcome_stage not in ("raw", "transformed"):
             from increment.winsor import winsor_refuse
 
@@ -1145,7 +1149,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             columns["cluster_id"] = totals[cluster].cast("string")
         if covariate_tables:
             columns.update({name: totals[name] for name in covariate_tables})
-        return self._snapshot.execute(totals.select(**columns))
+        return totals.select(**columns)
 
     def _observation_spine_edge(
         self,
@@ -1941,27 +1945,22 @@ class ArtifactMomentSource(SequentialSourceMixin):
             overlay_configs,
             validate_scalar_route,
         )
+        from increment._cuped_evidence import method_key
         from increment._source_types import ScalarMethodMomentSource
         from increment.estimation.engine import Method
 
         selected = tuple(selected or self.context.metrics)
         configs = overlay_configs(selected, self.context.configs, methods=methods, prior=prior)
-        validate_scalar_route(
-            configs,
-            route="artifact.moments",
-            representation="export",
-            design=self.context.design,
-        )
         rows = []
         for config in configs:
-            scalar = next(
-                (
-                    method
-                    for method in effective_methods(config, design=self.context.design)
-                    if method.variance_reduction == "cuped"
-                ),
-                None,
-            )
+            families = {
+                method_key(method): method
+                for method in effective_methods(config, design=self.context.design)
+                if method.variance_reduction == "cuped"
+            }
+            # Several scalar families cannot share one cube's x columns: the cube then
+            # carries outcome moments only, and each family is acquired by its own request.
+            scalar = next(iter(families.values())) if len(families) == 1 else None
             if isinstance(self, ScalarMethodMomentSource):
                 rows.extend(self.moments_for_method(config.metric, scalar or Method.unadjusted()))
             else:
@@ -2125,14 +2124,6 @@ class ArtifactMomentSource(SequentialSourceMixin):
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
     ) -> ArtifactMomentSource:
-        from increment._analysis_config import overlay_configs, validate_scalar_route
-
-        validate_scalar_route(
-            overlay_configs(metrics, self.context.configs, methods=methods, prior=prior),
-            route="artifact.moments_source",
-            representation="export",
-            design=self.context.design,
-        )
         if population != "assigned":
             _relation_refuse(
                 "artifact.evidence.unavailable", "artifact base does not carry triggered evidence"
@@ -2446,14 +2437,6 @@ class ArtifactMomentSource(SequentialSourceMixin):
         refuse_observational_quantile(metric, source=self)
 
     def export_moments(self, path: str | Path) -> None:
-        from increment._analysis_config import validate_scalar_route
-
-        validate_scalar_route(
-            self.context.configs,
-            route="artifact.export_moments",
-            representation="export",
-            design=self.context.design,
-        )
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
@@ -2486,6 +2469,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
             return export_source_moments(
                 self, path, observational_refusal=self._refuse_bound_observational_quantile
             )
+        from increment._cuped_evidence import portable_requests
+
+        requests = portable_requests(
+            self.context.configs, design=self.context.design, categorical=True
+        )
+        if requests is not None:
+            self._export_portable_moments(path, requests)
+            return
         import pyarrow as pa
         import pyarrow.parquet as pq
 
@@ -2524,11 +2515,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         from increment.sources import ASSIGNMENT_COUNTS_FIELD, COMPLIANCE_SUMMARY_FIELD
 
-        counts = None
-        if any(ext.kind == "assignment_counts" for ext in self._manifest.extensions):
-            counts = self.unit_counts()
-        elif compliance is not None:
-            counts = {arm.group_id: arm.n_units for arm in compliance.arms}
+        counts = self._export_counts(compliance)
         if counts is not None:
             counts_payload = json.dumps(counts, sort_keys=True, separators=(",", ":"))
             table = table.append_column(
@@ -2544,6 +2531,64 @@ class ArtifactMomentSource(SequentialSourceMixin):
             {b"increment.moments_format": str(MOMENTS_FORMAT).encode()}
         )
         pq.write_table(table, str(path))
+
+    def _export_counts(self, compliance: Any) -> dict[str, int] | None:
+        """Assignment counts carried by an export, when the artifact certifies them."""
+        if any(ext.kind == "assignment_counts" for ext in self._manifest.extensions):
+            return self.unit_counts()
+        if compliance is not None:
+            return {arm.group_id: arm.n_units for arm in compliance.arms}
+        return None
+
+    def _export_portable_moments(self, path: str | Path, requests: Any) -> None:
+        """Write format-13 outcome rows and method-scoped evidence envelopes."""
+        from increment._analysis_config import validate_scalar_route
+        from increment._cuped_evidence import CUPED_EVIDENCE_FORMAT, portable_cuped_rows
+        from increment._source_identity import source_identity
+        from increment._source_types import ScalarMethodMomentSource
+        from increment.decision_wire import compiled_plan_to_json
+        from increment.query.cuped import categorical_request_cells
+        from increment.sources import stamp_fixed_rows, write_moments_table
+
+        if not isinstance(self, ScalarMethodMomentSource):
+            # Without per-method moments, only the implicit scalar family is representable.
+            validate_scalar_route(
+                self.context.configs,
+                route="artifact.export_moments",
+                representation="implicit",
+                design=self.context.design,
+            )
+        population = self.population
+        identity = source_identity(self)
+        portable = portable_cuped_rows(
+            cast(CUPEDEvidenceExportSource, self),
+            requests,
+            categorical_cells=lambda metric, method: categorical_request_cells(
+                self, metric, method, population=population
+            ),
+            identity=identity,
+        )
+        compliance = (
+            self.compliance_summary(self.context.design)
+            if isinstance(self.context.design, Encouragement)
+            else None
+        )
+        counts = self._export_counts(compliance)
+        rows = stamp_fixed_rows(
+            portable,
+            version=CUPED_EVIDENCE_FORMAT,
+            plan=compiled_plan_to_json(self.context.plan),
+            identity=json.dumps(identity, sort_keys=True, separators=(",", ":")),
+            counts=None
+            if counts is None
+            else json.dumps(counts, sort_keys=True, separators=(",", ":")),
+            compliance=(
+                None
+                if compliance is None
+                else json.dumps(compliance.to_wire(), sort_keys=True, separators=(",", ":"))
+            ),
+        )
+        write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         refuse(

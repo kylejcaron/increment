@@ -487,7 +487,7 @@ def test_future_moments_format_is_refused():
 
     with pytest.raises(WireFormatError) as raised:
         MomentsSource(
-            [_format3_row(moments_format=13)],
+            [_format3_row(moments_format=14)],
             metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
             study_id="exp",
         )

@@ -302,6 +302,42 @@ def tests_warehouse_bigquery(session: nox.Session) -> None:
     )
 
 
+@nox.session(python="3.12")
+def tests_warehouse_compile_snowflake(session: nox.Session) -> None:
+    """Compile generated statements against Snowflake without executing them."""
+    _sync(session, "dev", "warehouse-backends", extras=("demo",))
+    session.run(
+        "pytest",
+        "integration/warehouse_execution/test_snowflake_compile.py",
+        "-q",
+        "-s",
+        "-m",
+        "warehouse_compile",
+        "-p",
+        "no:tach",
+        "--durations=0",
+        *session.posargs,
+    )
+
+
+@nox.session(python="3.12")
+def tests_warehouse_compile_bigquery(session: nox.Session) -> None:
+    """Compile generated statements against BigQuery without executing them."""
+    _sync(session, "dev", "warehouse-backends", extras=("demo",))
+    session.run(
+        "pytest",
+        "integration/warehouse_execution/test_bigquery_compile.py",
+        "-q",
+        "-s",
+        "-m",
+        "warehouse_compile",
+        "-p",
+        "no:tach",
+        "--durations=0",
+        *session.posargs,
+    )
+
+
 @nox.session(python=PYTHON_VERSIONS)
 def tests_floor(session: nox.Session) -> None:
     """Run the fast suite at dependency floors on every supported interpreter."""

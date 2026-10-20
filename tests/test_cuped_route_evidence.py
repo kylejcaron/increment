@@ -176,25 +176,54 @@ def _artifact_source(path, con):
 
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 @pytest.mark.parametrize("transport", ["export", "moments_source"])
-def test_single_cube_transports_refuse_before_reading(tmp_path, monkeypatch, ingress, transport):
+def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, ingress, transport):
+    import pyarrow.parquet as pq
+
+    from increment.estimation.results import LiftEstimate
     from tests.test_cuped_covariate_sources import _scalar_native_case
 
     path, con, methods, *_ = _scalar_native_case(tmp_path)
     source = (_native_source if ingress == "native" else _artifact_source)(path, con)
-    destination = tmp_path / "moments.json"
-    monkeypatch.setattr(
-        con,
-        "to_pyarrow",
-        lambda *args, **kwargs: pytest.fail("single-cube refusal must precede evidence access"),
-    )
     try:
-        with pytest.raises(CodedError) as raised:
-            if transport == "export":
-                source.export_moments(destination)
-            else:
+        expected = {row.method: row for row in run(source) if isinstance(row, LiftEstimate)}
+        monkeypatch.setattr(
+            type(source),
+            "unit_frame",
+            lambda *args, **kwargs: pytest.fail("scalar family evidence never reads unit frames"),
+        )
+        if transport == "export":
+            destination = tmp_path / "families.parquet"
+            source.export_moments(destination)
+            rows = pq.read_table(destination).to_pylist()
+            assert {row["moments_format"] for row in rows} == {13}
+            assert sum(row.get("record_kind") == "cuped_evidence" for row in rows) == 2
+            restored = Analysis.from_moments(
+                rows,
+                metrics=[
+                    MetricSpec(
+                        name="revenue", decision_method=methods[0], sensitivity_methods=methods[1:]
+                    )
+                ],
+                design=source.context.design,
+                experiment_id="cov_test",
+            )
+            try:
+                actual = restored.run()
+            finally:
+                restored.close()
+        else:
+            actual = run(
                 source.moments_source(metrics=source.context.metrics, methods=list(methods))
-        assert raised.value.code == "facade.analysis_config.multifamily_scalar_export"
-        assert not destination.exists()
+            )
+        replayed = {row.method: row for row in actual if isinstance(row, LiftEstimate)}
+        assert replayed.keys() == expected.keys() == {"scalar_a", "companion_b"}
+        for name, row in expected.items():
+            assert (replayed[name].role, replayed[name].method_role) == (row.role, row.method_role)
+            lift, reference = replayed[name].require_lift(), row.require_lift()
+            for field in ("value", "log_se", "lb", "ub"):
+                assert getattr(lift, field) == pytest.approx(
+                    getattr(reference, field), rel=1e-10, abs=1e-12
+                )
     finally:
         if ingress == "artifact":
             source.close()
@@ -440,3 +469,126 @@ def test_encouragement_breakout_scalar_failure_keeps_naive_sibling(panel):
     assert indexed["naive"].require_lift() == expected.require_lift()
     assert indexed["unavailable"].lift is None
     assert indexed["unavailable"].failure_code == "frame.validation.metric_covariate_column"
+
+
+def _scaled_records(*, outcome=1.0, denominator=1.0):
+    """Positive outcomes and denominators whose centered powers overflow at large scales.
+
+    Treatment outcomes are exactly 1.1 times their control counterparts over the same
+    denominators, so every adjustment over the balanced covariates estimates a
+    relative lift of 0.1.
+    """
+    import math
+
+    records = []
+    for a, arm in enumerate(("control", "treatment")):
+        for i in range(40):
+            records.append(
+                {
+                    "unit": f"{arm}-{i}",
+                    "arm": arm,
+                    "day": 1,
+                    "outcome": outcome * (2.0 + math.sin(0.7 * i)) * (1.1 if a else 1.0),
+                    "den": denominator * (2.0 + (1.0 if i % 2 else -1.0) * (1.0 + 0.01 * i)),
+                    "history": float(i % 7),
+                    "segment": "A" if i % 4 < 2 else "B",
+                }
+            )
+    return records
+
+
+_SCALED_METHODS = {
+    "unadjusted": Method.unadjusted(),
+    "scalar": Method.cuped(
+        name="scalar", covariates=CupedCovariate(name="history", kind="continuous")
+    ),
+    "mixed": Method.cuped_multicovariate(
+        name="mixed", covariates=CupedCovariate(name="segment", kind="categorical")
+    ),
+}
+
+
+def _scaled_run(records, method, *, ratio, ingress, tmp_path):
+    import pyarrow.parquet as pq
+
+    spec = MetricSpec(
+        name="outcome",
+        type="ratio" if ratio else "mean",
+        numerator="outcome" if ratio else None,
+        denominator="den" if ratio else None,
+        decision_method=_SCALED_METHODS[method],
+    )
+    common: dict[str, Any] = {"unit": "unit", "group": "arm", "control": "control"}
+    table = pa.Table.from_pylist(records)
+    if ingress == "panel":
+        with Analysis.from_unit_panel(table, date="day", metrics=[spec], **common) as analysis:
+            return analysis.run()
+    with Analysis.from_unit_summary(table, metrics=[spec], **common) as analysis:
+        if ingress == "summary":
+            return analysis.run()
+        path = tmp_path / "moments.parquet"
+        analysis.export(path)
+    rows = pq.read_table(path).to_pylist()
+    with Analysis.from_moments(rows, metrics=[spec], control="control") as replay:
+        return replay.run()
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
+@pytest.mark.parametrize("ratio", [False, True])
+def test_overflowing_scalar_moments_refuse_with_the_moment_code(tmp_path, ingress, ratio):
+    with pytest.raises(CodedError) as raised:
+        _scaled_run(
+            _scaled_records(outcome=1e155),
+            "scalar",
+            ratio=ratio,
+            ingress=ingress,
+            tmp_path=tmp_path,
+        )
+    assert raised.value.code == "estimation.armstats.arm_stats.group_summary_moment"
+    assert raised.value.context["name"] == "cy2"
+    assert raised.value.context["metric"] == "outcome"
+    assert raised.value.context["group_id"] in {"control", "treatment"}
+    assert raised.value.context["value"] == float("inf")
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
+@pytest.mark.parametrize("ratio", [False, True])
+def test_mixed_cuped_stays_available_when_ordinary_moments_overflow(tmp_path, ingress, ratio):
+    from increment.estimation.results import LiftEstimate
+
+    (row,) = (
+        row
+        for row in _scaled_run(
+            _scaled_records(outcome=1e155), "mixed", ratio=ratio, ingress=ingress, tmp_path=tmp_path
+        )
+        if isinstance(row, LiftEstimate)
+    )
+    assert row.require_lift().value == pytest.approx(0.1, rel=1e-9)
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel", "moments"])
+@pytest.mark.parametrize("method", ["unadjusted", "scalar", "mixed"])
+def test_overflowing_denominator_third_moment_keeps_ratio_inference(tmp_path, ingress, method):
+    import math
+
+    import pyarrow.parquet as pq
+
+    from increment.estimation.results import LiftEstimate
+
+    records = _scaled_records(outcome=10.0, denominator=1e105)
+    with Analysis.from_unit_summary(
+        pa.Table.from_pylist(records),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="outcome", type="ratio", numerator="outcome", denominator="den")],
+    ) as plain:
+        plain.export(tmp_path / "plain.parquet")
+    third = [row["cden3"] for row in pq.read_table(tmp_path / "plain.parquet").to_pylist()]
+    assert any(not math.isfinite(value) for value in third)
+    (row,) = (
+        row
+        for row in _scaled_run(records, method, ratio=True, ingress=ingress, tmp_path=tmp_path)
+        if isinstance(row, LiftEstimate)
+    )
+    assert row.require_lift().value == pytest.approx(0.1, rel=1e-9)

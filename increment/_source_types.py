@@ -607,6 +607,24 @@ class ScalarMethodMomentSource(Protocol):
 
 
 @runtime_checkable
+class CUPEDEvidenceExportSource(ScalarMethodMomentSource, Protocol):
+    """Public identity and moment API required to export portable CUPED evidence."""
+
+    @property
+    def population(self) -> Literal["assigned", "triggered"]: ...
+
+    @property
+    def trigger_name(self) -> str | None: ...
+
+
+@runtime_checkable
+class CategoricalEvidenceSource(Protocol):
+    """Sources retaining joint categorical evidence for multicovariate requests."""
+
+    def categorical_evidence(self, metric: Metric, method: Any) -> Any: ...
+
+
+@runtime_checkable
 class MomentSource(Protocol):
     """A source of aggregated moments, decoupled from how they were computed."""
 

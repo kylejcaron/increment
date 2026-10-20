@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
 from numbers import Integral, Real
@@ -17,6 +17,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from increment._canonical import canonical_json_bytes
+from increment._cuped_evidence import (
+    CUPED_EVIDENCE_FIELD,
+    CUPED_EVIDENCE_FORMAT,
+    CUPED_EVIDENCE_RECORD,
+    CupedEvidence,
+    categorical_request,
+    duplicate_evidence,
+    invalid_evidence,
+    local_categorical_cells,
+    method_key,
+    parse_cuped_evidence,
+    portable_cuped_rows,
+    portable_requests,
+    source_sha256,
+)
 from increment._immutable import _FrozenMapping
 from increment._labels import (
     MIXED_ASSIGNMENT_LABEL,
@@ -32,6 +47,7 @@ from increment._source_identity import (
 from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
+    CUPEDEvidenceExportSource,
     Grain,
     MomentSource,
     SourceContext,
@@ -323,15 +339,16 @@ _BREAKOUT_COMPLIANCE = _RefusalSpec(
 )
 
 
-# Fixed and sequential moments formats have separate version sequences. Fixed
-# format 12 carries the ratio denominator's third moment ``cden3``; format 11
-# added the source identity field. Every previously readable format stays
-# readable (formats 10 and 11 load with the denominator-skew check unavailable).
+# Fixed and sequential formats are separate sequences. Fixed format 12 carries
+# ``cden3`` and format 11 added source identity; format 13 adds method-scoped
+# CUPED evidence only when an export needs it. Formats 10 and 11 stay readable
+# with the denominator-skew check unavailable.
 MOMENTS_FORMAT = 12
 SEQUENTIAL_MOMENTS_FORMAT = 10
 _PREVIOUS_FIXED_MOMENTS_FORMATS = frozenset({10, 11})
 _PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT = 9
-_SUPPORTED_FIXED_MOMENTS_FORMATS = _PREVIOUS_FIXED_MOMENTS_FORMATS | {MOMENTS_FORMAT}
+_CURRENT_FIXED_MOMENTS_FORMATS = frozenset({MOMENTS_FORMAT, CUPED_EVIDENCE_FORMAT})
+_SUPPORTED_FIXED_MOMENTS_FORMATS = _PREVIOUS_FIXED_MOMENTS_FORMATS | _CURRENT_FIXED_MOMENTS_FORMATS
 _SUPPORTED_SEQUENTIAL_MOMENTS_FORMATS = frozenset(
     {_PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT, SEQUENTIAL_MOMENTS_FORMAT}
 )
@@ -522,7 +539,7 @@ def _refuse_unsupported_fixed_format(version: int) -> NoReturn:
     later one is future, anything else (a sequential-only stamp on a fixed
     row) is invalid; stamps below every supported format were already
     classified legacy."""
-    if version > MOMENTS_FORMAT:
+    if version > max(_SUPPORTED_FIXED_MOMENTS_FORMATS):
         _refuse(_MOMENTS_FORMAT_FUTURE, received=version, required=MOMENTS_FORMAT)
     _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
 
@@ -703,7 +720,7 @@ def _validate_moment_row(row: Mapping[str, object], version: int) -> None:
 def _validate_denominator_third_moment(row: Mapping[str, object], version: int) -> None:
     """A current-format denominator row carries ``cden3``; the previous format
     predates it and loads with the ratio coverage check unavailable."""
-    if version != MOMENTS_FORMAT or _is_null(row.get("ref_den")):
+    if version not in _CURRENT_FIXED_MOMENTS_FORMATS or _is_null(row.get("ref_den")):
         return
     if "cden3" not in row:
         _refuse(
@@ -777,12 +794,17 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
             required="a non-empty declared trigger name or null",
         )
     envelope_identity = None
+    evidence_payload = None
     kind = stripped.get("record_kind")
     sequential_checkpoint = kind == "sequential_checkpoint"
     if kind == "design_summary":
         if version not in _SUPPORTED_FIXED_MOMENTS_FORMATS:
             _refuse_unsupported_fixed_format(version)
-        if version == MOMENTS_FORMAT and require_source_identity and source_identity is None:
+        if (
+            version in _CURRENT_FIXED_MOMENTS_FORMATS
+            and require_source_identity
+            and source_identity is None
+        ):
             _refuse(
                 _MOMENTS_FORMAT_INVALID,
                 received=None,
@@ -803,6 +825,19 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
             )
         stripped.pop("record_kind")
         output_row = None
+    elif kind == CUPED_EVIDENCE_RECORD:
+        stripped.pop("record_kind")
+        evidence_payload = stripped.pop(CUPED_EVIDENCE_FIELD, None)
+        if version != CUPED_EVIDENCE_FORMAT:
+            invalid_evidence(
+                f"evidence envelopes require moments format {CUPED_EVIDENCE_FORMAT}; got {version}"
+            )
+        if require_source_identity and source_identity is None:
+            invalid_evidence("evidence envelopes require the cube's source identity")
+        carried = sorted(key for key, value in stripped.items() if not _is_null(value))
+        if carried:
+            invalid_evidence(f"envelope rows carry only transport fields; found {carried}")
+        output_row = None
     elif _strip_sequential_envelope(stripped, version=version, n_rows=row_count):
         if (
             version == SEQUENTIAL_MOMENTS_FORMAT
@@ -816,12 +851,18 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
             )
         output_row = None
     else:
-        if version == MOMENTS_FORMAT and require_source_identity and source_identity is None:
+        if (
+            version in _CURRENT_FIXED_MOMENTS_FORMATS
+            and require_source_identity
+            and source_identity is None
+        ):
             _refuse(
                 _MOMENTS_FORMAT_INVALID,
                 received=None,
                 required="source identity in current moments format",
             )
+        if not _is_null(stripped.pop(CUPED_EVIDENCE_FIELD, None)):
+            invalid_evidence("ordinary outcome rows cannot carry an evidence payload")
         output_row = stripped
     return (
         version,
@@ -832,6 +873,7 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
         output_row,
         source_identity,
         sequential_checkpoint,
+        evidence_payload,
     )
 
 
@@ -869,6 +911,7 @@ def _check_moments_format(
     str | None,
     str | None,
     dict[str, object] | None,
+    tuple[CupedEvidence, ...],
 ]:
     """Validate and strip moments format, plan, count, and source envelopes."""
     rows, boolean_count_aliases = _canonicalize_boolean_moment_group_ids(rows)
@@ -882,6 +925,7 @@ def _check_moments_format(
     trigger_rows = 0
     unplanned = 0
     planned_rows = 0
+    evidence_payloads: list[object] = []
     for row in rows:
         (
             version,
@@ -892,9 +936,12 @@ def _check_moments_format(
             output_row,
             source_identity,
             sequential_checkpoint,
+            evidence_payload,
         ) = _strip_moments_envelope_row(
             row, len(rows), require_source_identity=require_source_identity
         )
+        if evidence_payload is not None or row.get("record_kind") == CUPED_EVIDENCE_RECORD:
+            evidence_payloads.append(evidence_payload)
         versions.add(version)
         sequential_rows.add(sequential_checkpoint)
         if source_identity is not None:
@@ -925,20 +972,7 @@ def _check_moments_format(
             received="mixed fixed and sequential records",
             required="one moments source kind",
         )
-    if source_identities and len(source_identities) != len(rows):
-        _refuse(
-            _MOMENTS_FORMAT_INVALID,
-            received="source identity missing from some rows",
-            required="one consistent source identity across the moments cube",
-        )
-    if source_identities and any(
-        not source_identities_equal(item, source_identities[0]) for item in source_identities[1:]
-    ):
-        _refuse(
-            _MOMENTS_FORMAT_INVALID,
-            received="conflicting source identities",
-            required="one consistent source identity across the moments cube",
-        )
+    cube_identity = _cube_source_identity(source_identities, len(rows))
     version = next(iter(versions), MOMENTS_FORMAT)
     _parse_moments_format(version)
     sequential_checkpoint = next(iter(sequential_rows), False)
@@ -960,6 +994,7 @@ def _check_moments_format(
         if key in seen_keys:
             _refuse(_MOMENTS_DUPLICATE_ROWS, key=key)
         seen_keys.add(key)
+    evidence = _cube_evidence(evidence_payloads, version, cube_identity, out)
     assignment_counts = _validated_cube_assignment_counts(
         rows,
         boolean_count_aliases=boolean_count_aliases,
@@ -986,8 +1021,91 @@ def _check_moments_format(
         _cube_compliance_state(rows),
         envelope_identity,
         trigger_name,
-        source_identities[0] if source_identities else None,
+        cube_identity,
+        evidence,
     )
+
+
+def _cube_source_identity(
+    identities: Sequence[dict[str, object]], n_rows: int
+) -> dict[str, object] | None:
+    """The one source identity every row carries, or ``None`` when no row carries one."""
+    if identities and len(identities) != n_rows:
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="source identity missing from some rows",
+            required="one consistent source identity across the moments cube",
+        )
+    if identities and any(
+        not source_identities_equal(item, identities[0]) for item in identities[1:]
+    ):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="conflicting source identities",
+            required="one consistent source identity across the moments cube",
+        )
+    return identities[0] if identities else None
+
+
+def _cube_evidence(
+    payloads: Sequence[object],
+    version: int,
+    identity: Mapping[str, object] | None,
+    rows: Sequence[Mapping[str, object]],
+) -> tuple[CupedEvidence, ...]:
+    """Decode envelopes bound to this cube's source, metrics and population keys."""
+    if version == CUPED_EVIDENCE_FORMAT and not payloads:
+        invalid_evidence(
+            f"moments format {CUPED_EVIDENCE_FORMAT} requires CUPED evidence envelopes"
+        )
+    if not payloads:
+        return ()
+    if identity is None:
+        invalid_evidence("evidence envelopes require the cube's source identity")
+    digest = source_sha256(identity)
+    metrics = {str(row.get("metric")) for row in rows}
+    seen: set[tuple[str, str, str]] = set()
+    decoded: list[CupedEvidence] = []
+    for payload in payloads:
+        item = parse_cuped_evidence(payload)
+        if item.source_sha256 != digest:
+            invalid_evidence("envelope source digest differs from the cube's source identity")
+        if item.metric not in metrics:
+            invalid_evidence(f"envelope metric {item.metric!r} has no ordinary outcome rows")
+        key = (item.metric, item.population, item.method_key)
+        if key in seen:
+            duplicate_evidence(*key)
+        seen.add(key)
+        ordinary_rows = [row for row in rows if str(row.get("metric")) == item.metric]
+        ordinary_counts = {str(row.get("group_id")): row.get("n") for row in ordinary_rows}
+        if item.kind == "scalar_moments":
+            evidence_arms = {str(row.get("group_id")) for row in item.rows}
+            evidence_counts = {str(row.get("group_id")): row.get("n") for row in item.rows}
+        else:
+            if item.cells is None:
+                invalid_evidence("categorical envelope has no decoded cells")
+            evidence_arms = {str(arm) for arm in item.cells.arms}
+            evidence_counts = {
+                str(arm): sum(item.cells.counts[index]) for index, arm in enumerate(item.cells.arms)
+            }
+        if evidence_arms != set(ordinary_counts):
+            invalid_evidence(
+                f"envelope arm roster differs from ordinary rows for metric {item.metric!r}"
+            )
+        if evidence_counts != ordinary_counts:
+            invalid_evidence(
+                f"envelope arm counts differ from ordinary rows for metric {item.metric!r}"
+            )
+        _validate_moment_experiment_identity([*rows, *item.rows])
+        arms: set[str] = set()
+        for row in item.rows:
+            _validate_moment_row(row, version)
+            group = str(row.get("group_id"))
+            if group in arms:
+                _refuse(_MOMENTS_DUPLICATE_ROWS, key=(item.metric, group))
+            arms.add(group)
+        decoded.append(item)
+    return tuple(decoded)
 
 
 def _validate_cube_plan_payload(
@@ -1241,6 +1359,7 @@ def _aggregate_configs(
     design: Randomized | Encouragement | Observational | None,
     route: str,
     representation: Literal["moments", "breakout"],
+    portable_metrics: frozenset[str] = frozenset(),
 ) -> tuple[ResolvedMetricConfig, ...]:
     from increment._analysis_config import resolve_configs, validate_scalar_route
 
@@ -1250,8 +1369,74 @@ def _aggregate_configs(
         else resolve_configs(metrics, bindings=bindings, specs=None, methods=None, prior=None)
     )
     resolved = _configs_from_compiled_plan(metrics, plan, base)
-    validate_scalar_route(resolved, route=route, representation=representation, design=design)
+    # Metrics whose scalar families travel in method-scoped evidence are not
+    # limited to one family by the ordinary rows.
+    validate_scalar_route(
+        tuple(config for config in resolved if config.metric.name not in portable_metrics),
+        route=route,
+        representation=representation,
+        design=design,
+    )
     return resolved
+
+
+def _portable_population_and_trigger(
+    evidence, source: CUPEDEvidenceExportSource | None, trusted_trigger_name
+):
+    populations = {item.population for item in evidence}
+    triggers = {item.trigger_name for item in evidence}
+    if len(populations) > 1 or len(triggers) > 1:
+        invalid_evidence("CUPED envelopes disagree on population or trigger identity")
+    source_population = source.population if source is not None else None
+    source_trigger = source.trigger_name if source is not None else None
+    if (
+        populations
+        and source_population is not None
+        and next(iter(populations)) != source_population
+    ):
+        invalid_evidence("CUPED envelope population differs from its source")
+    trigger_name = next(iter(triggers), source_trigger)
+    if trigger_name is not None and source_trigger is not None and trigger_name != source_trigger:
+        invalid_evidence("CUPED envelope trigger identity differs from its source")
+    if trigger_name is not None and trusted_trigger_name is not None:
+        if trigger_name != trusted_trigger_name:
+            invalid_evidence("CUPED envelope trigger identity differs from its source")
+    population = next(iter(populations), source_population or "assigned")
+    if population == "triggered" and trigger_name is None:
+        invalid_evidence("triggered evidence requires a preserved trigger identity")
+    return population, trigger_name
+
+
+def _moments_trigger_name(
+    envelope_identity, study_id, embedded_trigger_name, trusted_trigger_name, evidence_trigger_name
+):
+    if envelope_identity is not None and envelope_identity != study_id:
+        invalid_compliance_state("design summary experiment identity differs from requested study")
+    if (
+        embedded_trigger_name is not None
+        and trusted_trigger_name is not None
+        and embedded_trigger_name != trusted_trigger_name
+    ):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received=embedded_trigger_name,
+            required="the trusted source trigger name",
+        )
+    if (
+        evidence_trigger_name is not None
+        and embedded_trigger_name is not None
+        and evidence_trigger_name != embedded_trigger_name
+    ):
+        invalid_evidence("CUPED envelope trigger identity differs from moments metadata")
+    return embedded_trigger_name or trusted_trigger_name or evidence_trigger_name
+
+
+def _moments_source_identity(source_record, requested_record, version, study_id):
+    if source_record is not None:
+        return source_record
+    if requested_record is not None:
+        return requested_record
+    return _legacy_moments_source_identity(version, study_id)
 
 
 class MomentsSource(SequentialSourceMixin):
@@ -1318,36 +1503,29 @@ class MomentsSource(SequentialSourceMixin):
             envelope_identity,
             embedded_trigger_name,
             source_identity_record,
+            evidence,
         ) = _check_moments_format(
             rows,
             require_plan=plan is None,
             require_source_identity=_source_identity_record is None,
         )
-        self._source_identity_record = (
-            source_identity_record
-            if source_identity_record is not None
-            else _source_identity_record
+        self._population, self._trigger_name = _portable_population_and_trigger(
+            evidence,
+            None if _source is None else cast(CUPEDEvidenceExportSource, _source),
+            _trusted_trigger_name,
         )
-        self._source_identity_record = (
-            self._source_identity_record
-            if self._source_identity_record is not None
-            else _legacy_moments_source_identity(_version, study_id)
+        evidence_trigger_name = self._trigger_name
+        self._bind_evidence(evidence)
+        self._source_identity_record = _moments_source_identity(
+            source_identity_record, _source_identity_record, _version, study_id
         )
-        if envelope_identity is not None and envelope_identity != study_id:
-            invalid_compliance_state(
-                "design summary experiment identity differs from requested study"
-            )
-        if (
-            embedded_trigger_name is not None
-            and _trusted_trigger_name is not None
-            and embedded_trigger_name != _trusted_trigger_name
-        ):
-            _refuse(
-                _MOMENTS_FORMAT_INVALID,
-                received=embedded_trigger_name,
-                required="the trusted source trigger name",
-            )
-        trigger_name = embedded_trigger_name or _trusted_trigger_name
+        trigger_name = _moments_trigger_name(
+            envelope_identity,
+            study_id,
+            embedded_trigger_name,
+            _trusted_trigger_name,
+            evidence_trigger_name,
+        )
         self._rows = stripped
         self._assignment_counts = assignment_counts
         self._compliance = _validated_compliance_payload(
@@ -1431,7 +1609,9 @@ class MomentsSource(SequentialSourceMixin):
             route="MomentsSource",
             representation="moments",
             design=design,
+            portable_metrics=self._scalar_evidence_metrics,
         )
+        self._require_method_evidence(base_configs, design)
         from increment._analysis_config import (
             effective_methods,
             resolve_configs,
@@ -1457,7 +1637,7 @@ class MomentsSource(SequentialSourceMixin):
             )
         named_metrics = {
             str(row["metric"]) for row in self._rows if row.get("covariate_name") is not None
-        }
+        } | self._scalar_evidence_metrics
         self._scalar_anonymous_metrics = frozenset(
             metric.name for metric in metric_catalog if metric.name not in named_metrics
         )
@@ -1483,6 +1663,49 @@ class MomentsSource(SequentialSourceMixin):
                 anonymous_metrics=self.scalar_anonymous_metrics,
             )
         self._restore_checkpoint(rows, stored_plan)
+
+    def _bind_evidence(self, evidence: tuple[CupedEvidence, ...]) -> None:
+        """Index method-scoped evidence; every envelope belongs to this cube's population."""
+        if any(item.population != self.population for item in evidence):
+            invalid_evidence(f"evidence population differs from this {self.population} cube")
+        self._evidence = {(item.metric, item.method_key): item for item in evidence}
+        self._scalar_evidence_metrics = frozenset(
+            item.metric for item in evidence if item.kind == "scalar_moments"
+        )
+
+    def _require_method_evidence(
+        self,
+        configs: Sequence[ResolvedMetricConfig],
+        design: Randomized | Encouragement | Observational | None,
+    ) -> None:
+        """Refuse an effective request whose evidence this cube does not carry."""
+        from increment._analysis_config import (
+            effective_methods,
+            refuse_cuped_linear_moments,
+            refuse_missing_scalar_evidence,
+        )
+
+        for config in configs:
+            name = config.metric.name
+            for method in effective_methods(config, design=design):
+                evidence = self._evidence.get((name, method_key(method)))
+                if method.variance_reduction == "cuped_multicovariate":
+                    # An in-process cube may still delegate unit frames to its source.
+                    if self._source is None and (
+                        evidence is None or not categorical_request(method)
+                    ):
+                        refuse_cuped_linear_moments(name)
+                elif (
+                    method.variance_reduction == "cuped"
+                    and name in self._scalar_evidence_metrics
+                    and evidence is None
+                ):
+                    refuse_missing_scalar_evidence("MomentsSource", method.name)
+
+    def categorical_evidence(self, metric, method) -> CupedEvidence | None:
+        """The joint categorical evidence retained for this request, if any."""
+        evidence = self._evidence.get((metric.name, method_key(method)))
+        return evidence if evidence is not None and evidence.kind == "categorical_cells" else None
 
     def _restore_checkpoint(
         self,
@@ -1530,7 +1753,11 @@ class MomentsSource(SequentialSourceMixin):
 
     @property
     def population(self) -> Literal["assigned", "triggered"]:
-        return getattr(self._source, "population", "assigned")
+        return self._population
+
+    @property
+    def trigger_name(self) -> str | None:
+        return self.context.trigger_name
 
     @contextmanager
     def readout_snapshot(
@@ -1566,8 +1793,8 @@ class MomentsSource(SequentialSourceMixin):
 
     @property
     def scalar_moments_only(self) -> bool:
-        """The aggregate cube retains one scalar input per metric."""
-        return True
+        """Ordinary rows alone carry the scalar input unless method-scoped evidence is present."""
+        return not self._scalar_evidence_metrics
 
     @property
     def scalar_recipe_fixed(self) -> bool:
@@ -1593,7 +1820,16 @@ class MomentsSource(SequentialSourceMixin):
         *,
         by: Sequence[str] = (),
     ) -> list[dict[str, object]]:
-        """Select a named scalar family, preserving anonymous legacy x rows."""
+        """Select a scalar family by its method evidence, or a named legacy x family."""
+        if method.variance_reduction == "cuped" and metric.name in self._scalar_evidence_metrics:
+            if by:
+                _refuse(_MOMENTS_BREAKOUT)
+            evidence = self._evidence.get((metric.name, method_key(method)))
+            if evidence is None:
+                from increment._analysis_config import refuse_missing_scalar_evidence
+
+                refuse_missing_scalar_evidence("MomentsSource", method.name)
+            return evidence.scalar_rows()
         rows = self.moments(metric, by=by)
         covariates = method.covariates or ()
         if not covariates:
@@ -1747,14 +1983,6 @@ def export_source_moments(
     from increment.semantics.design import Encouragement
 
     context = source.context
-    from increment._analysis_config import validate_scalar_route
-
-    validate_scalar_route(
-        context.configs,
-        route=f"{type(source).__name__}.export_moments",
-        representation="export",
-        design=context.design,
-    )
     identity_payload = json.dumps(source_identity(source), sort_keys=True, separators=(",", ":"))
     plan_payload = compiled_plan_to_json(
         context.plan,
@@ -1817,37 +2045,118 @@ def export_source_moments(
         if compliance is not None
         else None
     )
-    rows = []
-    for metric in context.metrics:
-        for raw in source.moments(metric):
-            row = dict(cast("Mapping[str, object]", raw))
-            _validate_moment_counts(row)
-            row.update(
-                {
-                    "moments_format": MOMENTS_FORMAT,
-                    DECISION_PLAN_FIELD: plan,
-                    ASSIGNMENT_COUNTS_FIELD: counts,
-                    SOURCE_IDENTITY_FIELD: identity_payload,
-                }
-            )
-            if payload is not None:
-                row[COMPLIANCE_SUMMARY_FIELD] = payload
-            if context.trigger_name is not None:
-                row[TRIGGER_NAME_FIELD] = context.trigger_name
-            rows.append(row)
-    if not rows and not context.metrics:
+    requests = portable_requests(context.configs, design=context.design, categorical=True)
+    portable = (
+        None
+        if requests is None
+        else portable_cuped_rows(
+            cast(CUPEDEvidenceExportSource, source),
+            requests,
+            categorical_cells=_categorical_cells_for(source),
+        )
+    )
+    version = MOMENTS_FORMAT if portable is None else CUPED_EVIDENCE_FORMAT
+    raw_rows = (
+        portable
+        if portable is not None
+        else [
+            dict(cast("Mapping[str, object]", raw))
+            for metric in context.metrics
+            for raw in source.moments(metric)
+        ]
+    )
+    if not raw_rows and not context.metrics:
         rows = [
             _design_summary_row(
                 context.study_id, plan, counts, payload, context.trigger_name, identity_payload
             )
         ]
-    table = pa.Table.from_pylist(rows).replace_schema_metadata(
-        {b"increment.moments_format": str(MOMENTS_FORMAT).encode()}
-    )
+    else:
+        rows = stamp_fixed_rows(
+            raw_rows,
+            version=version,
+            plan=plan,
+            identity=identity_payload,
+            counts=counts,
+            compliance=payload,
+            trigger_name=context.trigger_name,
+        )
+    write_moments_table(path, rows, version)
+
+
+def stamp_fixed_rows(
+    raw_rows: Iterable[Mapping[str, object]],
+    *,
+    version: int,
+    identity: str,
+    counts: str | None,
+    plan: str | None = None,
+    compliance: str | None = None,
+    trigger_name: str | None = None,
+) -> list[dict[str, object]]:
+    """Fixed-horizon transport fields on every outcome and envelope row."""
+    stamps: dict[str, object] = {"moments_format": version}
+    if plan is not None:
+        stamps[DECISION_PLAN_FIELD] = plan
+    if counts is not None:
+        stamps[ASSIGNMENT_COUNTS_FIELD] = counts
+    stamps[SOURCE_IDENTITY_FIELD] = identity
+    if compliance is not None:
+        stamps[COMPLIANCE_SUMMARY_FIELD] = compliance
+    if trigger_name is not None:
+        stamps[TRIGGER_NAME_FIELD] = trigger_name
+    rows = []
+    for raw in raw_rows:
+        row = dict(raw)
+        if row.get("record_kind") != CUPED_EVIDENCE_RECORD:
+            _validate_moment_counts(row)
+        row.update(stamps)
+        rows.append(row)
+    return rows
+
+
+def write_moments_table(
+    path: str | Path, rows: Sequence[Mapping[str, object]], version: int
+) -> None:
+    """Write rows over the union of their columns; envelope and outcome rows differ."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    table = pa.Table.from_pylist([{key: row.get(key) for key in columns} for row in rows])
+    table = table.replace_schema_metadata({b"increment.moments_format": str(version).encode()})
     if "successes" in table.column_names:
         index = table.schema.get_field_index("successes")
         table = table.set_column(index, "successes", table["successes"].cast(pa.int64()))
     pq.write_table(table, str(path))
+
+
+def cuped_evidence_items(
+    rows: Sequence[Mapping[str, object]], *, require_plan: bool
+) -> dict[str, dict[str, CupedEvidence]]:
+    """Validated evidence by metric and method, retaining decoded cells for admission checks."""
+    evidence = _check_moments_format(rows, require_plan=require_plan)[-1]
+    items: dict[str, dict[str, CupedEvidence]] = {}
+    for item in evidence:
+        items.setdefault(item.metric, {})[item.method_key] = item
+    return items
+
+
+def _categorical_cells_for(source: Any) -> Callable[[Any, Any], Any]:
+    """Retained portable evidence for a reloaded cube; otherwise a local reduction."""
+
+    def cells(metric: Any, method: Any) -> Any:
+        retained = getattr(source, "categorical_evidence", None)
+        if retained is None:
+            return local_categorical_cells(source, metric, method)
+        evidence = retained(metric, method)
+        if evidence is None or evidence.cells is None:
+            from increment._analysis_config import refuse_cuped_linear_moments
+
+            refuse_cuped_linear_moments(metric.name)
+        return evidence.cells
+
+    return cells
 
 
 class BreakoutMomentsSource(SequentialSourceMixin):

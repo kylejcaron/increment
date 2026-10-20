@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING, Any, cast
 from increment._analysis_config import overlay_configs, validate_scalar_route
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._source_operations import ReadoutSnapshotOperation
-from increment._source_types import ScalarBreakoutMomentSource, ScalarMethodMomentSource
+from increment._source_types import (
+    CategoricalEvidenceSource,
+    ScalarBreakoutMomentSource,
+    ScalarMethodMomentSource,
+)
 from increment.errors import CodedError, refuse
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
@@ -38,6 +42,14 @@ class MetricRows:
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
     method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
+    categorical_evidence: tuple[tuple[str, Any], ...] = ()
+
+    def categorical_for(self, method: Any) -> Any | None:
+        """Retained joint categorical evidence for one multicovariate method, if any."""
+        return next(
+            (evidence for name, evidence in self.categorical_evidence if name == method.name),
+            None,
+        )
 
     def rows_for_method(
         self,
@@ -101,8 +113,11 @@ def _rows_digest_and_arms(rows):
 def _rows_raw_digest_and_arms(rows):
     from increment.estimation.readout_types import StreamingDigest
 
+    # Moments may legitimately overflow (a third moment is then a diagnostic gap,
+    # and estimators that read an overflowed second moment refuse it), so
+    # non-finite values are digested with the frame-float encoding.
     digest = StreamingDigest()
-    digest.update_rows(rows)
+    digest.update_rows(rows, normalize_frame_floats=True)
     arms = frozenset(str(row["group_id"]) for row in rows if row.get("group_id") is not None)
     return arms, digest.hexdigest(), digest.count
 
@@ -339,6 +354,32 @@ def _load_metric_rows(
             method_refusals=tuple(method_refusals),
         )
 
+    retained_cells = _retained_categorical_evidence(src, metric, methods)
+    if retained_cells is not None:
+        retained, cell_arms, components = retained_cells
+        if decision_is_linear:
+            decision_components += tuple(
+                item for item in components if item[0] == f"categorical_cells:{methods[0].name}"
+            )
+        return MetricRows(
+            rows=tuple(rows),
+            unit_frame=None,
+            observed_arms=observed | cell_arms,
+            n_treatment_arms=len((observed | cell_arms) - {control_group}),
+            evidence_kind="mixed_rows",
+            evidence_sha256="",
+            evidence_count=moments_count + len(components),
+            decision_evidence_components=decision_components,
+            evidence_components=(
+                ("moments_rows", moments_sha256, moments_count),
+                *components,
+                *method_components,
+            ),
+            method_rows=method_rows,
+            method_refusals=tuple(method_refusals),
+            categorical_evidence=retained,
+        )
+
     import narwhals as nw
 
     from increment._source_types import unit_frame_covariate_columns
@@ -368,6 +409,34 @@ def _load_metric_rows(
         method_refusals=tuple(method_refusals),
         covariate_columns=tuple(acquired_columns.items()),
     )
+
+
+def _retained_categorical_evidence(
+    src: MomentSource, metric: Metric, methods: Sequence[Any]
+) -> tuple[tuple[tuple[str, Any], ...], frozenset[str], tuple[tuple[str, str, int], ...]] | None:
+    """Retained joint cells for every mixed request, with their arms and aggregate provenance.
+
+    Portable joint cells are explicit aggregate provenance, not unit rows.
+    """
+    if not isinstance(src, CategoricalEvidenceSource):
+        return None
+    retained = tuple(
+        (method.name, src.categorical_evidence(metric, method))
+        for method in methods
+        if method.variance_reduction == "cuped_multicovariate"
+    )
+    if not retained or any(evidence is None for _, evidence in retained):
+        return None
+    cell_arms = frozenset(
+        str(arm)
+        for _, evidence in retained
+        for arm, counts in zip(evidence.cells.arms, evidence.cells.counts, strict=True)
+        if sum(counts)
+    )
+    components = tuple(
+        (f"categorical_cells:{name}", evidence.payload_sha256, 1) for name, evidence in retained
+    )
+    return retained, cell_arms, components
 
 
 def _load_breakout_metric_rows(src, metric, methods, *, dimension, control_group) -> MetricRows:

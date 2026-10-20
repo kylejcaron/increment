@@ -75,6 +75,11 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="incompatible CUPED compact evidence: reason={reason!r}",
         ),
+        "estimation.cuped_linear.merge_precision": RefusalSpec(
+            "estimation.cuped_linear.merge_precision",
+            InvalidRequestError,
+            template="merged categorical evidence cannot preserve the {component} mean of arm {arm!r}: its error bound {bound!r} exceeds 2**-36 of the mean {mean!r}; {route}",
+        ),
     },
 )
 
@@ -151,6 +156,15 @@ def _arm_mean(values: np.ndarray) -> float:
         items = tuple(float(value) for value in values)
         large, shift, small = _partial_sums(items)
         return math.ldexp(large / len(items), shift) + small / len(items)
+
+
+def _arm_offset(values: np.ndarray) -> tuple[float, np.ndarray]:
+    """Upper-median offset and centered values; zero offset when centering would overflow."""
+    offset = float(np.partition(values, len(values) // 2)[len(values) // 2])
+    centered = values - offset
+    if not np.isfinite(centered).all():
+        return 0.0, values
+    return offset, centered
 
 
 _ScaledMean = tuple[float, float, int]

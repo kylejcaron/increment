@@ -152,6 +152,7 @@ markers = [
     "warehouse_postgres: executes real query builders against a live PostgreSQL connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_postgres nox session, never collected from testpaths",
     "warehouse_snowflake: executes real query builders against a live Snowflake connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_snowflake nox session, never collected from testpaths",
     "warehouse_bigquery: executes real query builders against a live BigQuery connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_bigquery nox session, never collected from testpaths",
+    "warehouse_compile: compiles generated warehouse SQL without executing queries; selected only by the tests_warehouse_compile_snowflake and tests_warehouse_compile_bigquery nox sessions",
 ]
 timeout = 300
 junit_family = "legacy"

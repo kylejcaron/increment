@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
@@ -299,6 +299,14 @@ class SqlPanelSource:
     @property
     def context(self) -> SourceContext:
         return self._context
+
+    @property
+    def population(self) -> Literal["assigned"]:
+        return "assigned"
+
+    @property
+    def trigger_name(self) -> str | None:
+        return self.context.trigger_name
 
     @classmethod
     def from_frame_via_memtable(
@@ -1376,7 +1384,51 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         ):
             refuse_observational_quantile(metric)
 
+    @contextmanager
+    def cuped_relation(self, metric: Metric, request):
+        """Expose only a verified warehouse relation to compact CUPED reduction."""
+        from increment.query._cuped_cells import general_qr_required
+
+        binding = next(
+            (item for item in self._manifest.metric_measures if item.metric_name == metric.name),
+            None,
+        )
+        if binding is None:
+            general_qr_required(metric, "outcome_domain")
+        keys = (
+            (binding.numerator_measure_key, binding.denominator_measure_key)
+            if binding.kind == "ratio"
+            else (binding.measure_key,)
+        )
+        domains = {item.measure_key: item.outcome_domain for item in self._manifest.measures}
+        if any(domains.get(key, "unknown") != "continuous" for key in keys):
+            general_qr_required(metric, "outcome_domain")
+        if request.population != self._population:
+            if request.population == "triggered" and self._population == "assigned":
+                triggered = cast("_ArtifactFacadeSource", self.triggered_source())
+                with triggered.cuped_relation(metric, request) as evidence:
+                    yield evidence
+                return
+            general_qr_required(metric, "source_population")
+        relation = self._unit_relation_with_covariates(
+            metric, covariates=tuple(item.name for item in request.method.covariates or ())
+        )
+        yield relation, self._snapshot.execute
+
     def unit_frame(
+        self,
+        metric: Metric,
+        *,
+        covariates: Sequence[str] = (),
+        outcome_stage: Literal["transformed", "raw"] = "transformed",
+    ) -> Any:
+        return self._snapshot.execute(
+            self._unit_relation_with_covariates(
+                metric, covariates=covariates, outcome_stage=outcome_stage
+            )
+        )
+
+    def _unit_relation_with_covariates(
         self,
         metric: Metric,
         *,
@@ -1401,7 +1453,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
             covariate_tables[name] = (relation, field, available)
         if self._population_units is None:
-            return self._unit_frame(
+            return self._unit_relation(
                 metric,
                 cluster=cluster,
                 resolve_cluster=self._cluster_table,
@@ -1409,7 +1461,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 outcome_stage=outcome_stage,
                 covariate_tables=covariate_tables,
             )
-        return self._unit_frame(
+        return self._unit_relation(
             metric,
             cluster=cluster,
             resolve_cluster=self._cluster_table,
@@ -1929,14 +1981,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
     ) -> _ArtifactFacadeSource:
-        from increment._analysis_config import overlay_configs, validate_scalar_route
-
-        validate_scalar_route(
-            overlay_configs(metrics, self.context.configs, methods=methods, prior=prior),
-            route="artifact.moments_source",
-            representation="export",
-            design=self.context.design,
-        )
         if population == "triggered":
             return cast("_ArtifactFacadeSource", self.triggered_source())
         return self

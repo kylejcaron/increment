@@ -305,11 +305,12 @@ and context are retained.
 A metric absent from a segment's queried evidence remains outside that segment's
 BH family and has no discovery verdict.
 
-Moment exports and direct `moments_source` transports retain one scalar family
-per metric. Native and artifact routes reject several distinct scalar families
-with `facade.analysis_config.multifamily_scalar_export` before reading or
-writing evidence. Provenance-free legacy `from_moments` inputs still accept a
-single scalar request, but several distinct requests refuse with
+Moment exports and direct `moments_source` transports carry one scalar family
+per metric in format 12. A metric whose requests resolve to several distinct
+scalar families travels in format 13 instead, with one method-scoped evidence
+envelope per family; see [Portable CUPED evidence](#portable-cuped-evidence).
+Provenance-free legacy `from_moments` inputs still accept a single scalar
+request, but several distinct requests refuse with
 `facade.analysis_config.cuped_scalar_moments`; a recorded covariate-name
 mismatch is never treated as anonymous evidence.
 When a portable cube records its scalar recipe, the missing-value preparation
@@ -978,6 +979,15 @@ Breakout cells fit separately and may therefore be unavailable even when the
 whole-population fit is supported. Assigned and triggered results retain
 their own populations; aggregate and per-unit evidence share one source
 snapshot, including the resolved fact source of each breakout.
+Native and artifact readouts of a mixed method still fit from per-unit
+warehouse evidence; their moment exports never transfer units.
+The mixed fit centers and scales each arm itself, so it stays available when
+an arm's ordinary centered second moments overflow the float range (centered
+outcomes near $10^{154}$ or larger).
+Unadjusted and scalar CUPED rows read those moments and refuse with
+`estimation.armstats.arm_stats.group_summary_moment`, naming the metric, arm,
+and moment; rescale the values to use them. An overflowed denominator third
+moment only makes the denominator-skew check unavailable.
 
 Relative and absolute projections have separate availability. A usable
 relative estimate survives an absolute-projection refusal, whose exact
@@ -990,6 +1000,143 @@ usable absolute projection as failed. `estimates_to_readout` forwards all
 four projection fields alongside the usable estimate.
 Declared priors do not change sampling inference; a posterior unsupported
 by the retained HC2/BM statistics is explicitly unavailable.
+
+### Joint categorical evidence
+
+The estimation layer can also fit categorical-only designs from joint
+arm-by-pattern counts and centered outcome moments. Separate marginal
+category tables are not sufficient: the joint pattern determines the
+design row, leverage, and fitted-slope uncertainty. Mean evidence retains
+one outcome component; ratio evidence retains both components and their
+within-cell cross scatter.
+Component first sums and scatters are normalized by exact powers of two chosen
+separately for each arm and component; the exponents travel with the evidence.
+Projected-score arithmetic applies these scales without reconstructing raw
+second moments, so arms whose units differ by many orders of magnitude keep
+their uncertainty and denominator support.
+Each arm is centered exactly as the per-unit fit centers it, on its upper
+median (or zero when that subtraction would overflow), so cancelling extreme
+outcomes round the same way. Cell sums of these centered values are then
+rebased once onto the arm-mean reference the evidence carries. Local
+reductions sum exactly. Warehouse reductions split each centered value
+exactly into two grid-rounded parts, whose sums are exact in any order, and
+a final remainder; values far below cancelling extremes survive in those
+remainders.
+
+For a cell with multiplicity $m_g$, factor rows
+$\sqrt{m_g w_a}\,z_g$, where $w_a=1/[n_a(n_a-1)]$. Dividing its compressed
+QR row by $\sqrt{m_g}$ recovers the original-unit row $q_g$ and leverage
+$h_g=q_g^\top q_g$. Treating a cell as one observation would instead
+change the estimator's uncertainty and degrees of freedom.
+
+If a projected score in the cell is $A_g(Y_i-\bar Y_g)+b_g$, its summed
+outer product is
+$A_g C_g A_g^\top + m_g b_g b_g^\top$, with $C_g$ the centered outcome
+cross scatter. This preserves the anchor contribution and the joint
+numerator/denominator covariance. Bell–McCaffrey reductions likewise
+weight each original-unit cell contribution by $m_g$ before the shared
+finalizer forms its component-stacked trace ratio.
+
+These cells are parameter-independent and merge only when evidence identity,
+preparation, arm ordering, and covariate identities agree. Null categories
+remain distinct from string labels. The usual level-support, rank, leverage,
+and denominator-precision rules still apply to the combined observations;
+individual partitions need not satisfy fitting support. This estimation
+representation does not by itself establish that a warehouse cell is safe to
+transfer.
+
+Evidence carries no sum of absolute component values. For the merge precision
+guard, each component's sum of absolute values is bounded by
+$\sqrt{n\sum_i y_i^2}$, where the squared sum is reconstructed from the
+retained reference, centered first sums, and within-cell scatter. A rigorous
+rounding allowance is applied to that reconstruction. If the resulting bound
+shows that rounding could materially alter a nearly cancelled merged mean,
+the merge refuses with `estimation.cuped_linear.merge_precision`, naming the
+arm and component. Fit the unpartitioned cells, or explicitly supplied
+per-unit data, instead.
+
+The warehouse categorical producer checks eligibility inside the warehouse
+before transferring outcome cells: no more than 4096 arm-by-joint-pattern
+cells, an encoded upper bound of 8 MiB, and at least eightfold compression
+from the original unit count. Every retained outcome component needs at
+least three finite contributors and demonstrably positive within-cell
+scatter in every cell. Known discrete or bounded outcome domains require
+general warehouse QR instead. So does a cell or arm whose remainders could
+change its outcome sum by more than $2^{-36}$ of the arm or cell mean, which
+arises only when centered values cancel across several widely separated
+magnitudes; the refusal reason `component_range` names the arm and the
+outcome component.
+The discrete-domain check uses original source-column metadata, retained in
+artifact measure manifests, rather than the prepared floating-point outcomes.
+An older artifact without that metadata cannot establish categorical eligibility.
+Transferred centering references are arm-level component means, not selected
+unit outcomes; any unit-valued numerical base remains inside the warehouse.
+
+Compression alone is not a disclosure guard. Two binary covariates with
+per-arm pattern counts `(999, 1, 1, 999)` reduce 4000 units to eight cells,
+yet four cells would directly reveal singleton outcomes. Two-contributor
+first/second moments reconstruct an unordered pair; zero scatter reveals
+the common component value even with many contributors. These cases do
+not transfer outcome cells. Until general warehouse QR is available,
+`query.cuped.general_qr_required` identifies the reason and the alternative
+of explicitly supplying local per-unit data through `from_unit_summary`
+or `from_unit_panel`. The producer never downloads units automatically,
+merges or suppresses categories, or changes the inferential procedure.
+The guards do not provide differential privacy or protection against
+arbitrary side information.
+
+### Portable CUPED evidence
+
+A moment export stays in format 12 when every metric has at most one scalar
+family and no categorical-only `cuped_multicovariate` request. Otherwise it is
+format 13: ordinary rows carry outcome moments only, unique per metric and
+arm, and each distinct request has one `record_kind="cuped_evidence"` row whose
+`cuped_evidence` column holds a canonical JSON payload:
+
+```text
+{"version": 1, "kind": "scalar_moments" | "categorical_cells", "metric": ...,
+ "method": <declaration without its label>, "population": "assigned" | "triggered",
+ "breakout": null, "source_sha256": ..., "evidence": {...}}
+```
+
+`scalar_moments` evidence holds the family's per-arm moment rows;
+`categorical_cells` evidence holds the joint cells above. Requests that differ
+only by label share one envelope, and `source_sha256` binds each envelope to
+the cube's source identity. Before estimation, `from_moments` refuses an
+unknown payload version or kind with `moments.cuped_evidence.unsupported`,
+repeated envelopes with `moments.cuped_evidence.duplicate`, and unknown or
+missing fields, noncanonical bytes, conflicting or invalid evidence, a
+mismatched source, metric, population or breakout, envelopes outside format
+13, or format 13 without envelopes with `moments.cuped_evidence.invalid`. A
+request the cube carries no evidence for refuses with
+`readout.scalar_method_evidence` for a scalar family and
+`facade.analysis_config.cuped_linear_moments` for a mixed method.
+
+Replay selects scalar evidence by request identity and fits categorical
+evidence with the unit route's estimator, ratio arm withholding, and
+projections. Categorical replay identifies its aggregate evidence, so its
+snapshot differs from the unit-source run; scalar-only replay keeps the
+unit-source snapshot. Categorical evidence identity is the metric, population,
+breakout, and request, independent of the producing source, so partitions of
+one request merge; scalar envelopes merge as centered moments.
+
+Native and artifact exports reduce categorical requests in the warehouse
+under the guards above or refuse with `query.cuped.general_qr_required`.
+Mixed methods with continuous covariates have no compact evidence and are
+omitted from every export, as in format 12. A native `moments_source` builds
+the same envelopes for several scalar families and leaves mixed requests to
+the live source.
+
+From definitions or an adopted unit-day artifact, `analysis.export(path)`
+writes the cube. Reload its rows with `Analysis.from_moments`, passing each
+metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
+design: the embedded plan supplies the declared decision and sensitivity
+methods, including scalar companions, so the replayed estimates, intervals,
+and roles match the source run. The cube has no breakout dimension, so
+`run_breakout` on it refuses with `facade.analysis.operation`. A metric with
+fixed winsorization caps, or any other bounded or discrete outcome, sends the
+whole export to `query.cuped.general_qr_required` before outcome cells leave
+the warehouse; run that request on the unit source instead.
 
 ## The math
 
