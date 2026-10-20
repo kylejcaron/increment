@@ -105,157 +105,168 @@ def _digest_builder(key, stage, fields_override=None):
     return build
 
 
-def _request():
-    from increment.estimation.engine import CupedCovariate, Method
-    from increment.query.cuped import _ResolvedCupedRequest
+_CAPTURED_CUPED_EXPRESSIONS = None
+_CAPTURED_CUPED_SCHEMAS = {}
 
-    return _ResolvedCupedRequest(
-        identity=("compile-check",),
-        control="control",
-        arm_order=("control", "treatment", "third"),
-        method=Method.cuped_multicovariate(
-            covariates=[
-                CupedCovariate(name="cov_a", kind="categorical"),
-                CupedCovariate(name="cov_b", kind="categorical"),
-            ]
-        ),
+
+def _capture_public_cuped_expressions():  # noqa: PLR0915
+    """Capture DuckDB SQL emitted by public CUPED readouts and CTAS operations."""
+    global _CAPTURED_CUPED_EXPRESSIONS, _CAPTURED_CUPED_SCHEMAS
+    if _CAPTURED_CUPED_EXPRESSIONS is not None:
+        return _CAPTURED_CUPED_EXPRESSIONS
+
+    import datetime as py_datetime
+    import tempfile
+    import warnings
+    from pathlib import Path
+
+    import ibis.expr.types as ir
+    import yaml
+
+    from increment import Analysis
+    from increment.errors import IncrementWarning
+    from tests.warehouse_cuped_cases import mixed_cuped_definitions_yaml, mixed_cuped_event_rows
+
+    arms = ("control", "treatment", "third")
+    rows = []
+    for arm_index, arm in enumerate(arms):
+        for index in range(30):
+            rows.append(
+                {
+                    "user_id": f"{arm}-{index}",
+                    "variant": arm,
+                    "date": py_datetime.date(2025, 1, 10),
+                    "revenue": float(4 + index % 7 + arm_index * 1.25 + index % 3 * 0.17),
+                    "orders": float(1 + index % 4),
+                    "pre_revenue": None if index % 9 == 0 else float(8 + index % 13 + arm_index),
+                    "country": ("north", "south", "north")[index % 3],
+                    "device": ("mobile", "desktop", "desktop")[index % 3],
+                    "new_user": "new" if index % 4 == 0 else "existing",
+                    "signups": float((index * 7 + arm_index) % 9),
+                    "region": None if index % 6 == 0 else ("east", "west")[index % 2],
+                }
+            )
+    expressions = []
+    con = ibis.duckdb.connect()
+    event_name = "cuped_compile_events"
+    con.create_table(event_name, obj=mixed_cuped_event_rows(rows), overwrite=True)
+    _CAPTURED_CUPED_SCHEMAS = {event_name: con.table(event_name).schema()}
+    backend_type = type(con)
+    original_to_pyarrow = backend_type.to_pyarrow
+    original_create_table = backend_type.create_table
+
+    def capture_to_pyarrow(backend, expression, *args, **kwargs):
+        if backend is con and isinstance(expression, ir.Expr):
+            expressions.append(expression)
+        return original_to_pyarrow(backend, expression, *args, **kwargs)
+
+    def capture_create_table(backend, name, obj=None, *args, **kwargs):
+        if backend is con and isinstance(obj, ir.Table):
+            _CAPTURED_CUPED_SCHEMAS[str(name)] = obj.schema()
+        return original_create_table(backend, name, obj, *args, **kwargs)
+
+    backend_type.to_pyarrow = capture_to_pyarrow
+    backend_type.create_table = capture_create_table
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            source = f'"{event_name}"'
+            for route in ("cells", "qr"):
+                config = yaml.safe_load(mixed_cuped_definitions_yaml(source, breakout=True))
+                experiment = config["experiments"][0]
+                experiment["allocation"] = dict.fromkeys(arms, 1 / 3)
+                covariates = [
+                    {
+                        "name": name,
+                        "kind": "categorical",
+                        "property": name,
+                        "source": "events",
+                    }
+                    for name in ("country", "device")
+                ]
+                if route == "qr":
+                    covariates.insert(
+                        0,
+                        {
+                            "name": "pre_revenue",
+                            "kind": "continuous",
+                            "property": "pre_revenue",
+                            "source": "events",
+                            "missing": "impute-indicator",
+                        },
+                    )
+                for role in ("primary", "guardrails", "secondaries"):
+                    entries = experiment["plan"][role]
+                    if isinstance(entries, dict):
+                        entries = [entries]
+                    for entry in entries:
+                        entry["decision_method"]["covariates"] = covariates
+                path = Path(directory) / f"{route}.yaml"
+                path.write_text(yaml.safe_dump(config, sort_keys=False))
+                analysis = Analysis.from_definitions("mixed_cuped", path, con)
+                try:
+                    analysis.run(metrics=["revenue", "rpo"])
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", IncrementWarning)
+                        analysis.run_breakout(metrics=["revenue", "rpo"])
+                finally:
+                    analysis.close()
+    finally:
+        backend_type.to_pyarrow = original_to_pyarrow
+        backend_type.create_table = original_create_table
+        con.drop_table(event_name, force=True)
+        con.disconnect()
+    _CAPTURED_CUPED_EXPRESSIONS = tuple(expressions)
+    return _CAPTURED_CUPED_EXPRESSIONS
+
+
+def _captured_statement_case(expression, dialect, index):
+    import sqlglot
+    from ibis.expr import operations as ops
+    from sqlglot import exp
+
+    rendered = str(ibis.to_sql(expression, dialect=dialect))
+    query = sqlglot.parse_one(rendered, read=dialect)
+    cte_names = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
+    relation_schemas = dict(_CAPTURED_CUPED_SCHEMAS)
+    relation_schemas.update(
+        {
+            relation.name: relation.schema
+            for relation in expression.op().find(ops.DatabaseTable)
+            if relation.name not in cte_names
+        }
+    )
+    table_refs = {table.name for table in query.find_all(exp.Table) if table.name not in cte_names}
+    schemas = {name: relation_schemas[name] for name in sorted(table_refs)}
+    if not schemas:
+        return None
+
+    def build(table_names, _dialect):
+        statement = sqlglot.parse_one(rendered, read=dialect)
+        for table in statement.find_all(exp.Table):
+            replacement = table_names.get(table.name)
+            if replacement is None:
+                continue
+            table.set("this", exp.to_identifier(replacement, quoted=True))
+            table.set("db", None)
+            table.set("catalog", None)
+        return statement.sql(dialect=dialect)
+
+    return CompileCase(
+        f"cuped.readout.{index:04d}",
+        schemas,
+        build,
+        {name: f"incr_compile_{name}_{uuid4().hex[:12]}" for name in schemas},
+        dialect,
     )
 
 
-def _metric(kind):
-    from increment.semantics.models import MeanMetric, Measure, RatioMetric
-
-    if kind == "mean":
-        return MeanMetric(name="outcome", entity="unit", fact="outcome", aggregation="sum")
-    return RatioMetric(
-        name="outcome",
-        entity="unit",
-        numerator=Measure(fact="numerator", aggregation="sum"),
-        denominator=Measure(fact="denominator", aggregation="sum"),
-    )
-
-
-def _cell_builder(stage):
-    def build(table_names, dialect):
-        from increment.query._cuped_cells import _cell_relation, _preflight
-
-        relation = ibis.table(
-            {
-                "unit_id": "string",
-                "group_id": "string",
-                "cov_a": "string",
-                "cov_b": "string",
-                "outcome": "float64",
-                "numerator": "float64",
-                "denominator": "float64",
-            },
-            name=table_names["unit_cells"],
-        )
-        outcomes = (
-            ("outcome",)
-            if stage in {"mean_cells", "preflight_mean"}
-            else ("numerator", "denominator")
-        )
-        cells = _cell_relation(relation, ("cov_a", "cov_b"), outcomes)
-        if stage == "preflight_mean":
-            return _preflight(cells, ("cov_a", "cov_b"), 1, _request(), _metric("mean"))
-        if stage == "preflight_ratio":
-            return _preflight(cells, ("cov_a", "cov_b"), 2, _request(), _metric("ratio"))
-        return cells
-
-    return build
-
-
-def _magnitude_builder(stage, kind):
-    def build(table_names, dialect):
-        from increment.query._cuped_cells import require_warehouse_magnitude_range
-
-        relation = ibis.table(
-            {
-                "group_id": "string",
-                "outcome": "float64",
-                "numerator": "float64",
-                "denominator": "float64",
-            },
-            name=table_names["units"],
-        )
-        captured = []
-
-        def record(expression):
-            captured.append(expression)
-            import pandas as pd
-
-            if len(captured) == 1:
-                rows = [
-                    {
-                        "group_id": "control",
-                        **{f"_magnitude_nonfinite_{i}": 0 for i in range(len(components))},
-                    }
-                ]
-            else:
-                rows = [
-                    {
-                        "group_id": "control",
-                        **{f"_magnitude_low_{i}": False for i in range(len(components))},
-                        **{f"_magnitude_high_{i}": False for i in range(len(components))},
-                    }
-                ]
-            return pd.DataFrame(rows)
-
-        if kind == "mean":
-            components = (("outcome", "outcome"),)
-        else:
-            components = (("numerator", "numerator"), ("denominator", "denominator"))
-        require_warehouse_magnitude_range(
-            relation,
-            metric=f"compile_{kind}",
-            components=components,
-            execute=record,
-        )
-        return captured[stage]
-
-    return build
-
-
-def _qr_factor_builder(stage):
-    def build(table_names, dialect):
-        import pandas as pd
-
-        from increment.query._cuped_qr import factor_design_relation
-
-        relation = ibis.table(
-            {
-                "unit_id": "string",
-                "group_id": "string",
-                "_qr_d0": "float64",
-                "_qr_y0": "float64",
-            },
-            name=table_names["units"],
-        )
-        materialized = []
-        reductions = []
-
-        class Scratch:
-            def materialize_next(self, expression):
-                materialized.append(expression)
-                return expression
-
-        def execute(expression):
-            reductions.append(expression)
-            return pd.DataFrame([{"_qr_r_0_0": 1.0, "_qr_rhs_0_0": 1.0}])
-
-        factor_design_relation(
-            relation,
-            design_columns=("_qr_d0",),
-            rhs_columns=("_qr_y0",),
-            order_columns=("unit_id",),
-            execute=execute,
-            scratch=Scratch(),
-        )
-        expressions = (*materialized, *reductions)
-        return expressions[stage]
-
-    return build
+def _captured_cuped_statement_cases(dialect):
+    cases = []
+    for index, expression in enumerate(_capture_public_cuped_expressions()):
+        case = _captured_statement_case(expression, dialect, index)
+        if case is not None:
+            cases.append(case)
+    return cases
 
 
 def _register(cases, dialect, name, schemas, builder):
@@ -521,64 +532,7 @@ def compile_statement_cases(dialect: str) -> list[CompileCase]:
         },
         _uptake_validation_builder,
     )
-    cell_schema = ibis.schema(
-        {
-            "unit_id": "string",
-            "group_id": "string",
-            "cov_a": "string",
-            "cov_b": "string",
-            "outcome": "float64",
-            "numerator": "float64",
-            "denominator": "float64",
-        }
-    )
-    for stage in ("preflight_mean", "mean_cells", "preflight_ratio", "ratio_cells"):
-        _register(
-            cases,
-            dialect,
-            f"categorical.{stage}",
-            {"unit_cells": cell_schema},
-            _cell_builder(stage),
-        )
-    magnitude_schema = {
-        "units": ibis.schema(
-            {
-                "group_id": "string",
-                "outcome": "float64",
-                "numerator": "float64",
-                "denominator": "float64",
-            }
-        )
-    }
-    for kind in ("mean", "ratio"):
-        for stage, stage_name in enumerate(("nonfinite", "magnitude_bounds")):
-            _register(
-                cases,
-                dialect,
-                f"categorical.{kind}.{stage_name}",
-                magnitude_schema,
-                _magnitude_builder(stage, kind),
-            )
-    qr_schema = {
-        "units": ibis.schema(
-            {
-                "unit_id": "string",
-                "group_id": "string",
-                "_qr_d0": "float64",
-                "_qr_y0": "float64",
-            }
-        )
-    }
-    for stage, stage_name in enumerate(
-        ("weighted_design", "householder_update", "factor_reduction")
-    ):
-        _register(
-            cases,
-            dialect,
-            f"qr.factor.{stage_name}",
-            qr_schema,
-            _qr_factor_builder(stage),
-        )
+    cases.extend(_captured_cuped_statement_cases(dialect))
     return cases
 
 

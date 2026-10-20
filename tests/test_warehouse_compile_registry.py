@@ -18,7 +18,8 @@ def test_registered_warehouse_statements_compile_offline(dialect):
     statement_lengths = {}
     for case in cases:
         expression = case.build(case.table_names)
-        assert expression.schema().names
+        if not isinstance(expression, str):
+            assert expression.schema().names
         sql = case.compile(expression)
         statement_lengths[case.name] = len(sql)
         assert sql.strip(), case.name
