@@ -207,3 +207,91 @@ def test_negative_control_is_registered_and_renders_offline(dialect):
     referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
     assert referenced <= set(case.table_names.values())
     assert set(case.table_names.values()) <= referenced
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_shared_source_tables_submit_without_per_case_ddl(dialect):
+    from integration.warehouse_execution._compile import (
+        BigQueryCompileSession,
+        CompileSourceTables,
+        run_compile_case,
+    )
+
+    case = next(
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_token"
+    )
+    if dialect == "snowflake":
+        connection = _CapturingSnowflakeConnection()
+        statements = connection.statements
+    else:
+        client = _CapturingBigQueryClient()
+        connection = BigQueryCompileSession(client, object(), lambda **kwargs: kwargs)
+        statements = client.statements
+
+    source_tables = CompileSourceTables(tuple(case.table_names.values()), frozenset())
+    assert (
+        run_compile_case(connection, case, shared_tables=source_tables)
+        == "shared schema-only tables"
+    )
+    assert len(statements) == 1
+    assert (
+        statements[0]
+        .upper()
+        .startswith("EXPLAIN USING TEXT " if dialect == "snowflake" else "SELECT")
+    )
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_shared_source_refusal_uses_inline_typed_cte(dialect):
+    from integration.warehouse_execution._compile import (
+        BigQueryCompileSession,
+        CompileSourceTables,
+        run_compile_case,
+    )
+
+    case = next(
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_token"
+    )
+    if dialect == "snowflake":
+        connection = _CapturingSnowflakeConnection()
+        statements = connection.statements
+    else:
+        client = _CapturingBigQueryClient()
+        connection = BigQueryCompileSession(client, object(), lambda **kwargs: kwargs)
+        statements = client.statements
+
+    source_tables = CompileSourceTables((), frozenset(case.table_names.values()))
+    assert run_compile_case(connection, case, shared_tables=source_tables) == (
+        "inline empty typed CTEs"
+    )
+    assert len(statements) == 1
+    statement = statements[0].removeprefix("EXPLAIN USING TEXT ")
+    assert "WITH" in statement.upper()
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_statement_normalization_ignores_literals_and_source_names(dialect):
+    from integration.warehouse_execution._compile import _normalize_compile_statement
+
+    left = 'SELECT "value" FROM "scratch_a" WHERE "value" = 1'
+    right = 'SELECT "value" FROM "scratch_b" WHERE "value" = 2'
+
+    assert _normalize_compile_statement(left, dialect, {"scratch_a": "source"}) == (
+        _normalize_compile_statement(right, dialect, {"scratch_b": "source"})
+    )
+
+
+def test_deduplicated_cases_retain_represented_count():
+    from integration.warehouse_execution import _compile
+
+    cases = _compile.compile_statement_cases("snowflake")
+
+    assert len(cases) < 797
+    assert any(case.represented_count > 1 for case in cases)
+    captured = _compile._capture_public_cuped_expressions()
+    materializations = _compile._CAPTURED_CUPED_MATERIALIZATIONS
+    assert materializations is not None
+    expected_count = (
+        len(_compile.fixed_compile_cases("snowflake")) + len(captured) + len(materializations)
+    )
+    assert sum(case.represented_count for case in cases) == expected_count

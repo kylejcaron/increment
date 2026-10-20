@@ -144,7 +144,7 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
       # Compile statements in parallel; each pytest worker opens its own connection.
-      - run: uv run --with nox nox -s tests_warehouse_compile_snowflake -- -n 4
+      - run: uv run --with nox nox -s tests_warehouse_compile_snowflake -- -n 4 --dist loadgroup
         env:
           INCREMENT_TEST_SNOWFLAKE_ACCOUNT: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_ACCOUNT }}
           INCREMENT_TEST_SNOWFLAKE_USER: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_USER }}
@@ -168,7 +168,7 @@ jobs:
       - name: Write service-account key
         run: printf '%s' "$SA_KEY" > "$RUNNER_TEMP/gcp-sa.json"
         env: {SA_KEY: "${{ secrets.INCREMENT_TEST_BIGQUERY_SA_KEY }}"}
-      - run: uv run --with nox nox -s tests_warehouse_compile_bigquery -- -n 4
+      - run: uv run --with nox nox -s tests_warehouse_compile_bigquery -- -n 4 --dist loadgroup
         env:
           INCREMENT_TEST_BIGQUERY_PROJECT: ${{ secrets.INCREMENT_TEST_BIGQUERY_PROJECT }}
           INCREMENT_TEST_BIGQUERY_DATASET: ${{ secrets.INCREMENT_TEST_BIGQUERY_DATASET }}
