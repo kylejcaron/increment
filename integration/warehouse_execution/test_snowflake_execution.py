@@ -580,8 +580,8 @@ def _run_cloud_mixed_cuped_probe(con, dialect, tmp_path, monkeypatch):  # noqa: 
         transferred.append((names, result.num_rows))
         return result
 
-    def capture_qr_materializations(session, name, expression, *, required):
-        relation = materialize_table(session, name, expression, required=required)
+    def capture_qr_materializations(session, name, expression, *, required, **kwargs):
+        relation = materialize_table(session, name, expression, required=required, **kwargs)
         if name.startswith("_cuped_qr_"):
             scratch_relations.append(relation)
         return relation

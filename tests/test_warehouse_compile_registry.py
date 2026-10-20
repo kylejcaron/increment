@@ -52,6 +52,32 @@ def test_registered_warehouse_statements_compile_offline(dialect):
     assert len(statement_lengths) == len(cases)
 
 
+def test_captured_statement_uses_schema_at_capture_time(monkeypatch):
+    import ibis
+
+    from integration.warehouse_execution import _compile
+
+    schema = ibis.schema({"_qr_projection_score_0_0": "float64"})
+    connection = ibis.duckdb.connect()
+    expression = connection.sql(
+        "SELECT _qr_projection_score_0_0 FROM _cuped_qr_stage", schema=schema
+    )
+    monkeypatch.setattr(
+        _compile,
+        "_CAPTURED_CUPED_EXPRESSION_SCHEMAS",
+        [{"_cuped_qr_stage": schema}],
+    )
+    monkeypatch.setattr(
+        _compile,
+        "_CAPTURED_CUPED_SCHEMAS",
+        {"_cuped_qr_stage": ibis.schema({"unit_id": "string"})},
+    )
+
+    case = _compile._captured_statement_case(expression, "bigquery", 0)
+
+    assert case.schemas["_cuped_qr_stage"] == schema
+
+
 class _CapturingCursor:
     def __init__(self, statements):
         self.statements = statements

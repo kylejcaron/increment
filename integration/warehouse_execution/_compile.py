@@ -108,11 +108,13 @@ def _digest_builder(key, stage, fields_override=None):
 
 _CAPTURED_CUPED_EXPRESSIONS = None
 _CAPTURED_CUPED_SCHEMAS = {}
+_CAPTURED_CUPED_EXPRESSION_SCHEMAS = []
 
 
 def _capture_public_cuped_expressions():  # noqa: PLR0915
     """Capture DuckDB SQL emitted by public CUPED readouts and CTAS operations."""
     global _CAPTURED_CUPED_EXPRESSIONS, _CAPTURED_CUPED_SCHEMAS
+    global _CAPTURED_CUPED_EXPRESSION_SCHEMAS
     if _CAPTURED_CUPED_EXPRESSIONS is not None:
         return _CAPTURED_CUPED_EXPRESSIONS
 
@@ -159,6 +161,7 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
     def capture_to_pyarrow(backend, expression, *args, **kwargs):
         if backend is con and isinstance(expression, ir.Expr):
             expressions.append(expression)
+            _CAPTURED_CUPED_EXPRESSION_SCHEMAS.append(dict(_CAPTURED_CUPED_SCHEMAS))
         return original_to_pyarrow(backend, expression, *args, **kwargs)
 
     def capture_create_table(backend, name, obj=None, *args, **kwargs):
@@ -259,7 +262,7 @@ def _captured_statement_case(expression, dialect, index):
     rendered = str(ibis.to_sql(target_expression, dialect=dialect))
     query = sqlglot.parse_one(rendered, read=dialect)
     cte_names = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
-    relation_schemas = dict(_CAPTURED_CUPED_SCHEMAS)
+    relation_schemas = dict(_CAPTURED_CUPED_EXPRESSION_SCHEMAS[index])
     relation_schemas.update(
         {
             relation.name: relation.schema
