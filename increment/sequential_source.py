@@ -255,7 +255,8 @@ def _automatic_law(metric, *, wants_cuped: bool, covariate: bool, adjustment) ->
                 "route.unsupported",
                 f"metric {metric.name!r}: a predeclared coefficient adjusts one scalar; a "
                 "ratio metric under sequential inference fits both component coefficients "
-                "from retained moments (declare a CUPED method with covariate= instead)",
+                "from retained moments (declare a CUPED method with "
+                "covariates=CupedCovariate(...))",
             )
         return "scalar_mean"
     if not wants_cuped:

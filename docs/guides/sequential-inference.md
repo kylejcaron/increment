@@ -787,9 +787,9 @@ arm retains with its full centered scatter:
 | law | retained per unit | contrast | selected automatically when |
 | --- | --- | --- | --- |
 | `scalar_mean` | $(Y)$ | ratio of arm means | a mean, conversion or retention metric |
-| `adjusted_mean` | $(Y, X)$ | ratio of CUPED-adjusted arm means | a mean metric with `covariate=` and a CUPED method |
+| `adjusted_mean` | $(Y, X)$ | ratio of CUPED-adjusted arm means | a mean metric using `Method.cuped(covariates=CupedCovariate(...))` |
 | `ratio_mean` | $(N, D)$ | ratio of arm ratios $E[N]/E[D]$ | a ratio metric |
-| `adjusted_ratio_mean` | $(N, D, X)$ | ratio of adjusted arm ratios | a ratio metric with `covariate=` and a CUPED method |
+| `adjusted_ratio_mean` | $(N, D, X)$ | ratio of adjusted arm ratios | a ratio metric using `Method.cuped(covariates=CupedCovariate(...))` |
 
 !!! warning "Check source support before choosing a joint law"
     Unit panels support bounded-window, unadjusted `ratio_mean`; they refuse

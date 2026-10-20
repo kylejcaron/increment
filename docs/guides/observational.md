@@ -994,10 +994,9 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
     the hypothesis as unavailable rather than as a result row.
 
   Routes forward, each answering a different question. Under a randomized
-  design, `Method(name="cuped", variance_reduction="cuped")` with a
-  `covariate=` column adjusts a ratio metric's numerator and denominator
-  jointly (see [CUPED](cuped.md#ratio-metrics)); it is not a confounding
-  adjustment. Under an `Observational` design, the explicit
+  design, `Method.cuped(covariates=CupedCovariate(...))` adjusts a ratio
+  metric's numerator and denominator jointly (see [CUPED](cuped.md#ratio-metrics));
+  it is not a confounding adjustment. Under an `Observational` design, the
   `Method(name="unadjusted")` comparison supports ratio metrics but is the
   confounded observed comparison. Adjusting the numerator and denominator
   as separate mean metrics estimates two different estimands (an adjusted
