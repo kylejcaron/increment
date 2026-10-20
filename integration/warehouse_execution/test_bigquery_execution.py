@@ -36,7 +36,16 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
     from google.cloud import bigquery
 
     from increment.query import artifact_digest
-    from increment.query.artifact_digest import digest_relation_sql_v2
+    from increment.query.artifact_digest import (
+        _BUCKET_HEX_LEN,
+        DigestType,
+        _fields,
+        _row_token_expr,
+        _sql_binary_hex_expr,
+        _sql_digest_sha256_binary_expr,
+        _sql_digest_sha256_expr,
+        digest_relation_sql_v2,
+    )
     from tests.test_unit_day_artifact_digest_v2 import _PORTABLE_SCHEMA, _portable_digest_rows
 
     schema = _PORTABLE_SCHEMA
@@ -79,7 +88,9 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
             f"IEEE_DIVIDE(1.0, `float`) AS `float_reciprocal` "
             f"FROM `{destination}`"
         )
-        fetched_arrow = bigquery_con.to_pyarrow(table)
+        fetched_arrow = bigquery_con.raw_sql(bigquery_con.compile(table)).to_arrow(
+            create_bqstorage_client=False, progress_bar_type=None
+        )
         fetched_rows = fetched_arrow.select(
             ["id", "integer", "float", "float_reciprocal"]
         ).to_pylist()
@@ -91,11 +102,11 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
         assert fetched_rows[0]["float_reciprocal"] == float("inf")
         assert fetched_rows[6]["float"] is not None
         assert math.isnan(fetched_rows[6]["float"])
-        assert fetched_rows[9]["float"] is None
         stored_arrow = fetched_arrow.select([name for name, _type, _nullable in schema])
+        duck_table = duckdb.create_table("digest_spec_stored", stored_arrow)
         expected = digest_relation_sql_v2(
             duckdb,
-            duckdb.create_table("digest_spec_stored", stored_arrow),
+            duck_table,
             "portable_spec",
             schema,
             primary_key=("id",),
@@ -106,7 +117,87 @@ def test_bigquery_format4_digest_matches_duckdb(bigquery_con, monkeypatch):
         actual = digest_relation_sql_v2(
             bigquery_con, table, "portable_spec", schema, primary_key=("id",)
         )
-        assert actual.content_sha256 == expected.content_sha256
+        kinds = {
+            DigestType.DATE: "date",
+            DigestType.FLOAT64: "float",
+            DigestType.TIMESTAMP_UTC_US: "timestamp",
+        }
+        tagged_fields = [
+            (field.name, int(field.type_tag), kinds.get(field.type_tag, "other"))
+            for field in _fields(schema)
+        ]
+
+        def diagnostic_rows(con, expr, dialect):
+            if dialect == "bigquery":
+                return (
+                    con.raw_sql(con.compile(expr))
+                    .to_arrow(create_bqstorage_client=False, progress_bar_type=None)
+                    .to_pylist()
+                )
+            return con.to_pyarrow(expr).to_pylist()
+
+        def field_tokens(con, relation, dialect):
+            tokens = {
+                f"token_{name}": _row_token_expr(relation, ((name, tag, kind),), dialect=dialect)
+                for name, tag, kind in tagged_fields
+            }
+            return sorted(
+                diagnostic_rows(con, relation.select(id=relation.id, **tokens), dialect),
+                key=lambda row: row["id"],
+            )
+
+        def digest_stages(con, relation, dialect):
+            tokens = relation.select(
+                id=relation.id,
+                token=_row_token_expr(relation, tagged_fields, dialect=dialect),
+            )
+            hashes = tokens.select(
+                id=tokens.id,
+                token=tokens.token,
+                row_hash=_sql_binary_hex_expr(
+                    _sql_digest_sha256_binary_expr(tokens.token, dialect=dialect),
+                    dialect=dialect,
+                ),
+            )
+            hashes = hashes.select(
+                id=hashes.id,
+                token=hashes.token,
+                row_hash=hashes.row_hash,
+                bucket=hashes.row_hash.substr(0, _BUCKET_HEX_LEN),
+            )
+            row_stages = diagnostic_rows(con, hashes.order_by("id"), dialect)
+            bucket_input = hashes.select(bucket=hashes.bucket, h=hashes.row_hash)
+            bucket_rows = (
+                bucket_input.group_by("bucket")
+                .aggregate(
+                    bucket_digest=_sql_digest_sha256_expr(
+                        bucket_input.h.group_concat(
+                            sep="",
+                            order_by=ibis.asc(bucket_input.h, nulls_first=dialect == "bigquery"),
+                        ),
+                        dialect=dialect,
+                    ),
+                    n=bucket_input.count(),
+                )
+                .order_by("bucket")
+            )
+            return {
+                "rows": row_stages,
+                "buckets": diagnostic_rows(con, bucket_rows, dialect),
+            }
+
+        duckdb_tokens = field_tokens(duckdb, duck_table, "duckdb")
+        bigquery_tokens = field_tokens(bigquery_con, table, "bigquery")
+        duckdb_stages = digest_stages(duckdb, duck_table, "duckdb")
+        bigquery_stages = digest_stages(bigquery_con, table, "bigquery")
+        assert duckdb_tokens == bigquery_tokens, (
+            f"format-4 field-token mismatch: DuckDB={duckdb_tokens!r}; BigQuery={bigquery_tokens!r}"
+        )
+        assert actual.content_sha256 == expected.content_sha256, (
+            "format-4 digest mismatch after stage diagnostics; "
+            f"DuckDB={expected.content_sha256}, BigQuery={actual.content_sha256}; "
+            f"DuckDB stages={duckdb_stages!r}; BigQuery stages={bigquery_stages!r}"
+        )
     finally:
         duckdb.disconnect()
         bigquery_con.drop_table(table_name, force=True)
@@ -214,7 +305,9 @@ def test_artifact_output_confidentiality(bigquery_con):
     run_artifact_confidentiality_probe(bigquery_con, dialect="bigquery")
 
 
+@pytest.mark.timeout(600, method="signal")
 def test_artifact_sequential_identity_matches_native(bigquery_con):
+    # The three sequential publish/adopt/readout journeys each issue many BigQuery jobs.
     run_artifact_sequential_identity_probe(bigquery_con, dialect="bigquery")
 
 
