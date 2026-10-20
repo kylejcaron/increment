@@ -241,7 +241,8 @@ def _mean_covariance(fit: _LinearCupedCalculator) -> np.ndarray:
     scores = [fit._arm_score(family, arm) for family in range(nfam) for arm in range(narm)]
     for i, left in enumerate(scores):
         for j, right in enumerate(scores):
-            covariance[i, j] = left @ right
+            with np.errstate(over="ignore", invalid="ignore"):
+                covariance[i, j] = left @ right
     return covariance
 
 

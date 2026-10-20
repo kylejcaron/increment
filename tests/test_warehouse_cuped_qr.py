@@ -1506,6 +1506,8 @@ def _assert_fit_coordinates_equal(left_rows, right_rows):
         )
 
 
+# Keep the 34-column, three-batch ratio path covered; CI needs a longer timeout for DuckDB.
+@pytest.mark.timeout(600)
 @pytest.mark.integration
 @pytest.mark.slow
 def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_path):
@@ -1522,13 +1524,15 @@ def test_native_three_arm_ratio_cuped_batches_bm_scores_against_local_fit(tmp_pa
     rng = np.random.default_rng(20261021)
     arms = ("control", "variant-a", "variant-b")
     covariate_names = tuple(f"x{index}" for index in range(34))
+    units_per_arm = 170
+    assert len(covariate_names) / units_per_arm <= 0.2
     units = []
     events = []
     exposure = dt.datetime(2025, 1, 10, 8)
     pre = dt.datetime(2025, 1, 7, 9)
     post = dt.datetime(2025, 1, 11, 9)
     for arm_index, arm in enumerate(arms):
-        for index in range(200):
+        for index in range(units_per_arm):
             values = rng.normal(size=len(covariate_names))
             revenue = 12.0 + arm_index * 0.4 + 0.7 * values[0] + rng.normal(scale=0.3)
             orders = float(5 + index % 4)

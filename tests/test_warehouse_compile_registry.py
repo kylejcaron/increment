@@ -8,8 +8,13 @@ from integration.warehouse_execution._compile import (
     compile_statement_cases,
 )
 
-# Building the cases runs public DuckDB CUPED readouts to capture their statements.
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+# Registry compilation captures public readouts once per worker and compiles many SQL cases.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    pytest.mark.xdist_group("warehouse_compile_registry"),
+    pytest.mark.timeout(600),
+]
 
 
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
