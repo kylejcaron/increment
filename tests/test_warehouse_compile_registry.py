@@ -88,45 +88,62 @@ def test_captured_statement_uses_schema_at_capture_time(monkeypatch):
     assert case.schemas["_cuped_qr_stage"] == schema
 
 
-def test_captured_snowflake_isnan_uses_portable_comparison():
+def test_captured_statement_compilation_uses_sqlglot_ast(monkeypatch):
     import ibis
-    from ibis.expr import operations as ops
 
-    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+    from integration.warehouse_execution import _compile
 
+    schema = ibis.schema({"value": "float64"})
     connection = ibis.duckdb.connect()
-    expression = connection.sql(
-        "SELECT ISNAN(value) AS nonfinite FROM source",
-        schema=ibis.schema({"nonfinite": "boolean"}),
+    expression = connection.sql("SELECT value FROM source", schema=schema)
+
+    def reject_string_rendering(*_args, **_kwargs):
+        pytest.fail("captured statements must reuse the compiler SQLGlot AST")
+
+    monkeypatch.setattr(ibis, "to_sql", reject_string_rendering)
+    case = _compile._captured_statement_case(
+        expression, "bigquery", 0, schema_snapshot={"source": schema}
     )
 
-    translated = _transpile_captured_raw_sql(expression, "snowflake")
-    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
-    sql = ibis.to_sql(translated, dialect="snowflake")
+    assert "FROM" in case.compile(case.build(case.table_names)).upper()
 
-    assert "IS_NAN" not in query.upper()
-    assert "'NaN'::FLOAT" in query
+
+def test_captured_snowflake_isnan_uses_portable_comparison():
+    import ibis
+
+    from integration.warehouse_execution._compile import _captured_statement_case
+
+    connection = ibis.duckdb.connect()
+    schema = ibis.schema({"nonfinite": "boolean"})
+    expression = connection.sql(
+        "SELECT ISNAN(value) AS nonfinite FROM source",
+        schema=schema,
+    )
+    case = _captured_statement_case(expression, "snowflake", 0, schema_snapshot={"source": schema})
+    sql = case.compile(case.build(case.table_names))
+
     assert "IS_NAN" not in sql.upper()
+    assert "'NaN'" in sql
+    assert "CAST(" in sql.upper()
 
 
 def test_captured_snowflake_isinf_uses_absolute_infinity_comparison():
     import ibis
-    from ibis.expr import operations as ops
 
-    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+    from integration.warehouse_execution._compile import _captured_statement_case
 
     connection = ibis.duckdb.connect()
+    schema = ibis.schema({"infinite": "boolean"})
     expression = connection.sql(
         "SELECT ISINF(value) AS infinite FROM source",
-        schema=ibis.schema({"infinite": "boolean"}),
+        schema=schema,
     )
+    case = _captured_statement_case(expression, "snowflake", 0, schema_snapshot={"source": schema})
+    sql = case.compile(case.build(case.table_names))
 
-    translated = _transpile_captured_raw_sql(expression, "snowflake")
-    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
-
-    assert "IS_INF" not in query.upper()
-    assert "ABS(" in query.upper()
-    assert "INF" in query.upper()
+    assert "IS_INF" not in sql.upper()
+    assert "ABS(" in sql.upper()
+    assert "INF" in sql.upper()
 
 
 class _CapturingCursor:
@@ -285,8 +302,8 @@ def test_shared_source_refusal_uses_inline_typed_cte(dialect):
 def test_statement_normalization_ignores_literals_and_source_names(dialect):
     from integration.warehouse_execution._compile import _normalize_compile_statement
 
-    left = 'SELECT "value" FROM "scratch_a" WHERE "value" = 1'
-    right = 'SELECT "value" FROM "scratch_b" WHERE "value" = 2'
+    left = 'SELECT "value" FROM "catalog_a"."schema_a"."scratch_a" WHERE "value" = 1'
+    right = 'SELECT "value" FROM "catalog_b"."schema_b"."scratch_b" WHERE "value" = 2'
 
     assert _normalize_compile_statement(left, dialect, {"scratch_a": "source"}) == (
         _normalize_compile_statement(right, dialect, {"scratch_b": "source"})
@@ -298,7 +315,7 @@ def test_deduplicated_cases_retain_represented_count():
 
     cases = _compile.compile_statement_cases("snowflake")
 
-    assert len(cases) < 797
+    assert len(cases) == 500
     assert any(case.represented_count > 1 for case in cases)
     captured = _compile._capture_public_cuped_expressions()
     materializations = _compile._CAPTURED_CUPED_MATERIALIZATIONS

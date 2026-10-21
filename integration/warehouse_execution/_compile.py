@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cache
 from hashlib import sha1
+from time import perf_counter
 from uuid import uuid4
 
 import ibis
@@ -41,7 +43,7 @@ def _schema_key(schema: ibis.Schema) -> tuple:
     return tuple((name, str(dtype)) for name, dtype in schema.items())
 
 
-def _normalize_compile_ast(query, source_roles: dict[str, str]) -> str:
+def _normalize_compile_ast(query, dialect: str, source_roles: dict[str, str]) -> str:
     from sqlglot import exp
 
     for literal in tuple(query.find_all(exp.Literal)):
@@ -50,15 +52,16 @@ def _normalize_compile_ast(query, source_roles: dict[str, str]) -> str:
         role = source_roles.get(table.name)
         if role is not None:
             table.set("this", exp.to_identifier(role))
+            table.set("catalog", None)
             table.set("db", None)
-    return repr(query.dump())
+    return query.sql(dialect=dialect, pretty=False)
 
 
 def _normalize_compile_statement(statement: str, dialect: str, source_roles: dict[str, str]) -> str:
     """Normalize literals and source relations to compare SQL statement shapes."""
     import sqlglot
 
-    return _normalize_compile_ast(sqlglot.parse_one(statement, read=dialect), source_roles)
+    return _normalize_compile_ast(sqlglot.parse_one(statement, read=dialect), dialect, source_roles)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +264,6 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
 
 
 def _transpile_captured_raw_sql(expression, dialect):
-    """Transpile DuckDB SQL embedded in captured raw-query operations."""
     import sqlglot
     from ibis.expr import operations as ops
     from sqlglot import exp
@@ -272,10 +274,7 @@ def _transpile_captured_raw_sql(expression, dialect):
         if dialect == "snowflake":
             statements = sqlglot.parse(query, read="duckdb")
             if len(statements) != 1:
-                raise ValueError(
-                    f"captured CUPED SQL {description} must transpile to one statement, "
-                    f"got {len(statements)}"
-                )
+                raise ValueError(f"captured CUPED SQL {description} must contain one query")
             statement = statements[0]
             for is_nan in tuple(statement.find_all(exp.IsNan)):
                 value = is_nan.this.sql(dialect=dialect)
@@ -287,10 +286,7 @@ def _transpile_captured_raw_sql(expression, dialect):
 
         statements = sqlglot.transpile(query, read="duckdb", write=dialect)
         if len(statements) != 1:
-            raise ValueError(
-                f"captured CUPED SQL {description} must transpile to one statement, "
-                f"got {len(statements)}"
-            )
+            raise ValueError(f"captured CUPED SQL {description} must contain one query")
         return statements[0]
 
     root = expression.op()
@@ -310,21 +306,41 @@ def _transpile_captured_raw_sql(expression, dialect):
     return root.replace(replacements).to_expr() if replacements else expression
 
 
-def _captured_statement_case(
-    expression,
-    dialect,
-    index,
-    *,
-    schema_snapshot=None,
-    statement_kind="readout",
-):
-    import sqlglot
+def _compiler_sqlglot_query(expression, dialect):
+    import ibis.backends.sql.compilers as compilers
+
+    compiler = getattr(compilers, dialect).compiler
+    queries = compiler.to_sqlglot(expression.unbind())
+    if isinstance(queries, list):
+        if len(queries) != 1:
+            raise ValueError(
+                f"captured CUPED expression must compile to one query, got {len(queries)}"
+            )
+        return queries[0]
+    return queries
+
+
+def _portable_nonfinite_ast(query, dialect):
+    if dialect != "snowflake":
+        return query
+
+    from sqlglot import exp
+
+    from increment.query._nonfinite import _is_nan_sql
+
+    for is_nan in tuple(query.find_all(exp.IsNan)):
+        value = is_nan.this.sql(dialect=dialect)
+        is_nan.replace(_is_nan_sql(dialect, value))
+    for is_inf in tuple(query.find_all(exp.IsInf)):
+        infinity = exp.Cast(this=exp.Literal.string("Inf"), to=exp.DataType.build("DOUBLE"))
+        is_inf.replace(exp.EQ(this=exp.Abs(this=is_inf.this.copy()), expression=infinity))
+    return query
+
+
+def _captured_relation_schemas(expression, index, schema_snapshot, query):
     from ibis.expr import operations as ops
     from sqlglot import exp
 
-    target_expression = _transpile_captured_raw_sql(expression, dialect)
-    rendered = str(ibis.to_sql(target_expression, dialect=dialect))
-    query = sqlglot.parse_one(rendered, read=dialect)
     cte_names = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
     if schema_snapshot is None:
         schema_snapshot = _CAPTURED_CUPED_EXPRESSION_SCHEMAS[index]
@@ -340,8 +356,75 @@ def _captured_statement_case(
         {relation.name: relation.schema for relation in expression.op().find(ops.InMemoryTable)}
     )
     table_refs = {table.name for table in query.find_all(exp.Table) if table.name not in cte_names}
-    schemas = {name: relation_schemas[name] for name in sorted(table_refs)}
+    return {name: relation_schemas[name] for name in sorted(table_refs)}
 
+
+def _captured_statement_shape(expression, index, schema_snapshot):
+    from collections import Counter
+
+    from ibis.expr import operations as ops
+    from sqlglot import exp
+
+    query = _compiler_sqlglot_query(expression, "duckdb")
+    schemas = _captured_relation_schemas(expression, index, schema_snapshot, query)
+    roles = {name: f"source_{position}" for position, name in enumerate(sorted(schemas))}
+    columns = {column.name for column in query.find_all(exp.Column)}
+    source_types = tuple(
+        (
+            roles[name],
+            tuple(
+                (column, str(dtype), dtype.nullable)
+                for column, dtype in schemas[name].items()
+                if column in columns
+            ),
+        )
+        for name in sorted(schemas)
+    )
+    raw_query_ops = Counter(
+        [type(operation).__name__ for operation in expression.op().find(ops.SQLQueryResult)]
+        + [type(operation).__name__ for operation in expression.op().find(ops.SQLStringView)]
+    )
+    raw_op_schema = tuple(
+        (
+            type(operation).__name__,
+            tuple((str(dtype), dtype.nullable) for dtype in operation.schema.values()),
+        )
+        for operation in (
+            *expression.op().find(ops.SQLQueryResult),
+            *expression.op().find(ops.SQLStringView),
+        )
+    )
+    result_schema = tuple(
+        (name, str(dtype), dtype.nullable) for name, dtype in expression.schema().items()
+    )
+    return (
+        _normalize_compile_ast(query.copy(), "duckdb", roles),
+        result_schema,
+        source_types,
+        tuple(sorted(raw_query_ops.items())),
+        raw_op_schema,
+    )
+
+
+def _captured_statement_case(
+    expression,
+    dialect,
+    index,
+    *,
+    schema_snapshot=None,
+    statement_kind="readout",
+    represented_count=1,
+    render_seconds=None,
+):
+    from sqlglot import exp
+
+    render_started = perf_counter()
+
+    target_expression = _transpile_captured_raw_sql(expression, dialect)
+    query = _portable_nonfinite_ast(_compiler_sqlglot_query(target_expression, dialect), dialect)
+    if render_seconds is not None:
+        render_seconds.append(perf_counter() - render_started)
+    schemas = _captured_relation_schemas(expression, index, schema_snapshot, query)
     table_names = {
         name: _shared_compile_table_name(dialect, _schema_key(schema))
         for name, schema in schemas.items()
@@ -365,8 +448,8 @@ def _captured_statement_case(
         build,
         table_names,
         dialect,
-        1,
-        _normalize_compile_ast(query.copy(), roles),
+        represented_count,
+        _normalize_compile_ast(query.copy(), dialect, roles),
     )
 
 
@@ -391,26 +474,75 @@ def _deduplicate_statement_cases(cases: list[CompileCase]) -> list[CompileCase]:
 
 @cache
 def _captured_cuped_statement_cases(dialect, shard=None):
-    """Render captured CUPED statements; ``shard=(k, n)`` keeps every n-th one from k."""
+    """Compile distinct captured statements; ``shard=(k, n)`` keeps every n-th one."""
+    started = perf_counter()
+    capture_started = perf_counter()
+    expressions = _capture_public_cuped_expressions()
     captured = [
-        (expression, index, None, "readout")
-        for index, expression in enumerate(_capture_public_cuped_expressions())
+        (expression, index, None, "readout") for index, expression in enumerate(expressions)
     ]
     captured.extend(
         (expression, index, schema_snapshot, "materialize")
         for index, (expression, schema_snapshot) in enumerate(_CAPTURED_CUPED_MATERIALIZATIONS)
     )
+    capture_seconds = perf_counter() - capture_started
     if shard is not None:
         offset, count = shard
         captured = captured[offset::count]
-    return _deduplicate_statement_cases(
-        [
-            _captured_statement_case(
-                expression, dialect, index, schema_snapshot=schema_snapshot, statement_kind=kind
-            )
-            for expression, index, schema_snapshot, kind in captured
-        ]
+
+    dedupe_started = perf_counter()
+    unique = []
+    positions = {}
+    for expression, index, schema_snapshot, kind in captured:
+        key = _captured_statement_shape(expression, index, schema_snapshot)
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(unique)
+            unique.append([expression, index, schema_snapshot, kind, 1])
+        else:
+            unique[position][4] += 1
+    pre_render_dedupe_seconds = perf_counter() - dedupe_started
+
+    render_seconds = []
+    cases = [
+        _captured_statement_case(
+            expression,
+            dialect,
+            index,
+            schema_snapshot=schema_snapshot,
+            statement_kind=kind,
+            represented_count=represented_count,
+            render_seconds=render_seconds,
+        )
+        for expression, index, schema_snapshot, kind, represented_count in unique
+    ]
+    dedupe_started = perf_counter()
+    cases = _deduplicate_statement_cases(cases)
+    dedupe_seconds = pre_render_dedupe_seconds + perf_counter() - dedupe_started
+    render_total = sum(render_seconds)
+    construction_seconds = (
+        perf_counter() - started - capture_seconds - dedupe_seconds - render_total
     )
+    shard_label = f" shard={shard}" if shard is not None else ""
+    for stage, seconds in (
+        ("capture", capture_seconds),
+        ("render", render_total),
+        ("dedupe", dedupe_seconds),
+        ("case_construction", construction_seconds),
+    ):
+        print(
+            f"warehouse compile timing dialect={dialect}{shard_label} "
+            f"stage={stage} seconds={seconds:.3f}"
+            + (
+                f" candidates={len(unique)} distinct={len(cases)} "
+                f"represented={sum(case.represented_count for case in cases)}"
+                if stage == "dedupe"
+                else ""
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+    return cases
 
 
 def _captured_cuped_case_names():
