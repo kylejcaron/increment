@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import cache
 from hashlib import sha1
-from time import perf_counter
 from uuid import uuid4
 
 import ibis
@@ -21,8 +19,6 @@ class CompileCase:
     builder: Callable[[dict[str, str], str], object]
     table_names: dict[str, str]
     dialect: str
-    represented_count: int = 1
-    normalized_statement: str | None = None
 
     def build(self, table_names: dict[str, str]):
         return self.builder(table_names, self.dialect)
@@ -41,27 +37,6 @@ def _shared_compile_table_name(dialect: str, schema_key: tuple) -> str:
 
 def _schema_key(schema: ibis.Schema) -> tuple:
     return tuple((name, str(dtype)) for name, dtype in schema.items())
-
-
-def _normalize_compile_ast(query, dialect: str, source_roles: dict[str, str]) -> str:
-    from sqlglot import exp
-
-    for literal in tuple(query.find_all(exp.Literal)):
-        literal.replace(exp.Placeholder())
-    for table in query.find_all(exp.Table):
-        role = source_roles.get(table.name)
-        if role is not None:
-            table.set("this", exp.to_identifier(role))
-            table.set("catalog", None)
-            table.set("db", None)
-    return query.sql(dialect=dialect, pretty=False)
-
-
-def _normalize_compile_statement(statement: str, dialect: str, source_roles: dict[str, str]) -> str:
-    """Normalize literals and source relations to compare SQL statement shapes."""
-    import sqlglot
-
-    return _normalize_compile_ast(sqlglot.parse_one(statement, read=dialect), dialect, source_roles)
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,51 +334,31 @@ def _captured_relation_schemas(expression, index, schema_snapshot, query):
     return {name: relation_schemas[name] for name in sorted(table_refs)}
 
 
-def _captured_statement_shape(expression, index, schema_snapshot):
-    from collections import Counter
-
-    from ibis.expr import operations as ops
+def _captured_statement_template(expression, dialect, index, schema_snapshot):
     from sqlglot import exp
 
-    query = _compiler_sqlglot_query(expression, "duckdb")
+    target_expression = _transpile_captured_raw_sql(expression, dialect)
+    query = _portable_nonfinite_ast(_compiler_sqlglot_query(target_expression, dialect), dialect)
     schemas = _captured_relation_schemas(expression, index, schema_snapshot, query)
-    roles = {name: f"source_{position}" for position, name in enumerate(sorted(schemas))}
-    columns = {column.name for column in query.find_all(exp.Column)}
-    source_types = tuple(
-        (
-            roles[name],
-            tuple(
-                (column, str(dtype), dtype.nullable)
-                for column, dtype in schemas[name].items()
-                if column in columns
-            ),
-        )
-        for name in sorted(schemas)
-    )
-    raw_query_ops = Counter(
-        [type(operation).__name__ for operation in expression.op().find(ops.SQLQueryResult)]
-        + [type(operation).__name__ for operation in expression.op().find(ops.SQLStringView)]
-    )
-    raw_op_schema = tuple(
-        (
-            type(operation).__name__,
-            tuple((str(dtype), dtype.nullable) for dtype in operation.schema.values()),
-        )
-        for operation in (
-            *expression.op().find(ops.SQLQueryResult),
-            *expression.op().find(ops.SQLStringView),
-        )
-    )
-    result_schema = tuple(
-        (name, str(dtype), dtype.nullable) for name, dtype in expression.schema().items()
-    )
-    return (
-        _normalize_compile_ast(query.copy(), "duckdb", roles),
-        result_schema,
-        source_types,
-        tuple(sorted(raw_query_ops.items())),
-        raw_op_schema,
-    )
+    schema_roles = {}
+    relation_roles = {}
+    table_roles = []
+    for name in sorted(schemas):
+        schema_key = _schema_key(schemas[name])
+        placeholder = schema_roles.get(schema_key)
+        if placeholder is None:
+            placeholder = f"__INCREMENT_COMPILE_SOURCE_{len(schema_roles):04d}__"
+            schema_roles[schema_key] = placeholder
+            table_roles.append((placeholder, name))
+        relation_roles[name] = placeholder
+    for table in query.find_all(exp.Table):
+        role = relation_roles.get(table.name)
+        if role is None:
+            continue
+        table.set("this", exp.to_identifier(role, quoted=True))
+        table.set("db", None)
+        table.set("catalog", None)
+    return query.sql(dialect=dialect), schemas, tuple(table_roles)
 
 
 def _captured_statement_case(
@@ -413,70 +368,47 @@ def _captured_statement_case(
     *,
     schema_snapshot=None,
     statement_kind="readout",
-    represented_count=1,
-    render_seconds=None,
 ):
-    from sqlglot import exp
-
-    render_started = perf_counter()
-
-    target_expression = _transpile_captured_raw_sql(expression, dialect)
-    query = _portable_nonfinite_ast(_compiler_sqlglot_query(target_expression, dialect), dialect)
-    if render_seconds is not None:
-        render_seconds.append(perf_counter() - render_started)
-    schemas = _captured_relation_schemas(expression, index, schema_snapshot, query)
+    template, schemas, table_roles = _captured_statement_template(
+        expression, dialect, index, schema_snapshot
+    )
     table_names = {
         name: _shared_compile_table_name(dialect, _schema_key(schema))
         for name, schema in schemas.items()
     }
 
-    def build(table_names, _dialect):
-        statement = query.copy()
-        for table in statement.find_all(exp.Table):
-            replacement = table_names.get(table.name)
-            if replacement is None:
-                continue
-            table.set("this", exp.to_identifier(replacement, quoted=True))
-            table.set("db", None)
-            table.set("catalog", None)
-        return statement.sql(dialect=dialect)
+    def build(requested_table_names, _dialect):
+        statement = template
+        for placeholder, name in table_roles:
+            statement = statement.replace(
+                placeholder, requested_table_names.get(name, table_names[name])
+            )
+        return statement
 
-    roles = {name: f"source_{position}" for position, name in enumerate(sorted(schemas))}
     return CompileCase(
         f"cuped.{statement_kind}.{index:04d}",
         schemas,
         build,
         table_names,
         dialect,
-        represented_count,
-        _normalize_compile_ast(query.copy(), dialect, roles),
     )
 
 
-def _deduplicate_statement_cases(cases: list[CompileCase]) -> list[CompileCase]:
-    unique = []
-    positions = {}
-    for case in cases:
-        key = case.normalized_statement
-        if key is None:
-            unique.append(case)
-        elif key in positions:
-            position = positions[key]
-            first = unique[position]
-            unique[position] = replace(
-                first, represented_count=first.represented_count + case.represented_count
-            )
-        else:
-            positions[key] = len(unique)
-            unique.append(case)
-    return unique
+def _serialize_compile_schema(schema):
+    return tuple((name, str(dtype), dtype.nullable) for name, dtype in schema.items())
 
 
-@cache
-def _captured_cuped_statement_cases(dialect, shard=None):
-    """Compile distinct captured statements; ``shard=(k, n)`` keeps every n-th one."""
+def _restore_compile_schema(fields):
+    return ibis.schema(
+        {name: dt.dtype(type_name).copy(nullable=nullable) for name, type_name, nullable in fields}
+    )
+
+
+def _build_cached_captured_compile_data(dialect):
+    import sys
+    from time import perf_counter
+
     started = perf_counter()
-    capture_started = perf_counter()
     expressions = _capture_public_cuped_expressions()
     captured = [
         (expression, index, None, "readout") for index, expression in enumerate(expressions)
@@ -485,71 +417,87 @@ def _captured_cuped_statement_cases(dialect, shard=None):
         (expression, index, schema_snapshot, "materialize")
         for index, (expression, schema_snapshot) in enumerate(_CAPTURED_CUPED_MATERIALIZATIONS)
     )
-    capture_seconds = perf_counter() - capture_started
+    cases = []
+    for expression, index, schema_snapshot, kind in captured:
+        template, schemas, table_roles = _captured_statement_template(
+            expression, dialect, index, schema_snapshot
+        )
+        cases.append(
+            (
+                f"cuped.{kind}.{index:04d}",
+                tuple(
+                    (name, _serialize_compile_schema(schema)) for name, schema in schemas.items()
+                ),
+                template,
+                table_roles,
+            )
+        )
+    print(
+        f"warehouse compile registry dialect={dialect} cases={len(cases)} "
+        f"build_seconds={perf_counter() - started:.3f}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return tuple(cases)
+
+
+@cache
+def _captured_compile_cache_key(dialect):
+    from pathlib import Path
+
+    from tests._shared_cache import fixture_cache_key
+
+    root = Path(__file__).resolve().parents[2]
+    source_paths = (Path(__file__), root / "tests" / "warehouse_cuped_cases.py")
+    return f"{dialect}-{fixture_cache_key(root, *source_paths)}"
+
+
+@cache
+def _captured_compile_data(dialect):
+    from pathlib import Path
+
+    from tests._shared_cache import get_or_build
+
+    root = Path(__file__).resolve().parents[2]
+    cache_root = root / ".pytest_cache" / "warehouse_compile_registry"
+    return get_or_build(
+        cache_root,
+        _captured_compile_cache_key(dialect),
+        lambda: _build_cached_captured_compile_data(dialect),
+    )
+
+
+def _restore_cached_captured_case(record, dialect):
+    name, schema_data, template, table_roles = record
+    schemas = {relation: _restore_compile_schema(fields) for relation, fields in schema_data}
+    table_names = {
+        relation: _shared_compile_table_name(dialect, _schema_key(schema))
+        for relation, schema in schemas.items()
+    }
+
+    def build(requested_table_names, _dialect):
+        statement = template
+        for placeholder, relation in table_roles:
+            statement = statement.replace(
+                placeholder, requested_table_names.get(relation, table_names[relation])
+            )
+        return statement
+
+    return CompileCase(name, schemas, build, table_names, dialect)
+
+
+@cache
+def _captured_cuped_statement_cases(dialect, shard=None):
+    """Load cached rendered cases and optionally select a disjoint shard."""
+    records = _captured_compile_data(dialect)
     if shard is not None:
         offset, count = shard
-        captured = captured[offset::count]
-
-    dedupe_started = perf_counter()
-    unique = []
-    positions = {}
-    for expression, index, schema_snapshot, kind in captured:
-        key = _captured_statement_shape(expression, index, schema_snapshot)
-        position = positions.get(key)
-        if position is None:
-            positions[key] = len(unique)
-            unique.append([expression, index, schema_snapshot, kind, 1])
-        else:
-            unique[position][4] += 1
-    pre_render_dedupe_seconds = perf_counter() - dedupe_started
-
-    render_seconds = []
-    cases = [
-        _captured_statement_case(
-            expression,
-            dialect,
-            index,
-            schema_snapshot=schema_snapshot,
-            statement_kind=kind,
-            represented_count=represented_count,
-            render_seconds=render_seconds,
-        )
-        for expression, index, schema_snapshot, kind, represented_count in unique
-    ]
-    dedupe_started = perf_counter()
-    cases = _deduplicate_statement_cases(cases)
-    dedupe_seconds = pre_render_dedupe_seconds + perf_counter() - dedupe_started
-    render_total = sum(render_seconds)
-    construction_seconds = (
-        perf_counter() - started - capture_seconds - dedupe_seconds - render_total
-    )
-    shard_label = f" shard={shard}" if shard is not None else ""
-    for stage, seconds in (
-        ("capture", capture_seconds),
-        ("render", render_total),
-        ("dedupe", dedupe_seconds),
-        ("case_construction", construction_seconds),
-    ):
-        print(
-            f"warehouse compile timing dialect={dialect}{shard_label} "
-            f"stage={stage} seconds={seconds:.3f}"
-            + (
-                f" candidates={len(unique)} distinct={len(cases)} "
-                f"represented={sum(case.represented_count for case in cases)}"
-                if stage == "dedupe"
-                else ""
-            ),
-            file=sys.stderr,
-            flush=True,
-        )
-    return cases
+        records = records[offset::count]
+    return [_restore_cached_captured_case(record, dialect) for record in records]
 
 
-def _captured_cuped_case_names():
-    expressions = _capture_public_cuped_expressions()
-    return [f"cuped.readout.{index:04d}" for index in range(len(expressions))] + [
-        f"cuped.materialize.{index:04d}" for index in range(len(_CAPTURED_CUPED_MATERIALIZATIONS))
-    ]
+def _captured_cuped_case_names(dialect):
+    return [record[0] for record in _captured_compile_data(dialect)]
 
 
 def _register(cases, dialect, name, schemas, builder):
@@ -775,8 +723,10 @@ def compile_statement_cases(
 
 
 def compile_case_names(dialect: str) -> list[str]:
-    """Return generated case names without rendering captured statements."""
-    return [case.name for case in fixed_compile_cases(dialect)] + _captured_cuped_case_names()
+    """Return registered case names."""
+    return [case.name for case in fixed_compile_cases(dialect)] + _captured_cuped_case_names(
+        dialect
+    )
 
 
 @cache

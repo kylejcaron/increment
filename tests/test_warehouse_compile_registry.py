@@ -17,6 +17,8 @@ _SHARDS = 8
 
 @pytest.mark.parametrize("shard", range(_SHARDS))
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+# A cold cache build compiles all registered statements before shard tests run.
+@pytest.mark.timeout(900)
 def test_registered_warehouse_statements_compile_offline(dialect, shard):
     cases = compile_statement_cases(dialect, shard=(shard, _SHARDS))
 
@@ -298,29 +300,26 @@ def test_shared_source_refusal_uses_inline_typed_cte(dialect):
     assert "WITH" in statement.upper()
 
 
+def test_all_captured_cases_are_registered():
+    from integration.warehouse_execution._compile import compile_case_names, compile_statement_cases
+
+    cases = compile_statement_cases("snowflake")
+
+    assert len(cases) == 826
+    assert [case.name for case in cases] == compile_case_names("snowflake")
+
+
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-def test_statement_normalization_ignores_literals_and_source_names(dialect):
-    from integration.warehouse_execution._compile import _normalize_compile_statement
-
-    left = 'SELECT "value" FROM "catalog_a"."schema_a"."scratch_a" WHERE "value" = 1'
-    right = 'SELECT "value" FROM "catalog_b"."schema_b"."scratch_b" WHERE "value" = 2'
-
-    assert _normalize_compile_statement(left, dialect, {"scratch_a": "source"}) == (
-        _normalize_compile_statement(right, dialect, {"scratch_b": "source"})
-    )
-
-
-def test_deduplicated_cases_retain_represented_count():
+def test_cached_templates_rebuild_case_sql(dialect):
     from integration.warehouse_execution import _compile
 
-    cases = _compile.compile_statement_cases("snowflake")
+    data = _compile._captured_compile_data(dialect)
+    cases = {case.name: case for case in _compile._captured_cuped_statement_cases(dialect)}
 
-    assert len(cases) == 500
-    assert any(case.represented_count > 1 for case in cases)
-    captured = _compile._capture_public_cuped_expressions()
-    materializations = _compile._CAPTURED_CUPED_MATERIALIZATIONS
-    assert materializations is not None
-    expected_count = (
-        len(_compile.fixed_compile_cases("snowflake")) + len(captured) + len(materializations)
-    )
-    assert sum(case.represented_count for case in cases) == expected_count
+    assert len(data) == len(cases) == 732
+    for name, _schemas, template, table_roles in data:
+        case = cases[name]
+        statement = case.build(case.table_names)
+        for placeholder, relation in table_roles:
+            statement = statement.replace(case.table_names[relation], placeholder)
+        assert statement == template

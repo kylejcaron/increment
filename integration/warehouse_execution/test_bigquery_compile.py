@@ -10,7 +10,7 @@ pytestmark = pytest.mark.warehouse_compile
 @pytest.mark.parametrize(
     "case",
     compile_statement_cases("bigquery"),
-    ids=lambda case: f"{case.name}[{case.represented_count}]",
+    ids=lambda case: case.name,
 )
 def test_bigquery_statement_compiles(bigquery_compile_session, bigquery_compile_sources, case):
     run_compile_case(bigquery_compile_session, case, shared_tables=bigquery_compile_sources)
