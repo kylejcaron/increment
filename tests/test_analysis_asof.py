@@ -837,7 +837,8 @@ def test_run_asof_lift_returns_frozen_per_day_lift_estimates(con):
     restored = [type(row).model_validate_json(row.model_dump_json()) for row in results]
     assert restored == list(results)
     assert {
-        value.date() if isinstance(value, datetime) else value for value in results.to_frame()["ds"]
+        value.date() if isinstance(value, datetime) else value
+        for value in results.to_frame(backend="pandas")["ds"]
     } == set(by_day)
     day0_lift = by_day[date(2025, 6, 1)].require_lift().value
     # Not hand-computed: "unadjusted" applies posterior shrinkage on top of the raw ratio. The property under test is the FREEZE (below), so just confirm direction (treatment > control).
@@ -1924,7 +1925,7 @@ def test_run_daily_lift_returns_nan_for_day_missing_control_arm(con):
     assert day1.reference_df is None
     assert DailyLiftEstimate.model_validate_json(day1.model_dump_json()) == day1
 
-    frame = results.to_frame()
+    frame = results.to_frame(backend="pandas")
     day1_frame = frame[frame["ds"].dt.date == date(2025, 6, 1)]
     assert len(day1_frame) == 1 and day1_frame["lift"].isna().all()
     from increment.tables import estimates_to_readout

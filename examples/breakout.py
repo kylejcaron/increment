@@ -110,7 +110,7 @@ def _(mo):
 @app.cell
 def _(analysis, ct):
     daily_values = analysis.run_daily()
-    daily_frame = daily_values.to_frame()
+    daily_frame = daily_values.to_frame(backend="pandas")
 
     value_table = (
         ct.CoefTable(daily_frame[["metric"]].drop_duplicates(), rows="metric")
@@ -146,7 +146,7 @@ def _(mo):
 @app.cell
 def _(analysis, ct):
     segment_daily_values = analysis.run_daily(dimension="country")
-    segment_daily_frame = segment_daily_values.to_frame()
+    segment_daily_frame = segment_daily_values.to_frame(backend="pandas")
     segment_daily_frame = segment_daily_frame[
         segment_daily_frame["group_id"] != analysis.experiment.control_group
     ]
@@ -189,7 +189,7 @@ def _(mo):
 def _(analysis, ct):
     # its series starts late, absent until the first cohort matures.
     asof_values = analysis.run_asof()
-    asof_frame = asof_values.to_frame()
+    asof_frame = asof_values.to_frame(backend="pandas")
 
     asof_table = (
         ct.CoefTable(asof_frame[["metric"]].drop_duplicates(), rows="metric")

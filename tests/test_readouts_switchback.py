@@ -604,7 +604,7 @@ def test_sum_contrast_saved_collection_replay_preserves_identity_and_consumers()
     assert restored.metadata == results.metadata
     assert restored.source == results.source
     assert restored[0].aggregation == "sum"
-    assert restored.to_frame()["aggregation"].iloc[0] == "sum"
+    assert restored.to_frame(backend="pandas")["aggregation"].iloc[0] == "sum"
     assert estimates_to_readout(restored)[0]["aggregation"] == "sum"
 
 
@@ -693,7 +693,7 @@ def test_cross_snapshot_contrast_concat_preserves_coverage_and_refuses_sequentia
     assert set(combined.metadata.scope.by_source) == {"snapshot-a", "snapshot-b"}
     assert combined.metadata.scope.by_source["snapshot-a"].source == declared_source
     assert combined.metadata.scope.by_source["snapshot-b"].source == exploratory_source
-    assert not combined.to_frame()["view_partial"].any()
+    assert not combined.to_frame(backend="pandas")["view_partial"].any()
     restored = ReadoutResults.model_validate_json(combined.model_dump_json())
     assert restored.metadata == combined.metadata
     assert restored.source is None
@@ -702,7 +702,7 @@ def test_cross_snapshot_contrast_concat_preserves_coverage_and_refuses_sequentia
     assert restored.metadata.scope.by_source["snapshot-b"].source == exploratory_source
     partial = combined.filter(lambda item: item.source_snapshot_id == "snapshot-a")
     assert partial.metadata.partial is True
-    assert partial.to_frame()["view_partial"].all()
+    assert partial.to_frame(backend="pandas")["view_partial"].all()
     assert estimates_to_readout(partial)[0]["view_partial"] is True
 
     checkpoint = object()

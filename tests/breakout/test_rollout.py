@@ -106,8 +106,8 @@ def test_rollout_keeps_assigned_and_triggered_populations_separate():
         combined = next(row for row in recommendations if row.analysis_population == population)
         assert combined.policy_value == pytest.approx(single_population[0].policy_value)
 
-    recommendation_frame = cast(pd.DataFrame, recommendations.to_frame())
-    segment_frame = cast(pd.DataFrame, segments.to_frame())
+    recommendation_frame = cast(pd.DataFrame, recommendations.to_frame(backend="pandas"))
+    segment_frame = cast(pd.DataFrame, segments.to_frame(backend="pandas"))
     assert "analysis_population" in recommendation_frame
     assert "analysis_population" in segment_frame
 
@@ -430,8 +430,8 @@ class TestMixedEstimandGrouping:
 
     def test_frames_carry_the_identifying_columns(self):
         recommendations, segments = segment_rollout_recommendation(BreakoutEstimates(_priced_key()))
-        rec_frame = cast(pd.DataFrame, recommendations.to_frame())
-        seg_frame = cast(pd.DataFrame, segments.to_frame())
+        rec_frame = cast(pd.DataFrame, recommendations.to_frame(backend="pandas"))
+        seg_frame = cast(pd.DataFrame, segments.to_frame(backend="pandas"))
         assert {"estimand", "value_scale"} <= set(rec_frame.columns)
         assert {"estimand", "value_scale"} <= set(seg_frame.columns)
         assert set(rec_frame["estimand"]) == {"itt"}
@@ -532,8 +532,8 @@ class TestFrames:
                 [*_priced_key(), _rollout_estimate("FR", float("nan"), 0.03, excluded="few_units")]
             )
         )
-        rec_frame = cast(pd.DataFrame, recommendations.to_frame())
-        seg_frame = cast(pd.DataFrame, segments.to_frame())
+        rec_frame = cast(pd.DataFrame, recommendations.to_frame(backend="pandas"))
+        seg_frame = cast(pd.DataFrame, segments.to_frame(backend="pandas"))
         assert len(rec_frame) == 1
         assert len(seg_frame) == 4
         assert {"metric", "recommendation", "policy_value", "k", "rollout_cost"} <= set(
@@ -549,7 +549,7 @@ class TestFrames:
                 [*_priced_key(), _rollout_estimate("FR", float("nan"), 0.03, excluded="few_units")]
             )
         )
-        frame = cast(pd.DataFrame, segments.to_frame())
+        frame = cast(pd.DataFrame, segments.to_frame(backend="pandas"))
         assert frame[frame["dimension_value"] == "FR"]["selected"].isna().all()
         assert frame["selected"].notna().sum() == 3
 

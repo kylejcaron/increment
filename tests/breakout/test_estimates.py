@@ -2446,7 +2446,7 @@ class TestRunBreakoutArmCounts:
             control_group="control",
             dimension="country",
         )
-        frame = cast(pd.DataFrame, result.to_frame())
+        frame = cast(pd.DataFrame, result.to_frame(backend="pandas"))
         assert "n_treat" in frame.columns
         assert "n_control" in frame.columns
         assert frame.loc[0, "n_treat"] == pytest.approx(50.0)
@@ -3553,7 +3553,7 @@ class TestRunBreakoutReturnsBreakoutEstimates:
         result = run_breakout(rows, [_mean_metric()], control_group="control", dimension="country")
         assert isinstance(result, BreakoutEstimates)
         assert isinstance(result, list)
-        assert isinstance(result.to_frame(), pd.DataFrame)
+        assert isinstance(result.to_frame(backend="pandas"), pd.DataFrame)
 
     def test_run_breakout_returns_breakout_estimates_when_empty(self):
         """No segments at all (empty *summary*) still returns the concrete collection type, not a
@@ -3598,14 +3598,14 @@ class TestEstimateListSlicingAndConcatPreserveSubclass:
     def test_slice_preserves_the_concrete_subclass(self):
         sliced = self._sample()[0:1]
         assert isinstance(sliced, BreakoutEstimates)
-        assert isinstance(sliced.to_frame(), pd.DataFrame)
+        assert isinstance(sliced.to_frame(backend="pandas"), pd.DataFrame)
         assert len(sliced) == 1
 
     def test_add_preserves_the_concrete_subclass(self):
         combined = self._sample() + self._sample()
         assert isinstance(combined, BreakoutEstimates)
         assert len(combined) == 4
-        assert isinstance(combined.to_frame(), pd.DataFrame)
+        assert isinstance(combined.to_frame(backend="pandas"), pd.DataFrame)
 
     def test_is_a_plain_list_throughout(self):
         """Every existing `list[BreakoutEstimate]` consumer - isinstance checks, iteration,
@@ -3713,7 +3713,7 @@ class TestToFrameFreeFunction:
         ],
     )
     def test_pandas_flattened_estimate_columns_remain_numeric(self, estimates, column, expected):
-        frame = cast(pd.DataFrame, estimates.to_frame())
+        frame = cast(pd.DataFrame, estimates.to_frame(backend="pandas"))
 
         assert pd.api.types.is_float_dtype(frame[column])
         assert frame.loc[0, column] == pytest.approx(expected)
@@ -3895,7 +3895,7 @@ class TestToFrameFreeFunction:
                 )
             ]
         )
-        frame = cast(pd.DataFrame, estimates.to_frame())
+        frame = cast(pd.DataFrame, estimates.to_frame(backend="pandas"))
         assert frame.loc[0, "lift"] == pytest.approx(0.1)
 
     def test_works_directly_on_daily_lift_estimates_collection(self):
@@ -3913,7 +3913,7 @@ class TestToFrameFreeFunction:
                 )
             ]
         )
-        frame = cast(pd.DataFrame, estimates.to_frame())
+        frame = cast(pd.DataFrame, estimates.to_frame(backend="pandas"))
         assert frame.loc[0, "lift"] == pytest.approx(0.1)
 
     def test_estimate_list_is_a_generic_base_not_a_public_construction_type(self):

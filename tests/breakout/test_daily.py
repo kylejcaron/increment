@@ -2057,7 +2057,7 @@ class TestRunDailyLiftNaNRowsForUnestimableSlices:
         assert results[0].group_id == "treatment"
         assert results[0].lift is None
         assert results[0].unavailable == "zero_variance"
-        frame = cast(pd.DataFrame, results.to_frame())
+        frame = cast(pd.DataFrame, results.to_frame(backend="pandas"))
         assert pd.isna(frame.loc[0, "lift"])
         assert frame.loc[0, "unavailable"] == "zero_variance"
 
@@ -2680,7 +2680,7 @@ class TestDailyMetricValueToFrame:
                 ),
             ]
         )
-        frame = cast(pd.DataFrame, values.to_frame())
+        frame = cast(pd.DataFrame, values.to_frame(backend="pandas"))
         assert frame.loc[0, "ds"].date() == date(2025, 1, 15)
         assert frame.loc[0, "metric"] == "purchase_rate"
         assert frame.loc[0, "group_id"] == "T"
@@ -2709,7 +2709,7 @@ class TestDailyMetricValueToFrame:
                 ),
             ]
         )
-        frame = cast(pd.DataFrame, values.to_frame())
+        frame = cast(pd.DataFrame, values.to_frame(backend="pandas"))
         assert pd.api.types.is_datetime64_any_dtype(frame["ds"])
 
     def test_empty_list_has_correct_columns(self):
@@ -2717,7 +2717,7 @@ class TestDailyMetricValueToFrame:
         skipped) - it must still be a 0-row frame with the documented 10
         columns, not columnless, so ``frame["value"]`` gets an empty
         column instead of ``KeyError``."""
-        frame = DailyMetricValues([]).to_frame()
+        frame = DailyMetricValues([]).to_frame(backend="pandas")
         assert len(frame) == 0
 
     def test_carries_dimension_columns_when_present(self):
@@ -2745,7 +2745,7 @@ class TestDailyMetricValueToFrame:
                 ),
             ]
         )
-        frame = cast(pd.DataFrame, values.to_frame())
+        frame = cast(pd.DataFrame, values.to_frame(backend="pandas"))
         assert frame.loc[0, "dimension"] == "country"
         assert frame.loc[0, "dimension_value"] == "US"
         assert frame.loc[0, "source"] == "events"
@@ -2837,7 +2837,7 @@ class TestDailyLiftEstimateToFrame:
                 ),
             ]
         )
-        frame = cast(pd.DataFrame, values.to_frame())
+        frame = cast(pd.DataFrame, values.to_frame(backend="pandas"))
         assert frame.loc[0, "ds"].date() == date(2025, 1, 15)
         assert frame.loc[0, "metric"] == "purchase_rate"
         assert frame.loc[0, "group_id"] == "T"
@@ -2864,7 +2864,7 @@ class TestDailyLiftEstimateToFrame:
                 ),
             ]
         )
-        frame = cast(pd.DataFrame, values.to_frame())
+        frame = cast(pd.DataFrame, values.to_frame(backend="pandas"))
         assert pd.api.types.is_datetime64_any_dtype(frame["ds"])
 
     def test_ds_stays_datetime_when_every_row_has_a_null_ds(self):
@@ -2898,8 +2898,8 @@ class TestDailyLiftEstimateToFrame:
         resolve to DIFFERENT, correctly-typed column sets even with no
         instance to introspect - the schema comes from the class, not
         from peeking at the (empty) list."""
-        value_frame = DailyMetricValues([]).to_frame()
-        lift_frame = DailyLiftEstimates([]).to_frame()
+        value_frame = DailyMetricValues([]).to_frame(backend="pandas")
+        lift_frame = DailyLiftEstimates([]).to_frame(backend="pandas")
         assert "value" in value_frame.columns and "n" in value_frame.columns
         assert "lift" in lift_frame.columns and "method" in lift_frame.columns
         assert "n" not in lift_frame.columns
@@ -2932,7 +2932,7 @@ class TestDailyLiftEstimateToFrame:
                 ),
             ]
         )
-        frame = cast(pd.DataFrame, values.to_frame())
+        frame = cast(pd.DataFrame, values.to_frame(backend="pandas"))
         assert frame.loc[0, "dimension"] == "country"
         assert frame.loc[0, "dimension_value"] == "US"
         assert frame.loc[0, "source"] == "events"
@@ -2971,14 +2971,14 @@ class TestRunDailyReturnsDailyMetricValues:
         result = run_daily(rows, [_mean_metric()])
         assert isinstance(result, DailyMetricValues)
         assert isinstance(result, list)
-        assert isinstance(result.to_frame(), pd.DataFrame)
+        assert isinstance(result.to_frame(backend="pandas"), pd.DataFrame)
 
     def test_run_daily_returns_daily_metric_values_when_empty(self):
         """Every metric filtered to nothing (empty summary) still returns
         the concrete collection type, not a bare `[]`."""
         result = run_daily([], [_mean_metric()])
         assert isinstance(result, DailyMetricValues)
-        assert len(result.to_frame()) == 0
+        assert len(result.to_frame(backend="pandas")) == 0
 
 
 class TestRunDailyLiftReturnsDailyLiftEstimates:
@@ -2991,12 +2991,12 @@ class TestRunDailyLiftReturnsDailyLiftEstimates:
         assert isinstance(result, DailyLiftEstimates)
         assert isinstance(result, list)
         assert {row.policy_name for row in result} == {"default_exploratory"}
-        assert isinstance(result.to_frame(), pd.DataFrame)
+        assert isinstance(result.to_frame(backend="pandas"), pd.DataFrame)
 
     def test_run_daily_lift_returns_daily_lift_estimates_when_empty(self):
         result = run_daily_lift([], [_mean_metric()], control_group="control")
         assert isinstance(result, DailyLiftEstimates)
-        assert len(result.to_frame()) == 0
+        assert len(result.to_frame(backend="pandas")) == 0
 
 
 # run_daily_lift(view="asof", design=Encouragement(...)): the additive

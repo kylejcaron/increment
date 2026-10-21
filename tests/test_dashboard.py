@@ -1622,7 +1622,7 @@ def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
     data = load_explore(
         storefront_analysis, snapshot=storefront, metric="checkout_conversion", view="daily_values"
     )
-    frame: Any = data.to_frame()
+    frame: Any = data.to_frame(backend="pandas")
     assert set(frame["ds_basis"].dropna()) == {"calendar"}
     reasons = set(frame["unavailable"].dropna())
     assert reasons == {"nonpositive_mean"}

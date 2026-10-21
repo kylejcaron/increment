@@ -242,8 +242,9 @@ def to_frame[M: BaseModel](
         Which model *estimates* holds. Required when *estimates* is
         empty, since an empty sequence carries no runtime type trace.
     backend : Backend | None
-        Native dataframe backend to build. When omitted, pandas is preferred
-        when installed and polars is used otherwise.
+        Native dataframe backend to build. When omitted, pandas is preferred,
+        then polars, then pyarrow. Collections created from dataframe input
+        default to that input's backend.
 
     columns : Sequence[str] | None
         Select known projection columns in canonical order. ``None`` keeps

@@ -299,7 +299,7 @@ def test_run_plain_cuped_methods_have_unique_to_frame_rows():
         sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
     )
 
-    rows = cast(pd.DataFrame, results.to_frame())
+    rows = cast(pd.DataFrame, results.to_frame(backend="pandas"))
     assert len(rows) == 2
     assert set(rows["method"]) == {"plain", "cuped"}
     assert rows["method"].is_unique
@@ -981,7 +981,7 @@ def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_trig
     assert [(row.analysis_population, row.sequential_result) for row in restored] == [
         (row.analysis_population, row.sequential_result) for row in results
     ]
-    frame = results.to_frame()
+    frame = results.to_frame(backend="pandas")
     triggered_frame = frame.loc[frame["analysis_population"] == "triggered"]
     assert len(triggered_frame) == 1
     assert triggered_frame["failure_code"].isna().all()
