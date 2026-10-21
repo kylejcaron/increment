@@ -96,12 +96,6 @@ print(results)
 ```text
 Warning: metric 'complaints': missing='drop' excludes rows with 537 null/NaN value(s) from this metric's moments (complete-case). This is unbiased only when missingness is unrelated to the values; if null means "no events", missing='zero' keeps every unit.
 assigned — treatment vs control
-Decision scope completeness: incomplete.
-Population roster completeness: complete (declared_allocation).
-Required cells: 2; available: 1.
-Unavailable complaints: Metric complaints has no usable observations for arm treatment (arms with observations: control); check the metric's missing-value policy and the values available in that arm, then correct the data or policy and rerun
-Multiplicity (primary): declared_plan; family primary.
-Multiplicity (guardrail): declared_plan; family guardrail.
 revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
 revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 revenue additive effect: 1.15169, set [0.638286, 1.6651].
@@ -109,6 +103,12 @@ revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
 complaints test alternative: less; null (relative lift): 0.
 complaints result identity: method unadjusted; method role decision; estimand itt.
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Decision scope completeness: incomplete.
+Required cells: 2; available: 1.
+Unavailable complaints: Metric complaints has no usable observations for arm treatment (arms with observations: control); check the metric's missing-value policy and the values available in that arm, then correct the data or policy and rerun
+Multiplicity (primary): declared_plan; family primary.
+Multiplicity (guardrail): declared_plan; family guardrail.
 ```
 
 This is a complete-case warning: dropping rows is unbiased only when
@@ -146,9 +146,6 @@ print(recovered)
 
 ```text
 assigned — treatment vs control
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Multiplicity (primary): declared_plan; family primary.
-Multiplicity (guardrail): declared_plan; family guardrail.
 revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
 revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 revenue additive effect: 1.15169, set [0.638286, 1.6651].
@@ -160,6 +157,9 @@ complaints additive effect: -0.00535734, set [-0.0249109, 0.0141962].
 complaints binomial set upper_bound: [-1, 0.666805] at 0.9 confidence.
 complaints test alternative: less; null (relative lift): 0.
 complaints result identity: method unadjusted; method role decision; estimand itt.
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Multiplicity (primary): declared_plan; family primary.
+Multiplicity (guardrail): declared_plan; family guardrail.
 ```
 
 The repaired collection is complete. The guardrail point estimate is a 13.8%

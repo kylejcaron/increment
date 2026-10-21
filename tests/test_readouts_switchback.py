@@ -233,7 +233,8 @@ def test_scoped_contrast_collection_default_output_keeps_qualifications():
     import narwhals as nw
 
     results = _switchback_analysis().run()
-    assert "Integrity:" in repr(results)
+    rendered = repr(results)
+    assert "SRM not run for this assignment design." in rendered
     for backend in ("pandas", "polars", "pyarrow"):
         frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
         assert {

@@ -277,7 +277,6 @@ raise `results.frame.unknown_columns`.
 <!-- output -->
 ```text
 assigned — treatment vs control
-Multiplicity (outcome): undeclared_plan; family retained scope.
 converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 converted additive effect: 0.36036, set [0.270641, 0.45008].
 converted binomial set central: [1.61559, +∞] at 0.95 confidence.
@@ -288,6 +287,8 @@ revenue interpretation: excludes zero at 95.0% confidence; effect direction supp
 revenue additive effect: 1.39812, set [0.504942, 2.29129].
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Multiplicity (outcome): undeclared_plan; family retained scope.
 revenue / treatment: lift=+9.47% [+3.27%, +16.04%] significant=True
 LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+1.616, +inf), route='finite_sample', discovery=None)
 ```
