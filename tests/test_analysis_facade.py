@@ -51,6 +51,26 @@ def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
 
 
+@pytest.mark.integration
+def test_warehouse_run_does_not_emit_duckdb_arrow_deprecation(seeded_defs, seeded_con):
+    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        analysis.run()
+
+    assert not [
+        warning
+        for warning in record
+        if isinstance(warning.message, DeprecationWarning)
+        and "fetch_arrow_table" in str(warning.message)
+    ]
+    package_warnings = [
+        warning.message for warning in record if isinstance(warning.message, IncrementWarning)
+    ]
+    if package_warnings:
+        assert all(isinstance(warning, IncrementWarning) for warning in package_warnings)
+
+
 @contextmanager
 def _ignore_ibis_deprecation():
     with warnings.catch_warnings():
