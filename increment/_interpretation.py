@@ -599,6 +599,9 @@ def _render_group_scope(group, visible_rows) -> list[str]:
         lines.append("SRM not checked; assignment counts are not recorded.")
     elif group.integrity_status == "unsupported_assignment":
         lines.append("SRM not run for this assignment design.")
+    elif group.integrity_status.startswith("not_checked"):
+        reason = group.integrity_code or group.integrity_status
+        lines.append(f"SRM not checked ({reason}).")
     if group.partial:
         lines.append("View: partial; do not treat visible cells as a complete decision.")
     if group.decision_complete is False:
