@@ -168,9 +168,17 @@ class MetricTrend:
     def sql(self) -> str:
         return str(ibis_to_sql(self._table))
 
-    def to_frame(self, backend: str = "pandas"):
+    def to_frame(self, backend: Literal["pandas", "polars", "pyarrow"] | None = None):
+        """Return the trend as a frame, preferring pandas when available."""
         import narwhals as nw
 
+        if backend is None:
+            try:
+                import pandas  # noqa: F401
+            except ModuleNotFoundError:
+                backend = "polars"
+            else:
+                backend = "pandas"
         frame = nw.from_native(self._table.to_pyarrow(), eager_only=True)
         if backend == "pyarrow":
             return frame.to_native()

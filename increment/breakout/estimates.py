@@ -122,6 +122,17 @@ from increment.semantics.models import Metric, RetentionMetric
 from increment.semantics.sequential import ASYMPTOTIC_LAWS
 from increment.sequential_state import SequentialSnapshot, require_public_laws, sequential_refuse
 
+
+def _default_backend(backend: Backend | None) -> Backend:
+    if backend is not None:
+        return backend
+    try:
+        import pandas  # noqa: F401
+    except ModuleNotFoundError:
+        return "polars"
+    return "pandas"
+
+
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.readout_types import ReadoutMetadata
@@ -1051,6 +1062,7 @@ class EstimateList[M: BaseModel](list[M]):
 
     _model: ClassVar[type[BaseModel]]
     _summary_columns: ClassVar[tuple[str, ...] | None] = None
+    _default_backend: Backend | None
 
     def __init__(
         self,
@@ -1066,6 +1078,7 @@ class EstimateList[M: BaseModel](list[M]):
         self._metadata = metadata
         self.source = source
         self.sequential_snapshot = sequential_snapshot
+        self._default_backend = None
         validate_collection(self, metadata)
 
     @property
@@ -1126,10 +1139,11 @@ class EstimateList[M: BaseModel](list[M]):
 
     def to_frame(
         self,
-        backend: Backend = "pandas",
+        backend: Backend | None = None,
         columns: Sequence[str] | Literal["summary"] | None = None,
     ) -> IntoDataFrame:
-        """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
+        """Convert this list to a native frame; defaulting to its input backend."""
+        backend = _default_backend(backend or getattr(self, "_default_backend", None))
 
         from increment.breakout.projection import to_frame
 

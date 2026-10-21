@@ -35,6 +35,17 @@ _refuse = raiser(_REFUSALS)
 Backend = Literal["pandas", "polars", "pyarrow"]
 
 
+def default_backend(preferred: Backend | None = None) -> Backend:
+    """Choose an available native dataframe backend, preferring an input backend."""
+    if preferred is not None:
+        return preferred
+    try:
+        import pandas  # noqa: F401
+    except ModuleNotFoundError:
+        return "polars"
+    return "pandas"
+
+
 def _scalar_dtype(annotation: Any) -> nw.dtypes.DType:
     """Map a pydantic field's declared type to a narwhals dtype.
 
@@ -215,7 +226,7 @@ def _append_frame_value(
 def to_frame[M: BaseModel](
     estimates: Sequence[M],
     model: type[M] | None = None,
-    backend: Backend = "pandas",
+    backend: Backend | None = None,
     columns: Sequence[str] | None = None,
 ) -> IntoDataFrame:
     """Convert a sequence of result models (:class:`LiftEstimate`,
@@ -241,9 +252,9 @@ def to_frame[M: BaseModel](
     model : type[M] | None
         Which model *estimates* holds. Required when *estimates* is
         empty, since an empty sequence carries no runtime type trace.
-    backend : Backend
-        Native dataframe backend to build: ``"pandas"``, ``"polars"``, or
-        ``"pyarrow"``.
+    backend : Backend | None
+        Native dataframe backend to build. When omitted, pandas is preferred
+        when installed and polars is used otherwise.
 
     columns : Sequence[str] | None
         Select known projection columns in canonical order. ``None`` keeps
@@ -261,6 +272,7 @@ def to_frame[M: BaseModel](
         endpoint; ``None`` for a closed interval and whenever there is no
         point estimate, including set-only rows (whose bounds are in ``lb``/``ub``).
     """
+    backend = default_backend(backend)
     if estimates:
         inferred = type(estimates[0])
         if model is None:

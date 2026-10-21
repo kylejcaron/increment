@@ -2662,4 +2662,51 @@ def test_moments_checkpoint_reexport_refused(tmp_path):
     assert not target.exists()
 
 
+def test_unit_summary_to_frame_defaults_to_input_backend_without_pandas(monkeypatch):
+    import sys
+
+    import polars as pl
+
+    frame = pl.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "value": [1.0, 2.0, 2.0, 3.0],
+        }
+    )
+    results = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    ).run()
+    monkeypatch.setitem(sys.modules, "pandas", None)
+
+    exported = results.to_frame()
+
+    assert isinstance(exported, pl.DataFrame)
+
+
+def test_unit_summary_to_frame_defaults_to_pandas_input_backend():
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "value": [1.0, 2.0, 2.0, 3.0],
+        }
+    )
+    results = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    ).run()
+
+    assert isinstance(results.to_frame(), pd.DataFrame)
+
+
 pytestmark = pytest.mark.integration

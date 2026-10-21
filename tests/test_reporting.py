@@ -1291,3 +1291,15 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
     except (ValueError, CapabilityError):
         return  # refusing the unsupported selector outright is also correct
     assert sorted(scoped["value"].tolist()) != baseline
+
+
+def test_report_to_frame_default_works_without_pandas(report, monkeypatch):
+    import sys
+
+    import polars as pl
+
+    monkeypatch.setitem(sys.modules, "pandas", None)
+
+    frame = report.metric("purchase_rate", **KW).to_frame()
+
+    assert isinstance(frame, pl.DataFrame)

@@ -138,7 +138,14 @@ class PowerCurve(list[PowerCurvePoint]):
     def to_dicts(self) -> list[dict[str, object]]:
         return [row.model_dump() for row in self]
 
-    def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
+    def to_frame(self, backend: Backend | None = None) -> IntoDataFrame:
+        if backend is None:
+            try:
+                import pandas  # noqa: F401
+            except ModuleNotFoundError:
+                backend = "polars"
+            else:
+                backend = "pandas"
 
         fields = PowerCurvePoint.model_fields
         names = list(fields)

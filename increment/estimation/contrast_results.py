@@ -26,6 +26,17 @@ if TYPE_CHECKING:
 
 Backend = Literal["pandas", "polars", "pyarrow"]
 
+
+def _default_backend(backend: Backend | None) -> Backend:
+    if backend is not None:
+        return backend
+    try:
+        import pandas  # noqa: F401
+    except ModuleNotFoundError:
+        return "polars"
+    return "pandas"
+
+
 # Independent units and shared blocks have different replication grains.
 RandomizationLaw = Literal["independent_bernoulli_order", "shared_schedule"]
 IndependenceGrain = Literal["unit_cycle", "shared_block"]
@@ -398,6 +409,7 @@ class ContrastResults(list[ContrastResult]):
         self._metadata = metadata
         self.source = source
         self.sequential_snapshot = sequential_snapshot
+        self._default_backend: Backend | None = None
         validate_collection(self, metadata)
 
     @property
@@ -523,12 +535,9 @@ class ContrastResults(list[ContrastResult]):
     def __imul__(self, value):
         self._mutation("imul")
 
-    def to_frame(self, *, backend: Backend = "pandas") -> IntoDataFrame:
-        """Return rows as a pandas, polars, or pyarrow frame.
-
-        The nested :class:`Estimate` is expanded in the same shape as other
-        increment result frames: ``estimate``, ``lb``, and ``ub`` columns.
-        """
+    def to_frame(self, *, backend: Backend | None = None) -> IntoDataFrame:
+        """Return rows as a native frame; pandas is preferred when available."""
+        backend = _default_backend(backend or self._default_backend)
         columns = [
             "metric",
             "control_group",

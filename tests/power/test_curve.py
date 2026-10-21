@@ -614,6 +614,17 @@ class TestPowerCurveCollection:
             assert list(frame.columns) == EXPECTED_COLUMNS
             assert len(frame) == 0
 
+    def test_default_backend_works_without_pandas(self, monkeypatch):
+        import sys
+
+        import polars as pl
+
+        monkeypatch.setitem(sys.modules, "pandas", None)
+
+        frame = PowerCurve([_point()]).to_frame()
+
+        assert isinstance(frame, pl.DataFrame)
+
 
 class TestUnavailableCompanionMde:
     """A supplied-effect row whose target has no minimum detectable effect

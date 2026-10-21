@@ -500,6 +500,7 @@ class Analysis:
         completeness watermarks; absent certification remains unknown.
     """
 
+    _input_backend: Literal["pandas", "polars", "pyarrow"] | None = None
     _readout_snapshot_active: bool = False
     _readout_srm_observations: (
         dict[tuple[Any, ...], tuple[Any, tuple[str, Mapping[str, Any], str] | None]] | None
@@ -1017,7 +1018,14 @@ class Analysis:
             exposure_date=exposure_date,
             breakouts=breakouts,
         )
-        return cls._from_source(src, src.context.design)
+        analysis = cls._from_source(src, src.context.design)
+        import narwhals as nw
+
+        analysis._input_backend = cast(
+            "Literal['pandas', 'polars', 'pyarrow']",
+            nw.from_native(frame, eager_only=True).implementation.value,
+        )
+        return analysis
 
     @classmethod
     # Public factory signature is the API for panel-backed analysis.
@@ -1104,7 +1112,14 @@ class Analysis:
             on_unassigned=on_unassigned,
             cluster=cluster,
         )
-        return cls._from_source(src, src.context.design)
+        analysis = cls._from_source(src, src.context.design)
+        import narwhals as nw
+
+        analysis._input_backend = cast(
+            "Literal['pandas', 'polars', 'pyarrow']",
+            nw.from_native(frame, eager_only=True).implementation.value,
+        )
+        return analysis
 
     @classmethod
     def from_moments(
@@ -1360,7 +1375,14 @@ class Analysis:
             plan=plan,
             contrast_references=contrast_references,
         )
-        return cls._from_source(cast("ContrastSource", src), identification)
+        analysis = cls._from_source(cast("ContrastSource", src), identification)
+        import narwhals as nw
+
+        analysis._input_backend = cast(
+            "Literal['pandas', 'polars', 'pyarrow']",
+            nw.from_native(frame, eager_only=True).implementation.value,
+        )
+        return analysis
 
     def materialize(self) -> Analysis:
         """Rebuild spine and per-metric stats from current warehouse data.
@@ -2571,9 +2593,11 @@ class Analysis:
             )
         added = self._exploratory_metrics(exploratory_metrics, caller="run")
         if isinstance(self._state, ContrastAnalysisState):
-            return self._run_contrast(
+            rows = self._run_contrast(
                 decision_method, sensitivity_methods, prior, metrics, estimands, value_scale
             )
+            rows._default_backend = self._input_backend
+            return rows
         selected = select_metrics(cast("Sequence[Metric]", self._metrics), metrics, caller="run")
 
         def request(chosen: Sequence[Metric]) -> WholeWindowRequest:
@@ -2614,6 +2638,7 @@ class Analysis:
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
+        rows._default_backend = getattr(self, "_input_backend", None)
         return rows
 
     def _warn_run_advisories(

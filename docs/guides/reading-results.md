@@ -945,5 +945,6 @@ assert additive["lower"] <= additive["lift"] <= additive["higher"]
     `pyarrow` and neither of them it converted a zero-control conversion row
     to `lift=None`, a finite `lower`, `higher=None`, and `stat_sig=True`.
     Rendering the rows with `readout_table` requires the `tables` extra.
-    `to_frame` defaults to `backend="pandas"`, so without pandas pass
-    `backend="pyarrow"`, which the core install provides.
+    `to_frame()` uses the input dataframe's library by default. Results without
+    a dataframe input prefer `pandas` when installed and fall back to `polars`;
+    pass `backend="pandas"`, `"polars"`, or `"pyarrow"` to choose explicitly.
