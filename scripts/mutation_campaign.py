@@ -62,6 +62,26 @@ CAMPAIGNS = {
         "tests/power/test_curve.py::TestSharedValidationHelpers",
         ["_require_finite", "_require_relative_domain"],
     ),
+    "sequential_screen_grid": (
+        "increment/estimation/_certified.py",
+        "tests/estimation/test_sequential_screen_acceptance.py",
+        ["log_interval", "log_rising"],
+    ),
+    "cuped_evidence_grid": (
+        "increment/_cuped_evidence.py",
+        "tests/test_cuped_evidence.py",
+        [
+            "_validate_fitted_union",
+            "_validate_fitted_tuple",
+            "_validate_fitted_float",
+            "_validate_fitted_wire_value",
+            "_validate_fitted_wire_dataclass",
+            "_restore_wire_value",
+            "_fitted_dataclass",
+            "_decode_fitted_evidence",
+            "parse_cuped_evidence",
+        ],
+    ),
 }
 
 

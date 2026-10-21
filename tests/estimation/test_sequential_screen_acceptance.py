@@ -8,6 +8,8 @@ from fractions import Fraction
 from itertools import product
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from increment.estimation._sequential_likelihood import (
     BernoulliState,
@@ -27,17 +29,13 @@ F = Fraction
 ALTERNATIVES: tuple[Alternative, ...] = ("two-sided", "greater", "less")
 
 
-@pytest.mark.parametrize("alternative", ALTERNATIVES)
-@pytest.mark.parametrize(
-    "control,treatment",
-    [
-        (Arm(nc, sc), Arm(nt, st))
-        for nc, nt in product(range(5), repeat=2)
-        for sc in range(nc + 1)
-        for st in range(nt + 1)
-    ],
-)
-def test_screen_upper_encloses_independent_exact_evidence(control, treatment, alternative):
+@st.composite
+def _bernoulli_states(draw):
+    n = draw(st.integers(min_value=0, max_value=4))
+    return Arm(n, draw(st.integers(min_value=0, max_value=n)))
+
+
+def _assert_screen_encloses_exact_evidence(control, treatment, alternative):
     screen = bernoulli_noncrossing_screen(
         BernoulliState(control.n, control.successes),
         BernoulliState(treatment.n, treatment.successes),
@@ -51,6 +49,38 @@ def test_screen_upper_encloses_independent_exact_evidence(control, treatment, al
     )
     exact_log = log_bounds(evidence(control, treatment, alternative))[1]
     assert exact_log <= screen.log_e_upper
+
+
+@pytest.mark.parametrize(
+    ("control", "treatment", "alternative"),
+    (
+        pytest.param(Arm(0, 0), Arm(0, 0), "two-sided", id="control0-treatment0-two-sided"),
+        pytest.param(Arm(0, 0), Arm(0, 0), "greater", id="control0-treatment0-greater"),
+        pytest.param(Arm(0, 0), Arm(0, 0), "less", id="control0-treatment0-less"),
+        pytest.param(Arm(1, 0), Arm(1, 0), "two-sided", id="control1-treatment1-two-sided"),
+        pytest.param(Arm(1, 0), Arm(1, 0), "greater", id="control1-treatment1-greater"),
+        pytest.param(Arm(1, 0), Arm(1, 0), "less", id="control1-treatment1-less"),
+        pytest.param(Arm(1, 1), Arm(1, 1), "two-sided", id="control2-treatment2-two-sided"),
+        pytest.param(Arm(1, 1), Arm(1, 1), "greater", id="control2-treatment2-greater"),
+        pytest.param(Arm(1, 1), Arm(1, 1), "less", id="control2-treatment2-less"),
+        pytest.param(Arm(2, 1), Arm(2, 1), "two-sided", id="control4-treatment4-two-sided"),
+        pytest.param(Arm(2, 1), Arm(2, 1), "greater", id="control4-treatment4-greater"),
+        pytest.param(Arm(2, 1), Arm(2, 1), "less", id="control4-treatment4-less"),
+    ),
+)
+def test_screen_upper_encloses_independent_exact_evidence(control, treatment, alternative):
+    _assert_screen_encloses_exact_evidence(control, treatment, alternative)
+
+
+@given(
+    control=_bernoulli_states(),
+    treatment=_bernoulli_states(),
+    alternative=st.sampled_from(ALTERNATIVES),
+)
+def test_screen_upper_encloses_exact_evidence_for_arbitrary_small_prefixes(
+    control, treatment, alternative
+):
+    _assert_screen_encloses_exact_evidence(control, treatment, alternative)
 
 
 @pytest.mark.parametrize("alternative", ALTERNATIVES)

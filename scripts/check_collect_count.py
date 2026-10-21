@@ -109,7 +109,11 @@ def _check_fanout(nodeids: str, root: Path) -> list[str]:
 
 
 def check_counts(
-    tier: str, baseline_path: Path, items: int, nodeids: str = "", tests_root: Path = Path("tests")
+    tier: str,
+    baseline_path: Path,
+    items: int,
+    nodeids: str = "",
+    tests_root: Path = Path("tests"),
 ) -> tuple[int, str]:
     try:
         baselines = _baseline(baseline_path)
@@ -119,24 +123,33 @@ def check_counts(
         return 2, f"{error}\n"
     baseline = baselines[tier]
     findings = _check_fanout(nodeids, tests_root) if nodeids else []
+    if findings:
+        message = (
+            "Collected parameter fan-out findings "
+            "(informational; they do not fail this check):\n"
+            "Literal or computed parameter grids over 12 collected items require a reasoned grid marker.\n"
+            + "\n".join(findings)
+            + "\n"
+        )
+    else:
+        message = ""
     if items > baseline:
         delta = items - baseline
-        message = (
-            f"{tier}: {items} items (baseline {baseline}; +{delta})\n"
-            f"tests: +{delta} items — <reason>\n"
-            "Literal or computed parameter grids over 12 collected items require a reasoned grid marker.\n"
+        message += (
+            "Count check failed:\n"
+            f"Tier: {tier}\n"
+            f"Observed: {items} items\n"
+            f"Baseline: {baseline} items\n"
+            f"Delta: +{delta} items\n"
+            f"Edit .github/collect-baseline to `{tier} {items}` and state "
+            f"`tests: +{delta} items — <reason>` in the PR description.\n"
         )
-        if findings:
-            message += "Collected parameter fan-out findings:\n" + "\n".join(findings) + "\n"
         return 1, message
-    message = (
+    message += (
         f"{tier} {items} (baseline {baseline}; lower count — lower the baseline)\n"
         if items < baseline
         else f"{tier} {items} (baseline {baseline})\n"
     )
-    if findings:
-        message += "Collected parameter fan-out findings (add a reasoned grid marker unless deliberately handling the baseline):\n"
-        message += "\n".join(findings) + "\n"
     return 0, message
 
 

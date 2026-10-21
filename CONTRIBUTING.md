@@ -130,6 +130,14 @@ including CI; module, class and parameter inheritance count.
 
 Integration tests remain in the fast tier and PR CI. `make test-unit` excludes
 them for a smaller local loop; `make test-fast` runs unit plus integration-fast.
+
+`make test-unit` and `make test-fast` report unit-selected call-phase process CPU
+above 100 ms; the list contains only unbaselined tests. Baseline candidates have
+exceeded 50 ms in any of three full-run samples, leaving headroom below the
+reporting threshold. This is report-only because per-test cost varies with test
+order and shared caches; use `--unit-cpu-budget-enforce` to opt into failures.
+Stale baseline entries are notes for removal. Focused `make test` runs do not
+enable measurement by default.
 Stress alone remains in the functional-slow tier; an inferential capacity
 campaign also carries numerical certification. Moving tests outside routine CI
 requires an executable, required gate for relevant changes and a scheduled/release
@@ -192,17 +200,23 @@ comparison. `scripts.affected` compares the merge base and working-tree
 changes. Configuration changes that affect selection or test infrastructure
 run the full requested tier; changed test modules and their importers are
 selected directly; test `conftest.py` changes select tests beneath that
-directory; production Python changes use Tach with the immutable base; changed
-README/docs pages run their snippets. Other changed paths are reported as not
-covered locally because CI is responsible for them. Deleted test paths are not
-selected. A zero-selection result is a successful no-op, not evidence that
-uncovered paths were tested.
+directory; production Python changes use Tach with the immutable base, and
+tests importing lazy root exports are also selected when the export's internal
+import closure reaches the changed module; changed README/docs pages run their
+snippets. Other changed paths are reported as not covered locally because CI
+is responsible for them. Deleted test paths are not selected. A zero-selection
+result is a successful no-op, not evidence that uncovered paths were tested.
 
 Affected checks are local feedback, not a replacement for required slow,
 parity, fixtures, public-smoke, documentation, scientific or full-suite gates.
 CI is the authoritative full-suite gate. The pre-push hook runs lint,
 type-checking and the affected fast tier; `make check` is an optional broader
 local check. Send pytest options through `PYTEST_ARGS` when using Make targets.
+
+For an optional local inner loop, run `make test-changed` to use
+pytest-testmon and run the whole files containing selected tests. The first
+run builds the coverage database; this target is iteration feedback only and
+never replaces any required test gate.
 
 For runtime audits, review every recorded test whose summed setup, call and
 teardown exceeds five seconds; prioritize those exceeding ten. Also inspect
@@ -273,11 +287,11 @@ Where new tests go:
 - Power-planning and parity work over large N belongs in `slow`; a fast-tier
   sentinel is one representative case, not a grid.
 
-Grids: `tests/test_parity_matrix.py` (about 2,800 items) and
-`tests/estimation/test_sequential_screen_acceptance.py` (about 680) are
-scheduled for collapse to boundary cases plus Hypothesis properties; do not
-add cases to them. Any `parametrize` that expands past twelve items becomes
-boundary cases plus a property or carries `@pytest.mark.grid("<reason>")`.
+The sequential screen and fitted-evidence shape grids have been collapsed to
+retained boundary cases plus a property. The parity matrix remains a strength-3
+covering array with disposition sentinels; the full grid runs nightly. Do not
+restore the collapsed grids. Any `parametrize` that expands past twelve items
+becomes boundary cases plus a property or carries `@pytest.mark.grid("<reason>")`.
 Check with `--collect-only -q` on the changed file.
 
 Red check: every new test is observed failing before it is accepted. For a
@@ -316,6 +330,11 @@ the holders' pid, working directory, command and start time. Slot coordination
 is bypassed when `CI` or `TEST_SLOT_HELD` is present or `fcntl` is unavailable.
 Focused `make test TESTS=...` runs are intentionally unwrapped.
 
+On local slot-held runs the wrapper raises the command's nice value by 10
+before `exec`, leaving more CPU priority for interactive work. CI and nested
+wrappers that inherit `TEST_SLOT_HELD` do not change priority; nested commands
+inherit their parent's nice value.
+
 Ibis DuckDB test connections default to one thread, a memory limit from
 `INCREMENT_TEST_DUCKDB_MEMORY` (default `1GB`) and a unique spill directory
 per connection; direct `duckdb.connect` calls are not wrapped and retain
@@ -346,14 +365,16 @@ Existing literal-grid exceptions are recorded under `# H5` in
 `tests/test_hygiene_allowlist.txt`; that baseline can only decrease.
 `grid(reason)` is registered in `pyproject.toml`. `make check-items` compares
 collected unit, fast, slow and all item counts with `.github/collect-baseline`;
-an increase requires `tests: +N items — <reason>` in the PR body. Computed
-grids are reported separately from the literal fan-out check.
+an increase requires `tests: +N items — <reason>` in the PR description.
+Computed grids are reported separately from the literal fan-out check.
 
-Together, the weakening check reports fewer test functions or assertions
-(requiring the owner's `Test-Reduction-Approved:` trailer), while the item
-ratchet reports more collected items or a literal grid over 12 without `grid`
-(requiring a stated reason); collapsing a grid to boundary cases plus a
-property lowers items and keeps functions, passing both.
+Together, the weakening check reports fewer test functions or assertions,
+requiring owner approval. Local checks accept a `Test-Reduction-Approved:`
+trailer on each reducing commit; CI ignores commit trailers and requires the
+PR owner to apply the `test-reduction-approved` label. The item ratchet reports
+more collected items or a literal grid over 12 without `grid` (requiring a
+stated reason); collapsing a grid to boundary cases plus a property lowers
+items and keeps functions, passing both.
 
 The pre-push `test-weakening` hook runs
 `scripts/check_test_weakening.py`. It checks whole-tree test-function and
@@ -363,8 +384,10 @@ reduced Hypothesis `max_examples` and raised timeouts. Assertion counts include
 `pytest.warns`, `pytest.approx` and testing-library `assert_*` functions.
 An unapproved finding fails the check; exit `0` means no unapproved findings,
 `1` means findings and `2` means invalid arguments, base or repository.
-Only a `Test-Reduction-Approved:` trailer on the reducing commit approves its
-findings; it cannot approve working-tree findings. Because counts are whole
+Locally, only a `Test-Reduction-Approved:` trailer on the reducing commit
+approves its findings; it cannot approve working-tree findings. CI ignores
+trailers and approves committed findings only when the PR has the
+`test-reduction-approved` label. Because counts are whole
 tree totals, a deletion can be offset by an unrelated addition in the same
 commit; review the diff as well as the check output.
 

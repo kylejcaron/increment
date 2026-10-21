@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import tempfile
+import time as _time
 from functools import cache
 from pathlib import Path
 
@@ -79,6 +80,69 @@ from tests._unit_boundary import (  # noqa: E402
 )
 
 install_guards()
+
+
+_UNIT_CPU_BUDGET_SECONDS = 0.1
+_unit_cpu_baseline: set[str] = set()
+_unit_cpu_warmups: dict[str, float] = {}
+_unit_cpu_measurements: dict[str, float] = {}
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--unit-cpu-budget",
+        action="store_true",
+        help="report per-test CPU time for unit-selected tests",
+    )
+    parser.addoption(
+        "--unit-cpu-budget-enforce",
+        action="store_true",
+        help="fail unit-selected tests above the CPU-time budget",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if not (config.getoption("--unit-cpu-budget") or config.getoption("--unit-cpu-budget-enforce")):
+        return
+    baseline = Path(
+        os.environ.get(
+            "UNIT_CPU_BASELINE", str(Path(__file__).parent / "tests/unit_cpu_baseline.txt")
+        )
+    )
+    if baseline.exists():
+        _unit_cpu_baseline.update(
+            line.strip()
+            for line in baseline.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    config = terminalreporter.config
+    if not (config.getoption("--unit-cpu-budget") or config.getoption("--unit-cpu-budget-enforce")):
+        return
+    if hasattr(config, "workerinput"):
+        return
+    for worker, seconds in sorted(_unit_cpu_warmups.items()):
+        terminalreporter.write_line(f"unit CPU import warm-up ({worker}): {seconds * 1000:.1f} ms")
+    unbaselined = sorted(
+        (nodeid, seconds)
+        for nodeid, seconds in _unit_cpu_measurements.items()
+        if seconds > _UNIT_CPU_BUDGET_SECONDS and nodeid not in _unit_cpu_baseline
+    )
+    for nodeid, seconds in unbaselined:
+        terminalreporter.write_line(f"unit CPU over budget: {seconds * 1000:.1f} ms ({nodeid})")
+    stale = sorted(
+        nodeid
+        for nodeid in _unit_cpu_baseline
+        if nodeid in _unit_cpu_measurements
+        and _unit_cpu_measurements[nodeid] <= _UNIT_CPU_BUDGET_SECONDS
+    )
+    if stale:
+        terminalreporter.write_sep("=", "stale unit CPU baseline entries (notes only)")
+        for nodeid in stale:
+            terminalreporter.write_line(nodeid)
+
 
 from sybil import Document, Example, Region, Sybil  # noqa: E402
 from sybil.evaluators.python import PythonEvaluator  # noqa: E402
@@ -199,6 +263,35 @@ def _clear_git_repository_environment() -> None:
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Keep test subprocesses from inheriting a hook's repository-local Git state."""
     _clear_git_repository_environment()
+
+
+@pytest.hookimpl(specname="pytest_sessionstart", tryfirst=True)
+def pytest_unit_cpu_sessionstart(session: pytest.Session) -> None:
+    config = session.config
+    if not (config.getoption("--unit-cpu-budget") or config.getoption("--unit-cpu-budget-enforce")):
+        return
+    is_worker = hasattr(config, "workerinput")
+    numprocesses = config.getoption("numprocesses", default=0)
+    if not is_worker and numprocesses not in (None, 0, "0"):
+        return
+    started = _time.process_time()
+    import increment
+
+    for name in increment.__all__:
+        getattr(increment, name)
+    seconds = _time.process_time() - started
+    worker_id = config.workerinput.get("workerid", "local") if is_worker else "local"
+    _unit_cpu_warmups[worker_id] = seconds
+    if is_worker:
+        config.workeroutput["increment_unit_cpu_warmup"] = seconds
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error) -> None:
+    workeroutput = getattr(node, "workeroutput", None) or {}
+    seconds = workeroutput.get("increment_unit_cpu_warmup")
+    if seconds is not None:
+        _unit_cpu_warmups[node.gateway.id] = float(seconds)
 
 
 def _pytest_environment_controls() -> dict[str, str]:
@@ -358,9 +451,31 @@ def pytest_unit_boundary_runtest_setup(item: pytest.Item):
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_call(item: pytest.Item):
     set_current_unit(item)
+    budget_enabled = item.config.getoption("--unit-cpu-budget") or item.config.getoption(
+        "--unit-cpu-budget-enforce"
+    )
+    from tests._unit_boundary import is_unit_selected
+
+    should_measure = budget_enabled and is_unit_selected(item)
+    start = _time.process_time() if should_measure else 0.0
     try:
-        yield
+        outcome = yield
     finally:
+        if should_measure:
+            elapsed = _time.process_time() - start
+            item.user_properties.append(("unit_cpu_seconds", elapsed))
+            _unit_cpu_measurements[item.nodeid] = elapsed
+            if (
+                item.config.getoption("--unit-cpu-budget-enforce")
+                and elapsed > _UNIT_CPU_BUDGET_SECONDS
+                and item.nodeid not in _unit_cpu_baseline
+            ):
+                outcome.force_exception(
+                    pytest.fail.Exception(
+                        f"unit CPU budget exceeded ({elapsed * 1000:.1f} ms > 100 ms); "
+                        "mark slow/integration for a real boundary, or make the test cheaper"
+                    )
+                )
         set_current_unit(None)
 
 
@@ -414,6 +529,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.when == "call":
         _CALL_DURATIONS[report.nodeid] = report.duration
+        for name, value in report.user_properties:
+            if name == "unit_cpu_seconds":
+                _unit_cpu_measurements[report.nodeid] = float(value)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

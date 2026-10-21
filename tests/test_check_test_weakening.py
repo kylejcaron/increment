@@ -497,6 +497,20 @@ class TestGitHistory:
             ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
         ).strip()
 
+    def test_ci_mode_ignores_trailers(self, tmp_path: Path, capsys):
+        repo = self.repo(tmp_path)
+        (repo / "tests/test_sample.py").write_text("def test_value():\n    pass\n")
+        self.commit(repo, "approved removal\n\nTest-Reduction-Approved: owner approved")
+        assert check.main(["--ci", "--base", "HEAD~1", "--repo", str(repo)]) == 1
+        assert "assertion-count-decreased" in capsys.readouterr().out
+
+    def test_ci_mode_approved_flag_passes(self, tmp_path: Path, capsys):
+        repo = self.repo(tmp_path)
+        (repo / "tests/test_sample.py").write_text("def test_value():\n    pass\n")
+        self.commit(repo, "approved removal\n\nTest-Reduction-Approved: owner approved")
+        assert check.main(["--ci", "--approved", "--base", "HEAD~1", "--repo", str(repo)]) == 0
+        assert "assertion-count-decreased" in capsys.readouterr().out
+
     def test_trailer_approves_only_its_commit(self, tmp_path: Path, capsys):
         repo = self.repo(tmp_path)
         (repo / "tests/test_sample.py").write_text("def test_value():\n    pass\n")

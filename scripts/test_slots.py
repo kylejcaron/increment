@@ -100,6 +100,7 @@ def hold_slot() -> None:
         if stream is not None:
             os.environ["TEST_SLOT_HELD"] = "1"
             _HELD_FILE = stream
+            os.nice(10)
             return
         if not waited:
             print("waiting for a heavy test slot; held by:", file=sys.stderr, flush=True)

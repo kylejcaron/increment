@@ -1,15 +1,17 @@
 .DEFAULT_GOAL := install
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected check-items mutate
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate
 
 
 CHECK_ITEMS_TESTS ?= tests
 CHECK_ITEMS_BASELINE ?= .github/collect-baseline
 CHECK_ITEMS_TIERS ?= unit fast slow all
+UNIT_CPU_ARGS ?= $(if $(filter unit fast,$(TIER)),--unit-cpu-budget,)
+
 
 check-items:
 	@set -e; for tier in $(CHECK_ITEMS_TIERS); do \
 		output=$$(mktemp); \
-		if $(MAKE) test-tier TIER=$$tier PYTEST_XDIST_ARGS= PYTEST_ARGS='--collect-only -q -p scripts.check_collect_count $(CHECK_ITEMS_TESTS)' >$$output; then \
+		if $(MAKE) test-tier TIER=$$tier PYTEST_XDIST_ARGS= UNIT_CPU_ARGS= PYTEST_ARGS='--collect-only -q -p scripts.check_collect_count $(CHECK_ITEMS_TESTS)' >$$output; then \
 			cat $$output | uv run --no-sync python scripts/check_collect_count.py --tier $$tier --baseline $(CHECK_ITEMS_BASELINE) --tests-root $(CHECK_ITEMS_TESTS); \
 			rm -f $$output; \
 		else status=$$?; cat $$output; rm -f $$output; exit $$status; fi; \
@@ -64,7 +66,7 @@ test-integration-fast:
 	$(MAKE) test-tier TIER=integration-fast
 # Fast tiers stop at the first failure; long tiers report every failure.
 test-tier:
-	$(SLOT) $(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
+	$(SLOT) $(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(UNIT_CPU_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
 # Functional tests exclude Monte-Carlo calibration and notebook subprocesses.
 test-slow:
 	$(MAKE) test-tier TIER=slow
@@ -105,6 +107,9 @@ else
 	$(MAKE) test-unit
 
 endif
+
+test-changed:
+	$(SLOT) uv run --no-sync --with pytest-testmon==2.2.0 --extra demo --extra tables --extra dashboard python -m scripts.test_changed
 
 test-affected:
 	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow]' >&2; exit 2; }

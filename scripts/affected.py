@@ -58,14 +58,52 @@ def _test_files_under(root: Path, directory: str) -> set[str]:
     }
 
 
-def _test_module_imports(path: Path, module: str, known_modules: set[str]) -> set[str]:
+def _type_checking_import_ids(tree: ast.Module) -> set[int]:
+    excluded: set[int] = set()
+
+    def visit(node: ast.AST, *, in_type_checking: bool = False) -> None:
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and in_type_checking:
+            excluded.add(id(node))
+        is_type_checking = isinstance(node, ast.If) and (
+            (isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING")
+            or (
+                isinstance(node.test, ast.Attribute)
+                and node.test.attr == "TYPE_CHECKING"
+                and isinstance(node.test.value, ast.Name)
+                and node.test.value.id == "typing"
+            )
+        )
+        if is_type_checking:
+            assert isinstance(node, ast.If)
+            visit(node.test, in_type_checking=in_type_checking)
+            for statement in node.body:
+                visit(statement, in_type_checking=True)
+            for statement in node.orelse:
+                visit(statement, in_type_checking=in_type_checking)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child, in_type_checking=in_type_checking)
+
+    visit(tree)
+    return excluded
+
+
+def _module_imports(
+    path: Path,
+    module: str,
+    known_modules: set[str],
+    lazy_exports: dict[str, str] | None = None,
+) -> set[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, SyntaxError):
         return set()
 
     imports: set[str] = set()
+    type_only_imports = _type_checking_import_ids(tree)
     for node in ast.walk(tree):
+        if id(node) in type_only_imports:
+            continue
         if isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names if alias.name in known_modules)
             continue
@@ -87,7 +125,108 @@ def _test_module_imports(path: Path, module: str, known_modules: set[str]) -> se
             if alias.name != "*"
             if (candidate := f"{base}.{alias.name}") in known_modules
         )
+        if base == "increment" and lazy_exports is not None:
+            imports.update(
+                lazy_exports[alias.name] for alias in node.names if alias.name in lazy_exports
+            )
     return imports
+
+
+def _module_paths(root: Path, package_dir: str) -> dict[str, Path]:
+    directory = root / package_dir
+    modules: dict[str, Path] = {}
+    if not directory.is_dir():
+        return modules
+    for path in directory.rglob("*.py"):
+        parts = path.relative_to(root).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        modules[".".join(parts)] = path
+    return modules
+
+
+def _lazy_imports(path: Path) -> dict[str, str]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError):
+        return {}
+    for node in tree.body:
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS" for target in node.targets
+        ):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id == "_LAZY_IMPORTS":
+                value = node.value
+        if value is None:
+            continue
+        try:
+            entries = ast.literal_eval(value)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(entries, dict):
+            return {}
+        return {
+            name: target[0]
+            for name, target in entries.items()
+            if isinstance(name, str)
+            and isinstance(target, tuple)
+            and len(target) == 2
+            and isinstance(target[0], str)
+        }
+    return {}
+
+
+def _lazy_export_importers(root: Path, changed_modules: set[str]) -> set[str]:
+    package_modules = _module_paths(root, "increment")
+    lazy_exports = _lazy_imports(root / "increment/__init__.py")
+    if not package_modules or not lazy_exports:
+        return set()
+
+    known_modules = set(package_modules) | changed_modules
+    imported_modules = {
+        module: _module_imports(path, module, known_modules, lazy_exports)
+        for module, path in package_modules.items()
+    }
+    closures: dict[str, set[str]] = {}
+    for target in set(lazy_exports.values()):
+        visited: set[str] = set()
+        pending = [target]
+        while pending:
+            module = pending.pop()
+            if module in visited:
+                continue
+            visited.add(module)
+            if module in imported_modules:
+                pending.extend(imported_modules[module] - visited)
+        closures[target] = visited
+
+    test_root = root / "tests"
+    if not test_root.is_dir():
+        return set()
+    test_importers: set[str] = set()
+    for path in test_root.rglob("test_*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+        type_only_imports = _type_checking_import_ids(tree)
+        imported_names = {
+            alias.name
+            for node in ast.walk(tree)
+            if id(node) not in type_only_imports
+            and isinstance(node, ast.ImportFrom)
+            and node.module == "increment"
+            for alias in node.names
+        }
+        if any(
+            changed_modules.intersection(closures.get(lazy_exports[name], set()))
+            for name in imported_names
+            if name in lazy_exports
+        ):
+            test_importers.add(path.relative_to(root).as_posix())
+    return test_importers
 
 
 def _test_module_importers(root: Path, module_names: set[str]) -> set[str]:
@@ -105,7 +244,7 @@ def _test_module_importers(root: Path, module_names: set[str]) -> set[str]:
     reverse_imports: dict[str, set[str]] = {}
     known_modules = set(module_paths)
     for module, path in module_paths.items():
-        for imported in _test_module_imports(path, module, known_modules):
+        for imported in _module_imports(path, module, known_modules):
             reverse_imports.setdefault(imported, set()).add(module)
 
     visited = set(module_names)
@@ -132,6 +271,7 @@ def select(base: str, root: Path) -> Selection:
     doc_pages: set[str] = set()
     use_tach = False
     changed_test_modules: set[str] = set()
+    changed_increment_modules: set[str] = set()
     uncovered: set[str] = set()
 
     for path in changed:
@@ -149,11 +289,17 @@ def select(base: str, root: Path) -> Selection:
         elif path.startswith("tests/"):
             use_tach = True
         elif path.startswith("increment/") and path.endswith(".py"):
+            parts = Path(path).with_suffix("").parts
+            if parts[-1] == "__init__":
+                parts = parts[:-1]
+            changed_increment_modules.add(".".join(parts))
             use_tach = True
         else:
             uncovered.add(path)
     if changed_test_modules and not full_tier:
         test_files.update(_test_module_importers(root, changed_test_modules))
+    if changed_increment_modules and not full_tier:
+        test_files.update(_lazy_export_importers(root, changed_increment_modules))
 
     return Selection(
         () if full_tier else tuple(sorted(test_files)),
@@ -191,6 +337,7 @@ def _pytest_invocations(
 
     if selection.use_tach:
         tach_args = markers + ["--tach-base", base]
+        tach_args.extend(f"--ignore={path}" for path in selection.test_files)
         if selection.test_files or selection.doc_pages:
             tach_args.append("tests")
         tach_args.extend(extra_args)
