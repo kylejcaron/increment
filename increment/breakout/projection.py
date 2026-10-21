@@ -42,6 +42,10 @@ def default_backend(preferred: Backend | None = None) -> Backend:
     try:
         import pandas  # noqa: F401
     except ModuleNotFoundError:
+        try:
+            import polars  # noqa: F401
+        except ModuleNotFoundError:
+            return "pyarrow"
         return "polars"
     return "pandas"
 

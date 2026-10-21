@@ -2736,6 +2736,71 @@ print(f"{type(result).__module__}.{type(result).__name__}")
     assert output == "polars.dataframe.frame.DataFrame"
 
 
+def test_polars_result_backend_survives_collection_reconstruction():
+    import copy
+    import pickle
+
+    import polars as pl
+
+    frame = pl.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "value": [1.0, 2.0, 2.0, 3.0],
+        }
+    )
+    results = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"value": "mean"},
+    ).run()
+    transformed = pickle.loads(pickle.dumps(copy.deepcopy(results.filter(lambda _: True)[:])))
+
+    assert isinstance(transformed.to_frame(), pl.DataFrame)
+
+
+def test_polars_backend_survives_daily_lift_results():
+    import polars as pl
+
+    frame = pl.DataFrame(
+        {
+            "unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"],
+            "arm": ["control"] * 4 + ["treatment"] * 4,
+            "day": ["2025-01-01", "2025-01-02"] * 4,
+            "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0],
+        }
+    )
+    results = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    ).run_daily_lift()
+
+    assert isinstance(results.to_frame(), pl.DataFrame)
+
+
+def test_polars_backend_survives_exploratory_run_and_breakout(seeded_defs, seeded_con):
+    import polars as pl
+
+    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    analysis._input_backend = "polars"
+    exploratory = analysis.available_metrics[0].name
+    results = analysis.run(
+        exploratory_metrics=[exploratory],
+        decision_method=Method(name="unadjusted"),
+    )
+    breakout = analysis.run_breakout()
+
+    assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
+    assert isinstance(results.to_frame(), pl.DataFrame)
+    assert isinstance(breakout.to_frame(), pl.DataFrame)
+
+
 def test_unit_summary_to_frame_defaults_to_pandas_input_backend():
     import pandas as pd
 

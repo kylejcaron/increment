@@ -362,8 +362,11 @@ def _stamp_exploratory_rows(rows):
         for row in source_rows
     ]
     if metadata is None:
-        result = LiftEstimates(updated, source=rows.source)
-        result._default_backend = rows._default_backend
+        result = LiftEstimates(
+            updated,
+            source=rows.source,
+            default_backend=rows._default_backend,
+        )
         return result
 
     moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
@@ -432,14 +435,13 @@ def _stamp_exploratory_rows(rows):
         partial=metadata.partial,
         partial_reason=metadata.partial_reason,
     )
-    result = LiftEstimates(
+    return LiftEstimates(
         updated,
         metadata=metadata,
         source=rows.source,
         sequential_snapshot=rows.sequential_snapshot,
+        default_backend=rows._default_backend,
     )
-    result._default_backend = rows._default_backend
-    return result
 
 
 def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricConfig) -> bool:
@@ -2625,8 +2627,8 @@ class Analysis:
                 metadata=extra.metadata,
                 source=extra.source,
                 sequential_snapshot=extra.sequential_snapshot,
+                default_backend=extra._default_backend,
             )
-            extra._default_backend = getattr(self, "_input_backend", None)
             extra = _stamp_exploratory_rows(extra)
             rows = extra if rows.metadata is None else rows.concat(extra)
         self._warn_run_advisories(

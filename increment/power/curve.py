@@ -143,10 +143,14 @@ class PowerCurve(list[PowerCurvePoint]):
             try:
                 import pandas  # noqa: F401
             except ModuleNotFoundError:
-                backend = "polars"
+                try:
+                    import polars  # noqa: F401
+                except ModuleNotFoundError:
+                    backend = "pyarrow"
+                else:
+                    backend = "polars"
             else:
                 backend = "pandas"
-
         fields = PowerCurvePoint.model_fields
         names = list(fields)
         names.insert(names.index("power_basis") + 1, "numerical_qualification")

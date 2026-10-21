@@ -176,7 +176,12 @@ class MetricTrend:
             try:
                 import pandas  # noqa: F401
             except ModuleNotFoundError:
-                backend = "polars"
+                try:
+                    import polars  # noqa: F401
+                except ModuleNotFoundError:
+                    backend = "pyarrow"
+                else:
+                    backend = "polars"
             else:
                 backend = "pandas"
         frame = nw.from_native(self._table.to_pyarrow(), eager_only=True)

@@ -977,9 +977,15 @@ def refuse_legacy_sampling(row: Any) -> NoReturn:
     )
 
 
-def _restore_collection(collection_type, rows, metadata, source, sequential_snapshot):
+def _restore_collection(
+    collection_type, rows, metadata, source, sequential_snapshot, default_backend
+):
     return collection_type(
-        rows, metadata=metadata, source=source, sequential_snapshot=sequential_snapshot
+        rows,
+        metadata=metadata,
+        source=source,
+        sequential_snapshot=sequential_snapshot,
+        default_backend=default_backend,
     )
 
 
@@ -1255,7 +1261,12 @@ def concat_collection(left, right):
                 fields=("source", "sequential_snapshot"),
             )
         return type(left)(
-            [*left, *right], source=left.source, sequential_snapshot=left.sequential_snapshot
+            [*left, *right],
+            source=left.source,
+            sequential_snapshot=left.sequential_snapshot,
+            default_backend=(
+                left._default_backend if left._default_backend == right._default_backend else None
+            ),
         )
     if left.metadata is None or right.metadata is None:
         refuse_readout(
@@ -1339,6 +1350,9 @@ def concat_collection(left, right):
         metadata=metadata,
         source=result_source,
         sequential_snapshot=getattr(left, "sequential_snapshot", None),
+        default_backend=(
+            left._default_backend if left._default_backend == right._default_backend else None
+        ),
     )
 
 

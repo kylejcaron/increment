@@ -129,6 +129,10 @@ def _default_backend(backend: Backend | None) -> Backend:
     try:
         import pandas  # noqa: F401
     except ModuleNotFoundError:
+        try:
+            import polars  # noqa: F401
+        except ModuleNotFoundError:
+            return "pyarrow"
         return "polars"
     return "pandas"
 
@@ -1071,6 +1075,7 @@ class EstimateList[M: BaseModel](list[M]):
         metadata: ReadoutMetadata | None = None,
         source=None,
         sequential_snapshot=None,
+        default_backend: Backend | None = None,
     ):
         from increment.estimation.readout_types import validate_collection
 
@@ -1078,7 +1083,7 @@ class EstimateList[M: BaseModel](list[M]):
         self._metadata = metadata
         self.source = source
         self.sequential_snapshot = sequential_snapshot
-        self._default_backend = None
+        self._default_backend = default_backend
         validate_collection(self, metadata)
 
     @property
@@ -1102,6 +1107,7 @@ class EstimateList[M: BaseModel](list[M]):
             self.metadata,
             self.source,
             self.sequential_snapshot,
+            self._default_backend,
         )
 
     def model_dump_json(self):
@@ -1118,6 +1124,7 @@ class EstimateList[M: BaseModel](list[M]):
             metadata=partial_metadata(self.metadata, rows, "filter"),
             source=self.source,
             sequential_snapshot=self.sequential_snapshot,
+            default_backend=self._default_backend,
         )
 
     def concat(self, other):
@@ -1291,6 +1298,7 @@ class EstimateList[M: BaseModel](list[M]):
                 metadata=partial_metadata(self.metadata, result, "slice"),
                 source=self.source,
                 sequential_snapshot=self.sequential_snapshot,
+                default_backend=self._default_backend,
             )
         return cast("M", result)
 
