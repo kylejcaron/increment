@@ -681,6 +681,10 @@ need a first-line `# prose: allow-long <specific justification>`. Do not split
 blocks or add blank lines merely to evade the check. Public API docstrings are
 not length-capped; their detail should remain useful to callers.
 
+For root-export justifications and analyst-facing language requirements, see
+the consumer standard in [AGENTS.md](AGENTS.md#import-organization-and-user-facing-language)
+and its checks in `tests/test_consumer_standard.py`.
+
 Exercise documentation snippets and build the complete site with:
 
 ```bash

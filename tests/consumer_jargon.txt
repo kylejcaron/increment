@@ -1,0 +1,9 @@
+# Internal vocabulary; optional tab-separated guide files that define the term for users.
+ingress
+seam
+retained family
+roster completeness
+proof obligation
+carrier
+sidecar
+substrate

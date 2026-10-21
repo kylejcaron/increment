@@ -215,18 +215,31 @@ that is unfinished. Keep the path-by-capability table in
 
 ## Import organization and user-facing language
 
-- Keep authoring and analysis configuration distinct from receive-only result
-  consumption in documentation and examples. Show the intended import path for
-  each role; do not move root exports, add compatibility aliases, or create
-  parallel namespaces without an approved API cutover.
-- Use one term for each public concept across README, guides, API reference, and
-  release notes. Keep statistical status labels and population names exact
-  (`exploratory_unadjusted`, `assigned`, `triggered`); explain them in ordinary
-  analyst language rather than inventing synonyms.
+- Every root export from `increment` MUST serve a clear user task and have a
+  one-line justification in `tests/public_exports.txt`. Root exports may be
+  moved, consolidated, or removed through an explicit API cutover recorded in
+  release notes; compatibility aliases are allowed only when those notes state
+  a removal date.
+- A reader who has not read the guides is the audience for every user-facing
+  string: refusal and error templates, representations, display output,
+  warnings, README, and guides MUST make sense to an analyst on first use.
+  Internal design vocabulary (for example, ingress, seam, retained family,
+  roster completeness, and proof obligation) MUST stay out of those surfaces
+  unless a guide defines the term for users.
+- Keep one term for each public concept across README, guides, API reference,
+  and release notes. Preserve exact statistical labels and population names
+  (`exploratory_unadjusted`, `assigned`, `triggered`), explaining them in
+  ordinary analyst language rather than inventing synonyms.
+- The root-export and user-facing vocabulary checks live in
+  `tests/test_consumer_standard.py`. Add a root-export justification only for
+  a name that serves a user task; remove obsolete allowlist entries when exports
+  leave the root. For jargon, define a term in a guide only when that definition
+  helps users, then record the defining guide in `tests/consumer_jargon.txt`.
+  Baseline existing occurrences in `tests/consumer_jargon_baseline.txt`; counts
+  may fall but MUST NOT grow. New wording MUST use analyst language.
 - Update the existing release-note mechanism when one exists. Do not introduce
   a new changelog or claim an API/release change for documentation-only
   clarification.
-
 
 ## Method compatibility and limitations
 

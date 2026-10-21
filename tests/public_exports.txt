@@ -1,0 +1,165 @@
+# Export name: one-line user task served by the root import.
+# Keep this inventory in exact parity with increment.__all__; the check rejects
+# both unjustified root names and entries for names no longer exported.
+Analysis: Declare an experiment and its analysis inputs.
+moments_from_summaries: Build a moments input from per-arm mean, variance, or conversion summaries.
+Report: Evaluate governed metrics over calendar time without declaring an experiment.
+Definitions: Load experiment and metric definitions from YAML.
+Metric: Select a metric definition from the supported metric types.
+MetricSpec: Define a metric to estimate from a dataframe column.
+CupedCovariate: Declare one covariate used by a CUPED method.
+CupedCovariateBinding: Bind a CUPED covariate to a declared property or pre-period measure.
+Winsorization: Bound a mean metric's outcomes before aggregation.
+Design: Declare the experiment's assignment and identification design.
+Randomized: Describe random assignment with a named control arm.
+Observational: Define an adjusted non-randomized comparison.
+Encouragement: Describe random encouragement assignment and participant uptake.
+RelationLocator: Identify an artifact relation by namespace and name.
+RelationRole: Select the semantic role of an artifact relation.
+UnitDayArtifactRef: Pin an immutable unit-day artifact generation as a trusted source.
+ArtifactRelationRef: Bind a relation name to an artifact generation and role.
+BaseRelations: Identify required base relations in a unit-day artifact.
+Freshness: Record how far source data are loaded and whether it is declared complete.
+MeasureManifest: Describe one measure's key, provenance, freshness, and observation/completeness bounds.
+SimpleMetricMeasure: Define source fields for a simple metric.
+RatioMetricMeasure: Define numerator and denominator fields for a ratio metric.
+MetricMeasure: Define the source fields for a metric in an artifact.
+ArtifactContext: Describe the experiment and source metadata attached to an artifact.
+UnitDayArtifactManifest: Declare the schema and relations in a unit-day artifact.
+ExtensionRefBase: Define a shared reference for an optional artifact extension.
+BreakoutDimensionExtension: Store breakout values needed to reproduce segmented results.
+FactorDimensionExtension: Store factor values used for factor-adjusted analysis.
+ClusterIdentityExtension: Store cluster identities for cluster-aware analysis.
+CupedPreperiodExtension: Store pre-period values required to replay CUPED adjustments.
+AssignmentCountsExtension: Store assignment counts needed to check allocation.
+TriggerPopulationExtension: Store counts for assigned and trigger-eligible populations.
+TriggerMeasureStatsExtension: Store statistics for trigger measures.
+EncouragementUptakeExtension: Store uptake evidence for an encouragement study.
+SiteVolumeExtension: Store site-volume totals needed for sitewide analysis.
+UnitCovariateExtension: Store unit-level numeric adjustment covariates.
+UnitCovariateLevelExtension: Store unit-level categorical adjustment covariates.
+ArtifactDigestError: Handle a refusal when artifact content cannot be digested.
+DigestType: Choose the field encoding used in an artifact content digest.
+FieldSpec: Declare one field's encoding and nullability for artifact digests.
+RelationDigests: Read a relation's schema and content digests and row count.
+canonical_schema_bytes: Encode a schema in the canonical form used by artifact digests.
+canonical_row_bytes: Encode one relation row for a stable content digest.
+canonical_rows_bytes: Encode relation rows in canonical order for digesting.
+canonical_json_bytes: Encode JSON values in the canonical artifact format.
+schema_sha256: Calculate the SHA-256 digest of a canonical schema.
+content_sha256: Calculate the SHA-256 digest of canonical content bytes.
+digest_relation: Calculate schema and content digests for an artifact relation.
+manifest_sha256: Calculate the digest that identifies an artifact manifest.
+context_sha256: Calculate the digest that identifies an artifact context.
+request_sha256: Calculate the digest of a portable artifact request.
+extension_definition_sha256: Calculate the digest of an artifact extension definition.
+extension_source_provenance_sha256: Calculate the digest of extension source provenance.
+ArtifactExtensionRef: Identify an optional artifact extension in a published source.
+ExtensionRequestBase: Declare a request for optional artifact evidence.
+BreakoutDimensionRequest: Request breakout values when publishing an artifact.
+FactorDimensionRequest: Request factor values when publishing an artifact.
+ClusterIdentityRequest: Request cluster identities when publishing an artifact.
+CupedPreperiodRequest: Request pre-period values needed to replay CUPED.
+AssignmentCountsRequest: Request assignment counts for an artifact.
+TriggerPopulationRequest: Request assigned and trigger-eligible population counts.
+TriggerMeasureStatsRequest: Request trigger-measure statistics for an artifact.
+EncouragementUptakeRequest: Request uptake evidence for an encouragement artifact.
+SiteVolumeRequest: Request site-volume totals for sitewide analysis.
+UnitCovariateRequest: Request numeric unit-level covariates for an artifact.
+UnitCovariateLevelRequest: Request categorical unit-level covariates for an artifact.
+ArtifactExtensionRequest: Select which optional evidence an artifact publisher should include.
+ArtifactExtensionCatalogEntry: Inspect an extension request, its canonical definition/source recipes, and digests.
+ArtifactPublication: Create and publish an immutable artifact generation.
+ArtifactSnapshot: Open a read-only view of one artifact generation.
+ArtifactStore: Publish artifacts and open immutable snapshots within a namespace.
+compile_unit_day_artifact_context: Build a portable context from loaded experiment definitions.
+unit_day_artifact_extension_catalog: List validated optional artifact extensions.
+UptakeSpec: Declare the binary uptake fact for an encouragement study.
+ExclusionRestriction: State the exclusion assumption for an encouragement effect.
+AdjustmentSet: Name covariates used to adjust an observational comparison.
+IdentificationGate: Set overlap and positivity rules for an observational comparison.
+AnalysisPlan: Register the evidence and decision rule for an analysis.
+MultiplicitySpec: Choose how a segmented family of results is multiplicity-adjusted.
+ExperimentMetric: Assign a method, role, and prior to one experiment metric.
+InferenceSpec: Select exact or explicitly asymptotic inference for an analysis.
+Method: Choose an estimation method and its optional adjustments.
+MethodSpec: Declare an estimation method and its CUPED inputs.
+Normal: Specify a Normal distribution for scalar-mean inference.
+AsymptoticMean: Register an asymptotic confidence sequence for count-clock mean outcomes.
+AsymptoticSequentialResult: Store portable asymptotic evidence and confidence limits at a stopped look.
+AsymptoticSequentialEvidence: Report set-exclusion evidence with assumptions and arm clocks.
+ScalarMeanModel: Declare count-clock assumptions for asymptotic mean inference.
+PredeclaredAdjustment: Fix a covariate coefficient and center from pre-period data.
+fit_predeclared_adjustment: Fit the pre-period coefficient and center for sequential CUPED.
+AlwaysValid: Register raw likelihood evidence with its model, roster, and reveal rules.
+PredictivePrior: Specify Beta, Normal-inverse-gamma, or Normal-inverse-Wishart prior parameters.
+SequentialModel: Declare the likelihood model for a sequential analysis.
+JointReveal: State how multiple outcomes are revealed together.
+SequentialCell: Define one metric, arm, and segment cell in a sequential roster.
+SequentialRegistration: Register the sequential model and data contract before reading outcomes.
+SequentialCompliancePolicy: Choose which Bernoulli uptake evidence to test sequentially.
+SequentialSnapshot: Store a versioned checkpoint of sequential analysis state.
+capture_sequential_snapshot: Save the current sequential analysis state as a checkpoint.
+declare_sequential_freeze: Stop monitoring selected metrics at the checkpoint's current look.
+snapshot_from_json: Restore a sequential checkpoint from JSON while rejecting duplicate keys.
+estimate_sequential: Evaluate the registered roster using exact or asymptotic evidence.
+sequential_definition_id: Identify the metric, window, assignment, and population binding.
+Covariate: Name a pre-exposure column used to model treatment-effect variation.
+ClusterBootstrap: Set whole-cluster resampling options for honest validation.
+SummaryStats: Reduce one arm's raw observations to canonical summary statistics.
+SwitchbackBaseline: Summarize treatment/control period variability for switchback planning.
+ProspectiveAssumptionProvenance: Record the source and timing of switchback planning assumptions.
+UnitCycleVarianceEnvelope: Supply a finite-sample variance reference for unit-cycle planning.
+UnitCycleTApproximation: Use the qualified Student-t approximation for unit-cycle planning.
+UnitCycleReference: Record the reference values used by unit-cycle power calculations.
+switchback_achieved_power: Calculate power at a fixed number of switchback blocks or units.
+switchback_minimum_detectable_effect: Find the smallest switchback effect reaching target power.
+switchback_required_blocks_or_units: Find the smallest switchback sample size reaching target power.
+unit_cycle_power_lower_bound: Calculate a supplementary Cantelli lower bound for unit-cycle power.
+Baseline: Specify expected control-arm values for a power calculation.
+PowerDesign: Set numeric inputs for sample-size, power, and detectable-effect calculations.
+required_sample_size: Calculate the sample size needed to detect a specified relative lift.
+achieved_power: Calculate power at a fixed arm size under a planning procedure.
+minimum_detectable_effect: Calculate the minimum relative effect detectable at a fixed arm size.
+power_curve: Compare power or minimum detectable effects across a planning grid.
+sample_ratio_mismatch: Detect allocation mismatch between observed and expected assignment counts.
+allocation_posterior_bands: Calculate posterior credible bands for each arm's allocation share.
+absorb_factor: Estimate an average treatment effect after adjusting for a declared factor.
+estimate_cate: Estimate conditional treatment effects for a metric.
+validate_cate: Validate conditional treatment-effect predictions on held-out observations.
+select_targeting_rule: Choose the share of units to target using honest validation.
+targeting_rule: Decide whether to target the highest-scoring share of units.
+segment_heterogeneity: Measure variation in treatment effects across segments.
+segment_contrast: Compare treatment effects between two segment values.
+segment_rollout_recommendation: Recommend which segments to roll out and estimate their value.
+estimate_policy_contrast: Estimate a target-versus-reference effect from an admitted decision trace.
+LoggedTrace: Record ordered decisions and outcomes for a logged policy.
+PolicyRegistry: Register and retrieve immutable policy definitions by ID and version.
+TabularPolicy: Define action probabilities from one context value.
+to_frame: Convert package result rows to a pandas, Polars, or Narwhals dataframe.
+impute: Repair missing dataframe values using the package's supported imputation methods.
+IdentificationError: Handle a refusal when assumptions do not identify the requested effect.
+CapabilityError: Handle a request that the selected data source cannot support.
+CodedError: Handle a package error with a stable code and structured context.
+DefinitionError: Correct a YAML definition or reference rejected during loading.
+IncrementDeprecationWarning: Identify a deprecated package feature while retaining Python's deprecation category.
+IncrementRuntimeWarning: Handle a runtime warning raised by package analysis.
+IncrementWarning: Handle a package warning with a stable code and structured context.
+InvalidRequestError: Correct a request that is invalid for the declared analysis.
+RefusalSpec: Declare the stable code and message renderer for a supported refusal.
+UnsupportedRequestError: Handle a recognized analysis request that is not supported.
+WarningSpec: Declare the stable code and message renderer for a package warning.
+WireFormatError: Correct serialized source data that does not match its wire format.
+refuse: Raise a registered refusal with its stable code and context.
+warn: Emit a registered package warning with its stable code and context.
+__version__: Check the installed package version.
+Assignment: Declare the assignment mechanism for an experiment.
+ParallelAssignment: Describe the assignment mechanism for a parallel-arm experiment.
+IndependentBernoulliOrder: Model independent treatment/control order draws for unit cycles.
+SharedScheduleOrder: Model a shared treatment/control schedule across switchback blocks.
+SwitchbackWindow: Declare washout and observation windows for a switchback study.
+SwitchbackAssignment: Describe treatment assignment across switchback periods.
+ParallelStudyEnvelope: Record design and allocation assumptions for a parallel-arm study.
+SwitchbackStudyEnvelope: Record design and schedule assumptions for a switchback study.
+StudyEnvelope: Carry a study's assignment and design metadata through analysis.
+SourceSnapshotEvidence: Record the event-time cutoff and completeness evidence for each source feed.
