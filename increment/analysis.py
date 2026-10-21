@@ -43,7 +43,7 @@ from increment._day_axis import (
     _day_axis_source_route,
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
-from increment._literals import Correction, ValueScale
+from increment._literals import Backend, Correction, ValueScale
 from increment._sitewide import SitewideReadouts, SitewideRequest
 from increment._source_operations import (
     AllocationHistoryOperation,
@@ -134,8 +134,6 @@ from increment.sources import (
 )
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
-
-Backend = Literal["pandas", "polars", "pyarrow"]
 
 
 def _input_backend_of(frame: IntoDataFrame) -> Backend:

@@ -11,7 +11,13 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from increment._literals import Alternative, PreferredDirection, Role
+from increment._literals import (
+    Alternative,
+    Backend,
+    PreferredDirection,
+    Role,
+    default_frame_backend,
+)
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.results import Estimate
 from increment.semantics.unit_cycle import (
@@ -23,22 +29,6 @@ from increment.semantics.unit_cycle import (
 
 if TYPE_CHECKING:
     from increment.estimation.readout_types import ReadoutMetadata
-
-Backend = Literal["pandas", "polars", "pyarrow"]
-
-
-def _default_backend(backend: Backend | None) -> Backend:
-    if backend is not None:
-        return backend
-    try:
-        import pandas  # noqa: F401
-    except ModuleNotFoundError:
-        try:
-            import polars  # noqa: F401
-        except ModuleNotFoundError:
-            return "pyarrow"
-        return "polars"
-    return "pandas"
 
 
 # Independent units and shared blocks have different replication grains.
@@ -545,7 +535,7 @@ class ContrastResults(list[ContrastResult]):
 
     def to_frame(self, *, backend: Backend | None = None) -> IntoDataFrame:
         """Return rows as a native frame; pandas is preferred when available."""
-        backend = _default_backend(backend or self._default_backend)
+        backend = default_frame_backend(backend or self._default_backend)
         columns = [
             "metric",
             "control_group",

@@ -44,11 +44,18 @@ from pydantic import (
 from scipy.stats import norm as _norm
 
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._literals import Alternative, Correction, Role, RowRole, ValueScale
+from increment._literals import (
+    Alternative,
+    Backend,
+    Correction,
+    Role,
+    RowRole,
+    ValueScale,
+    default_frame_backend,
+)
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
 from increment._source_types import MethodMomentEvidence, unit_frame_covariate_columns
-from increment.breakout.projection import Backend
 from increment.compatibility import _conservative_divide
 from increment.errors import (
     CapabilityError,
@@ -121,21 +128,6 @@ from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import Metric, RetentionMetric
 from increment.semantics.sequential import ASYMPTOTIC_LAWS
 from increment.sequential_state import SequentialSnapshot, require_public_laws, sequential_refuse
-
-
-def _default_backend(backend: Backend | None) -> Backend:
-    if backend is not None:
-        return backend
-    try:
-        import pandas  # noqa: F401
-    except ModuleNotFoundError:
-        try:
-            import polars  # noqa: F401
-        except ModuleNotFoundError:
-            return "pyarrow"
-        return "polars"
-    return "pandas"
-
 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan, DecisionComputation
@@ -1150,7 +1142,7 @@ class EstimateList[M: BaseModel](list[M]):
         columns: Sequence[str] | Literal["summary"] | None = None,
     ) -> IntoDataFrame:
         """Convert this list to a native frame; defaulting to its input backend."""
-        backend = _default_backend(backend or getattr(self, "_default_backend", None))
+        backend = default_frame_backend(backend or getattr(self, "_default_backend", None))
 
         from increment.breakout.projection import to_frame
 

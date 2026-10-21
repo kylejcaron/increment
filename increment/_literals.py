@@ -16,5 +16,23 @@ MultiplicityCorrection = Literal["none", "bh", "bonferroni", "e_bh"]
 Correction = Literal["none", "bh", "bonferroni"]
 ConversionInference = Literal["auto", "finite_sample"]
 
+Backend = Literal["pandas", "polars", "pyarrow"]
+
+
+def default_frame_backend(preferred: Backend | None = None) -> Backend:
+    """Prefer an explicit backend, then pandas, polars, and core pyarrow."""
+    if preferred is not None:
+        return preferred
+    try:
+        import pandas  # noqa: F401
+    except ModuleNotFoundError:
+        try:
+            import polars  # noqa: F401
+        except ModuleNotFoundError:
+            return "pyarrow"
+        return "polars"
+    return "pandas"
+
+
 ALTERNATIVE_VALUES = frozenset(get_args(Alternative))
 VALUE_SCALE_VALUES = frozenset(get_args(ValueScale))

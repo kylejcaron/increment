@@ -10,6 +10,7 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel
 
+from increment._literals import Backend, default_frame_backend
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.results import BinomialConfidenceSet, Estimate
 from increment.estimation.sequential_result import SequentialInferenceResult
@@ -32,22 +33,6 @@ _REFUSALS = refusals(
     },
 )
 _refuse = raiser(_REFUSALS)
-Backend = Literal["pandas", "polars", "pyarrow"]
-
-
-def default_backend(preferred: Backend | None = None) -> Backend:
-    """Choose an available native dataframe backend, preferring an input backend."""
-    if preferred is not None:
-        return preferred
-    try:
-        import pandas  # noqa: F401
-    except ModuleNotFoundError:
-        try:
-            import polars  # noqa: F401
-        except ModuleNotFoundError:
-            return "pyarrow"
-        return "polars"
-    return "pandas"
 
 
 def _scalar_dtype(annotation: Any) -> nw.dtypes.DType:
@@ -276,7 +261,7 @@ def to_frame[M: BaseModel](
         endpoint; ``None`` for a closed interval and whenever there is no
         point estimate, including set-only rows (whose bounds are in ``lb``/``ub``).
     """
-    backend = default_backend(backend)
+    backend = default_frame_backend(backend)
     if estimates:
         inferred = type(estimates[0])
         if model is None:

@@ -24,6 +24,7 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from increment._literals import Backend, default_frame_backend
 from increment.decision import FixedInference
 from increment.errors import (
     CodedModel,
@@ -49,7 +50,6 @@ from increment.power.core import (
 if TYPE_CHECKING:
     pass
 
-Backend = Literal["pandas", "polars", "pyarrow"]
 SolveFor = Literal["power", "mde"]
 
 
@@ -139,18 +139,7 @@ class PowerCurve(list[PowerCurvePoint]):
         return [row.model_dump() for row in self]
 
     def to_frame(self, backend: Backend | None = None) -> IntoDataFrame:
-        if backend is None:
-            try:
-                import pandas  # noqa: F401
-            except ModuleNotFoundError:
-                try:
-                    import polars  # noqa: F401
-                except ModuleNotFoundError:
-                    backend = "pyarrow"
-                else:
-                    backend = "polars"
-            else:
-                backend = "pandas"
+        backend = default_frame_backend(backend)
         fields = PowerCurvePoint.model_fields
         names = list(fields)
         names.insert(names.index("power_basis") + 1, "numerical_qualification")

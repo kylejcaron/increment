@@ -389,7 +389,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.power.curve"
-depends_on = ["increment.decision", "increment.errors", "increment.estimation", "increment.power.core"]
+depends_on = ["increment._literals", "increment.decision", "increment.errors", "increment.estimation", "increment.power.core"]
 
 [[modules]]
 path = "increment.power.unit_cycle"
@@ -416,7 +416,7 @@ depends_on = ["increment._literals", "increment.estimation"]
 
 [[modules]]
 path = "increment.breakout.projection"
-depends_on = ["increment._canonical", "increment.errors", "increment.estimation", "increment.estimation.sequential_result"]
+depends_on = ["increment._canonical", "increment._literals", "increment.errors", "increment.estimation", "increment.estimation.sequential_result"]
 
 [[modules]]
 path = "increment.breakout.estimates"
@@ -554,7 +554,7 @@ depends_on = ["increment._canonical", "increment._interpretation", "increment._s
 
 [[modules]]
 path = "increment.reporting"
-depends_on = ["increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
+depends_on = ["increment._literals", "increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
 
 [[modules]]
 path = "increment.logged_policy"
@@ -665,7 +665,24 @@ expose = ["ArrayPsiFn", "PsiFn", "ScoreDesign"]
 
 [[interfaces]]
 from = ["increment.breakout.projection"]
-expose = ["Backend", "to_frame"]
+expose = ["to_frame"]
+
+[[interfaces]]
+from = ["increment._literals"]
+expose = [
+  "Alternative",
+  "ALTERNATIVE_VALUES",
+  "Backend",
+  "ConversionInference",
+  "Correction",
+  "default_frame_backend",
+  "MultiplicityCorrection",
+  "PreferredDirection",
+  "Role",
+  "RowRole",
+  "ValueScale",
+  "VALUE_SCALE_VALUES",
+]
 
 [[modules]]
 path = "increment.winsor"
