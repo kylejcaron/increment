@@ -245,7 +245,7 @@ def test_scoped_contrast_collection_default_output_keeps_qualifications():
         } <= set(frame.columns)
 
     empty = results.filter(lambda row: False)
-    assert "Required cells:" in repr(empty)
+    assert "View: partial" in repr(empty)
     empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
     assert not len(empty_frame) and "integrity_status" in empty_frame.columns
 

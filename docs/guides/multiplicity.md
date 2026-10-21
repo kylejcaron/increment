@@ -43,10 +43,6 @@ print(results)
 <!-- output -->
 ```text
 assigned — treatment vs control
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Decision scope completeness: complete.
-Population roster completeness: complete (declared_allocation).
-Required cells: 2; available: 2.
 Multiplicity (primary): declared_plan; family primary.
 Multiplicity (secondary): declared_plan; family secondary.
 sessions (primary, relative lift): 0.129354, set [0.0912107, 0.16883] at 0.95 confidence.
@@ -154,10 +150,6 @@ print(av_results)
 <!-- output -->
 ```text
 assigned — treatment vs control
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Decision scope completeness: complete.
-Population roster completeness: complete (declared_allocation).
-Required cells: 2; available: 2.
 Multiplicity (primary): declared_plan; family primary.
 Multiplicity (secondary): declared_plan; family secondary.
 sessions (primary, relative lift): 0.129354, set [0.0706467, 0.191773] at 0.95 confidence.

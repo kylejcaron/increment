@@ -64,10 +64,6 @@ print(results)
 
 ```text
 assigned — treatment vs control
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Decision scope completeness: complete.
-Population roster completeness: complete (declared_allocation).
-Required cells: 1; available: 1.
 Multiplicity (primary): declared_plan; family primary.
 purchase (primary, relative lift): 0.646342, set [-0.318461, 3.28175] at 0.95 confidence.
 purchase interpretation: does not reject; inconclusive, not evidence of no effect.

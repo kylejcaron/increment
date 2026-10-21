@@ -202,10 +202,10 @@ population or inference method.
 
 ## Fixed horizon: guard the missing point
 
-The collection summary keeps required cells, integrity and retained family
-visible before effects. This example includes an exact conversion row with
-zero control conversions, so its relative point is unavailable even though
-the confidence set remains informative.
+The collection summary leads with the metric results. It shows integrity and
+scope qualifications only when they affect how to read those results. This
+example includes an exact conversion row with zero control conversions, so its
+relative point is unavailable even though the confidence set remains informative.
 
 ```python
 from random import Random
@@ -277,10 +277,6 @@ raise `results.frame.unknown_columns`.
 <!-- output -->
 ```text
 assigned — treatment vs control
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Decision scope completeness: complete.
-Population roster completeness: complete (declared_allocation).
-Required cells: 2; available: 2.
 Multiplicity (outcome): undeclared_plan; family retained scope.
 converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 converted additive effect: 0.36036, set [0.270641, 0.45008].
