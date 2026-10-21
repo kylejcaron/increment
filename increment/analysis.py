@@ -135,6 +135,15 @@ from increment.sources import (
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
 
+Backend = Literal["pandas", "polars", "pyarrow"]
+
+
+def _input_backend_of(frame: IntoDataFrame) -> Backend:
+    import narwhals as nw
+
+    return cast("Backend", nw.from_native(frame, eager_only=True).implementation.value)
+
+
 _CONTRAST_UNAVAILABLE = RefusalSpec(
     "facade.analysis.contrast_unavailable",
     CapabilityError,
@@ -353,7 +362,9 @@ def _stamp_exploratory_rows(rows):
         for row in source_rows
     ]
     if metadata is None:
-        return LiftEstimates(updated, source=rows.source)
+        result = LiftEstimates(updated, source=rows.source)
+        result._default_backend = rows._default_backend
+        return result
 
     moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
     families: list[FamilyScope] = []
@@ -421,12 +432,14 @@ def _stamp_exploratory_rows(rows):
         partial=metadata.partial,
         partial_reason=metadata.partial_reason,
     )
-    return LiftEstimates(
+    result = LiftEstimates(
         updated,
         metadata=metadata,
         source=rows.source,
         sequential_snapshot=rows.sequential_snapshot,
     )
+    result._default_backend = rows._default_backend
+    return result
 
 
 def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricConfig) -> bool:
@@ -500,7 +513,7 @@ class Analysis:
         completeness watermarks; absent certification remains unknown.
     """
 
-    _input_backend: Literal["pandas", "polars", "pyarrow"] | None = None
+    _input_backend: Backend | None = None
     _readout_snapshot_active: bool = False
     _readout_srm_observations: (
         dict[tuple[Any, ...], tuple[Any, tuple[str, Mapping[str, Any], str] | None]] | None
@@ -1019,12 +1032,7 @@ class Analysis:
             breakouts=breakouts,
         )
         analysis = cls._from_source(src, src.context.design)
-        import narwhals as nw
-
-        analysis._input_backend = cast(
-            "Literal['pandas', 'polars', 'pyarrow']",
-            nw.from_native(frame, eager_only=True).implementation.value,
-        )
+        analysis._input_backend = _input_backend_of(frame)
         return analysis
 
     @classmethod
@@ -1113,12 +1121,7 @@ class Analysis:
             cluster=cluster,
         )
         analysis = cls._from_source(src, src.context.design)
-        import narwhals as nw
-
-        analysis._input_backend = cast(
-            "Literal['pandas', 'polars', 'pyarrow']",
-            nw.from_native(frame, eager_only=True).implementation.value,
-        )
+        analysis._input_backend = _input_backend_of(frame)
         return analysis
 
     @classmethod
@@ -1376,12 +1379,7 @@ class Analysis:
             contrast_references=contrast_references,
         )
         analysis = cls._from_source(cast("ContrastSource", src), identification)
-        import narwhals as nw
-
-        analysis._input_backend = cast(
-            "Literal['pandas', 'polars', 'pyarrow']",
-            nw.from_native(frame, eager_only=True).implementation.value,
-        )
+        analysis._input_backend = _input_backend_of(frame)
         return analysis
 
     def materialize(self) -> Analysis:
@@ -2628,6 +2626,7 @@ class Analysis:
                 source=extra.source,
                 sequential_snapshot=extra.sequential_snapshot,
             )
+            extra._default_backend = getattr(self, "_input_backend", None)
             extra = _stamp_exploratory_rows(extra)
             rows = extra if rows.metadata is None else rows.concat(extra)
         self._warn_run_advisories(
@@ -3062,7 +3061,7 @@ class Analysis:
             segments instead. ``source`` names the resolved
             :class:`FactSource`. Empty when no breakouts are declared.
         """
-        return self._run_breakout(
+        rows = self._run_breakout(
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
@@ -3070,6 +3069,8 @@ class Analysis:
             exploratory_metrics=exploratory_metrics,
             population=population,
         )
+        rows._default_backend = self._input_backend
+        return rows
 
     def _run_breakout(
         self,
@@ -3370,7 +3371,9 @@ class Analysis:
             dimension=dimension,
             population=population,
         )
-        return self._day_axis().values(req)
+        rows = self._day_axis().values(req)
+        rows._default_backend = self._input_backend
+        return rows
 
     def _daily_lift(self, **kwargs: Any) -> DailyLiftEstimates:
         """Internal day-axis boundary: always supply an effective compiled plan.
@@ -3514,12 +3517,14 @@ class Analysis:
             estimands=tuple(estimands) if estimands is not None else None,
             population=population,
         )
-        return self._day_axis().lift(
+        rows = self._day_axis().lift(
             req,
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
         )
+        rows._default_backend = self._input_backend
+        return rows
 
     def run_asof(
         self,
@@ -3603,7 +3608,9 @@ class Analysis:
             completed_windows_only=completed_windows_only,
             population=population,
         )
-        return self._day_axis().values(req)
+        rows = self._day_axis().values(req)
+        rows._default_backend = self._input_backend
+        return rows
 
     def run_asof_lift(
         self,
@@ -3725,7 +3732,7 @@ class Analysis:
             mechanism=getattr(self._design, "mechanism", None),
             segmented=dimension is not None,
         )
-        return self._stamp_exploratory(
+        rows = self._stamp_exploratory(
             self._day_axis().lift(
                 req,
                 decision_method=decision_method,
@@ -3735,3 +3742,5 @@ class Analysis:
             added,
             correction=normalize_display_correction(asof_policy.correction),
         )
+        rows._default_backend = self._input_backend
+        return rows
