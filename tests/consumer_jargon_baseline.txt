@@ -1,0 +1,24 @@
+# Current user-facing occurrences: term, repository file, count. Counts may only decrease.
+carrier	docs/guides/priors-and-decisions.md	1
+ingress	docs/guides/cuped.md	1
+ingress	docs/guides/logged-policy.md	1
+ingress	docs/guides/observational.md	2
+ingress	increment/estimation/engine.py	1
+ingress	docs/guides/quantile-metrics.md	1
+retained family	docs/guides/dashboard.md	2
+retained family	docs/guides/encouragement.md	1
+retained family	docs/guides/reading-results.md	4
+retained family	increment/estimation/results.py	2
+retained family	docs/guides/sequential-inference.md	1
+roster completeness	README.md	1
+roster completeness	docs/guides/multiplicity.md	2
+roster completeness	docs/guides/quickstart.md	2
+roster completeness	docs/guides/reading-results.md	1
+roster completeness	docs/guides/sequential-inference.md	1
+roster completeness	increment/_interpretation.py	2
+roster completeness	increment/tables.py	1
+seam	docs/guides/compatibility.md	4
+seam	increment/estimation/cuped/scalar.py	1
+sidecar	docs/guides/observational.md	1
+substrate	docs/guides/data-model.md	1
+sidecar	increment/estimation/inference.py	1
