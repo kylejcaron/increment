@@ -957,6 +957,7 @@ def test_sequential_rows_compare_every_public_field_except_route_identifiers():
 def test_srm_undeclared_allocation_refusal_matches_summary_and_panel_ingress():
     import pandas as pd
 
+    from increment import Analysis
     from increment.errors import CapabilityError
 
     per_unit = pd.DataFrame(
@@ -994,6 +995,7 @@ def test_srm_undeclared_allocation_refusal_matches_summary_and_panel_ingress():
 
     assert refusals[0] == refusals[1]
     assert refusals[0][0] == "integrity.allocation_scheme_missing"
+    assert refusals[0][1]["observed_arms"] == ()
 
 
 pytestmark = pytest.mark.integration

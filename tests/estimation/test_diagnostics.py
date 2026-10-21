@@ -315,7 +315,11 @@ class TestSampleRatioMismatch:
         """Five arms each expecting ~3 units fall under Cochran's rule of
         thumb - the fixed chi-square p-value is not trustworthy there."""
         counts = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5}
-        result = sample_ratio_mismatch(counts, inference="fixed")
+        result = sample_ratio_mismatch(
+            counts,
+            expected=dict.fromkeys(counts, 1 / len(counts)),
+            inference="fixed",
+        )
 
         assert result.min_expected_count == pytest.approx(3.0)
         assert result.low_expected_count is True
@@ -732,7 +736,11 @@ def test_srm_result_min_expected_count_is_json_portable():
 
     # Computed: the finite minimum serializes to a JSON number and reconstructs
     # to the same value.
-    result = sample_ratio_mismatch({"a": 100, "b": 100}, inference="fixed")
+    result = sample_ratio_mismatch(
+        {"a": 100, "b": 100},
+        expected={"a": 0.5, "b": 0.5},
+        inference="fixed",
+    )
     payload = result.model_dump_json()
     assert result.min_expected_count is not None
     assert json.loads(payload)["min_expected_count"] == result.min_expected_count

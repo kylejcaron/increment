@@ -544,7 +544,8 @@ def test_analysis_srm_requires_declared_allocation(inference):
 
     error = raised.value
     assert error.code == "integrity.allocation_scheme_missing"
-    assert error.context["observed_arms"] == ("control", "treatment")
+    # Missing allocation is rejected before reading counts on every source.
+    assert error.context["observed_arms"] == ()
     assert error.context["population"] == "assigned"
     assert "Randomized(control_group=" in str(error)
     assert "allocation={" in str(error)
@@ -641,12 +642,20 @@ def test_analysis_native_srm_zero_fills_explicit_missing_arm_for_fixed_look(seed
 
 
 @pytest.mark.slow
-def test_analysis_native_srm_requires_declared_allocation(seeded_defs):
-    """Warehouse definitions without allocation cannot use either SRM inference."""
+def test_analysis_native_srm_requires_declared_allocation(seeded_defs, monkeypatch):
+    """Warehouse refusal does not execute count queries before checking allocation."""
     from examples._seed import seed_event_log
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=28)
+    queries: list[str] = []
+    to_pyarrow = con.to_pyarrow
+
+    def record_query(expr, *args, **kwargs):
+        queries.append(str(expr))
+        return to_pyarrow(expr, *args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", record_query)
 
     with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
         for inference in ("always_valid", "fixed"):
@@ -654,6 +663,7 @@ def test_analysis_native_srm_requires_declared_allocation(seeded_defs):
                 analysis.srm(inference=inference)
             assert raised.value.code == "integrity.allocation_scheme_missing"
             assert raised.value.context["observed_arms"] == ()
+    assert queries == []
 
 
 def _extend_mixed_assignment_event_horizon(con) -> None:

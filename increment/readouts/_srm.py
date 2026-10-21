@@ -72,20 +72,15 @@ def srm(
             ),
         )
     if expected is None and getattr(design, "allocation", None) is None:
-        # Frame sources already retain their assignment rows in memory.
-        # Other sources must refuse before issuing a counts query.
-        observed = src.unit_counts() if hasattr(src, "_frame") else {}
+        # This refusal is independent of observed counts: every source refuses
+        # before querying or loading them, so observed_arms is consistently empty.
         _raise(
             (
                 "integrity.allocation_scheme_missing"
                 if getattr(design, "allocation_scheme", None) is None
                 else "integrity.allocation_missing_or_nonconstant"
             ),
-            observed_arms=tuple(
-                sorted(
-                    arm for arm in observed if arm not in (UNASSIGNED_LABEL, MIXED_ASSIGNMENT_LABEL)
-                )
-            ),
+            observed_arms=(),
             population="assigned",
         )
     if inference == "always_valid":
