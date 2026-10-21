@@ -595,6 +595,11 @@ def _render_group_scope(group, visible_rows) -> list[str]:
             'SRM not checked; declare allocation_scheme="independent" on '
             "Randomized or Encouragement; it must describe how units were actually assigned."
         )
+    elif group.integrity_code == "integrity.triggered_population_not_checked":
+        lines.append(
+            "SRM not checked on the triggered population; post-trigger counts cannot "
+            "validate assignment. Check the assigned population instead."
+        )
     elif group.integrity_status == "not_checked_missing_counts":
         lines.append("SRM not checked; assignment counts are not recorded.")
     elif group.integrity_status == "unsupported_assignment":
