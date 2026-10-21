@@ -112,9 +112,7 @@ def _(Analysis, DEFINITIONS, EXPERIMENT, con, warehouse_ready):
     assert (warehouse_ready / "manifest.json").exists(), (
         "warehouse missing - run the generation cell above first"
     )
-    analysis = Analysis(
-        experiment_name=EXPERIMENT, definitions_path=DEFINITIONS, con=con, store="always"
-    )
+    analysis = Analysis.from_definitions(EXPERIMENT, DEFINITIONS, con, store="always")
     experiment = analysis.experiment
     return analysis, experiment
 

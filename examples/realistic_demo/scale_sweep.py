@@ -125,13 +125,9 @@ def sweep(
 
     rows: list[dict] = []
     try:
-        # The shipped fact_sources.yaml reads Parquet via CWD-RELATIVE SQL
-        # (read_parquet('examples/realistic_demo/warehouse/...')), while
-        # regen/measurement here use absolute paths anchored to __file__.
-        # Those only coincide if cwd is the repo root, so enforce it for the
-        # duration -- otherwise a caller with a different cwd (e.g. a
-        # notebook opened from elsewhere) would regenerate the real
-        # warehouse but silently query stale or missing Parquet.
+        # fact_sources.yaml uses CWD-relative Parquet paths while generation
+        # uses paths anchored to __file__. Run from the repository root so
+        # queries cannot silently read stale or missing Parquet.
         os.chdir(_REPO_ROOT)
         for partitions in partition_counts:
             row_counts = _regenerate(
@@ -144,7 +140,7 @@ def sweep(
 
             con = ibis.duckdb.connect()
             try:
-                analysis = Analysis(_EXPERIMENT, _DEFINITIONS, con)
+                analysis = Analysis.from_definitions(_EXPERIMENT, _DEFINITIONS, con)
 
                 start = time.perf_counter()
                 analysis.materialize()

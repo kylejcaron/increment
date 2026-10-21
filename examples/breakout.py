@@ -54,7 +54,7 @@ def _(ibis, seed_event_log):
 
 @app.cell
 def _(Analysis, DEFINITIONS, EXPERIMENT, con):
-    analysis = Analysis(experiment_name=EXPERIMENT, definitions_path=DEFINITIONS, con=con)
+    analysis = Analysis.from_definitions(EXPERIMENT, DEFINITIONS, con)
     return (analysis,)
 
 

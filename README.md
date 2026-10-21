@@ -15,8 +15,8 @@
 
 Increment is an open-source Python library for A/B test analysis. Analyze
 experiments from dataframes or SQL warehouses with reusable metrics, effect
-estimates, uncertainty intervals, and reports. Increment does not assign traffic,
-ship feature flags, or maintain a separate event store.
+estimates, and uncertainty intervals. Increment does not assign traffic, ship
+feature flags, or maintain a separate event store.
 
 [Website](https://getincrement.io/) · [Documentation](https://getincrement.io/docs/) ·
 [Quickstart](#quickstart) · [Warehouse analysis](#connect-your-warehouse) ·
@@ -35,8 +35,9 @@ ship feature flags, or maintain a separate event store.
   effect; use a sequential method for repeated looks when its assumptions fit.
 - **Estimate causal effects** — use IPTW, DML, or AIPW for observational
   treatments, or analyze encouragement and switchback designs.
-- **Explore and report** — inspect breakouts, trends, and treatment-effect
-  differences; create readout tables, dashboards, and sitewide-impact estimates.
+- **Explore** — inspect breakouts, trends, and treatment-effect differences;
+  create readout tables and dashboards, and track metric trends over calendar
+  time.
 
 Methods support different metrics and designs. Use the
 [method guide](https://getincrement.io/docs/guides/choose-a-method/) to choose;
