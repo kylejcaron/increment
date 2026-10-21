@@ -176,11 +176,11 @@ def snowflake_compile_con():
 @pytest.fixture(scope="module")
 def snowflake_compile_sources(snowflake_compile_con):
     from integration.warehouse_execution._compile import (
-        create_compile_source_tables,
+        CompileSourceTables,
         drop_compile_source_tables,
     )
 
-    sources = create_compile_source_tables(snowflake_compile_con, "snowflake")
+    sources = CompileSourceTables([], set())
     try:
         yield sources
     finally:
@@ -209,11 +209,11 @@ def bigquery_compile_session():
 @pytest.fixture(scope="module")
 def bigquery_compile_sources(bigquery_compile_session):
     from integration.warehouse_execution._compile import (
-        create_compile_source_tables,
+        CompileSourceTables,
         drop_compile_source_tables,
     )
 
-    sources = create_compile_source_tables(bigquery_compile_session, "bigquery")
+    sources = CompileSourceTables([], set())
     try:
         yield sources
     finally:

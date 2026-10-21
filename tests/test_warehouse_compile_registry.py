@@ -210,10 +210,12 @@ def test_negative_control_is_registered_and_renders_offline(dialect):
 
 
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-def test_shared_source_tables_submit_without_per_case_ddl(dialect):
+def test_shared_source_table_is_created_once_when_first_referenced(dialect):
     from integration.warehouse_execution._compile import (
         BigQueryCompileSession,
         CompileSourceTables,
+        drop_compile_source_tables,
+        fixed_compile_cases,
         run_compile_case,
     )
 
@@ -228,17 +230,27 @@ def test_shared_source_tables_submit_without_per_case_ddl(dialect):
         connection = BigQueryCompileSession(client, object(), lambda **kwargs: kwargs)
         statements = client.statements
 
-    source_tables = CompileSourceTables(tuple(case.table_names.values()), frozenset())
+    source_tables = CompileSourceTables([], set())
     assert (
         run_compile_case(connection, case, shared_tables=source_tables)
         == "shared schema-only tables"
     )
-    assert len(statements) == 1
+    assert len(statements) == 2
+    assert statements[0].upper().startswith("CREATE TABLE")
+    next_case = next(
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_hash"
+    )
+    assert run_compile_case(connection, next_case, shared_tables=source_tables) == (
+        "shared schema-only tables"
+    )
+    assert len(statements) == 3
     assert (
-        statements[0]
+        statements[-1]
         .upper()
         .startswith("EXPLAIN USING TEXT " if dialect == "snowflake" else "SELECT")
     )
+    drop_compile_source_tables(connection, dialect, source_tables)
+    assert statements[-1].upper().startswith("DROP TABLE")
 
 
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
@@ -260,7 +272,7 @@ def test_shared_source_refusal_uses_inline_typed_cte(dialect):
         connection = BigQueryCompileSession(client, object(), lambda **kwargs: kwargs)
         statements = client.statements
 
-    source_tables = CompileSourceTables((), frozenset(case.table_names.values()))
+    source_tables = CompileSourceTables([], set(case.table_names.values()))
     assert run_compile_case(connection, case, shared_tables=source_tables) == (
         "inline empty typed CTEs"
     )

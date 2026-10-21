@@ -793,28 +793,30 @@ def _execute_sql(connection, dialect: str, statement: str, *, dry_run: bool = Fa
     return job
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class CompileSourceTables:
-    created: tuple[str, ...]
-    unavailable: frozenset[str]
+    created: list[str]
+    unavailable: set[str]
 
 
-def create_compile_source_tables(connection, dialect: str) -> CompileSourceTables:
-    """Create the worker's distinct typed source relations once for all cases."""
-    owners = {}
-    cases = [*compile_statement_cases(dialect), compile_negative_control(dialect)]
-    for case in cases:
-        for key, table_name in case.table_names.items():
-            owners.setdefault(table_name, (case, key))
-    created = []
-    unavailable = set()
-    for table_name, (case, key) in owners.items():
+def _create_shared_source_tables(
+    connection, case: CompileCase, source_tables: CompileSourceTables
+) -> None:
+    known = set(source_tables.created) | source_tables.unavailable
+    for key, table_name in case.table_names.items():
+        if table_name in known:
+            continue
         try:
-            _execute_sql(connection, dialect, _schema_only_ddl(case, key, table_name))
-            created.append(table_name)
+            _execute_sql(
+                connection,
+                case.dialect,
+                _schema_only_ddl(case, key, table_name),
+            )
         except Exception:
-            unavailable.add(table_name)
-    return CompileSourceTables(tuple(created), frozenset(unavailable))
+            source_tables.unavailable.add(table_name)
+        else:
+            source_tables.created.append(table_name)
+            known.add(table_name)
 
 
 def drop_compile_source_tables(
@@ -870,6 +872,7 @@ def run_compile_case(
     try:
         if case.schemas:
             if shared_tables is not None:
+                _create_shared_source_tables(connection, case, shared_tables)
                 if set(case.table_names.values()) & shared_tables.unavailable:
                     statement = _inline_empty_ctes(statement, case)
                     route = "inline empty typed CTEs"
