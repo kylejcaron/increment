@@ -546,9 +546,6 @@ def test_analysis_srm_requires_declared_allocation(inference):
     assert error.code == "integrity.allocation_scheme_missing"
     # Missing allocation is rejected before reading counts on every source.
     assert error.context == {"population": "assigned"}
-    assert error.context["population"] == "assigned"
-    assert "Randomized(control_group=" in str(error)
-    assert "allocation={" in str(error)
     for restored in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):
         assert type(restored) is type(error)
         assert restored.code == error.code

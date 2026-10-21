@@ -1655,8 +1655,8 @@ class Analysis:
                                     "route": (
                                         "Declare allocation_scheme='independent' on a design "
                                         "that uses an independent constant-probability draw, or "
-                                        "use Analysis.srm(inference='fixed') for one predeclared "
-                                        "look."
+                                        "pass the target shares as Analysis.srm(inference='fixed', "
+                                        "expected={...}) for one predeclared look."
                                     )
                                 }
                                 if integrity.code == "integrity.allocation_scheme_missing"
