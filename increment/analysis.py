@@ -17,10 +17,10 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import inspect
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from ibis.backends.sql import SQLBackend
 
@@ -465,6 +465,9 @@ def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricC
         prior_present=config.prior is not None,
     )
     return isinstance(support, Supported)
+
+
+_T = TypeVar("_T")
 
 
 class Analysis:
@@ -1409,18 +1412,21 @@ class Analysis:
         with src.readout_snapshot(
             metrics=metrics, population="assigned", include_breakouts=True
         ) as pinned:
-            isolated = copy.copy(self)
-            isolated._state = replace(self._state, source=pinned)
-            # The pinned snapshot must never be reopened over: drop any reopen pin
-            # the copy would otherwise inherit.
-            isolated._artifact_open_spec = None
-            isolated._readout_snapshot_active = True
-            isolated._readout_srm_observations = {}
-            try:
-                return operation(isolated)
-            finally:
-                delattr(isolated, "_readout_snapshot_active")
-                delattr(isolated, "_readout_srm_observations")
+            return self._with_pinned_source(pinned, operation)
+
+    def _with_pinned_source(self, pinned: MomentSource, operation: Callable[[Analysis], _T]) -> _T:
+        isolated = copy.copy(self)
+        isolated._state = replace(self._state, source=pinned)
+        # The pinned snapshot must never be reopened over: drop any reopen pin
+        # the copy would otherwise inherit.
+        isolated._artifact_open_spec = None
+        isolated._readout_snapshot_active = True
+        isolated._readout_srm_observations = {}
+        try:
+            return operation(isolated)
+        finally:
+            delattr(isolated, "_readout_snapshot_active")
+            delattr(isolated, "_readout_srm_observations")
 
     def dashboard_breakout_reads(self, breakout: Breakout) -> DashboardBreakoutReads:
         """The dashboard's Explore reads through one declared breakout alone.
@@ -1524,22 +1530,22 @@ class Analysis:
     def health_check(
         self, *, expected_allocation: Mapping[str, float] | None = None
     ) -> ExperimentHealth:
-        from increment.estimation.health import ExperimentHealth
+        from increment._health import check_health
 
-        if getattr(self, "_readout_snapshot_active", False):
-            return self._collect_health(expected_allocation)
-        if (
-            not isinstance(self._state, ContrastAnalysisState)
-            and classify_source(self._src) == "native"
+        if getattr(self, "_readout_snapshot_active", False) or isinstance(
+            self._state, ContrastAnalysisState
         ):
-            return cast(
-                ExperimentHealth,
-                self.dashboard_snapshot(
-                    lambda pinned: pinned.health_check(expected_allocation=expected_allocation),
-                    metrics=self._metrics,
-                ),
+            return self._collect_health(expected_allocation)
+
+        def collect(pinned: MomentSource) -> ExperimentHealth:
+            if pinned is self._src:
+                return self._collect_health(expected_allocation)
+            return self._with_pinned_source(
+                pinned,
+                lambda isolated: isolated._collect_health(expected_allocation),
             )
-        return self._collect_health(expected_allocation)
+
+        return check_health(self._src, metrics=self._metrics, collect=collect)
 
     def _collect_health(
         self,
