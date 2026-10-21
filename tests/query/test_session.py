@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
+import textwrap
 import time
 import warnings
 from datetime import UTC, date, datetime, timedelta
@@ -31,6 +34,48 @@ from increment.semantics.artifact import (
 from tests.warning_codes import warning_codes
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.integration
+def test_query_boundary_filters_only_ibis_duckdb_arrow_deprecation():
+    script = textwrap.dedent(
+        """
+        import ibis
+        from increment import Analysis
+        from tests.analysis_factory import _make_event_log_table
+
+        con = ibis.duckdb.connect()
+        _make_event_log_table(con)
+        analysis = Analysis.from_definitions(
+            "new_onboarding_v2", "examples/definitions", con
+        )
+        analysis.run(metrics=["purchase_rate"])
+        analysis.health_check()
+        """
+    )
+    analysis = subprocess.run(
+        [sys.executable, "-W", "error::DeprecationWarning", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert analysis.returncode == 0, analysis.stderr
+    assert "fetch_arrow_table" not in analysis.stderr
+
+    user_warning = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error::UserWarning",
+            "-c",
+            'import warnings; warnings.warn("probe", UserWarning)',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert user_warning.returncode != 0
+    assert "UserWarning: probe" in user_warning.stderr
 
 
 def _session():

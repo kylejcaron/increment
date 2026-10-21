@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import inspect
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -2610,24 +2609,17 @@ class Analysis:
                 prior=prior,
             )
 
-        def run_window(
-            target: Analysis, req: WholeWindowRequest
-        ) -> LiftEstimates | ContrastResults:
-            with warnings.catch_warnings():  # Ibis DuckDB still calls fetch_arrow_table; remove when fixed upstream (locked Ibis 12.0.0 / DuckDB 1.5.5; floors Ibis 10.1.0 / DuckDB 1.3.2 and Ibis 11.0.0 / DuckDB 1.4.3).
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"fetch_arrow_table\(\) is deprecated",
-                    category=DeprecationWarning,
-                    module=r"ibis\.backends\.duckdb",
-                )
-                return target._whole_window().run(req)
-
-        rows = run_window(self, request(selected)) if selected or not added else LiftEstimates()
+        rows = (
+            self._whole_window().run(request(selected))
+            if selected or not added
+            else LiftEstimates()
+        )
         if not isinstance(rows, LiftEstimates):
             rows = LiftEstimates(rows)
         if added:
-            exploratory_analysis = self._exploratory_analysis(added, caller="run")
-            extra = run_window(exploratory_analysis, request(added))
+            extra = (
+                self._exploratory_analysis(added, caller="run")._whole_window().run(request(added))
+            )
             extra = LiftEstimates(
                 [row for row in extra if row.estimand != "compliance"],
                 metadata=extra.metadata,
