@@ -128,9 +128,10 @@ moments, artifact, and checkpoint formats.
     (`group_id`, `metric`, `n >= 2`, `mean`, ddof=1 `var`) and conversion rows
     (`group_id`, `metric`, `n`, exact integer `successes`). Extra fields are
     refused with `moments.summaries.invalid`. Without `assignment_counts`,
-    `unit_counts()`, `srm()`, and health allocation checks refuse with
-    `source.moments.assignment_counts`. For ratios and richer summaries, use
-    `from_unit_summary`.
+    `unit_counts()` and health allocation checks refuse with
+    `source.moments.assignment_counts`; `srm()` does too once a target
+    allocation is declared, and refuses with an `integrity.allocation_*` code
+    before that. For ratios and richer summaries, use `from_unit_summary`.
 
     **Unit-day artifacts.** Artifact context format 2 is the only supported
     format. It contains no source SQL; source recipes use domain-tagged SHA-256
