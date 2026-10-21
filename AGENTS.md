@@ -79,6 +79,21 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   invariants and parity. Do not pin permitted wording, private wiring or exact
   bits where a tolerance defines the contract. Replay tests exercise the
   claimed consumers on the restored object.
+- Load the `writing-tests` skill before adding or changing tests and
+  `test-audit` before pruning. Each new test names the bug it catches and is
+  shown failing first: a one-line break in the code under test or a detached
+  worktree at the base, never `git stash`. Derive expected values from the
+  spec, not from running the implementation.
+- One test file per source module. Assert query and estimation behavior
+  through one ingress path plus the parity harness, never once per ingress.
+  Assert dashboard behavior on the prepared payload; render only when the
+  behavior is the rendering.
+- A `parametrize` past twelve items becomes boundary cases plus a Hypothesis
+  property or carries `@pytest.mark.grid("<reason>")`. Do not add cases to
+  `tests/test_parity_matrix.py` or
+  `tests/estimation/test_sequential_screen_acceptance.py`.
+- Mutation evidence comes from `scripts/mutation_campaign.py` on demand or
+  nightly, never per push; see [test economy](CONTRIBUTING.md#test-economy).
 - Start with `make test TESTS=tests/file.py::test_name`, then run
   `make test-affected BASE=<task-base-sha>` and include relevant slow cases.
   Resolve the base at dispatch and reuse it across commits/resumes;

@@ -233,6 +233,79 @@ the full inventory so no case disappears. Run focused execution when test
 bodies, fixtures, assertions or selection/guard logic change. Batch those
 checks at meaningful milestones rather than after each decorator edit.
 
+#### Test economy
+
+A test exists to fail when the code is wrong. Per test this suite is cheap;
+its cost is item count. In October 2026 the recorded CI durations showed
+about 20,000 collected items from about 9,000 test functions (fast tier
+18,189 items, 619 CPU-seconds, median 2 ms; slow tier 1,825 items, 1,760
+CPU-seconds, median 0.3 s; certification 82 items, 852 CPU-seconds).
+Collecting the tree takes close to a minute per xdist worker in every shard,
+so item count and shard wall time are the budgets to watch, not CPU. These
+numbers date quickly; the duration files under `.github/` are current.
+
+Tier intent:
+
+- `fast` is the PR gate: unit plus in-process `integration` (DuckDB, Ibis,
+  dataframe entry points). Keep each shard around ten minutes of wall time;
+  add shards before trimming tests.
+- `slow` holds deterministic functional work: large-N parity, power
+  enclosure, artifact replay, dashboard capture. Same shard target.
+- `numerical_certification` runs on PRs only when certified modules change;
+  `parameter_recovery` is nightly. Neither moves into `fast` or `slow` to
+  see it on a PR.
+- `integration/warehouse_execution/` is weekly or on touch and never
+  collected from `testpaths`.
+
+Where new tests go:
+
+- One test file per source module, `tests/<pkg>/test_<module>.py`. Do not
+  add a file for a facet of an existing feature; the
+  `test_unit_day_artifact_*` family is the pattern to stop, not extend.
+- Query-builder and estimation behavior is asserted through one ingress path
+  plus the parity harness (`tests/test_parity_harness.py`,
+  `tests/test_parity_matrix.py`). Do not re-assert the same result through
+  dataframe, SQL and artifact ingress separately.
+- Dashboard behavior is asserted on the prepared payload
+  (`increment.dashboard` data structures). Rendering tests are a small set of
+  `slow` plus `integration` smokes; a new dashboard test renders only when the
+  behavior is the rendering. Rendering is about a quarter of the slow tier.
+- Power-planning and parity work over large N belongs in `slow`; a fast-tier
+  sentinel is one representative case, not a grid.
+
+Grids: `tests/test_parity_matrix.py` (about 2,800 items) and
+`tests/estimation/test_sequential_screen_acceptance.py` (about 680) are
+scheduled for collapse to boundary cases plus Hypothesis properties; do not
+add cases to them. Any `parametrize` that expands past twelve items becomes
+boundary cases plus a property or carries `@pytest.mark.grid("<reason>")`.
+Check with `--collect-only -q` on the changed file.
+
+Red check: every new test is observed failing before it is accepted. For a
+bugfix, run it against the pre-change code; for new code, introduce a
+deliberate one-line break in the code under test, watch the test catch it,
+and revert. Use a detached worktree
+(`git worktree add --detach /tmp/red-check <base>`) when the old code is
+needed; never `git stash`, which disturbs other worktrees' uncommitted work.
+Quote the failure in the PR.
+
+Mutation evidence: `scripts/mutation_campaign.py` runs bounded mutmut 3.8
+campaigns over named functions in a fresh interpreter per mutant (the
+numerical stack is not fork-safe, so the mutmut CLI is not used directly).
+Campaigns are scoped by `[tool.mutmut]` in `pyproject.toml` and the campaign
+table in the script. A change under `increment/estimation/`, `increment/power/`
+or `increment/query/` that adds tests states which campaign covers the touched
+function, or that none does yet; run the campaign on demand under the usual
+local resource limits, never as a per-push step. Survivors are reported, not
+fixed, unless the task is about them. When a campaign exists, a new test
+should kill a mutant no prior test killed; otherwise the PR names, in one
+line per test, the bug it catches that no existing test catches.
+
+Long descriptive names and one behavior per test are the house style; do not
+merge tests to shorten names. The duplication to remove is two tests no
+single-line mutant can separate, which only a per-test kill matrix shows.
+Audit the three modules with the highest test-LOC-to-source ratio once per
+release cycle and after any change that adds more than 200 items.
+
 
 
 Before pushing, the pre-push checks run lint, type-checking and the affected
