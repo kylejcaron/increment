@@ -45,6 +45,9 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
+from tests._unit_boundary import backend_fixture
+
+pytestmark = pytest.mark.integration
 
 
 def _cancel_tol(n, ref):
@@ -81,7 +84,7 @@ def _experiment(cluster: str | None) -> Experiment:
     )
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def cl_con():
     # DuckDB's own thread count, unlike the harness default (tests/conftest.py):
     # this module keeps the spine, totals and summary queries on parallel plans.

@@ -9,6 +9,7 @@ import pytest
 from increment.breakout.estimates import LiftEstimates
 from increment.frame import MetricSpec
 from increment.semantics.models import AnalysisPlan, InferenceSpec
+from tests._unit_boundary import backend_fixture
 from tests.binary_sequential_cases import (
     DESIGN,
     check_path_parity,
@@ -21,7 +22,7 @@ from tests.capability_consumers_scalar import BOUNDED_CONVERSION_SEQUENTIAL, com
 SPEC = InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=400)
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def duck():
     import ibis
 

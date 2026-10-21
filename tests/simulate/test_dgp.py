@@ -485,6 +485,7 @@ def test_post_exposure_day_offset_still_spans_the_full_window():
 # Encouragement design: uptake fact honors per-arm compliance
 
 
+@pytest.mark.integration
 class TestEncouragementUptake:
     """``uptake_compliance_t``/``_c``/``tau_complier`` drive a Bernoulli
     uptake fact plus compliance-driven outcome; verified via a real DuckDB

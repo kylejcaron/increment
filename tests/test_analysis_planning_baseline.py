@@ -745,6 +745,7 @@ def _triggered_analysis(
     )
 
 
+@pytest.mark.integration
 def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_path):
     con, _path, analysis = _triggered_analysis(tmp_path)
     con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'control'")

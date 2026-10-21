@@ -18,6 +18,7 @@ from increment import readouts as readout_functions
 from increment.frame import MetricSpec
 from increment.plan import compile_decision_plan
 from increment.semantics.models import AnalysisPlan, Definitions
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import lift_rows, make_analysis, make_analysis_like
 
 # The secondary-family fixtures declare these two policy values on their
@@ -160,7 +161,7 @@ def _execute_plan_cluster_defs() -> Definitions:
     )
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def _execute_plan_cluster_con():
     con = ibis.duckdb.connect()
     con.create_table("execute_plan_cluster_events", obj=_execute_plan_cluster_rows())

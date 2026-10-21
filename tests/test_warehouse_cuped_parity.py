@@ -16,6 +16,7 @@ import yaml
 from increment.errors import DefinitionError
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Definitions
+from tests._unit_boundary import backend_fixture
 from tests.warehouse_cuped_cases import (
     check_day_axis_parity,
     check_fixed_horizon_parity,
@@ -227,7 +228,7 @@ def _assert_usable_cuped_rows(results):
             )
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def duck():
     con = ibis.duckdb.connect()
     con.create_table("events", obj=event_rows(unit_rows()))

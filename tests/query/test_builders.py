@@ -76,7 +76,7 @@ from tests.warning_codes import warning_codes, warning_context
 # the shared `con` connection - that is this module's established style,
 # not accidental cross-test state. Exempt the whole file from the
 # no-stray-tables guard rather than decorating ~150 individual tests.
-pytestmark = pytest.mark.creates_tables
+pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
 
 def _total(row, ref="ref_y", resid="cy1"):

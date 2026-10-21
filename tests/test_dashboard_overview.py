@@ -383,6 +383,7 @@ def test_choosing_what_to_show_never_changes_the_family(tmp_path):
         assert cells(hidden.overview) == cells(shown.overview)
 
 
+@pytest.mark.integration
 def test_an_undeclared_exploratory_metric_is_refused_before_preparation(tmp_path):
     with _workspace(tmp_path, metrics=_SAVED) as (con, analysis):
         con.disconnect()
@@ -490,6 +491,7 @@ _REPORT_ONLY = (
 )
 
 
+@pytest.mark.integration
 def test_only_estimable_saved_metrics_are_offered(tmp_path):
     with _workspace(tmp_path, metrics=_REPORT_ONLY) as (con, analysis):
         assert [metric.name for metric in analysis.available_metrics] == [ADDED]
@@ -522,6 +524,7 @@ _OBSERVATIONAL = """    design:
 """
 
 
+@pytest.mark.integration
 def test_a_non_randomized_design_is_refused_before_any_read(tmp_path, monkeypatch):
     import tests.test_dashboard_capture as capture
 

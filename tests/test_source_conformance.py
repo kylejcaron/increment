@@ -10,6 +10,8 @@ import pytest
 
 from tests.source_conformance import arm_adapters, definitions_source, public_result_factories
 
+pytestmark = pytest.mark.integration
+
 
 def _expect_code(call: Callable[[], Any], code: str) -> None:
     from increment.errors import CapabilityError

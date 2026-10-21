@@ -16,6 +16,9 @@ from increment.query.artifact_digest import (
     digest_relation_bucketed,
     digest_relation_sql_v2,
 )
+from tests._unit_boundary import backend_fixture
+
+pytestmark = pytest.mark.integration
 
 _SCHEMA = (
     ("experiment_id", "STRING", False),
@@ -32,7 +35,7 @@ _ROWS = [
 ]
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     return ibis.duckdb.connect()
 

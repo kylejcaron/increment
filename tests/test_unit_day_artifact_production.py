@@ -38,6 +38,8 @@ from increment.semantics.artifact import (
     UnitDayArtifactRef,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _context() -> ArtifactContext:
     payload = (

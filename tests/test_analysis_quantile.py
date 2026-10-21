@@ -207,6 +207,7 @@ def _events_with_null_assignment(table, *, mixed: bool = False):
     return pa.Table.from_pylist(rows, schema=table.schema)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("mixed", [False, True], ids=["null-only", "mixed-plus-null"])
 def test_quantile_default_assignment_policy_rejects_null_unit(tmp_path, mixed):
     from increment.errors import InvalidRequestError
@@ -288,6 +289,7 @@ def test_warehouse_quantile_matches_the_frame_path(tmp_path):
     assert warehouse.require_lift().ub == pytest.approx(frame.require_lift().ub, rel=1e-12)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "method_name",
     ["panel_sql", "summary_sql", "run_daily", "run_asof", "run_daily_lift", "run_asof_lift"],
@@ -306,6 +308,7 @@ def test_moments_only_surfaces_refuse_a_quantile_metric(tmp_path, method_name):
     assert raised.value.code == expected
 
 
+@pytest.mark.integration
 def test_run_breakout_refuses_a_quantile_metric(tmp_path):
     """A quantile does not decompose over segment moments - run_breakout()
     must refuse rather than silently sum the per-unit column into a
@@ -323,6 +326,7 @@ def test_run_breakout_refuses_a_quantile_metric(tmp_path):
     assert raised.value.code == "readout.metric.quantile_breakout"
 
 
+@pytest.mark.integration
 def test_factor_summaries_refuses_a_quantile_metric(tmp_path):
     """A quantile has no whole-window moments to absorb a factor over."""
     import pyarrow as pa
@@ -354,6 +358,7 @@ def test_warehouse_quantile_refuses_call_time_inference(tmp_path):
         lift_rows(an.run(inference=inc.AlwaysValid(registration=registration())))  # ty: ignore[unknown-argument]
 
 
+@pytest.mark.integration
 def test_native_encouragement_refuses_a_quantile_metric(tmp_path):
     """No native (Analysis.from_definitions) call site populates an
     Encouragement design today (this guard is currently unreachable in
@@ -485,6 +490,7 @@ def test_quantile_primary_casts_int_group_id_before_arm_counting(tmp_path):
     assert result.require_lift().level == pytest.approx(0.95)
 
 
+@pytest.mark.integration
 @pytest.mark.filterwarnings(
     "ignore:.*quantile metric.*fixed-horizon order-statistic bracket:UserWarning"
 )

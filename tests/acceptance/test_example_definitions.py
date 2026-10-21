@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from tests._unit_boundary import backend_fixture
+
 pytestmark = [pytest.mark.slow, pytest.mark.examples]
 
 DEFINITIONS = "examples/definitions/"
@@ -161,7 +163,7 @@ def _seed_rows():
     return rows, expected
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def seeded():
     import ibis
     import pyarrow as pa

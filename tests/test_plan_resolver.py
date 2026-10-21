@@ -786,6 +786,7 @@ class TestEncouragementSeamRefusals:
             )
         assert raised.value.code == "plan.encouragement.margin"
 
+    @pytest.mark.integration
     def test_sql_panel_source_refuses_supplied_margin_plan(self):
         import ibis
 

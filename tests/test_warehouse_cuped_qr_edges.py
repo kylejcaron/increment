@@ -15,6 +15,8 @@ from increment.query._cuped_qr import encode_qr_covariates, fit_warehouse_qr
 from increment.query.cuped import _ResolvedCupedRequest, fit_multicovariate_source
 from tests.test_warehouse_cuped_qr import _scratch_session
 
+pytestmark = pytest.mark.integration
+
 ARMS = ("control", "treatment")
 
 

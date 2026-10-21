@@ -8,10 +8,11 @@ import pytest
 from increment.errors import InvalidRequestError
 from increment.query.dims import join_dims
 from increment.semantics.models import DimSource
+from tests._unit_boundary import backend_fixture
 
 # Every test here gets its own fresh, isolated `con` (see the fixture
 # below) - tables can never leak between tests.
-pytestmark = pytest.mark.creates_tables
+pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
 T0 = dt.datetime(2025, 1, 1)
 T1 = dt.datetime(2025, 2, 1)
@@ -19,7 +20,7 @@ T2 = dt.datetime(2025, 3, 1)
 FOREVER = dt.datetime(9999, 12, 31)
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     return ibis.duckdb.connect()  # in-memory
 

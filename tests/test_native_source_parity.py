@@ -10,6 +10,7 @@ import pytest
 from increment.analysis import Analysis
 from increment.estimation.quantile import estimate_quantile_lift
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import (
     _make_event_log_table,
     _native_source,
@@ -17,8 +18,10 @@ from tests.analysis_factory import (
     make_analysis_like,
 )
 
+pytestmark = pytest.mark.integration
 
-@pytest.fixture(scope="module")
+
+@backend_fixture(scope="module")
 def pricing_con():
     con = ibis.duckdb.connect()
     _make_event_log_table(con)

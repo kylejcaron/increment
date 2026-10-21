@@ -32,14 +32,15 @@ from increment.query.calendar import (
     validate_period_grain,
 )
 from increment.semantics.models import ActiveMetric, ConversionMetric, MeanMetric, TotalMetric
+from tests._unit_boundary import backend_fixture
 
 # Every test here gets its own fresh, isolated `con` (see the fixture
 # below) - tables can never leak between tests. Exempt the whole file
 # rather than decorating the many fixtures that build one.
-pytestmark = pytest.mark.creates_tables
+pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     return ibis.duckdb.connect()
 

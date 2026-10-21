@@ -21,6 +21,8 @@ from increment.estimation.armstats import ArmStats
 from increment.query.builders import daily_group_summary
 from increment.semantics.models import Measure, RatioMetric
 
+pytestmark = pytest.mark.integration
+
 N_DAYS = 6
 N_UNITS = 40
 

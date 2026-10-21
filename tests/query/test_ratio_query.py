@@ -30,6 +30,8 @@ from increment.query.schemas import GROUP_SUMMARY, UNIT_TOTALS
 from increment.semantics.models import Measure, RatioMetric
 from tests.warning_codes import warning_codes
 
+pytestmark = pytest.mark.integration
+
 
 def _total(row, ref, resid):
     """Recover a raw first moment from the centered wire fields."""

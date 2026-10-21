@@ -84,6 +84,7 @@ def _fieller(a: float, c: float, *, alternative: str = "two-sided", cov: float =
     return relative_confidence_set(reference, alternative=alternative)
 
 
+@pytest.mark.integration
 def test_binomial_qualification_is_in_the_metric_inspector_interval_fold(storefront):
     from increment.dashboard._html import render_metric_details
 
@@ -181,6 +182,7 @@ def test_outcome_label_formats_captured_verdict_and_selection(
     assert outcome_label({**row, "discovery": not discovery}) != label
 
 
+@pytest.mark.integration
 def test_valid_sets_without_a_bounded_interval_keep_captured_verdict(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -190,6 +192,7 @@ def test_valid_sets_without_a_bounded_interval_keep_captured_verdict(
     assert outcome_label(row) == outcome_label({**row, "relative_confidence_set": None})
 
 
+@pytest.mark.integration
 def test_missing_verdict_is_not_converted_to_non_rejection(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -199,6 +202,7 @@ def test_missing_verdict_is_not_converted_to_non_rejection(
     )
 
 
+@pytest.mark.integration
 def test_readout_qualifications_distinguish_multiple_methods_for_one_metric(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -218,12 +222,14 @@ def test_readout_qualifications_distinguish_multiple_methods_for_one_metric(
     assert "method role sensitivity" in qualifications
 
 
+@pytest.mark.integration
 def test_metric_details_restore_metric_descriptions(storefront: DashboardSnapshot) -> None:
     declared = render_metric_details(storefront, metric=PRIMARY).text
 
     assert "Did the user check out within 14 days of exposure?" in declared
 
 
+@pytest.mark.integration
 def test_outcome_label_does_not_add_row_identity_to_layout_text(
     storefront: DashboardSnapshot,
 ) -> None:

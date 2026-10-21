@@ -1,5 +1,8 @@
 """Test, lint, and typecheck sessions."""
 
+import os
+import sys
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,6 +10,27 @@ import nox
 
 nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def _xdist_args(environ: Mapping[str, str], cpu_count: int) -> tuple[str, ...]:
+    """Return the standard worker arguments for the current execution lane."""
+    workers = "auto" if "CI" in environ else environ.get("WORKERS", str(max(1, cpu_count // 3)))
+    return ("-n", workers, "--dist", "loadgroup")
+
+
+PYTEST_ARGS = _xdist_args(os.environ, os.cpu_count() or 1)
+
+
+def _run_heavy(session: nox.Session, *command: str, **kwargs) -> None:
+    """Acquire the machine-wide slot before running a heavy command."""
+    from scripts.test_slots import hold_slot
+
+    hold_slot()
+    session.run(*command, **kwargs)
+
 
 PYTHON_VERSIONS = ["3.12", "3.13", "3.14"]
 
@@ -75,7 +99,6 @@ DUCKDB_FLOORS: dict[str, str] = {
 # suites mutate shared paths on disk and would race otherwise. Sessions
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
-PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup")
 TIER_MARKERS = {
     "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
     "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress",
@@ -103,7 +126,7 @@ def _sync(session: nox.Session, *groups: str, extras: tuple[str, ...] = ()) -> N
 def _run_pytest_tier(session: nox.Session, tier: str, *pytest_args: str) -> None:
     marker = TIER_MARKERS.get(tier)
     selection = ("-m", marker) if marker is not None else ()
-    session.run("pytest", *selection, *pytest_args)
+    _run_heavy(session, "pytest", *selection, *pytest_args)
 
 
 def _run_pytest_at_floor(
@@ -134,7 +157,8 @@ def _run_pytest_at_floor(
         tier = "focused"
     marker = TIER_MARKERS.get(tier)
     marker_args = ("-m", marker) if marker is not None else ()
-    session.run(
+    _run_heavy(
+        session,
         "uv",
         "run",
         "--no-sync",
@@ -233,7 +257,8 @@ def tests_scientific(session: nox.Session) -> None:
 def tests_warehouse_postgres(session: nox.Session) -> None:
     """Execute real PostgreSQL probes; missing connection settings fail."""
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "integration/warehouse_execution/test_postgres_execution.py",
         "-q",
@@ -250,7 +275,8 @@ def tests_warehouse_postgres(session: nox.Session) -> None:
 def tests_warehouse_snowflake(session: nox.Session) -> None:
     """Execute real Snowflake probes; missing credentials fail."""
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "tests/query/test_session.py::test_hosted_metadata_creation_targets_the_explicit_catalog",
         "-q",
@@ -261,7 +287,8 @@ def tests_warehouse_snowflake(session: nox.Session) -> None:
         "-p",
         "no:tach",
     )
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "integration/warehouse_execution/test_snowflake_execution.py",
         "-q",
@@ -278,7 +305,8 @@ def tests_warehouse_snowflake(session: nox.Session) -> None:
 def tests_warehouse_bigquery(session: nox.Session) -> None:
     """Execute real BigQuery probes; missing credentials fail."""
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "tests/query/test_session.py::test_hosted_metadata_creation_targets_the_explicit_catalog",
         "-q",
@@ -289,7 +317,8 @@ def tests_warehouse_bigquery(session: nox.Session) -> None:
         "-p",
         "no:tach",
     )
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "integration/warehouse_execution/test_bigquery_execution.py",
         "-vv",
@@ -306,7 +335,8 @@ def tests_warehouse_bigquery(session: nox.Session) -> None:
 def tests_warehouse_compile_snowflake(session: nox.Session) -> None:
     """Compile generated statements against Snowflake without executing them."""
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "integration/warehouse_execution/test_snowflake_compile.py",
         "-q",
@@ -324,7 +354,8 @@ def tests_warehouse_compile_snowflake(session: nox.Session) -> None:
 def tests_warehouse_compile_bigquery(session: nox.Session) -> None:
     """Compile generated statements against BigQuery without executing them."""
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
-    session.run(
+    _run_heavy(
+        session,
         "pytest",
         "integration/warehouse_execution/test_bigquery_compile.py",
         "-q",
@@ -425,8 +456,8 @@ def examples(session: nox.Session) -> None:
     complete examples tier has one five-minute local aggregate budget.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    session.run("ruff", "check", "examples")
-    session.run("ruff", "format", "--check", "examples")
+    _run_heavy(session, "ruff", "check", "examples")
+    _run_heavy(session, "ruff", "format", "--check", "examples")
     _run_pytest_tier(session, "examples", "-q", *PYTEST_ARGS)
 
 
@@ -537,7 +568,7 @@ def docs(session: nox.Session) -> None:
     fails ``nox -s docs`` instead of silently shipping.
     """
     _sync(session, "docs", "dev", extras=("demo", "tables", "dashboard"))
-    session.run("python", "scripts/check_doc_references.py", "--check")
+    _run_heavy(session, "python", "scripts/check_doc_references.py", "--check")
     session.run("python", "scripts/render_capability_table.py", "--check")
     for name in EXAMPLE_NOTEBOOKS:
         session.run(

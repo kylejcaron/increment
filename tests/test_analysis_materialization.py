@@ -23,6 +23,8 @@ from tests.analysis_factory import (
     make_analysis_like,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.slow
 def test_store_always_sees_an_in_place_metric_correction_on_the_next_run():

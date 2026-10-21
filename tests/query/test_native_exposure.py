@@ -22,6 +22,8 @@ from increment import Analysis
 from increment.errors import CapabilityError
 from tests.analysis_factory import _native_source
 
+pytestmark = pytest.mark.integration
+
 
 def _write_defs(tmp_path, yaml: str):
     defs_path = tmp_path / "defs.yaml"

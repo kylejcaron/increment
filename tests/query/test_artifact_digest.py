@@ -11,6 +11,8 @@ import pytest
 
 from increment.query import artifact_digest as codec
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.slow
 def test_streaming_digest_multiround_parity():

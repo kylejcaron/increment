@@ -135,6 +135,7 @@ def test_all_tables_have_their_declared_column_shapes() -> None:
         )
 
 
+@pytest.mark.integration
 def test_renderer_import_does_not_load_scenarios_or_analysis() -> None:
     code = """
 import builtins

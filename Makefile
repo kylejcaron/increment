@@ -1,6 +1,25 @@
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
+.DEFAULT_GOAL := install
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected check-items mutate
+
+
+CHECK_ITEMS_TESTS ?= tests
+CHECK_ITEMS_BASELINE ?= .github/collect-baseline
+CHECK_ITEMS_TIERS ?= unit fast slow all
+
+check-items:
+	@set -e; for tier in $(CHECK_ITEMS_TIERS); do \
+		output=$$(mktemp); \
+		if $(MAKE) test-tier TIER=$$tier PYTEST_XDIST_ARGS= PYTEST_ARGS='--collect-only -q -p scripts.check_collect_count $(CHECK_ITEMS_TESTS)' >$$output; then \
+			cat $$output | uv run --no-sync python scripts/check_collect_count.py --tier $$tier --baseline $(CHECK_ITEMS_BASELINE) --tests-root $(CHECK_ITEMS_TESTS); \
+			rm -f $$output; \
+		else status=$$?; cat $$output; rm -f $$output; exit $$status; fi; \
+	done
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
+mutate:
+	@test -n "$(CAMPAIGN)" || { echo 'usage: make mutate CAMPAIGN=<name> [KILL_MATRIX=1]'; exit 2; }
+	$(SLOT) uv run --no-sync python scripts/mutation_campaign.py $(CAMPAIGN) --output mutation-results $(if $(filter 1,$(KILL_MATRIX)),--kill-matrix,)
+SLOT = uv run --no-sync python -m scripts.test_slots --
 PYTEST = uv run --extra demo --extra tables --extra dashboard pytest
 WORKERS ?= $(shell python3 -c 'import os; print(max(1, (os.cpu_count() or 1) // 3))')
 PYTEST_XDIST_ARGS ?= -n $(WORKERS) --dist loadgroup
@@ -45,7 +64,7 @@ test-integration-fast:
 	$(MAKE) test-tier TIER=integration-fast
 # Fast tiers stop at the first failure; long tiers report every failure.
 test-tier:
-	$(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
+	$(SLOT) $(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
 # Functional tests exclude Monte-Carlo calibration and notebook subprocesses.
 test-slow:
 	$(MAKE) test-tier TIER=slow
@@ -89,7 +108,7 @@ endif
 
 test-affected:
 	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow]' >&2; exit 2; }
-	uv run --extra demo --extra tables --extra dashboard python -m scripts.affected --base $(BASE) --tier $(or $(TIER),fast) -- $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(SLOT) uv run --extra demo --extra tables --extra dashboard python -m scripts.affected --base $(BASE) --tier $(or $(TIER),fast) -- $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
 sim:
 	uv run --extra demo python -m increment.simulate --replications 200
 demo:

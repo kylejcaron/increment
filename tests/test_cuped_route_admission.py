@@ -113,6 +113,7 @@ def _native_case(tmp_path, *, decision=None, sensitivity=(), breakout=False):
     return path, con, methods
 
 
+@pytest.mark.integration
 def test_artifact_single_scalar_export_replays_its_bound_family(tmp_path):
     path, con, methods = _native_case(tmp_path)
     source = _artifact_source(path, con)
@@ -139,6 +140,7 @@ def test_artifact_single_scalar_export_replays_its_bound_family(tmp_path):
         con.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("operation", ["run_daily_lift", "run_asof_lift"])
 @pytest.mark.parametrize("dimension", [None, "segment"])
 def test_facade_day_scalar_binding_refuses_before_reading(
@@ -324,6 +326,7 @@ def test_summary_breakout_refusing_input_precedes_outcome_deletion():
     )
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("role", ["decision", "sensitivity"])
 @pytest.mark.parametrize("missing", ["refuse", "impute"])
 def test_native_breakout_scalar_missing_is_method_and_segment_local(tmp_path, role, missing):
@@ -412,6 +415,7 @@ def test_explicit_frame_registration_refuses_multiple_scalar_inputs_before_frame
     assert raised.value.context["route"] == "sequential.registration"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("roundtrip", ["pickle", "decision_wire", "yaml"])
 def test_explicit_raw_procedure_survives_serialized_roundtrip(tmp_path, roundtrip):
     from increment._analysis_config import method_from_spec
@@ -482,6 +486,7 @@ def scalar_probe(monkeypatch):
     return admissions, reads, unread
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("operation", _scalar_operation_cases("readout"))
 def test_public_scalar_operations_refuse_before_evidence(
     tmp_path, monkeypatch, scalar_probe, operation
@@ -535,6 +540,7 @@ def test_public_scalar_operations_refuse_before_evidence(
     assert reads == []
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("operation", _scalar_operation_cases("export"))
 def test_public_export_carries_each_scalar_family(tmp_path, operation):
     second = _scalar("second", "history_b")

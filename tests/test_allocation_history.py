@@ -109,6 +109,7 @@ def _analysis(
     )
 
 
+@pytest.mark.integration
 def test_allocation_history_excludes_mixed_and_unassigned_units(tmp_path):
     """A unit enrolled into two arms, and a unit with no assignment label,
     contribute to neither arm's daily count -- allocation reads off the
@@ -133,6 +134,7 @@ def test_allocation_history_excludes_mixed_and_unassigned_units(tmp_path):
     assert day1_treatment["n_daily"] == 2
 
 
+@pytest.mark.integration
 def test_allocation_history_quiet_arm_gets_explicit_zero_day_row(tmp_path):
     """Treatment enrolls no one on day 2 (only control does); the quiet
     arm still gets an explicit ``n_daily=0`` row with ``n_cumulative``
@@ -148,6 +150,7 @@ def test_allocation_history_quiet_arm_gets_explicit_zero_day_row(tmp_path):
     assert day2_control["n_cumulative"] == 5
 
 
+@pytest.mark.integration
 def test_allocation_history_schema_and_sort_order(tmp_path):
     analysis = _analysis(tmp_path, _main_fixture_rows(), on_mixed_assignment="exclude")
     history = analysis.allocation_history()
@@ -166,6 +169,7 @@ def test_allocation_history_schema_and_sort_order(tmp_path):
     assert {r["experiment_id"] for r in rows} == {"ah_test"}
 
 
+@pytest.mark.integration
 def test_allocation_history_final_counts_reconcile_with_assigned_srm(tmp_path):
     """Each arm's final-day ``n_cumulative`` matches ``srm()``'s own
     assigned-population observed counts -- both read off the same
@@ -180,6 +184,7 @@ def test_allocation_history_final_counts_reconcile_with_assigned_srm(tmp_path):
     assert final_counts == srm_result.observed
 
 
+@pytest.mark.integration
 def test_allocation_history_respects_declared_day_boundary_shift(tmp_path):
     """An exposure at 2025-08-02 03:10 UTC buckets to local day 2025-08-01
     under ``day_boundary='UTC-05:00'`` -- the same localization
@@ -202,6 +207,7 @@ def test_allocation_history_respects_declared_day_boundary_shift(tmp_path):
     assert treatment_enrolled == {dt.date(2025, 8, 5)}
 
 
+@pytest.mark.integration
 def test_allocation_history_refuses_a_declared_cluster(tmp_path):
     """A cluster-randomized experiment refuses before any query: a
     unit-level daily timeline would misrepresent SRM, which for this

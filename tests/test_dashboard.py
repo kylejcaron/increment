@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 from increment.errors import CapabilityError, InvalidRequestError
+from tests._unit_boundary import backend_fixture
 
 pytest.importorskip("coeftable")
 pytest.importorskip("marimo")
@@ -265,7 +266,7 @@ def dashboard_definitions(tmp_path_factory: pytest.TempPathFactory) -> str:
     return str(path)
 
 
-@pytest.fixture(scope="session")
+@backend_fixture(scope="session")
 def dashboard_con():
     import ibis
     import pyarrow as pa
@@ -1287,12 +1288,12 @@ def test_the_second_experiment_uses_the_same_result_sections(
 # Explore: dispatch boundaries, before any advanced query commits to data.
 
 
-@pytest.fixture
+@backend_fixture()
 def storefront_analysis(dashboard_con, dashboard_definitions):
     return _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
 
 
-@pytest.fixture
+@backend_fixture()
 def pricing_analysis(dashboard_con, dashboard_definitions):
     return _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
 
@@ -1892,7 +1893,7 @@ def test_temporal_breakouts_refuse_an_undeclared_dimension_before_any_query(
     assert caught.value.context["requested"] == ("event_log", "plan")
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def storefront_payload(storefront: DashboardSnapshot, dashboard_con, dashboard_definitions):
     from increment.dashboard._app import build_payload
 

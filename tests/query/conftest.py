@@ -62,6 +62,7 @@ from increment.semantics.models import (
     MeanMetric,
     RetentionMetric,
 )
+from tests._unit_boundary import backend_fixture
 
 # ── Shared DuckDB connection (all tables live in one database) ─────────
 
@@ -70,7 +71,7 @@ from increment.semantics.models import (
 _SEED_ROWS: dict[str, list[dict]] = {}
 
 
-@pytest.fixture(scope="session")
+@backend_fixture(scope="session")
 def con():
     """Single in-memory DuckDB connection shared by all fixtures.
 

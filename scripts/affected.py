@@ -164,6 +164,22 @@ def select(base: str, root: Path) -> Selection:
     )
 
 
+def _without_xdist_worker_args(arguments: Sequence[str]) -> list[str]:
+    """Drop xdist process-count and distribution options in all CLI forms."""
+    result = []
+    args = iter(arguments)
+    for arg in args:
+        if arg in {"-n", "--numprocesses", "--dist"}:
+            next(args, None)
+        elif arg.startswith("-n") and len(arg) > 2:
+            continue
+        elif arg.startswith("--numprocesses=") or arg.startswith("--dist="):
+            continue
+        else:
+            result.append(arg)
+    return result
+
+
 def _pytest_invocations(
     selection: Selection, base: str, tier: str, extra_args: Sequence[str]
 ) -> list[list[str]]:
@@ -185,7 +201,16 @@ def _pytest_invocations(
         return [tach_args, direct_args]
 
     direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
-    direct_args.extend(extra_args)
+    if (
+        selection.test_files
+        and len(selection.test_files) <= 6
+        and not selection.doc_pages
+        and not selection.use_tach
+        and not selection.full_tier
+    ):
+        direct_args.extend(_without_xdist_worker_args(extra_args))
+    else:
+        direct_args.extend(extra_args)
     return [direct_args]
 
 

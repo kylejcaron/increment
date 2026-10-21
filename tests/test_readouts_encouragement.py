@@ -38,6 +38,7 @@ from increment.readouts._encouragement import encouragement_rows
 from increment.semantics.design import Encouragement, ExclusionRestriction, Randomized, UptakeSpec
 from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec, MeanMetric
 from increment.sources import MomentSource, SourceContext, SourceOperation
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows, make_analysis, make_analysis_like
 from tests.sequential_cases import registration
 
@@ -1382,7 +1383,7 @@ def test_segment_rollout_default_estimands_keep_itt_family_clean():
     assert all(s.estimand == "itt" for s in segments if s.metric == "rev" and s.estimand == "itt")
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def con():
     import ibis
 

@@ -19,6 +19,7 @@ from increment.query.source import open_artifact
 from increment.semantics.artifact import ClusterIdentityRequest
 from increment.semantics.loader import load
 from increment.semantics.models import Breakout
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, native_connection
 
 pytestmark = pytest.mark.slow
@@ -38,7 +39,7 @@ def test_publication_rejects_conflicting_canonical_cluster_identity(published_un
     assert caught.value.code == "query.integrity.cluster_conflict"
 
 
-@pytest.fixture
+@backend_fixture()
 def published_units(tmp_path):
     definitions = tmp_path / "definitions.yaml"
     definitions.write_text("""

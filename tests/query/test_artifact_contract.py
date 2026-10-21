@@ -13,6 +13,8 @@ from increment.errors import InvalidRequestError
 from increment.query import artifact_contract as ac
 from increment.semantics import Definitions
 
+pytestmark = pytest.mark.integration
+
 _EXPERIMENT = "site_volume_test"
 
 

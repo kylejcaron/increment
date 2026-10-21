@@ -18,8 +18,11 @@ import pytest
 
 from increment import Analysis, Report
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis_like
 from tests.warning_codes import warning_codes
+
+pytestmark = pytest.mark.integration
 
 START = dt.datetime(2025, 1, 10)
 UPGRADE = dt.datetime(2025, 1, 20)  # after every exposure below
@@ -138,7 +141,7 @@ INLINE_YAML = (
 N = 40  # small: this file must stay well under the fast-suite budget
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     con = ibis.duckdb.connect()
     users = [f"u{i:03d}" for i in range(N)]

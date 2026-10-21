@@ -34,6 +34,7 @@ from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import AnalysisPlan, MeanMetric
+from tests._unit_boundary import backend_fixture
 from tests.test_sequential_public_sources import gaussian_plan
 
 
@@ -82,7 +83,7 @@ def unit_summary_frame() -> pa.Table:
     return _unit_summary_table()
 
 
-@pytest.fixture(scope="session")
+@backend_fixture(scope="session")
 def con():
     return ibis.duckdb.connect()
 
@@ -91,6 +92,7 @@ def _revenue_spec() -> MetricSpec:
     return MetricSpec(name="revenue", type="mean")
 
 
+@pytest.mark.integration
 def test_same_readout_serves_both_substrates(con, unit_summary_frame):
     """The whole point: one readout implementation, identical results to
     1e-12 relative tolerance across substrates (float summation order
@@ -160,6 +162,7 @@ def test_memtable_missingness_keeps_enrollment_and_absent_denominator(con):
                 assert row["ref_den"] is None
 
 
+@pytest.mark.integration
 def test_memtable_source_refuses_the_same_frame_from_unit_summary_refuses(con):
     """Reproduces the issue's own probe: a duplicated unit, a null group, and
     a NaN outcome. from_unit_summary refuses this frame outright (null group
@@ -200,6 +203,7 @@ def test_memtable_source_refuses_the_same_frame_from_unit_summary_refuses(con):
     assert sql_error.value.code == frame_error.value.code == "source.frame.unassigned"
 
 
+@pytest.mark.integration
 def test_memtable_source_on_unassigned_exclude_surfaces_the_same_unit_counts_as_the_oracle(con):
     """Regression: the unassigned refusal's suggested route forward
     ("Pass on_unassigned='exclude' to from_frame_via_memtable") must name a
@@ -239,6 +243,7 @@ def test_memtable_source_on_unassigned_exclude_surfaces_the_same_unit_counts_as_
     assert sql_src.unit_counts() == frame_src.unit_counts()
 
 
+@pytest.mark.integration
 def test_memtable_source_refuses_a_frame_missing_the_declared_control_arm(con):
     """Regression: design carries control_group even though this
     constructor has no `control` parameter of its own; a frame missing that
@@ -318,6 +323,7 @@ def test_run_explicit_empty_methods_preserves_no_rows(unit_summary_frame):
     assert [row.method for row in default_rows] == ["unadjusted"]
 
 
+@pytest.mark.integration
 def test_sql_panel_source_resolves_plan_on_the_frame_path_like_from_unit_summary(
     con, unit_summary_frame
 ):
@@ -344,6 +350,7 @@ def test_sql_panel_source_resolves_plan_on_the_frame_path_like_from_unit_summary
     assert src.context.plan.procedures["revenue"].family.member is True  # ty: ignore[unresolved-attribute]
 
 
+@pytest.mark.integration
 def test_sql_source_applies_pooled_winsorization(con):
     from increment.query.source import SqlPanelSource
 
@@ -1501,6 +1508,7 @@ def test_cluster_counts_refuses_on_a_moments_source():
     assert exc_info.value.code == "source.moments.cluster_grain"
 
 
+@pytest.mark.integration
 def test_cluster_counts_refuses_on_a_sql_summary_source(con, unit_summary_frame):
     from increment.query.source import SqlPanelSource
 

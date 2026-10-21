@@ -16,8 +16,9 @@ from increment.query.fact_resolution import (
 from increment.query.session import WarehouseSession
 from increment.semantics.design import Randomized
 from increment.semantics.models import Breakout, Definitions, Experiment, Fact, FactSource, Property
+from tests._unit_boundary import backend_fixture
 
-pytestmark = pytest.mark.creates_tables
+pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
 
 def test_find_fact_source_reports_the_missing_name_and_every_declared_fact():
@@ -139,7 +140,7 @@ def _fact_table(con, fs, unit="user_id"):
     return WarehouseSession(con, defs).fact_table(fs, unit)
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     return ibis.duckdb.connect()
 

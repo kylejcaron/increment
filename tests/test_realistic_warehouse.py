@@ -34,6 +34,7 @@ from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from increment.results import NotApplicable, SRMResult
 from increment.semantics.models import RatioMetric, RetentionMetric
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis_like
 from tests.warning_codes import warning_codes
 
@@ -114,7 +115,7 @@ def small_warehouse():
     _generate(partitions=2, users_per_partition=2000)
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def con():
     # No view registration needed - the shipped fact-source SQL reads
     # Parquet directly, so a bare in-memory DuckDB connection suffices as long as cwd is the repo root (pytest's default here).

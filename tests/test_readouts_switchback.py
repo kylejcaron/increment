@@ -750,6 +750,7 @@ def test_readout_wire_rejects_duplicate_object_keys_with_portable_refusal():
     assert pickle.loads(pickle.dumps(raised.value)).code == raised.value.code
 
 
+@pytest.mark.integration
 def test_readout_wire_requires_snapshot_for_checkpoint_bearing_results():
     import json
     import pickle

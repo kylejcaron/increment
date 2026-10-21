@@ -306,7 +306,74 @@ single-line mutant can separate, which only a per-test kill matrix shows.
 Audit the three modules with the highest test-LOC-to-source ratio once per
 release cycle and after any change that adds more than 200 items.
 
+#### Resource and behavior guards
 
+Heavy Make and Nox test commands acquire advisory slots through
+`scripts/test_slots.py`. `TEST_SLOTS` defaults to `3`; `TEST_SLOT_DIR` defaults
+to `${XDG_CACHE_HOME:-$HOME/.cache}/test-slots`. The wrapper waits when all
+slots are occupied and prints `waiting for a heavy test slot; held by:` plus
+the holders' pid, working directory, command and start time. Slot coordination
+is bypassed when `CI` or `TEST_SLOT_HELD` is present or `fcntl` is unavailable.
+Focused `make test TESTS=...` runs are intentionally unwrapped.
+
+Ibis DuckDB test connections default to one thread, a memory limit from
+`INCREMENT_TEST_DUCKDB_MEMORY` (default `1GB`) and a unique spill directory
+per connection; direct `duckdb.connect` calls are not wrapped and retain
+DuckDB's own defaults. Explicit Ibis connection settings take precedence;
+explicit `None` omits that setting so DuckDB uses its own default.
+Hypothesis uses the `dev` profile locally (`deadline=None`, suppressing only
+`HealthCheck.too_slow`) and the `ci` profile when `CI` is present (200 ms
+deadline and default health checks).
+Affected selections of up to six direct test files run without xdist workers.
+
+Unit-selected tests run without DuckDB connections, subprocesses, processes or
+Internet sockets. Collection raises `pytest.UsageError` if a unit test requests
+a fixture declared with `backend_fixture`; runtime refusals identify the
+nodeid and action. Mark a true component boundary `@pytest.mark.integration`
+(still included in fast and PR CI), or exercise the pure function on
+in-memory data. `tests/_unit_boundary.py` defines the boundary.
+
+The test-hygiene checks in `tests/test_test_hygiene.py` enforce H3 (patches
+targeting `increment` internals) and H4 (imports of private `increment`
+internals). New occurrences fail with source locations and recommend testing
+through the public API or injecting a dependency; lower counts also fail as a
+stale `tests/test_hygiene_allowlist.txt` baseline and show observed/baseline
+counts.
+
+H5 limits literal `parametrize` fan-out: over twelve expanded cases require
+boundary cases plus a Hypothesis property or a reasoned `@pytest.mark.grid`.
+Existing literal-grid exceptions are recorded under `# H5` in
+`tests/test_hygiene_allowlist.txt`; that baseline can only decrease.
+`grid(reason)` is registered in `pyproject.toml`. `make check-items` compares
+collected unit, fast, slow and all item counts with `.github/collect-baseline`;
+an increase requires `tests: +N items — <reason>` in the PR body. Computed
+grids are reported separately from the literal fan-out check.
+
+Together, the weakening check reports fewer test functions or assertions
+(requiring the owner's `Test-Reduction-Approved:` trailer), while the item
+ratchet reports more collected items or a literal grid over 12 without `grid`
+(requiring a stated reason); collapsing a grid to boundary cases plus a
+property lowers items and keeps functions, passing both.
+
+The pre-push `test-weakening` hook runs
+`scripts/check_test_weakening.py`. It checks whole-tree test-function and
+assertion counts and reports added skip/xfail behavior, loosened tolerances,
+reduced Hypothesis `max_examples` and raised timeouts. Assertion counts include
+`assert` statements and recognized assertion calls such as `pytest.raises`,
+`pytest.warns`, `pytest.approx` and testing-library `assert_*` functions.
+An unapproved finding fails the check; exit `0` means no unapproved findings,
+`1` means findings and `2` means invalid arguments, base or repository.
+Only a `Test-Reduction-Approved:` trailer on the reducing commit approves its
+findings; it cannot approve working-tree findings. Because counts are whole
+tree totals, a deletion can be offset by an unrelated addition in the same
+commit; review the diff as well as the check output.
+
+`make mutate CAMPAIGN=<name> [KILL_MATRIX=1]` runs an on-demand mutation
+campaign through the slot wrapper; mutation evidence is not a per-push step.
+In kill-matrix output, `cover` is the greedy test subset covering killed
+mutants, while `candidates_for_removal`, `killed_nothing` and
+`string_literal_only` are review inputs, not automatic deletion instructions.
+String-literal-only kills can overstate behavioral coverage.
 
 Before pushing, the pre-push checks run lint, type-checking and the affected
 fast tier. CI is the authoritative full-suite gate; `make check` is an optional

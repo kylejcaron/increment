@@ -433,6 +433,7 @@ def test_read_rejects_unregistered_stored_kind_as_coded_refusal():
     assert snapshot.calls == 0
 
 
+@pytest.mark.integration
 def test_encode_writes_through_explicit_publication_handle_and_uses_exact_catalog_entry():
     request = _valid_request()
     definition = {
@@ -534,6 +535,7 @@ def test_read_validates_relation_and_returns_site_volume_rows():
     ]
 
 
+@pytest.mark.integration
 def test_site_volume_round_trip_accepts_roundoff_but_rejects_impossible_totals():
     request = _valid_request()
     definition = {
@@ -820,6 +822,7 @@ def _trigger_population_fixture(request, definition, rows):
 
 
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())
+@pytest.mark.integration
 def test_every_closed_extension_producer_and_reader_round_trips(req, definition, rows):
     recipe = _recipe({"source": "facts", "request": req["kind"]})
     extension = encode_extension(
@@ -842,6 +845,7 @@ def test_every_closed_extension_producer_and_reader_round_trips(req, definition,
     assert result == rows
 
 
+@pytest.mark.integration
 def test_same_kind_catalog_entries_select_exact_request():
     selected = {"kind": "site_volume", "metric_names": ["revenue"]}
     other = {"kind": "site_volume", "metric_names": ["clicks"]}
@@ -943,6 +947,7 @@ def test_every_extension_rejects_missing_operation_and_extension(req, definition
 
 
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())
+@pytest.mark.integration
 def test_every_extension_rejects_schema_null_domain_fk_and_join_mismatch(req, definition, rows):
     recipe = _recipe({"source": "facts", "request": req["kind"]})
     context = _context(req, definition, recipe)
@@ -1003,6 +1008,7 @@ def test_every_extension_rejects_schema_null_domain_fk_and_join_mismatch(req, de
 
 
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())
+@pytest.mark.integration
 def test_every_extension_rejects_cross_role_key_generation_and_provenance(req, definition, rows):
     recipe = _recipe({"source": "facts", "request": req["kind"]})
     context = _context(req, definition, recipe)
@@ -1057,6 +1063,7 @@ def test_every_extension_rejects_cross_role_key_generation_and_provenance(req, d
     assert raised.value.code == "artifact.extension.invalid"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())
 def test_source_driven_producers_invoke_declared_task5_operation(req, definition, rows):
     operation = {
@@ -1128,6 +1135,7 @@ def test_concrete_task5_result_objects_refuse_without_truthful_unit_rows(kind):
     )
 
 
+@pytest.mark.integration
 def test_clustered_assignment_preserves_randomization_and_unit_counts():
     request = {"kind": "assignment_counts", "populations": ["assigned", "triggered"]}
     definition = {"kind": "assignment_counts", "populations": ["assigned", "triggered"]}
@@ -1223,6 +1231,7 @@ def test_observational_and_contrast_operations_refuse(operation):
     _expect_code("artifact.evidence.unavailable", operation)
 
 
+@pytest.mark.integration
 def test_assignment_accounting_labels_become_descriptor_audit_metadata():
     request = {"kind": "assignment_counts", "populations": ["assigned"]}
     definition = {"kind": "assignment_counts", "populations": ["assigned"]}
@@ -1268,6 +1277,7 @@ def test_assignment_accounting_labels_become_descriptor_audit_metadata():
     )
 
 
+@pytest.mark.integration
 def test_zero_trigger_arms_encode_as_zero_count_rows():
     request = {"kind": "assignment_counts", "populations": ["assigned", "triggered"]}
     definition = {"kind": "assignment_counts", "populations": ["assigned", "triggered"]}
@@ -1303,6 +1313,7 @@ def test_zero_trigger_arms_encode_as_zero_count_rows():
     assert triggered["control"]["n_randomization_units"] == 1
 
 
+@pytest.mark.integration
 def test_non_integer_audit_counts_refuse_before_fingerprint():
     request = {"kind": "assignment_counts", "populations": ["assigned"]}
     definition = {"kind": "assignment_counts", "populations": ["assigned"]}
@@ -1487,6 +1498,7 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
         native.close()
 
 
+@pytest.mark.integration
 def test_dimension_relation_verifier_rejects_missing_and_empty_coverage(tmp_path) -> None:
     import ibis
 

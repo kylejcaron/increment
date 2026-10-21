@@ -223,6 +223,7 @@ def test_date_token_compiles_for_every_dialect(dialect):
     sqlglot.parse_one(sql, read=dialect)
 
 
+@pytest.mark.integration
 def test_date_token_is_zero_padded_iso_text_for_every_year():
     import datetime as dt
 
@@ -252,6 +253,7 @@ def test_float64_binary_token_compiles_as_a_scalar(dialect):
         assert "STARTS_WITH" not in sql
 
 
+@pytest.mark.integration
 def test_float64_binary_tokens_match_python_for_all_pinned_values():
     import json
     import struct

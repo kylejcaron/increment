@@ -25,6 +25,8 @@ from increment.semantics.loader import (
 )
 from increment.semantics.models import Definitions, Fact, FactSource
 
+pytestmark = pytest.mark.integration
+
 
 def _defs_with_fact_source(*, dialect: str | None, sql: str) -> Definitions:
     return Definitions(

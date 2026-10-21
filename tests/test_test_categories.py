@@ -97,3 +97,12 @@ def test_numerical_certification_inherits_slow_cost_mark(tmp_path: Path, scope: 
     )
     assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
     assert (tmp_path / "executed").read_text() == "5"
+
+
+def test_unit_exclusions_match_unit_selector() -> None:
+    from noxfile import TIER_MARKERS
+    from tests._unit_boundary import UNIT_EXCLUDING_MARKERS
+
+    markers = {part.strip() for part in TIER_MARKERS["unit"].split("and")}
+    excluded = {part[4:].strip() for part in markers if part.strip().startswith("not ")}
+    assert excluded == UNIT_EXCLUDING_MARKERS

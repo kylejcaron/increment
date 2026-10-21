@@ -233,6 +233,7 @@ def test_definitions_and_artifact_breakouts_supply_cuped_unit_evidence(tmp_path)
     assert native_rows.metadata.scope.cells == artifact_rows.metadata.scope.cells
 
 
+@pytest.mark.integration
 def test_explicit_scalar_cuped_breakout_matches_frame_oracle(tmp_path) -> None:
     from tests.covariate_cases import categorical_defs_and_con
 
@@ -793,6 +794,7 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
         con.disconnect()
 
 
+@pytest.mark.integration
 def test_native_breakout_override_without_covariates_refuses_before_queries(tmp_path, monkeypatch):
     from increment.errors import CodedError
     from tests.covariate_cases import _CATEGORICAL_DESIGN, categorical_defs_and_con

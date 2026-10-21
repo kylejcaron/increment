@@ -84,6 +84,7 @@ def test_untriggered_summary_has_explicit_unavailable_triggered_rows() -> None:
     assert all(check.conclusion is None for check in report.checks[1:])
 
 
+@pytest.mark.integration
 def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
@@ -117,6 +118,7 @@ def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
     assert assumptions.context["family_guarantee"] is None
 
 
+@pytest.mark.integration
 def test_health_missing_certificates_are_unknown(tmp_path) -> None:
     import ibis
 
@@ -140,6 +142,7 @@ def test_health_missing_certificates_are_unknown(tmp_path) -> None:
     assert all(check.context["watermark"] is None for check in completeness)
 
 
+@pytest.mark.integration
 def test_pinned_health_report_repeats_with_identical_source_evidence(tmp_path) -> None:
     import ibis
 
@@ -203,6 +206,7 @@ def test_health_preserves_assigned_failure_beside_triggered_balance(tmp_path) ->
     assert triggered.srm is not None and not triggered.srm.is_srm
 
 
+@pytest.mark.integration
 def test_health_unsupported_assignment_law_is_not_a_unit_arm_pass(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
@@ -223,6 +227,7 @@ def test_health_unsupported_assignment_law_is_not_a_unit_arm_pass(tmp_path) -> N
     assert assigned.srm is None
 
 
+@pytest.mark.integration
 def test_empty_native_assignment_returns_a_complete_health_report(tmp_path) -> None:
     import ibis
 
@@ -537,6 +542,7 @@ def test_triggered_health_without_declared_allocation_is_unavailable_for_native_
         assert "expected_allocation" in str(check.context.get("route"))
 
 
+@pytest.mark.integration
 def test_native_health_completeness_omits_unused_catalog_feed(tmp_path) -> None:
     import ibis
 
@@ -568,6 +574,7 @@ def test_native_health_completeness_omits_unused_catalog_feed(tmp_path) -> None:
     assert "events" in feeds
 
 
+@pytest.mark.integration
 def test_native_health_includes_unwatermarked_separate_uptake_feed(tmp_path) -> None:
     import ibis
 
@@ -613,6 +620,7 @@ def test_native_health_includes_unwatermarked_separate_uptake_feed(tmp_path) -> 
     assert uptake.context["watermark"] is None
 
 
+@pytest.mark.integration
 def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
     import datetime as dt
 
@@ -663,6 +671,7 @@ def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
     assert "SQL-backed" in str(sql_trigger.context["reason"])
 
 
+@pytest.mark.integration
 def test_sql_assignment_completeness_does_not_inherit_same_named_feed_watermark(
     tmp_path,
 ) -> None:
@@ -929,6 +938,7 @@ def test_health_extreme_valid_srm_statistic_round_trips_through_json() -> None:
     assert restored.source_snapshot_id == report.source_snapshot_id
 
 
+@pytest.mark.integration
 def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
@@ -950,6 +960,7 @@ def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp
     assert rates.rates == {"C": 0.0, "T": 0.0}
 
 
+@pytest.mark.integration
 def test_health_validates_expected_allocation_before_empty_trigger_counts(tmp_path) -> None:
     from increment.errors import InvalidRequestError
     from tests.test_analysis_trigger import _analysis, _events

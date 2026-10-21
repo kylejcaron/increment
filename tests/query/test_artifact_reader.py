@@ -5,6 +5,8 @@ import pytest
 from increment.errors import InvalidRequestError
 from increment.query.artifact_reader import ArtifactMomentSource, _rows
 
+pytestmark = pytest.mark.integration
+
 
 def test_rows_rejects_an_unsupported_relation_type():
     with pytest.raises(InvalidRequestError) as exc_info:

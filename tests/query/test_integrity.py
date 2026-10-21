@@ -19,6 +19,8 @@ from increment.query.integrity import (
 )
 from tests.warning_codes import warning_codes
 
+pytestmark = pytest.mark.integration
+
 
 def test_arm_counts_returns_per_arm_unit_counts(con, exposures):
     """u1/u3 land in treatment, u2 in control - the mixed unit u4 is

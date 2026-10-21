@@ -12,6 +12,7 @@ from increment.errors import CapabilityError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.cuped.cells import fit_categorical_cells
 from increment.semantics.models import CupedCovariate, MeanMetric, Measure, RatioMetric
+from tests._unit_boundary import backend_fixture
 
 pytestmark = pytest.mark.integration
 
@@ -625,7 +626,7 @@ def test_categorical_warehouse_discrete_domain_refuses_before_query_execution():
         con.disconnect()
 
 
-@pytest.fixture
+@backend_fixture()
 def categorical_sources(tmp_path, request):
     from dataclasses import replace
     from typing import cast

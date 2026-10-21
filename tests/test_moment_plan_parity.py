@@ -23,6 +23,8 @@ from increment.frame import CupedCovariate, MetricSpec, from_unit_summary
 from increment.query.builders import group_summary
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
+pytestmark = pytest.mark.integration
+
 _N = 240
 _DESIGN = Encouragement(
     control_group="control",

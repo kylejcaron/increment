@@ -144,6 +144,7 @@ def test_run_daily_lift_refuses_a_config_bound_observational_method():
     assert raised.value.code == "estimation.engine.method_name_observational"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("readout", ["run_daily_lift", "run_asof_lift"])
 @pytest.mark.parametrize("metric_count, explicit_decision", [(1, False), (2, False), (1, True)])
 def test_native_observational_lift_uses_the_day_axis_refusal(
