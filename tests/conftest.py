@@ -1,20 +1,11 @@
 """Shared session-scoped DuckDB fixtures for the test suite."""
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 
-# Bound per-process pools under xdist and inherit these defaults in nested subprocesses.
-for _thread_limit in (
-    "OPENBLAS_NUM_THREADS",
-    "OMP_NUM_THREADS",
-    "MKL_NUM_THREADS",
-    "VECLIB_MAXIMUM_THREADS",
-    "POLARS_MAX_THREADS",
-):
-    os.environ.setdefault(_thread_limit, "1")
+from tests._unit_boundary import backend_fixture
 
 if TYPE_CHECKING:
     from tach.extension import TachPytestPluginHandler
@@ -28,9 +19,6 @@ class _FilesystemGuardHandler:
         self._guard_paths = {
             Path(__file__).with_name("test_refusal_gate.py").resolve(),
             Path(__file__).with_name("test_test_hygiene.py").resolve(),
-            Path(__file__).with_name("test_impact_selection.py").resolve(),
-            Path(__file__).with_name("test_full_suite_evidence.py").resolve(),
-            Path(__file__).with_name("test_test_runner_cli.py").resolve(),
         }
         self._decisions: dict[Path, bool] = {}
 
@@ -48,29 +36,8 @@ class _FilesystemGuardHandler:
         return self._decisions[resolved]
 
 
-def _cap_duckdb_threads() -> None:
-    """Default every ibis DuckDB connection to one thread.
-
-    DuckDB's pool also defaults to one thread per core, so under xdist each
-    test connection multiplies that by the worker count on tiny tables. An
-    explicit ``threads=`` still wins, and ``threads=None`` asks for DuckDB's
-    own default so one builder module keeps exercising its parallel operators.
-    """
-    from ibis.backends.duckdb import Backend
-
-    connect = Backend.do_connect
-
-    def capped_connect(self, *args, **kwargs):
-        if kwargs.setdefault("threads", 1) is None:
-            del kwargs["threads"]
-        return connect(self, *args, **kwargs)
-
-    Backend.do_connect = capped_connect
-
-
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    _cap_duckdb_threads()
     if config.getoption("--tach", default=None) is None:
         return
 
@@ -87,7 +54,7 @@ def pytest_configure(config: pytest.Config) -> None:
     state.handler = cast("TachPytestPluginHandler", _FilesystemGuardHandler(state.handler))
 
 
-@pytest.fixture(scope="session")
+@backend_fixture(scope="session")
 def con():
     """In-memory DuckDB with an ``analytics.event_log`` table."""
     import ibis
@@ -99,7 +66,7 @@ def con():
     return con
 
 
-@pytest.fixture(scope="session")
+@backend_fixture(scope="session")
 def seeded_con():
     """A separate in-memory DuckDB, seeded via examples._seed.seed_event_log.
 
@@ -119,7 +86,7 @@ def seeded_con():
     return con
 
 
-@pytest.fixture(scope="session")
+@backend_fixture(scope="session")
 def seeded_pre_period_con():
     """`seeded_con`'s population plus the 14 days of pre-exposure activity
     CUPED's covariate is built from.

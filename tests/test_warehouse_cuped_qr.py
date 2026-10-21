@@ -67,6 +67,7 @@ def _positive_diagonal(r, rhs):
     return signs[:, None] * r, signs[:, None] * rhs
 
 
+@pytest.mark.integration
 def test_qr_scratch_reuses_two_temp_relations_without_intermediate_drops(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -103,6 +104,7 @@ def test_qr_scratch_reuses_two_temp_relations_without_intermediate_drops(
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("p", [1, 4, 20, 50])
 def test_duckdb_householder_factor_matches_numpy(p, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
@@ -150,6 +152,7 @@ def test_duckdb_householder_factor_matches_numpy(p, tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_duckdb_householder_factor_handles_large_offset_small_spread(tmp_path):
     from increment.query._cuped_qr import factor_design_relation
 
@@ -187,6 +190,7 @@ def test_duckdb_householder_factor_handles_large_offset_small_spread(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_duckdb_qr_coefficients_and_unit_quantities_match_local_fit(tmp_path):
     from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.query._cuped_qr import (
@@ -326,6 +330,7 @@ def test_duckdb_qr_coefficients_and_unit_quantities_match_local_fit(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
     from increment.errors import CodedError
     from increment.estimation.cuped import fit_cuped_multicovariate
@@ -429,6 +434,7 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
 def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkeypatch):
     from increment.query._cuped_qr import QRFactor, warehouse_qr_unit_summary
@@ -509,6 +515,7 @@ def test_bm_feature_batches_respect_postgres_column_budget_at_p203():
     )
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("dialect", ["bigquery", "snowflake"])
 def test_qr_factor_aggregates_compile_without_filter(dialect, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
@@ -545,6 +552,7 @@ def test_qr_factor_aggregates_compile_without_filter(dialect, tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noqa: PLR0915
     tmp_path,
 ):
@@ -849,6 +857,7 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa: PLR0915
     from increment.estimation.cuped import FitState, ProjectionSpec, fit_cuped_multicovariate
     from increment.query._cuped_qr import (
@@ -1148,6 +1157,7 @@ def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("perturbation", [0.0, 1.0e-12])
 def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(perturbation, tmp_path):
     from increment.errors import CodedError
@@ -1183,6 +1193,7 @@ def test_duckdb_householder_factor_uses_pivoted_r_rank_rule(perturbation, tmp_pa
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_scratch_pins_input_while_alternating_work_relations(tmp_path):
     connection = ibis.duckdb.connect()
     connection.create_table("scratch_source", obj=[{"x": 1.0}, {"x": 2.0}])
@@ -1204,6 +1215,7 @@ def test_qr_scratch_pins_input_while_alternating_work_relations(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_scratch_drop_failure_exposes_retained_locator(tmp_path, monkeypatch):
     from increment.errors import CodedError
 
@@ -1231,6 +1243,7 @@ def test_qr_scratch_drop_failure_exposes_retained_locator(tmp_path, monkeypatch)
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_scratch_create_permission_failure_leaves_no_work_relation(tmp_path, monkeypatch):
     from increment.errors import CodedError
 
@@ -1257,6 +1270,7 @@ def test_qr_scratch_create_permission_failure_leaves_no_work_relation(tmp_path, 
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_artifact_snapshot_qr_scratch_materializes_and_cleans_relations():
     from increment.query.session import WarehouseArtifactStore
 
@@ -1273,6 +1287,7 @@ def test_artifact_snapshot_qr_scratch_materializes_and_cleans_relations():
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_warehouse_qr_encoder_matches_local_layout(tmp_path):
     import ibis
 
@@ -2017,6 +2032,7 @@ def test_artifact_mixed_cuped_uses_warehouse_qr_without_unit_transfer(
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_outcome_anchor_falls_back_before_overflow(tmp_path):
     from increment.query._cuped_qr import (
         encode_qr_covariates,
@@ -2070,6 +2086,7 @@ def test_qr_outcome_anchor_falls_back_before_overflow(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("scales", [(1.0e-300, 1.0e300), (1.0e300, 1.0e-300)])
 def test_duckdb_householder_factor_handles_tiny_and_huge_scales(scales, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
@@ -2121,6 +2138,7 @@ def test_duckdb_householder_factor_handles_tiny_and_huge_scales(scales, tmp_path
         session.drop_materialized()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("sql_kind", ["integer", "decimal", "boolean"])
 def test_qr_numeric_sql_domains_match_local_fitter(sql_kind, tmp_path):
     from decimal import Decimal
@@ -2220,6 +2238,7 @@ def test_qr_numeric_sql_domains_match_local_fitter(sql_kind, tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("case", ["empty_arm", "null_outcome", "nan_outcome"])
 def test_qr_input_refusals_match_local_codes(case, tmp_path):
     from increment.errors import CodedError
@@ -2282,6 +2301,7 @@ def test_qr_input_refusals_match_local_codes(case, tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_outcome_centers_cancelling_extremes_like_local_fit(tmp_path):
     from increment.estimation.cuped import fit_cuped_multicovariate
     from increment.query._cuped_qr import encode_qr_covariates, prepare_qr_factor_input
@@ -2366,6 +2386,7 @@ def test_unchanged_warehouse_qr_requests_keep_stable_identity():
     assert first.identity != changed.identity
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("denominator_scale", (1.0e-50, 1.0e-40, 1.0e-20))
 def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scale, tmp_path):
     from increment.estimation.cuped import fit_cuped_multicovariate
@@ -2451,6 +2472,7 @@ def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scal
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_tiny_mean_large_denominator_spread_refuses_magnitude_range(tmp_path):
     from increment.errors import CodedError
     from increment.estimation.cuped import fit_cuped_multicovariate
@@ -2537,6 +2559,7 @@ def test_qr_tiny_mean_large_denominator_spread_refuses_magnitude_range(tmp_path)
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_encoder_refuses_infinite_covariates_with_coded_error(tmp_path):
     from increment.errors import InvalidRequestError
     from increment.frame import CupedCovariate
@@ -2567,6 +2590,7 @@ def test_qr_encoder_refuses_infinite_covariates_with_coded_error(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_encoder_routes_more_than_200_levels_with_coded_refusal():
     from increment.errors import CapabilityError
     from increment.frame import CupedCovariate
@@ -2594,6 +2618,7 @@ def test_qr_encoder_routes_more_than_200_levels_with_coded_refusal():
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("invalid_arm", ("variant-b", "control"))
 def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):
     from contextlib import contextmanager
@@ -2701,6 +2726,7 @@ def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_qr_null_factor_entries_refuse_rank_deficiency_instead_of_crashing(tmp_path):
     from increment.errors import CodedError
     from increment.estimation.cuped import fit_cuped_multicovariate

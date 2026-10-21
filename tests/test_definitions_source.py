@@ -25,6 +25,7 @@ from increment.semantics.models import (
     MultiplicitySpec,
     Winsorization,
 )
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, make_analysis_like, native_connection
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
 
@@ -97,7 +98,7 @@ def _estimate_ub(row: Any) -> float | None:
     return None if estimate is None else estimate.ub
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def seeded_analysis():
     con = ibis.duckdb.connect()
     seed_event_log(con)
@@ -392,7 +393,7 @@ def test_panel_cache_distinguishes_same_name_metric_variant(seeded_analysis):
 
 # A single `dimension=` can match multiple declared Breakouts sharing one
 # `.property` but resolving to different FactSources.
-@pytest.fixture
+@backend_fixture()
 def cross_source_con():
     return ibis.duckdb.connect()
 
@@ -487,7 +488,7 @@ def test_public_breakout_disambiguates_multiple_fact_sources_run_asof_lift(cross
 # readouts, which build none) - a regression here silently widens the CI, not crashes.
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def pre_period_analysis():
     """`new_onboarding_v2` with 14 days of pre-exposure activity
     seeded, so `_breakout_moments_source()`'s CUPED covariate has

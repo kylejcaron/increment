@@ -30,12 +30,13 @@ from increment.semantics.models import (
     MultiplicitySpec,
     RetentionMetric,
 )
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis, make_analysis_like
 from tests.capability_consumers_scalar import UNBOUNDED_RETENTION_SEQUENTIAL, refused
 from tests.test_sequential_public_sources import gaussian_plan
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def retention_cuped_con():
     """Seed enough first-cohort units for every retention lift slice to estimate."""
     import ibis

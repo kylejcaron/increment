@@ -822,6 +822,7 @@ def test_cluster_with_ratio_metric_and_encouragement_refuses_in_the_estimator():
         assert raised.value.code == "estimation.encouragement.cluster.ratio"
 
 
+@pytest.mark.integration
 def test_native_encouragement_cluster_refuses_cuped_by_pre_periods():
     """Public panel SQL preserves the native CUPED/cluster refusal."""
     analysis = _native_cluster_analysis(n_pre_periods=14)
@@ -830,6 +831,7 @@ def test_native_encouragement_cluster_refuses_cuped_by_pre_periods():
     assert raised.value.code == "source.native.operation"
 
 
+@pytest.mark.integration
 def test_native_encouragement_cluster_refuses_ratio_metric():
     """Public panel SQL preserves the native ratio/cluster refusal."""
     analysis = _native_cluster_analysis(ratio=True)

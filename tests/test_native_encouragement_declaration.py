@@ -8,10 +8,11 @@ import pytest
 
 from increment.analysis import Analysis
 from increment.semantics.models import AnalysisPlan, Definitions
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     return ibis.duckdb.connect()
 

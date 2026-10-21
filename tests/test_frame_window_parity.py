@@ -580,6 +580,7 @@ def test_frame_asof_bounded_retention_completed_windows_match_builder() -> None:
     assert frame_refusal.value.code == "frame.frame_panel.asof_moments_completed"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 def test_completed_window_gate_matches_frame_and_warehouse(backend: str) -> None:
     """D4's completion gate (Tasks 3/6) must agree between the warehouse and
@@ -882,6 +883,7 @@ def _first_moment(row: Any) -> float:
     return row["n"] * row["ref_y"] + row["cy1"]
 
 
+@pytest.mark.integration
 def test_frame_windowed_total_excludes_pre_exposure_rows() -> None:
     """The windowed total-grain reduce
     bounded only the band's RIGHT edge (``day_idx < right_edge``), never

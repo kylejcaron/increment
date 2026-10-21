@@ -26,6 +26,8 @@ from increment.query.schemas import UNIT_TOTALS
 from increment.semantics.models import AnalysisPlan, Experiment
 from tests.query.conftest import _table
 
+pytestmark = pytest.mark.integration
+
 # Fixtures
 
 

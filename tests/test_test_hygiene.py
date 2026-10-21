@@ -19,6 +19,7 @@ import ast
 import builtins
 import importlib
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -36,6 +37,41 @@ _SANCTIONED_SHIMS = frozenset({"tests/analysis_factory.py", "tests/source_confor
 _UNRESOLVED = object()
 _DYNAMIC_BINDING = object()
 _UNRESOLVED_REASON = "not statically resolvable; verify the runtime exception contract"
+
+
+@cache
+def _parse_test_module(path: Path, relpath: str) -> ast.Module:
+    return ast.parse(path.read_text(), filename=relpath)
+
+
+def _find_import_binding(
+    name: str,
+    scopes: list[_ScopeBindings],
+) -> tuple[bool, _ImportBinding | object]:
+    inside_function = False
+    for scope in reversed(scopes):
+        if scope.kind == "function":
+            inside_function = True
+        elif scope.kind == "class" and inside_function:
+            continue
+        bindings = scope.names.get(name)
+        if bindings is not None:
+            if scope.has_star_import or len(bindings) != 1:
+                return True, _UNRESOLVED
+            binding = next(iter(bindings))
+            if not isinstance(binding, _ImportBinding):
+                return True, _UNRESOLVED
+            return True, binding
+        if scope.has_star_import:
+            return True, _UNRESOLVED
+    return False, _UNRESOLVED
+
+
+def _resolve_import_name(name: str, scopes: list[_ScopeBindings]) -> object:
+    found, binding = _find_import_binding(name, scopes)
+    if found:
+        return _reflect_import(binding) if isinstance(binding, _ImportBinding) else _UNRESOLVED
+    return getattr(builtins, name, _UNRESOLVED)
 
 
 def _qualname(stack: list[str]) -> str:
@@ -189,25 +225,7 @@ class _MatchRaiseVisitor(ast.NodeVisitor):
         return f"{self.relpath}::{_qualname(self.name_stack)}::{exception}"
 
     def _resolve_name(self, name: str) -> object:
-        inside_function = False
-        for scope in reversed(self.scope_stack):
-            if scope.kind == "function":
-                inside_function = True
-            elif scope.kind == "class" and inside_function:
-                # Unqualified names in a method do not close over its class body.
-                continue
-
-            bindings = scope.names.get(name)
-            if bindings is not None:
-                if scope.has_star_import or len(bindings) != 1:
-                    return _UNRESOLVED
-                binding = next(iter(bindings))
-                if not isinstance(binding, _ImportBinding):
-                    return _UNRESOLVED
-                return _reflect_import(binding)
-            if scope.has_star_import:
-                return _UNRESOLVED
-        return getattr(builtins, name, _UNRESOLVED)
+        return _resolve_import_name(name, self.scope_stack)
 
     def _record_exception(self, node: ast.expr) -> None:
         if isinstance(node, ast.Tuple):
@@ -271,7 +289,7 @@ def _collect_match_findings(tests_root: Path) -> _MatchFindings:
     base = tests_root.parent
     for path in sorted(tests_root.rglob("*.py")):
         relpath = path.relative_to(base).as_posix()
-        tree = ast.parse(path.read_text(), filename=relpath)
+        tree = _parse_test_module(path, relpath)
         visitor = _MatchRaiseVisitor(relpath, tree)
         visitor.visit(tree)
         coded.update(visitor.coded_keys)
@@ -324,11 +342,195 @@ def collect_private_attribute_keys(tests_root: Path) -> set[str]:
         relpath = path.relative_to(base).as_posix()
         if relpath in _SANCTIONED_SHIMS:
             continue
-        tree = ast.parse(path.read_text(), filename=relpath)
+        tree = _parse_test_module(path, relpath)
         visitor = _PrivateAttributeVisitor(relpath)
         visitor.visit(tree)
         keys.update(visitor.keys)
     return keys
+
+
+class _PatchVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.scopes: list[_ScopeBindings] = []
+        self.occurrences: list[int] = []
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self.scopes.append(_scope_bindings(node))
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scopes.append(_scope_bindings(node))
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.scopes.append(_scope_bindings(node))
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.scopes.append(_scope_bindings(node))
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    def _has_increment_import_root(self, expression: ast.expr) -> bool:
+        while isinstance(expression, ast.Attribute):
+            expression = expression.value
+        if not isinstance(expression, ast.Name):
+            return False
+        found, binding = _find_import_binding(expression.id, self.scopes)
+        return (
+            found
+            and isinstance(binding, _ImportBinding)
+            and (binding.module == "increment" or binding.module.startswith("increment."))
+        )
+
+    def visit_Call(self, node: ast.Call) -> None:
+        function = node.func
+        attribute = function.attr if isinstance(function, ast.Attribute) else ""
+        direct_mock_patch = False
+        if isinstance(function, ast.Name):
+            found, binding = _find_import_binding(function.id, self.scopes)
+            direct_mock_patch = (
+                found
+                and isinstance(binding, _ImportBinding)
+                and binding.module == "unittest.mock"
+                and binding.attribute == "patch"
+            )
+        target: ast.expr | None = None
+        if (attribute in {"setattr", "setitem", "patch"} or direct_mock_patch) and node.args:
+            target = node.args[0]
+        elif attribute == "object" and isinstance(function, ast.Attribute) and node.args:
+            target = node.args[0]
+        if target is not None:
+            is_patch_helper = (
+                attribute in {"setattr", "setitem", "patch", "object"} or direct_mock_patch
+            )
+            string_target = (
+                isinstance(target, ast.Constant)
+                and isinstance(target.value, str)
+                and target.value.startswith("increment.")
+            )
+            object_target = not isinstance(
+                target, ast.Constant
+            ) and self._has_increment_import_root(target)
+            if is_patch_helper and (string_target or object_target):
+                self.occurrences.append(node.lineno)
+        self.generic_visit(node)
+
+
+def _collect_patch_occurrences(tests_root: Path) -> dict[str, list[int]]:
+    occurrences: dict[str, list[int]] = {}
+    base = tests_root.parent
+    for path in sorted(tests_root.rglob("*.py")):
+        relpath = path.relative_to(base).as_posix()
+        visitor = _PatchVisitor()
+        visitor.visit(_parse_test_module(path, relpath))
+        if visitor.occurrences:
+            occurrences[relpath] = visitor.occurrences
+    return occurrences
+
+
+def collect_patch_counts(tests_root: Path) -> Counter[str]:
+    return Counter(
+        {path: len(lines) for path, lines in _collect_patch_occurrences(tests_root).items()}
+    )
+
+
+def _private_import_lines(path: Path, relpath: str) -> list[int]:
+    tree = _parse_test_module(path, relpath)
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases = [
+                alias
+                for alias in node.names
+                if alias.name.startswith("increment.")
+                and any(part.startswith("_") for part in alias.name.split(".")[1:])
+            ]
+            lines.extend([node.lineno] * len(aliases))
+        elif (
+            isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("increment")
+        ):
+            private_module = any(part.startswith("_") for part in node.module.split(".")[1:])
+            private_names = sum(alias.name.startswith("_") for alias in node.names)
+            if private_module:
+                lines.extend([node.lineno] * len(node.names))
+            else:
+                lines.extend([node.lineno] * private_names)
+    return lines
+
+
+def _collect_private_import_occurrences(tests_root: Path) -> dict[str, list[int]]:
+    base = tests_root.parent
+    result: dict[str, list[int]] = {}
+    for path in sorted(tests_root.rglob("*.py")):
+        relpath = path.relative_to(base).as_posix()
+        lines = _private_import_lines(path, relpath)
+        if lines:
+            result[relpath] = lines
+    return result
+
+
+def collect_private_import_counts(tests_root: Path) -> Counter[str]:
+    return Counter(
+        {
+            path: len(lines)
+            for path, lines in _collect_private_import_occurrences(tests_root).items()
+        }
+    )
+
+
+def _load_count_allowlist(section_name: str, *, path: Path = ALLOWLIST_PATH) -> Counter[str]:
+    section = None
+    counts: Counter[str] = Counter()
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("# H"):
+            section = stripped[2:].split(":", 1)[0]
+            continue
+        if not stripped or stripped.startswith("#") or section != section_name:
+            continue
+        relpath, separator, count = stripped.rpartition(" ")
+        if not separator or not count.isdecimal() or relpath in counts:
+            raise AssertionError(f"{path}:{line_number}: malformed {section_name} count")
+        counts[relpath] = int(count)
+    return counts
+
+
+def _format_count_occurrences(
+    tests_root: Path,
+    paths: set[str],
+    kind: str,
+) -> list[str]:
+    lookup = (
+        _collect_patch_occurrences if kind == "patch" else _collect_private_import_occurrences
+    )(tests_root)
+    return [
+        f"{path}:{line}: {kind}; test through the public API or inject the dependency"
+        for path in sorted(paths)
+        for line in lookup.get(path, [])
+    ]
+
+
+def _format_stale_counts(
+    observed: Counter[str], allowed: Counter[str]
+) -> dict[str, tuple[int, int]]:
+    return {
+        path: (observed[path], allowed[path])
+        for path in sorted(allowed)
+        if observed[path] < allowed[path]
+    }
+
+
+def _assert_count_baseline(
+    section: str,
+    observed: Counter[str],
+    allowed: Counter[str],
+) -> None:
+    stale_counts = _format_stale_counts(observed, allowed)
+    assert not stale_counts, f"{section} allowlist is stale (observed, baseline): {stale_counts}"
 
 
 def _load_allowlist(
@@ -351,9 +553,14 @@ def _load_allowlist(
             seen_separator = True
             section = attribute_keys
             continue
+        if stripped.startswith("# H3:") or stripped.startswith("# H4:"):
+            section = None
+            continue
         if not stripped or stripped.startswith("#"):
             continue
 
+        if section is None:
+            continue
         key, separator, reason = stripped.partition("  # ")
         key = key.strip()
         if key.count("::") < 2:
@@ -379,14 +586,272 @@ def _write_allowlist() -> None:
         for key in sorted(findings.keys)
     ]
     attribute_lines = sorted(collect_private_attribute_keys(TESTS_ROOT))
+    patch_lines = [
+        f"{path} {count}" for path, count in sorted(collect_patch_counts(TESTS_ROOT).items())
+    ]
+    private_import_lines = [
+        f"{path} {count}"
+        for path, count in sorted(collect_private_import_counts(TESTS_ROOT).items())
+    ]
+    fanout = collect_literal_fanout(TESTS_ROOT)
     lines = [
         "# H1: pytest.raises(..., match=...) on coded or unresolved exceptions",
         *match_lines,
         "# ---",
         "# H2: private-attribute reach-ins outside the two sanctioned shims",
         *attribute_lines,
+        "# H3: patches targeting increment internals",
+        *patch_lines,
+        "# H4: imports of increment private modules or names",
+        *private_import_lines,
+        "# H5: literal parameter grids over 12 collected cases",
+        *[f"{key} {count}" for key, count in sorted(fanout.items()) if count > 12],
     ]
     ALLOWLIST_PATH.write_text("\n".join(lines) + "\n")
+
+
+def _has_grid_reason(decorator: ast.expr) -> bool:
+    if not (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "grid"
+        and decorator.args
+    ):
+        return False
+    try:
+        reason = ast.literal_eval(decorator.args[0])
+    except (ValueError, TypeError):
+        return False
+    return isinstance(reason, str) and bool(reason.strip())
+
+
+def _literal_parametrize_size(expression: ast.expr) -> int | None:
+    if isinstance(expression, (ast.List, ast.Tuple, ast.Set)):
+        return len(expression.elts)
+    if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name):
+        if expression.func.id == "range":
+            try:
+                values = [ast.literal_eval(argument) for argument in expression.args]
+            except (ValueError, TypeError):
+                return None
+            if 1 <= len(values) <= 3 and all(isinstance(value, int) for value in values):
+                return len(range(*values))
+    return None
+
+
+def _collect_fanout_details(
+    tests_root: Path,
+) -> tuple[dict[str, int], set[str], dict[str, int], set[str]]:
+    observed: dict[str, int] = {}
+    computed: set[str] = set()
+    source_lines: dict[str, int] = {}
+    grid_marked: set[str] = set()
+    for path in sorted(tests_root.rglob("test*.py")):
+        relpath = path.relative_to(tests_root.parent).as_posix()
+        if "parametrize" not in path.read_text():
+            continue
+        tree = _parse_test_module(path, relpath)
+
+        def visit(node: ast.AST, relpath: str, parents: tuple[str, ...]) -> None:
+            if isinstance(node, ast.Module):
+                for child in node.body:
+                    visit(child, relpath, parents)
+                return
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualname = ".".join((*parents, node.name))
+                if node.name.startswith("test_"):
+                    key = f"{relpath}::{qualname}"
+                    source_lines[key] = node.lineno
+                    product = 1
+                    has_grid = False
+                    has_parameterize = False
+                    for decorator in node.decorator_list:
+                        call = decorator if isinstance(decorator, ast.Call) else None
+                        target = call.func if call else decorator
+                        if _has_grid_reason(decorator):
+                            has_grid = True
+                            grid_marked.add(key)
+                        if (
+                            isinstance(target, ast.Attribute)
+                            and target.attr == "parametrize"
+                            and isinstance(target.value, ast.Attribute)
+                            and target.value.attr == "mark"
+                            and isinstance(target.value.value, ast.Name)
+                            and target.value.value.id == "pytest"
+                        ):
+                            has_parameterize = True
+                            if call is None or len(call.args) < 2:
+                                computed.add(key)
+                                continue
+                            size = _literal_parametrize_size(call.args[1])
+                            if size is None:
+                                computed.add(key)
+                            else:
+                                product *= size
+                    if has_parameterize and key not in computed:
+                        observed[key] = product
+                    if has_grid:
+                        computed.discard(key)
+                for child in node.body:
+                    visit(child, relpath, (*parents, node.name))
+                return
+            if isinstance(node, ast.ClassDef):
+                for child in node.body:
+                    visit(child, relpath, (*parents, node.name))
+
+        visit(tree, relpath, ())
+    return observed, computed, source_lines, grid_marked
+
+
+def collect_literal_fanout(tests_root: Path) -> dict[str, int]:
+    """Return literal parameter products, excluding computed expressions."""
+    return _collect_fanout_details(tests_root)[0]
+
+
+def collect_computed_fanout(tests_root: Path) -> set[str]:
+    """Return test functions whose parameter size is computed."""
+    return _collect_fanout_details(tests_root)[1]
+
+
+def _load_fanout_allowlist(path: Path = ALLOWLIST_PATH) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    section = None
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("# H"):
+            section = stripped[2:].split(":", 1)[0]
+            continue
+        if not stripped or stripped.startswith("#") or section != "H5":
+            continue
+        key, separator, count = stripped.rpartition(" ")
+        if not separator or not count.isdecimal() or key in counts:
+            raise AssertionError(f"{path}:{line_number}: malformed H5 count")
+        counts[key] = int(count)
+    return counts
+
+
+def _assert_fanout_baseline(tests_root: Path, allowed: dict[str, int]) -> None:
+    observed, _, source_lines, grid_marked = _collect_fanout_details(tests_root)
+    findings = [
+        f"{key} ({observed[key]}, baseline {allowed.get(key, 'none')})"
+        for key in sorted(observed)
+        if observed[key] > 12 and key not in allowed and key not in grid_marked
+    ]
+    stale = {
+        key: (observed.get(key, 0), count)
+        for key, count in allowed.items()
+        if observed.get(key, 0) != count
+    }
+    assert not findings, (
+        "literal parameter grids over 12 require pytest.mark.grid(reason) or boundary cases plus a Hypothesis property: "
+        + "; ".join(
+            f"{key.rsplit('::', 1)[0]}:{source_lines.get(key, '?')}: {finding}"
+            for key, finding in zip(
+                sorted(
+                    key
+                    for key in observed
+                    if observed[key] > 12 and key not in allowed and key not in grid_marked
+                ),
+                findings,
+                strict=True,
+            )
+        )
+    )
+    assert not stale, f"H5 allowlist is stale (observed, baseline): {stale}"
+
+
+def test_literal_fanout_counts_products_and_ranges(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    source = tests_root / "test_grid.py"
+    source.write_text(
+        "import pytest\n"
+        "@pytest.mark.parametrize('x', [1, 2, 3])\n"
+        "@pytest.mark.parametrize('y', (1, 2, 3, 4))\n"
+        "def test_product(x, y): pass\n"
+        "@pytest.mark.parametrize('x', range(13))\n"
+        "def test_range(x): pass\n"
+        "@pytest.mark.parametrize('x', values)\n"
+        "def test_computed(x): pass\n"
+    )
+    observed = collect_literal_fanout(tests_root)
+    computed = collect_computed_fanout(tests_root)
+    assert observed == {
+        "tests/test_grid.py::test_product": 12,
+        "tests/test_grid.py::test_range": 13,
+    }
+    assert computed == {"tests/test_grid.py::test_computed"}
+
+
+def test_fanout_over_cap_without_grid_marker_fails(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    source = tests_root / "test_grid.py"
+    source.write_text(
+        "import pytest\n@pytest.mark.parametrize('x', range(13))\ndef test_large(x): pass\n"
+    )
+    with pytest.raises(AssertionError) as raised:
+        _assert_fanout_baseline(tests_root, {})
+    assert "tests/test_grid.py:3" in str(raised.value)
+    assert "pytest.mark.grid" in str(raised.value)
+
+
+def test_grid_marker_exempts_fanout(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    source = tests_root / "test_grid.py"
+    source.write_text(
+        "import pytest\n"
+        "@pytest.mark.parametrize('x', range(13))\n"
+        "@pytest.mark.grid('boundary enumeration')\n"
+        "def test_large(x): pass\n"
+    )
+    _assert_fanout_baseline(tests_root, {})
+
+
+def test_class_method_grid_marker_exempts_fanout(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    source = tests_root / "test_grid.py"
+    source.write_text(
+        "import pytest\n"
+        "class TestGrid:\n"
+        "    @pytest.mark.parametrize('x', range(13))\n"
+        "    @pytest.mark.grid('boundary enumeration')\n"
+        "    def test_large(self, x): pass\n"
+    )
+    _assert_fanout_baseline(tests_root, {})
+
+
+def test_class_method_fanout_failure_includes_source_line(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    source = tests_root / "test_grid.py"
+    source.write_text(
+        "import pytest\n"
+        "class TestGrid:\n"
+        "    @pytest.mark.parametrize('x', range(13))\n"
+        "    def test_large(self, x): pass\n"
+    )
+    with pytest.raises(AssertionError) as raised:
+        _assert_fanout_baseline(tests_root, {})
+    assert "tests/test_grid.py:4" in str(raised.value)
+
+
+def test_h5_repository_guard_is_unmarked() -> None:
+    marks = getattr(test_literal_fanout_does_not_grow_without_a_grid_marker, "pytestmark", ())
+    assert all(mark.name != "slow" for mark in marks)
+
+
+def test_fanout_baseline_only_moves_down(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    source = tests_root / "test_grid.py"
+    source.write_text("def test_small(): pass\n")
+    baseline = tmp_path / "allowlist.txt"
+    baseline.write_text("# H5\ntests/test_grid.py::test_small 2\n")
+    with pytest.raises(AssertionError, match="H5 allowlist is stale"):
+        _assert_fanout_baseline(tests_root, _load_fanout_allowlist(path=baseline))
 
 
 @pytest.mark.slow
@@ -518,6 +983,101 @@ def test_collect_private_attribute_keys_finds_all_names_and_only_exact_shims(
         "tests/test_widget.py::TestWidget.test_x::_session",
         "tests/unit/analysis_factory.py::test_not_the_sanctioned_path::_plan",
     }
+
+
+def test_patch_collector_counts_string_and_object_targets(tmp_path: Path) -> None:
+    package = tmp_path / "tests"
+    package.mkdir()
+    (package / "test_widget.py").write_text(
+        "from unittest import mock\n"
+        "from unittest.mock import patch\n"
+        "from unittest.mock import patch as p\n"
+        "import unittest.mock as um\n"
+        "from increment import analysis as a\n"
+        "from increment.estimation.adjust import ADJUSTMENTS\n"
+        "from increment.estimation import _student_t\n"
+        "def test_patches(monkeypatch):\n"
+        "    monkeypatch.setattr('increment.analysis.load', f)\n"
+        "    monkeypatch.setattr(a, 'load', f)\n"
+        "    mock.patch('increment.query.x')\n"
+        "    monkeypatch.setitem(ADJUSTMENTS._entries, 'x', f)\n"
+        "    monkeypatch.setattr(_student_t.special, 'ndtri', f)\n"
+        "    patch('increment.analysis.load')\n"
+        "    p('increment.query.x')\n"
+        "    p.object(a, 'load', f)\n"
+        "    um.patch.object(a, 'load', f)\n"
+        "    monkeypatch.setattr('os.getcwd', f)\n"
+    )
+
+    assert collect_patch_counts(package) == Counter({"tests/test_widget.py": 9})
+
+
+def test_private_import_collector(tmp_path: Path) -> None:
+    package = tmp_path / "tests"
+    package.mkdir()
+    (package / "test_widget.py").write_text(
+        "from increment.estimation._adjust import fit\n"
+        "from increment.power import _binomial\n"
+        "import increment._identity\n"
+        "from increment import Analysis\n"
+    )
+
+    assert collect_private_import_counts(package) == Counter({"tests/test_widget.py": 3})
+
+
+@pytest.mark.slow
+def test_no_new_patches_of_increment_internals() -> None:
+    observed = collect_patch_counts(TESTS_ROOT)
+    allowed = _load_count_allowlist("H3")
+    new_files = observed.keys() - allowed.keys()
+    overages = {
+        path: observed[path] - allowed[path]
+        for path in observed.keys() & allowed.keys()
+        if observed[path] > allowed[path]
+    }
+    assert not new_files and not overages, (
+        "new patches of increment internals; test through the public API or "
+        "inject the dependency: "
+        f"{_format_count_occurrences(TESTS_ROOT, new_files | overages.keys(), 'patch')}"
+    )
+    _assert_count_baseline("H3", observed, allowed)
+
+
+@pytest.mark.slow
+def test_no_new_private_increment_imports() -> None:
+    observed = collect_private_import_counts(TESTS_ROOT)
+    allowed = _load_count_allowlist("H4")
+    new_files = observed.keys() - allowed.keys()
+    overages = {
+        path: observed[path] - allowed[path]
+        for path in observed.keys() & allowed.keys()
+        if observed[path] > allowed[path]
+    }
+    assert not new_files and not overages, (
+        "new private imports from increment; test through the public API or "
+        "inject the dependency: "
+        f"{_format_count_occurrences(TESTS_ROOT, new_files | overages.keys(), 'private import')}"
+    )
+    _assert_count_baseline("H4", observed, allowed)
+
+
+def test_count_allowlist_parses_h3_and_h4(tmp_path: Path) -> None:
+    allowlist = tmp_path / "allowlist.txt"
+    allowlist.write_text("# H3\nsample.py 2\n# H4\nsample.py 3\n")
+
+    assert _load_count_allowlist("H3", path=allowlist) == Counter({"sample.py": 2})
+    assert _load_count_allowlist("H4", path=allowlist) == Counter({"sample.py": 3})
+
+
+def test_count_baseline_reports_lower_observed_count_as_stale() -> None:
+    with pytest.raises(AssertionError, match="H3 allowlist is stale") as raised:
+        _assert_count_baseline("H3", Counter({"sample.py": 1}), Counter({"sample.py": 2}))
+
+    assert "sample.py': (1, 2)" in str(raised.value)
+
+
+def test_literal_fanout_does_not_grow_without_a_grid_marker() -> None:
+    _assert_fanout_baseline(TESTS_ROOT, _load_fanout_allowlist())
 
 
 if __name__ == "__main__":

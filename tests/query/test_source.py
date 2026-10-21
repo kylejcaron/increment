@@ -6,6 +6,8 @@ from increment.errors import InvalidRequestError
 from increment.query.artifact_reader import ArtifactMomentSource
 from increment.query.source import open_artifact
 
+pytestmark = pytest.mark.integration
+
 
 def test_artifact_open_verification_refusal_uses_canonical_code() -> None:
     with pytest.raises(InvalidRequestError) as via_artifact_reader:

@@ -242,6 +242,7 @@ class TestAcceptedProducerMoments:
     the admitted bounds. The runtime's row and the planner's pair, which sees only counts, are
     the same decision at an interval end whichever producer stored the arms."""
 
+    @pytest.mark.integration
     def test_the_arms_are_admitted_on_their_counts(self, producer):
         control, treatment = _arms(producer)
         x_c, n_c, x_t, n_t = _DRIFT_COUNTS
@@ -252,6 +253,7 @@ class TestAcceptedProducerMoments:
         exact = [(a.ref_y, a.cy1, a.cy2) for a in count_arms(*_DRIFT_COUNTS)]
         assert (stored != exact) == (producer != "canonical")
 
+    @pytest.mark.integration
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     def test_the_interval_is_the_one_of_the_counts(self, producer, alternative):
         row = _summary_row(
@@ -262,6 +264,7 @@ class TestAcceptedProducerMoments:
             *_DRIFT_COUNTS, tail=_DRIFT_TAIL, alternative=alternative
         )
 
+    @pytest.mark.integration
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     def test_the_verdict_at_an_interval_end_is_the_one_of_the_counts(self, producer, alternative):
         interval = delta_interval(*_DRIFT_COUNTS, tail=_DRIFT_TAIL, alternative=alternative)
@@ -298,6 +301,7 @@ class TestAcceptedProducerMoments:
         ],
         ids=["conversion", "retention"],
     )
+    @pytest.mark.integration
     def test_a_retention_arm_is_decided_like_a_conversion_arm(self, producer, metric):
         row = _summary_row(
             _stored_summary(producer),
@@ -312,6 +316,7 @@ class TestAcceptedProducerMoments:
         )
 
 
+@pytest.mark.integration
 def test_a_mean_metric_reads_its_moments_as_stored():
     """Nothing declares a mean metric's arms 0/1, so the counts they happen to reconstruct do
     not replace the moments the producer stored."""

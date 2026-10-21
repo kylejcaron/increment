@@ -57,6 +57,7 @@ from increment.semantics.design import (
     UptakeSpec,
 )
 from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec
+from tests._unit_boundary import backend_fixture
 from tests.compatibility_catalog import (
     CAPABILITIES,
     MATRIX,
@@ -329,7 +330,7 @@ def _main_with_always_valid_inference(defs_path: Any, con: Any) -> Any:
 # every native-only probe (retention support, breakout, export, reports).
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def native(tmp_path_factory):
     ibis = pytest.importorskip("ibis")
     pytest.importorskip("duckdb")

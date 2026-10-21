@@ -609,6 +609,7 @@ def test_no_backfire_annotation_when_cuped_reduces_the_variance():
 # Substrate parity (design validation test 8)
 
 
+@pytest.mark.integration
 def test_cxd_parity_between_frame_and_warehouse_substrates():
     """The moment schema is a cross-substrate contract: ``from_unit_summary``
     and ``group_summary`` must agree on cxd, and therefore on the whole
@@ -676,6 +677,7 @@ def test_cxd_parity_between_frame_and_warehouse_substrates():
     assert _late_row(frame_rows) == pytest.approx(_late_row(wh_rows), rel=1e-10)
 
 
+@pytest.mark.integration
 def test_group_summary_leaves_cxd_null_without_a_covariate():
     """Unpopulated slots stay literally None - a 0.0 would slip past every
     ``is None`` guard and die much later as a zero-variance covariate."""

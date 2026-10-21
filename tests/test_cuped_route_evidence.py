@@ -174,6 +174,7 @@ def _artifact_source(path, con):
     return open_artifact(store, ref, expected_context=context)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 @pytest.mark.parametrize("transport", ["export", "moments_source"])
 def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, ingress, transport):
@@ -230,6 +231,7 @@ def test_single_cube_transports_carry_each_scalar_family(tmp_path, monkeypatch, 
         con.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("field", ["property", "source", "measure"])
 def test_artifact_scalar_rebinding_refuses_before_reading(tmp_path, monkeypatch, field):
     from increment.semantics.models import CupedCovariateBinding
@@ -268,6 +270,7 @@ def test_artifact_scalar_rebinding_refuses_before_reading(tmp_path, monkeypatch,
         con.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("binding", ["property", "measure"])
 def test_native_sequential_explicit_scalar_refuses_before_capture(tmp_path, monkeypatch, binding):
     import yaml

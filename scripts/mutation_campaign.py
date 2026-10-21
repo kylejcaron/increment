@@ -7,6 +7,7 @@ copy; JSON verdicts and pytest output are retained in the requested directory.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib
 import importlib.metadata
@@ -19,9 +20,12 @@ import tempfile
 import time
 import tomllib
 import traceback
+import xml.etree.ElementTree as ET
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import chdir
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = Path(__file__).resolve()
@@ -113,7 +117,7 @@ def worker(stage: str, source: str, tests: list[str]) -> int:
     from mutmut.runners.harness import PytestRunner
     from mutmut.state import state
 
-    if stage not in {"generate", "stats", "test"}:
+    if stage not in {"generate", "stats", "test", "matrix"}:
         raise ValueError(f"Unknown worker stage: {stage}")
     if stage == "generate":
         Path("mutants").mkdir()
@@ -146,8 +150,21 @@ def worker(stage: str, source: str, tests: list[str]) -> int:
                 indent=2,
             )
         )
-    else:
-        code = run_tests(tests, forced_fail=forced_fail)
+        return code
+    if stage == "matrix":
+        import pytest
+
+        junit = Path(os.environ["MUTATION_JUNIT"])
+        with chdir("mutants"):
+            runner = PytestRunner()
+            pytest_args = without_exit_first(
+                runner._pytest_args_regular_run(tests) + runner._pytest_add_cli_args
+            )
+            code = int(
+                pytest.main(["--rootdir=.", "--tb=native", "--junitxml", str(junit)] + pytest_args)
+            )
+        return code
+    code = run_tests(tests, forced_fail=forced_fail)
     return code
 
 
@@ -193,6 +210,143 @@ def _rates(counts: Counter) -> dict[str, float | None]:
     }
 
 
+def greedy_cover(kills: Mapping[str, set[str]]) -> tuple[list[str], dict[str, int]]:
+    uncovered = set().union(*kills.values()) if kills else set()
+    cover: list[str] = []
+    while uncovered:
+        best = max(kills, key=lambda test: len(kills[test] & uncovered))
+        gain = kills[best] & uncovered
+        if not gain:
+            break
+        cover.append(best)
+        uncovered -= gain
+    return cover, {
+        test: len(mutants & set().union(*(kills[name] for name in cover)))
+        for test, mutants in kills.items()
+        if test not in cover and mutants
+    }
+
+
+def failing_tests(junit: Path) -> set[str]:
+    root = ET.parse(junit).getroot()
+    failures = set()
+    for case in root.iter("testcase"):
+        if not any(child.tag in {"failure", "error"} for child in case):
+            continue
+        file = case.attrib.get("file")
+        if file:
+            module_path = Path(file)
+            module_parts = module_path.with_suffix("").as_posix().split("/")
+            classes = case.attrib.get("classname", "").split(".")[len(module_parts) :]
+            nodeid = f"{module_path.as_posix()}::{'::'.join(classes + [case.attrib['name']])}"
+        else:
+            nodeid = (
+                f"{case.attrib.get('classname', '').replace('.', '/')}.py::{case.attrib['name']}"
+            )
+        failures.add(nodeid)
+    return failures
+
+
+def without_exit_first(args: list[str]) -> list[str]:
+    filtered: list[str] = []
+    skip_value = False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+            continue
+        if arg in {"-x", "--exitfirst", "--maxfail"}:
+            skip_value = arg == "--maxfail"
+        elif not arg.startswith("--maxfail="):
+            filtered.append(arg)
+    return filtered
+
+
+def effective_kills(kills: Mapping[str, set[str]], string_only: set[str]) -> dict[str, set[str]]:
+    return {test: mutants - string_only for test, mutants in kills.items()}
+
+
+def string_literal_mutants(metadata: Mapping[str, Mapping[str, str]]) -> set[str]:
+    def normalize(line: str) -> str:
+        tree = ast.parse(line)
+
+        class Strings(ast.NodeTransformer):
+            def visit_Constant(self, node):
+                if isinstance(node.value, str):
+                    return ast.copy_location(ast.Constant(value="STRING"), node)
+                return node
+
+        return ast.dump(Strings().visit(tree))
+
+    output = set()
+    for mutant, diff in metadata.get("mutants", {}).items():
+        removed = [
+            line[1:].strip()
+            for line in diff.splitlines()
+            if line.startswith("-") and not line.startswith("---")
+        ]
+        added = [
+            line[1:].strip()
+            for line in diff.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        ]
+        try:
+            if (
+                len(removed) == len(added) == 1
+                and normalize(removed[0]) == normalize(added[0])
+                and removed[0] != added[0]
+            ):
+                output.add(mutant)
+        except SyntaxError:
+            continue
+    return output
+
+
+def collect_kill_matrix(
+    name: str,
+    source: str,
+    output: Path,
+    work: Path,
+    env: dict[str, str],
+    log: Path,
+    results: list[dict[str, Any]],
+    mutant_diffs: dict[str, str],
+) -> dict[str, Any]:
+    attributed: dict[str, set[str]] = {
+        test: set()
+        for result in results
+        if result["status"] == "killed"
+        for test in result["tests"]
+    }
+    for result in results:
+        if result["status"] != "killed" or not result["tests"]:
+            continue
+        mutant = result["mutant"]
+        junit = output / f"{name}-{hashlib.sha256(mutant.encode()).hexdigest()}.xml"
+        code, _ = execute(
+            "matrix",
+            source,
+            result["tests"],
+            work,
+            env | {"MUTANT_UNDER_TEST": mutant, "MUTATION_JUNIT": str(junit)},
+            log,
+            30,
+        )
+        if code not in (0, 1):
+            raise RuntimeError(f"Kill matrix worker failed for {mutant}; see {log}")
+        for test in failing_tests(junit):
+            attributed.setdefault(test, set()).add(mutant)
+        junit.unlink()
+    literals = string_literal_mutants({"mutants": mutant_diffs})
+    effective = effective_kills(attributed, literals)
+    cover, candidates = greedy_cover(effective)
+    return {
+        "cover": cover,
+        "candidates_for_removal": candidates,
+        "killed_nothing": sorted(test for test, mutants in effective.items() if not mutants),
+        "string_literal_only": sorted(literals),
+    }
+
+
 def execute(
     stage: str,
     source: str,
@@ -222,7 +376,7 @@ def execute(
             return None, time.monotonic() - started
 
 
-def campaign(name: str, output: Path) -> None:
+def campaign(name: str, output: Path, *, kill_matrix: bool = False) -> None:
     source, selection, functions = CAMPAIGNS[name]
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
@@ -250,8 +404,11 @@ def campaign(name: str, output: Path) -> None:
             + "[tool.mutmut]\n"
             + "\n".join(f"{key} = {json.dumps(value)}" for key, value in config.items())
         )
-        for path in ["increment", "tests", *config["also_copy"]]:
-            shutil.copytree(ROOT / path, work / path, ignore=shutil.ignore_patterns("__pycache__"))
+        for path in {source.split("/")[0], "tests", *config.get("also_copy", [])}:
+            if (ROOT / path).exists():
+                shutil.copytree(
+                    ROOT / path, work / path, ignore=shutil.ignore_patterns("__pycache__")
+                )
         stages = {}
         for stage, active, wanted in [
             ("generate", "", 0),
@@ -280,7 +437,8 @@ def campaign(name: str, output: Path) -> None:
             not any(key.startswith(prefix) for key in mutants) for prefix in prefixes
         ):
             raise RuntimeError("Requested function has no generated mutants")
-        results = []
+        mutant_diffs: dict[str, str] = {}
+        results: list[dict[str, Any]] = []
         for mutant in mutants:
             tests = associations.get(mutant.split("__mutmut_")[0], [])
             code, elapsed = (
@@ -299,6 +457,24 @@ def campaign(name: str, output: Path) -> None:
                 }
             )
             print(f"{name} {len(results)}/{len(mutants)} {status}: {mutant}", flush=True)
+            if kill_matrix and status == "killed":
+                import subprocess as _subprocess
+
+                diff_result = _subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "from mutmut.mutation.diff_apply import get_diff_for_mutant; "
+                        "import sys; print(get_diff_for_mutant(sys.argv[1]))",
+                        mutant,
+                    ],
+                    cwd=work,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                mutant_diffs[mutant] = diff_result.stdout
             counts = Counter(result["status"] for result in results)
             report = {
                 "schema_version": 3,
@@ -324,6 +500,11 @@ def campaign(name: str, output: Path) -> None:
             (output / f"{name}.json").write_text(json.dumps(report, indent=2) + "\n")
             if status == "runner error":
                 raise RuntimeError(f"Runner error for {mutant}; see {log}")
+        if kill_matrix:
+            report["kill_matrix"] = collect_kill_matrix(
+                name, source, output, work, env, log, results, mutant_diffs
+            )
+            (output / f"{name}.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def main() -> None:
@@ -334,11 +515,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("campaigns", nargs="+", choices=CAMPAIGNS)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--kill-matrix", action="store_true")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     for name in args.campaigns:
-        campaign(name, output)
+        campaign(name, output, kill_matrix=args.kill_matrix)
 
 
 if __name__ == "__main__":

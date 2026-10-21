@@ -30,6 +30,8 @@ from increment.semantics.artifact import (
 )
 from tests.warning_codes import warning_codes
 
+pytestmark = pytest.mark.integration
+
 
 def _session():
     con = ibis.duckdb.connect()

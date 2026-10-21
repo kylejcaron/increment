@@ -70,6 +70,7 @@ def test_initial_summary_mapping_mismatch_refuses_before_frame_access(role):
     assert exc.value.code == "sequential.source.invalid"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("recipe", ["exposure", "outcome"])
 def test_initial_native_mapping_mismatch_refuses_before_querying_new_recipe(recipe):
     from tests.analysis_factory import make_analysis
@@ -143,6 +144,7 @@ def test_public_run_uses_captured_randomized_or_encouragement_state_without_live
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -176,6 +178,7 @@ def test_uptake_registration_must_match_explicit_compiled_policy(field, value):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_matching_compliance_family_q_compiles():
     from increment.plan import compile_decision_plan
 
@@ -201,6 +204,7 @@ def test_matching_compliance_family_q_compiles():
         connection.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("registered_q", [Fraction(1, 2), Fraction(0.1) + Fraction(1, 10**100)])
 def test_compliance_family_q_must_match_compiled_plan(registered_q):
     from increment.plan import compile_decision_plan
@@ -228,6 +232,7 @@ def test_compliance_family_q_must_match_compiled_plan(registered_q):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_multiple_uptake_models_refuse_single_compliance_policy():
     from increment.plan import compile_decision_plan
 
@@ -254,6 +259,7 @@ def test_multiple_uptake_models_refuse_single_compliance_policy():
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_uptake_column_override_must_match_initial_registration():
     from increment.frame import synthesise_metric
     from increment.semantics.models import AnalysisPlan, InferenceSpec
@@ -303,6 +309,7 @@ def test_uptake_column_override_must_match_initial_registration():
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_compliance_shortcut_without_uptake_refuses_before_checkpoint_or_outcomes():
     connection, _, source = _native_fixture("bernoulli")
     try:
@@ -314,6 +321,7 @@ def test_compliance_shortcut_without_uptake_refuses_before_checkpoint_or_outcome
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_encouragement_asof_requires_completion_before_legacy_checkpoint():
     from increment.errors import InvalidRequestError
 
@@ -329,6 +337,7 @@ def test_encouragement_asof_requires_completion_before_legacy_checkpoint():
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_compliance_policy_wire_roundtrip_and_mismatch_rejection():
     from increment.decision_wire import compiled_plan_from_dict, compiled_plan_to_dict
     from increment.errors import WireFormatError
@@ -451,6 +460,7 @@ def test_breakout_bonferroni_allocation_precedes_missing_checkpoint(arms):
     assert exc.value.code == "sequential.source.invalid"
 
 
+@pytest.mark.integration
 def test_corrected_compliance_breakout_retains_pre_read_scope_refusal():
     from increment import MultiplicitySpec
     from increment.errors import UnsupportedRequestError
@@ -1836,6 +1846,7 @@ def test_registered_native_and_artifact_capture_share_source_identity():
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_a_registration_from_before_window_days_were_bound_refuses_new_native_capture():
     """The frozen registration hashed a source recipe without the derived window days, which
     cannot say which window the data was computed under, so it never continues."""

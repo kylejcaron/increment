@@ -21,6 +21,7 @@ from scipy.stats import norm
 from increment.estimation.armstats import IndependentMeanComponent, IndependentMeanReference
 from increment.estimation.inference import infer_ate, infer_lift, normal_posterior
 from tests._i15_design import ETA, exact_label_reference, load_manifest, sample
+from tests._unit_boundary import backend_fixture
 from tests.mc import binomial_error_upper_bound, coverage_lower_bound, scientific_delta
 
 TRUE_LOG_RR = 0.10
@@ -862,7 +863,7 @@ def _run_shared_cases(cases, build, *, seed, repetitions=None, observers=None):
     return {case_id: accumulator.report() for case_id, accumulator in accumulators.items()}
 
 
-@pytest.fixture
+@backend_fixture()
 def winsor_connection():
     import ibis
 

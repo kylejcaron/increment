@@ -13,6 +13,8 @@ from increment.semantics.artifact import UnitDayArtifactManifest
 from tests.analysis_factory import _moment_source
 from tests.covariate_cases import categorical_defs_and_con, covariate_defs_and_con
 
+pytestmark = pytest.mark.integration
+
 _NUMERIC_COVARIATE_SCHEMA = (
     ("experiment_id", "STRING", False),
     ("unit_id", "STRING", False),

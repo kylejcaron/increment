@@ -351,6 +351,47 @@ def test_slow_tier_marker_expression_is_used(tmp_path: Path) -> None:
     ]
 
 
+def test_small_selection_runs_without_workers() -> None:
+    """Small direct-file selections avoid xdist startup overhead."""
+    selection = Selection(
+        test_files=tuple(f"tests/test_{index}.py" for index in range(6)),
+        doc_pages=(),
+        use_tach=False,
+        full_tier=False,
+        uncovered=(),
+    )
+    assert _pytest_arguments(selection, "base", "fast", ["-n", "4", "--dist", "loadgroup"]) == [
+        "-m",
+        "not slow and not parameter_recovery and not numerical_certification",
+        *selection.test_files,
+    ]
+
+    for worker_args in (
+        ["-n4", "--dist=loadgroup"],
+        ["-nauto"],
+        ["--numprocesses", "4"],
+        ["--numprocesses=4"],
+    ):
+        assert _pytest_arguments(selection, "base", "fast", worker_args) == [
+            "-m",
+            "not slow and not parameter_recovery and not numerical_certification",
+            *selection.test_files,
+        ]
+    larger = Selection(
+        test_files=(*selection.test_files, "tests/test_6.py"),
+        doc_pages=(),
+        use_tach=False,
+        full_tier=False,
+        uncovered=(),
+    )
+    assert _pytest_arguments(larger, "base", "fast", ["-n", "4", "--dist", "loadgroup"])[-4:] == [
+        "-n",
+        "4",
+        "--dist",
+        "loadgroup",
+    ]
+
+
 def test_unknown_base_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from scripts.affected import main
 

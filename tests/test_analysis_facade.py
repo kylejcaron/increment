@@ -39,6 +39,7 @@ from increment.semantics.models import (
     MeanMetric,
     RetentionMetric,
 )
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis, make_analysis_like
 from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
@@ -1148,7 +1149,7 @@ def test_from_unit_summary_refusals_are_coded_and_actionable(method, expected_co
     analysis.close()
 
 
-@pytest.fixture
+@backend_fixture()
 def sitewide_con():
     """A private warehouse: the sitewide cases rewrite arm assignment, and the
     session-seeded `seeded_con` is shared with every other test."""

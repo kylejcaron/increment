@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.integration
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "release_receipt.py"
 SHA = "a" * 40
 

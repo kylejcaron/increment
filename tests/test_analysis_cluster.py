@@ -20,6 +20,7 @@ from increment.analysis import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.sitewide import SitewideImpact
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows, make_analysis_like
 from tests.sequential_cases import registration
 
@@ -910,7 +911,7 @@ def _quantile_event_rows(
     return rows
 
 
-@pytest.fixture
+@backend_fixture()
 def quantile_source_factory(tmp_path):
     """Build a fresh randomized quantile-metric Analysis on demand."""
 

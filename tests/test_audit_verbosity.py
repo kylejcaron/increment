@@ -101,6 +101,7 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.integration
 def test_cli_exit_and_diagnostics(tmp_path: Path) -> None:
     bad = write_source(tmp_path, "# one\n# two\n# three\n# four\n# five\n")
     result = run_cli(str(bad))
@@ -108,6 +109,7 @@ def test_cli_exit_and_diagnostics(tmp_path: Path) -> None:
     assert f"{bad}:1" in result.stdout
 
 
+@pytest.mark.integration
 def test_cli_no_target_scans_shipped_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "increment").mkdir()
@@ -124,6 +126,7 @@ def test_short_exception_still_requires_a_reason(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.integration
 def test_module_docstring_diagnostic_uses_actual_source_line(tmp_path: Path) -> None:
     path = write_source(tmp_path, '#!/usr/bin/env python\n# coding: utf-8\n\n"""superpowers"""\n')
     result = run_cli(str(path))
@@ -149,12 +152,14 @@ def test_empty_comment_counts_toward_the_block_limit(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.integration
 def test_invalid_python_is_reported_after_tokenization(tmp_path: Path) -> None:
     path = write_source(tmp_path, "value =\n")
     assert audit(path)["errors"]
     assert run_cli(str(path)).returncode == 1
 
 
+@pytest.mark.integration
 def test_explicit_missing_target_cannot_be_hidden_by_clean_file(tmp_path: Path) -> None:
     path = write_source(tmp_path, "value = 1\n")
     result = run_cli(str(path), str(tmp_path / "missing-directory"))
@@ -162,6 +167,7 @@ def test_explicit_missing_target_cannot_be_hidden_by_clean_file(tmp_path: Path) 
     assert "missing-directory" in result.stdout
 
 
+@pytest.mark.integration
 def test_no_target_scan_includes_hook_configuration_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -175,6 +181,7 @@ def test_no_target_scan_includes_hook_configuration_files(
     assert "docs/example.py:1:" in result.stdout
 
 
+@pytest.mark.integration
 def test_empty_discovery_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     assert run_cli().returncode == 1

@@ -18,6 +18,8 @@ from increment.estimation.engine import Method
 from increment.sources import MomentsSource
 from tests.analysis_factory import _native_source
 
+pytestmark = pytest.mark.integration
+
 
 def _assert_operation_refusal(
     error: CapabilityError,

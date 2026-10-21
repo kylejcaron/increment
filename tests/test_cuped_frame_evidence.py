@@ -281,6 +281,7 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
             )
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("ingress", ["summary", "panel", "native", "artifact"])
 @pytest.mark.parametrize("role", ["decision", "sensitivity"])
 @pytest.mark.parametrize("missing", ["refuse", "impute"])

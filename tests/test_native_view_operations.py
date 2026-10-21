@@ -19,6 +19,7 @@ from increment.semantics.models import (
     QuantileMetric,
     Winsorization,
 )
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, make_analysis_like
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
 from tests.test_analysis_breakout import _analysis_with_country_breakout
@@ -26,7 +27,7 @@ from tests.test_analysis_sitewide import _REVENUE_PER_USER, _REVENUE_PER_USER_PL
 from tests.test_native_core_operations import _assert_operation_refusal
 
 
-@pytest.fixture(scope="module")
+@backend_fixture(scope="module")
 def pricing_con():
     import ibis
 

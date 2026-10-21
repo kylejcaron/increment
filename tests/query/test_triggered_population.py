@@ -9,11 +9,12 @@ import pandas as pd
 import pytest
 
 from increment.query.builders import triggered_population
+from tests._unit_boundary import backend_fixture
 
-pytestmark = pytest.mark.creates_tables
+pytestmark = [pytest.mark.creates_tables, pytest.mark.integration]
 
 
-@pytest.fixture
+@backend_fixture()
 def con():
     return ibis.duckdb.connect()
 

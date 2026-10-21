@@ -151,6 +151,7 @@ def test_constructor_families_keep_distinct_cluster_refusals(family: str) -> Non
         analysis.close()
 
 
+@pytest.mark.integration
 def test_definitions_keeps_native_warehouse_cluster_contract(seeded_defs, seeded_con) -> None:
     analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     try:
@@ -161,6 +162,7 @@ def test_definitions_keeps_native_warehouse_cluster_contract(seeded_defs, seeded
         analysis.close()
 
 
+@pytest.mark.integration
 def test_trigger_refusal_uses_public_trigger_rates(seeded_defs, seeded_con) -> None:
     analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     try:
@@ -318,6 +320,7 @@ def _invoke_matrix_operation(analysis: Analysis, family: str, operation: str) ->
     raise AssertionError(f"unknown matrix operation: {operation}")
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("family", "operation", "expected_code", "expected_context"),
     _MATRIX,

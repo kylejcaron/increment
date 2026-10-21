@@ -16,6 +16,7 @@ from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
 from increment.plan import compile_decision_plan
 from increment.semantics.models import MeanMetric, Measure, QuantileMetric, RatioMetric
+from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _make_event_log_table, make_analysis, make_analysis_like
 
 _REVENUE_PER_USER = MeanMetric(
@@ -123,7 +124,7 @@ def _three_arm_analysis(con) -> Analysis:
     return a
 
 
-@pytest.fixture
+@backend_fixture()
 def pricing_site_noise_con():
     """Fresh DuckDB (NOT the shared session ``con`` fixture - adding rows
     to that one would change every other test in this file) carrying
@@ -135,7 +136,7 @@ def pricing_site_noise_con():
     return noise_con
 
 
-@pytest.fixture
+@backend_fixture()
 def pricing_three_arm_con():
     """Same as ``pricing_site_noise_con`` plus a third enrolled arm, so the
     site total carries TWO treatment arms' lifts on top of non-enrolled
@@ -183,6 +184,7 @@ class TestSitewide:
         # Per-unit means: control 200/20=10.0, treatment 560/20=28.0.
         assert result.delta == pytest.approx(18.0)
 
+    @pytest.mark.integration
     def test_invalid_alpha_rejected_before_site_volume_query(
         self, pricing_site_noise_con, monkeypatch
     ):
@@ -222,6 +224,7 @@ class TestSitewide:
         assert result.site_total_numerator == pytest.approx(200.0 + 560.0 + 123.45)
         assert result.site_total_denominator == pytest.approx(42.0)
 
+    @pytest.mark.integration
     def test_windowed_ratio_refuses_before_evidence(self, pricing_site_noise_con):
         a = Analysis(
             "pricing_tier_test",
@@ -250,6 +253,7 @@ class TestSitewide:
         assert raised.value.code == "facade.analysis.operation"
         assert raised.value.context["operation"] == "sitewide_evidence"
 
+    @pytest.mark.integration
     def test_winsorized_metric_refuses_with_its_own_code(self, pricing_site_noise_con):
         winsorized = MeanMetric(
             name="revenue_per_user",
@@ -300,6 +304,7 @@ class TestSitewide:
         assert raised.value.code == "facade.analysis.sitewide_ratio_denominator_missing"
         assert raised.value.context["metric"] == "revenue_per_session"
 
+    @pytest.mark.integration
     def test_unknown_metric_name_raises_value_error(self, con):
         """A metric name never declared on this experiment gets a named
         ValueError, not a raw KeyError - mirrors the
@@ -394,6 +399,7 @@ class TestSitewide:
         assert implicit.n_enrolled == 40
         assert explicit == implicit
 
+    @pytest.mark.integration
     def test_retention_metric_capability_error_propagates(self, con):
         """``d7_retention`` (a declared guardrail on ``pricing_tier_test``)
         raises ``site_volume``'s own ``CapabilityError`` through the
@@ -404,6 +410,7 @@ class TestSitewide:
             a.sitewide("d7_retention")
         assert raised.value.code == "query.builders.site_volume_metric_type"
 
+    @pytest.mark.integration
     def test_quantile_metric_capability_error_propagates(self, con):
         """A ``QuantileMetric`` also has no site-wide reading - a
         distributional statistic is not additive across events."""
@@ -417,6 +424,7 @@ class TestSitewide:
         assert raised.value.code == "query.builders.site_volume_metric_type"
 
 
+@pytest.mark.integration
 def test_sitewide_refuses_clustered_retention_before_type_check(con):
     """Clustered retention refuses at the cluster-decomposition boundary,
     before the retention type's own site-volume refusal can fire."""

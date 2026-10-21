@@ -71,10 +71,11 @@ from increment.semantics.models import (
     RetentionMetric,
     Winsorization,
 )
+from tests._unit_boundary import backend_fixture
 from tests.semantics.test_unit_day_artifact import _manifest
 
 
-@pytest.fixture
+@backend_fixture()
 def reader_snapshot():
     from increment._window import NO_DATA_SIGNAL
 

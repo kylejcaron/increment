@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from increment import CapabilityError, Report
 from increment.errors import InvalidRequestError
 from increment.semantics.models import Definitions
+from tests._unit_boundary import backend_fixture
 
 DEFS = {
     "fact_sources": [
@@ -132,7 +133,7 @@ ORDER_ROWS = [
 ]
 
 
-@pytest.fixture
+@backend_fixture()
 def report():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
@@ -140,7 +141,7 @@ def report():
     return Report.from_definitions(Definitions.model_validate(DEFS), con)
 
 
-@pytest.fixture
+@backend_fixture()
 def recorded_report(monkeypatch):
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
@@ -157,6 +158,7 @@ def recorded_report(monkeypatch):
     return report, executed
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("source_order", [("profile", "events"), ("events", "profile")])
 def test_report_fact_resolution_ignores_property_source_order(source_order):
     sources = {
@@ -271,6 +273,7 @@ class _RecordingConnection:
         return self.connection.sql(*args, **kwargs)
 
 
+@pytest.mark.integration
 def test_report_uses_definitions_snapshot_after_caller_mutation():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
@@ -291,6 +294,7 @@ def test_report_uses_definitions_snapshot_after_caller_mutation():
     assert all("INSERT" not in str(args[0]).upper() for args, _ in recording_con.sql_calls)
 
 
+@pytest.mark.integration
 def test_programmatic_select_definitions_execute():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
@@ -302,6 +306,7 @@ def test_programmatic_select_definitions_execute():
     assert len(trend.to_frame()) == 2
 
 
+@pytest.mark.integration
 def test_report_snapshots_immutable_allocation_definitions():
     from copy import deepcopy
 
@@ -340,6 +345,7 @@ def test_report_snapshots_immutable_allocation_definitions():
         con.disconnect()
 
 
+@pytest.mark.integration
 @pytest.mark.filterwarnings(
     r"ignore:metric .* has window_days=None \(variable per-unit window\); specify window_days if a fixed window is intended:UserWarning"
 )
@@ -365,6 +371,7 @@ class _SpyConnection:
         return object()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("population", "expected_code"),
     [
@@ -411,6 +418,7 @@ class _DialectStandInConnection:
         return self.inner.sql(query, *args, **kwargs)
 
 
+@pytest.mark.integration
 def test_report_population_validation_uses_backend_dialect():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
@@ -432,6 +440,7 @@ def test_report_population_validation_uses_backend_dialect():
     assert raised.value.code == "definition.sql.parse"
 
 
+@pytest.mark.integration
 def test_completeness_horizon_scoped_to_metrics_own_fact():
     # A fresher sibling fact on the same source (page_view, Jan 20) must not
     # mask the metric's own fact (purchase, last event Jan 13) still being incomplete.
@@ -461,6 +470,7 @@ def test_completeness_horizon_scoped_to_metrics_own_fact():
     assert not bool(wk2.period_complete)
 
 
+@pytest.mark.integration
 def test_report_bucketing_is_session_timezone_independent():
     """A TIMESTAMPTZ event must bucket to the same calendar day and the
     same completeness horizon regardless of the warehouse session
@@ -505,6 +515,7 @@ def test_report_bucketing_is_session_timezone_independent():
     assert results["UTC"][dt.date(2025, 1, 2)] == 10.0
 
 
+@pytest.mark.integration
 def test_report_buckets_by_the_declared_day_boundary_not_utc():
     """A definitions-level ``day_boundary`` must decide the calendar day on the
     report/calendar path. The sibling session-timezone test runs at the default
@@ -541,6 +552,7 @@ def test_report_buckets_by_the_declared_day_boundary_not_utc():
     assert values.get(dt.date(2025, 1, 2), 0.0) == 0.0
 
 
+@pytest.mark.integration
 def test_zero_row_fact_horizon_with_explicit_end_never_complete(report):
     # 'refund' has zero rows anywhere; its fact-scoped max(ts) is SQL NULL.
     # With an explicit end=, every period must be incomplete, never NULL/crash.
@@ -552,6 +564,7 @@ def test_zero_row_fact_horizon_with_explicit_end_never_complete(report):
     assert (frame.value == 0.0).all()  # zero-fill: no refund events anywhere
 
 
+@pytest.mark.integration
 def test_zero_row_fact_horizon_with_default_end_empty_frame(report):
     # No end= given: edge falls back to horizon. A zero-row fact's sentinel
     # horizon (start - 1 day) precedes the spine entirely -> clean empty frame.
@@ -559,6 +572,7 @@ def test_zero_row_fact_horizon_with_default_end_empty_frame(report):
     assert len(frame) == 0
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("grain", ["day", "week", "month"])
 @pytest.mark.parametrize("span", [3652, 3653, 3654])
 def test_default_report_horizon_capacity(grain, span):
@@ -664,6 +678,7 @@ def test_default_report_horizon_capacity(grain, span):
         con.disconnect()
 
 
+@pytest.mark.integration
 def test_default_horizons_are_selected_per_metric_and_frozen():
     start = dt.date(2000, 1, 1)
     definitions = Definitions.model_validate(
@@ -752,6 +767,7 @@ def test_default_horizons_are_selected_per_metric_and_frozen():
         con.disconnect()
 
 
+@pytest.mark.integration
 def test_omitted_end_executes_bound_horizon_aggregate(recorded_report):
     report, executed = recorded_report
     trend = report.metric("revenue", grain="day", start=dt.date(2026, 1, 5))
@@ -761,6 +777,7 @@ def test_omitted_end_executes_bound_horizon_aggregate(recorded_report):
     assert "VALUES" not in executed[0].upper()
 
 
+@pytest.mark.integration
 def test_omitted_end_ratio_aggregates_bound_component_relations(recorded_report):
     report, executed = recorded_report
     trend = report.metric("rev_per_order", grain="day", start=dt.date(2026, 1, 5))
@@ -770,6 +787,7 @@ def test_omitted_end_ratio_aggregates_bound_component_relations(recorded_report)
     assert "VALUES" not in executed[0].upper()
 
 
+@pytest.mark.integration
 def test_omitted_end_population_admission_precedes_data_execution(recorded_report):
     report, executions = recorded_report
     for invalid_sql in ("SELEC FROM raw_events", "DELETE FROM raw_events"):
@@ -793,6 +811,7 @@ def test_omitted_end_population_admission_precedes_data_execution(recorded_repor
     assert executions == []
 
 
+@pytest.mark.integration
 def test_omitted_end_rejects_unknown_grain_before_horizon_execution(recorded_report):
     report, executions = recorded_report
 
@@ -803,6 +822,7 @@ def test_omitted_end_rejects_unknown_grain_before_horizon_execution(recorded_rep
     assert executions == []
 
 
+@pytest.mark.integration
 def test_range_beyond_capacity_refused_through_facade(report):
     with pytest.raises(CapabilityError) as raised:
         report.metric(
@@ -816,6 +836,7 @@ def test_range_beyond_capacity_refused_through_facade(report):
     }
 
 
+@pytest.mark.integration
 def test_zero_row_fact_ratio_numerator_horizon_never_complete(report):
     # Ratio branch's ibis.least(num_horizon, den_horizon) ignores NULLs in
     # DuckDB, so an unguarded zero-row numerator would let the populated denominator alone drive completeness; the sentinel coalesce fixes this.
@@ -826,6 +847,7 @@ def test_zero_row_fact_ratio_numerator_horizon_never_complete(report):
     assert (frame.period_complete == False).all()  # noqa: E712 - not NULL/NaN
 
 
+@pytest.mark.integration
 def test_zero_row_fact_ratio_numerator_default_end_empty_frame(report):
     frame = report.metric("refund_ratio", grain="week", start=dt.date(2026, 1, 5)).to_frame()
     assert len(frame) == 0
@@ -834,6 +856,7 @@ def test_zero_row_fact_ratio_numerator_default_end_empty_frame(report):
 KW: dict[str, Any] = {"grain": "week", "start": dt.date(2026, 1, 5), "end": dt.date(2026, 1, 18)}
 
 
+@pytest.mark.integration
 def test_conversion_trend_shape_and_wilson_ci(report):
     frame = report.metric("purchase_rate", **KW).to_frame()
     assert set(frame.columns) == {
@@ -858,6 +881,7 @@ def test_conversion_trend_shape_and_wilson_ci(report):
     assert 0.0 <= wk1.ci_lb < wk1.value < wk1.ci_ub <= 1.0
 
 
+@pytest.mark.integration
 def test_wilson_ci_finite_at_tiny_alpha(report):
     """norm.ppf(1 - alpha/2) rounds the complement to exactly 1.0 once
     alpha is small enough, returning z=inf and poisoning both CI bounds
@@ -869,6 +893,7 @@ def test_wilson_ci_finite_at_tiny_alpha(report):
     assert math.isfinite(wk1.ci_ub)
 
 
+@pytest.mark.integration
 def test_wilson_ci_not_zero_width_at_extreme_rate(report):
     pop = ibis.memtable([{"unit_id": "u1"}])
     frame = report.metric("order_rate", population=pop, **KW).to_frame()
@@ -878,6 +903,7 @@ def test_wilson_ci_not_zero_width_at_extreme_rate(report):
     assert wk1.ci_ub <= 1.0
 
 
+@pytest.mark.integration
 def test_mean_trend_normal_ci_and_n_equals_one_edge_case(report):
     frame = report.metric("revenue", **KW).to_frame()
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
@@ -899,6 +925,7 @@ def test_mean_trend_normal_ci_and_n_equals_one_edge_case(report):
     assert wk2.ci_ub != wk2.ci_ub or wk2.ci_ub is None
 
 
+@pytest.mark.integration
 def test_mean_trend_variance_survives_extreme_mean():
     """The trend CI comes from the producer-centered moments, so its SE
     stays exact-grade when the mean dwarfs the spread. The raw-sum
@@ -946,6 +973,7 @@ def test_mean_trend_variance_survives_extreme_mean():
             assert abs(raw_var - float(exact_var)) / float(exact_var) > raw_floor
 
 
+@pytest.mark.integration
 def test_mean_trend_constant_period_has_zero_variance_not_nan():
     """Every unit at the non-representable 0.1: the centered sum of
     squares is ~1e-17 noise of unpredictable sign, and an unclamped
@@ -976,6 +1004,7 @@ def test_mean_trend_constant_period_has_zero_variance_not_nan():
     assert wk.ci_ub == pytest.approx(0.1, rel=1e-12)
 
 
+@pytest.mark.integration
 def test_total_and_active_have_null_n_and_ci(report):
     frame = report.metric("wau", **KW).to_frame()
     assert frame.n.isna().all()
@@ -984,6 +1013,7 @@ def test_total_and_active_have_null_n_and_ci(report):
     assert wk1.value == 2
 
 
+@pytest.mark.integration
 def test_dimensioned_trend_carries_dim_column(report):
     frame = report.metric("total_revenue", by=["country"], **KW).to_frame()
     assert "country" in frame.columns
@@ -992,23 +1022,27 @@ def test_dimensioned_trend_carries_dim_column(report):
     assert dict(zip(wk1.country, wk1.value, strict=True)) == {"US": 10.0}
 
 
+@pytest.mark.integration
 def test_sql_returns_string(report):
     sql = report.metric("purchase_rate", **KW).sql()
     assert isinstance(sql, str) and "SELECT" in sql.upper()
 
 
+@pytest.mark.integration
 def test_retention_refused(report):
     with pytest.raises(CapabilityError) as raised:
         report.metric("d7", **KW)
     assert raised.value.code == "report.metric.unsupported"
 
 
+@pytest.mark.integration
 def test_ratio_with_dims_refused(report):
     with pytest.raises(CapabilityError) as raised:
         report.metric("rev_per_order", by=["country"], **KW)
     assert raised.value.code == "report.metric.unsupported"
 
 
+@pytest.mark.integration
 def test_degenerate_default_denominator_refused(report):
     # 'order' is the only fact on orders_only and order_rate is filterless:
     # active default == converters.
@@ -1017,6 +1051,7 @@ def test_degenerate_default_denominator_refused(report):
     assert raised.value.code == "report.metric.unsupported"
 
 
+@pytest.mark.integration
 def test_filtered_conversion_on_single_fact_source_allowed(report):
     # Filtered conversion is NOT degenerate: denominator = all active units,
     # numerator = filtered subset.
@@ -1027,6 +1062,7 @@ def test_filtered_conversion_on_single_fact_source_allowed(report):
     assert wk1.value == pytest.approx(0.5)
 
 
+@pytest.mark.integration
 def test_degenerate_denominator_ok_with_population(report):
     pop = ibis.memtable([{"unit_id": u} for u in ["u1", "u2", "u3"]])
     frame = report.metric("order_rate", population=pop, **KW).to_frame()
@@ -1035,6 +1071,7 @@ def test_degenerate_denominator_ok_with_population(report):
     assert wk1.value == pytest.approx(2 / 3)  # u1 and u3 ordered in wk1
 
 
+@pytest.mark.integration
 def test_cross_source_ratio_population_and_horizon(report):
     frame = report.metric("rev_per_order", **KW).to_frame()
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
@@ -1049,6 +1086,7 @@ def test_cross_source_ratio_population_and_horizon(report):
     assert not bool(wk2.period_complete)
 
 
+@pytest.mark.integration
 def test_dimensioned_conversion_end_to_end_by_country(report):
     # Entity-scoped dims are as-of-period-end, unit-level: u1 (US) purchased
     # -> converted; u2 (DE, page_view only) -> not converted.
@@ -1060,6 +1098,7 @@ def test_dimensioned_conversion_end_to_end_by_country(report):
     assert by_country["DE"] == (1, pytest.approx(0.0))
 
 
+@pytest.mark.integration
 def test_metrics_batch_validates_upfront(report):
     """One batch call reports every offender it was handed, once each."""
     with pytest.raises(CapabilityError) as raised:
@@ -1073,11 +1112,13 @@ def test_metrics_batch_validates_upfront(report):
         assert sum(offender in message for message in errors) == 1
 
 
+@pytest.mark.integration
 def test_metrics_batch_returns_dict(report):
     out = report.metrics(["purchase_rate", "wau"], **KW)
     assert set(out) == {"purchase_rate", "wau"}
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("alpha", [math.nan, math.inf, -math.inf, 0.0, 1.0, -0.1, 1.1])
 @pytest.mark.parametrize("batch", [False, True])
 def test_invalid_alpha_rejected_before_build(report, alpha, batch):
@@ -1089,6 +1130,7 @@ def test_invalid_alpha_rejected_before_build(report, alpha, batch):
     assert exc_info.value.code == "reporting.alpha_finite"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("week_start", ["tuesday", ""])
 @pytest.mark.parametrize("batch", [False, True])
 def test_invalid_week_start_rejected_before_build(report, week_start, batch):
@@ -1101,6 +1143,7 @@ def test_invalid_week_start_rejected_before_build(report, week_start, batch):
     assert exc_info.value.context["week_start"] == week_start
 
 
+@pytest.mark.integration
 def test_to_frame_refuses_an_unknown_backend(report):
     from increment.errors import InvalidRequestError
 
@@ -1111,12 +1154,14 @@ def test_to_frame_refuses_an_unknown_backend(report):
     assert exc_info.value.context["backend"] == "spark"
 
 
+@pytest.mark.integration
 def test_unknown_dim_refused_before_query(report):
     with pytest.raises(CapabilityError) as raised:
         report.metric("purchase_rate", by=["no_such_dim"], **KW)
     assert raised.value.code == "report.metric.unsupported"
 
 
+@pytest.mark.integration
 def test_metadata(report):
     t = report.metric("purchase_rate", by=["country"], **KW)
     assert (t.metric, t.grain, t.week_start, t.denominator) == (
@@ -1133,6 +1178,7 @@ def test_metadata(report):
     )
 
 
+@pytest.mark.integration
 def test_week_start_defaults_from_definitions():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
@@ -1142,6 +1188,7 @@ def test_week_start_defaults_from_definitions():
     assert t.week_start == "sunday"  # governed default, no per-call arg
 
 
+@pytest.mark.integration
 def test_rolling_mau(report):
     t = report.metric(
         "wau", grain="day", window=7, start=dt.date(2026, 1, 10), end=dt.date(2026, 1, 16)
@@ -1154,6 +1201,7 @@ def test_rolling_mau(report):
     assert t.window == 7
 
 
+@pytest.mark.integration
 def test_rolling_total_revenue(report):
     # Confirms the facade routes TotalMetric (not just ActiveMetric) to
     # rolling_total_values when window= is set.
@@ -1167,23 +1215,27 @@ def test_rolling_total_revenue(report):
     assert (frame.window == 7).all()
 
 
+@pytest.mark.integration
 def test_window_null_for_calendar_buckets(report):
     frame = report.metric("wau", **KW).to_frame()
     assert frame.window.isna().all()
 
 
+@pytest.mark.integration
 def test_rolling_refused_on_entity_scoped_metrics(report):
     with pytest.raises(CapabilityError) as raised:
         report.metric("purchase_rate", window=28, **KW)
     assert raised.value.code == "report.metric.unsupported"
 
 
+@pytest.mark.integration
 def test_nonpositive_window_refused(report):
     with pytest.raises(CapabilityError) as raised:
         report.metric("wau", window=0, **KW)
     assert raised.value.code == "report.metric.unsupported"
 
 
+@pytest.mark.integration
 def test_report_population_is_not_silently_dropped_for_total_metrics():
     """A total metric must honor population= or refuse it, and the read-only
     SQL admission must run on the argument before anything else."""

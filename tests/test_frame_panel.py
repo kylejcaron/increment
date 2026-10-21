@@ -158,6 +158,7 @@ def test_parallel_panel_path_remains_independent_of_switchback_validation(
     assert source.unit_counts() == {"control": 4, "treatment": 4}
 
 
+@pytest.mark.integration
 def test_daily_moments_match_daily_group_summary(panel_frame: pa.Table) -> None:
     """The narwhals per-day moments equal builders.daily_group_summary, all columns.
 
@@ -375,6 +376,7 @@ def test_asof_cumulative_moments_refuses_ambiguous_string_day_labels() -> None:
     assert raised.value.code == "frame.asof.day_axis_unorderable"
 
 
+@pytest.mark.integration
 def test_asof_encouragement_uptake_moments_match_group_summary() -> None:
     ibis = pytest.importorskip("ibis")
     pytest.importorskip("duckdb")

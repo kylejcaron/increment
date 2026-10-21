@@ -8,6 +8,8 @@ import pytest
 
 from increment.query.builders import join_unit_covariates
 
+pytestmark = pytest.mark.integration
+
 
 def _joined(
     rows: list[dict[str, object]],

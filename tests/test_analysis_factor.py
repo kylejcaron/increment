@@ -283,6 +283,7 @@ class TestFactorSummaries:
             assert cell["n"] == n
             assert _recovered_sum(cell["n"], cell["ref_y"], cell["cy1"]) == pytest.approx(sum_y)
 
+    @pytest.mark.integration
     def test_rejects_percentile_winsorization(self, con):
         analysis = _analysis_with_country_factor(con)
         metric = analysis.metrics[0].model_copy(
@@ -295,6 +296,7 @@ class TestFactorSummaries:
             replacement.factor_summaries()
         assert raised.value.code == "source.native.operation"
 
+    @pytest.mark.integration
     def test_returns_empty_dict_without_declared_factors(self, con):
         """factor_summaries's early-return path: an experiment that
         declares no ``factors`` returns ``{}`` rather than raising."""

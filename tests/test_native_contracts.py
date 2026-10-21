@@ -13,6 +13,8 @@ from tests.analysis_factory import _native_source
 from tests.test_analysis_breakout import _configured_country_breakout_analysis as _breakout_analysis
 from tests.test_analysis_breakout import make_analysis_like
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.slow
 def test_native_asof_prior_preserves_sparse_exact_inference_dimensioned_and_undimensioned(
