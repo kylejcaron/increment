@@ -139,7 +139,7 @@ def bigquery_con():
         con.disconnect()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def snowflake_compile_con():
     import snowflake.connector
     from cryptography.hazmat.primitives import serialization
@@ -173,7 +173,21 @@ def snowflake_compile_con():
         connection.close()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
+def snowflake_compile_sources(snowflake_compile_con):
+    from integration.warehouse_execution._compile import (
+        CompileSourceTables,
+        drop_compile_source_tables,
+    )
+
+    sources = CompileSourceTables([], set())
+    try:
+        yield sources
+    finally:
+        drop_compile_source_tables(snowflake_compile_con, "snowflake", sources)
+
+
+@pytest.fixture(scope="module")
 def bigquery_compile_session():
     from google.cloud import bigquery
 
@@ -190,3 +204,17 @@ def bigquery_compile_session():
         yield BigQueryCompileSession(client, dataset, bigquery.QueryJobConfig)
     finally:
         client.close()
+
+
+@pytest.fixture(scope="module")
+def bigquery_compile_sources(bigquery_compile_session):
+    from integration.warehouse_execution._compile import (
+        CompileSourceTables,
+        drop_compile_source_tables,
+    )
+
+    sources = CompileSourceTables([], set())
+    try:
+        yield sources
+    finally:
+        drop_compile_source_tables(bigquery_compile_session, "bigquery", sources)

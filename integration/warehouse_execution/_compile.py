@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
+from hashlib import sha1
 from uuid import uuid4
 
 import ibis
@@ -26,6 +27,16 @@ class CompileCase:
         if isinstance(expression, str):
             return expression
         return str(ibis.to_sql(expression, dialect=self.dialect))
+
+
+@cache
+def _shared_compile_table_name(dialect: str, schema_key: tuple) -> str:
+    digest = sha1(repr(schema_key).encode()).hexdigest()[:12]
+    return f"incr_compile_{dialect}_{digest}_{uuid4().hex[:8]}"
+
+
+def _schema_key(schema: ibis.Schema) -> tuple:
+    return tuple((name, str(dtype)) for name, dtype in schema.items())
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +239,6 @@ def _capture_public_cuped_expressions():  # noqa: PLR0915
 
 
 def _transpile_captured_raw_sql(expression, dialect):
-    """Transpile DuckDB SQL embedded in captured raw-query operations."""
     import sqlglot
     from ibis.expr import operations as ops
     from sqlglot import exp
@@ -239,10 +249,7 @@ def _transpile_captured_raw_sql(expression, dialect):
         if dialect == "snowflake":
             statements = sqlglot.parse(query, read="duckdb")
             if len(statements) != 1:
-                raise ValueError(
-                    f"captured CUPED SQL {description} must transpile to one statement, "
-                    f"got {len(statements)}"
-                )
+                raise ValueError(f"captured CUPED SQL {description} must contain one query")
             statement = statements[0]
             for is_nan in tuple(statement.find_all(exp.IsNan)):
                 value = is_nan.this.sql(dialect=dialect)
@@ -254,10 +261,7 @@ def _transpile_captured_raw_sql(expression, dialect):
 
         statements = sqlglot.transpile(query, read="duckdb", write=dialect)
         if len(statements) != 1:
-            raise ValueError(
-                f"captured CUPED SQL {description} must transpile to one statement, "
-                f"got {len(statements)}"
-            )
+            raise ValueError(f"captured CUPED SQL {description} must contain one query")
         return statements[0]
 
     root = expression.op()
@@ -277,21 +281,41 @@ def _transpile_captured_raw_sql(expression, dialect):
     return root.replace(replacements).to_expr() if replacements else expression
 
 
-def _captured_statement_case(
-    expression,
-    dialect,
-    index,
-    *,
-    schema_snapshot=None,
-    statement_kind="readout",
-):
-    import sqlglot
+def _compiler_sqlglot_query(expression, dialect):
+    import ibis.backends.sql.compilers as compilers
+
+    compiler = getattr(compilers, dialect).compiler
+    queries = compiler.to_sqlglot(expression.unbind())
+    if isinstance(queries, list):
+        if len(queries) != 1:
+            raise ValueError(
+                f"captured CUPED expression must compile to one query, got {len(queries)}"
+            )
+        return queries[0]
+    return queries
+
+
+def _portable_nonfinite_ast(query, dialect):
+    if dialect != "snowflake":
+        return query
+
+    from sqlglot import exp
+
+    from increment.query._nonfinite import _is_nan_sql
+
+    for is_nan in tuple(query.find_all(exp.IsNan)):
+        value = is_nan.this.sql(dialect=dialect)
+        is_nan.replace(_is_nan_sql(dialect, value))
+    for is_inf in tuple(query.find_all(exp.IsInf)):
+        infinity = exp.Cast(this=exp.Literal.string("Inf"), to=exp.DataType.build("DOUBLE"))
+        is_inf.replace(exp.EQ(this=exp.Abs(this=is_inf.this.copy()), expression=infinity))
+    return query
+
+
+def _captured_relation_schemas(expression, index, schema_snapshot, query):
     from ibis.expr import operations as ops
     from sqlglot import exp
 
-    target_expression = _transpile_captured_raw_sql(expression, dialect)
-    rendered = str(ibis.to_sql(target_expression, dialect=dialect))
-    query = sqlglot.parse_one(rendered, read=dialect)
     cte_names = {cte.alias_or_name for cte in query.find_all(exp.CTE)}
     if schema_snapshot is None:
         schema_snapshot = _CAPTURED_CUPED_EXPRESSION_SCHEMAS[index]
@@ -307,58 +331,180 @@ def _captured_statement_case(
         {relation.name: relation.schema for relation in expression.op().find(ops.InMemoryTable)}
     )
     table_refs = {table.name for table in query.find_all(exp.Table) if table.name not in cte_names}
-    schemas = {name: relation_schemas[name] for name in sorted(table_refs)}
+    return {name: relation_schemas[name] for name in sorted(table_refs)}
 
-    def build(table_names, _dialect):
-        statement = sqlglot.parse_one(rendered, read=dialect)
-        for table in statement.find_all(exp.Table):
-            replacement = table_names.get(table.name)
-            if replacement is None:
-                continue
-            table.set("this", exp.to_identifier(replacement, quoted=True))
-            table.set("db", None)
-            table.set("catalog", None)
-        return statement.sql(dialect=dialect)
+
+def _captured_statement_template(expression, dialect, index, schema_snapshot):
+    from sqlglot import exp
+
+    target_expression = _transpile_captured_raw_sql(expression, dialect)
+    query = _portable_nonfinite_ast(_compiler_sqlglot_query(target_expression, dialect), dialect)
+    schemas = _captured_relation_schemas(expression, index, schema_snapshot, query)
+    schema_roles = {}
+    relation_roles = {}
+    table_roles = []
+    for name in sorted(schemas):
+        schema_key = _schema_key(schemas[name])
+        placeholder = schema_roles.get(schema_key)
+        if placeholder is None:
+            placeholder = f"__INCREMENT_COMPILE_SOURCE_{len(schema_roles):04d}__"
+            schema_roles[schema_key] = placeholder
+            table_roles.append((placeholder, name))
+        relation_roles[name] = placeholder
+    for table in query.find_all(exp.Table):
+        role = relation_roles.get(table.name)
+        if role is None:
+            continue
+        table.set("this", exp.to_identifier(role, quoted=True))
+        table.set("db", None)
+        table.set("catalog", None)
+    return query.sql(dialect=dialect), schemas, tuple(table_roles)
+
+
+def _captured_statement_case(
+    expression,
+    dialect,
+    index,
+    *,
+    schema_snapshot=None,
+    statement_kind="readout",
+):
+    template, schemas, table_roles = _captured_statement_template(
+        expression, dialect, index, schema_snapshot
+    )
+    table_names = {
+        name: _shared_compile_table_name(dialect, _schema_key(schema))
+        for name, schema in schemas.items()
+    }
+
+    def build(requested_table_names, _dialect):
+        statement = template
+        for placeholder, name in table_roles:
+            statement = statement.replace(
+                placeholder, requested_table_names.get(name, table_names[name])
+            )
+        return statement
 
     return CompileCase(
         f"cuped.{statement_kind}.{index:04d}",
         schemas,
         build,
-        {name: f"incr_compile_{name}_{uuid4().hex[:12]}" for name in schemas},
+        table_names,
         dialect,
     )
 
 
-def _captured_cuped_statement_cases(dialect, shard=None):
-    """Render captured CUPED statements; ``shard=(k, n)`` keeps every n-th one from k."""
+def _serialize_compile_schema(schema):
+    return tuple((name, str(dtype), dtype.nullable) for name, dtype in schema.items())
+
+
+def _restore_compile_schema(fields):
+    return ibis.schema(
+        {name: dt.dtype(type_name).copy(nullable=nullable) for name, type_name, nullable in fields}
+    )
+
+
+def _build_cached_captured_compile_data(dialect):
+    import sys
+    from time import perf_counter
+
+    started = perf_counter()
+    expressions = _capture_public_cuped_expressions()
     captured = [
-        (expression, index, None, "readout")
-        for index, expression in enumerate(_capture_public_cuped_expressions())
+        (expression, index, None, "readout") for index, expression in enumerate(expressions)
     ]
     captured.extend(
         (expression, index, schema_snapshot, "materialize")
         for index, (expression, schema_snapshot) in enumerate(_CAPTURED_CUPED_MATERIALIZATIONS)
     )
+    cases = []
+    for expression, index, schema_snapshot, kind in captured:
+        template, schemas, table_roles = _captured_statement_template(
+            expression, dialect, index, schema_snapshot
+        )
+        cases.append(
+            (
+                f"cuped.{kind}.{index:04d}",
+                tuple(
+                    (name, _serialize_compile_schema(schema)) for name, schema in schemas.items()
+                ),
+                template,
+                table_roles,
+            )
+        )
+    print(
+        f"warehouse compile registry dialect={dialect} cases={len(cases)} "
+        f"build_seconds={perf_counter() - started:.3f}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return tuple(cases)
+
+
+@cache
+def _captured_compile_cache_key(dialect):
+    from pathlib import Path
+
+    from tests._shared_cache import fixture_cache_key
+
+    root = Path(__file__).resolve().parents[2]
+    source_paths = (Path(__file__), root / "tests" / "warehouse_cuped_cases.py")
+    return f"{dialect}-{fixture_cache_key(root, *source_paths)}"
+
+
+@cache
+def _captured_compile_data(dialect):
+    from pathlib import Path
+
+    from tests._shared_cache import get_or_build
+
+    root = Path(__file__).resolve().parents[2]
+    cache_root = root / ".pytest_cache" / "warehouse_compile_registry"
+    return get_or_build(
+        cache_root,
+        _captured_compile_cache_key(dialect),
+        lambda: _build_cached_captured_compile_data(dialect),
+    )
+
+
+def _restore_cached_captured_case(record, dialect):
+    name, schema_data, template, table_roles = record
+    schemas = {relation: _restore_compile_schema(fields) for relation, fields in schema_data}
+    table_names = {
+        relation: _shared_compile_table_name(dialect, _schema_key(schema))
+        for relation, schema in schemas.items()
+    }
+
+    def build(requested_table_names, _dialect):
+        statement = template
+        for placeholder, relation in table_roles:
+            statement = statement.replace(
+                placeholder, requested_table_names.get(relation, table_names[relation])
+            )
+        return statement
+
+    return CompileCase(name, schemas, build, table_names, dialect)
+
+
+@cache
+def _captured_cuped_statement_cases(dialect, shard=None):
+    """Load cached rendered cases and optionally select a disjoint shard."""
+    records = _captured_compile_data(dialect)
     if shard is not None:
         offset, count = shard
-        captured = captured[offset::count]
-    return [
-        _captured_statement_case(
-            expression, dialect, index, schema_snapshot=schema_snapshot, statement_kind=kind
-        )
-        for expression, index, schema_snapshot, kind in captured
-    ]
+        records = records[offset::count]
+    return [_restore_cached_captured_case(record, dialect) for record in records]
 
 
-def _captured_cuped_case_names():
-    expressions = _capture_public_cuped_expressions()
-    return [f"cuped.readout.{index:04d}" for index in range(len(expressions))] + [
-        f"cuped.materialize.{index:04d}" for index in range(len(_CAPTURED_CUPED_MATERIALIZATIONS))
-    ]
+def _captured_cuped_case_names(dialect):
+    return [record[0] for record in _captured_compile_data(dialect)]
 
 
 def _register(cases, dialect, name, schemas, builder):
-    names = {key: f"incr_compile_{key}_{uuid4().hex[:12]}" for key in schemas}
+    names = {
+        key: _shared_compile_table_name(dialect, _schema_key(schema))
+        for key, schema in schemas.items()
+    }
     cases.append(CompileCase(name, schemas, builder, names, dialect))
 
 
@@ -577,8 +723,10 @@ def compile_statement_cases(
 
 
 def compile_case_names(dialect: str) -> list[str]:
-    """Return every registered case name without rendering captured statements."""
-    return [case.name for case in fixed_compile_cases(dialect)] + _captured_cuped_case_names()
+    """Return registered case names."""
+    return [case.name for case in fixed_compile_cases(dialect)] + _captured_cuped_case_names(
+        dialect
+    )
 
 
 @cache
@@ -727,6 +875,46 @@ def _execute_sql(connection, dialect: str, statement: str, *, dry_run: bool = Fa
     return job
 
 
+@dataclass(slots=True)
+class CompileSourceTables:
+    created: list[str]
+    unavailable: set[str]
+
+
+def _create_shared_source_tables(
+    connection, case: CompileCase, source_tables: CompileSourceTables
+) -> None:
+    known = set(source_tables.created) | source_tables.unavailable
+    for key, table_name in case.table_names.items():
+        if table_name in known:
+            continue
+        try:
+            _execute_sql(
+                connection,
+                case.dialect,
+                _schema_only_ddl(case, key, table_name),
+            )
+        except Exception:
+            source_tables.unavailable.add(table_name)
+        else:
+            source_tables.created.append(table_name)
+            known.add(table_name)
+
+
+def drop_compile_source_tables(
+    connection, dialect: str, source_tables: CompileSourceTables
+) -> None:
+    for table_name in reversed(source_tables.created):
+        try:
+            _execute_sql(
+                connection,
+                dialect,
+                f"DROP TABLE IF EXISTS {_identifier(dialect, table_name)}",
+            )
+        except Exception:
+            pass
+
+
 def _create_schema_only(connection, case: CompileCase, created: list[str]) -> None:
     for key, table_name in case.table_names.items():
         _execute_sql(connection, case.dialect, _schema_only_ddl(case, key, table_name))
@@ -752,7 +940,9 @@ def _submit_compile(connection, dialect: str, statement: str) -> None:
         _execute_sql(connection, dialect, statement, dry_run=True)
 
 
-def run_compile_case(connection, case: CompileCase) -> str:
+def run_compile_case(
+    connection, case: CompileCase, *, shared_tables: CompileSourceTables | None = None
+) -> str:
     """Compile one expression against empty typed relations; never execute a query."""
     created = []
     try:
@@ -763,14 +953,22 @@ def run_compile_case(connection, case: CompileCase) -> str:
 
     try:
         if case.schemas:
-            try:
-                _create_schema_only(connection, case, created)
-                route = "empty schema-only tables"
-            except Exception:
-                _drop_schema_only(connection, case, created)
-                created.clear()
-                statement = _inline_empty_ctes(statement, case)
-                route = "inline empty typed CTEs"
+            if shared_tables is not None:
+                _create_shared_source_tables(connection, case, shared_tables)
+                if set(case.table_names.values()) & shared_tables.unavailable:
+                    statement = _inline_empty_ctes(statement, case)
+                    route = "inline empty typed CTEs"
+                else:
+                    route = "shared schema-only tables"
+            else:
+                try:
+                    _create_schema_only(connection, case, created)
+                    route = "empty schema-only tables"
+                except Exception:
+                    _drop_schema_only(connection, case, created)
+                    created.clear()
+                    statement = _inline_empty_ctes(statement, case)
+                    route = "inline empty typed CTEs"
         else:
             route = "inline statement without source tables"
         print(f"{case.dialect} {case.name}: {route}")
@@ -779,4 +977,5 @@ def run_compile_case(connection, case: CompileCase) -> str:
     except Exception as exc:
         raise WarehouseCompileError(case.dialect, case.name, str(exc)) from exc
     finally:
-        _drop_schema_only(connection, case, created)
+        if shared_tables is None:
+            _drop_schema_only(connection, case, created)

@@ -19,6 +19,8 @@ _SHARDS = 8
 @pytest.mark.timeout(900)
 @pytest.mark.parametrize("shard", range(_SHARDS))
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+# A cold cache build compiles all registered statements before shard tests run.
+@pytest.mark.timeout(900)
 def test_registered_warehouse_statements_compile_offline(dialect, shard):
     cases = compile_statement_cases(dialect, shard=(shard, _SHARDS))
 
@@ -90,45 +92,62 @@ def test_captured_statement_uses_schema_at_capture_time(monkeypatch):
     assert case.schemas["_cuped_qr_stage"] == schema
 
 
-def test_captured_snowflake_isnan_uses_portable_comparison():
+def test_captured_statement_compilation_uses_sqlglot_ast(monkeypatch):
     import ibis
-    from ibis.expr import operations as ops
 
-    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+    from integration.warehouse_execution import _compile
 
+    schema = ibis.schema({"value": "float64"})
     connection = ibis.duckdb.connect()
-    expression = connection.sql(
-        "SELECT ISNAN(value) AS nonfinite FROM source",
-        schema=ibis.schema({"nonfinite": "boolean"}),
+    expression = connection.sql("SELECT value FROM source", schema=schema)
+
+    def reject_string_rendering(*_args, **_kwargs):
+        pytest.fail("captured statements must reuse the compiler SQLGlot AST")
+
+    monkeypatch.setattr(ibis, "to_sql", reject_string_rendering)
+    case = _compile._captured_statement_case(
+        expression, "bigquery", 0, schema_snapshot={"source": schema}
     )
 
-    translated = _transpile_captured_raw_sql(expression, "snowflake")
-    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
-    sql = ibis.to_sql(translated, dialect="snowflake")
+    assert "FROM" in case.compile(case.build(case.table_names)).upper()
 
-    assert "IS_NAN" not in query.upper()
-    assert "'NaN'::FLOAT" in query
+
+def test_captured_snowflake_isnan_uses_portable_comparison():
+    import ibis
+
+    from integration.warehouse_execution._compile import _captured_statement_case
+
+    connection = ibis.duckdb.connect()
+    schema = ibis.schema({"nonfinite": "boolean"})
+    expression = connection.sql(
+        "SELECT ISNAN(value) AS nonfinite FROM source",
+        schema=schema,
+    )
+    case = _captured_statement_case(expression, "snowflake", 0, schema_snapshot={"source": schema})
+    sql = case.compile(case.build(case.table_names))
+
     assert "IS_NAN" not in sql.upper()
+    assert "'NaN'" in sql
+    assert "CAST(" in sql.upper()
 
 
 def test_captured_snowflake_isinf_uses_absolute_infinity_comparison():
     import ibis
-    from ibis.expr import operations as ops
 
-    from integration.warehouse_execution._compile import _transpile_captured_raw_sql
+    from integration.warehouse_execution._compile import _captured_statement_case
 
     connection = ibis.duckdb.connect()
+    schema = ibis.schema({"infinite": "boolean"})
     expression = connection.sql(
         "SELECT ISINF(value) AS infinite FROM source",
-        schema=ibis.schema({"infinite": "boolean"}),
+        schema=schema,
     )
+    case = _captured_statement_case(expression, "snowflake", 0, schema_snapshot={"source": schema})
+    sql = case.compile(case.build(case.table_names))
 
-    translated = _transpile_captured_raw_sql(expression, "snowflake")
-    query = next(operation.query for operation in translated.op().find(ops.SQLQueryResult))
-
-    assert "IS_INF" not in query.upper()
-    assert "ABS(" in query.upper()
-    assert "INF" in query.upper()
+    assert "IS_INF" not in sql.upper()
+    assert "ABS(" in sql.upper()
+    assert "INF" in sql.upper()
 
 
 class _CapturingCursor:
@@ -209,3 +228,100 @@ def test_negative_control_is_registered_and_renders_offline(dialect):
     referenced = {table.name for table in ast.find_all(sqlglot.exp.Table)}
     assert referenced <= set(case.table_names.values())
     assert set(case.table_names.values()) <= referenced
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_shared_source_table_is_created_once_when_first_referenced(dialect):
+    from integration.warehouse_execution._compile import (
+        BigQueryCompileSession,
+        CompileSourceTables,
+        drop_compile_source_tables,
+        fixed_compile_cases,
+        run_compile_case,
+    )
+
+    case = next(
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_token"
+    )
+    if dialect == "snowflake":
+        connection = _CapturingSnowflakeConnection()
+        statements = connection.statements
+    else:
+        client = _CapturingBigQueryClient()
+        connection = BigQueryCompileSession(client, object(), lambda **kwargs: kwargs)
+        statements = client.statements
+
+    source_tables = CompileSourceTables([], set())
+    assert (
+        run_compile_case(connection, case, shared_tables=source_tables)
+        == "shared schema-only tables"
+    )
+    assert len(statements) == 2
+    assert statements[0].upper().startswith("CREATE TABLE")
+    next_case = next(
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_hash"
+    )
+    assert run_compile_case(connection, next_case, shared_tables=source_tables) == (
+        "shared schema-only tables"
+    )
+    assert len(statements) == 3
+    assert (
+        statements[-1]
+        .upper()
+        .startswith("EXPLAIN USING TEXT " if dialect == "snowflake" else "SELECT")
+    )
+    drop_compile_source_tables(connection, dialect, source_tables)
+    assert statements[-1].upper().startswith("DROP TABLE")
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_shared_source_refusal_uses_inline_typed_cte(dialect):
+    from integration.warehouse_execution._compile import (
+        BigQueryCompileSession,
+        CompileSourceTables,
+        run_compile_case,
+    )
+
+    case = next(
+        case for case in fixed_compile_cases(dialect) if case.name == "digest.exposures.row_token"
+    )
+    if dialect == "snowflake":
+        connection = _CapturingSnowflakeConnection()
+        statements = connection.statements
+    else:
+        client = _CapturingBigQueryClient()
+        connection = BigQueryCompileSession(client, object(), lambda **kwargs: kwargs)
+        statements = client.statements
+
+    source_tables = CompileSourceTables([], set(case.table_names.values()))
+    assert run_compile_case(connection, case, shared_tables=source_tables) == (
+        "inline empty typed CTEs"
+    )
+    assert len(statements) == 1
+    statement = statements[0].removeprefix("EXPLAIN USING TEXT ")
+    assert "WITH" in statement.upper()
+
+
+def test_all_captured_cases_are_registered():
+    from integration.warehouse_execution._compile import compile_case_names, compile_statement_cases
+
+    cases = compile_statement_cases("snowflake")
+
+    assert len(cases) == 826
+    assert [case.name for case in cases] == compile_case_names("snowflake")
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
+def test_cached_templates_rebuild_case_sql(dialect):
+    from integration.warehouse_execution import _compile
+
+    data = _compile._captured_compile_data(dialect)
+    cases = {case.name: case for case in _compile._captured_cuped_statement_cases(dialect)}
+
+    assert len(data) == len(cases) == 732
+    for name, _schemas, template, table_roles in data:
+        case = cases[name]
+        statement = case.build(case.table_names)
+        for placeholder, relation in table_roles:
+            statement = statement.replace(case.table_names[relation], placeholder)
+        assert statement == template
