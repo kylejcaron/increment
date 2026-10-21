@@ -49,7 +49,7 @@ Requires **Python 3.12–3.14**. Install Increment's pre-release package and
 Polars for this example:
 
 ```bash
-pip install --pre increment polars
+pip install "increment>=0.1.0a2" polars
 ```
 
 Start with one row per randomization unit. This example uses independent

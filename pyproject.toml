@@ -5,16 +5,18 @@ description = "Open-source Python library for A/B test analysis, from dataframes
 keywords = [
     "python",
     "a-b-testing",
+    "A/B testing",
     "experimentation",
-    "causal-inference",
+    "causal inference",
     "statistics",
-    "data-analysis",
-    "power-analysis",
-    "cuped",
-    "sequential-inference",
+    "data analysis",
+    "power analysis",
+    "CUPED",
+    "sequential testing",
+    "experiment analysis",
     "ibis",
-    "sql",
-    "data-warehouse",
+    "SQL",
+    "data warehouse",
 ]
 readme = "README.md"
 license = "Apache-2.0"
