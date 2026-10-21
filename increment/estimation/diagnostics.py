@@ -42,7 +42,7 @@ _REFUSALS = refusals(
         "estimation.diagnostics.need_least_groups": "Need at least 2 groups for SRM test",
         "estimation.diagnostics.total_observed_count": "Total observed count must be > 0",
         "estimation.diagnostics.counts_non_negative": "counts must be non-negative, got {negative}",
-        "estimation.diagnostics.predeclared_allocation_support": "predeclared allocation support via expected is required for inference='always_valid'; validity also requires known, constant conditional assignment probabilities",
+        "estimation.diagnostics.predeclared_allocation_support": "predeclared allocation support via expected is required for both fixed and always_valid inference; always_valid validity also requires known, constant conditional assignment probabilities",
         "estimation.diagnostics.every_expected_share_finite": "every expected share must be finite, got {nonfinite}",
         "estimation.diagnostics.every_expected_share_positive": "every expected share must be > 0 -- a zero-share arm makes the chi-square statistic undefined for any observed count there (and negative shares are meaningless); got {expected}",
         "estimation.diagnostics.expected_share_normalization": "expected-share normalization produced nonpositive or nonfinite shares; got {invalid_normalized}",

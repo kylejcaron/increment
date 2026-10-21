@@ -137,10 +137,18 @@ class SitewideReadouts:
         population: Literal["assigned", "triggered"],
     ) -> SitewideImpact | SitewideRatioImpact:
         allocation_balance = None
+        allocation_balance_unavailable_reason = None
         population_counts = evidence.population_counts or {}
         if population == "triggered":
-            expected = getattr(self._src.context.design, "allocation", None)
-            if expected is not None:
+            design = self._src.context.design
+            expected = getattr(design, "allocation", None)
+            if expected is None:
+                allocation_balance_unavailable_reason = (
+                    "integrity.allocation_scheme_missing"
+                    if getattr(design, "allocation_scheme", None) is None
+                    else "integrity.allocation_missing_or_nonconstant"
+                )
+            else:
                 from increment.estimation.diagnostics import (
                     complete_srm_support,
                     sample_ratio_mismatch,
@@ -188,6 +196,7 @@ class SitewideReadouts:
                 "adjustment": "unadjusted",
                 "assumptions": assumptions,
                 "allocation_balance": allocation_balance,
+                "allocation_balance_unavailable_reason": allocation_balance_unavailable_reason,
             }
         )
 

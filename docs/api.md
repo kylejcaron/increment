@@ -1058,7 +1058,9 @@ discloses membership assumptions, allocation-balance evidence, provenance,
 and its exploratory unadjusted multiplicity status on the result.
 `SitewideImpact` and `SitewideRatioImpact`
 include `analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
-`scaled_units`, `unobserved_members`, `assumptions`, and `allocation_balance`.
+`scaled_units`, `unobserved_members`, `assumptions`, `allocation_balance`, and
+`allocation_balance_unavailable_reason` (the integrity code when a triggered
+balance cannot run because allocation is undeclared).
 The paired-provenance check is content-bound only for artifacts; native
 `snapshot_id` reflects declared `SourceSnapshotEvidence`, not table contents.
 

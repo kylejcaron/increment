@@ -538,8 +538,8 @@ def test_triggered_health_without_declared_allocation_is_unavailable_for_native_
         check = next(row for row in report.checks if row.check == "triggered_balance")
         assert check.availability == "unavailable"
         assert check.conclusion is None
-        assert check.code == "estimation.diagnostics.always_srm_predeclared"
-        assert "expected_allocation" in str(check.context.get("route"))
+        assert check.code == "integrity.allocation_scheme_missing"
+        assert "allocation=" in str(check.context["reason"])
 
 
 @pytest.mark.integration

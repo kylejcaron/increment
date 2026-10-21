@@ -97,11 +97,11 @@ declare the target allocation and call `srm(inference="fixed")`.
 
 ## Assignment-protocol requirements
 
-`inference="always_valid"` REQUIRES a predeclared `expected` allocation -- it
-cannot infer equal shares from the observed counts the way fixed inference
-can, since an always-valid check that adapted its own null to the data it is
-checking would not be a check at all. Omitting `expected` raises. For
-cluster-randomized designs, use `grain="cluster"` with cluster-level `counts`.
+Both `inference="fixed"` and `inference="always_valid"` require a predeclared
+`expected` allocation or a design-declared allocation; neither infers equal
+shares from observed counts. The always-valid check additionally requires
+known, constant conditional assignment probabilities. For cluster-randomized
+designs, use `grain="cluster"` with cluster-level `counts`.
 `unit_counts` is descriptive only: cluster-size imbalance does not change
 `is_srm`.
 

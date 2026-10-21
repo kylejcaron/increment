@@ -802,7 +802,14 @@ def test_unequal_cluster_sizes_are_not_a_sample_ratio_mismatch(tmp_path):
     assert result.observed == {"control": 20, "treatment": 20}
     assert result.is_srm is False
     assert result.unit_counts == {"control": 40, "treatment": 120}
-    assert sample_ratio_mismatch(result.unit_counts, inference="fixed").is_srm is True
+    assert (
+        sample_ratio_mismatch(
+            result.unit_counts,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        ).is_srm
+        is True
+    )
 
 
 def test_cluster_count_skew_flags_even_when_unit_counts_balance(tmp_path):
@@ -810,12 +817,21 @@ def test_cluster_count_skew_flags_even_when_unit_counts_balance(tmp_path):
     so both arms land on 40 units. Unit counts see nothing; the cluster
     counts (what was actually randomized) flag."""
     rows = _sized_cluster_rows({"control": [2] * 20, "treatment": [5] * 8})
-    result = _analysis(tmp_path, rows=rows).srm(inference="fixed", alpha=0.05)
+    result = _analysis(tmp_path, rows=rows).srm(
+        expected={"control": 0.5, "treatment": 0.5}, inference="fixed", alpha=0.05
+    )
     assert isinstance(result, SRMResult)
     assert result.observed == {"control": 20, "treatment": 8}
     assert result.is_srm is True
     assert result.unit_counts == {"control": 40, "treatment": 40}
-    assert sample_ratio_mismatch(result.unit_counts, inference="fixed").is_srm is False
+    assert (
+        sample_ratio_mismatch(
+            result.unit_counts,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        ).is_srm
+        is False
+    )
 
 
 def test_clustered_srm_flags_a_missing_treatment_arm_in_a_cumulative_prefix(tmp_path):

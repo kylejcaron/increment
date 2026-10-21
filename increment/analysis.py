@@ -98,6 +98,10 @@ from increment.errors import (
     refusals,
 )
 from increment.errors import refuse as _refuse
+from increment.estimation.assignment_integrity import (
+    ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
+    ALLOCATION_SCHEME_MISSING_REFUSAL,
+)
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
 from increment.plan import (
@@ -257,26 +261,8 @@ def fit_predeclared_adjustment(
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "integrity.allocation_scheme_missing": RefusalSpec(
-            "integrity.allocation_scheme_missing",
-            CapabilityError,
-            template=(
-                "SRM requires a declared target allocation for population "
-                "{population!r}. Declare Randomized(control_group=..., "
-                "allocation={{...}}, allocation_scheme=...) and retry."
-            ),
-            keys=frozenset({"population"}),
-        ),
-        "integrity.allocation_missing_or_nonconstant": RefusalSpec(
-            "integrity.allocation_missing_or_nonconstant",
-            CapabilityError,
-            template=(
-                "SRM requires a declared target allocation for population "
-                "{population!r}. Declare Randomized(control_group=..., "
-                "allocation={{...}}, allocation_scheme=...) and retry."
-            ),
-            keys=frozenset({"population"}),
-        ),
+        "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
+        "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
         "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
         "facade.analysis.unknown_experiment": RefusalSpec(
             "facade.analysis.unknown_experiment",
