@@ -552,7 +552,7 @@ def _render_group_label(group, *, metadata_known: bool, show_source: bool) -> st
 
 
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
-    """Render concise integrity/completeness qualifications before effects."""
+    """Render metric evidence first, followed by relevant qualifications."""
     if not interpretation.groups:
         return "Scope retained; no source-qualified cells recorded."
     lines: list[str] = []
@@ -579,8 +579,22 @@ def _render_group_scope(group, visible_rows) -> list[str]:
         lines.append(
             "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
         )
-    elif group.integrity_status == "not_checked_missing_declaration":
-        lines.append("SRM not checked; declare allocation on Randomized to enable.")
+    elif (
+        group.integrity_status == "not_checked_missing_declaration"
+        and group.integrity_code == "integrity.allocation_missing_or_nonconstant"
+    ):
+        lines.append(
+            "SRM not checked; declare allocation={...} and "
+            'allocation_scheme="independent" on Randomized or Encouragement.'
+        )
+    elif (
+        group.integrity_status == "not_checked_missing_declaration"
+        and group.integrity_code == "integrity.allocation_scheme_missing"
+    ):
+        lines.append(
+            'SRM not checked; declare allocation_scheme="independent" on '
+            "Randomized or Encouragement; it must describe how units were actually assigned."
+        )
     elif group.integrity_status == "not_checked_missing_counts":
         lines.append("SRM not checked; assignment counts are not recorded.")
     elif group.integrity_status == "unsupported_assignment":

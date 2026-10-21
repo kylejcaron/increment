@@ -64,12 +64,13 @@ print(results)
 
 ```text
 assigned — treatment vs control
-Multiplicity (primary): declared_plan; family primary.
 purchase (primary, relative lift): 0.646342, set [-0.318461, 3.28175] at 0.95 confidence.
 purchase interpretation: does not reject; inconclusive, not evidence of no effect.
 purchase sequential ratio confidence set interval: [0.681539, 4.28175].
 purchase test alternative: two-sided; null (relative lift): 0.
 purchase result identity: method unadjusted; method role decision; estimand itt.
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Multiplicity (primary): declared_plan; family primary.
 ```
 
 The displayed point is a relative lift; the sequential confidence set is shown

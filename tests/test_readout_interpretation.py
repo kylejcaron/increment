@@ -125,6 +125,7 @@ def _run_mean(
     frame,
     *,
     allocation=True,
+    allocation_scheme=True,
     guardrail=False,
     cluster=None,
     control="control",
@@ -136,7 +137,7 @@ def _run_mean(
     design = Randomized(
         control_group=control,
         allocation={control: 0.5, "treatment": 0.5} if allocation else None,
-        allocation_scheme="independent" if allocation else None,
+        allocation_scheme="independent" if allocation_scheme else None,
     )
     metrics = [MetricSpec(name="value", type="mean")]
     plan = AnalysisPlan(primary="value", guardrails=["guard"] if guardrail else [])
@@ -175,9 +176,45 @@ def test_not_rejected_integrity_is_described_as_no_detected_mismatch_not_proof()
 
 def test_missing_allocation_declaration_is_not_success():
     interpretation = _interpret(_run_mean(_mean_frame(), allocation=False))
-    assert {group.integrity_status for group in interpretation.groups} == {
-        "not_checked_missing_declaration"
-    }
+    group = interpretation.groups[0]
+    assert group.integrity_status == "not_checked_missing_declaration"
+    assert group.integrity_code == "integrity.allocation_missing_or_nonconstant"
+    text = render_readout_text(interpretation)
+    assert "allocation=" in text and "allocation_scheme=" in text
+    assert "Randomized" in text and "Encouragement" in text
+
+
+def test_missing_allocation_scheme_names_only_the_missing_declaration():
+    interpretation = _interpret(_run_mean(_mean_frame(), allocation_scheme=False))
+    group = interpretation.groups[0]
+    assert group.integrity_code == "integrity.allocation_scheme_missing"
+    text = render_readout_text(interpretation)
+    assert "allocation_scheme=" in text
+    assert "allocation=" not in text
+    assert "actually assigned" in text
+
+
+def test_encouragement_missing_allocation_names_its_declaration():
+    from increment.semantics.design import Encouragement, UptakeSpec
+
+    frame = _mean_frame()
+    frame["takeup"] = 0
+    results = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="takeup"),
+            allocation_scheme="independent",
+        ),
+        metrics=[MetricSpec(name="value", type="mean")],
+    ).run(estimands=("itt",))
+    interpretation = _interpret(results)
+    assert interpretation.groups[0].integrity_code == "integrity.allocation_missing_or_nonconstant"
+    text = render_readout_text(interpretation)
+    assert "allocation=" in text and "allocation_scheme=" in text
+    assert "Encouragement" in text
 
 
 def test_advisory_context_is_immutable_after_construction_and_restore():
@@ -221,7 +258,8 @@ def test_roster_completeness_is_distinct_from_view_partiality():
     assert columns["decision_scope_complete"] is False
     assert columns["roster_complete"] is False
     text = render_readout_text(interpretation)
-    assert "observed_union" in text and text.count("incomplete") >= 2
+    assert "Population roster completeness: incomplete." in text
+    assert text.count("incomplete") >= 2
 
 
 def test_required_guardrail_failure_remains_visible_when_filtered_out():

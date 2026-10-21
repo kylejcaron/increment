@@ -35,11 +35,12 @@ in the collection `repr`. Failure rows keep the registered failure explanation
 in a `Failure` column and their full structured context on the result object.
 
 Scoped result collections also carry qualifications in their default
-`repr`: integrity and scope completeness precede availability, multiplicity,
-advisories, row qualifications, and effects. A failed integrity check is not
-hidden by an otherwise favorable estimate, and `not_rejected` means no
-detected mismatch, not proof of valid randomization. The collection display
-includes retained scope even when filtering leaves no visible rows.
+`repr`: metric results lead, followed by relevant integrity and scope
+qualifications, availability, multiplicity, advisories, and row qualifications.
+A failed integrity check remains visible beside the results, and
+`not_rejected` means no detected mismatch, not proof of valid randomization.
+The collection display includes retained scope even when filtering leaves no
+visible rows.
 
 Interpretation separates the tested-null outcome from effect direction.
 An interval containing the tested null is inconclusive, not evidence of no
