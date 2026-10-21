@@ -36,6 +36,8 @@ htmlcov/
 *.cover
 .hypothesis/
 /.test-evidence/
+/mutation-results/
+.testmondata*
 /.test_durations
 
 # Documentation and notebook outputs

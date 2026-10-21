@@ -17,9 +17,9 @@ def test_count_above_baseline_fails_with_pr_line(tmp_path: Path) -> None:
     baseline.write_text("unit 10\n")
     status, output = check_counts("unit", baseline, 13)
     assert status == 1
-    assert "unit: 13 items (baseline 10; +3)" in output
+    assert "Tier: unit\nObserved: 13 items\nBaseline: 10 items\nDelta: +3 items" in output
     assert "tests: +3 items — <reason>" in output
-    assert "parameter grids over 12" in output
+    assert "Literal or computed parameter grids over 12" not in output
 
 
 def test_count_at_or_below_baseline_passes_and_prints_lower_count(tmp_path: Path) -> None:
@@ -48,8 +48,18 @@ def test_count_increase_still_reports_actual_over_cap_fanout(tmp_path: Path) -> 
     status, output = check_counts("unit", baseline, 13, nodeids, tests_root)
 
     assert status == 1
-    assert "tests: +3 items — <reason>" in output
+    assert (
+        "Collected parameter fan-out findings (informational; they do not fail this check):"
+        in output
+    )
     assert "tests/test_dynamic.py::test_computed: 13 collected items" in output
+    assert (
+        "Literal or computed parameter grids over 12 collected items require a reasoned grid marker."
+        in output
+    )
+    failure = output[output.index("Count check failed:") :]
+    assert "PR description" in failure
+    assert "`tests: +3 items — <reason>`" in failure
 
 
 def test_actual_class_method_nodeid_honors_reasoned_grid_marker(tmp_path: Path) -> None:

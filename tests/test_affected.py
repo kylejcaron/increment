@@ -132,6 +132,7 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
             "not slow and not parameter_recovery and not numerical_certification",
             "--tach-base",
             base,
+            "--ignore=tests/test_explicit.py",
             "tests",
         ],
         [
@@ -425,3 +426,32 @@ def test_python_module_entrypoint_runs_main_for_bad_base(tmp_path: Path) -> None
 
     assert result.returncode == 2
     assert result.stderr == "affected: base is not a resolvable commit: nope\n"
+
+
+def test_changed_lazy_export_dependency_selects_root_importing_test(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/__init__.py": (
+                "import importlib\n"
+                "_LAZY_IMPORTS = {'PublicThing': ('increment.facade', 'PublicThing')}\n"
+                "def __getattr__(name):\n"
+                "    module, attr = _LAZY_IMPORTS[name]\n"
+                "    return getattr(importlib.import_module(module), attr)\n"
+            ),
+            "increment/facade.py": "from increment.details import PublicThing\n",
+            "increment/details.py": "class PublicThing: pass\n",
+            "tests/test_public_api.py": (
+                "from increment import PublicThing\ndef test_public_thing(): assert PublicThing\n"
+            ),
+        },
+    )
+
+    selection = _change(
+        root,
+        base,
+        "increment/details.py",
+        "class PublicThing:\n    VALUE = 1\n",
+    )
+
+    assert selection.test_files == ("tests/test_public_api.py",)

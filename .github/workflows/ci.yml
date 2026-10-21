@@ -47,6 +47,9 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Check collected item counts
+        if: matrix.group == 1 && matrix.python-version == '3.12'
+        run: make check-items
       - id: fast-tests
         run: |
           coverage_args=""
@@ -270,12 +273,31 @@ jobs:
       - run: uv build --wheel --out-dir dist
       - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
 
+  test-weakening:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Check for weakened tests
+        env:
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'test-reduction-approved') }}
+        run: |
+          args=(--ci --base "origin/${{ github.base_ref }}")
+          if [ "$APPROVED" = "true" ]; then args+=(--approved); fi
+          uv run --no-sync python -m scripts.check_test_weakening "${args[@]}"
   # Single check to require in the main-review ruleset. A matrix job reports
   # one check per entry ("test (3.12)", ...), so requiring them individually
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, slow, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows]
+    needs: [lint, test, slow, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening]
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -322,6 +344,8 @@ jobs:
           WHEEL_SMOKE_MACOS_RESULT: ${{ needs.wheel-smoke-macos.result }}
           WHEEL_SMOKE_REQUIRED: ${{ needs.changes.outputs.wheel_smoke_required }}
           WHEEL_SMOKE_WINDOWS_RESULT: ${{ needs.wheel-smoke-windows.result }}
+          TEST_WEAKENING_REQUIRED: ${{ github.event_name == 'pull_request' }}
+          TEST_WEAKENING_RESULT: ${{ needs.test-weakening.result }}
         run: |
           set -euo pipefail
           results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.changes.result }}"
@@ -344,3 +368,4 @@ jobs:
           check_conditional_job "$STRICT_DOCS_REQUIRED" "$STRICT_DOCS_RESULT" strict-docs
           check_conditional_job "$WHEEL_SMOKE_REQUIRED" "$WHEEL_SMOKE_MACOS_RESULT" wheel-smoke-macos
           check_conditional_job "$WHEEL_SMOKE_REQUIRED" "$WHEEL_SMOKE_WINDOWS_RESULT" wheel-smoke-windows
+          check_conditional_job "$TEST_WEAKENING_REQUIRED" "$TEST_WEAKENING_RESULT" test-weakening

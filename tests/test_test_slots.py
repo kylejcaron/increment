@@ -138,6 +138,46 @@ def test_nested_run_does_not_wait(tmp_path: Path) -> None:
     assert marker.read_text() == "nested"
 
 
+def test_slot_held_command_runs_at_lower_priority(tmp_path: Path) -> None:
+    """A locally slot-held command adds ten nice points up to the platform ceiling."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.test_slots",
+            "--",
+            sys.executable,
+            "-c",
+            "import os; print(os.nice(0)); print(os.nice(100))",
+        ],
+        cwd=Path(__file__).parents[1],
+        env=_environment(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    child_nice, max_nice = map(int, result.stdout.splitlines())
+    assert child_nice == min(os.nice(0) + 10, max_nice)
+
+
+def test_hold_slot_lowers_priority_when_called_directly(tmp_path: Path) -> None:
+    """A direct hold_slot caller lowers priority after acquiring a local slot."""
+    script = (
+        "import os; from scripts.test_slots import hold_slot; "
+        "hold_slot(); print(os.nice(0)); print(os.nice(100))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[1],
+        env=_environment(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    child_nice, max_nice = map(int, result.stdout.splitlines())
+    assert child_nice == min(os.nice(0) + 10, max_nice)
+
+
 def test_killed_holder_frees_its_slot(tmp_path: Path) -> None:
     """Killing a slot owner lets a waiting process acquire the released slot."""
     holder = _wrapper(

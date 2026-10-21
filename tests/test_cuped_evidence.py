@@ -7,6 +7,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from increment import Analysis, Method, MetricSpec
 from increment._canonical import canonical_json_bytes
@@ -415,26 +417,109 @@ def _wrong_sequence_length(value):
     return value[:-1] if value else [None]
 
 
-@pytest.mark.parametrize(
-    ("path", "malformation"),
-    [
-        (path, malformation)
-        for path in _FITTED_SEQUENCE_PATHS
-        for malformation in ("null", "wrong_length", "wrong_type")
-    ]
-    + [
-        (("fit_state", "identity", 6), "null"),
-        (("fit_state", "identity", 6), "wrong_type"),
-        (("fit_state", "identity", 6), "wrong_length"),
-        (("fit_state", "refusal_contexts"), "nested_wrong_length"),
-        (("inference_summary", "scaled_projected_score_squares", 0), "wrong_length"),
-        (("inference_summary", "projection_specs", 0, "identity"), "wrong_length"),
-        (("inference_summary", "projection_specs", 0, "jacobian"), "wrong_length"),
-    ],
+_RETAINED_FITTED_SEQUENCE_CASES = (
+    pytest.param(
+        ("fit_state", "identity"),
+        "null",
+        id="path0-null",
+    ),
+    pytest.param(
+        ("fit_state", "counts"),
+        "wrong_length",
+        id="path13-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "offsets"),
+        "wrong_length",
+        id="path16-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "layout", "encoded_columns"),
+        "wrong_length",
+        id="path58-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "triangular_factor"),
+        "wrong_length",
+        id="path28-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "slopes"),
+        "wrong_length",
+        id="path34-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "adjusted_means"),
+        "wrong_length",
+        id="path37-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "layout", "names"),
+        "wrong_length",
+        id="path46-wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "adjusted_component_covariance"),
+        "wrong_length",
+        id="path76-wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "s2"),
+        "wrong_length",
+        id="path82-wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "g"),
+        "wrong_length",
+        id="path91-wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "projection_specs"),
+        "wrong_length",
+        id="path103-wrong_length",
+    ),
 )
-def test_malformed_fitted_nested_shapes_refuse_with_coded_error(
-    fitted_evidence_payload, path, malformation
-):
+
+_NESTED_FITTED_SEQUENCE_CASES = (
+    pytest.param(
+        ("fit_state", "identity", 6),
+        "null",
+        id="path108-null",
+    ),
+    pytest.param(
+        ("fit_state", "identity", 6),
+        "wrong_type",
+        id="path109-wrong_type",
+    ),
+    pytest.param(
+        ("fit_state", "identity", 6),
+        "wrong_length",
+        id="path110-wrong_length",
+    ),
+    pytest.param(
+        ("fit_state", "refusal_contexts"),
+        "nested_wrong_length",
+        id="path111-nested_wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "scaled_projected_score_squares", 0),
+        "wrong_length",
+        id="path112-wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "projection_specs", 0, "identity"),
+        "wrong_length",
+        id="path113-wrong_length",
+    ),
+    pytest.param(
+        ("inference_summary", "projection_specs", 0, "jacobian"),
+        "wrong_length",
+        id="path114-wrong_length",
+    ),
+)
+
+
+def _assert_malformed_fitted_payload_refuses(fitted_evidence_payload, path, malformation):
     from increment._cuped_evidence import parse_cuped_evidence
 
     payload = json.loads(json.dumps(fitted_evidence_payload))
@@ -451,12 +536,32 @@ def test_malformed_fitted_nested_shapes_refuse_with_coded_error(
     elif malformation == "nested_wrong_length":
         replacement = [[]]
     else:
-        assert isinstance(value, list)
-        replacement = _wrong_sequence_length(value)
+        raise AssertionError(f"unsupported malformed shape: {malformation}")
     _replace_at_path(payload["evidence"], path, replacement)
     with pytest.raises(CodedError) as raised:
         parse_cuped_evidence(canonical_json_bytes(payload).decode())
     assert raised.value.code == "moments.cuped_evidence.invalid"
+
+
+@pytest.mark.parametrize(
+    ("path", "malformation"),
+    _RETAINED_FITTED_SEQUENCE_CASES + _NESTED_FITTED_SEQUENCE_CASES,
+)
+def test_malformed_fitted_nested_shapes_refuse_with_coded_error(
+    fitted_evidence_payload, path, malformation
+):
+    _assert_malformed_fitted_payload_refuses(fitted_evidence_payload, path, malformation)
+
+
+@example(("inference_summary", "projection_identity"), "wrong_length")
+@given(
+    path=st.sampled_from(_FITTED_SEQUENCE_PATHS),
+    malformation=st.sampled_from(("null", "wrong_length", "wrong_type")),
+)
+def test_arbitrary_malformed_fitted_sequence_shapes_refuse_with_coded_error(
+    fitted_evidence_payload, path, malformation
+):
+    _assert_malformed_fitted_payload_refuses(fitted_evidence_payload, path, malformation)
 
 
 @pytest.mark.parametrize("ratio", [False, True])

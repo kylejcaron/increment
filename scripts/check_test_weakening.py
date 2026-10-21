@@ -841,6 +841,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     parser.add_argument("--repo", default=".")
+    parser.add_argument("--ci", action="store_true")
+    parser.add_argument("--approved", action="store_true")
     try:
         args = parser.parse_args(argv)
         _git(args.repo, "rev-parse", "--verify", f"{args.base}^{{commit}}")
@@ -849,6 +851,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         unapproved: list[tuple[str, Finding]] = []
         for commit in commits:
             findings = _parent_findings(args.repo, commit, cache)
+            if args.ci:
+                unapproved.extend((commit, finding) for finding in findings)
+                continue
             trailers = _git(
                 args.repo,
                 "log",
@@ -868,10 +873,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if unapproved:
         for revision, finding in unapproved:
             print(f"{revision} {finding.path}:{finding.line} {finding.kind} {finding.detail}")
-        print(
-            "removing or weakening tests needs owner approval; restore the test or record "
-            "the owner's approval as that trailer on the reducing commit"
-        )
+        if args.ci and args.approved:
+            return 0
+        if args.ci:
+            message = (
+                "removing or weakening tests needs owner approval; ask the PR owner "
+                "to apply the test-reduction-approved label"
+            )
+        else:
+            message = (
+                "removing or weakening tests needs owner approval; restore the test or "
+                "record the owner's approval as a Test-Reduction-Approved trailer on "
+                "the reducing commit"
+            )
+        print(message)
         return 1
     return 0
 

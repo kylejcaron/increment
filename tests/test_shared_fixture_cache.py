@@ -3,6 +3,7 @@ import pytest
 from tests._shared_cache import fixture_cache_key
 
 
+@pytest.mark.integration
 def test_fixture_cache_key_changes_when_fixture_source_changes(tmp_path):
     package = tmp_path / "increment"
     package.mkdir()
@@ -24,6 +25,7 @@ def test_fixture_cache_key_changes_when_fixture_source_changes(tmp_path):
     assert third != second
 
 
+@pytest.mark.integration
 def test_fixture_cache_key_changes_when_installed_distribution_version_changes(
     tmp_path, monkeypatch
 ):
