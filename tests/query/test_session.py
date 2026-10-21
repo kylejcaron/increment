@@ -62,20 +62,21 @@ def test_query_boundary_filters_only_ibis_duckdb_arrow_deprecation():
     assert analysis.returncode == 0, analysis.stderr
     assert "fetch_arrow_table" not in analysis.stderr
 
-    user_warning = subprocess.run(
+    other_deprecation = subprocess.run(
         [
             sys.executable,
             "-W",
-            "error::UserWarning",
+            "error::DeprecationWarning",
             "-c",
-            'import warnings; warnings.warn("probe", UserWarning)',
+            "import warnings, increment.query; "
+            'warnings.warn("probe is deprecated", DeprecationWarning)',
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert user_warning.returncode != 0
-    assert "UserWarning: probe" in user_warning.stderr
+    assert other_deprecation.returncode != 0
+    assert "DeprecationWarning: probe is deprecated" in other_deprecation.stderr
 
 
 def _session():
