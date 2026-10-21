@@ -66,18 +66,12 @@ validation:
 
 nav:
   - Home: index.md
-  - API Reference: api.md
-  - Statistical Limitations: limitations.md
-  - Capabilities by Entry Point: reference/capabilities-by-entry-point.md
-  - Validation: validation.md
   - Guides:
-      - Which Method Should I Use?: guides/choose-a-method.md
-      - Method Compatibility Reference: guides/compatibility.md
       - Quickstart: guides/quickstart.md
       - Reading Results: guides/reading-results.md
+      - Which Method Should I Use?: guides/choose-a-method.md
       - Refusal Navigation: guides/refusals.md
       - Data Model & YAML Definitions: guides/data-model.md
-      - Extending Estimators and Evidence: development/adding-an-estimator.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
       - Switchback Contrasts: guides/switchback.md
@@ -93,6 +87,14 @@ nav:
       - Quantile Metrics: guides/quantile-metrics.md
       - Heterogeneity and Rollout: guides/heterogeneity-and-rollout.md
       - SRM Diagnostics: guides/srm-diagnostics.md
+  - Trust:
+      - Statistical Limitations: limitations.md
+      - Validation: validation.md
+      - Capabilities by Entry Point: reference/capabilities-by-entry-point.md
+      - Method Compatibility Reference: guides/compatibility.md
+  - Development:
+      - Extending Estimators and Evidence: development/adding-an-estimator.md
+  - API Reference: api.md
   - Examples:
       - DataFrame Analysis Tutorial: examples/analysis_from_a_dataframe.md
       - Warehouse Analysis: examples/analysis_from_a_warehouse.md
