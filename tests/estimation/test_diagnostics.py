@@ -256,19 +256,15 @@ class TestSampleRatioMismatch:
         assert result.log_e_value >= -math.log(alpha)
         assert result.is_srm is True
 
-    def test_fixed_inference_without_expected_has_no_e_value(self):
-        """Observed-arm equal shares are a Pearson fallback, not an e-process null."""
-        result = sample_ratio_mismatch(
-            {"control": 480, "treatment": 520},
-            alpha=0.05,
-            inference="fixed",
-        )
+    def test_fixed_inference_requires_declared_expected_allocation(self):
+        with pytest.raises(InvalidRequestError) as exc:
+            sample_ratio_mismatch(
+                {"control": 480, "treatment": 520},
+                alpha=0.05,
+                inference="fixed",
+            )
 
-        assert result.inference == "fixed"
-        assert result.chi2_stat == pytest.approx(1.6)
-        assert result.fixed_p_value == pytest.approx(0.2059032107)
-        assert result.log_e_value is None
-        assert result.is_srm is (result.fixed_p_value < result.alpha)
+        assert exc.value.code == "estimation.diagnostics.predeclared_allocation_support"
 
     def test_unknown_inference_is_refused(self):
         with pytest.raises(InvalidRequestError) as exc_info:

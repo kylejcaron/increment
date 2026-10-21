@@ -8,6 +8,7 @@ from increment._readout_request import _raise as _raise_readout_request
 from increment._window import resolve_window_days
 from increment.compatibility import Unsupported, refuse_unsupported
 from increment.errors import (
+    CapabilityError,
     IncrementWarning,
     InvalidRequestError,
     RefusalSpec,
@@ -100,6 +101,28 @@ _REFUSALS = refusals(
             template="metric(s) {combined} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), but a per-metric shifted null is not built for the as-of encouragement view -- run() applies the margin to the whole-window ITT row, or declare a one-sided plan alternative for a test against null_lift=0.0",
         ),
         "readout.srm_source_declared": "srm() requires a source with a declared design -- this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
+        "integrity.allocation_missing_or_nonconstant": RefusalSpec(
+            "integrity.allocation_missing_or_nonconstant",
+            CapabilityError,
+            template=(
+                "SRM requires a declared target allocation; observed arms are "
+                "{observed_arms!r} for population {population!r}. Declare "
+                "Randomized(control_group=..., allocation={{...}}, "
+                "allocation_scheme=...) and retry."
+            ),
+            keys=frozenset({"observed_arms", "population"}),
+        ),
+        "integrity.allocation_scheme_missing": RefusalSpec(
+            "integrity.allocation_scheme_missing",
+            CapabilityError,
+            template=(
+                "SRM requires a declared target allocation; observed arms are "
+                "{observed_arms!r} for population {population!r}. Declare "
+                "Randomized(control_group=..., allocation={{...}}, "
+                "allocation_scheme=...) and retry."
+            ),
+            keys=frozenset({"observed_arms", "population"}),
+        ),
         "readout.roster.undeclared_observed_arms": RefusalSpec(
             "readout.roster.undeclared_observed_arms",
             InvalidRequestError,

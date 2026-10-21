@@ -73,16 +73,19 @@ Pearson tests. Switchbacks have their own assignment law; observational
 comparisons have no randomized allocation. Report these as unsupported or not
 applicable, not "no SRM."
 
-`sample_ratio_mismatch(inference="fixed")` assumes equal shares when
-`expected` is omitted. `Analysis.srm(inference="fixed")` uses the design's
-declared `allocation` when present, falling back to equal shares only when
-neither the design nor the call supplies an allocation. This example's 4:1
-allocation therefore means 80/20, not 50/50.
+`sample_ratio_mismatch()` requires an explicit `expected` allocation. For
+`Analysis.srm()`, pass `expected` or declare `allocation` on the design.
+Without either declaration, both fixed and always-valid inference refuse
+before producing an SRM result; observed arm proportions never define the
+null. For this example's declared 4:1 allocation the target is 80/20, not
+50/50.
+
 Automatic SRM checking requires `allocation_scheme="independent"`, declared
 constant `allocation` weights, and cumulative assigned counts at the
-randomization grain. Otherwise `health_check()` records an unavailable status
-(for example, missing allocation is `not_checked_missing_declaration`). You can
-also call `srm(inference="fixed")` for a single predeclared look.
+randomization grain. Otherwise `health_check()` and `print(results)` record an
+unavailable status (for example, missing allocation is
+`not_checked_missing_declaration`). To request one predeclared fixed look,
+declare the target allocation and call `srm(inference="fixed")`.
 
 ??? info "How the always-valid SRM guarantee differs"
     That e-process is a distinct construction from the `AlwaysValid` guarantee

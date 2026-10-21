@@ -139,30 +139,31 @@ class SitewideReadouts:
         allocation_balance = None
         population_counts = evidence.population_counts or {}
         if population == "triggered":
-            from increment.estimation.diagnostics import (
-                complete_srm_support,
-                sample_ratio_mismatch,
-            )
-
-            grain, triggered_counts, unit_counts = cast(
-                "TriggeredCountsOperation", self._src
-            ).triggered_counts()
             expected = getattr(self._src.context.design, "allocation", None)
-            # An assigned arm nobody in which triggered is a zero, not a missing arm.
-            support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
-            srm = sample_ratio_mismatch(
-                complete_srm_support(support, expected=expected),
-                expected=expected,
-                inference="fixed",
-                alpha=0.001,
-                grain=grain,
-                unit_counts=unit_counts,
-            )
-            allocation_balance = AllocationBalance(
-                statistic=srm.chi2_stat,
-                p_value=srm.fixed_p_value,
-                status="failed" if srm.is_srm else "passed",
-            )
+            if expected is not None:
+                from increment.estimation.diagnostics import (
+                    complete_srm_support,
+                    sample_ratio_mismatch,
+                )
+
+                grain, triggered_counts, unit_counts = cast(
+                    "TriggeredCountsOperation", self._src
+                ).triggered_counts()
+                # An assigned arm nobody in which triggered is a zero, not a missing arm.
+                support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
+                srm = sample_ratio_mismatch(
+                    complete_srm_support(support, expected=expected),
+                    expected=expected,
+                    inference="fixed",
+                    alpha=0.001,
+                    grain=grain,
+                    unit_counts=unit_counts,
+                )
+                allocation_balance = AllocationBalance(
+                    statistic=srm.chi2_stat,
+                    p_value=srm.fixed_p_value,
+                    status="failed" if srm.is_srm else "passed",
+                )
         assumptions = (
             (
                 "membership_independent_of_treatment",

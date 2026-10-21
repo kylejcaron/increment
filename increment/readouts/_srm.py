@@ -49,11 +49,9 @@ def srm(
     along on `SRMResult.unit_counts` as context: unit imbalance under a clustered
     design is cluster-SIZE imbalance, which the randomizer never controlled.
 
-    For ``inference="always_valid"``, pass ``expected`` or declare
-    ``design.allocation``: its support is static and known before the
-    cumulative prefix is observed. Fixed mode with neither expected nor
-    design allocation uses equal observed-arm shares and returns
-    ``log_e_value=None``; the fixed Pearson p-value controls ``is_srm``.
+    A call must supply ``expected`` or use a design with declared
+    ``allocation``. Neither inference mode assumes equal shares or infers its
+    null from observed counts.
 
     ``alpha`` (default 0.001) is a diagnostic significance threshold for
     this randomization-integrity check, not part of the declared
@@ -72,6 +70,23 @@ def srm(
                 "assignment was not randomized; a sample-ratio test presumes "
                 "a target allocation to mismatch"
             ),
+        )
+    if expected is None and getattr(design, "allocation", None) is None:
+        # Frame sources already retain their assignment rows in memory.
+        # Other sources must refuse before issuing a counts query.
+        observed = src.unit_counts() if hasattr(src, "_frame") else {}
+        _raise(
+            (
+                "integrity.allocation_scheme_missing"
+                if getattr(design, "allocation_scheme", None) is None
+                else "integrity.allocation_missing_or_nonconstant"
+            ),
+            observed_arms=tuple(
+                sorted(
+                    arm for arm in observed if arm not in (UNASSIGNED_LABEL, MIXED_ASSIGNMENT_LABEL)
+                )
+            ),
+            population="assigned",
         )
     if inference == "always_valid":
         scheme = getattr(design, "allocation_scheme", None)

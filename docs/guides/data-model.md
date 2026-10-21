@@ -282,11 +282,9 @@ qualifying row decides both its enrollment time and its arm.
 ??? info "SRM result fields and inference"
     `SRMResult.p_value` has been removed. Pearson fixed-look evidence is
     `SRMResult.fixed_p_value`, and `is_srm` uses the evidence selected by
-    `inference`. Anytime-valid adapters require `expected` or
-    `design.allocation`; declared arms absent from a cumulative prefix keep
-    zero counts. Fixed inference without expected/design allocation infers
-    equal shares from observed arms and returns `log_e_value=None`, with
-    Pearson as the selected evidence. Anytime-valid inference requires
+    Both modes require `expected` or `design.allocation`; declared arms absent
+    from a cumulative prefix keep zero counts. No SRM path infers its null
+    from observed arms. Anytime-valid inference requires
     cumulative prefixes whose assignment units have the same known conditional
     arm probabilities at every assignment; independent categorical
     randomization suffices. Static marginal shares alone do not: blocked,
