@@ -614,16 +614,29 @@ class TestPowerCurveCollection:
             assert list(frame.columns) == EXPECTED_COLUMNS
             assert len(frame) == 0
 
-    def test_default_backend_works_without_pandas(self, monkeypatch):
+    @pytest.mark.integration
+    def test_default_backend_works_without_pandas(self):
+        import subprocess
         import sys
 
-        import polars as pl
-
-        monkeypatch.setitem(sys.modules, "pandas", None)
-
-        frame = PowerCurve([_point()]).to_frame()
-
-        assert isinstance(frame, pl.DataFrame)
+        code = """
+import sys
+import polars as pl
+from increment.results import PowerCurve
+from tests.power.test_curve import _point
+sys.modules["pandas"] = None
+result = PowerCurve([_point()]).to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "polars.dataframe.frame.DataFrame"
 
 
 class TestUnavailableCompanionMde:

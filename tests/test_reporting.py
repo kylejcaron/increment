@@ -1293,13 +1293,32 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
     assert sorted(scoped["value"].tolist()) != baseline
 
 
-def test_report_to_frame_default_works_without_pandas(report, monkeypatch):
+@pytest.mark.integration
+def test_report_to_frame_default_works_without_pandas():
+    import subprocess
     import sys
 
-    import polars as pl
-
-    monkeypatch.setitem(sys.modules, "pandas", None)
-
-    frame = report.metric("purchase_rate", **KW).to_frame()
-
-    assert isinstance(frame, pl.DataFrame)
+    code = """
+import sys
+import ibis
+import polars as pl
+from increment import Report
+from increment.semantics.models import Definitions
+from tests.test_reporting import DEFS, KW, ORDER_ROWS, ROWS
+con = ibis.duckdb.connect()
+con.create_table("raw_events", ibis.memtable(ROWS))
+con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
+report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+sys.modules["pandas"] = None
+result = report.metric("purchase_rate", **KW).to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "polars.dataframe.frame.DataFrame"

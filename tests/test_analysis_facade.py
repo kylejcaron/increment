@@ -2662,83 +2662,78 @@ def test_moments_checkpoint_reexport_refused(tmp_path):
     assert not target.exists()
 
 
-def test_unit_summary_to_frame_defaults_to_input_backend_without_pandas(monkeypatch):
+def _run_without_pandas(code: str) -> str:
+    import subprocess
     import sys
 
-    import polars as pl
-
-    frame = pl.DataFrame(
-        {
-            "unit": ["c1", "c2", "t1", "t2"],
-            "arm": ["control", "control", "treatment", "treatment"],
-            "value": [1.0, 2.0, 2.0, 3.0],
-        }
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    results = Analysis.from_unit_summary(
-        frame,
-        unit="unit",
-        group="arm",
-        control="control",
-        metrics={"value": "mean"},
-    ).run()
-    monkeypatch.setitem(sys.modules, "pandas", None)
-
-    exported = results.to_frame()
-
-    assert isinstance(exported, pl.DataFrame)
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
 
 
-def test_unit_panel_daily_lift_to_frame_defaults_to_input_backend_without_pandas(monkeypatch):
-    import sys
-
-    import polars as pl
-
-    frame = pl.DataFrame(
-        {
-            "unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"],
-            "arm": [
-                "control",
-                "control",
-                "control",
-                "control",
-                "treatment",
-                "treatment",
-                "treatment",
-                "treatment",
-            ],
-            "day": ["2025-01-01", "2025-01-02"] * 4,
-            "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0],
-        }
+@pytest.mark.integration
+def test_unit_summary_to_frame_defaults_to_input_backend_without_pandas():
+    output = _run_without_pandas(
+        """
+import sys
+import polars as pl
+from increment import Analysis
+frame = pl.DataFrame({"unit": ["c1", "c2", "t1", "t2"], "arm": ["control", "control", "treatment", "treatment"], "value": [1.0, 2.0, 2.0, 3.0]})
+results = Analysis.from_unit_summary(frame, unit="unit", group="arm", control="control", metrics={"value": "mean"}).run()
+sys.modules["pandas"] = None
+result = results.to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
     )
-    results = Analysis.from_unit_panel(
-        frame,
-        unit="unit",
-        group="arm",
-        date="day",
-        control="control",
-        metrics={"value": "mean"},
-    ).run_daily_lift()
-    monkeypatch.setitem(sys.modules, "pandas", None)
-
-    assert isinstance(results.to_frame(), pl.DataFrame)
+    assert output == "polars.dataframe.frame.DataFrame"
 
 
-def test_run_with_exploratory_metric_to_frame_without_pandas(seeded_defs, seeded_con, monkeypatch):
-    import sys
-
-    import polars as pl
-
-    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
-    exploratory = analysis.available_metrics[0].name
-    monkeypatch.setitem(sys.modules, "pandas", None)
-
-    results = analysis.run(
-        exploratory_metrics=[exploratory],
-        decision_method=Method(name="unadjusted"),
+@pytest.mark.integration
+def test_unit_panel_daily_lift_to_frame_defaults_to_input_backend_without_pandas():
+    output = _run_without_pandas(
+        """
+import sys
+import polars as pl
+from increment import Analysis
+frame = pl.DataFrame({"unit": ["c1", "c1", "c2", "c2", "t1", "t1", "t2", "t2"], "arm": ["control"] * 4 + ["treatment"] * 4, "day": ["2025-01-01", "2025-01-02"] * 4, "value": [1.0, 2.0, 2.0, 3.0, 2.0, 4.0, 3.0, 5.0]})
+results = Analysis.from_unit_panel(frame, unit="unit", group="arm", date="day", control="control", metrics={"value": "mean"}).run_daily_lift()
+sys.modules["pandas"] = None
+result = results.to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
     )
+    assert output == "polars.dataframe.frame.DataFrame"
 
-    assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
-    assert isinstance(results.to_frame(), pl.DataFrame)
+
+@pytest.mark.integration
+def test_run_with_exploratory_metric_to_frame_without_pandas():
+    output = _run_without_pandas(
+        """
+import sys
+import ibis
+import polars as pl
+from examples._seed import seed_event_log
+from increment import Analysis, Method
+con = ibis.duckdb.connect()
+seed_event_log(con)
+analysis = Analysis.from_definitions("new_onboarding_v2", "examples/definitions", con)
+exploratory = analysis.available_metrics[0].name
+results = analysis.run(exploratory_metrics=[exploratory], decision_method=Method(name="unadjusted"))
+assert any(row.metric == exploratory and row.role == "exploratory" for row in results)
+sys.modules["pandas"] = None
+result = results.to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
+    )
+    assert output == "polars.dataframe.frame.DataFrame"
 
 
 def test_unit_summary_to_frame_defaults_to_pandas_input_backend():
