@@ -36,8 +36,8 @@ feature flags, or maintain a separate event store.
 - **Estimate causal effects** — use IPTW, DML, or AIPW for observational
   treatments, or analyze encouragement and switchback designs.
 - **Explore** — inspect breakouts, trends, and treatment-effect differences;
-  create readout tables and dashboards, and track metric trends over calendar
-  time.
+  create readout tables, dashboards, and sitewide-impact estimates, and track
+  metric trends over calendar time.
 
 Methods support different metrics and designs. Use the
 [method guide](https://getincrement.io/docs/guides/choose-a-method/) to choose;
