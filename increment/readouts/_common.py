@@ -105,23 +105,21 @@ _REFUSALS = refusals(
             "integrity.allocation_missing_or_nonconstant",
             CapabilityError,
             template=(
-                "SRM requires a declared target allocation; observed arms are "
-                "{observed_arms!r} for population {population!r}. Declare "
-                "Randomized(control_group=..., allocation={{...}}, "
-                "allocation_scheme=...) and retry."
+                "SRM requires a declared target allocation for population "
+                "{population!r}. Declare Randomized(control_group=..., "
+                "allocation={{...}}, allocation_scheme=...) and retry."
             ),
-            keys=frozenset({"observed_arms", "population"}),
+            keys=frozenset({"population"}),
         ),
         "integrity.allocation_scheme_missing": RefusalSpec(
             "integrity.allocation_scheme_missing",
             CapabilityError,
             template=(
-                "SRM requires a declared target allocation; observed arms are "
-                "{observed_arms!r} for population {population!r}. Declare "
-                "Randomized(control_group=..., allocation={{...}}, "
-                "allocation_scheme=...) and retry."
+                "SRM requires a declared target allocation for population "
+                "{population!r}. Declare Randomized(control_group=..., "
+                "allocation={{...}}, allocation_scheme=...) and retry."
             ),
-            keys=frozenset({"observed_arms", "population"}),
+            keys=frozenset({"population"}),
         ),
         "readout.roster.undeclared_observed_arms": RefusalSpec(
             "readout.roster.undeclared_observed_arms",

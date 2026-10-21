@@ -80,7 +80,6 @@ def srm(
                 if getattr(design, "allocation_scheme", None) is None
                 else "integrity.allocation_missing_or_nonconstant"
             ),
-            observed_arms=(),
             population="assigned",
         )
     if inference == "always_valid":

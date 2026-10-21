@@ -261,23 +261,21 @@ _REFUSALS = refusals(
             "integrity.allocation_scheme_missing",
             CapabilityError,
             template=(
-                "SRM requires a declared target allocation; observed arms are "
-                "{observed_arms!r} for population {population!r}. Declare "
-                "Randomized(control_group=..., allocation={{...}}, "
-                "allocation_scheme=...) and retry."
+                "SRM requires a declared target allocation for population "
+                "{population!r}. Declare Randomized(control_group=..., "
+                "allocation={{...}}, allocation_scheme=...) and retry."
             ),
-            keys=frozenset({"observed_arms", "population"}),
+            keys=frozenset({"population"}),
         ),
         "integrity.allocation_missing_or_nonconstant": RefusalSpec(
             "integrity.allocation_missing_or_nonconstant",
             CapabilityError,
             template=(
-                "SRM requires a declared target allocation; observed arms are "
-                "{observed_arms!r} for population {population!r}. Declare "
-                "Randomized(control_group=..., allocation={{...}}, "
-                "allocation_scheme=...) and retry."
+                "SRM requires a declared target allocation for population "
+                "{population!r}. Declare Randomized(control_group=..., "
+                "allocation={{...}}, allocation_scheme=...) and retry."
             ),
-            keys=frozenset({"observed_arms", "population"}),
+            keys=frozenset({"population"}),
         ),
         "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
         "facade.analysis.unknown_experiment": RefusalSpec(
@@ -2073,13 +2071,13 @@ class Analysis:
                     ),
                 )
                 if expected is None and getattr(self._design, "allocation", None) is None:
+                    # Match assignment_integrity: no scheme -> allocation_scheme_missing; independent with no allocation -> allocation_missing_or_nonconstant.
                     _raise(
                         (
                             "integrity.allocation_scheme_missing"
                             if getattr(self._design, "allocation_scheme", None) is None
                             else "integrity.allocation_missing_or_nonconstant"
                         ),
-                        observed_arms=(),
                         population=population,
                     )
                 from increment.estimation.diagnostics import (

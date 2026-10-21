@@ -545,7 +545,7 @@ def test_analysis_srm_requires_declared_allocation(inference):
     error = raised.value
     assert error.code == "integrity.allocation_scheme_missing"
     # Missing allocation is rejected before reading counts on every source.
-    assert error.context["observed_arms"] == ()
+    assert error.context == {"population": "assigned"}
     assert error.context["population"] == "assigned"
     assert "Randomized(control_group=" in str(error)
     assert "allocation={" in str(error)
@@ -662,7 +662,7 @@ def test_analysis_native_srm_requires_declared_allocation(seeded_defs, monkeypat
             with pytest.raises(CapabilityError) as raised:
                 analysis.srm(inference=inference)
             assert raised.value.code == "integrity.allocation_scheme_missing"
-            assert raised.value.context["observed_arms"] == ()
+            assert raised.value.context == {"population": "assigned"}
     assert queries == []
 
 

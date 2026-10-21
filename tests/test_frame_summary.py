@@ -1314,7 +1314,7 @@ def test_srm_missing_allocation_refuses_before_reading_source_counts() -> None:
     with pytest.raises(CapabilityError) as exc:
         readouts.srm(cast("Any", NeverReadSource()))
     assert exc.value.code == "integrity.allocation_missing_or_nonconstant"
-    assert exc.value.context == {"observed_arms": (), "population": "assigned"}
+    assert exc.value.context == {"population": "assigned"}
 
 
 def test_srm_without_assignment_scheme_is_not_applicable() -> None:
