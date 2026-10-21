@@ -15,6 +15,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 _SHARDS = 8
 
 
+# The first shard on each worker also pays for capturing the public readouts.
+@pytest.mark.timeout(900)
 @pytest.mark.parametrize("shard", range(_SHARDS))
 @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
 def test_registered_warehouse_statements_compile_offline(dialect, shard):
