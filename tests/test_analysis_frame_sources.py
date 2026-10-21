@@ -2072,3 +2072,64 @@ def test_frame_panel_day_axis_refuses_an_undeclared_metric_object():
     for method in (analysis.run_daily, analysis.run_asof):
         with pytest.raises(ValueError):
             method(metrics=[undeclared])
+
+
+@pytest.mark.parametrize("backend", ["pandas", "pyarrow"])
+def test_panel_daily_lift_accepts_midnight_iso_datetime_day_labels(backend):
+    """Timestamp-shaped strings represent a calendar day only at midnight."""
+    import pandas as pd
+    import pyarrow as pa
+
+    from increment.semantics.models import AnalysisPlan
+
+    rows = [
+        {
+            "unit": f"{arm}-{unit}",
+            "arm": arm,
+            "day": "2025-01-01T00:00:00",
+            "revenue": float(unit + (10 if arm == "treatment" else 1)),
+        }
+        for arm in ("control", "treatment")
+        for unit in range(8)
+    ]
+    frame = pd.DataFrame(rows) if backend == "pandas" else pa.Table.from_pylist(rows)
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        date="day",
+        metrics=[MetricSpec(name="revenue")],
+        plan=AnalysisPlan(primary="revenue"),
+    )
+
+    result = analysis.run_daily_lift()
+    assert result[0].ds == date(2025, 1, 1)
+    from increment.breakout.estimates import DailyLiftEstimate
+
+    serialized = result[0].model_dump_json()
+    restored = DailyLiftEstimate.model_validate_json(serialized)
+    assert restored.ds == result[0].ds
+
+
+@pytest.mark.parametrize("backend", ["pandas", "pyarrow"])
+def test_panel_refuses_non_midnight_datetime_string_day_labels(backend):
+    import pandas as pd
+    import pyarrow as pa
+
+    rows = [
+        {"unit": f"{arm}-{unit}", "arm": arm, "day": "2025-01-01T12:00:00", "revenue": 1.0}
+        for arm in ("control", "treatment")
+        for unit in range(2)
+    ]
+    frame = pd.DataFrame(rows) if backend == "pandas" else pa.Table.from_pylist(rows)
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_unit_panel(
+            frame,
+            unit="unit",
+            group="arm",
+            control="control",
+            date="day",
+            metrics=[MetricSpec(name="revenue")],
+        )
+    assert raised.value.code == "source.panel.day_grain_columns"

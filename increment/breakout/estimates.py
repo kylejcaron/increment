@@ -4339,13 +4339,23 @@ def _coerce_date(v: Any) -> date:
     it: pyarrow decodes to ``date`` already, pandas commonly carries a
     ``Timestamp``/``datetime`` (always midnight-truncated). ``datetime``
     is checked before ``date`` since it is a subclass of ``date``.
+    String timestamps are day labels only when naive and at midnight.
     """
     if isinstance(v, datetime):
         return v.date()
     if isinstance(v, date):
         return v
     if isinstance(v, str):
-        return date.fromisoformat(v)
+        try:
+            return date.fromisoformat(v)
+        except ValueError:
+            try:
+                timestamp = datetime.fromisoformat(v)
+            except ValueError:
+                _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
+            if timestamp.tzinfo is None and timestamp.time().isoformat() == "00:00:00":
+                return timestamp.date()
+            _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
     _refuse("breakout.coerce_type_datetime", v=v, type_name=type(v).__name__)
 
 
