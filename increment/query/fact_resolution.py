@@ -11,14 +11,15 @@ identically.
 from __future__ import annotations
 
 from collections.abc import Callable
-
-import ibis
-from ibis import Table
-from ibis.backends.sql import SQLBackend
+from typing import TYPE_CHECKING
 
 from increment.errors import DefinitionError, InvalidRequestError, raiser, refusals
-from increment.query.dims import join_dims
 from increment.semantics.models import Breakout, Definitions, Experiment, Fact, Factor, FactSource
+
+if TYPE_CHECKING:
+    from ibis import Table
+    from ibis.backends.sql import SQLBackend
+
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -213,6 +214,8 @@ def _rename_to_builder_cols(tbl: Table, fs: FactSource, unit: str) -> Table:
     ``[session_id, user_id]``), and picking the wrong one silently
     aggregates at the wrong grain with no error.
     """
+    import ibis
+
     entity_source = _resolve_entity_source(fs, unit)
     _reject_property_rename_collisions(fs, entity_source)
     kw = {}
@@ -249,6 +252,7 @@ def _dim_joined_fact_table(
     caller-owned, keyed by dim name, so two fact sources sharing a dim
     reuse one scan.
     """
+    from increment.query.dims import join_dims
 
     def default_resolver(sql: str) -> Table:
         return con.sql(sql, dialect=defs.dialect)

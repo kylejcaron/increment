@@ -41,7 +41,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from scipy.stats import norm as _norm
 
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import (
@@ -4489,6 +4488,8 @@ def run_daily(
         _refuse("estimation.diagnostics.alpha", alpha=alpha)
     if alpha / 2.0 == 0.0:
         _refuse("estimation.meta.alpha_too_small")
+    from scipy.stats import norm as _norm
+
     z = _norm.isf(alpha / 2.0)
 
     results: list[DailyMetricValue] = []

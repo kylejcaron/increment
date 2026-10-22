@@ -40,8 +40,6 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, TypedDict, cast, overload
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from scipy.stats import norm
-from scipy.stats import t as student_t
 
 from increment._display import format_interval
 from increment._identity import canonical_id_strings
@@ -1076,6 +1074,8 @@ def _rank_test(score: np.ndarray, psi: np.ndarray, u: np.ndarray) -> RankTest:
     if not se > 0.0:
         # A degenerate spread carries no evidence against the null.
         return RankTest(estimate=estimate, se=se, p_value=1.0)
+    from scipy.stats import norm
+
     return RankTest(estimate=estimate, se=se, p_value=float(norm.sf(estimate / se)))
 
 
@@ -1641,6 +1641,8 @@ def _validation(
             bootstrap_repetitions=bootstrap_repetitions,
         )
     score, y_hold, d_hold = holdout.score, holdout.y, holdout.d
+    from scipy.stats import norm
+
     z_crit = two_sided_critical_value(norm.isf, alpha, what="targeting validation holdout ATE")
     if arm_summary == "welch":
         ate, ate_se = _welch(y_hold[d_hold == 1.0], y_hold[d_hold == 0.0])
@@ -2200,6 +2202,8 @@ def _unclustered_selection_table(
 
     selection = select_out_of_fold(len(fracs), folds, fit, _evaluate)
     best_index = selection.best_index
+    from scipy.stats import norm
+
     z_crit = two_sided_critical_value(norm.isf, alpha, what="targeting selection net benefit")
 
     def _net_benefit(index: int, est: float, se: float) -> Estimate:
@@ -3291,6 +3295,8 @@ def _jackknife_hull(
         return _BootstrapResult(None, None, None, None, bootstrap.valid, summary.reason)
     assert summary.value is not None and summary.se is not None and summary.df is not None
     assert bootstrap.p_value is not None
+    from scipy.stats import t as student_t
+
     p = max(bootstrap.p_value, float(student_t.sf(summary.value / summary.se, summary.df)))
     if bootstrap.reason is not None:
         return bootstrap._replace(p_value=p)

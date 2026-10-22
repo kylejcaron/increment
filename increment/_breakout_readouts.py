@@ -13,13 +13,12 @@ from increment._literals import Correction
 from increment._source_operations import BreakoutSourcesOperation, ReadoutSnapshotOperation
 from increment._source_types import classify_source
 from increment._whole_window import _ANALYSIS_OPERATION, _require_analysis_operation
-from increment.breakout.estimates import BreakoutEstimates
 from increment.errors import refuse as _refuse
-from increment.query.native_contract import NativeViewSource
 from increment.readouts._requests import _validate_breakout_request
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
+    from increment.breakout.estimates import BreakoutEstimates
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
@@ -154,6 +153,8 @@ class BreakoutReadouts:
                 route=route,
                 supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
+        from increment.query.native_contract import NativeViewSource
+
         native_src = cast(NativeViewSource, self._src)
         native_src.validate_populations(populations, operation="run_breakout")
 
@@ -201,6 +202,8 @@ class BreakoutReadouts:
         )
 
     def run(self, req: BreakoutRequest) -> BreakoutEstimates:
+        from increment.breakout.estimates import BreakoutEstimates
+
         registration = getattr(self._src.context.plan.inference, "registration", None)
         if req.population == "triggered" and registration is not None:
             from increment.sequential_state import sequential_refuse
@@ -258,6 +261,8 @@ class BreakoutReadouts:
         return self._run_slices(req, route)
 
     def _run_slices(self, req: BreakoutRequest, route: BreakoutRoute) -> BreakoutEstimates:
+        from increment.breakout.estimates import BreakoutEstimates
+
         results: BreakoutEstimates | None = None
         for breakout_slice in self._slices(req, route):
             segment_results = readouts.breakout(

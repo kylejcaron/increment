@@ -312,4 +312,28 @@ def test_estimation_import_leaves_decision_core_unloaded():
     assert result.returncode == 0, result.stderr
 
 
+def test_resolving_analysis_leaves_warehouse_and_scipy_stats_unloaded():
+    code = (
+        "import sys\n"
+        "from increment import Analysis\n"
+        "heavy = {'ibis', 'sqlglot', 'scipy.stats'} & set(sys.modules)\n"
+        "assert not heavy, sorted(heavy)\n"
+        "import pandas as pd\n"
+        "frame = pd.DataFrame({'unit': ['u1', 'u2', 'u3', 'u4'], "
+        "'group': ['control', 'control', 'treatment', 'treatment'], "
+        "'value': [1.0, 2.0, 3.0, 4.0]})\n"
+        "Analysis.from_unit_summary(frame, unit='unit', group='group', "
+        "control='control', metrics={'value': 'mean'}).run()\n"
+        "heavy = {'ibis', 'sqlglot'} & set(sys.modules)\n"
+        "assert not heavy, sorted(heavy)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 pytestmark = pytest.mark.integration

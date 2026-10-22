@@ -146,7 +146,6 @@ from typing import Literal, NamedTuple, cast
 import numpy as np
 import scipy.special._ufuncs as _scu
 from scipy.special import ndtri as _ndtri
-from scipy.stats import beta as _beta_dist
 
 from increment._literals import ALTERNATIVE_VALUES, Alternative
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
@@ -327,6 +326,8 @@ def clopper_pearson(x: int, n: int, beta: float) -> tuple[float, float]:
     "Floating-point outward-rounding certification" above).
     """
     validate_counts(x, n)
+    from scipy.stats import beta as _beta_dist
+
     if not (0.0 < beta < 1.0):
         _raise("estimation.binomial.tail_unrepresentable", beta=beta)
     half = beta / 2.0

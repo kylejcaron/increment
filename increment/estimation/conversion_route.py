@@ -45,6 +45,7 @@ the ``log_se >= 0.5`` nor the zero-variance guard of ``infer_lift`` can fire.
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 import struct
@@ -53,7 +54,6 @@ from fractions import Fraction
 from typing import Literal, NoReturn
 
 import numpy as np
-from scipy.stats import norm
 
 from increment._literals import ConversionInference
 from increment.errors import InvalidRequestError, refusals, refuse
@@ -161,6 +161,8 @@ def finite_sample_blocker(
 def dense_min_count(tail_alpha: float) -> int:
     """Least per-arm success and failure count at which ``auto`` takes the
     asymptotic route for a one-sided tail allocation ``tail_alpha`` in ``(0, 1)``."""
+    from scipy.stats import norm
+
     z = float(norm.isf(tail_alpha))
     return max(_GUARD_FLOOR, _DENSE_FLOOR, math.ceil(_DENSE_SLOPE * z**4))
 
@@ -191,7 +193,15 @@ def route_for_counts(
 #: Counts from which every representable tail is dense: ``dense_min_count`` of the smallest
 #: positive float, past which the closed-form inversion below would evaluate the rule at a tail
 #: of zero. A contrast with such counts has a dense level of zero and is never escalated.
-_DENSE_CEILING = dense_min_count(math.nextafter(0.0, 1.0))
+@functools.cache
+def _dense_ceiling() -> int:
+    return dense_min_count(math.nextafter(0.0, 1.0))
+
+
+def __getattr__(name: str) -> int:
+    if name == "_DENSE_CEILING":
+        return _dense_ceiling()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _float_bisect(lo: float, hi: float, dense: Callable[[float], bool]) -> float:
@@ -226,7 +236,7 @@ def dense_level_tail(smallest: int) -> float | None:
     not above one half)."""
     if smallest < _DENSE_FLOOR:
         return None
-    if smallest >= _DENSE_CEILING:
+    if smallest >= _dense_ceiling():
         return 0.0
     tail = _float_bisect(
         math.nextafter(0.0, 1.0),
@@ -263,9 +273,9 @@ def dense_level_holds(
     differs by one float at its count fails this check; re-running the analysis is the remedy."""
     smallest = min(x_c, n_c - x_c, x_t, n_t - x_t)
     if level == 0.0:
-        return smallest >= _DENSE_CEILING
+        return smallest >= _dense_ceiling()
     tail = level / 2.0 if alternative == "two-sided" else level
-    if not 0.0 < tail < 0.5 or smallest >= _DENSE_CEILING:
+    if not 0.0 < tail < 0.5 or smallest >= _dense_ceiling():
         return False
     if dense_min_count(tail) > smallest:
         return False

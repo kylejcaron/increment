@@ -162,7 +162,6 @@ from collections.abc import Sequence
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
-from scipy.stats import norm as _norm
 
 from increment._moment_plan import X_SLOT_ROLES
 from increment.errors import (
@@ -1001,6 +1000,8 @@ def _critical_value(alpha: float, dof: float | None) -> float:
     """
     if dof is not None:
         return two_sided_critical_value(student_t_isf, alpha, dof, what="sitewide impact interval")
+    from scipy.stats import norm as _norm
+
     return two_sided_critical_value(_norm.isf, alpha, what="sitewide impact interval")
 
 

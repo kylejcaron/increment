@@ -11,8 +11,6 @@ from __future__ import annotations
 import math
 from typing import cast
 
-from scipy.stats import norm as _norm
-
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment.compatibility import Unsupported, refuse_unsupported
 from increment.decision import FixedInference
@@ -370,6 +368,8 @@ def segment_pairwise_required_sample_size(
     k = 1.0 / design.allocation + 1.0 / (1.0 - design.allocation)
     term_a = baseline_a.effective_var / (baseline_a.mean**2 * q_a)
     term_b = baseline_b.effective_var / (baseline_b.mean**2 * q_b)
+    from scipy.stats import norm as _norm
+
     z_sum = float(_norm.isf(procedure.compiled_tail_alpha)) + float(_norm.ppf(design.power))
 
     if abs(theta) < 1e-15:

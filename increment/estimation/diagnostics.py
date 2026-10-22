@@ -18,8 +18,6 @@ from typing import Any, Literal, cast
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
-from scipy.stats import beta as beta_dist
-from scipy.stats import chi2 as chi2_dist
 
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
@@ -298,6 +296,8 @@ def sample_ratio_mismatch(
     zero counts. ``unit_counts`` is descriptive per-arm context for a
     cluster-grain test, never a second allocation sample.
     """
+    from scipy.stats import chi2 as chi2_dist
+
     if not 0.0 < alpha < 1.0:
         _raise("estimation.diagnostics.alpha", alpha=alpha)
     if inference not in ("always_valid", "fixed"):
@@ -439,6 +439,8 @@ def allocation_posterior_bands(
     date would inflate the total and produce spuriously narrow, wrong
     bands. Returns one band per input row, in input order.
     """
+    from scipy.stats import beta as beta_dist
+
     if not (math.isfinite(credible_level) and 0.0 < credible_level < 1.0):
         _raise("estimation.diagnostics.credible_level", credible_level=credible_level)
     prior_a, prior_b = prior

@@ -20,7 +20,6 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from scipy.optimize import brentq
-from scipy.stats import norm as _norm
 
 from increment.errors import (
     CodedModel,
@@ -173,9 +172,13 @@ class MixturePosterior:
     sigmas: np.ndarray
 
     def cdf(self, value: float) -> float:
+        from scipy.stats import norm as _norm
+
         return float((self.weights * _norm.cdf((value - self.means) / self.sigmas)).sum())
 
     def survival(self, value: float) -> float:
+        from scipy.stats import norm as _norm
+
         return float((self.weights * _norm.sf((value - self.means) / self.sigmas)).sum())
 
     def quantile(self, probability: float) -> float:
@@ -217,6 +220,8 @@ class MixturePosterior:
         which is algebraically identical but keeps the small tail
         probabilities themselves, not their near-1.0 complements.
         """
+        from scipy.stats import norm as _norm
+
         z_lower = (lower - self.means) / self.sigmas
         z_upper = (upper - self.means) / self.sigmas
         upper_tail = z_lower > 0.0
@@ -226,6 +231,8 @@ class MixturePosterior:
         return float((self.weights * per_component).sum())
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
+        from scipy.stats import norm as _norm
+
         active = self.weights > 0.0
         weights = self.weights[active]
         means = self.means[active]
@@ -241,6 +248,8 @@ class MixturePosterior:
         return float((weights * per).sum())
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
+        from scipy.stats import norm as _norm
+
         active = self.weights > 0.0
         weights = self.weights[active]
         means = self.means[active]
@@ -266,6 +275,8 @@ def mixture_posterior(
     likelihood of the data, computed in log space so a many-sigma surprise
     re-normalizes instead of underflowing to NaN.
     """
+    from scipy.stats import norm as _norm
+
     if standard_error <= 0:
         _raise("estimation.priors.standard_error", standard_error=standard_error)
     prior_means = np.asarray(prior.means)

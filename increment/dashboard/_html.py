@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Literal
 import coeftable as ct
 import marimo as mo
 import pandas as pd
-from scipy.stats import norm
 
 from increment._interpretation import interpret_readout, render_readout_text
 from increment.dashboard._data import (
@@ -573,6 +572,8 @@ def _allocation_history_table(
     n = totals.where(totals > 0)
     share = frame["n_cumulative"] / n
     frame["share"] = share
+    from scipy.stats import norm
+
     z = norm.isf(0.025)
     denominator = 1 + z * z / n
     center = (share + z * z / (2 * n)) / denominator

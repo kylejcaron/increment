@@ -17,7 +17,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from scipy.stats import t as _t
 
 from increment._unit_cycle import (
     _float_outward,
@@ -556,6 +555,8 @@ def _unit_t_reference(
     Callers validate metadata and mark zero-SE evidence unavailable. This kernel
     supplies the existing reference; it does not establish finite-sample coverage.
     """
+    from scipy.stats import t as _t
+
     tail = alpha / 2.0 if alternative == "two-sided" else alpha
     critical = tail_isf(student_t_isf, tail, dof, what="fixed unit-t critical value")
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
@@ -922,6 +923,8 @@ def estimate_contrast(
     stats: ContrastStats, procedure: ContrastDecisionProcedure
 ) -> DecisionComputation[ContrastResult]:
     """Estimate one contrast and retain its typed decision evidence."""
+    from scipy.stats import t as _t
+
     from increment.estimation.decision_types import (
         ContrastHypothesisKey,
         DecisionComputation,

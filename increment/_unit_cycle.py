@@ -12,13 +12,18 @@ from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_HALF_EVEN, Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 from functools import lru_cache
-from typing import NoReturn
-
-from scipy.stats import binomtest
+from typing import Any, NoReturn
 
 from increment._literals import ALTERNATIVE_VALUES
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
 from increment.semantics.unit_cycle import UnitCycleVarianceEnvelope
+
+
+def binomtest(k: int, n: int, p: float) -> Any:
+    from scipy.stats import binomtest as _binomtest
+
+    return _binomtest(k, n, p)
+
 
 _REFUSALS = {
     code: RefusalSpec(code, InvalidRequestError, lambda *, reason, **_: reason)
@@ -135,7 +140,9 @@ class UnitCycleAdmissionRule:
 @lru_cache(maxsize=4096, typed=True)
 def unit_cycle_admission_outcome(n_cycles: int, probability_ct: float, ct_cycles: int) -> bool:
     """Verify the realized binomial decision against the cached interval mask."""
+
     rule = unit_cycle_admission_rule(n_cycles, probability_ct)
+
     try:
         value = float(binomtest(ct_cycles, n_cycles, probability_ct).pvalue)
     except (OverflowError, ValueError, TypeError) as exc:
@@ -194,6 +201,7 @@ def unit_cycle_admission_rule(n_cycles: int, probability_ct: float) -> UnitCycle
     mode = min(n, int((n + 1) * Fraction(probability_ct)))
 
     def accepted(k: int) -> bool:
+
         try:
             value = float(binomtest(k, n, probability_ct).pvalue)
         except (OverflowError, ValueError, TypeError) as exc:

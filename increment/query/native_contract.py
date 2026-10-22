@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from ibis import Table
-
 from increment.errors import CapabilityError, RefusalSpec
 from increment.estimation.armstats import ArmStats
 from increment.semantics.models import Breakout, Metric
@@ -28,6 +26,7 @@ from increment.sources import (
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from ibis import Table
 
     from increment.sources import Grain
 
