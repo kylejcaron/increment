@@ -20,7 +20,7 @@ import math
 from collections.abc import Callable
 from typing import Literal, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from increment._literals import ValueScale
 from increment.breakout.estimates import (
@@ -476,6 +476,14 @@ class HeterogeneitySummary(BaseModel):
     n_excluded_design: int
     n_excluded_outcome: int
     pooled: Estimate
+    i2_reason_code: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    def __repr__(self) -> str:
+        scale = "relative (log-RR)" if self.scale == "relative" else "absolute (additive)"
+        return (
+            f"HeterogeneitySummary(metric={self.metric!r}, dimension={self.dimension!r}, "
+            f"scale={scale!r}, k={self.k}, q={self.q:.4g}, i2={self.i2!r})"
+        )
 
 
 class SegmentEstimate(CodedModel, BaseModel):
@@ -1041,6 +1049,13 @@ def segment_heterogeneity(  # noqa: PLR0915
                     n_excluded_design=n_design,
                     n_excluded_outcome=n_outcome,
                     pooled=pooled,
+                    i2_reason_code=(
+                        "estimation.meta.i2_outcome_excluded"
+                        if n_outcome > 0
+                        else "estimation.meta.i2_small_k"
+                        if het.k < 5
+                        else None
+                    ),
                 )
             )
 

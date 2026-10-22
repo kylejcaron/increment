@@ -616,6 +616,48 @@ def test_decision_line_uses_interpreted_control_group():
     assert "holdout → treatment" in decision
 
 
+def test_encouragement_headlines_identify_itt_and_late():
+    from types import SimpleNamespace
+
+    from increment._interpretation import _decision_line
+
+    common = {"metric": "conversion", "lift": None, "estimate": None}
+    itt = _decision_line(
+        SimpleNamespace(**common, estimand="itt"),
+        control_group="control",
+        treatment_group="encouraged",
+    )
+    late = _decision_line(
+        SimpleNamespace(**common, estimand="late"),
+        control_group="control",
+        treatment_group="encouraged",
+    )
+
+    assert itt != late
+    assert "estimand=itt" in itt
+    assert "estimand=late" in late
+
+
+def test_breakout_headline_names_dimension_value():
+    from types import SimpleNamespace
+
+    from increment._interpretation import _decision_line
+
+    headline = _decision_line(
+        SimpleNamespace(
+            metric="conversion",
+            lift=None,
+            estimate=None,
+            dimension="country",
+            dimension_value="US",
+        ),
+        control_group="control",
+        treatment_group="treatment",
+    )
+
+    assert "country=US" in headline
+
+
 def test_daily_value_readout_skips_decision_comparison_but_lift_keeps_it():
     import datetime as dt
 
