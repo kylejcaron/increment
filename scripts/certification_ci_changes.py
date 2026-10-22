@@ -93,10 +93,24 @@ def _imported_modules(node: ast.AST, root: Path, module_names: set[str]) -> set[
     return modules
 
 
-def _certified_modules(root: Path) -> set[str]:
+def _dependency_closure(root: Path, roots: set[str]) -> set[str]:
     graph = tomllib.loads((root / "tach.toml").read_text())
     dependencies = {item["path"]: set(item["depends_on"]) for item in graph["modules"]}
-    module_names = set(dependencies)
+    closure = set(roots)
+    if not closure <= dependencies.keys():
+        raise ValueError("Dependency roots are missing from tach.toml.")
+    pending = list(closure)
+    while pending:
+        for dependency in dependencies[pending.pop()]:
+            if dependency not in closure:
+                closure.add(dependency)
+                pending.append(dependency)
+    return closure
+
+
+def _certified_modules(root: Path) -> set[str]:
+    graph = tomllib.loads((root / "tach.toml").read_text())
+    module_names = {item["path"] for item in graph["modules"]}
     certified: set[str] = set()
     for test_path in _CERTIFICATION_TEST_MODULES:
         tree = ast.parse((root / test_path).read_text(), filename=test_path)
@@ -104,13 +118,7 @@ def _certified_modules(root: Path) -> set[str]:
             certified.update(_imported_modules(node, root, module_names))
     if not certified:
         raise ValueError("No certified modules were found in the test imports.")
-    pending = list(certified)
-    while pending:
-        for dependency in dependencies[pending.pop()]:
-            if dependency not in certified:
-                certified.add(dependency)
-                pending.append(dependency)
-    return certified
+    return _dependency_closure(root, certified)
 
 
 def _requires_certification(event: str, base: str, head: str, root: Path | None = None) -> bool:

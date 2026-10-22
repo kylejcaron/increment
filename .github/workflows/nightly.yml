@@ -98,6 +98,14 @@ jobs:
           path: random-fast-junit.xml
           if-no-files-found: warn
           retention-days: 30
+  warehouse-postgres:
+    name: warehouse PostgreSQL suite
+    permissions:
+      contents: read
+    uses: ./.github/workflows/warehouse-backends.yml
+    with:
+      backend_mode: postgres
+      postgres_shards: 1
 
   mutation-evidence:
     name: mutation evidence (${{ matrix.campaign }})
@@ -130,7 +138,7 @@ jobs:
   report-failure:
     name: report a failed nightly gate
     runs-on: ubuntu-latest
-    needs: [test-all, test-scientific, randomized-fast, mutation-evidence]
+    needs: [test-all, test-scientific, randomized-fast, mutation-evidence, warehouse-postgres]
     if: failure()
     timeout-minutes: 10
     permissions:

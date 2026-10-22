@@ -86,6 +86,10 @@ unrelated module changes such as `increment/dashboard/_html.py` do not select it
 The parity-harness certification case runs nightly; its facade is not a
 certification root because the other harness cases exercise those ingress paths
 on every PR.
+The PostgreSQL gate is selected for query dependency, warehouse-execution,
+PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
+PRs skip it. PostgreSQL runs nightly on main; numerical certification runs
+nightly inside the scientific tier.
 Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.
@@ -462,9 +466,10 @@ on Python 3.12 and 3.14; 3.13 remains in main pushes and nightly full/weekly flo
 matrices. `ci-ok` validates every selected fast shard and required conditional
 gate. It combines Python 3.12 fast-shard coverage advisory; cross-platform wheel
 smoke runs for packaging-related PR changes and on pushes.
-PostgreSQL may skip a PR only when all changes are known prose or static
-documentation assets. Library, test, fixture, dependency, CI, unknown,
-deletion, and rename changes require it; an unavailable diff also requires it.
+PostgreSQL runs on a PR when a change touches the transitive `tach.toml`
+dependency closure of `increment.query`, `integration/warehouse_execution/`,
+a test helper the PostgreSQL suite imports, build or workflow files, or an
+unclassified path; deletions, renames and an unavailable diff also require it.
 Main pushes never use this filter.
 
 The PR PostgreSQL gate runs one duration-balanced shard. The reusable
@@ -483,7 +488,7 @@ Refresh them with the complete fast suite, preserving worker group suffixes:
 make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
 ```
 
-Functional-slow CI uses three isolated shards and the certification job two,
+Functional-slow CI uses four isolated shards and the certification job two,
 with workers inside each shard; `ci-ok` requires their aggregate success. Every
 case remains selected exactly once. Both split by the recorded weights in
 `.github/slow-test-durations.json` and `.github/certification-test-durations.json`;
