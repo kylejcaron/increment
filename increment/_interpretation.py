@@ -552,7 +552,7 @@ def _render_group_label(group, *, metadata_known: bool, show_source: bool) -> st
 
 
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
-    """Render concise integrity/completeness qualifications before effects."""
+    """Render metric evidence first, followed by relevant qualifications."""
     if not interpretation.groups:
         return "Scope retained; no source-qualified cells recorded."
     lines: list[str] = []
@@ -566,8 +566,8 @@ def render_readout_text(interpretation: ReadoutInterpretation) -> str:
             )
         )
         visible_rows = sorted(group.visible_rows, key=_row_display_order)
-        lines.extend(_render_group_scope(group, visible_rows))
         lines.extend(_render_group_rows(group, visible_rows))
+        lines.extend(_render_group_scope(group, visible_rows))
     return "\n".join(lines)
 
 
@@ -579,26 +579,46 @@ def _render_group_scope(group, visible_rows) -> list[str]:
         lines.append(
             "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
         )
-    else:
-        lines.append(f"Integrity: {group.integrity_status} (not success).")
+    elif (
+        group.integrity_status == "not_checked_missing_declaration"
+        and group.integrity_code == "integrity.allocation_missing_or_nonconstant"
+    ):
+        lines.append(
+            "SRM not checked; declare allocation={...} and "
+            'allocation_scheme="independent" on Randomized or Encouragement.'
+        )
+    elif (
+        group.integrity_status == "not_checked_missing_declaration"
+        and group.integrity_code == "integrity.allocation_scheme_missing"
+    ):
+        lines.append(
+            'SRM not checked; declare allocation_scheme="independent" on '
+            "Randomized or Encouragement; it must describe how units were actually assigned."
+        )
+    elif group.integrity_code == "integrity.triggered_population_not_checked":
+        lines.append(
+            "SRM not checked on the triggered population; post-trigger counts cannot "
+            "validate assignment. Check the assigned population instead."
+        )
+    elif group.integrity_status == "not_checked_missing_counts":
+        lines.append("SRM not checked; assignment counts are not recorded.")
+    elif group.integrity_status == "unsupported_assignment":
+        lines.append("SRM not run for this assignment design.")
+    elif group.integrity_status.startswith("not_checked"):
+        reason = group.integrity_code or group.integrity_status
+        lines.append(f"SRM not checked ({reason}).")
     if group.partial:
         lines.append("View: partial; do not treat visible cells as a complete decision.")
-    if group.decision_complete is None:
-        lines.append("Decision scope completeness: unknown.")
-    else:
-        state = "complete" if group.decision_complete else "incomplete"
-        lines.append(f"Decision scope completeness: {state}.")
-    if group.roster_complete is None:
-        lines.append("Population roster completeness: unknown.")
-    else:
-        state = "complete" if group.roster_complete else "incomplete"
-        source = group.roster_source or "source unknown"
-        lines.append(f"Population roster completeness: {state} ({source}).")
+    if group.decision_complete is False:
+        lines.append("Decision scope completeness: incomplete.")
+    if group.roster_complete is False:
+        lines.append("Population roster completeness: incomplete.")
     if group.required_cells:
         required_available = sum(item.available for item in group.required_cells)
-        lines.append(
-            f"Required cells: {len(group.required_cells)}; available: {required_available}."
-        )
+        if required_available < len(group.required_cells):
+            lines.append(
+                f"Required cells: {len(group.required_cells)}; available: {required_available}."
+            )
     for item in group.unavailable_cells:
         if item.visible:
             lines.append(

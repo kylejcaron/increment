@@ -1354,10 +1354,18 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     pytest.importorskip("coeftable")
     from increment.tables import estimates_to_readout, readout_table
 
-    with pytest.warns(IncrementWarning):
-        results = _analysis(_frame()).run()
-    assert "Integrity:" in repr(results)
-    assert "not success" in repr(results)
+    results = _analysis(_frame(guard_constant=False)).run()
+    rendered = repr(results)
+    assert "SRM not checked" in rendered
+    assert not any(
+        word in rendered.lower()
+        for word in ("not success", "failed", "incomplete", "unknown", "unavailable")
+    )
+    assert "declare allocation" in rendered
+    lines = rendered.splitlines()
+    metric_headline = next(i for i, line in enumerate(lines) if "rev (primary" in line)
+    assert metric_headline < 5
+    assert metric_headline < next(i for i, line in enumerate(lines) if "SRM not checked" in line)
     for backend in ("pandas", "polars", "pyarrow"):
         frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
         assert {
@@ -1378,11 +1386,27 @@ def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
     assert "not_checked_missing_declaration" in _latex_text(_as_latex(readout_table(results)))
 
     empty = results.filter(lambda row: False)
-    assert "Required cells:" in repr(empty)
+    assert "View: partial" in repr(empty)
     empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
     assert len(empty_frame) == 0 and "integrity_status" in empty_frame.columns
-    assert "Required cells:" in readout_table(empty).gt().as_raw_html()
-    assert "Scope and integrity unknown" in readout_table([]).gt().as_raw_html()
+
+
+def test_real_assignment_integrity_failure_still_says_failed():
+    results = Analysis.from_unit_panel(
+        _imbalanced_assignment_frame(),
+        unit="unit",
+        group="arm",
+        date="ds",
+        design=_independent_design(),
+        metrics=[MetricSpec(name="rev", type="mean")],
+    ).run()
+
+    rendered = repr(results)
+    assert "Integrity: failed" in rendered
+    lines = rendered.splitlines()
+    assert next(i for i, line in enumerate(lines) if "rev (" in line) < next(
+        i for i, line in enumerate(lines) if line.startswith("Integrity:")
+    )
 
 
 def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail():

@@ -233,7 +233,8 @@ def test_scoped_contrast_collection_default_output_keeps_qualifications():
     import narwhals as nw
 
     results = _switchback_analysis().run()
-    assert "Integrity:" in repr(results)
+    rendered = repr(results)
+    assert "SRM not run for this assignment design." in rendered
     for backend in ("pandas", "polars", "pyarrow"):
         frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
         assert {
@@ -245,7 +246,7 @@ def test_scoped_contrast_collection_default_output_keeps_qualifications():
         } <= set(frame.columns)
 
     empty = results.filter(lambda row: False)
-    assert "Required cells:" in repr(empty)
+    assert "View: partial" in repr(empty)
     empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
     assert not len(empty_frame) and "integrity_status" in empty_frame.columns
 

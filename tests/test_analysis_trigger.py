@@ -2216,6 +2216,10 @@ def test_triggered_run_does_not_retest_assigned_law_on_selected_counts(tmp_path)
     assert triggered_integrity.status == "not_checked_missing_counts"
     assert triggered_integrity.analysis_population == "triggered"
     assert triggered_integrity.observed is None
+    assert triggered_integrity.code == "integrity.triggered_population_not_checked"
+    rendered = str(results.filter(lambda row: row.analysis_population == "triggered"))
+    assert "triggered population" in rendered
+    assert "not recorded" not in rendered
     triggered_only = results.filter(lambda row: row.analysis_population == "triggered")
     retained = next(
         scope

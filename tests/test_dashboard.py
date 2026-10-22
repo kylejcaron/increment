@@ -2379,7 +2379,7 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
     summary_html = render_header(dashboard_snapshot).text
     assert "partial" in summary_html
     assert "session_seconds" in summary_html
-    assert "not_checked_missing_declaration" in summary_html
+    assert "SRM not checked" in summary_html and "allocation" in summary_html
     readout_html = render_results(dashboard_snapshot).text
     assert "partial" in readout_html
     for surface in (summary_html, readout_html):

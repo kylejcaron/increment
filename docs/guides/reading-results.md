@@ -35,11 +35,12 @@ in the collection `repr`. Failure rows keep the registered failure explanation
 in a `Failure` column and their full structured context on the result object.
 
 Scoped result collections also carry qualifications in their default
-`repr`: integrity and scope completeness precede availability, multiplicity,
-advisories, row qualifications, and effects. A failed integrity check is not
-hidden by an otherwise favorable estimate, and `not_rejected` means no
-detected mismatch, not proof of valid randomization. The collection display
-includes retained scope even when filtering leaves no visible rows.
+`repr`: metric results lead, followed by relevant integrity and scope
+qualifications, availability, multiplicity, advisories, and row qualifications.
+A failed integrity check remains visible beside the results, and
+`not_rejected` means no detected mismatch, not proof of valid randomization.
+The collection display includes retained scope even when filtering leaves no
+visible rows.
 
 Interpretation separates the tested-null outcome from effect direction.
 An interval containing the tested null is inconclusive, not evidence of no
@@ -202,10 +203,10 @@ population or inference method.
 
 ## Fixed horizon: guard the missing point
 
-The collection summary keeps required cells, integrity and retained family
-visible before effects. This example includes an exact conversion row with
-zero control conversions, so its relative point is unavailable even though
-the confidence set remains informative.
+The collection summary leads with the metric results. It shows integrity and
+scope qualifications only when they affect how to read those results. This
+example includes an exact conversion row with zero control conversions, so its
+relative point is unavailable even though the confidence set remains informative.
 
 ```python
 from random import Random
@@ -277,11 +278,6 @@ raise `results.frame.unknown_columns`.
 <!-- output -->
 ```text
 assigned — treatment vs control
-Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
-Decision scope completeness: complete.
-Population roster completeness: complete (declared_allocation).
-Required cells: 2; available: 2.
-Multiplicity (outcome): undeclared_plan; family retained scope.
 converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 converted additive effect: 0.36036, set [0.270641, 0.45008].
 converted binomial set central: [1.61559, +∞] at 0.95 confidence.
@@ -292,6 +288,8 @@ revenue interpretation: excludes zero at 95.0% confidence; effect direction supp
 revenue additive effect: 1.39812, set [0.504942, 2.29129].
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
+Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
+Multiplicity (outcome): undeclared_plan; family retained scope.
 revenue / treatment: lift=+9.47% [+3.27%, +16.04%] significant=True
 LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+1.616, +inf), route='finite_sample', discovery=None)
 ```
