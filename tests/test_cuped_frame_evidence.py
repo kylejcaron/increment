@@ -75,7 +75,7 @@ def test_adjusted_frame_rechecks_every_override_column(panel, role, monkeypatch)
             run(source, decision_method=override)
         else:
             run(source, sensitivity_methods=(override,))
-    assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
+    assert raised.value.code == "source.frame.metric_missing"
 
 
 @pytest.mark.parametrize("by", [(), ("segment",)])

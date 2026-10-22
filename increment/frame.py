@@ -83,6 +83,7 @@ from increment._frame_validation import (  # noqa: F401
     _validate_uptake_binary,
     canonical_control_for_frame,
     canonical_design_for_frame,
+    check_covariate_columns,
     refuse_observational_quantile,
     require_eager_frame,
 )
@@ -517,6 +518,9 @@ class FrameTotalsSource(SequentialSourceMixin):
     def available_covariates(self) -> frozenset[str]:
         return frozenset(self._frame.columns)
 
+    def check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
+        check_covariate_columns(self._frame, metric, methods)
+
     def breakout_moments_for_method(
         self, metric: Metric, method: Any, *, by: Sequence[str]
     ) -> ScalarBreakoutRows:
@@ -926,6 +930,8 @@ class FrameTotalsSource(SequentialSourceMixin):
             scratch = _scratch_name(nwf, "__segment__")
             nwf = nwf.with_columns(_normalized_breakout_expr(nwf, dimension).alias(scratch))
             segment_columns[dimension] = scratch
+        for spec in specs:
+            check_covariate_columns(nwf, spec.name, spec._methods)
         nwf = _canonicalize_group_identity(nwf, group)
         metric_columns = sorted(_numeric_metric_columns(specs))
         if uptake is not None:
@@ -1229,6 +1235,12 @@ class _RestrictedSummaryBreakoutSource:
     ) -> ScalarBreakoutRows:
         return self._source.breakout_moments_for_method(
             metric, _remap_method_covariates(method, self._covariate_columns), by=by
+        )
+
+    def check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
+        self._source.check_method_covariates(
+            metric,
+            [_remap_method_covariates(method, self._covariate_columns) for method in methods],
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -1691,6 +1703,10 @@ class FramePanelSource(SequentialSourceMixin):
     def available_covariates(self) -> frozenset[str]:
         frame = self._source_frame if self._source_frame is not None else self._sparse_panel
         return frozenset(frame.columns)
+
+    def check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
+        frame = self._source_frame if self._source_frame is not None else self._sparse_panel
+        check_covariate_columns(frame, metric, methods)
 
     def _spec_for(self, metric: Metric) -> MetricSpec:
         spec = self._specs_by_name.get(metric.name)
@@ -2201,6 +2217,8 @@ class FramePanelSource(SequentialSourceMixin):
             if uptake is not None:
                 declarations.append(("uptake", uptake))
             _validate_panel_declarations(declarations)
+        for spec in specs:
+            check_covariate_columns(nwf, spec.name, spec._methods)
         nwf = _canonicalize_group_identity(nwf, group)
         metric_columns = sorted(_numeric_metric_columns(specs))
         if uptake is not None:

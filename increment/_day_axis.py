@@ -20,6 +20,7 @@ from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
 from increment._source_types import (
     ComplianceSummary,
+    CovariateColumnCheck,
     ScalarCovariateMoments,
     classify_source,
     compliance_summary_series,
@@ -1584,6 +1585,9 @@ class DayAxisReadouts:
         )
         for roles in opts.by_metric.values():
             _validate_methods(list(roles.methods))
+        if isinstance(self._src, CovariateColumnCheck):
+            for name, roles in opts.by_metric.items():
+                self._src.check_method_covariates(name, roles.methods)
         if req.caller == "run_asof_lift":
             validate_readout_inference(
                 ReadoutRequest.from_source(

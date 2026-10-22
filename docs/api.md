@@ -313,7 +313,9 @@ Each declaration has a `name`, `kind="continuous"` or `"categorical"`, and a
 must be strings. Multicovariate CUPED supports mean, conversion, and ratio
 metrics; ratio metrics use the same declared covariates for numerator and
 denominator. The scalar `Method.cuped(covariates=...)` factory is for one
-continuous covariate. See the runnable
+continuous covariate. Both factories accept a column name in place of a
+declaration: `"pre"` means `CupedCovariate(name="pre", kind="continuous")`, so
+categorical covariates are always declared explicitly. See the runnable
 [mixed-covariate CUPED recipe](guides/cuped.md#a-mixed-covariate-dataframe-recipe).
 
 Multicovariate CUPED uses HC2 uncertainty and a Bell–McCaffrey Student-t
