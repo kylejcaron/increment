@@ -176,8 +176,8 @@ analysis = Analysis.from_unit_day_artifact(
 
 ```python
 for m in ("revenue", "revenue_per_session"):
-    assigned = analysis.sitewide(m)
-    triggered = analysis.sitewide(m, population="triggered")
+    assigned = analysis.sitewide(metric=m)
+    triggered = analysis.sitewide(metric=m, population="triggered")
     print(f"{m}: assigned={assigned}; triggered={triggered}")
     assert assigned.snapshot_id == triggered.snapshot_id
     assert assigned.window == triggered.window

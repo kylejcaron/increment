@@ -1074,8 +1074,8 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 
 ## Results (`increment.results`)
 
-Sitewide behavior is exposed through `Analysis.sitewide`, with output values
-available from the receive-only results namespace.
+Sitewide behavior is exposed through `Analysis.sitewide(metric=...)`, with
+output values available from the receive-only results namespace.
 
 `Analysis.sitewide(metric, population="assigned")` reports an assigned
 intent-to-treat whole-site impact, including when the experiment declares a

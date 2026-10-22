@@ -117,7 +117,7 @@ def absorb_factor(
     summary: IntoDataFrame,
     *,
     factor: str,
-    control_group: str,
+    control: str,
     pooling: Literal["partial", "hard", "none"] = "partial",
     alpha: float = 0.05,
 ) -> AbsorptionResult:
@@ -130,7 +130,7 @@ def absorb_factor(
         carrying *factor* plus `group_id, n, ref_y, cy1, cy2`.
     factor : str
         Name of the factor-level column.
-    control_group : str
+    control : str
         Which `group_id` is the control arm.
     pooling : {"partial", "hard", "none"}
         Passed through; prefer the default.
@@ -172,6 +172,7 @@ def absorb_factor(
 
     rows: list[dict[str, Any]] = frame.rows(named=True)
     arms = sorted({r["group_id"] for r in rows}, key=lambda v: (v is None, str(v)))
+    control_group = control
     if control_group not in arms:
         _raise("absorption.control_group_present", control_group=control_group, arms=arms)
     treated = [a for a in arms if a != control_group]

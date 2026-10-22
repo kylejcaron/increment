@@ -507,7 +507,7 @@ adjustment = fit_predeclared_adjustment(
     unit="user_id",
     group="variant",
     control="control",
-    outcome="revenue_pre_window",
+    metric="revenue_pre_window",
     covariate="revenue_earlier_window",
 )
 plan = AnalysisPlan(

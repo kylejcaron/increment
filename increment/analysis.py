@@ -202,15 +202,14 @@ def fit_predeclared_adjustment(
     unit: str,
     group: str,
     control: str,
-    outcome: str,
+    metric: str,
     covariate: str,
     covariate_missing: Literal["impute", "zero", "error"] = "impute",
 ):
     """Fit a sequential CUPED coefficient and covariate centre from pre-period data.
 
     *frame* is one row per assigned unit observed BEFORE the experiment reads
-    any outcome: *outcome* is the metric measured in a pre-period window and
-    *covariate* its covariate measured relative to that window, the same way
+    any outcome: *metric* is the metric measured in a pre-period window and
     the in-experiment covariate is measured relative to exposure. The rows
     are reduced to the same centered moments the fixed-horizon frame path
     builds, and the coefficient is ``estimation.cuped.fit_cuped``'s inverse-n
@@ -246,7 +245,7 @@ def fit_predeclared_adjustment(
         control=control,
         metrics=[
             MetricSpec(
-                name=outcome,
+                name=metric,
                 decision_method=Method.cuped(covariates=covariate_declaration),
             )
         ],
@@ -2157,13 +2156,13 @@ class Analysis:
 
     def sitewide(
         self,
-        metric_name: str,
+        metric: str,
         *,
         arm: str | None = None,
         alpha: float = 0.05,
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> SitewideImpact | SitewideRatioImpact:
-        """Whole-site impact of shipping *metric_name*'s lift to every unit.
+        """Whole-site impact of *metric*'s lift to every unit.
 
         Native (:meth:`from_definitions`) and adopted artifact sources with a
         published site-volume extension combine enrolled-arm moments with
@@ -2188,7 +2187,7 @@ class Analysis:
 
         Parameters
         ----------
-        metric_name : str
+        metric : str
             Name of a metric declared on this experiment.
         arm : str | None
             ``group_id`` of the treatment arm to score.
@@ -2218,7 +2217,7 @@ class Analysis:
             mean cluster sizes must be within 20%. Spillover caveat: unexposed
             units in a treated cluster bias the reported relative impact low.
         ValueError
-            *metric_name* is not declared, has no enrolled arm, or
+            *metric* is not declared, has no enrolled arm, or
             ``arm`` names an arm that isn't enrolled; ``alpha`` is not
             strictly between 0 and 1.
         """
@@ -2227,7 +2226,7 @@ class Analysis:
         experiment = getattr(self, "_experiment", None)
         return SitewideReadouts(src=self._src, experiment=experiment).run(
             SitewideRequest(
-                metric_name=metric_name,
+                metric_name=metric,
                 arm=arm,
                 alpha=alpha,
                 population=population,
