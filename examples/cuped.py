@@ -72,7 +72,7 @@ def _(Analysis, DEFINITIONS, EXPERIMENT, ibis, seed_event_log):
     # generate events
     seed_event_log(con, with_pre_period=True)
 
-    analysis = Analysis(experiment_name=EXPERIMENT, definitions_path=DEFINITIONS, con=con)
+    analysis = Analysis.from_definitions(EXPERIMENT, DEFINITIONS, con)
     return (analysis,)
 
 

@@ -4,6 +4,18 @@ Use `increment` for workflow entry points and caller-authored configuration.
 Receive-only result types are in `increment.results`; specialized power solvers
 are in `increment.power`.
 
+## Start here
+
+::: increment.Analysis
+    options:
+      inherited_members: true
+
+::: increment.Report
+
+::: increment.Definitions
+
+`increment.__version__` reports the installed package version.
+
 ## Pre-1.0 compatibility
 
 Increment is pre-release software. This section covers compatibility between
@@ -249,17 +261,6 @@ except Exception as exc:
 
 See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularpolicy).
 
-## Start here
-
-::: increment.Analysis
-    options:
-      inherited_members: true
-
-::: increment.Report
-
-::: increment.Definitions
-
-`increment.__version__` reports the installed package version.
 
 
 
