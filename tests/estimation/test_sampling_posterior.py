@@ -128,11 +128,12 @@ def test_sparse_conversion_preserves_exact_sampling_and_guard_reason():
 
 
 def test_favorable_probability_reason_is_persisted_by_state():
-    from increment._literals import PreferredDirection
     from increment.estimation.inference import posterior_fields
 
     def favorable_fields(
-        preferred_direction: PreferredDirection | None, *, null_abs: float | None = None
+        preferred_direction: Literal["increase", "decrease", "neutral"] | None,
+        *,
+        null_abs: float | None = None,
     ):
         return posterior_fields(
             point=0.08,
