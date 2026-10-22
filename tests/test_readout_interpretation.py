@@ -941,3 +941,18 @@ def test_absolute_scale_null_is_not_labeled_as_relative_lift():
     text = render_readout_text(interpret_readout([row], None))
     assert "null (absolute units): 0" in text
     assert "null (relative lift):" not in text
+
+
+def test_readout_leads_with_arm_counts_means_and_relative_decision():
+    results = _run_mean(_mean_frame())
+    text = render_readout_text(interpret_readout(results, results.metadata))
+    lines = text.splitlines()
+    decision = next(line for line in lines if "control → treatment" in line)
+
+    assert "n control=100" in decision and "n treatment=100" in decision
+    assert "mean control=4.95" in decision and "mean treatment=5.15" in decision
+    assert "effect=4.0404%" in decision and "interval=[" in decision
+    assert "stat_sig=" in decision
+    assert lines.index(decision) < lines.index(
+        next(line for line in lines if line.startswith("Integrity:"))
+    )

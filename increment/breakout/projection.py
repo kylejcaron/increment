@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import Any, Literal, get_args, get_origin
+from typing import Any, Literal, cast, get_args, get_origin
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -113,7 +113,11 @@ def _frame_columns(
     model: type[BaseModel], estimate_field: str | None, binomial_set_field: str | None
 ) -> list[str]:
     columns: list[str] = []
+    decision_row = model.__name__ in {"LiftEstimate", "BreakoutEstimate", "DailyLiftEstimate"}
+    arm_fact_fields = {"n_control", "n_treat", "mean_control", "mean_treat"}
     for name in model.model_fields:
+        if name in arm_fact_fields and not decision_row:
+            continue
         if name == estimate_field:
             columns.extend((name, "lb", "ub", "open_side"))
         elif name == "sequential_result":
@@ -134,6 +138,8 @@ def _frame_columns(
             columns.extend(("set_lower", "set_upper", "set_level", "set_numerical_qualification"))
         else:
             columns.append(name)
+    if decision_row:
+        columns.extend(("stat_sig", "p_value", "p_value_reason_code"))
     return columns
 
 
@@ -210,6 +216,48 @@ def _append_frame_value(
         data[name].append(repr(value))
     else:
         data[name].append(value)
+
+
+def _append_decision_frame_values(
+    data: dict[str, list[Any]], estimates: Sequence[BaseModel]
+) -> None:
+    from increment.estimation.results import row_p_value, row_stat_sig
+
+    for estimate in estimates:
+        if not callable(getattr(estimate, "stat_sig", None)):
+            data["stat_sig"].append(None)
+            data["p_value"].append(None)
+            data["p_value_reason_code"].append(None)
+            continue
+        try:
+            stat_sig = row_stat_sig(cast(Any, estimate))
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code != "readout.legacy.sampling_unreconstructible":
+                raise
+            data["stat_sig"].append(None)
+            data["p_value"].append(None)
+            data["p_value_reason_code"].append(code)
+            continue
+        data["stat_sig"].append(stat_sig)
+        if stat_sig is None or getattr(estimate, "sampling_available", None) is not True:
+            data["p_value"].append(None)
+            data["p_value_reason_code"].append(None)
+            continue
+        try:
+            data["p_value"].append(row_p_value(cast(Any, estimate)))
+            data["p_value_reason_code"].append(None)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code not in (
+                "sequential.route.unsupported",
+                "estimation.results.lift.p_value_cluster_robust_null_abs",
+                "estimation.results.lift.p_value_missing_log_mean_or_se",
+                "estimation.results.lift.liftestimate_dof_set",
+            ):
+                raise
+            data["p_value"].append(None)
+            data["p_value_reason_code"].append(code)
 
 
 def to_frame[M: BaseModel](
@@ -308,6 +356,10 @@ def to_frame[M: BaseModel](
     data: dict[str, list[Any]] = {name: [] for name in columns}
     for est in estimates:
         for name in model.model_fields:
+            if name in {"n_control", "n_treat", "mean_control", "mean_treat"} and (
+                model.__name__ not in {"LiftEstimate", "BreakoutEstimate", "DailyLiftEstimate"}
+            ):
+                continue
             _append_frame_value(
                 data,
                 name,
@@ -317,9 +369,18 @@ def to_frame[M: BaseModel](
                 getattr(est, binomial_set_field) if binomial_set_field is not None else None,
             )
 
+    if model.__name__ in {"LiftEstimate", "BreakoutEstimate", "DailyLiftEstimate"}:
+        _append_decision_frame_values(data, estimates)
+    derived_dtypes = {
+        "stat_sig": nw.Boolean(),
+        "p_value": nw.Float64(),
+        "p_value_reason_code": nw.String(),
+    }
     schema = {
         name: (
-            nw.Float64()
+            derived_dtypes[name]
+            if name in derived_dtypes
+            else nw.Float64()
             if name
             in (
                 estimate_field,

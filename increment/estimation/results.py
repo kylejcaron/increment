@@ -863,6 +863,11 @@ class _RowIdentity(CodedModel, BaseModel):
     control_weight_n: int | None = None
     treatment_weight_n: int | None = None
 
+    n_control: int | None = Field(default=None, exclude_if=lambda v: v is None)
+    n_treat: int | None = Field(default=None, exclude_if=lambda v: v is None)
+    mean_control: float | None = Field(default=None, exclude_if=lambda v: v is None)
+    mean_treat: float | None = Field(default=None, exclude_if=lambda v: v is None)
+
     @model_validator(mode="after")
     def _freeze_readout_contexts(self):
         _freeze_row_contexts(self)
