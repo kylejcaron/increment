@@ -40,7 +40,7 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from tests._unit_boundary import backend_fixture
-from tests.analysis_factory import make_analysis, make_analysis_like
+from tests.analysis_factory import held_source, make_analysis, make_analysis_like
 from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
 from tests.test_unit_day_artifact_facade import _extensions, _published
@@ -49,17 +49,43 @@ from tests.warning_codes import warning_codes
 
 def test_analysis_repr_and_run_signature_are_readable_without_changing_unset_identity():
     import inspect
+    import pandas as pd
 
-    from increment._analysis_config import UNSET
+    from increment import CupedCovariate
 
-    analysis = make_analysis()
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "user_id": ["u1", "u2", "u3", "u4"],
+                "variant": ["treatment", "treatment", "control", "control"],
+                "revenue": [25.0, 35.0, 22.5, 13.0],
+                "pre_revenue": [8.0, 9.0, 3.0, 4.0],
+            }
+        ),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_revenue", kind="continuous")
+                ),
+            )
+        ],
+    )
     display = repr(analysis)
     signature = str(inspect.signature(Analysis.run))
     assert "Analysis(" in display and "\n" in display
     assert "experiment=" in display and "design=" in display
     assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
     assert "<not set>" in signature and "0x" not in signature
-    assert inspect.signature(Analysis.run).parameters["decision_method"].default is UNSET
+    assert {row.method for row in _lift_rows(analysis.run())} == {"cuped"}
+    assert {
+        row.method
+        for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+    } == {"unadjusted"}
 
 
 def _lift_rows(rows: object) -> list[LiftEstimate]:
@@ -2239,11 +2265,11 @@ def test_closed_artifact_analysis_repr_does_not_reopen_its_source(published_arti
     _con, _native, context, store, ref = published_artifact
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     adopted.close()
-    source = adopted._state.source
+    source = held_source(adopted)
 
     for display in (repr(adopted), str(adopted), repr(adopted.__repr_args__())):
         assert display
-        assert adopted._state.source is source
+        assert held_source(adopted) is source
 
 
 @pytest.mark.slow
