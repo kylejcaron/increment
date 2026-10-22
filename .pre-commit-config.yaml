@@ -68,7 +68,7 @@ repos:
         always_run: true
       - id: prepush-tests
         name: pre-push unit tests
-        entry: uv run --no-sync python scripts/prepush_tests.py
+        entry: uv run --no-sync python -m scripts.prepush_tests
         language: system
         stages: [pre-push]
         pass_filenames: false

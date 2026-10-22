@@ -41,20 +41,17 @@ def main() -> int:
         print("pre-push: tests already passed for this tree and merge base")
         return 0
 
+    status = 0
     if "tach.toml" in _changed_paths(root, base):
-        status = _run(["uv", "run", "tach", "check"], root)
-    else:
-        testmon = root / ".testmondata"
-        if testmon.exists():
-            status = _run([sys.executable, "scripts/test_changed.py", "--tier", "unit"], root)
+        status = _run(["uv", "run", "--no-sync", "tach", "check"], root)
+    if status == 0:
+        if (root / ".testmondata").exists():
+            status = _run([sys.executable, "-m", "scripts.test_changed", "--tier", "unit"], root)
         else:
+            # The first run in a worktree records coverage for every unit test.
             status = _run(
-                [sys.executable, "-m", "scripts.affected", "--base", base, "--tier", "unit"], root
+                [sys.executable, "-m", "pytest", "--testmon", "-q", "-m", _unit_marker()], root
             )
-            if status == 0:
-                status = _run(
-                    ["uv", "run", "--no-sync", "pytest", "--testmon", "-m", _unit_marker()], root
-                )
 
     if status == 0:
         receipt.parent.mkdir(parents=True, exist_ok=True)
