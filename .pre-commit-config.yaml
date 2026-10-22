@@ -61,7 +61,7 @@ repos:
         types: [python]
       - id: test-weakening
         name: test weakening check
-        entry: "bash -c 'uv run --no-sync python -m scripts.check_test_weakening --base $(git merge-base origin/main HEAD) || { echo WARNING: test-weakening report requires review; CI enforces PR label; exit 0; }'"
+        entry: "bash -c 'uv run --no-sync python -m scripts.check_test_weakening --base $(git merge-base origin/main HEAD) || { echo \"WARNING: the test-weakening report needs review; CI enforces the test-reduction-approved label\"; exit 0; }'"
         language: system
         stages: [pre-push]
         pass_filenames: false

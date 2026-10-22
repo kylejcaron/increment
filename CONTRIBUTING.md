@@ -441,7 +441,7 @@ pytest-split distributes tests evenly.
 Make targets default to `max(1, CPU count // TEST_SLOTS, CPU count // held slots)` workers after acquiring their slot; override with
 `WORKERS=auto` or a specific count. CI passes `WORKERS=auto`; ordinary
 commands accept `PYTEST_ARGS` for pytest options. The pre-push checks run
-lint, type-checking and the affected fast tier; the CI matrix is the full-suite
+lint, type-checking and the unit tests the change executed (testmon selection, skipped for an already-passed tree); the CI matrix is the full-suite
 gate.
 
 The test bootstrap defaults numerical-library thread pools to one per process,

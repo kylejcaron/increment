@@ -177,7 +177,7 @@ acceptance; it does not authorize shared-hook changes.
 | --- | --- | --- |
 | Commit | Existing format/lint/type hooks; relevant regressions while editing, not a broad suite merely because a commit is created. | Roborev per commit; resolve findings with concrete code/test results. |
 | Task / AI task | Focused regressions, affected fast and relevant affected slow against the immutable task base, plus the changed public-behavior smoke. | One independent high-depth correctness review of the completed task; consume commit findings. |
-| PR | Required CI full-suite and applicable docs/build, parity and scientific gates; pre-push runs lint, type-checking and affected fast. `make check` is optional. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
+| PR | Required CI full-suite and applicable docs/build, parity and scientific gates; pre-push runs lint, type-checking and the unit tests the change executed. `make check` is optional. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
 | Stack / final integration | Same baseline on the frozen combined source, plus cross-PR journeys and applicable scientific campaigns or `make test-all`. | High-depth integration review of interactions and unreviewed resolutions; do not re-review every constituent PR from scratch. |
 
 - A standalone PR is the final integration gate. Rerun affected checks when
