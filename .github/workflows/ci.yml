@@ -135,7 +135,7 @@ jobs:
           value=$(uv run --no-sync python -c 'from integration.warehouse_execution._compile import _captured_compile_cache_key; print(_captured_compile_cache_key("snowflake").removeprefix("snowflake-"))')
           echo "value=$value" >> "$GITHUB_OUTPUT"
       - name: Restore or save compiled warehouse registry
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.2.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .pytest_cache/warehouse_compile_registry
           key: compile-registry-${{ steps.key.outputs.value }}
