@@ -1149,8 +1149,11 @@ def from_switchback_panel(  # noqa: PLR0915
         _validate_switchback_labels,
         _validate_switchback_metric_values,
         _validate_switchback_schedule,
+        require_eager_frame,
     )
     from increment._metric_specs import coerce_metrics, synthesise_metric
+
+    require_eager_frame(frame, constructor="from_switchback_panel")
 
     if not isinstance(identification, Randomized):
         _reject_identification(

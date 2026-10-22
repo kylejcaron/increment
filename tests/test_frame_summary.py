@@ -54,6 +54,61 @@ def test_frame_modules_keep_query_free_import_boundary(module_name: str) -> None
     assert result.returncode == 0, result.stderr
 
 
+def test_frame_input_type_refusals_name_the_route(monkeypatch):
+    import copy
+    import pickle
+
+    import ibis
+    import polars as pl
+
+    cases: tuple[tuple[Any, str, str], ...] = (
+        (
+            ibis.memtable({"user_id": ["u"], "variant": ["control"], "value": [1]}),
+            "Table",
+            "Analysis.from_definitions",
+        ),
+        (
+            pl.DataFrame({"user_id": ["u"], "variant": ["control"], "value": [1]}).lazy(),
+            "LazyFrame",
+            ".collect()",
+        ),
+        (
+            [{"user_id": "u", "variant": "control", "value": 1}],
+            "list",
+            "a supported eager dataframe, such as pandas, Polars, or Arrow",
+        ),
+        (
+            {"user_id": ["u"], "variant": ["control"], "value": [1]},
+            "dict",
+            "a supported eager dataframe, such as pandas, Polars, or Arrow",
+        ),
+    )
+
+    def forbidden_collect(self, *args, **kwargs):
+        raise AssertionError("LazyFrame must not be collected")
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", forbidden_collect)
+    for frame, input_type, route in cases:
+        with pytest.raises(InvalidRequestError) as caught:
+            from_unit_summary(
+                cast(Any, frame),
+                unit="user_id",
+                group="variant",
+                control="control",
+                metrics={"value": "mean"},
+            )
+        error = caught.value
+        assert error.code == "source.frame.input_type"
+        assert error.context == {
+            "constructor": "from_unit_summary",
+            "input_type": input_type,
+            "route": route,
+        }
+        for restored in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):
+            assert restored.code == error.code
+            assert restored.context == error.context
+
+
 _PLUGIN_TOL = 1e-6
 
 
