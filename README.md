@@ -87,7 +87,7 @@ design = Randomized(
 )
 plan = AnalysisPlan(primary="revenue", guardrails=["complaints"])
 metrics = [
-    MetricSpec(name="revenue", type="mean"),
+    "revenue",
     MetricSpec(
         name="complaints",
         type="conversion",

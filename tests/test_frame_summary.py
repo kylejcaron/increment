@@ -12,11 +12,14 @@ import importlib.util
 import math
 import subprocess
 import sys
+from datetime import date
 from typing import Any, cast
 
 import narwhals as nw
 import pyarrow as pa
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from increment import readouts
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
@@ -32,6 +35,79 @@ from increment.frame import (
 )
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
+
+
+@settings(max_examples=8, deadline=None)
+@given(offset=st.floats(min_value=0.1, max_value=10, allow_nan=False, allow_infinity=False))
+def test_metric_names_match_explicit_specs_for_float_and_bool_summary_and_panel(offset):
+    count = 40
+    rows = []
+    for i in range(count):
+        treatment = i >= count // 2
+        index = i % (count // 2)
+        rows.append(
+            {
+                "unit": f"u{i}",
+                "group": "treatment" if treatment else "control",
+                "revenue": float(index + 1) + (offset if treatment else 0),
+                "converted": index % 2 == 1,
+            }
+        )
+    table = pa.Table.from_pylist(rows)
+    panel = table.append_column("day", pa.array([date(2025, 1, 1)] * count, type=pa.date32()))
+    long_form = [
+        MetricSpec(name="revenue", type="mean"),
+        MetricSpec(name="converted", type="conversion"),
+    ]
+
+    def estimates(results):
+        return {(row.metric, row.group_id): row.require_lift() for row in results}
+
+    for frame, is_panel in ((table, False), (panel, True)):
+        if is_panel:
+            inferred = from_unit_panel(
+                frame,
+                unit="unit",
+                group="group",
+                date="day",
+                control="control",
+                metrics=["revenue", "converted"],
+            )
+            explicit = from_unit_panel(
+                frame,
+                unit="unit",
+                group="group",
+                date="day",
+                control="control",
+                metrics=long_form,
+            )
+        else:
+            inferred = from_unit_summary(
+                frame,
+                unit="unit",
+                group="group",
+                control="control",
+                metrics=["revenue", "converted"],
+            )
+            explicit = from_unit_summary(
+                frame,
+                unit="unit",
+                group="group",
+                control="control",
+                metrics=long_form,
+            )
+        try:
+            actual = estimates(readouts.run(inferred))
+            expected = estimates(readouts.run(explicit))
+            assert actual.keys() == expected.keys()
+            for identity, result in actual.items():
+                for field in ("value", "lb", "ub"):
+                    assert getattr(result, field) == pytest.approx(
+                        getattr(expected[identity], field)
+                    )
+        finally:
+            inferred.close()
+            explicit.close()
 
 
 @pytest.mark.parametrize(

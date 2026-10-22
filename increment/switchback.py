@@ -1151,7 +1151,7 @@ def from_switchback_panel(  # noqa: PLR0915
         _validate_switchback_schedule,
         require_eager_frame,
     )
-    from increment._metric_specs import coerce_metrics, synthesise_metric
+    from increment._metric_specs import _metrics_need_schema, coerce_metrics, synthesise_metric
 
     require_eager_frame(frame, constructor="from_switchback_panel")
 
@@ -1186,8 +1186,10 @@ def from_switchback_panel(  # noqa: PLR0915
             reason="unsupported_assignment_mechanism",
         )
     control, treatment = _switchback_groups(identification)
-
-    specs = coerce_metrics(metrics)
+    schema = (
+        nw.from_native(frame, eager_only=True).schema if _metrics_need_schema(metrics) else None
+    )
+    specs = coerce_metrics(metrics, schema=schema)
     unsupported = [spec.name for spec in specs if spec.type not in ("mean", "conversion")]
     if unsupported:
         _reject_metric(
