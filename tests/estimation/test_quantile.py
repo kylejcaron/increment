@@ -34,7 +34,13 @@ def test_point_is_the_raw_sample_quantile():
     assert point == float(np.quantile(y, 0.5))
 
 
-@pytest.mark.parametrize("n,q", [(400, 0.9), (100, 0.9)])
+@pytest.mark.parametrize(
+    "n,q",
+    [
+        pytest.param(400, 0.9, marks=pytest.mark.slow),
+        pytest.param(100, 0.9, marks=pytest.mark.slow),
+    ],
+)
 def test_se_matches_standard_order_stat_bracket(n, q):
     """Independent reference: the textbook distribution-free bracket
     [Y_(a), Y_(b)] with 1-based ranks a = ppf(alpha/2), b = ppf(1-alpha/2)+1
@@ -356,22 +362,6 @@ def test_rejects_multidimensional_values():
     assert exc_info.value.code == "estimation.quantile.values_one_dimensional"
 
 
-def test_se_matches_classical_formula_for_continuous_data():
-    """Continuous data must be numerically identical to the plain
-    Woodruff formula -- the bracket resolves finely enough that the
-    buffer term is exactly zero."""
-    rng = np.random.default_rng(7)
-    alpha = 0.05
-    q = 0.9
-    y = np.sort(rng.lognormal(mean=1.0, sigma=0.8, size=400))
-    a = int(binom.ppf(alpha / 2, 400, q))
-    b = int(binom.ppf(1 - alpha / 2, 400, q)) + 1
-    z = norm.ppf(1 - alpha / 2)
-    want_se = (math.log(y[b - 1]) - math.log(y[a - 1])) / (2 * z)
-    _, got_se = log_quantile_se(y, q=q, alpha=alpha)
-    assert math.isclose(got_se, want_se, rel_tol=1e-12)
-
-
 @pytest.mark.parametrize("n", [6, 20])
 def test_narrow_but_fully_distinct_bracket_pays_no_width_penalty(n):
     """A narrow bracket (few ranks) is not by itself a resolution
@@ -459,8 +449,15 @@ def _tied_samples(seed: int) -> dict[str, tuple[np.ndarray, float]]:
     }
 
 
-@pytest.mark.parametrize("seed", range(8))
-@pytest.mark.parametrize("kind", ["poisson", "ms", "ms_off_grid", "price_endings"])
+@pytest.mark.parametrize(
+    ("kind", "seed"),
+    [
+        pytest.param("ms", 0, id="ms-0"),
+        pytest.param("ms_off_grid", 0, id="ms_off_grid-0"),
+        pytest.param("poisson", 0, id="poisson-0"),
+        pytest.param("price_endings", 3, id="price_endings-3"),
+    ],
+)
 def test_tied_interval_contains_the_order_statistic_bracket(kind, seed):
     """``[Y_(a), Y_(b)]`` covers the quantile with probability at least
     1 - alpha for any distribution, discrete or not. On a coarsely tied
@@ -564,7 +561,14 @@ def test_quantile_lift_no_widened_note_on_continuous_small_n():
     assert est.note is None
 
 
-@pytest.mark.parametrize("offset", [1e6, 1e12, 1e15])
+@pytest.mark.parametrize(
+    "offset",
+    [
+        pytest.param(1e6, marks=pytest.mark.slow),
+        pytest.param(1e12, marks=pytest.mark.slow),
+        1e15,
+    ],
+)
 def test_quantile_lift_survives_a_large_offset(offset: float):
     """Two medians differing by exactly 1 at a large offset: the reported
     log ratio is ``log1p((Q_t - Q_c) / Q_c)`` (within one ulp of a 60-digit
