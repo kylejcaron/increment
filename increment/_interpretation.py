@@ -672,6 +672,13 @@ def _render_group_rows(group, visible_rows) -> list[str]:
                     treatment_group=group.treatment_group,
                 )
             )
+        if getattr(row, "posterior_available", False) is True:
+            posterior_estimate = getattr(row, "posterior_estimate", None)
+            chance_to_beat = getattr(row, "chance_to_beat", lambda: None)()
+            lines.append(
+                f"{row.metric} posterior: estimate={posterior_estimate!r}; "
+                f"chance_to_beat={chance_to_beat!r}"
+            )
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(

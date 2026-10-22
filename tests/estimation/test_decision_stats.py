@@ -582,9 +582,10 @@ def test_chance_to_beat_favorable_matches_chance_to_beat_for_increase():
     assert est.chance_to_beat_favorable() == pytest.approx(est.chance_to_beat())
 
 
-def test_chance_to_beat_favorable_matches_chance_to_beat_for_neutral():
+def test_favorable_probability_accessors_are_unavailable_for_neutral_direction():
     est = _est(mu=0.02, sigma=0.05).model_copy(update={"preferred_direction": "neutral"})
-    assert est.chance_to_beat_favorable() == pytest.approx(est.chance_to_beat())
+    assert est.prob_favorable() is None
+    assert est.chance_to_beat_favorable() is None
 
 
 def test_chance_to_beat_favorable_is_complement_for_decrease():

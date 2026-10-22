@@ -830,6 +830,9 @@ class _RowIdentity(CodedModel, BaseModel):
     # Stored at the declared relative null on the metric's good side; None for
     # absolute-margin nulls.
     posterior_prob_favorable: float | None = None
+    posterior_prob_favorable_reason_code: str | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     absolute_error_code: str | None = None
     absolute_error_context: Mapping[str, object] | None = None
     relative_error_code: str | None = None
@@ -2073,7 +2076,11 @@ class LiftEstimate(_RowIdentity):
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        if self.preferred_direction is None or self.null_abs is not None:
+        if (
+            self.preferred_direction is None
+            or self.preferred_direction == "neutral"
+            or self.null_abs is not None
+        ):
             return None
         threshold = math.log1p(self.null_lift) if self.posterior_scale == "log" else self.null_lift
         if self.preferred_direction == "decrease":
@@ -2103,7 +2110,11 @@ class LiftEstimate(_RowIdentity):
     def chance_to_beat_favorable(self) -> float | None:
         """Stored posterior probability on the favorable side of zero."""
         chance = self.chance_to_beat()
-        if chance is None or self.preferred_direction is None:
+        if (
+            chance is None
+            or self.preferred_direction is None
+            or self.preferred_direction == "neutral"
+        ):
             return None
         return 1.0 - chance if self.preferred_direction == "decrease" else chance
 

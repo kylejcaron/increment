@@ -130,6 +130,7 @@ def _run_mean(
     cluster=None,
     control="control",
     sensitivity_methods=None,
+    prior=None,
 ):
     if control != "control":
         frame = frame.copy()
@@ -153,14 +154,25 @@ def _run_mean(
         cluster=cluster,
     )
     return (
-        analysis.run()
+        analysis.run(prior=prior)
         if sensitivity_methods is None
-        else analysis.run(sensitivity_methods=sensitivity_methods)
+        else analysis.run(sensitivity_methods=sensitivity_methods, prior=prior)
     )
 
 
 def _interpret(results):
     return interpret_readout(results, results.metadata)
+
+
+def test_prior_backed_repr_shows_posterior_without_preferred_direction():
+    from increment.estimation.inference import Normal
+
+    results = _run_mean(_mean_frame(), prior=Normal(mu=0.0, sigma=0.1))
+
+    rendered = repr(results)
+
+    assert "value posterior: estimate=" in rendered
+    assert "chance_to_beat=" in rendered
 
 
 def test_failed_declared_allocation_is_integrity_first_and_not_laundered():
