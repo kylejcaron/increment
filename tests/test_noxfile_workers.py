@@ -9,11 +9,12 @@ from pathlib import Path
 import pytest
 
 from noxfile import TIER_MARKERS, _xdist_args
+from scripts.test_slots import WORKERS_PLACEHOLDER
 
 
 def test_ci_keeps_auto_workers() -> None:
     """CI delegates worker sizing to xdist."""
-    assert _xdist_args({"CI": "true", "WORKERS": "2"}, 12) == (
+    assert _xdist_args({"CI": "true", "WORKERS": "2"}) == (
         "-n",
         "auto",
         "--dist",
@@ -22,14 +23,13 @@ def test_ci_keeps_auto_workers() -> None:
 
 
 def test_local_workers_follow_lane_allowance() -> None:
-    """Local Nox uses one worker per three CPUs, at least one."""
-    assert _xdist_args({}, 12) == ("-n", "4", "--dist", "loadgroup")
-    assert _xdist_args({}, 2) == ("-n", "1", "--dist", "loadgroup")
+    """Local Nox resolves worker count after acquiring its lane."""
+    assert _xdist_args({}) == ("-n", WORKERS_PLACEHOLDER, "--dist", "loadgroup")
 
 
 def test_workers_variable_overrides_allowance() -> None:
     """WORKERS overrides the local CPU-derived allowance."""
-    assert _xdist_args({"WORKERS": "2"}, 12) == (
+    assert _xdist_args({"WORKERS": "2"}) == (
         "-n",
         "2",
         "--dist",

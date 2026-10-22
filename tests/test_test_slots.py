@@ -13,7 +13,39 @@ from pathlib import Path
 
 import pytest
 
+from scripts import test_slots
+from scripts.test_slots import _worker_allowance
+
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize(("held_slots", "expected"), [(1, 12), (2, 6), (3, 4)])
+def test_worker_allowance_uses_held_slots(held_slots: int, expected: int) -> None:
+    assert _worker_allowance(cpu_count=12, held_slots=held_slots, slot_count=3) == expected
+
+
+def test_single_nodeid_make_run_does_not_use_xdist() -> None:
+    result = subprocess.run(
+        ["make", "-n", "test", "TESTS=tests/x.py::test_y"],
+        cwd=Path(__file__).parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "-n " not in result.stdout
+
+
+def test_two_file_make_run_uses_xdist() -> None:
+    result = subprocess.run(
+        ["make", "-n", "test", "TESTS=tests/x.py tests/y.py"],
+        cwd=Path(__file__).parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "-n " in result.stdout
 
 
 def _environment(slot_dir: Path, **overrides: str) -> dict[str, str]:
@@ -235,3 +267,11 @@ def test_wrapped_exit_status_is_preserved(tmp_path: Path) -> None:
     wrapped = _wrapper(_environment(tmp_path), sys.executable, "-c", "raise SystemExit(3)")
     _wait(wrapped)
     assert wrapped.returncode == 3
+
+
+def test_worker_placeholder_is_replaced_by_the_held_allowance(monkeypatch) -> None:
+    monkeypatch.setattr(test_slots, "_workers", lambda: 6)
+    command = ["pytest", "-n", test_slots.WORKERS_PLACEHOLDER, "-k", "a or b"]
+
+    assert test_slots._with_workers(command) == ["pytest", "-n", "6", "-k", "a or b"]
+    assert test_slots._with_workers(["pytest", "-q"]) == ["pytest", "-q"]

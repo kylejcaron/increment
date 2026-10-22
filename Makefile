@@ -17,8 +17,9 @@ mutate:
 	$(SLOT) uv run --no-sync python scripts/mutation_campaign.py $(CAMPAIGN) --output mutation-results $(if $(filter 1,$(KILL_MATRIX)),--kill-matrix,)
 SLOT = uv run --no-sync python -m scripts.test_slots --
 PYTEST = uv run --extra demo --extra tables --extra dashboard pytest
-WORKERS ?= $(shell python3 -c 'import os; print(max(1, (os.cpu_count() or 1) // 3))')
-PYTEST_XDIST_ARGS ?= -n $(WORKERS) --dist loadgroup
+WORKERS ?=
+# @WORKERS@ is replaced by the slot wrapper with the allowance it computes after acquiring a slot.
+PYTEST_XDIST_ARGS ?= -n $(if $(strip $(WORKERS)),$(WORKERS),@WORKERS@) --dist loadgroup
 PYTEST_ARGS ?=
 TIER_MARKER = $(shell uv run python -c "from noxfile import TIER_MARKERS; print(TIER_MARKERS['$(TIER)'])")
 unexport \
@@ -96,7 +97,11 @@ prek:
 	uv run prek run --all-files
 test:
 ifneq ($(strip $(TESTS)),)
+ifeq ($(words $(TESTS))$(findstring ::,$(TESTS)),1::)
 	$(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_ARGS)
+else
+	$(SLOT) $(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+endif
 else
 	$(MAKE) test-unit
 

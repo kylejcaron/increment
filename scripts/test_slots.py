@@ -25,6 +25,38 @@ _HELD_FILE: TextIO | None = None
 _COMMAND: list[str] | None = None
 
 
+def _worker_allowance(cpu_count: int, held_slots: int, slot_count: int) -> int:
+    """Size workers against both the configured lane count and current load."""
+    return max(1, cpu_count // slot_count, cpu_count // held_slots)
+
+
+def _held_slots(directory: Path) -> int:
+    """Count held advisory locks without changing their ownership."""
+    if fcntl is None or not directory.exists():
+        return 0
+    held = 0
+    for index in range(_slot_count()):
+        stream = (directory / f"slot-{index}.lock").open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held += 1
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
+    return held
+
+
+def _workers() -> int:
+    """Return lane allowance; caller must hold a slot or is counted as one."""
+    held_slots = _held_slots(_slot_directory())
+    if "TEST_SLOT_HELD" not in os.environ:
+        held_slots += 1
+    held_slots = max(1, held_slots)
+    return _worker_allowance(os.cpu_count() or 1, held_slots, _slot_count())
+
+
 def _slot_directory() -> Path:
     configured = os.environ.get("TEST_SLOT_DIR")
     if configured:
@@ -110,16 +142,34 @@ def hold_slot() -> None:
         time.sleep(1)
 
 
+WORKERS_PLACEHOLDER = "@WORKERS@"
+
+
+def _with_workers(command: list[str]) -> list[str]:
+    """Replace the worker placeholder with the allowance computed while holding a slot."""
+    if WORKERS_PLACEHOLDER not in command:
+        return command
+    workers = str(_workers())
+    return [workers if argument == WORKERS_PLACEHOLDER else argument for argument in command]
+
+
 def main(argv: list[str]) -> int:
     """Acquire a slot and replace this process with the requested command."""
+    if argv == ["--workers"]:
+        print(_workers())
+        return 0
     if not argv or argv[0] != "--" or len(argv) == 1:
-        print("usage: python -m scripts.test_slots -- CMD [ARGS...]", file=sys.stderr)
+        print(
+            "usage: python -m scripts.test_slots --workers | -- CMD [ARGS...]",
+            file=sys.stderr,
+        )
         return 2
     global _COMMAND
     _COMMAND = argv[1:]
     hold_slot()
     os.environ["TEST_SLOT_HELD"] = "1"
-    os.execvp(argv[1], argv[1:])
+    command = _with_workers(argv[1:])
+    os.execvp(command[0], command)
     return 127
 
 

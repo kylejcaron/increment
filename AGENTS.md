@@ -112,7 +112,7 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   uses `slow or not slow`. Tags require successful `ci-ok` and a successful
   nightly run on the exact SHA unless the explicit `force` input is used. Each
   test has the configured 300-second timeout.
-- The default local worker count is `max(1, CPU count // 3)`; CI passes
+- The default local worker count is `max(1, CPU count // TEST_SLOTS, CPU count // held slots)`, measured after acquiring a test slot; CI passes
   `WORKERS=auto`. Tests MUST remain xdist-independent. The ignored
   `.test_durations` cache controls stable longest-first ordering.
 - The pre-push hook runs lint, type-checking and the affected fast tier.
@@ -121,7 +121,7 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   nightly on the exact tagged SHA unless `force` is supplied.
 - Use `make fmt`; build docs with `nox -s docs`, not bare MkDocs.
 - The unit boundary is enforced by `tests/_unit_boundary.py`: unit-selected tests cannot open DuckDB, start processes or open Internet sockets, and cannot request a `backend_fixture`; mark a real integration boundary or test a pure function on in-memory data.
-- `scripts/test_slots.py` coordinates heavy Make/Nox runs; focused `make test TESTS=...` is intentionally unwrapped. DuckDB defaults and Hypothesis profiles are configured in root `conftest.py`.
+- `scripts/test_slots.py` coordinates heavy Make/Nox runs; focused `make test TESTS=...` uses xdist under a slot for files/directories, while one node ID stays unwrapped and single-process. DuckDB defaults and Hypothesis profiles are configured in root `conftest.py`.
 - Before/after: unexplained expected value `tests/estimation/test_sampling_posterior.py:120` → independent 100-digit reference comment and parametrized cases in `tests/estimation/test_tails.py:23-26`.
 - Before/after: estimation assertion behind DuckDB `tests/test_cuped_identity.py::test_definitions_and_artifact_keep_decision_family_when_companion_changes` (`tests/covariate_cases.py:121`) → moments-route scalar-family evidence in `tests/test_cuped_route_evidence.py::test_single_cube_transports_carry_each_scalar_family`.
 - Run `make test TESTS=<nodeid>` while editing; before commit run `make test-affected BASE=$BASE`.

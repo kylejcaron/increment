@@ -329,7 +329,7 @@ to `${XDG_CACHE_HOME:-$HOME/.cache}/test-slots`. The wrapper waits when all
 slots are occupied and prints `waiting for a heavy test slot; held by:` plus
 the holders' pid, working directory, command and start time. Slot coordination
 is bypassed when `CI` or `TEST_SLOT_HELD` is present or `fcntl` is unavailable.
-Focused `make test TESTS=...` runs are intentionally unwrapped.
+Focused `make test TESTS=...` uses a slot and xdist for file/directory selections; one node ID remains unwrapped and single-process.
 
 On local slot-held runs the wrapper raises the command's nice value by 10
 before `exec`, leaving more CPU priority for interactive work. CI and nested
@@ -429,7 +429,7 @@ uses `make test-numerical-certification`. Nightly scientific-union shards use
 `make test-scientific SPLITS=4 GROUP=1`; without local timing data,
 pytest-split distributes tests evenly.
 
-Make targets default to `max(1, CPU count // 3)` workers. Override with
+Make targets default to `max(1, CPU count // TEST_SLOTS, CPU count // held slots)` workers after acquiring their slot; override with
 `WORKERS=auto` or a specific count. CI passes `WORKERS=auto`; ordinary
 commands accept `PYTEST_ARGS` for pytest options. The pre-push checks run
 lint, type-checking and the affected fast tier; the CI matrix is the full-suite
