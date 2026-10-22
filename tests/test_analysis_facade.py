@@ -2420,11 +2420,8 @@ def test_estimate_cate_matches_across_definitions_and_unit_summary(tmp_path):
         metrics={"revenue": "mean"},
         control="control",
     )
-    results = [
-        analysis.estimate_cate("revenue", control="control", interact=["tenure"])
-        for analysis in (native, oracle)
-    ]
-    native_result, oracle_result = results
+    native_result = native.estimate_cate("revenue", interact=["tenure"])
+    oracle_result = oracle.estimate_cate("revenue", control="control", interact=["tenure"])
     assert native_result.n == oracle_result.n == len(tenure)
     for field in ("ate", "se", "lb", "ub"):
         assert getattr(native_result, field) == pytest.approx(

@@ -76,36 +76,35 @@ from increment.power import (
 )
 
 baseline = Baseline(mean=20.0, var=400.0)
-# One fixed-horizon plan for an ordinary parallel test. Pass `comparisons=`
-# to split alpha across arms, or `clustered=True` for a clustered design;
-# build ArmPlanningProcedure directly for anything outside that.
-procedure = ArmPlanningProcedure.standard("mean")
+# The default procedure is a fixed-horizon standard for this baseline's metric.
 size = required_sample_size(
     relative_lift=0.02,
     baseline=baseline,
-    procedure=procedure,
     design=PowerDesign(power=0.80, allocation=0.5),
 )
-power = achieved_power(25_000, 0.02, baseline, procedure)
-mde = minimum_detectable_effect(25_000, baseline, procedure)
+power = achieved_power(25_000, 0.02, baseline)
+mde = minimum_detectable_effect(25_000, baseline)
 ```
 
 The solver signatures are:
 
 ```text
-required_sample_size(relative_lift, baseline, procedure, design=None, *, planned_looks=None)
-achieved_power(n_per_arm, relative_lift, baseline, procedure, design=None, *, planned_looks=None)
-minimum_detectable_effect(n_per_arm, baseline, procedure, design=None, *, planned_looks=None)
+required_sample_size(relative_lift, baseline, procedure=None, design=None, *, planned_looks=None)
+achieved_power(n_per_arm, relative_lift, baseline, procedure=None, design=None, *, planned_looks=None)
+minimum_detectable_effect(n_per_arm, baseline, procedure=None, design=None, *, planned_looks=None)
 ```
 
-`procedure` is required. `inference=`, `alpha=`, `alternative=`, and
-method-list arguments are not solver parameters; put those decisions in the
-procedure. `PowerDesign` supplies only the target `power` (default `0.80`) and
-treatment `allocation` (default `0.5`). `n_per_arm` is the treatment-arm size;
-the control-arm size follows from `allocation`, and `PowerResult.n_total` is
-the assigned total across the contrast. Each solver returns a complete
-`PowerResult` at the actual integer size, including `power`, `mde_relative`,
-and `effective_var`.
+When `procedure` is omitted, the baseline's declared metric type determines
+the standard procedure; clustered baselines also select the clustered standard.
+An explicit procedure always takes precedence. Pass an explicit procedure to
+change the decision method, inference regime, or other planning choices.
+`inference=`, `alpha=`, `alternative=`, and method-list arguments are not solver
+parameters; put those decisions in the procedure. `PowerDesign` supplies only
+the target `power` (default `0.80`) and treatment `allocation` (default `0.5`).
+`n_per_arm` is the treatment-arm size; the control-arm size follows from
+`allocation`, and `PowerResult.n_total` is the assigned total across the
+contrast. Each solver returns a complete `PowerResult` at the actual integer
+size, including `power`, `mde_relative`, and `effective_var`.
 
 ## Build a baseline
 
@@ -117,6 +116,12 @@ and `effective_var`.
 | `Baseline.from_ratio(...)` | A ratio metric's linearized numerator, denominator, and covariance moments. |
 | `Baseline.from_absorption(mean, var, icc)` | A measured one-way factor absorption reduction. |
 | `analysis.planning_baseline(metric)` | An `Analysis` over a prior or pilot experiment (or an in-flight experiment's pre-treatment data): reads that data and its declared design directly. |
+
+`Baseline.metric_type` defaults to `"mean"` and is omitted from dumps at that
+default, so existing mean baselines keep their serialized form. Conversion,
+ratio, and quantile constructors declare their respective metric types;
+`planning_baseline()` carries the declared metric type through the selected
+pilot route so the standard solver procedure matches the metric.
 
 With no prior experiment or pilot data, there is nothing for
 `planning_baseline` to read; use the other constructors with an assumed or
@@ -156,11 +161,12 @@ returns a `QuantileBaseline`.
 
 ### Quantile metrics
 
-A `QuantileBaseline` carries the pilot's real per-unit control values, not a
+`QuantileBaseline` carries the pilot's real per-unit control values, not a
 single variance: at each candidate size the solver re-evaluates the readout's
 own order-statistic construction over them, and its `var` is the per-unit
-variance the pilot's standard error implies. Pass it with
-`ArmPlanningProcedure.standard()`; another declared metric type is refused.
+variance the pilot's standard error implies. The baseline declares its metric
+type, so the solver can infer the matching standard procedure; an explicit
+procedure can still be supplied when different planning choices are needed.
 Results echo `PowerResult.planned_metric_name`/`planned_quantile`, so reusing
 one metric's baseline for another is visible in the answer. There is no CUPED
 route for quantiles.
@@ -474,8 +480,9 @@ arm-split.
 
 ## Curves
 
-`power_curve` takes one procedure or a sequence of procedures and exactly one
-of `relative_lift` and `target_power`; the omitted quantity is solved for
+`power_curve` takes a scalar procedure, a sequence of procedures, or no
+procedure (which selects the baseline's standard procedure). Provide exactly
+one of `relative_lift` and `target_power`; the omitted quantity is solved for
 each Cartesian-grid row, using the procedure's compiled decision alpha and
 inference:
 
@@ -486,7 +493,6 @@ curve = power_curve(
     n_per_arm=[5_000, 10_000, 20_000],
     relative_lift=[0.01, 0.02, 0.05],
     baseline=baseline,
-    procedure=procedure,
     units_per_week=50_000,
 )
 print(curve.to_frame())
@@ -495,14 +501,13 @@ mde_curve = power_curve(
     n_per_arm=[5_000, 10_000, 20_000],
     target_power=[0.80, 0.90],
     baseline=baseline,
-    procedure=procedure,
 )
 ```
 
 The full curve signature is:
 
 ```text
-power_curve(*, n_per_arm, baseline, procedure, relative_lift=None,
+power_curve(*, n_per_arm, baseline, procedure=None, relative_lift=None,
             target_power=None, design=None, units_per_week=None,
             planned_looks=None, max_workers=None)
 ```

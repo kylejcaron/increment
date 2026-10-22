@@ -45,6 +45,7 @@ from increment.power.core import (
     _require_companion_mde,
     _runtime_binomial,
     _solve_together,
+    default_procedure,
 )
 
 if TYPE_CHECKING:
@@ -370,7 +371,7 @@ def power_curve(
     *,
     n_per_arm: int | Sequence[int],
     baseline: Baseline,
-    procedure: ArmPlanningProcedure | Sequence[ArmPlanningProcedure],
+    procedure: ArmPlanningProcedure | Sequence[ArmPlanningProcedure] | None = None,
     relative_lift: float | Sequence[float] | None = None,
     target_power: float | Sequence[float] | None = None,
     design: PowerDesign | None = None,
@@ -390,7 +391,10 @@ def power_curve(
     if (relative_lift is None) == (target_power is None):
         _raise("power.exactly_one_relative")
 
-    procedures_raw = _as_tuple("procedure", procedure)
+    if procedure is None:
+        procedures_raw = (default_procedure(baseline),)
+    else:
+        procedures_raw = _as_tuple("procedure", procedure)
     procedures: tuple[ArmPlanningProcedure, ...] = ()
     for item in procedures_raw:
         validated_procedure, _ = _prepare_solver(item, baseline)

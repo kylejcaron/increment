@@ -17,6 +17,7 @@ Simulations draw CLUSTER MEANS directly (``y_ij = mu + b_j + e_ij`` gives mean
 from __future__ import annotations
 
 import math
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -706,11 +707,11 @@ def test_cluster_one_unit_mean_survives_pilot_ratio_roundoff():
         "trigger_rate": 2 / 49,
         "cluster_participation": 1.0,
     }
-    baseline = Baseline(**inputs)
+    baseline = Baseline(**cast(Any, inputs))
     assert baseline.design_effect == 1.0
     assert _cluster_dof(49, 49, baseline) == 1
     with pytest.raises(InvalidRequestError) as raised:
-        Baseline(**inputs, cluster_icc=0.2)
+        Baseline(**cast(Any, inputs), cluster_icc=0.2)
     assert raised.value.code == "power.baseline.cluster_icc_avg"
 
 

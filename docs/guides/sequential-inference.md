@@ -1,9 +1,25 @@
 # Registered sequential inference
 
 Use sequential monitoring when you need to make decisions as finalized
-experiment data arrives. Register the plan before looking at outcomes; exact
-Bernoulli monitoring is anytime-valid, while continuous means and ratios use
-an asymptotic method.
+experiment data arrives. Register the plan before looking at outcomes. Exact
+Bernoulli monitoring is anytime-valid; continuous means use a qualified
+asymptotic method. Although ratios can be converted to means, the ordinary
+sequential guarantee does not automatically transfer to that conversion.
+
+## Choose the route by the metric and the guarantee you need
+
+| Registered route | Metric types | Treatment arms | CUPED | Sample-size planning | Guarantee |
+|---|---|---:|---|---|---|
+| Exact Bernoulli (`always_valid`) | Conversion or retention | One or more | No | Unsupported; use fixed-horizon planning or asymptotic-route planning | Anytime-valid finite-sample guarantee under the registered sampling and reveal assumptions |
+| Asymptotic mean (`asymptotic_mean`) | Mean, conversion, retention, or ratio | One treatment/control comparison | Yes, when the required per-unit covariate is available | Supported as an asymptotic approximation | Asymptotic; not a finite-sample guarantee |
+
+Ratios use the asymptotic route's ratio model, not a ratio-to-mean relabeling;
+the denominator and source requirements still apply. For rare conversion
+rates, exact finite-sample monitoring can require very large samples, so its
+guarantee does not imply useful power at a practical sample size. Planning
+approximations are not runtime guarantees. See the relevant metric section
+below for route-specific assumptions and limitations.
+
 
 !!! warning "Guarantees depend on the data and reveal process"
     Every observation must follow the registered reveal contract. Outcome-driven

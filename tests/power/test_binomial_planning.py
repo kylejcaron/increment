@@ -2115,7 +2115,7 @@ class TestRouting:
             overrides["cuped_rho"] = 0.3
         if procedure.dependence == "cluster":
             overrides.update(cluster_icc=0.01, avg_cluster_size=5.0)
-        baseline = Baseline(mean=0.1, var=0.09, **overrides)
+        baseline = Baseline(mean=0.1, var=0.09, **cast("Any", overrides))
         for result in (
             achieved_power(2_000, 0.2, baseline, procedure),
             minimum_detectable_effect(2_000, baseline, procedure),

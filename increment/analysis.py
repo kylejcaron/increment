@@ -2775,7 +2775,7 @@ class Analysis:
         self,
         metric: str,
         *,
-        control: str,
+        control: str | None = None,
         interact: Sequence[Covariate | str],
         adjust: Sequence[Covariate | str] = (),
         alpha: float = 0.05,
@@ -2785,6 +2785,9 @@ class Analysis:
         """Fit CATE using this analysis's unit source and declared intervention."""
         from increment.cate import estimate_cate
 
+        if control is None:
+            assert self._design is not None
+            control = self._design.control_group
         return estimate_cate(
             self._cate_source("estimate_cate"),
             metric,

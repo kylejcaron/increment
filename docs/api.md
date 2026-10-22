@@ -568,12 +568,15 @@ same for either route.
 
 ## Sequential inference
 
-For continuous means, use `InferenceSpec(kind="asymptotic_mean")` with an
+Continuous means use `InferenceSpec(kind="asymptotic_mean")` with an
 ordinary fixed-allocation design. The source binds registration before capture;
 `expected_decision_sample_size` optionally sets pre-outcome tuning.
 For conversion and retention, `InferenceSpec(kind="always_valid",
-baseline_rate=...)` binds an exact Bernoulli e-process from the plan alone. See
-[sequential conversion monitoring](guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric).
+baseline_rate=...)` binds an exact Bernoulli e-process from the plan alone.
+Ratios may be convertible to means, but that conversion does not itself provide
+the same sequential guarantee. See
+[sequential conversion monitoring](guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric)
+and the [route decision table](guides/sequential-inference.md#choose-the-route-by-the-metric-and-the-guarantee-you-need).
 Definitions-based experiments specify arm weights in `Experiment.allocation`.
 See [ordinary continuous monitoring](guides/sequential-inference.md#ordinary-continuous-monitoring)
 for assumptions, finalization, and the qualified asymptotic guarantee.
