@@ -456,6 +456,7 @@ def test_dashboard_preparation_calls_public_health_method(
     assert observed_analyses[0] is not analysis
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("change", ["control", "window", "policy", "breakouts"])
 def test_explore_rejects_same_name_binding_changes_before_query(
     dashboard_con, dashboard_definitions, pricing, tmp_path, monkeypatch, change
@@ -550,6 +551,7 @@ def test_dashboard_readout_normalizes_relative_allocation_weights(
         analysis.close()
 
 
+@pytest.mark.slow
 def test_dashboard_explains_missing_allocation_scheme_separately(
     pricing: DashboardSnapshot,
 ) -> None:
@@ -761,6 +763,7 @@ def test_health_renderer_consumes_restored_health_report(
     assert "Assignment-law admission" not in html[: html.index("<details")]
 
 
+@pytest.mark.slow
 def test_both_experiments_share_the_same_sections(
     storefront: DashboardSnapshot, pricing: DashboardSnapshot
 ) -> None:
@@ -819,6 +822,7 @@ def test_primary_headline_colors_significant_results_by_declared_direction(
     assert f">Significant · {tone}</span>" in html
 
 
+@pytest.mark.slow
 def test_primary_headline_keeps_directionless_significance_neutral(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -857,6 +861,7 @@ def test_rows_correspond_one_to_one_with_estimates(storefront: DashboardSnapshot
 # Allocation history: real assigned-unit enrollment, not derived from samples.
 
 
+@pytest.mark.slow
 def test_snapshot_owns_nested_readout_data(storefront: DashboardSnapshot) -> None:
     rows = [dict(row) for row in storefront.readout_rows]
     components: list[dict[str, Any]] = [{"bounds": {"lower": 0.25}, "labels": ["registered"]}]
@@ -923,6 +928,7 @@ def test_allocation_history_reconciles_with_the_renamed_unequal_experiment(
     assert final_totals == pricing.allocation.observed
 
 
+@pytest.mark.slow
 def test_allocation_history_cannot_also_be_refused(storefront: DashboardSnapshot) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         dataclasses.replace(
@@ -1631,6 +1637,7 @@ def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
     assert "nonpositive_mean" in html
 
 
+@pytest.mark.slow
 def test_dashboard_explore_reports_unavailable_points_in_its_plot_notes(
     storefront_payload,
 ) -> None:
