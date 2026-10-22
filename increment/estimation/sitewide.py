@@ -341,6 +341,9 @@ class SitewideImpact(BaseModel):
         Assumptions required to interpret the selected population.
     allocation_balance : AllocationBalance | None
         Descriptive triggered-population SRM evidence; it never gates a result.
+    allocation_balance_unavailable_reason : str | None
+        Integrity refusal code when triggered balance is unavailable because
+        the design has no declared target allocation.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -375,6 +378,12 @@ class SitewideImpact(BaseModel):
     adjustment: Literal["unadjusted"] = "unadjusted"
     assumptions: tuple[str, ...] = ("enrolled_units_exhaust_exposure",)
     allocation_balance: AllocationBalance | None = None
+    allocation_balance_unavailable_reason: (
+        Literal[
+            "integrity.allocation_scheme_missing", "integrity.allocation_missing_or_nonconstant"
+        ]
+        | None
+    ) = None
     relative_dof: float | None = None
 
     def __repr__(self) -> str:
@@ -453,6 +462,9 @@ class SitewideRatioImpact(BaseModel):
         Assumptions required to interpret the selected population.
     allocation_balance : AllocationBalance | None
         Descriptive triggered-population SRM evidence; it never gates a result.
+    allocation_balance_unavailable_reason : str | None
+        Integrity refusal code when triggered balance is unavailable because
+        the design has no declared target allocation.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -496,6 +508,12 @@ class SitewideRatioImpact(BaseModel):
     adjustment: Literal["unadjusted"] = "unadjusted"
     assumptions: tuple[str, ...] = ("enrolled_units_exhaust_exposure",)
     allocation_balance: AllocationBalance | None = None
+    allocation_balance_unavailable_reason: (
+        Literal[
+            "integrity.allocation_scheme_missing", "integrity.allocation_missing_or_nonconstant"
+        ]
+        | None
+    ) = None
     relative_dof: float | None = None
 
     def __repr__(self) -> str:

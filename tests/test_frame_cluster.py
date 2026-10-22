@@ -603,7 +603,14 @@ def test_unit_count_skew_is_reported_but_not_tested_under_a_cluster():
     assert result.observed == {"control": 20, "treatment": 20}
     assert result.is_srm is False
     assert result.unit_counts == {"control": 40, "treatment": 120}
-    assert sample_ratio_mismatch(result.unit_counts, inference="fixed").is_srm is True
+    assert (
+        sample_ratio_mismatch(
+            result.unit_counts,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        ).is_srm
+        is True
+    )
 
 
 def test_cluster_count_skew_flags_even_when_unit_counts_balance():
@@ -619,7 +626,14 @@ def test_cluster_count_skew_flags_even_when_unit_counts_balance():
     assert result.observed == {"control": 20, "treatment": 8}
     assert result.is_srm is True
     assert result.unit_counts == {"control": 40, "treatment": 40}
-    assert sample_ratio_mismatch(result.unit_counts, inference="fixed").is_srm is False
+    assert (
+        sample_ratio_mismatch(
+            result.unit_counts,
+            expected={"control": 0.5, "treatment": 0.5},
+            inference="fixed",
+        ).is_srm
+        is False
+    )
 
 
 def test_srm_stays_at_unit_grain_without_a_declared_cluster():

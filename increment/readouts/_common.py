@@ -18,6 +18,10 @@ from increment.errors import (
     warn,
 )
 from increment.estimation.adjust import ESTIMATION_ADJUST_ESTIMATE_ATE_EVERY
+from increment.estimation.assignment_integrity import (
+    ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
+    ALLOCATION_SCHEME_MISSING_REFUSAL,
+)
 from increment.estimation.encouragement import (
     ESTIMATION_ENCOURAGEMENT_UNKNOWN_ESTIMAND_SUPPORTED,
     READOUT_ENCOURAGEMENT_VALUE_SCALE,
@@ -100,6 +104,8 @@ _REFUSALS = refusals(
             template="metric(s) {combined} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), but a per-metric shifted null is not built for the as-of encouragement view -- run() applies the margin to the whole-window ITT row, or declare a one-sided plan alternative for a test against null_lift=0.0",
         ),
         "readout.srm_source_declared": "srm() requires a source with a declared design -- this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
+        "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
+        "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
         "readout.roster.undeclared_observed_arms": RefusalSpec(
             "readout.roster.undeclared_observed_arms",
             InvalidRequestError,

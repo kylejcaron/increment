@@ -98,6 +98,10 @@ from increment.errors import (
     refusals,
 )
 from increment.errors import refuse as _refuse
+from increment.estimation.assignment_integrity import (
+    ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
+    ALLOCATION_SCHEME_MISSING_REFUSAL,
+)
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
 from increment.plan import (
@@ -257,6 +261,8 @@ def fit_predeclared_adjustment(
 _REFUSALS = refusals(
     InvalidRequestError,
     {
+        "integrity.allocation_scheme_missing": ALLOCATION_SCHEME_MISSING_REFUSAL,
+        "integrity.allocation_missing_or_nonconstant": ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL,
         "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
         "facade.analysis.unknown_experiment": RefusalSpec(
             "facade.analysis.unknown_experiment",
@@ -1649,8 +1655,8 @@ class Analysis:
                                     "route": (
                                         "Declare allocation_scheme='independent' on a design "
                                         "that uses an independent constant-probability draw, or "
-                                        "use Analysis.srm(inference='fixed') for one predeclared "
-                                        "look."
+                                        "pass the target shares as Analysis.srm(inference='fixed', "
+                                        "expected={...}) for one predeclared look."
                                     )
                                 }
                                 if integrity.code == "integrity.allocation_scheme_missing"
@@ -1987,32 +1993,35 @@ class Analysis:
         inference: Literal["always_valid", "fixed"] = "always_valid",
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> SRMResult | NotApplicable:
-        """Sample-ratio-mismatch check on the enrolled per-group counts.
+        """Check assigned or triggered counts against a declared allocation.
 
-        The default is an anytime-valid check for cumulative prefixes
-        under a known allocation with constant conditional arm
-        probabilities; pass ``inference="fixed"`` for one predeclared
-        Pearson look. On a clustered experiment, the chi-square runs
-        over distinct cluster counts per arm.
+        The default is an anytime-valid check for cumulative prefixes under
+        a known allocation with constant conditional arm probabilities; pass
+        ``inference="fixed"`` for one predeclared Pearson look. On a clustered
+        experiment, the chi-square runs over distinct cluster counts per arm.
+
+        ``expected`` supplies the target allocation for this call; otherwise
+        the design must declare ``allocation``. SRM never assumes equal shares
+        or infers its null from observed counts.
 
         Parameters
         ----------
         expected : dict[str, float] | None
-            Expected allocation proportions per group. Required (or a
-            declared ``allocation``) for ``inference="always_valid"``.
+            Expected allocation proportions per group.
         alpha : float
             Lifetime significance threshold (default 0.001).
         inference : {"always_valid", "fixed"}
             Evidence controlling ``is_srm``. Default ``"always_valid"``.
         population : {"assigned", "triggered"}
             ``"assigned"`` (default) checks enrolled counts.
-            ``"triggered"`` narrows to the declared trigger population
-            first; raises ``CapabilityError`` on a seam-family instance.
+            ``"triggered"`` narrows to the declared trigger population first.
 
         Raises
         ------
         CapabilityError
-            If the requested population is unavailable from the analysis source.
+            If the requested population is unavailable or no target allocation
+            is declared. Declare ``Randomized(control_group=..., allocation={...},
+            allocation_scheme=...)`` to check the design allocation.
 
         Returns
         -------
@@ -2047,6 +2056,16 @@ class Analysis:
                         "narrow to a triggered population."
                     ),
                 )
+                if expected is None and getattr(self._design, "allocation", None) is None:
+                    # Match assignment_integrity: no scheme -> allocation_scheme_missing; independent with no allocation -> allocation_missing_or_nonconstant.
+                    _raise(
+                        (
+                            "integrity.allocation_scheme_missing"
+                            if getattr(self._design, "allocation_scheme", None) is None
+                            else "integrity.allocation_missing_or_nonconstant"
+                        ),
+                        population=population,
+                    )
                 from increment.estimation.diagnostics import (
                     complete_srm_support,
                     resolve_srm_expected,

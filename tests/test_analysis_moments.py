@@ -153,7 +153,8 @@ def test_legacy_moments_preserve_missing_evidence():
     assert result.source_snapshot_id
     with pytest.raises(CapabilityError) as exc:
         legacy.srm(inference="fixed")
-    assert exc.value.code == "source.moments.assignment_counts"
+    assert exc.value.code == "integrity.allocation_scheme_missing"
+    assert exc.value.context == {"population": "assigned"}
 
 
 def test_legacy_fixed10_identity_is_stable_across_reload(tmp_path):

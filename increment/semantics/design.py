@@ -147,8 +147,7 @@ class Randomized(BaseModel):
 
     mechanism: Literal["randomized"] = "randomized"
     control_group: str
-    #: Target allocation weights; SRM checks against them. Required unless
-    #: the caller passes ``expected``; fixed inference falls back to equal split.
+    #: Target allocation weights; SRM requires these or a call-time ``expected``.
     allocation: Mapping[str, float] | None = None
     #: Assignment law; proportions alone never declare independence.
     allocation_scheme: AllocationScheme | None = Field(

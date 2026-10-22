@@ -8,8 +8,30 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
+from increment.errors import CapabilityError, RefusalSpec
 from increment.estimation.diagnostics import sample_ratio_mismatch
 from increment.semantics.design import Encouragement, Observational, Randomized
+
+ALLOCATION_SCHEME_MISSING_REFUSAL = RefusalSpec(
+    "integrity.allocation_scheme_missing",
+    CapabilityError,
+    template=(
+        "SRM requires a declared target allocation for population "
+        "{population!r}. Declare Randomized(control_group=..., "
+        "allocation={{...}}, allocation_scheme=...) and retry."
+    ),
+    keys=frozenset({"population"}),
+)
+ALLOCATION_MISSING_OR_NONCONSTANT_REFUSAL = RefusalSpec(
+    "integrity.allocation_missing_or_nonconstant",
+    CapabilityError,
+    template=(
+        "SRM requires a declared target allocation for population "
+        "{population!r}. Declare Randomized(control_group=..., "
+        "allocation={{...}}, allocation_scheme=...) and retry."
+    ),
+    keys=frozenset({"population"}),
+)
 
 if TYPE_CHECKING:
     from increment.estimation.readout_types import IntegrityResult

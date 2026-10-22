@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 
 from increment import readouts
-from increment.errors import IncrementWarning, InvalidRequestError
+from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
 from increment.frame import (
@@ -1294,9 +1294,8 @@ def test_srm_zero_fills_declared_missing_arm_for_always_valid_prefix() -> None:
     assert result.is_srm is True
 
 
-def test_srm_always_valid_missing_support_refuses_before_reading_source_counts() -> None:
-    """Support is a precondition, not an error discovered by reading the source."""
-
+def test_srm_missing_allocation_refuses_before_reading_source_counts() -> None:
+    """A missing target allocation is rejected before source count access."""
     from types import SimpleNamespace
 
     class NeverReadSource:
@@ -1310,11 +1309,12 @@ def test_srm_always_valid_missing_support_refuses_before_reading_source_counts()
             )
 
         def unit_counts(self) -> dict[str, int]:
-            raise AssertionError("srm() read unit counts before validating support")
+            raise AssertionError("srm() read source counts before rejecting missing allocation")
 
-    with pytest.raises(InvalidRequestError) as exc:
+    with pytest.raises(CapabilityError) as exc:
         readouts.srm(cast("Any", NeverReadSource()))
-    assert exc.value.code == "estimation.diagnostics.always_srm_predeclared"
+    assert exc.value.code == "integrity.allocation_missing_or_nonconstant"
+    assert exc.value.context == {"population": "assigned"}
 
 
 def test_srm_without_assignment_scheme_is_not_applicable() -> None:
@@ -1388,8 +1388,7 @@ def test_srm_zero_fill_preserves_unexpected_observed_unit_arm_for_strict_mismatc
     assert "holdout" in cast("Any", exc.value.context["counts_keys"])
 
 
-def test_srm_always_valid_requires_declared_allocation_but_fixed_keeps_equal_split() -> None:
-    """Only fixed-look Pearson inference may infer its support from observations."""
+def test_srm_requires_expected_or_design_allocation_for_both_inferences() -> None:
     source = from_unit_summary(
         _arrow_table(),
         unit="user_id",
@@ -1402,15 +1401,10 @@ def test_srm_always_valid_requires_declared_allocation_but_fixed_keeps_equal_spl
         ),
     )
 
-    with pytest.raises(InvalidRequestError) as exc:
-        readouts.srm(source)
-
-    assert exc.value.code == "estimation.diagnostics.always_srm_predeclared"
-
-    fixed = readouts.srm(source, inference="fixed")
-    assert isinstance(fixed, SRMResult)
-    assert fixed.observed == {"control": 6, "treatment": 6}
-    assert fixed.log_e_value is None
+    for inference in ("always_valid", "fixed"):
+        with pytest.raises(CapabilityError) as exc:
+            readouts.srm(source, inference=inference)
+        assert exc.value.code == "integrity.allocation_missing_or_nonconstant"
 
 
 def _revenue_spec() -> MetricSpec:

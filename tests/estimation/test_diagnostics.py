@@ -256,19 +256,15 @@ class TestSampleRatioMismatch:
         assert result.log_e_value >= -math.log(alpha)
         assert result.is_srm is True
 
-    def test_fixed_inference_without_expected_has_no_e_value(self):
-        """Observed-arm equal shares are a Pearson fallback, not an e-process null."""
-        result = sample_ratio_mismatch(
-            {"control": 480, "treatment": 520},
-            alpha=0.05,
-            inference="fixed",
-        )
+    def test_fixed_inference_requires_declared_expected_allocation(self):
+        with pytest.raises(InvalidRequestError) as exc:
+            sample_ratio_mismatch(
+                {"control": 480, "treatment": 520},
+                alpha=0.05,
+                inference="fixed",
+            )
 
-        assert result.inference == "fixed"
-        assert result.chi2_stat == pytest.approx(1.6)
-        assert result.fixed_p_value == pytest.approx(0.2059032107)
-        assert result.log_e_value is None
-        assert result.is_srm is (result.fixed_p_value < result.alpha)
+        assert exc.value.code == "estimation.diagnostics.predeclared_allocation_support"
 
     def test_unknown_inference_is_refused(self):
         with pytest.raises(InvalidRequestError) as exc_info:
@@ -319,7 +315,11 @@ class TestSampleRatioMismatch:
         """Five arms each expecting ~3 units fall under Cochran's rule of
         thumb - the fixed chi-square p-value is not trustworthy there."""
         counts = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5}
-        result = sample_ratio_mismatch(counts, inference="fixed")
+        result = sample_ratio_mismatch(
+            counts,
+            expected=dict.fromkeys(counts, 1 / len(counts)),
+            inference="fixed",
+        )
 
         assert result.min_expected_count == pytest.approx(3.0)
         assert result.low_expected_count is True
@@ -736,7 +736,11 @@ def test_srm_result_min_expected_count_is_json_portable():
 
     # Computed: the finite minimum serializes to a JSON number and reconstructs
     # to the same value.
-    result = sample_ratio_mismatch({"a": 100, "b": 100}, inference="fixed")
+    result = sample_ratio_mismatch(
+        {"a": 100, "b": 100},
+        expected={"a": 0.5, "b": 0.5},
+        inference="fixed",
+    )
     payload = result.model_dump_json()
     assert result.min_expected_count is not None
     assert json.loads(payload)["min_expected_count"] == result.min_expected_count

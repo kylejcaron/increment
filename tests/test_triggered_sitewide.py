@@ -706,8 +706,7 @@ def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_balance_counts_assigned_arm_with_no_members(tmp_path):
-    # No declared allocation: the balance check compares equal shares, and an
-    # assigned arm nobody in which triggered must count as zero, not vanish.
+    # A declared roster includes U even though nobody in that arm triggered.
     rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
     rows += [
         {
@@ -720,7 +719,7 @@ def test_triggered_balance_counts_assigned_arm_with_no_members(tmp_path):
         }
         for index in range(100)
     ]
-    analysis = _analysis(tmp_path, pa.Table.from_pylist(rows))
+    analysis = _analysis(tmp_path, pa.Table.from_pylist(rows), third_arm=True)
     adopted = None
     try:
         native = analysis.sitewide("revenue", arm="T", population="triggered")
@@ -732,7 +731,7 @@ def test_triggered_balance_counts_assigned_arm_with_no_members(tmp_path):
         artifact = adopted.sitewide("revenue", arm="T", population="triggered")
         for result in (native, artifact):
             assert result.allocation_balance is not None
-            assert result.allocation_balance.status == "failed"
+            assert result.allocation_balance.status == "passed"
         assert artifact.allocation_balance == native.allocation_balance
     finally:
         if adopted is None:
@@ -1075,8 +1074,15 @@ def test_triggered_sitewide_result_discloses_population_and_provenance(tmp_path)
             "never_triggered_unaffected",
             "enrolled_units_exhaust_exposure",
         )
-        assert result.allocation_balance is not None
-        assert result.allocation_balance.status in {"passed", "failed"}
+        assert result.allocation_balance is None
+        assert result.allocation_balance_unavailable_reason == "integrity.allocation_scheme_missing"
+        from increment.breakout.projection import to_frame
+
+        frame = cast(pa.Table, to_frame([result], backend="pyarrow"))
+        assert (
+            frame.column("allocation_balance_unavailable_reason")[0].as_py()
+            == "integrity.allocation_scheme_missing"
+        )
         assert "population='triggered'" in repr(result)
         assert "scaled_units=33" in repr(result)
         cls = type(result)
@@ -1137,6 +1143,15 @@ def test_triggered_sitewide_ratio_component_baseline(tmp_path):
         )
         result = analysis.sitewide("revenue_per_session", population="triggered")
         assert isinstance(result, SitewideRatioImpact)
+        assert result.allocation_balance is None
+        assert result.allocation_balance_unavailable_reason == "integrity.allocation_scheme_missing"
+        from increment.breakout.projection import to_frame
+
+        frame = cast(pa.Table, to_frame([result], backend="pyarrow"))
+        assert (
+            frame.column("allocation_balance_unavailable_reason")[0].as_py()
+            == "integrity.allocation_scheme_missing"
+        )
         arms = {arm.group_id: arm for arm in evidence.arm_stats}
         control, treatment = arms["C"], arms["T"]
         delta_num = treatment.mean_y() - control.mean_y()
@@ -1220,7 +1235,7 @@ def test_triggered_sitewide_failed_balance_is_qualified_not_refused(tmp_path):
         or row["group_id"] == "C"
         or int(row["user_id"][1:]) % 20 == 0
     ]
-    analysis = _analysis(tmp_path, pa.Table.from_pylist(filtered))
+    analysis = _analysis(tmp_path, pa.Table.from_pylist(filtered), third_arm=True)
     try:
         result = analysis.sitewide("revenue", population="triggered")
         assert result.allocation_balance is not None

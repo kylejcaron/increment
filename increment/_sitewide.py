@@ -137,32 +137,41 @@ class SitewideReadouts:
         population: Literal["assigned", "triggered"],
     ) -> SitewideImpact | SitewideRatioImpact:
         allocation_balance = None
+        allocation_balance_unavailable_reason = None
         population_counts = evidence.population_counts or {}
         if population == "triggered":
-            from increment.estimation.diagnostics import (
-                complete_srm_support,
-                sample_ratio_mismatch,
-            )
+            design = self._src.context.design
+            expected = getattr(design, "allocation", None)
+            if expected is None:
+                allocation_balance_unavailable_reason = (
+                    "integrity.allocation_scheme_missing"
+                    if getattr(design, "allocation_scheme", None) is None
+                    else "integrity.allocation_missing_or_nonconstant"
+                )
+            else:
+                from increment.estimation.diagnostics import (
+                    complete_srm_support,
+                    sample_ratio_mismatch,
+                )
 
-            grain, triggered_counts, unit_counts = cast(
-                "TriggeredCountsOperation", self._src
-            ).triggered_counts()
-            expected = getattr(self._src.context.design, "allocation", None)
-            # An assigned arm nobody in which triggered is a zero, not a missing arm.
-            support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
-            srm = sample_ratio_mismatch(
-                complete_srm_support(support, expected=expected),
-                expected=expected,
-                inference="fixed",
-                alpha=0.001,
-                grain=grain,
-                unit_counts=unit_counts,
-            )
-            allocation_balance = AllocationBalance(
-                statistic=srm.chi2_stat,
-                p_value=srm.fixed_p_value,
-                status="failed" if srm.is_srm else "passed",
-            )
+                grain, triggered_counts, unit_counts = cast(
+                    "TriggeredCountsOperation", self._src
+                ).triggered_counts()
+                # An assigned arm nobody in which triggered is a zero, not a missing arm.
+                support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
+                srm = sample_ratio_mismatch(
+                    complete_srm_support(support, expected=expected),
+                    expected=expected,
+                    inference="fixed",
+                    alpha=0.001,
+                    grain=grain,
+                    unit_counts=unit_counts,
+                )
+                allocation_balance = AllocationBalance(
+                    statistic=srm.chi2_stat,
+                    p_value=srm.fixed_p_value,
+                    status="failed" if srm.is_srm else "passed",
+                )
         assumptions = (
             (
                 "membership_independent_of_treatment",
@@ -187,6 +196,7 @@ class SitewideReadouts:
                 "adjustment": "unadjusted",
                 "assumptions": assumptions,
                 "allocation_balance": allocation_balance,
+                "allocation_balance_unavailable_reason": allocation_balance_unavailable_reason,
             }
         )
 

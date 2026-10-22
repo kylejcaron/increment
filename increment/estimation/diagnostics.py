@@ -42,7 +42,7 @@ _REFUSALS = refusals(
         "estimation.diagnostics.need_least_groups": "Need at least 2 groups for SRM test",
         "estimation.diagnostics.total_observed_count": "Total observed count must be > 0",
         "estimation.diagnostics.counts_non_negative": "counts must be non-negative, got {negative}",
-        "estimation.diagnostics.predeclared_allocation_support": "predeclared allocation support via expected is required for inference='always_valid'; validity also requires known, constant conditional assignment probabilities",
+        "estimation.diagnostics.predeclared_allocation_support": "predeclared allocation support via expected is required for both fixed and always_valid inference; always_valid validity also requires known, constant conditional assignment probabilities",
         "estimation.diagnostics.every_expected_share_finite": "every expected share must be finite, got {nonfinite}",
         "estimation.diagnostics.every_expected_share_positive": "every expected share must be > 0 -- a zero-share arm makes the chi-square statistic undefined for any observed count there (and negative shares are meaningless); got {expected}",
         "estimation.diagnostics.expected_share_normalization": "expected-share normalization produced nonpositive or nonfinite shares; got {invalid_normalized}",
@@ -65,10 +65,9 @@ class SRMResult(BaseModel):
     """Result of an allocation sample-ratio-mismatch check.
 
     ``fixed_p_value`` is the ordinary Pearson fixed-look p-value.
-    ``log_e_value`` is the current uniform-Dirichlet mixture evidence
-    for a predeclared allocation (unavailable when fixed inference
-    infers equal shares from observed arms). ``inference`` states
-    which quantity controls ``is_srm``.
+    ``log_e_value`` is the current uniform-Dirichlet mixture evidence for a
+    predeclared allocation. ``inference`` states which quantity controls
+    ``is_srm``.
 
     ``unassigned_units`` and ``mixed_assignment_units`` are accounting
     entries, not arms: they contribute no chi-square degree of freedom
@@ -232,10 +231,9 @@ def sample_ratio_mismatch(
     stateless and may decrease, since this result retains no historical
     maximum.
 
-    ``inference="fixed"`` uses the ordinary Pearson chi-square p-value
-    for one predeclared look or a caller-managed scheduled-look alpha
-    budget; without ``expected`` it falls back to equal observed-arm
-    shares and ``log_e_value`` is unavailable.
+    ``inference="fixed"`` uses the ordinary Pearson chi-square p-value for
+    one predeclared look or a caller-managed scheduled-look alpha budget.
+    Both modes require an explicit expected allocation.
 
     Apply to all assigned or targeted units, or to a demonstrably
     pre-treatment, arm-invariant exposure - a treatment-affected
@@ -243,11 +241,10 @@ def sample_ratio_mismatch(
     that randomization failed.
 
     ``counts``' ``"(unassigned)"``/``"(mixed assignment)"`` accounting
-    keys are split out and never treated as arms. ``expected`` is
-    required for ``always_valid``; its keys declare the arms, and
-    missing observed arms receive zero counts. ``unit_counts`` is
-    descriptive per-arm context for a cluster-grain test, never a
-    second allocation sample.
+    keys are split out and never treated as arms. ``expected`` declares the
+    target arm shares for both inference modes; missing observed arms receive
+    zero counts. ``unit_counts`` is descriptive per-arm context for a
+    cluster-grain test, never a second allocation sample.
     """
     if not 0.0 < alpha < 1.0:
         _raise("estimation.diagnostics.alpha", alpha=alpha)
@@ -284,29 +281,24 @@ def sample_ratio_mismatch(
     negative = {k: v for k, v in counts.items() if v < 0}
     if negative:
         _raise("estimation.diagnostics.counts_non_negative", negative=negative)
-    if expected is None and inference == "always_valid":
-        _raise("estimation.diagnostics.predeclared_allocation_support")
-
-    # Default: equal proportions
     if expected is None:
-        expected = dict.fromkeys(counts, 1.0 / n_groups)
-    else:
-        nonfinite = {k: v for k, v in expected.items() if not math.isfinite(v)}
-        if nonfinite:
-            _raise("estimation.diagnostics.every_expected_share_finite", nonfinite=nonfinite)
-        if any(v <= 0 for v in expected.values()):
-            _raise("estimation.diagnostics.every_expected_share_positive", expected=expected)
-        # Normalize exactly for both statistics. Scaling first keeps the total
-        # finite even when individually finite shares would overflow in a sum.
-        scale = max(expected.values())
-        scaled_total = math.fsum(v / scale for v in expected.values())
-        expected = {k: (v / scale) / scaled_total for k, v in expected.items()}
-        invalid_normalized = {k: v for k, v in expected.items() if not math.isfinite(v) or v <= 0}
-        if invalid_normalized:
-            _raise(
-                "estimation.diagnostics.expected_share_normalization",
-                invalid_normalized=invalid_normalized,
-            )
+        _raise("estimation.diagnostics.predeclared_allocation_support")
+    nonfinite = {k: v for k, v in expected.items() if not math.isfinite(v)}
+    if nonfinite:
+        _raise("estimation.diagnostics.every_expected_share_finite", nonfinite=nonfinite)
+    if any(v <= 0 for v in expected.values()):
+        _raise("estimation.diagnostics.every_expected_share_positive", expected=expected)
+    # Normalize exactly for both statistics. Scaling first keeps the total
+    # finite even when individually finite shares would overflow in a sum.
+    scale = max(expected.values())
+    scaled_total = math.fsum(v / scale for v in expected.values())
+    expected = {k: (v / scale) / scaled_total for k, v in expected.items()}
+    invalid_normalized = {k: v for k, v in expected.items() if not math.isfinite(v) or v <= 0}
+    if invalid_normalized:
+        _raise(
+            "estimation.diagnostics.expected_share_normalization",
+            invalid_normalized=invalid_normalized,
+        )
 
     # Chi-square statistic (every expected share is validated > 0 above,
     # so no term is ever dropped from the sum)

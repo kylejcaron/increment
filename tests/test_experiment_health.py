@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from increment import Analysis
-from increment.results import ExperimentHealth, HealthCheck
+from increment.results import ExperimentHealth, HealthCheck, SRMResult
 from increment.semantics.design import Randomized
 
 
@@ -538,8 +538,8 @@ def test_triggered_health_without_declared_allocation_is_unavailable_for_native_
         check = next(row for row in report.checks if row.check == "triggered_balance")
         assert check.availability == "unavailable"
         assert check.conclusion is None
-        assert check.code == "estimation.diagnostics.always_srm_predeclared"
-        assert "expected_allocation" in str(check.context.get("route"))
+        assert check.code == "integrity.allocation_scheme_missing"
+        assert "allocation=" in str(check.context["reason"])
 
 
 @pytest.mark.integration
@@ -795,8 +795,10 @@ def test_run_leaves_undeclared_srm_visible_in_health_check() -> None:
     )
     assert assigned.availability == "unavailable"
     assert assigned.code == "integrity.allocation_scheme_missing"
-    assert "allocation_scheme='independent'" in str(assigned.context["route"])
-    assert "Analysis.srm(inference='fixed')" in str(assigned.context["route"])
+    assert assigned.context["route"]
+    # The suggested fixed look works once target shares are supplied.
+    fixed = analysis.srm(inference="fixed", expected={"C": 0.5, "T": 0.5})
+    assert isinstance(fixed, SRMResult) and fixed.is_srm is False
 
 
 def test_health_switchback_does_not_substitute_unit_arm_srm() -> None:
@@ -1057,9 +1059,9 @@ def test_health_missing_assignment_scheme_suggests_supported_routes() -> None:
     )
     assert assigned.availability == "unavailable"
     assert assigned.code == "integrity.allocation_scheme_missing"
-    route = str(assigned.context["route"])
-    assert "allocation_scheme='independent'" in route
-    assert "Analysis.srm(inference='fixed')" in route
+    assert assigned.context["route"]
+    fixed = analysis.srm(inference="fixed", expected={"C": 0.5, "T": 0.5})
+    assert isinstance(fixed, SRMResult) and fixed.is_srm is False
 
 
 def test_health_snapshot_fingerprint_canonicalizes_nonfinite_evidence() -> None:

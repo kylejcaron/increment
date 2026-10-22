@@ -954,4 +954,47 @@ def test_sequential_rows_compare_every_public_field_except_route_identifiers():
     _assert_lift_rows_equal(row, renamed)
 
 
+def test_srm_undeclared_allocation_refusal_matches_summary_and_panel_ingress():
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.errors import CapabilityError
+
+    per_unit = pd.DataFrame(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["control", "control", "treatment", "treatment"],
+            "metric": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    panel = per_unit.loc[per_unit.index.repeat(2)].copy()
+    panel["day"] = ["2026-01-01", "2026-01-02"] * len(per_unit)
+
+    analyses = (
+        Analysis.from_unit_summary(
+            per_unit,
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics={"metric": "mean"},
+        ),
+        Analysis.from_unit_panel(
+            panel,
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"metric": "mean"},
+        ),
+    )
+    refusals = []
+    for analysis in analyses:
+        with pytest.raises(CapabilityError) as raised:
+            analysis.srm(inference="fixed")
+        refusals.append((raised.value.code, raised.value.context))
+
+    assert refusals[0] == refusals[1]
+    assert refusals[0][0] == "integrity.allocation_scheme_missing"
+
+
 pytestmark = pytest.mark.integration

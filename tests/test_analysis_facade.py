@@ -517,13 +517,17 @@ def test_analysis_srm_is_not_applicable_without_declared_independent_scheme():
     assert result.reason.startswith("integrity.allocation_scheme_missing")
 
 
-def test_analysis_srm_forwards_explicit_fixed_inference():
+@pytest.mark.parametrize("inference", ["fixed", "always_valid"])
+def test_analysis_srm_requires_declared_allocation(inference):
+    import copy
+    import pickle
+
     import pandas as pd
 
     frame = pd.DataFrame(
         {
             "user_id": range(8),
-            "group": ["control"] * 4 + ["treatment"] * 4,
+            "group": ["control"] * 5 + ["treatment"] * 3,
             "revenue": [1.0] * 8,
         }
     )
@@ -535,12 +539,19 @@ def test_analysis_srm_forwards_explicit_fixed_inference():
         metrics={"revenue": "mean"},
     )
 
-    result = analysis.srm(inference="fixed", alpha=0.05)
+    with pytest.raises(CapabilityError) as raised:
+        analysis.srm(inference=inference)
 
-    assert isinstance(result, SRMResult)
-    assert result.inference == "fixed"
-    assert result.alpha == 0.05
-    assert result.log_e_value is None
+    error = raised.value
+    assert error.code == "integrity.allocation_scheme_missing"
+    # Missing allocation is rejected before reading counts on every source.
+    assert error.context == {"population": "assigned"}
+    for restored in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):
+        assert type(restored) is type(error)
+        assert restored.code == error.code
+        assert restored.context == error.context
+        with pytest.raises(TypeError):
+            restored.context["population"] = "triggered"  # ty: ignore[invalid-assignment]
 
 
 def test_analysis_from_unit_summary_on_unassigned_threads_through():
@@ -628,31 +639,28 @@ def test_analysis_native_srm_zero_fills_explicit_missing_arm_for_fixed_look(seed
 
 
 @pytest.mark.slow
-def test_analysis_native_srm_requires_declared_independent_allocation(seeded_defs, monkeypatch):
-    """Always-valid SRM is not applicable without independent assignment."""
+def test_analysis_native_srm_requires_declared_allocation(seeded_defs, monkeypatch):
+    """Warehouse refusal does not execute count queries before checking allocation."""
     from examples._seed import seed_event_log
 
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=28)
+    queries: list[str] = []
+    to_pyarrow = con.to_pyarrow
 
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as a:
-        queries: list[str] = []
-        to_pyarrow = con.to_pyarrow
+    def record_query(expr, *args, **kwargs):
+        queries.append(str(expr))
+        return to_pyarrow(expr, *args, **kwargs)
 
-        def record_query(expr, *args, **kwargs):
-            queries.append(str(expr))
-            return to_pyarrow(expr, *args, **kwargs)
+    monkeypatch.setattr(con, "to_pyarrow", record_query)
 
-        monkeypatch.setattr(con, "to_pyarrow", record_query)
-        not_applicable = a.srm()
-        assert isinstance(not_applicable, NotApplicable)
-        assert not_applicable.reason.startswith("integrity.allocation_scheme_missing")
-        assert queries == []
-        fixed = a.srm(inference="fixed")
-
-    assert isinstance(fixed, SRMResult)
-    assert fixed.observed == {"control": 14, "treatment": 14}
-    assert fixed.log_e_value is None
+    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
+        for inference in ("always_valid", "fixed"):
+            with pytest.raises(CapabilityError) as raised:
+                analysis.srm(inference=inference)
+            assert raised.value.code == "integrity.allocation_scheme_missing"
+            assert raised.value.context == {"population": "assigned"}
+    assert queries == []
 
 
 def _extend_mixed_assignment_event_horizon(con) -> None:
