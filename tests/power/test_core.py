@@ -128,6 +128,8 @@ class TestClosedForm:
         assert (
             result.model_dump(mode="json")["numerical_qualification"] == "closed_form_model_only_v1"
         )
+        assert "effective_var=" in display
+        assert "inference_to_declare=" not in display
         from rich.pretty import pretty_repr
 
         rich_display = pretty_repr(result)
@@ -153,6 +155,7 @@ class TestClosedForm:
             result.model_dump(mode="json")["numerical_qualification"]
             == "sequential_crossing_quadrature_v1"
         )
+        assert "inference_to_declare=" not in display
         from rich.pretty import pretty_repr
 
         rich_display = pretty_repr(result)
