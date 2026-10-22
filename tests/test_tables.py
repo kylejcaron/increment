@@ -2884,6 +2884,7 @@ def _assert_label_inert(dom, control):
     assert len(dom.handlers) == len(control.handlers)
 
 
+@pytest.mark.integration
 @pytest.mark.grid(
     "Each hostile Markdown URL spelling is exercised across each readout label surface to cover distinct HTML parsing contexts."
 )
@@ -2910,6 +2911,7 @@ def test_readout_table_dangerous_markdown_label_is_inert(surface, label):
     assert dom.tags["svg"] == control.tags["svg"]
 
 
+@pytest.mark.integration
 @pytest.mark.grid(
     "Each hostile URL spelling is exercised inside units syntax across each split label surface, covering its separate Markdown reparse path."
 )
@@ -2931,6 +2933,7 @@ def test_readout_table_units_wrapped_split_label_is_inert(surface, label):
     assert dom.percent_tokens() == control.percent_tokens()
 
 
+@pytest.mark.integration
 @pytest.mark.grid(
     "Safe URL schemes are checked across Markdown label surfaces because renderer allowlisting can vary by context."
 )
@@ -2950,6 +2953,7 @@ def test_readout_table_keeps_safe_markdown_links_and_emphasis(surface, href):
     assert dom.executable_destinations() == []
 
 
+@pytest.mark.integration
 @pytest.mark.grid(
     "Raw markup payload classes are crossed with all label surfaces to cover independent browser parsing contexts."
 )
@@ -2971,6 +2975,7 @@ def test_readout_table_raw_markup_in_label_renders_as_literal_text(surface, raw)
     assert label in {value for row in rows for value in row.values()}
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("surface", _READOUT_SURFACES)
 def test_readout_table_benign_units_label_stays_readable_and_graphics_untouched(surface):
     pytest.importorskip("coeftable")
@@ -3033,6 +3038,7 @@ def _trend_value_tokens(dom):
     return Counter(re.findall(r"\d+\.\d\d", dom.text))
 
 
+@pytest.mark.integration
 @pytest.mark.grid(
     "Each dangerous URL class is checked in both trend-table label axes to cover their distinct rendering positions."
 )

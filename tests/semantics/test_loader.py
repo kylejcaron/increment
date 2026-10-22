@@ -766,6 +766,9 @@ def test_admit_read_only_sql_accepts_benign_table_hints(sql: str):
     admit_read_only_sql(sql, dialect="tsql", label="test query")
 
 
+@pytest.mark.grid(
+    "Invalid statements are crossed with dialect-specific syntax and error codes; each corpus entry covers a separate SQL write or locking construct."
+)
 @pytest.mark.parametrize(
     ("sql", "dialect", "code"),
     [

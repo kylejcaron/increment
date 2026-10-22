@@ -289,6 +289,9 @@ def _probe(encoding: object) -> Fraction:
     return _Probe.model_validate_json(json.dumps({"value": encoding})).value
 
 
+@pytest.mark.grid(
+    "Accepted rational spellings cover distinct syntax forms and portable-limit boundaries; each fixes a supported wire spelling and exact reduced value."
+)
 @pytest.mark.parametrize(
     "encoding,expected",
     [
@@ -315,6 +318,9 @@ def test_bounded_spellings_are_admitted_exactly(encoding, expected):
     assert _Probe(value=value).model_dump() == {"value": str(expected)}
 
 
+@pytest.mark.grid(
+    "Rejected rational spellings each exercise a distinct lexical or size refusal class, including whitespace, foreign syntax and portable-limit boundaries."
+)
 @pytest.mark.parametrize(
     "encoding",
     [
