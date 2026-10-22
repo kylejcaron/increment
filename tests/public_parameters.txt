@@ -48,6 +48,7 @@ effect_delta: Effect size used in unit-cycle planning.
 encouragement_uptake: Uptake declaration for an encouragement study.
 envelope: Declared design envelope for planning.
 estimands: Requested causal estimands.
+estimate: One estimate row to evaluate.
 estimates: Previously computed estimate rows.
 expected: Expected counts or values used for comparison.
 expected_allocation: Expected assignment share for each arm.
@@ -126,6 +127,7 @@ summary: Per-arm summary statistics.
 target: Policy or target population to evaluate.
 target_power: Desired probability of detecting the target effect.
 tau_prior_scale: Prior scale for segment-level heterogeneity.
+threshold_risk_ratio: Confounding risk ratio the sensitivity bound is evaluated against.
 trace: Logged policy decisions and outcomes.
 transformations: Declared transformations applied to the source.
 triggered: Whether the sequential analysis has triggered.
