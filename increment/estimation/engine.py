@@ -1939,6 +1939,9 @@ def _infer_lift_result(
         if strategy.n_clusters is not None:
             control_n, control_mean = _cluster_arm_unit_facts(control)
             treatment_n, treatment_mean = _cluster_arm_unit_facts(treatment)
+            if strategy.metric_type in {"ratio", "quantile"}:
+                # A per-unit outcome mean is not the arm's value of a ratio metric.
+                control_mean = treatment_mean = None
             cluster_result = cluster_result.model_copy(
                 update={
                     "n_control": control_n,
