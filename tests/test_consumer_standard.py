@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import re
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
+from types import FunctionType
+from typing import Protocol
+
+import pytest
+
+from increment.errors import CodedError
 
 ROOT = Path(__file__).resolve().parents[1]
+PUBLIC_PARAMETERS = ROOT / "tests" / "public_parameters.txt"
 EXPORTS = ROOT / "tests" / "public_exports.txt"
 TERMS = ROOT / "tests" / "consumer_jargon.txt"
 BASELINE = ROOT / "tests" / "consumer_jargon_baseline.txt"
@@ -442,3 +451,200 @@ def _surface_lines(source: Path, relative: str) -> list[tuple[int, str]]:
     if relative.endswith(".py"):
         return _user_facing_python_strings(source)
     return list(enumerate(source.read_text().splitlines(), 1))
+
+
+class _ExportingModule(Protocol):
+    @property
+    def __all__(self) -> Sequence[str]: ...
+
+
+def _unwrapped_function(value: object) -> FunctionType | None:
+    if isinstance(value, (classmethod, staticmethod)):
+        value = value.__func__
+    if isinstance(value, property) or inspect.isclass(value) or not callable(value):
+        return None
+    unwrapped = inspect.unwrap(value)
+    if inspect.isclass(unwrapped) or not inspect.isfunction(unwrapped):
+        return None
+    return unwrapped
+
+
+def _root_export_functions(module: _ExportingModule) -> list[tuple[str, FunctionType]]:
+    functions: list[tuple[str, FunctionType]] = []
+    for name in module.__all__:
+        function = _unwrapped_function(getattr(module, name))
+        if function is not None and function.__module__.startswith("increment"):
+            functions.append((name, function))
+    return functions
+
+
+def _frame_factory_functions(module: _ExportingModule) -> list[tuple[str, FunctionType]]:
+    functions: list[tuple[str, FunctionType]] = []
+    for name in module.__all__:
+        if not name.startswith("from_"):
+            continue
+        function = _unwrapped_function(getattr(module, name))
+        if function is not None:
+            functions.append((name, function))
+    return functions
+
+
+def _public_callable_parameters() -> dict[str, set[str]]:
+    import increment
+    from increment import frame
+    from increment.analysis import Analysis
+
+    callables = [
+        (f"increment.{name}", function) for name, function in _root_export_functions(increment)
+    ]
+    for name, value in vars(Analysis).items():
+        if name.startswith("_"):
+            continue
+        function = _unwrapped_function(value)
+        if function is not None:
+            callables.append((f"Analysis.{name}", function))
+    callables.extend(
+        (f"frame.{name}", function) for name, function in _frame_factory_functions(frame)
+    )
+
+    parameters: dict[str, set[str]] = {}
+    for location, function in callables:
+        for index, name in enumerate(inspect.signature(function).parameters):
+            if index == 0 and name in {"self", "cls"}:
+                continue
+            parameters.setdefault(name, set()).add(location)
+    return parameters
+
+
+def _public_parameter_vocabulary(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    allowed: dict[str, str] = {}
+    banned: dict[str, str] = {}
+    for number, raw in enumerate(path.read_text().splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        names, separator, meaning = raw.partition(":")
+        if not separator or not meaning.strip():
+            raise AssertionError(f"{path}:{number}: expected name/name: one-line meaning")
+        target = banned if names.startswith("!") else allowed
+        for name in names.removeprefix("!").split("/"):
+            name = name.strip()
+            if not name or name in allowed or name in banned:
+                raise AssertionError(f"{path}:{number}: empty or duplicate parameter {name!r}")
+            target[name] = meaning.strip()
+    return allowed, banned
+
+
+def test_public_parameter_vocabulary_matches_the_ratchet() -> None:
+    parameters = _public_callable_parameters()
+    allowed, banned = _public_parameter_vocabulary(PUBLIC_PARAMETERS)
+    disallowed = sorted(parameters.keys() & banned.keys())
+    missing = sorted(parameters.keys() - allowed.keys())
+    assert not disallowed and not missing, (
+        "Public parameter vocabulary changed: "
+        f"banned={[(name, sorted(parameters[name])) for name in disallowed]}, "
+        f"missing={[(name, sorted(parameters[name])) for name in missing]}"
+    )
+
+
+def test_public_parameter_ratchet_discovers_decorated_root_exports() -> None:
+    from functools import cache
+    from types import SimpleNamespace
+
+    def new_public_function(unregistered_root_parameter):
+        return unregistered_root_parameter
+
+    new_public_function.__module__ = "increment"
+    module = SimpleNamespace(
+        __all__=("new_public_function",),
+        new_public_function=cache(new_public_function),
+    )
+    functions = _root_export_functions(module)
+    assert "unregistered_root_parameter" in inspect.signature(functions[0][1]).parameters
+
+
+def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
+    from types import SimpleNamespace
+
+    def from_new_source(unregistered_factory_parameter):
+        return unregistered_factory_parameter
+
+    module = SimpleNamespace(
+        __all__=("from_new_source",),
+        from_new_source=from_new_source,
+    )
+    functions = _frame_factory_functions(module)
+    assert "unregistered_factory_parameter" in inspect.signature(functions[0][1]).parameters
+
+
+@pytest.mark.parametrize(
+    ("case", "code", "invoke"),
+    [
+        (
+            "unknown model field",
+            "model.field.unknown",
+            lambda: importlib.import_module("increment").Randomized(
+                control_group="c",
+                allocation_schem={"c": 0.5},  # ty: ignore[unknown-argument]
+            ),
+        ),
+        (
+            "list frame",
+            "source.frame.input_type",
+            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+                [],  # ty: ignore[invalid-argument-type]
+                unit="unit",
+                group="arm",
+                control="c",
+                metrics={"y": "mean"},
+            ),
+        ),
+        (
+            "lazy frame",
+            "source.frame.input_type",
+            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+                importlib.import_module("polars")
+                .DataFrame({"unit": ["u"], "arm": ["c"], "y": [1]})
+                .lazy(),  # ty: ignore[invalid-argument-type]
+                unit="unit",
+                group="arm",
+                control="c",
+                metrics={"y": "mean"},
+            ),
+        ),
+        (
+            "metric type required",
+            "frame.metrics.type_required",
+            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+                importlib.import_module("pyarrow").table({"unit": ["u"], "arm": ["c"], "y": [1]}),
+                unit="unit",
+                group="arm",
+                control="c",
+                metrics=["missing"],
+            ),
+        ),
+        (
+            "CUPED covariate kind required",
+            "frame.cuped.covariate_kind_required",
+            lambda: importlib.import_module("increment").Analysis.from_moments(
+                [],
+                control="c",
+                metrics=[
+                    importlib.import_module("increment").MetricSpec(
+                        name="y",
+                        type="mean",
+                        decision_method=importlib.import_module(
+                            "increment.estimation.engine"
+                        ).Method.cuped(covariates="pre"),
+                    )
+                ],
+            ),
+        ),
+    ],
+)
+def test_public_bad_inputs_raise_registered_codes(case, code, invoke) -> None:
+    from tests.refusal_registry import walk_refusal_registries
+
+    assert code in walk_refusal_registries(), f"{case}: expected code must be registered"
+    with pytest.raises(CodedError) as raised:
+        invoke()
+    assert raised.value.code == code

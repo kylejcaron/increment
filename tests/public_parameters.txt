@@ -1,0 +1,138 @@
+# Format: name/name: one-line meaning. Separate alternative spellings with /.
+!metric_name: Banned public function parameter; use metric or metrics.
+!outcome: Banned public function parameter; use the metric name.
+!control_group: Banned public function parameter; use control; model/result fields may retain this name.
+metric/metrics: Metric or set of metrics to analyze or summarize.
+adjust: Covariates used for outcome adjustment.
+alpha: Type-I error probability.
+append: Value appended to a sequential checkpoint.
+ard: Target value used by conditional-effect analysis.
+arm: Label identifying an assignment arm.
+as_of: Look or time at which to evaluate results.
+assignment: Declared assignment schedule.
+assignment_counts: Counts by arm used to check allocation.
+backend: Warehouse SQL dialect or selected execution backend.
+baseline: Expected control-arm values used for planning.
+bootstrap: Bootstrap resampling configuration.
+breakout: One declared breakout dimension.
+breakouts: Columns available for breakout analysis.
+canonical_definition_json: Canonical serialized definition.
+canonical_source_recipe_json: Canonical serialized source recipe.
+checkpoints: Sequential look schedule.
+cluster: Column identifying randomization clusters.
+cluster_weight: Weighting choice for cluster-level analysis.
+columns: Column names or mappings requested from a source.
+completed_windows_only: Whether to include only completed windows.
+con: Warehouse backend connection.
+context: Structured context associated with a request or refusal.
+contrast_references: Per-metric switchback contrast reference values.
+control: Label identifying the control arm.
+cost_per_treated: Cost assigned to each treated unit.
+counts: Observed counts by arm.
+covariate: Pre-exposure covariate column or covariate definition.
+covariate_missing: Policy for missing covariate values.
+credible_level: Posterior probability level for allocation bands.
+cycle: Column identifying switchback cycles.
+date: Column containing observation dates.
+decision_method: Estimator or variance-reduction method.
+definitions: Loaded experiment and metric definitions.
+definitions_id: Identifier for the definitions source.
+definitions_path: Path to YAML experiment definitions.
+delta: Effect size used for planning.
+deploy_grain: Unit or cluster level at which targeting is deployed.
+design: Experiment assignment and identification design.
+dimension: Name of a segment or breakout dimension.
+dimension_value_a: First value of a segment contrast.
+dimension_value_b: Second value of a segment contrast.
+effect_delta: Effect size used in unit-cycle planning.
+encouragement_uptake: Uptake declaration for an encouragement study.
+envelope: Declared design envelope for planning.
+estimands: Requested causal estimands.
+estimates: Previously computed estimate rows.
+expected: Expected counts or values used for comparison.
+expected_allocation: Expected assignment share for each arm.
+expected_context: Expected context to validate against.
+experiment_id: Stable identifier for the analyzed experiment.
+experiment_name: Name of the experiment definition.
+exploratory_metrics: Metrics included in an exploratory family.
+exposure_date: Column recording exposure timing.
+exposures: Exposure records or values.
+extensions: Optional artifact evidence extensions.
+factor: Name of a declared adjustment factor.
+finalized: Whether the sequential checkpoint is final.
+fraction: Share of units selected for targeting.
+fractions: Candidate shares of units selected for targeting.
+frame: Eager dataframe supplied as analysis input.
+freeze: Metrics to stop monitoring at the current checkpoint.
+grain: Unit at which observations or counts are represented.
+group: Column containing arm labels.
+horizon_metrics: Metrics defined at the analysis horizon.
+identification: Randomized design used for switchback identification.
+include_evaluation_population: Whether to report the evaluation population.
+inference: Inference procedure or declared inference assumptions.
+interact: Pre-exposure covariates used to model effect heterogeneity.
+intervention_grain: Declared level where intervention is applied.
+kind: Kind or category of the requested value.
+manifest: Artifact manifest describing source contents.
+max_workers: Maximum parallel workers to use.
+model: Model specification for sequential inference.
+n: Sample size or number of units.
+n_folds: Number of folds for honest validation.
+n_groups: Number of groups to evaluate.
+n_per_arm: Sample size per assignment arm.
+observation_end: Declared end of observation.
+on_mixed_assignment: Policy for units assigned to multiple or no arms.
+on_unassigned: Policy for rows without a recognized arm.
+operation: Operation to perform on the supplied data.
+path: File or resource path.
+payload: Serialized data or request payload.
+period: Column identifying switchback periods.
+plan: Declared analysis and decision policy.
+planned_looks: Number or schedule of planned analysis looks.
+pooling: How factor-adjusted observations are pooled.
+population: Population to which the analysis applies.
+previous: Prior sequential checkpoint.
+primary_key: Columns uniquely identifying relation rows.
+prior: Prior distribution or prior parameter values.
+procedure: Statistical procedure used for planning.
+records: Sequential observation records.
+ref: Artifact reference.
+reference: Reference policy or reference values.
+refresh_of: Generation that a refreshed artifact replaces.
+registration: Sequential model and data contract registered before outcomes are read.
+relative_lift: Relative effect used for sample-size planning.
+request: Portable request describing desired evidence.
+reveal_cursor: Position of the next sequential reveal.
+role: Semantic role of an artifact relation or metric.
+rollout_cost: Cost used to compare rollout recommendations.
+row: Single relation row.
+rows: Collection of rows.
+schema: Field schema describing serialized data.
+seed: Random seed for deterministic resampling.
+sensitivity_methods: Alternative analysis methods used for sensitivity checks.
+site_volume_coverage: Coverage declaration for site-volume evidence.
+skip_file_prefixes: File prefixes ignored when locating warning sources.
+snapshot: Sequential checkpoint or artifact snapshot.
+source: Data source supplying observations or moments.
+source_id: Stable identifier for the source data.
+source_mapping: Mapping from source columns to analysis fields.
+source_snapshot_evidence: Source cutoff and completeness evidence.
+spec: Specification describing behavior or input shape.
+stacklevel: Warning call-site stack depth.
+step: Column identifying steps within a switchback period.
+store: Policy for materializing warehouse reductions.
+study_id: Stable identifier for the study.
+summary: Per-arm summary statistics.
+target: Policy or target population to evaluate.
+target_power: Desired probability of detecting the target effect.
+tau_prior_scale: Prior scale for segment-level heterogeneity.
+trace: Logged policy decisions and outcomes.
+transformations: Declared transformations applied to the source.
+triggered: Whether the sequential analysis has triggered.
+unit: Column identifying experimental units.
+unit_counts: Counts of units by arm.
+units_per_week: Weekly unit volume used for planning.
+uptake: Column recording encouragement uptake.
+value: Value to encode or report.
+value_scale: Scale used for a treatment-effect value.
+verification: Verification evidence supplied for the request.
