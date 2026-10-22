@@ -480,10 +480,21 @@ class HeterogeneitySummary(BaseModel):
 
     def __repr__(self) -> str:
         scale = "relative (log-RR)" if self.scale == "relative" else "absolute (additive)"
-        return (
-            f"HeterogeneitySummary(metric={self.metric!r}, dimension={self.dimension!r}, "
-            f"scale={scale!r}, k={self.k}, q={self.q:.4g}, i2={self.i2!r})"
+        identity = ", ".join(
+            f"{name}={value!r}"
+            for name, value in (
+                ("metric", self.metric),
+                ("group_id", self.group_id),
+                ("dimension", self.dimension),
+                ("estimand", self.estimand),
+                ("value_scale", self.value_scale),
+                ("scale", scale),
+                ("method", self.method),
+                ("analysis_population", self.analysis_population),
+            )
+            if value is not None
         )
+        return f"HeterogeneitySummary({identity}, k={self.k}, q={self.q:.4g}, i2={self.i2!r})"
 
 
 class SegmentEstimate(CodedModel, BaseModel):

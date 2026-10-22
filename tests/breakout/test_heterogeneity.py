@@ -1102,6 +1102,9 @@ class TestMixedEstimandGrouping:
         assert late_abs[0].k == 5
         assert late_abs[0].n_excluded_outcome == 0
         assert late_abs[0].i2_reason_code is None
+        rendered = repr(summary)
+        assert "estimand='itt'" in rendered
+        assert "estimand='late'" in rendered
         assert {(row.estimand, row.scale) for row in segments} == {
             ("itt", "relative"),
             ("itt", "absolute"),
@@ -1183,6 +1186,9 @@ class TestSegmentHeterogeneity:
         # unaffected by treatment_b's presence in `estimates`.
         assert by_group["treatment_a"].q == pytest.approx(2.338235294117647)
         assert by_group["treatment_b"].q != pytest.approx(by_group["treatment_a"].q)
+        rendered = repr(summary)
+        assert "group_id='treatment_a'" in rendered
+        assert "group_id='treatment_b'" in rendered
 
     def test_both_scales_shipped_when_both_populated(self):
         estimates = BreakoutEstimates(
