@@ -336,7 +336,7 @@ def native(tmp_path_factory):
     pytest.importorskip("duckdb")
     import yaml
 
-    from increment import Analysis, Report
+    from increment import Analysis, MetricTrends
 
     n = 48
     d0 = dt.datetime(2026, 1, 1, 9, 0, 0)
@@ -560,7 +560,7 @@ def native(tmp_path_factory):
         control="control",
     )
 
-    # Report reads the same tables through experiment-less definitions
+    # MetricTrends reads the same tables through experiment-less definitions
     # (unwindowed variants plus the report-only and refused types).
     report_defs = Definitions.model_validate(
         {
@@ -628,7 +628,7 @@ def native(tmp_path_factory):
         asof = main.run_asof_lift(metrics=[d1])
         cluster_run = clustered.run()
         rehydrated_run = rehydrated.run()
-        report = Report.from_definitions(report_defs, con)
+        report = MetricTrends.from_definitions(report_defs, con)
 
     Native.export_rows = export_rows
     Native.export_metrics = {row["metric"] for row in export_rows}

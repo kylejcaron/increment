@@ -16,7 +16,7 @@ import warnings
 import ibis
 import pytest
 
-from increment import Analysis, Report
+from increment import Analysis, MetricTrends
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis_like
@@ -254,11 +254,11 @@ def test_summary_sql_contains_generated_joins(tmp_path, con):
 
 @pytest.mark.integration
 def test_report_trend_over_dim_backed_dimension(tmp_path, con):
-    # The calendar/analytics path: Report must see dim-joined columns too.
+    # The calendar/analytics path: MetricTrends must see dim-joined columns too.
     d = tmp_path / "report"
     d.mkdir()
     (d / "definitions.yaml").write_text(DECLARATIVE_YAML)
-    report = Report.from_definitions(d, con)
+    report = MetricTrends.from_definitions(d, con)
     trend = report.metric(
         "conversion",
         by=["country"],

@@ -1,4 +1,4 @@
-"""Report - the public facade for calendar metric trends.
+"""MetricTrends - the public entry point for calendar metric trends.
 
 The report twin of `Analysis`: same semantic layer, same fact sources, no
 experiment. A readout renders an experiment's results; a report evaluates
@@ -67,7 +67,7 @@ from increment.semantics.models import (
     TotalMetric,
 )
 
-__all__ = ["MetricTrend", "Report"]
+__all__ = ["MetricTrend", "MetricTrends"]
 
 
 if TYPE_CHECKING:
@@ -117,7 +117,7 @@ def _validate_report_options(alpha: float, week_start: str) -> None:
 class MetricTrend:
     """One metric's calendar trend: a lazy ibis query plus metadata.
 
-    When ``Report.metric`` omits ``end``, it resolves the selected metric's
+    When ``MetricTrends.metric`` omits ``end``, it resolves the selected metric's
     fact horizon through a bounded aggregate over the bound warehouse
     relation at construction; no in-memory row is registered. The returned
     trend remains lazy and its default edge is a snapshot.
@@ -184,20 +184,20 @@ class MetricTrend:
         _raise("reporting.metric_trend.unknown_backend", backend=backend)
 
 
-class Report:
+class MetricTrends:
     """Evaluate governed metrics over calendar time - no experiment.
 
     An omitted end date resolves the selected metric's own fact horizon
     through a bounded aggregate when the trend is constructed.
-    ``Report.metrics`` resolves each selected metric independently. The
+    ``MetricTrends.metrics`` resolves each selected metric independently. The
     default edge is therefore a snapshot, and ranges beyond the ten-year
     calendar capacity refuse before a trend is returned. Population SQL and
     the required ``unit_id`` key are admitted before this data query.
 
     Usage::
 
-        report = Report.from_definitions("definitions/", con)
-        trend = report.metric("purchase_rate", grain="week",
+        trends = MetricTrends.from_definitions("definitions/", con)
+        trend = trends.metric("purchase_rate", grain="week",
                               start=dt.date(2026, 1, 1))
         trend.to_frame()
     """
@@ -231,7 +231,7 @@ class Report:
         self._session = WarehouseSession(con, snapshot)
 
     @classmethod
-    def from_definitions(cls, defs: Definitions | str | Path, con: SQLBackend) -> Report:
+    def from_definitions(cls, defs: Definitions | str | Path, con: SQLBackend) -> MetricTrends:
         if not isinstance(defs, Definitions):
             defs = load(defs)
         return cls(defs, con)
@@ -437,7 +437,7 @@ class Report:
         # Admit and validate the caller population before any data query.
         pop_tbl = self._resolve_population(population)
         validate_report_population(pop_tbl)
-        # Report/calendar path carries only Definitions.day_boundary (a raw
+        # MetricTrends/calendar path carries only Definitions.day_boundary (a raw
         # string), never an Experiment -- see builders.day_boundary_offset.
         offset = day_boundary_offset(self._defs.day_boundary)
 
