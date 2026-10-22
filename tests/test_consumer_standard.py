@@ -623,18 +623,22 @@ def test_public_parameter_ratchet_discovers_new_frame_factories() -> None:
             ),
         ),
         (
-            "CUPED covariate kind required",
-            "frame.cuped.covariate_kind_required",
-            lambda: importlib.import_module("increment").Analysis.from_moments(
-                [],
+            "CUPED covariate on a text column",
+            "frame.validation.covariate_not_numeric",
+            lambda: importlib.import_module("increment").Analysis.from_unit_summary(
+                importlib.import_module("pyarrow").table(
+                    {"unit": ["u1", "u2"], "arm": ["c", "t"], "y": [1.0, 2.0], "pre": ["a", "b"]}
+                ),
+                unit="unit",
+                group="arm",
                 control="c",
                 metrics=[
                     importlib.import_module("increment").MetricSpec(
                         name="y",
                         type="mean",
-                        decision_method=importlib.import_module(
-                            "increment.estimation.engine"
-                        ).Method.cuped(covariates="pre"),
+                        decision_method=importlib.import_module("increment").Method.cuped(
+                            covariates="pre"
+                        ),
                     )
                 ],
             ),
