@@ -391,7 +391,7 @@ def test_public_retained_window_metadata_and_effect_round_trip(shared, carryover
     assert diagnostic.randomization_law == sequence.scheme
     assert diagnostic.independence_grain == sequence.independence_unit
     assert type(diagnostic).model_validate_json(diagnostic.model_dump_json()) == diagnostic
-    frame = cast(Any, ContrastResults([result]).to_frame())
+    frame = cast(Any, ContrastResults([result]).to_frame(backend="pandas"))
     frame_row = frame.iloc[0].to_dict()
     for row in (result.model_dump(), frame_row, estimates_to_readout(results)[0]):
         assert row["observation_steps"] == 3

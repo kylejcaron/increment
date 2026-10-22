@@ -103,6 +103,29 @@ def test_concatenation_preserves_contrast_results():
     assert hasattr(combined, "to_frame")
 
 
+def test_backend_survives_contrast_result_reconstruction():
+    import copy
+    import pickle
+
+    import polars as pl
+
+    result = _result()
+    results = ContrastResults([result, result], default_backend="polars")
+    transformed = pickle.loads(pickle.dumps(copy.deepcopy(results.filter(lambda _: True)[:1])))
+
+    assert transformed._default_backend == "polars"
+    assert isinstance(transformed.to_frame(), pl.DataFrame)
+
+
+def test_concatenated_backend_is_kept_only_when_inputs_agree():
+    left = ContrastResults([_result()], default_backend="polars")
+    same = ContrastResults([_result()], default_backend="polars")
+    different = ContrastResults([_result()], default_backend="pandas")
+
+    assert (left + same)._default_backend == "polars"
+    assert (left + different)._default_backend is None
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
 def test_to_frame_supports_declared_backends(backend):
     pytest.importorskip(backend)

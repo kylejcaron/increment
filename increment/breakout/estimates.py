@@ -44,11 +44,18 @@ from pydantic import (
 from scipy.stats import norm as _norm
 
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._literals import Alternative, Correction, Role, RowRole, ValueScale
+from increment._literals import (
+    Alternative,
+    Backend,
+    Correction,
+    Role,
+    RowRole,
+    ValueScale,
+    default_frame_backend,
+)
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
 from increment._source_types import MethodMomentEvidence, unit_frame_covariate_columns
-from increment.breakout.projection import Backend
 from increment.compatibility import _conservative_divide
 from increment.errors import (
     CapabilityError,
@@ -1051,6 +1058,7 @@ class EstimateList[M: BaseModel](list[M]):
 
     _model: ClassVar[type[BaseModel]]
     _summary_columns: ClassVar[tuple[str, ...] | None] = None
+    _default_backend: Backend | None
 
     def __init__(
         self,
@@ -1059,6 +1067,7 @@ class EstimateList[M: BaseModel](list[M]):
         metadata: ReadoutMetadata | None = None,
         source=None,
         sequential_snapshot=None,
+        default_backend: Backend | None = None,
     ):
         from increment.estimation.readout_types import validate_collection
 
@@ -1066,6 +1075,7 @@ class EstimateList[M: BaseModel](list[M]):
         self._metadata = metadata
         self.source = source
         self.sequential_snapshot = sequential_snapshot
+        self._default_backend = default_backend
         validate_collection(self, metadata)
 
     @property
@@ -1089,6 +1099,7 @@ class EstimateList[M: BaseModel](list[M]):
             self.metadata,
             self.source,
             self.sequential_snapshot,
+            self._default_backend,
         )
 
     def model_dump_json(self):
@@ -1105,6 +1116,7 @@ class EstimateList[M: BaseModel](list[M]):
             metadata=partial_metadata(self.metadata, rows, "filter"),
             source=self.source,
             sequential_snapshot=self.sequential_snapshot,
+            default_backend=self._default_backend,
         )
 
     def concat(self, other):
@@ -1126,10 +1138,11 @@ class EstimateList[M: BaseModel](list[M]):
 
     def to_frame(
         self,
-        backend: Backend = "pandas",
+        backend: Backend | None = None,
         columns: Sequence[str] | Literal["summary"] | None = None,
     ) -> IntoDataFrame:
-        """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
+        """Convert this list to a native frame; defaulting to its input backend."""
+        backend = default_frame_backend(backend or getattr(self, "_default_backend", None))
 
         from increment.breakout.projection import to_frame
 
@@ -1277,6 +1290,7 @@ class EstimateList[M: BaseModel](list[M]):
                 metadata=partial_metadata(self.metadata, result, "slice"),
                 source=self.source,
                 sequential_snapshot=self.sequential_snapshot,
+                default_backend=self._default_backend,
             )
         return cast("M", result)
 

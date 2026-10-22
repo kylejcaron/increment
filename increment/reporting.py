@@ -19,6 +19,7 @@ import ibis
 import ibis.expr.types as ir
 from ibis import to_sql as ibis_to_sql
 
+from increment._literals import Backend, default_frame_backend
 from increment.errors import (
     CapabilityError,
     InvalidRequestError,
@@ -168,9 +169,11 @@ class MetricTrend:
     def sql(self) -> str:
         return str(ibis_to_sql(self._table))
 
-    def to_frame(self, backend: str = "pandas"):
+    def to_frame(self, backend: Backend | None = None):
+        """Return the trend as a frame, preferring the available native backend."""
         import narwhals as nw
 
+        backend = default_frame_backend(backend)
         frame = nw.from_native(self._table.to_pyarrow(), eager_only=True)
         if backend == "pyarrow":
             return frame.to_native()

@@ -352,8 +352,8 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
     ]
 
     for results, expected_columns in collections:
-        full = cast(pd.DataFrame, results.to_frame())
-        summary = cast(pd.DataFrame, results.to_frame(columns="summary"))
+        full = cast(pd.DataFrame, results.to_frame(backend="pandas"))
+        summary = cast(pd.DataFrame, results.to_frame(backend="pandas", columns="summary"))
         assert set(summary.columns) == set(expected_columns)
         pd.testing.assert_frame_equal(summary, full.loc[:, summary.columns])
 

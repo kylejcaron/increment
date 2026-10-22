@@ -1304,7 +1304,7 @@ def test_collection_copy_protocols_preserve_failed_scope_and_provenance(operatio
     )
     assert copied.metadata == results.metadata
     assert copied.model_dump_json() == results.model_dump_json()
-    frame = copied.to_frame()
+    frame = copied.to_frame(backend="pandas")
     assert frame.loc[frame["metric"] == "guard", "lift"].isna().all()
     assert frame["decision_scope_complete"].eq(False).all()
 

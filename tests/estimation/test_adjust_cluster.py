@@ -470,7 +470,7 @@ def test_unit_weight_diagnostics_use_the_actual_arm_weights():
     unweighted = [result for result in results if result.method == "unadjusted"]
 
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
-    native_frame = results.to_frame()
+    native_frame = results.to_frame(backend="pandas")
     assert isinstance(native_frame, pd.DataFrame)
     frame = native_frame
     restored_weighted = next(result for result in restored if result.method == "iptw")

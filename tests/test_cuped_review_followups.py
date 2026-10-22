@@ -919,12 +919,12 @@ def test_unscoped_export_preserves_unknown_legacy_sampling_availability():
     estimate = _breakout_estimate(
         "revenue", "T", "unadjusted", "country", "US", 0.2, lb=0.1, ub=0.3
     ).model_copy(update={"sampling_available": None, "prior_shrunk": True})
-    frame = cast(Any, BreakoutEstimates([estimate]).to_frame())
+    frame = cast(Any, BreakoutEstimates([estimate]).to_frame(backend="pandas"))
     assert frame["sampling_available"].isna().all()
     assert frame["sampling_available"].dtype == "boolean"
 
     known = estimate.model_copy(update={"sampling_available": False})
-    exported = cast(Any, BreakoutEstimates([known]).to_frame())
+    exported = cast(Any, BreakoutEstimates([known]).to_frame(backend="pandas"))
     assert exported["sampling_available"].tolist() == [False]
 
 

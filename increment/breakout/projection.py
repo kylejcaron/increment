@@ -10,6 +10,7 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel
 
+from increment._literals import Backend, default_frame_backend
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.results import BinomialConfidenceSet, Estimate
 from increment.estimation.sequential_result import SequentialInferenceResult
@@ -32,7 +33,6 @@ _REFUSALS = refusals(
     },
 )
 _refuse = raiser(_REFUSALS)
-Backend = Literal["pandas", "polars", "pyarrow"]
 
 
 def _scalar_dtype(annotation: Any) -> nw.dtypes.DType:
@@ -215,7 +215,7 @@ def _append_frame_value(
 def to_frame[M: BaseModel](
     estimates: Sequence[M],
     model: type[M] | None = None,
-    backend: Backend = "pandas",
+    backend: Backend | None = None,
     columns: Sequence[str] | None = None,
 ) -> IntoDataFrame:
     """Convert a sequence of result models (:class:`LiftEstimate`,
@@ -241,9 +241,10 @@ def to_frame[M: BaseModel](
     model : type[M] | None
         Which model *estimates* holds. Required when *estimates* is
         empty, since an empty sequence carries no runtime type trace.
-    backend : Backend
-        Native dataframe backend to build: ``"pandas"``, ``"polars"``, or
-        ``"pyarrow"``.
+    backend : Backend | None
+        Native dataframe backend to build. When omitted, pandas is preferred,
+        then polars, then pyarrow. Collections created from dataframe input
+        default to that input's backend.
 
     columns : Sequence[str] | None
         Select known projection columns in canonical order. ``None`` keeps
@@ -261,6 +262,7 @@ def to_frame[M: BaseModel](
         endpoint; ``None`` for a closed interval and whenever there is no
         point estimate, including set-only rows (whose bounds are in ``lb``/``ub``).
     """
+    backend = default_frame_backend(backend)
     if estimates:
         inferred = type(estimates[0])
         if model is None:

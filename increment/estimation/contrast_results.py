@@ -11,7 +11,13 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from increment._literals import Alternative, PreferredDirection, Role
+from increment._literals import (
+    Alternative,
+    Backend,
+    PreferredDirection,
+    Role,
+    default_frame_backend,
+)
 from increment.errors import CodedModel, InvalidRequestError, RefusalSpec, refuse
 from increment.estimation.results import Estimate
 from increment.semantics.unit_cycle import (
@@ -24,7 +30,6 @@ from increment.semantics.unit_cycle import (
 if TYPE_CHECKING:
     from increment.estimation.readout_types import ReadoutMetadata
 
-Backend = Literal["pandas", "polars", "pyarrow"]
 
 # Independent units and shared blocks have different replication grains.
 RandomizationLaw = Literal["independent_bernoulli_order", "shared_schedule"]
@@ -391,6 +396,7 @@ class ContrastResults(list[ContrastResult]):
         metadata: ReadoutMetadata | None = None,
         source=None,
         sequential_snapshot=None,
+        default_backend: Backend | None = None,
     ):
         from increment.estimation.readout_types import validate_collection
 
@@ -398,6 +404,7 @@ class ContrastResults(list[ContrastResult]):
         self._metadata = metadata
         self.source = source
         self.sequential_snapshot = sequential_snapshot
+        self._default_backend = default_backend
         validate_collection(self, metadata)
 
     @property
@@ -421,6 +428,7 @@ class ContrastResults(list[ContrastResult]):
             self.metadata,
             self.source,
             self.sequential_snapshot,
+            self._default_backend,
         )
 
     def model_dump_json(self):
@@ -444,6 +452,7 @@ class ContrastResults(list[ContrastResult]):
                 metadata=partial_metadata(self.metadata, rows, "slice"),
                 source=self.source,
                 sequential_snapshot=self.sequential_snapshot,
+                default_backend=self._default_backend,
             )
         return super().__getitem__(index(key))
 
@@ -456,6 +465,7 @@ class ContrastResults(list[ContrastResult]):
             metadata=partial_metadata(self.metadata, rows, "filter"),
             source=self.source,
             sequential_snapshot=self.sequential_snapshot,
+            default_backend=self._default_backend,
         )
 
     def concat(self, other):
@@ -523,12 +533,9 @@ class ContrastResults(list[ContrastResult]):
     def __imul__(self, value):
         self._mutation("imul")
 
-    def to_frame(self, *, backend: Backend = "pandas") -> IntoDataFrame:
-        """Return rows as a pandas, polars, or pyarrow frame.
-
-        The nested :class:`Estimate` is expanded in the same shape as other
-        increment result frames: ``estimate``, ``lb``, and ``ub`` columns.
-        """
+    def to_frame(self, *, backend: Backend | None = None) -> IntoDataFrame:
+        """Return rows as a native frame; pandas is preferred when available."""
+        backend = default_frame_backend(backend or self._default_backend)
         columns = [
             "metric",
             "control_group",

@@ -1061,7 +1061,7 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
     assert restored_selected.family_axes == selected.family_axes
     assert restored_selected.family_q == selected.family_q
     assert restored_selected.family_size == selected.family_size
-    frame = restored.to_frame()
+    frame = restored.to_frame(backend="pandas")
     selected_frame = frame[
         (frame["analysis_population"] == "triggered")
         & (frame["metric"] == selected.metric)

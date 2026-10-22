@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import narwhals as nw
 import numpy as np
 import pyarrow as pa
 import pytest
@@ -54,7 +55,9 @@ def test_five_unplanned_metrics_are_visibly_unadjusted():
     assert len(rows) == 5
     assert {row.role for row in rows} == {None}
     assert {row.multiplicity_status for row in rows} == {"undeclared_plan"}
-    assert set(rows.to_frame()["multiplicity_status"]) == {"undeclared_plan"}
+    assert set(
+        nw.from_native(rows.to_frame(), eager_only=True)["multiplicity_status"].to_list()
+    ) == {"undeclared_plan"}
     assert {row["multiplicity_status"] for row in estimates_to_readout(rows)} == {"undeclared_plan"}
     restored = ReadoutResults.model_validate_json(rows.model_dump_json())
     assert {row.multiplicity_status for row in restored} == {"undeclared_plan"}
@@ -209,7 +212,9 @@ def test_primary_allocation_and_family_survive_filter_and_additional_declared_me
     filtered = rows.filter(lambda row: row.metric == "m0")
     assert filtered.metadata.scope.families == families
     assert filtered[0].family_id == rows[0].family_id
-    assert filtered.to_frame()["multiplicity_status"].tolist() == ["declared_plan"]
+    assert nw.from_native(filtered.to_frame(), eager_only=True)[
+        "multiplicity_status"
+    ].to_list() == ["declared_plan"]
     assert filtered[0].require_lift().alpha == pytest.approx(0.01)
     extended = analysis.run(metrics=names + ["m5"])
     assert [row.require_lift().alpha for row in extended if row.metric in names] == pytest.approx(

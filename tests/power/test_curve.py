@@ -614,6 +614,53 @@ class TestPowerCurveCollection:
             assert list(frame.columns) == EXPECTED_COLUMNS
             assert len(frame) == 0
 
+    @pytest.mark.integration
+    def test_default_backend_works_without_pandas(self):
+        import subprocess
+        import sys
+
+        code = """
+import sys
+import polars as pl
+from increment.results import PowerCurve
+from tests.power.test_curve import _point
+sys.modules["pandas"] = None
+result = PowerCurve([_point()]).to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "polars.dataframe.frame.DataFrame"
+        pyarrow_only = """
+import sys
+from importlib.abc import MetaPathFinder
+class BlockOptionalFrames(MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in {"pandas", "polars"}:
+            raise ModuleNotFoundError(name=fullname)
+sys.meta_path.insert(0, BlockOptionalFrames())
+import pyarrow as pa
+from increment.results import PowerCurve
+from tests.power.test_curve import _point
+result = PowerCurve([_point()]).to_frame()
+assert isinstance(result, pa.Table)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", pyarrow_only],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "pyarrow.lib.Table"
+
 
 class TestUnavailableCompanionMde:
     """A supplied-effect row whose target has no minimum detectable effect

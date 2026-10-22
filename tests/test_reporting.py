@@ -213,7 +213,11 @@ def test_report_fact_resolution_ignores_property_source_order(source_order):
                 ]
             ),
         )
-        frame = Report.from_definitions(definitions, con).metric("purchase_rate", **KW).to_frame()
+        frame = (
+            Report.from_definitions(definitions, con)
+            .metric("purchase_rate", **KW)
+            .to_frame(backend="pandas")
+        )
         week = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
         assert week.n == 2
         assert week.value == pytest.approx(0.5)
@@ -329,12 +333,16 @@ def test_report_snapshots_immutable_allocation_definitions():
         con.create_table("raw_events", ibis.memtable(ROWS))
         con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
         report = Report.from_definitions(definitions, con)
-        expected = report.metric("total_revenue", **KW).to_frame().sort_values("period")
+        expected = (
+            report.metric("total_revenue", **KW).to_frame(backend="pandas").sort_values("period")
+        )
 
         raw["experiments"][0]["allocation"]["T"] = 9
         raw["fact_sources"][0]["sql"] = "SELECT * FROM nonexistent_events"
         raw["metrics"][2]["aggregation"] = "count"
-        actual = report.metric("total_revenue", **KW).to_frame().sort_values("period")
+        actual = (
+            report.metric("total_revenue", **KW).to_frame(backend="pandas").sort_values("period")
+        )
         assert actual["value"].tolist() == expected["value"].tolist()
         assert actual["value"].tolist() == pytest.approx([10.0, 4.0])
         allocation = definitions.experiments[0].allocation
@@ -460,7 +468,7 @@ def test_completeness_horizon_scoped_to_metrics_own_fact():
     report = Report.from_definitions(Definitions.model_validate(DEFS), con)
     frame = report.metric(
         "revenue", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 25)
-    ).to_frame()
+    ).to_frame(backend="pandas")
     # Week 1 (Jan 5-11): fully within purchase's horizon (Jan 13) - complete.
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     assert bool(wk1.period_complete)
@@ -509,7 +517,9 @@ def test_report_bucketing_is_session_timezone_independent():
         # No explicit end=: the completeness horizon falls back to
         # tbl.ts.max() - the exact bug site. A session-dependent bucketing
         # there changes which periods the dense spine even covers.
-        frame = tz_report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame()
+        frame = tz_report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame(
+            backend="pandas"
+        )
         results[session_tz] = dict(zip(frame.period, frame.value, strict=True))
     assert results["UTC"] == results["America/Los_Angeles"]
     assert results["UTC"][dt.date(2025, 1, 2)] == 10.0
@@ -545,7 +555,7 @@ def test_report_buckets_by_the_declared_day_boundary_not_utc():
     )
     con.raw_sql("INSERT INTO tz_events VALUES ('u1', '2025-01-02 00:30:00+00', 'purchase', 10.0)")
     report = Report.from_definitions(Definitions.model_validate(defs), con)
-    frame = report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame()
+    frame = report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame(backend="pandas")
     values = dict(zip(frame.period, frame.value, strict=True))
     assert values[dt.date(2025, 1, 1)] == 10.0
     assert max(values) == dt.date(2025, 1, 1)
@@ -558,7 +568,7 @@ def test_zero_row_fact_horizon_with_explicit_end_never_complete(report):
     # With an explicit end=, every period must be incomplete, never NULL/crash.
     frame = report.metric(
         "refund_total", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 18)
-    ).to_frame()
+    ).to_frame(backend="pandas")
     assert len(frame) > 0
     assert (frame.period_complete == False).all()  # noqa: E712 - not NULL/NaN
     assert (frame.value == 0.0).all()  # zero-fill: no refund events anywhere
@@ -568,7 +578,9 @@ def test_zero_row_fact_horizon_with_explicit_end_never_complete(report):
 def test_zero_row_fact_horizon_with_default_end_empty_frame(report):
     # No end= given: edge falls back to horizon. A zero-row fact's sentinel
     # horizon (start - 1 day) precedes the spine entirely -> clean empty frame.
-    frame = report.metric("refund_total", grain="week", start=dt.date(2026, 1, 5)).to_frame()
+    frame = report.metric("refund_total", grain="week", start=dt.date(2026, 1, 5)).to_frame(
+        backend="pandas"
+    )
     assert len(frame) == 0
 
 
@@ -642,7 +654,9 @@ def test_default_report_horizon_capacity(grain, span):
             assert len(default_trend.to_table().execute()) == len(default)
             assert len(default_trend.to_frame("polars")) == len(default)
             assert default_trend.to_frame("pyarrow").num_rows == len(default)
-            explicit = report.metric("revenue", grain=grain, start=start, end=last).to_frame()
+            explicit = report.metric("revenue", grain=grain, start=start, end=last).to_frame(
+                backend="pandas"
+            )
             columns = ["period", "period_complete", "n", "value", "ci_lb", "ci_ub"]
             from pandas.testing import assert_frame_equal
 
@@ -658,7 +672,7 @@ def test_default_report_horizon_capacity(grain, span):
             population = con.table("report_units")
             average = report.metric(
                 "calendar_average", grain=grain, start=start, population=population
-            ).to_frame()
+            ).to_frame(backend="pandas")
             for row in average.itertuples():
                 period = row.period.date() if isinstance(row.period, dt.datetime) else row.period
                 if grain == "day":
@@ -750,8 +764,8 @@ def test_default_horizons_are_selected_per_metric_and_frozen():
         trends = report.metrics(["fresh", "ratio"], grain="day", start=start)
         assert trends["fresh"].end is None
         assert trends["ratio"].end is None
-        fresh = trends["fresh"].to_frame()
-        ratio = trends["ratio"].to_frame()
+        fresh = trends["fresh"].to_frame(backend="pandas")
+        ratio = trends["ratio"].to_frame(backend="pandas")
         assert max(fresh["period"]) == dt.date(2000, 1, 10)
         assert max(ratio["period"]) == dt.date(2000, 1, 15)
         assert ratio.loc[ratio.period == dt.date(2000, 1, 15), "value"].iloc[0] == pytest.approx(
@@ -762,7 +776,7 @@ def test_default_horizons_are_selected_per_metric_and_frozen():
             "INSERT INTO scoped_horizon_events VALUES "
             "('u1', TIMESTAMP '2020-01-02 12:00:00', 'purchase', 9.0)"
         )
-        assert max(trends["fresh"].to_frame()["period"]) == dt.date(2000, 1, 10)
+        assert max(trends["fresh"].to_frame(backend="pandas")["period"]) == dt.date(2000, 1, 10)
     finally:
         con.disconnect()
 
@@ -842,14 +856,16 @@ def test_zero_row_fact_ratio_numerator_horizon_never_complete(report):
     # DuckDB, so an unguarded zero-row numerator would let the populated denominator alone drive completeness; the sentinel coalesce fixes this.
     frame = report.metric(
         "refund_ratio", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 18)
-    ).to_frame()
+    ).to_frame(backend="pandas")
     assert len(frame) > 0
     assert (frame.period_complete == False).all()  # noqa: E712 - not NULL/NaN
 
 
 @pytest.mark.integration
 def test_zero_row_fact_ratio_numerator_default_end_empty_frame(report):
-    frame = report.metric("refund_ratio", grain="week", start=dt.date(2026, 1, 5)).to_frame()
+    frame = report.metric("refund_ratio", grain="week", start=dt.date(2026, 1, 5)).to_frame(
+        backend="pandas"
+    )
     assert len(frame) == 0
 
 
@@ -858,7 +874,7 @@ KW: dict[str, Any] = {"grain": "week", "start": dt.date(2026, 1, 5), "end": dt.d
 
 @pytest.mark.integration
 def test_conversion_trend_shape_and_wilson_ci(report):
-    frame = report.metric("purchase_rate", **KW).to_frame()
+    frame = report.metric("purchase_rate", **KW).to_frame(backend="pandas")
     assert set(frame.columns) == {
         "metric",
         "grain",
@@ -887,7 +903,7 @@ def test_wilson_ci_finite_at_tiny_alpha(report):
     alpha is small enough, returning z=inf and poisoning both CI bounds
     to NaN. The survival-form critical value (isf(alpha/2)) stays finite
     at this alpha."""
-    frame = report.metric("purchase_rate", **KW, alpha=1e-16).to_frame()
+    frame = report.metric("purchase_rate", **KW, alpha=1e-16).to_frame(backend="pandas")
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     assert math.isfinite(wk1.ci_lb)
     assert math.isfinite(wk1.ci_ub)
@@ -896,7 +912,7 @@ def test_wilson_ci_finite_at_tiny_alpha(report):
 @pytest.mark.integration
 def test_wilson_ci_not_zero_width_at_extreme_rate(report):
     pop = ibis.memtable([{"unit_id": "u1"}])
-    frame = report.metric("order_rate", population=pop, **KW).to_frame()
+    frame = report.metric("order_rate", population=pop, **KW).to_frame(backend="pandas")
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     assert wk1.value == pytest.approx(1.0)  # p-hat == 1
     assert wk1.ci_lb < 1.0  # Wald would collapse to zero width here
@@ -905,7 +921,7 @@ def test_wilson_ci_not_zero_width_at_extreme_rate(report):
 
 @pytest.mark.integration
 def test_mean_trend_normal_ci_and_n_equals_one_edge_case(report):
-    frame = report.metric("revenue", **KW).to_frame()
+    frame = report.metric("revenue", **KW).to_frame(backend="pandas")
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     # Week 1 active-in-source: u1(purchase=10), u2(page_view->0). n=2, mean=5.0,
     # var=(100-10**2/2)/(2-1)=50.0, se=sqrt(50/2)=5.0.
@@ -955,7 +971,7 @@ def test_mean_trend_variance_survives_extreme_mean():
         report = Report.from_definitions(Definitions.model_validate(DEFS), con)
         frame = report.metric(
             "revenue", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 11)
-        ).to_frame()
+        ).to_frame(backend="pandas")
         wk = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
         assert wk.n == 3
 
@@ -995,7 +1011,7 @@ def test_mean_trend_constant_period_has_zero_variance_not_nan():
     report = Report.from_definitions(Definitions.model_validate(DEFS), con)
     frame = report.metric(
         "revenue", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 11)
-    ).to_frame()
+    ).to_frame(backend="pandas")
     wk = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     assert wk.n == 3
     assert wk.value == pytest.approx(0.1, rel=1e-15)
@@ -1006,7 +1022,7 @@ def test_mean_trend_constant_period_has_zero_variance_not_nan():
 
 @pytest.mark.integration
 def test_total_and_active_have_null_n_and_ci(report):
-    frame = report.metric("wau", **KW).to_frame()
+    frame = report.metric("wau", **KW).to_frame(backend="pandas")
     assert frame.n.isna().all()
     assert frame.ci_lb.isna().all()
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
@@ -1015,7 +1031,7 @@ def test_total_and_active_have_null_n_and_ci(report):
 
 @pytest.mark.integration
 def test_dimensioned_trend_carries_dim_column(report):
-    frame = report.metric("total_revenue", by=["country"], **KW).to_frame()
+    frame = report.metric("total_revenue", by=["country"], **KW).to_frame(backend="pandas")
     assert "country" in frame.columns
     wk1 = frame[(frame.period == dt.date(2026, 1, 5))]
     # Dimensioned totals are sparse: exactly the segments with events.
@@ -1055,7 +1071,7 @@ def test_degenerate_default_denominator_refused(report):
 def test_filtered_conversion_on_single_fact_source_allowed(report):
     # Filtered conversion is NOT degenerate: denominator = all active units,
     # numerator = filtered subset.
-    frame = report.metric("web_order_rate", **KW).to_frame()
+    frame = report.metric("web_order_rate", **KW).to_frame(backend="pandas")
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     # Active on orders_only in wk1: u1 (web), u3 (store) -> 1/2 web.
     assert wk1.n == 2
@@ -1065,7 +1081,7 @@ def test_filtered_conversion_on_single_fact_source_allowed(report):
 @pytest.mark.integration
 def test_degenerate_denominator_ok_with_population(report):
     pop = ibis.memtable([{"unit_id": u} for u in ["u1", "u2", "u3"]])
-    frame = report.metric("order_rate", population=pop, **KW).to_frame()
+    frame = report.metric("order_rate", population=pop, **KW).to_frame(backend="pandas")
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     assert wk1.n == 3
     assert wk1.value == pytest.approx(2 / 3)  # u1 and u3 ordered in wk1
@@ -1073,7 +1089,7 @@ def test_degenerate_denominator_ok_with_population(report):
 
 @pytest.mark.integration
 def test_cross_source_ratio_population_and_horizon(report):
-    frame = report.metric("rev_per_order", **KW).to_frame()
+    frame = report.metric("rev_per_order", **KW).to_frame(backend="pandas")
     wk1 = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
     # Population = active on either source (u1,u2,u3); revenue wk1=10 (u1),
     # orders wk1=2 (u1,u3) -> 5.0. Dropping denominator-only u3 would wrongly give 10.0.
@@ -1090,7 +1106,7 @@ def test_cross_source_ratio_population_and_horizon(report):
 def test_dimensioned_conversion_end_to_end_by_country(report):
     # Entity-scoped dims are as-of-period-end, unit-level: u1 (US) purchased
     # -> converted; u2 (DE, page_view only) -> not converted.
-    frame = report.metric("purchase_rate", by=["country"], **KW).to_frame()
+    frame = report.metric("purchase_rate", by=["country"], **KW).to_frame(backend="pandas")
     assert "country" in frame.columns
     wk1 = frame[frame.period == dt.date(2026, 1, 5)]
     by_country = {row.country: (row.n, row.value) for row in wk1.itertuples()}
@@ -1193,7 +1209,7 @@ def test_rolling_mau(report):
     t = report.metric(
         "wau", grain="day", window=7, start=dt.date(2026, 1, 10), end=dt.date(2026, 1, 16)
     )
-    frame = t.to_frame()
+    frame = t.to_frame(backend="pandas")
     # page_views: u1 Jan6, u2 Jan7. Trailing-7d actives: Jan10-12 see both
     # (leading events count); Jan13 sees only u2; Jan14-16 see neither -> 0.
     assert list(frame.sort_values("period").value) == [2, 2, 2, 1, 0, 0, 0]
@@ -1208,7 +1224,7 @@ def test_rolling_total_revenue(report):
     t = report.metric(
         "total_revenue", grain="day", window=7, start=dt.date(2026, 1, 10), end=dt.date(2026, 1, 16)
     )
-    frame = t.to_frame()
+    frame = t.to_frame(backend="pandas")
     # purchase revenue: u1 Jan5=10.0, u2 Jan13=4.0. Trailing-7d sum sees
     # only Jan5 on Jan10-11, neither on Jan12, only Jan13 on Jan13-16.
     assert list(frame.sort_values("period").value) == [10.0, 10.0, 0.0, 4.0, 4.0, 4.0, 4.0]
@@ -1217,7 +1233,7 @@ def test_rolling_total_revenue(report):
 
 @pytest.mark.integration
 def test_window_null_for_calendar_buckets(report):
-    frame = report.metric("wau", **KW).to_frame()
+    frame = report.metric("wau", **KW).to_frame(backend="pandas")
     assert frame.window.isna().all()
 
 
@@ -1271,7 +1287,7 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
     kwargs = {"grain": "week", "start": dt.date(2026, 1, 1)}
     baseline = sorted(
         report.metric("total_revenue", **kwargs)  # ty: ignore[invalid-argument-type]
-        .to_frame()["value"]
+        .to_frame(backend="pandas")["value"]
         .tolist()
     )
 
@@ -1287,7 +1303,38 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
             "total_revenue",
             population="SELECT user_id FROM raw_events WHERE 1 = 0",
             **kwargs,  # ty: ignore[invalid-argument-type]
-        ).to_frame()
+        ).to_frame(backend="pandas")
     except (ValueError, CapabilityError):
         return  # refusing the unsupported selector outright is also correct
     assert sorted(scoped["value"].tolist()) != baseline
+
+
+@pytest.mark.integration
+def test_report_to_frame_default_works_without_pandas():
+    import subprocess
+    import sys
+
+    code = """
+import sys
+import ibis
+import polars as pl
+from increment import Report
+from increment.semantics.models import Definitions
+from tests.test_reporting import DEFS, KW, ORDER_ROWS, ROWS
+con = ibis.duckdb.connect()
+con.create_table("raw_events", ibis.memtable(ROWS))
+con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
+report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+sys.modules["pandas"] = None
+result = report.metric("purchase_rate", **KW).to_frame()
+assert isinstance(result, pl.DataFrame)
+print(f"{type(result).__module__}.{type(result).__name__}")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "polars.dataframe.frame.DataFrame"
