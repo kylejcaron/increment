@@ -1477,3 +1477,187 @@ def test_native_scalar_measure_binding_runs_end_to_end(tmp_path):
             )
     finally:
         con.disconnect()
+
+
+def _string_covariate_frame(*, panel: bool):
+    import pyarrow as pa
+
+    columns: dict[str, Any] = {
+        "unit": range(8),
+        "arm": ["control"] * 4 + ["treatment"] * 4,
+        "revenue": [10.0, 12.0, 9.0, 11.0, 13.0, 14.0, 12.0, 15.0],
+        "pre": ["a", "b", "c", "d", "a", "b", "c", "d"],
+    }
+    if panel:
+        columns["day"] = [1] * 8
+    return pa.table(columns)
+
+
+def _frame_analysis(frame, *, panel: bool, metric):
+    constructor = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+    return constructor(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[metric],
+        **({"date": "day"} if panel else {}),
+    )
+
+
+@pytest.mark.parametrize("panel", [False, True], ids=["summary", "panel"])
+@pytest.mark.parametrize("variance_reduction", ["cuped", "cuped_multicovariate"])
+@pytest.mark.parametrize("declared", [True, False], ids=["declared", "call_time"])
+def test_continuous_covariate_on_string_column_refuses_with_route(
+    panel, variance_reduction, declared
+):
+    from increment.errors import InvalidRequestError
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec
+    from increment.semantics.models import CupedCovariate
+
+    factory = Method.cuped if variance_reduction == "cuped" else Method.cuped_multicovariate
+    method = (
+        factory(covariates="pre")
+        if declared
+        else factory(covariates=CupedCovariate(name="pre", kind="continuous"))
+    )
+    frame = _string_covariate_frame(panel=panel)
+
+    with pytest.raises(InvalidRequestError) as raised:
+        if declared:
+            metric = MetricSpec(name="revenue", type="mean", decision_method=method)
+            _frame_analysis(frame, panel=panel, metric=metric).run()
+        else:
+            metric = MetricSpec(name="revenue", type="mean")
+            _frame_analysis(frame, panel=panel, metric=metric).run(decision_method=method)
+
+    assert raised.value.code == "frame.validation.covariate_not_numeric"
+    assert raised.value.context["covariate"] == "pre"
+    assert raised.value.context["variance_reduction"] == variance_reduction
+
+
+def test_definitions_alias_shorthand_matches_plain_form(tmp_path):
+    import warnings
+
+    from increment.estimation.engine import Method
+    from increment.semantics.models import CupedCovariate
+
+    path, con, *_ = _scalar_native_case(tmp_path)
+    plain = Method.cuped(
+        name="scalar_a", covariates=CupedCovariate(name="history_a", kind="continuous")
+    )
+    shorthand = Method.cuped(name="scalar_a", covariates="history_a")
+    try:
+        with Analysis.from_definitions("cov_test", path, con) as native:
+            # Overriding the declared methods may warn; only the rows are compared.
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                (named,) = native.run(decision_method=shorthand, sensitivity_methods=())
+                (typed,) = native.run(decision_method=plain, sensitivity_methods=())
+        assert named == typed
+    finally:
+        con.disconnect()
+
+
+@pytest.mark.parametrize("route", ["breakout", "daily_lift"])
+@pytest.mark.parametrize(
+    ("column", "code"),
+    [
+        ("pre", "frame.validation.covariate_not_numeric"),
+        ("absent_column", "source.frame.metric_missing"),
+    ],
+)
+def test_breakout_and_daily_lift_covariates_use_frame_refusals(route, column, code):
+    import pyarrow as pa
+
+    from increment.errors import InvalidRequestError
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec
+
+    frame = pa.table(
+        {
+            "unit": range(8),
+            "arm": ["control"] * 4 + ["treatment"] * 4,
+            "segment": ["x", "y"] * 4,
+            "day": [1] * 8,
+            "revenue": [10.0, 12.0, 9.0, 11.0, 13.0, 14.0, 12.0, 15.0],
+            "pre": ["a", "b", "c", "d", "a", "b", "c", "d"],
+        }
+    )
+    metric = MetricSpec(name="revenue", type="mean")
+    method = Method.cuped(covariates=column)
+
+    with pytest.raises(InvalidRequestError) as raised:
+        if route == "breakout":
+            Analysis.from_unit_summary(
+                frame.drop(["day"]),
+                unit="unit",
+                group="arm",
+                control="control",
+                breakouts=("segment",),
+                metrics=[metric],
+            ).run_breakout(decision_method=method)
+        else:
+            Analysis.from_unit_panel(
+                frame, unit="unit", group="arm", date="day", control="control", metrics=[metric]
+            ).run_daily_lift(decision_method=method)
+
+    assert raised.value.code == code
+
+
+def test_numeric_values_in_an_object_column_are_a_numeric_covariate():
+    import pandas as pd
+
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec
+
+    floats = pd.DataFrame(
+        {
+            "unit": range(8),
+            "arm": ["control"] * 4 + ["treatment"] * 4,
+            "revenue": [10.0, 12.0, 9.0, 11.0, 13.0, 14.0, 12.0, 15.0],
+            "pre": [1.0, 2.0, 4.0, 3.0, 1.0, 3.0, 2.0, 5.0],
+        }
+    )
+    objects = floats.assign(pre=floats["pre"].astype(object))
+    metric = MetricSpec(name="revenue", type="mean", decision_method=Method.cuped(covariates="pre"))
+
+    def lifts(frame):
+        rows = _frame_analysis(frame, panel=False, metric=metric).run()
+        return [row.require_lift() for row in rows]
+
+    assert lifts(objects) == lifts(floats)
+
+
+def test_object_numeric_covariate_with_pandas_missing_follows_its_missing_policy():
+    import warnings
+
+    import pandas as pd
+
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec
+    from increment.semantics.models import CupedCovariate
+
+    values = [1.0, 2.0, None, 3.0, 1.0, 3.0, 2.0, 5.0]
+    floats = pd.DataFrame(
+        {
+            "unit": range(8),
+            "arm": ["control"] * 4 + ["treatment"] * 4,
+            "revenue": [10.0, 12.0, 9.0, 11.0, 13.0, 14.0, 12.0, 15.0],
+            "pre": values,
+        }
+    )
+    objects = floats.assign(
+        pre=pd.Series([pd.NA if v is None else v for v in values], dtype=object)
+    )
+    method = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous", missing="zero"))
+    metric = MetricSpec(name="revenue", type="mean", decision_method=method)
+
+    def lifts(frame):
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            rows = _frame_analysis(frame, panel=False, metric=metric).run()
+        return [row.require_lift() for row in rows]
+
+    assert lifts(objects) == lifts(floats)

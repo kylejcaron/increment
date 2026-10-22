@@ -319,21 +319,34 @@ def check_total_clusters(
         )
 
 
+CovariateArg = str | CupedCovariate | CupedCovariateBinding
+
+
+def _as_covariate(value: CovariateArg) -> CupedCovariate | CupedCovariateBinding:
+    """A bare column name is one numeric covariate; categorical ones are declared explicitly."""
+    if isinstance(value, str):
+        return CupedCovariate(name=value, kind="continuous")
+    return value
+
+
 def _normalize_method_covariates(
-    covariates: CupedCovariate | Sequence[CupedCovariate] | None,
-) -> tuple[CupedCovariate, ...] | None:
+    covariates: CovariateArg | Sequence[CovariateArg] | None,
+) -> tuple[CupedCovariate | CupedCovariateBinding, ...] | None:
     if covariates is None:
         return None
-    if isinstance(covariates, CupedCovariate):
-        return (covariates,)
-    return tuple(covariates)
+    if isinstance(covariates, (str, CupedCovariate)):
+        return (_as_covariate(covariates),)
+    return tuple(_as_covariate(covariate) for covariate in covariates)
 
 
 def _normalize_method_covariates_input(value: object) -> object:
-    if value is None or isinstance(value, CupedCovariate):
+    if value is None or isinstance(value, (str, CupedCovariate)):
         return _normalize_method_covariates(value)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return tuple(cast(Sequence[CupedCovariate], value))
+    if isinstance(value, Sequence) and not isinstance(value, bytes):
+        return tuple(
+            _as_covariate(item) if isinstance(item, str) else item
+            for item in cast(Sequence[object], value)
+        )
     return value
 
 
@@ -436,9 +449,10 @@ class Method(CodedModel, BaseModel):
     def cuped(
         cls,
         *,
-        covariates: CupedCovariate | Sequence[CupedCovariate] | None = None,
+        covariates: CovariateArg | Sequence[CovariateArg] | None = None,
         name: str = "cuped",
     ) -> Method:
+        """CUPED with one numeric covariate; a column name such as ``"pre"`` is enough."""
         values = _normalize_method_covariates(covariates)
         return cls(name=name, variance_reduction="cuped", covariates=values)
 
@@ -446,9 +460,11 @@ class Method(CodedModel, BaseModel):
     def cuped_multicovariate(
         cls,
         *,
-        covariates: CupedCovariate | Sequence[CupedCovariate],
+        covariates: CovariateArg | Sequence[CovariateArg],
         name: str = "cuped_multicovariate",
     ) -> Method:
+        """CUPED with several covariates; a bare column name is a numeric covariate and a
+        categorical one is declared with ``CupedCovariate(name=..., kind="categorical")``."""
         values = _normalize_method_covariates(covariates)
         return cls(name=name, variance_reduction="cuped_multicovariate", covariates=values)
 

@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
+    from increment.estimation.engine import Method
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import CupedCovariate, Metric
     from increment.sources import SourceOperation
@@ -516,6 +517,13 @@ class CovariateAvailability(Protocol):
 
     @property
     def available_covariates(self) -> frozenset[str] | None: ...
+
+
+@runtime_checkable
+class CovariateColumnCheck(Protocol):
+    """Optional check that requested CUPED covariates name usable source columns."""
+
+    def check_method_covariates(self, metric: str, methods: Sequence[Method]) -> None: ...
 
 
 @runtime_checkable

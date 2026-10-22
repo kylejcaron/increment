@@ -17,6 +17,16 @@ procedure, use `Method.cuped` with one continuous covariate. Declaring a
 covariate alone changes nothing: `run()` keeps its declared or default
 decision method.
 
+A covariate can be given by its column name: `Method.cuped(covariates="pre_revenue")`
+is the same method as
+`Method.cuped(covariates=CupedCovariate(name="pre_revenue", kind="continuous"))`.
+A bare name is always a numeric covariate with the default `missing="refuse"`
+policy. Declare a category column explicitly with
+`CupedCovariate(name=..., kind="categorical")` on `Method.cuped_multicovariate`,
+and use the explicit form to choose another missing-value policy. A numeric
+covariate whose column holds text or dates is refused with
+`frame.validation.covariate_not_numeric`.
+
 ```python
 import numpy as np
 import polars as pl

@@ -9550,10 +9550,76 @@ def _bare_metric_name_frame_case() -> ParityCase:
     )
 
 
+def _cuped_covariate_name_frame_case() -> ParityCase:
+    records = [
+        {
+            "unit_id": f"u{i}",
+            "group": "control" if i < 20 else "treatment",
+            "revenue": float(i % 20 + 1) + 0.5 * (i % 7) + (2.0 if i >= 20 else 0.0),
+            "pre": float(i % 7),
+        }
+        for i in range(40)
+    ]
+    summary = pd.DataFrame(records)
+    panel = summary.assign(day=dt.date(2025, 1, 10))
+    design = Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+    )
+    explicit = Method.cuped(covariates=CupedCovariate(name="pre", kind="continuous"))
+
+    def build(frame: pd.DataFrame, method: Method, *, is_panel: bool = False) -> Analysis:
+        constructor = Analysis.from_unit_panel if is_panel else Analysis.from_unit_summary
+        return constructor(
+            frame,
+            unit="unit_id",
+            group="group",
+            design=design,
+            metrics=[MetricSpec(name="revenue", type="mean", decision_method=method)],
+            **({"date": "day"} if is_panel else {}),
+        )
+
+    def estimate_values(rows: Any) -> dict[tuple[str, str], Any]:
+        return {(row.metric, row.group_id): row.require_lift() for row in rows}
+
+    def compare_explicit_kind(rows: Any) -> None:
+        expected = estimate_values(rows)
+        for frame, is_panel in ((summary, False), (panel, True)):
+            source = build(frame, explicit, is_panel=is_panel)
+            try:
+                actual = estimate_values(source.run())
+                assert actual.keys() == expected.keys()
+                for identity, lift in actual.items():
+                    for field in ("value", "lb", "ub"):
+                        assert getattr(lift, field) == pytest.approx(
+                            getattr(expected[identity], field)
+                        )
+            finally:
+                source.close()
+
+    named = Method.cuped(covariates="pre")
+    return ParityCase(
+        id="cuped_covariate_name_summary_panel",
+        build={
+            "from_unit_summary": lambda: build(summary, named),
+            "from_unit_panel": lambda: build(panel, named, is_panel=True),
+        },
+        metrics=("revenue",),
+        readout_probe=compare_explicit_kind,
+        waive={
+            "from_definitions": "SOURCE: this parity case compares summary and panel frames.",
+            "from_unit_day_artifact": "SOURCE: this parity case compares summary and panel frames.",
+            "from_moments": "SOURCE: moments carry no covariate column.",
+            "from_switchback_panel": "SOURCE: switchback contrasts do not use CUPED.",
+        },
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     _arm_facts_parity_case(),
     _categorical_cuped_moments_case(),
     _bare_metric_name_frame_case(),
+    _cuped_covariate_name_frame_case(),
     _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),

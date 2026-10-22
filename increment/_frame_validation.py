@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from numbers import Integral, Real
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
@@ -48,6 +49,7 @@ from increment.sources import (
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
+    from increment.estimation.engine import Method
 
 CAPABILITY_TABLE: dict[str, str] = {
     "window_days": (
@@ -219,6 +221,16 @@ _METRIC_COVARIATE_IMPUTE_ALL_NULL = RefusalSpec(
     InvalidRequestError,
     template="metric {metric!r}: covariate column {covariate!r} has no observed values to impute a pooled mean from -- every row is null/NaN. Drop the covariate method or repair the column upstream.",
 )
+_COVARIATE_NOT_NUMERIC = RefusalSpec(
+    "frame.validation.covariate_not_numeric",
+    InvalidRequestError,
+    lambda *, metric, covariate, dtype, variance_reduction: (
+        f"metric {metric!r}: CUPED covariate {covariate!r} must be a numeric column "
+        f"(a covariate given by name is numeric), but its dtype is {dtype}. For a "
+        f"category column, declare CupedCovariate(name={covariate!r}, kind='categorical')"
+        + (" and use Method.cuped_multicovariate." if variance_reduction == "cuped" else ".")
+    ),
+)
 _METRIC_COVARIATE_MISSING = RefusalSpec(
     "frame.validation.metric_covariate_column",
     InvalidRequestError,
@@ -314,6 +326,7 @@ _REFUSALS = refusals(
         "frame.validation.metric_covariate_impute_all_null": _METRIC_COVARIATE_IMPUTE_ALL_NULL,
         "source.frame.input_type": _UNSUPPORTED_FRAME_INPUT,
         "frame.validation.metric_covariate_column": _METRIC_COVARIATE_MISSING,
+        "frame.validation.covariate_not_numeric": _COVARIATE_NOT_NUMERIC,
         "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r} -- one control, declared once",
         "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind -- one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
         "frame.validation.metric_value_missing": "metric {metric!r}: column {column!r} has {n_missing} null/NaN value(s). An undeclared null is silently averaged as 0 (n counts the row, sum skips it) and NaN sums diverge by backend. If null means \"no events\", declare MetricSpec(missing='zero') or run df, n = increment.impute.zeros(df, {column!r}). If \"not observed\", declare missing='drop' (complete-case; unbiased only when missingness is unrelated to the values) or run df, n = increment.impute.drop_null(df, {column!r}).",
@@ -635,6 +648,53 @@ def _validate_columns(
                     reason="degenerate_ratio",
                 )
             refuse(_RATIO_SAME_COLUMN, metric=spec.name, column=spec.numerator)
+
+
+def check_covariate_columns(
+    frame: nw.DataFrame[Any], metric: str, methods: Sequence[Method]
+) -> None:
+    """Refuse a CUPED covariate absent from the frame, or numeric on a non-numeric column."""
+    schema = frame.schema
+    for method in methods:
+        for covariate in method.covariates or ():
+            if covariate.name not in schema:
+                missing = [f"{covariate.name!r} (metric {metric!r})"]
+                available = sorted(schema)
+                refuse(
+                    _METRIC_MISSING,
+                    message=(
+                        f"columns not found in frame: {missing[0]}. Available columns: {available}"
+                    ),
+                    missing=missing,
+                    available=available,
+                )
+            dtype = schema[covariate.name]
+            if (
+                covariate.kind != "continuous"
+                or dtype.is_numeric()
+                or dtype == nw.Boolean
+                or (isinstance(dtype, nw.Object) and _holds_only_numbers(frame, covariate.name))
+                # A column with no observed values is a missing-data case for its missing policy.
+                or frame[covariate.name].null_count() == frame.shape[0]
+            ):
+                continue
+            refuse(
+                _COVARIATE_NOT_NUMERIC,
+                metric=metric,
+                covariate=covariate.name,
+                dtype=str(dtype),
+                variance_reduction=method.variance_reduction,
+            )
+
+
+def _holds_only_numbers(frame: nw.DataFrame[Any], column: str) -> bool:
+    """Whether an object column's observed values are all numbers, not text or dates."""
+    values = frame[column].to_list()
+    is_null = frame.select(nw.col(column).is_null())[column].to_list()
+    return all(
+        null or (isinstance(value, (Real, Decimal)) and not isinstance(value, bool))
+        for value, null in zip(values, is_null, strict=True)
+    )
 
 
 def _is_nan_real(value: object) -> bool:

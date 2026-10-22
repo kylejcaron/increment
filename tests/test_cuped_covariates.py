@@ -65,6 +65,19 @@ def test_method_factories_normalize_covariates_and_roundtrip_binding():
     assert declaration.model_dump()["covariates"][1]["measure"] == binding.model_dump()["measure"]
 
 
+def test_method_cuped_string_is_one_covariate():
+    pre = CupedCovariate(name="pre", kind="continuous")
+    country = CupedCovariate(name="country", kind="categorical")
+
+    assert Method.cuped(covariates="pre") == Method.cuped(covariates=pre)
+    assert Method.cuped_multicovariate(covariates=["pre", country]) == (
+        Method.cuped_multicovariate(covariates=[pre, country])
+    )
+    assert Method(name="cuped", variance_reduction="cuped", covariates=["pre"]) == (
+        Method.cuped(covariates=pre)
+    )
+
+
 def test_method_factories_enforce_procedure_specific_covariates():
     with pytest.raises(InvalidRequestError):
         Method.cuped_multicovariate(covariates=[])
@@ -677,7 +690,8 @@ def test_missing_effective_scalar_override_column_is_refused_for_adjusted_frames
             ),
             sensitivity_methods=(),
         )
-    assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
+    assert raised.value.code == "source.frame.metric_missing"
+    assert raised.value.context["missing"] == ("'nope' (metric 'outcome')",)
 
 
 def test_scalar_method_subset_preserves_aliases_that_collide_with_scratch_columns():

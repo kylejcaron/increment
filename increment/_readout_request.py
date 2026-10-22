@@ -18,6 +18,7 @@ from increment._literals import Correction, ValueScale
 from increment._source_types import (
     ConfiguredBreakoutSource,
     CovariateAvailability,
+    CovariateColumnCheck,
     ScalarBindingSource,
     ScalarBreakoutMomentSource,
     ScalarMethodMomentSource,
@@ -314,7 +315,7 @@ class ReadoutRequest:
         available_covariates = (
             source.available_covariates if isinstance(source, CovariateAvailability) else None
         )
-        return cls(
+        request = cls(
             context=context,
             metrics=tuple(metrics),
             configs=tuple(configs),
@@ -364,6 +365,10 @@ class ReadoutRequest:
             value_scale=MappingProxyType(dict(value_scale or {})),
             completion_policy=completion_policy,
         )
+        if isinstance(source, CovariateColumnCheck):
+            for config, methods in zip(request.configs, request.estimation_methods, strict=True):
+                source.check_method_covariates(config.metric.name, methods)
+        return request
 
     @property
     def design(self):
