@@ -378,9 +378,11 @@ def test_slow_tier_marker_expression_is_used(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"tests/test_example.py": "def test_old(): pass\n"})
     selection = _change(root, base, "tests/test_example.py", "def test_new(): pass\n")
 
+    from noxfile import TIER_MARKERS
+
     assert _pytest_arguments(selection, base, "slow", []) == [
         "-m",
-        "slow and not parameter_recovery and not numerical_certification and not examples",
+        TIER_MARKERS["slow"],
         "tests/test_example.py",
     ]
 
