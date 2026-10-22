@@ -374,7 +374,7 @@ def require_eager_frame(frame: object, *, constructor: str) -> None:
             input_type=input_type,
             route=".collect()",
         )
-    if nw.from_native(frame, eager_only=True, pass_through=True) is frame:
+    if issubclass(frame_type, (list, tuple, dict)):
         refuse(
             _UNSUPPORTED_FRAME_INPUT,
             constructor=constructor,
