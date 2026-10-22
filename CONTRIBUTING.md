@@ -169,7 +169,8 @@ default CI selection; the Make targets define supported tiers:
 | `make test-unit` | `not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress` |
 | `make test-integration-fast` | `not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress` |
 | `make test-fast` | Unit plus integration-fast |
-| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples` |
+| `make test-slow` | `slow and not parameter_recovery and not numerical_certification and not examples and not compile_registry` |
+| `make test-tier TIER=compile-registry` | `compile_registry` (the warehouse compile registry; its own CI job) |
 | `make test-parameter-recovery SPLITS=N GROUP=K` | `parameter_recovery` |
 | `make test-numerical-certification` | `numerical_certification` |
 | `make test-scientific SPLITS=N GROUP=K` | `(parameter_recovery or numerical_certification)` |
