@@ -6,13 +6,12 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from increment.errors import CodedError
 from increment.estimation.readout_types import (
     CellKey,
     ReadoutMetadata,
     render_readout_failure,
 )
-from increment.estimation.results import _selection_qualification
+from increment.estimation.results import _selection_qualification, row_verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -739,11 +738,7 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
 
         verdict = contrast_stat_sig(row)
     else:
-        stat_sig = getattr(row, "stat_sig", None)
-        try:
-            verdict = stat_sig() if callable(stat_sig) else None
-        except CodedError:
-            verdict = None
+        verdict = row_verdict(row)
     parts.append(f"stat_sig={verdict if verdict is not None else 'unavailable'}")
     return "; ".join(parts)
 

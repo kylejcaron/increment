@@ -2234,6 +2234,17 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
     return lift.excludes(row.null_lift)
 
 
+def row_verdict(row: Any) -> bool | None:
+    """The row's ``stat_sig()`` verdict, or None when the row cannot compute one."""
+    stat_sig = getattr(row, "stat_sig", None)
+    if not callable(stat_sig):
+        return None
+    try:
+        return stat_sig()
+    except CodedError:
+        return None
+
+
 def row_p_value(row: DecisionRow) -> float | None:
     """``row``'s prior-free sampling p-value against its own null, or ``None``
     when the row carries no usable sampling evidence (the cases
