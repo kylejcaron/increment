@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from shutil import copy2
 from tempfile import TemporaryDirectory
 
 import pytest
@@ -43,6 +44,16 @@ def repository(tmp_path):
     with TemporaryDirectory(dir=tmp_path) as directory:
         repo = Path(directory)
         _git(repo, "init", "-q")
+        project = Path(__file__).parents[1]
+        for source in (
+            project / "tach.toml",
+            project / "tests/power/test_binomial_planning.py",
+            project / "tests/estimation/test_conversion_route_calibration.py",
+            project / "tests/calibration/test_cuped_linear.py",
+        ):
+            target = repo / source.relative_to(project)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            copy2(source, target)
         _change(repo, "README.md")
         _change(repo, "increment/source.py")
         (repo / "README.md").write_text("base docs\n")
@@ -92,7 +103,6 @@ def test_docs_only_pr_does_not_require_postgres(repository):
     [
         "increment/query/session.py",
         "increment/sequential_source.py",
-        "tests/parity_harness/cases.py",
         "integration/warehouse_execution/_suite.py",
         "conftest.py",
         "uv.lock",
@@ -108,6 +118,37 @@ def test_docs_mixed_with_runtime_or_unknown_path_requires_postgres(repository, p
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "mixed")
     assert _required(repo, base)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("increment/_moment_plan.py", True),
+        ("increment/semantics/models.py", True),
+    ],
+)
+def test_query_dependency_changes_follow_tach_closure(repository, path, expected):
+    repo, base = repository
+    _change(repo, path)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", f"change {path}")
+    assert _required(repo, base) is expected
+
+
+def test_uv_lock_requires_postgres(repository):
+    repo, base = repository
+    _change(repo, "uv.lock")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "lock")
+    assert _required(repo, base)
+
+
+def test_non_postgres_test_change_does_not_require_postgres(repository):
+    repo, base = repository
+    _change(repo, "tests/test_general.py")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "test only")
+    assert not _required(repo, base)
 
 
 def test_source_renamed_into_docs_still_requires_postgres(repository):

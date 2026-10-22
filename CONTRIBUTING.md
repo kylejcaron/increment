@@ -86,6 +86,9 @@ unrelated module changes such as `increment/dashboard/_html.py` do not select it
 The parity-harness certification case runs nightly; its facade is not a
 certification root because the other harness cases exercise those ingress paths
 on every PR.
+The PostgreSQL gate is selected for query dependency, warehouse-execution,
+PostgreSQL-test, and build/workflow changes; docs-only and unrelated test-only
+PRs skip it. PostgreSQL and numerical certification both run nightly on main.
 Tagging requires successful `ci-ok` and a successful nightly run on the exact
 tagged SHA. The existing `force` input bypasses both checks; hosted
 branch-protection activation is an owner gate.
@@ -483,7 +486,7 @@ Refresh them with the complete fast suite, preserving worker group suffixes:
 make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
 ```
 
-Functional-slow CI uses three isolated shards and the certification job two,
+Functional-slow CI uses four isolated shards and the certification job two,
 with workers inside each shard; `ci-ok` requires their aggregate success. Every
 case remains selected exactly once. Both split by the recorded weights in
 `.github/slow-test-durations.json` and `.github/certification-test-durations.json`;

@@ -31,9 +31,11 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.name", "Test")
     (repo / "tach.toml").write_text(
         "exact = true\n"
-        '[[modules]]\npath = "increment.power._binomial"\ndepends_on = ["increment.power.core"]\n'
+        '[[modules]]\npath = "increment.power._binomial"\ndepends_on = ["increment.power._search"]\n'
+        '[[modules]]\npath = "increment.power._search"\ndepends_on = ["increment.power.core"]\n'
         '[[modules]]\npath = "increment.power.core"\ndepends_on = ["increment.errors"]\n'
-        '[[modules]]\npath = "increment.estimation"\ndepends_on = ["increment.errors"]\n'
+        '[[modules]]\npath = "increment.estimation"\ndepends_on = ["increment.estimation.variance"]\n'
+        '[[modules]]\npath = "increment.estimation.variance"\ndepends_on = ["increment.errors"]\n'
         '[[modules]]\npath = "increment.analysis"\ndepends_on = ["increment.estimation", "increment.errors"]\n'
         '[[modules]]\npath = "increment.dashboard"\ndepends_on = []\n'
         '[[modules]]\npath = "increment.errors"\ndepends_on = []\n'
@@ -131,6 +133,16 @@ def test_unrelated_docs_only_pr_does_not_require_certification(repository, path:
 def test_transitive_dependency_of_certified_module_requires_certification(repository):
     repo, base = repository
     _commit_change(repo, "increment/errors.py")
+    assert _required(repo, base)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["increment/power/_search.py", "increment/estimation/variance.py"],
+)
+def test_indirect_certified_dependencies_require_certification(repository, path: str):
+    repo, base = repository
+    _commit_change(repo, path)
     assert _required(repo, base)
 
 
