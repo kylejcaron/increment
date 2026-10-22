@@ -1164,6 +1164,22 @@ class TestSegmentHeterogeneity:
         assert "relative (log-RR)" in rendered
         assert "absolute (additive)" in rendered
 
+    def test_heterogeneity_repr_distinguishes_sources(self):
+        estimates = BreakoutEstimates(
+            [
+                _het_estimate("US", 0.10, math.sqrt(0.02)),
+                _het_estimate("CA", 0.30, math.sqrt(0.05)),
+                _het_estimate("MX", -0.05, math.sqrt(0.01)),
+            ]
+        )
+        summary, _ = segment_heterogeneity(estimates)
+        first = summary[0]
+        second = first.model_copy(update={"source": "other_source"})
+
+        assert first.source != second.source
+        assert repr(first) != repr(second)
+        assert "other_source" in repr(second)
+
     def test_two_treatment_arms_produce_two_independent_summaries(self):
         """A two-arm breakout: group_id is part of the grouping key, so each arm's Q statistic is computed independently - merging them previously inflated Q by 17.1%."""
         estimates = BreakoutEstimates(

@@ -486,6 +486,7 @@ class HeterogeneitySummary(BaseModel):
                 ("metric", self.metric),
                 ("group_id", self.group_id),
                 ("dimension", self.dimension),
+                ("source", self.source),
                 ("estimand", self.estimand),
                 ("value_scale", self.value_scale),
                 ("scale", scale),
@@ -494,7 +495,10 @@ class HeterogeneitySummary(BaseModel):
             )
             if value is not None
         )
-        return f"HeterogeneitySummary({identity}, k={self.k}, q={self.q:.4g}, i2={self.i2!r})"
+        i2 = (
+            f"i2={self.i2!r}" if self.i2_reason_code is None else f"i2=None ({self.i2_reason_code})"
+        )
+        return f"HeterogeneitySummary({identity}, k={self.k}, q={self.q:.4g}, {i2})"
 
 
 class SegmentEstimate(CodedModel, BaseModel):
