@@ -36,9 +36,10 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      # Pull requests run Python 3.14 as one shard; main runs every version in two.
+      # Pull requests run Python 3.14 in two shards, like 3.12: one shard holds the
+      # whole fast tier (~15 min) and hits this job's timeout during upload.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":1}]' || '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.13","group":1,"splits":2},{"python-version":"3.13","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":2},{"python-version":"3.14","group":2,"splits":2}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":2},{"python-version":"3.14","group":2,"splits":2}]' || '[{"python-version":"3.12","group":1,"splits":2},{"python-version":"3.12","group":2,"splits":2},{"python-version":"3.13","group":1,"splits":2},{"python-version":"3.13","group":2,"splits":2},{"python-version":"3.14","group":1,"splits":2},{"python-version":"3.14","group":2,"splits":2}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
