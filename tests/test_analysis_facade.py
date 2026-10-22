@@ -2909,7 +2909,7 @@ def test_compliance_only_run_does_not_warn_about_unused_outcome_overrides():
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             min_first_stage_z=0.5,
         ),
