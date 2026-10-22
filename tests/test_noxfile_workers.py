@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from noxfile import TIER_MARKERS, _xdist_args
+from scripts.test_slots import WORKERS_PLACEHOLDER
 
 
 def test_ci_keeps_auto_workers() -> None:
@@ -23,7 +24,7 @@ def test_ci_keeps_auto_workers() -> None:
 
 def test_local_workers_follow_lane_allowance() -> None:
     """Local Nox resolves worker count after acquiring its lane."""
-    assert _xdist_args({}) == ("-n", "__test_slots_workers__", "--dist", "loadgroup")
+    assert _xdist_args({}) == ("-n", WORKERS_PLACEHOLDER, "--dist", "loadgroup")
 
 
 def test_workers_variable_overrides_allowance() -> None:

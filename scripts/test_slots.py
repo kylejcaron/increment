@@ -142,6 +142,17 @@ def hold_slot() -> None:
         time.sleep(1)
 
 
+WORKERS_PLACEHOLDER = "@WORKERS@"
+
+
+def _with_workers(command: list[str]) -> list[str]:
+    """Replace the worker placeholder with the allowance computed while holding a slot."""
+    if WORKERS_PLACEHOLDER not in command:
+        return command
+    workers = str(_workers())
+    return [workers if argument == WORKERS_PLACEHOLDER else argument for argument in command]
+
+
 def main(argv: list[str]) -> int:
     """Acquire a slot and replace this process with the requested command."""
     if argv == ["--workers"]:
@@ -157,7 +168,8 @@ def main(argv: list[str]) -> int:
     _COMMAND = argv[1:]
     hold_slot()
     os.environ["TEST_SLOT_HELD"] = "1"
-    os.execvp(argv[1], argv[1:])
+    command = _with_workers(argv[1:])
+    os.execvp(command[0], command)
     return 127
 
 

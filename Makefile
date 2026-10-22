@@ -18,7 +18,8 @@ mutate:
 SLOT = uv run --no-sync python -m scripts.test_slots --
 PYTEST = uv run --extra demo --extra tables --extra dashboard pytest
 WORKERS ?=
-PYTEST_XDIST_ARGS ?= -n $(if $(strip $(WORKERS)),$(WORKERS),$$(python3 -m scripts.test_slots --workers)) --dist loadgroup
+# @WORKERS@ is replaced by the slot wrapper with the allowance it computes after acquiring a slot.
+PYTEST_XDIST_ARGS ?= -n $(if $(strip $(WORKERS)),$(WORKERS),@WORKERS@) --dist loadgroup
 PYTEST_ARGS ?=
 TIER_MARKER = $(shell uv run python -c "from noxfile import TIER_MARKERS; print(TIER_MARKERS['$(TIER)'])")
 unexport \
@@ -99,7 +100,7 @@ ifneq ($(strip $(TESTS)),)
 ifeq ($(words $(TESTS))$(findstring ::,$(TESTS)),1::)
 	$(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_ARGS)
 else
-	$(SLOT) sh -c 'exec $(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)'
+	$(SLOT) $(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
 endif
 else
 	$(MAKE) test-unit

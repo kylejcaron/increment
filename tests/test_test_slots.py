@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import test_slots
 from scripts.test_slots import _worker_allowance
 
 pytestmark = pytest.mark.integration
@@ -266,3 +267,11 @@ def test_wrapped_exit_status_is_preserved(tmp_path: Path) -> None:
     wrapped = _wrapper(_environment(tmp_path), sys.executable, "-c", "raise SystemExit(3)")
     _wait(wrapped)
     assert wrapped.returncode == 3
+
+
+def test_worker_placeholder_is_replaced_by_the_held_allowance(monkeypatch) -> None:
+    monkeypatch.setattr(test_slots, "_workers", lambda: 6)
+    command = ["pytest", "-n", test_slots.WORKERS_PLACEHOLDER, "-k", "a or b"]
+
+    assert test_slots._with_workers(command) == ["pytest", "-n", "6", "-k", "a or b"]
+    assert test_slots._with_workers(["pytest", "-q"]) == ["pytest", "-q"]
