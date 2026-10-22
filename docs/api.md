@@ -734,6 +734,8 @@ different approximations and limits.
 
 ::: increment.absorb_factor
 
+`increment.confounding_sensitivity` reports a marginal conversion risk-ratio interval for an observational `LiftEstimate`; `increment.results.ConfoundingSensitivity` is its receive-only result type.
+
 `Analysis.health_check()` combines assignment balance, triggered-cohort
 balance, descriptive trigger rates, retained source-maturity/completeness
 evidence, and declared trigger assumptions. Use it alongside estimates; it is
@@ -748,6 +750,14 @@ Sequential triggered analyses also assume `triggered_look_predictability`:
 looks, stops, and freezes use only already-revealed triggered-chain data.
 Assigned results must not reveal future triggered outcomes, including for the
 same metric. The health check does not verify an analyst's decision rule.
+
+::: increment.confounding_sensitivity
+
+::: increment.results.ConfoundingSensitivity
+
+For fixed-horizon IPTW/AIPW conversion risk ratios, confounding sensitivity
+transforms an existing `LiftEstimate`. Binary outcome status is caller-attested,
+not verified; robustness is not identification.
 
 ```python
 import pandas as pd
