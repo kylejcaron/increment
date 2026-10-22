@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from increment.errors import CodedError
 from increment.estimation.readout_types import (
     CellKey,
     ReadoutMetadata,
@@ -664,6 +665,7 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             (getattr(row, "method", None), getattr(row, "method_role", None))
         )
     for row in visible_rows:
+        lines.append(_decision_line(row))
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
@@ -695,6 +697,39 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
             lines.append(f"{row.metric} selection: {selection}; separate from interval evidence.")
     return lines
+
+
+def _decision_line(row) -> str:
+    estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
+    control = getattr(row, "control_group", getattr(row, "control", "control"))
+    treatment = getattr(row, "treatment", getattr(row, "group_id", "treatment"))
+    parts = [f"{row.metric}: {control} → {treatment}"]
+    for name, label in (
+        ("n_control", "n control"),
+        ("n_treat", "n treatment"),
+        ("mean_control", "mean control"),
+        ("mean_treat", "mean treatment"),
+    ):
+        value = getattr(row, name, None)
+        if value is not None:
+            parts.append(f"{label}={value:.6g}" if name.startswith("mean_") else f"{label}={value}")
+    scale = getattr(row, "value_scale", "absolute" if hasattr(row, "control") else "relative")
+    if estimate is not None:
+        factor = 100 if scale == "relative" else 1
+        value = estimate.value * factor
+        suffix = "%" if factor == 100 else ""
+        parts.append(f"effect={value:.6g}{suffix}")
+        if estimate.lb is not None or estimate.ub is not None:
+            low = "−∞" if estimate.lb is None else f"{estimate.lb * factor:.6g}"
+            high = "+∞" if estimate.ub is None else f"{estimate.ub * factor:.6g}"
+            parts.append(f"interval=[{low}, {high}]{suffix}")
+    stat_sig = getattr(row, "stat_sig", None)
+    try:
+        verdict = stat_sig() if callable(stat_sig) else None
+    except CodedError:
+        verdict = None
+    parts.append(f"stat_sig={verdict if verdict is not None else 'unavailable'}")
+    return "; ".join(parts)
 
 
 def _display_source(source_id: str | None) -> str | None:

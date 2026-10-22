@@ -351,10 +351,19 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
         ),
     ]
 
+    required_decision_columns = {
+        "stat_sig",
+        "p_value",
+        "p_value_reason_code",
+        "n_control",
+        "n_treat",
+        "mean_control",
+        "mean_treat",
+    }
     for results, expected_columns in collections:
         full = cast(pd.DataFrame, results.to_frame(backend="pandas"))
         summary = cast(pd.DataFrame, results.to_frame(backend="pandas", columns="summary"))
-        assert set(summary.columns) == set(expected_columns)
+        assert set(summary.columns) == set(expected_columns) | required_decision_columns
         pd.testing.assert_frame_equal(summary, full.loc[:, summary.columns])
 
 
@@ -488,3 +497,40 @@ def test_selected_views_preserve_partial_and_scope_disclosures():
         assert frame["view_partial"].all()
         assert not frame["decision_scope_complete"].any()
         assert set(frame["multiplicity_status"]) == {"declared_plan"}
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_to_frame_projects_decision_statistics(backend):
+    pytest.importorskip(backend)
+    from increment.breakout.estimates import LiftEstimates
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    row = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(
+            value=0.1,
+            lb=0.02,
+            ub=0.18,
+            level=0.95,
+            alpha=0.05,
+            log_mean=0.1,
+            log_se=0.04,
+        ),
+        alpha=0.05,
+        sampling_available=True,
+        reference_kind="normal",
+    )
+    frame: Any = LiftEstimates([row]).to_frame(backend=backend)
+
+    if backend == "pandas":
+        projected = frame.iloc[0]
+    elif backend == "polars":
+        projected = frame.row(0, named=True)
+    else:
+        projected = frame.to_pylist()[0]
+    assert projected["stat_sig"] == row.stat_sig()
+    assert projected["p_value"] == pytest.approx(row.p_value())
+    assert pd.isna(projected["p_value_reason_code"])
