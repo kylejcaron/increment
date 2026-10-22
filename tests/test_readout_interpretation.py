@@ -175,6 +175,41 @@ def test_prior_backed_repr_shows_posterior_without_preferred_direction():
     assert "chance_to_beat=" in rendered
 
 
+@pytest.mark.parametrize("row_kind", ["breakout", "daily_lift"])
+def test_prior_backed_breakout_and_daily_rows_render_posterior_chance_to_beat(row_kind):
+    from datetime import date
+
+    from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+    from increment.estimation.results import Estimate
+
+    fields: dict[str, Any] = {
+        "metric": "value",
+        "group_id": "treatment",
+        "method": "unadjusted",
+        "method_role": "decision",
+        "posterior_available": True,
+        "posterior_model": "normal",
+        "posterior_scale": "log",
+        "posterior_estimate": 0.020201340026755776,
+        "posterior_latent_mean": 0.02,
+        "posterior_latent_sd": 0.05,
+        "posterior_lb": -0.075,
+        "posterior_ub": 0.124,
+        "posterior_level": 0.95,
+        "posterior_alpha": 0.05,
+        "lift": Estimate(value=0.02, lb=-0.05, ub=0.09, level=0.95),
+    }
+    if row_kind == "breakout":
+        row = BreakoutEstimate(**fields, dimension="country", dimension_value="US")
+    else:
+        row = DailyLiftEstimate(**fields, ds=date(2025, 1, 1))
+
+    rendered = render_readout_text(interpret_readout([row], None))
+
+    assert "value posterior: estimate=" in rendered
+    assert "chance_to_beat=0.6554217416103242" in rendered
+
+
 def test_failed_declared_allocation_is_integrity_first_and_not_laundered():
     results = _run_mean(_mean_frame(n_control=900, n_treatment=100))
     interpretation = _interpret(results)

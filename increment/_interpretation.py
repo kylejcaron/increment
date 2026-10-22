@@ -11,7 +11,11 @@ from increment.estimation.readout_types import (
     ReadoutMetadata,
     render_readout_failure,
 )
-from increment.estimation.results import _selection_qualification, row_verdict
+from increment.estimation.results import (
+    _selection_qualification,
+    row_chance_to_beat,
+    row_verdict,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,7 +678,7 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
         if getattr(row, "posterior_available", False) is True:
             posterior_estimate = getattr(row, "posterior_estimate", None)
-            chance_to_beat = getattr(row, "chance_to_beat", lambda: None)()
+            chance_to_beat = row_chance_to_beat(row)
             lines.append(
                 f"{row.metric} posterior: estimate={posterior_estimate!r}; "
                 f"chance_to_beat={chance_to_beat!r}"
