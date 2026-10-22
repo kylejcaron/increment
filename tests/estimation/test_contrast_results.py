@@ -180,6 +180,7 @@ def test_to_frame_supports_declared_backends(backend):
         "response_meaning",
         "analysis_population",
         "source_snapshot_id",
+        "metric_type",
         "decision_scope_complete",
         "decision_scope_reason_code",
         "decision_scope_reason_context",
@@ -222,9 +223,10 @@ def test_empty_to_frame_retains_typed_schema(backend):
     frame = cast(Any, ContrastResults().to_frame(backend=backend))
     columns = list(frame.columns) if backend != "pyarrow" else frame.column_names
     assert columns[0] == "metric"
-    assert columns[-6:] == [
+    assert columns[-7:] == [
         "analysis_population",
         "source_snapshot_id",
+        "metric_type",
         "decision_scope_complete",
         "decision_scope_reason_code",
         "decision_scope_reason_context",

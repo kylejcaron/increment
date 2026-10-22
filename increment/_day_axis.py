@@ -1368,6 +1368,7 @@ def _scope_day_axis_rows(
         plan,
         configs,
         scope_request,
+        metrics=req.metrics,
         route=route,
         view=req.grain,
         design=design,
