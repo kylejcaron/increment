@@ -285,6 +285,7 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
 @pytest.mark.parametrize("ingress", ["summary", "panel", "native", "artifact"])
 @pytest.mark.parametrize("role", ["decision", "sensitivity"])
 @pytest.mark.parametrize("missing", ["refuse", "impute"])
+@pytest.mark.slow
 def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, missing):
     treatment_group = "treatment"
     expected_code = (

@@ -105,7 +105,7 @@ def test_qr_scratch_reuses_two_temp_relations_without_intermediate_drops(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("p", [1, 4, 20, 50])
+@pytest.mark.parametrize("p", [1, 4, 20, pytest.param(50, marks=pytest.mark.slow)])
 def test_duckdb_householder_factor_matches_numpy(p, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
 

@@ -911,6 +911,7 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_warehouse_only(  # noqa: PLR0915
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

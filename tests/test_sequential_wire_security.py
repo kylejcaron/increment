@@ -234,6 +234,9 @@ _FIELDS = [
 ]
 
 
+@pytest.mark.grid(
+    "Every wire rational field is crossed with hostile spellings; each field/value pair exercises a distinct decoder rejection."
+)
 @pytest.mark.parametrize("model,payload,field", _FIELDS)
 @pytest.mark.parametrize("hostile", HOSTILE)
 def test_every_serialized_rational_field_refuses_hostile_encodings(model, payload, field, hostile):
@@ -394,6 +397,9 @@ def _json_text(payload: dict, literal: str) -> str:
     return json.dumps(payload).replace('"__RAW__"', literal, 1)
 
 
+@pytest.mark.grid(
+    "Every wire rational field is crossed with JSON numeric token classes; each field/token pair exercises a distinct decoder boundary."
+)
 @pytest.mark.parametrize("model,payload,field", _FIELDS)
 @pytest.mark.parametrize("literal", _JSON_NUMBERS)
 def test_json_floating_literals_refuse_at_every_rational_field(model, payload, field, literal):
@@ -404,6 +410,9 @@ def test_json_floating_literals_refuse_at_every_rational_field(model, payload, f
     _assert_refusal(exc.value, field, literal)
 
 
+@pytest.mark.grid(
+    "Each boolean value is checked at every wire rational field through both Python and JSON decoding."
+)
 @pytest.mark.parametrize("model,payload,field", _FIELDS)
 @pytest.mark.parametrize("value", [True, False])
 def test_booleans_refuse_at_every_rational_field_on_both_paths(model, payload, field, value):
@@ -424,6 +433,9 @@ def test_checkpoint_row_json_floating_literal_refuses_at_its_owning_field():
     _assert_refusal(exc.value, "SequentialArmState.mean", "0.05")
 
 
+@pytest.mark.grid(
+    "Compiled plan rational locations are crossed with textual JSON numeric token classes to exercise each raw-token decoder branch."
+)
 @pytest.mark.parametrize("mutate,field", _PLAN_RATIONALS)
 @pytest.mark.parametrize("literal", ["0.05", "1e-5", "1e50000", "true"])
 def test_compiled_plan_json_text_refuses_numeric_rational_literals(mutate, field, literal):

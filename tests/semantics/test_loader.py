@@ -806,6 +806,9 @@ def test_admit_read_only_sql_rejects_side_effects(sql: str, dialect: str, code: 
     assert exc_info.value.code == code
 
 
+@pytest.mark.grid(
+    "Each side-effecting function and SQL dialect pair covers a distinct external-effect rule; retaining the explicit attack corpus guards dialect-specific omissions."
+)
 @pytest.mark.parametrize(
     ("sql", "dialect"),
     [
@@ -869,6 +872,9 @@ def test_admit_read_only_sql_counts_the_parsed_statements():
     assert (exc_info.value.context["statements"], exc_info.value.context["empty"]) == (2, 0)
 
 
+@pytest.mark.grid(
+    "Large-object writes are exercised across function aliases and SQL nesting/catalog qualification forms that map to separate parser shapes."
+)
 @pytest.mark.parametrize(
     ("function", "argument"),
     [("lowrite", "decode('DEADBEEF', 'hex')"), ("lo_truncate", "0"), ("lo_truncate64", "0")],
