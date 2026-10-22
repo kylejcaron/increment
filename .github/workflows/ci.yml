@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with: {enable-cache: true}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - run: uv run python scripts/check_doc_references.py --check --collect
@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -69,7 +69,7 @@ jobs:
           if [ -f coverage.json ]; then cp coverage.json .fast-coverage/coverage.json; fi
       - name: Retain fast coverage shard
         if: always() && matrix.python-version == '3.12'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         continue-on-error: true
         with:
           name: fast-coverage-3.12-shard-${{ matrix.group }}-${{ github.sha }}-${{ github.run_attempt }}
@@ -79,7 +79,7 @@ jobs:
           retention-days: 30
       - name: Retain fast JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fast-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}
           path: junit.xml
@@ -100,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -108,7 +108,7 @@ jobs:
       - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
       - name: Retain slow JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: slow-junit-shard-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: junit.xml
@@ -125,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -159,7 +159,7 @@ jobs:
           # Full history: the version is derived from git tags.
           fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with: {enable-cache: true}
       - run: uv build --sdist --wheel --out-dir dist
       - run: uvx twine check --strict dist/*
@@ -240,13 +240,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with: {enable-cache: true, python-version: "3.12"}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - run: make test-numerical-certification WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/certification-test-durations.json"
       - name: Retain certification JUnit report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: numerical-certification-junit-shard-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: junit.xml
@@ -273,7 +273,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -290,7 +290,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -306,7 +306,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with: {enable-cache: true}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - name: Check for weakened tests
@@ -327,7 +327,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: Download Python 3.12 coverage shards
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           pattern: fast-coverage-3.12-shard-*-${{ github.sha }}-${{ github.run_attempt }}
@@ -349,7 +349,7 @@ jobs:
           cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload combined fast coverage
         if: always() && hashFiles('coverage/coverage.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         continue-on-error: true
         with:
           name: fast-tier executed-code coverage (in-process), Python 3.12, ${{ github.sha }}
