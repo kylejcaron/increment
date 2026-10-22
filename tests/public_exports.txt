@@ -3,7 +3,7 @@
 # both unjustified root names and entries for names no longer exported.
 Analysis: Declare an experiment and its analysis inputs.
 moments_from_summaries: Build a moments input from per-arm mean, variance, or conversion summaries.
-Report: Evaluate governed metrics over calendar time without declaring an experiment.
+MetricTrends: Evaluate governed metrics over calendar time without declaring an experiment.
 Definitions: Load experiment and metric definitions from YAML.
 Metric: Select a metric definition from the supported metric types.
 MetricSpec: Define a metric to estimate from a dataframe column.

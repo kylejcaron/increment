@@ -38,7 +38,7 @@ WeekStart = Literal["monday", "sunday"]
 _ONE_DAY = _days_literal(1).as_interval("D")
 
 # Explicit ranges above the fixed calendar capacity refuse; scalar edges are
-# unchecked here and must be admitted by Report before they reach this builder.
+# unchecked here and must be admitted by MetricTrends before they reach this builder.
 _MAX_REPORT_DAYS = 3653  # 10 years
 
 
@@ -185,7 +185,7 @@ def calendar_periods(
 
     Raises :class:`CapabilityError` when the inclusive ``[start, end_edge]``
     span exceeds ``_MAX_REPORT_DAYS``. Scalar edges are bounded by the same
-    fixed spine without range admission; the Report facade resolves its
+    fixed spine without range admission; the MetricTrends facade resolves its
     default scalar horizon to a date and validates it before query construction.
     """
     if isinstance(end_edge, dt.date):

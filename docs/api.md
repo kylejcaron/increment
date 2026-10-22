@@ -10,7 +10,7 @@ are in `increment.power`.
     options:
       inherited_members: true
 
-::: increment.Report
+::: increment.MetricTrends
 
 ::: increment.Definitions
 

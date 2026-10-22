@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from increment import Analysis, Report
+from increment import Analysis, MetricTrends
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.models import Definitions
 from integration.warehouse_execution import _suite
@@ -378,7 +378,7 @@ def test_conversion_calendar_trend(postgres_con):
     con.create_table(name, obj=rows)
     try:
         frame = (
-            Report.from_definitions(definitions, con)
+            MetricTrends.from_definitions(definitions, con)
             .metric(
                 "purchase_rate", grain="day", start=dt.date(2025, 1, 1), end=dt.date(2025, 1, 3)
             )

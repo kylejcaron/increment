@@ -86,7 +86,7 @@ if TYPE_CHECKING:
         schema_sha256,
     )
     from increment.query.session import SourceSnapshotEvidence
-    from increment.reporting import Report
+    from increment.reporting import MetricTrends
     from increment.semantics.artifact import (
         ArtifactContext,
         ArtifactExtensionCatalogEntry,
@@ -191,7 +191,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without an instal
 __all__ = [
     "Analysis",
     "moments_from_summaries",
-    "Report",
+    "MetricTrends",
     "Definitions",
     "Metric",
     "MetricSpec",
@@ -357,7 +357,7 @@ _LAZY_IMPORTS = {
     # Submodule, not an attribute of one: __getattr__ returns the module
     # itself when the attr slot is None.
     "impute": ("increment.impute", None),
-    "Report": ("increment.reporting", "Report"),
+    "MetricTrends": ("increment.reporting", "MetricTrends"),
     "Analysis": ("increment.analysis", "Analysis"),
     "SourceSnapshotEvidence": ("increment.query.session", "SourceSnapshotEvidence"),
     "MetricSpec": ("increment.frame", "MetricSpec"),

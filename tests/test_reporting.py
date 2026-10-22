@@ -1,4 +1,4 @@
-"""Report facade: calendar metric trends from definitions. DuckDB in-memory."""
+"""MetricTrends facade: calendar metric trends from definitions. DuckDB in-memory."""
 
 import datetime as dt
 import math
@@ -10,7 +10,8 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from increment import CapabilityError, Report
+import increment
+from increment import CapabilityError, MetricTrends
 from increment.errors import InvalidRequestError
 from increment.semantics.models import Definitions
 from tests._unit_boundary import backend_fixture
@@ -138,7 +139,18 @@ def report():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-    return Report.from_definitions(Definitions.model_validate(DEFS), con)
+    return MetricTrends.from_definitions(Definitions.model_validate(DEFS), con)
+
+
+@pytest.mark.integration
+def test_metric_trends_is_the_root_trend_entry_point(report):
+    frame = report.metric("purchase_rate", **KW).to_frame(backend="pandas")
+    week = frame[frame.period == dt.date(2026, 1, 5)].iloc[0]
+
+    assert isinstance(report, MetricTrends)
+    assert week.n == 2
+    assert week.value == pytest.approx(0.5)
+    assert hasattr(increment, "Report") is False
 
 
 @backend_fixture()
@@ -146,7 +158,7 @@ def recorded_report(monkeypatch):
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(ROWS))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-    report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+    report = MetricTrends.from_definitions(Definitions.model_validate(DEFS), con)
     executed = []
     original_execute = con.execute
 
@@ -214,7 +226,7 @@ def test_report_fact_resolution_ignores_property_source_order(source_order):
             ),
         )
         frame = (
-            Report.from_definitions(definitions, con)
+            MetricTrends.from_definitions(definitions, con)
             .metric("purchase_rate", **KW)
             .to_frame(backend="pandas")
         )
@@ -242,12 +254,12 @@ def test_programmatic_definitions_reject_writes_before_query(sql: str):
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        Report.from_definitions(defs, con)  # ty: ignore[invalid-argument-type]
+        MetricTrends.from_definitions(defs, con)  # ty: ignore[invalid-argument-type]
     assert raised.value.code == "definition.sql.not_read_only"
     assert con.sql_calls == []
 
 
-def test_direct_report_rejects_write_fact_source_before_query():
+def test_direct_metric_trends_rejects_write_fact_source_before_query():
     con = _SpyConnection()
     defs = Definitions.model_validate(
         {
@@ -260,7 +272,7 @@ def test_direct_report_rejects_write_fact_source_before_query():
     )
 
     with pytest.raises(InvalidRequestError) as raised:
-        Report(defs, con)  # ty: ignore[invalid-argument-type]
+        MetricTrends(defs, con)  # ty: ignore[invalid-argument-type]
     assert raised.value.code == "definition.sql.not_read_only"
     assert con.sql_calls == []
 
@@ -284,7 +296,7 @@ def test_report_uses_definitions_snapshot_after_caller_mutation():
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
     recording_con = _RecordingConnection(con)
     defs = Definitions.model_validate(DEFS)
-    report = Report(defs, recording_con)  # ty: ignore[invalid-argument-type]
+    report = MetricTrends(defs, recording_con)  # ty: ignore[invalid-argument-type]
 
     # The declaration layer is frozen, so a caller cannot rewrite the SQL it
     # already handed over -- a stronger guarantee than snapshotting a mutable
@@ -304,7 +316,7 @@ def test_programmatic_select_definitions_execute():
     con.create_table("raw_events", ibis.memtable(ROWS))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
 
-    trend = Report.from_definitions(Definitions.model_validate(DEFS), con).metric(
+    trend = MetricTrends.from_definitions(Definitions.model_validate(DEFS), con).metric(
         "purchase_rate", **KW
     )
     assert len(trend.to_frame()) == 2
@@ -332,7 +344,7 @@ def test_report_snapshots_immutable_allocation_definitions():
     try:
         con.create_table("raw_events", ibis.memtable(ROWS))
         con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-        report = Report.from_definitions(definitions, con)
+        report = MetricTrends.from_definitions(definitions, con)
         expected = (
             report.metric("total_revenue", **KW).to_frame(backend="pandas").sort_values("period")
         )
@@ -364,7 +376,7 @@ def test_file_definitions_still_load_and_execute(tmp_path):
     con.create_table("raw_events", ibis.memtable(ROWS))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
 
-    trend = Report.from_definitions(path, con).metric("purchase_rate", **KW)
+    trend = MetricTrends.from_definitions(path, con).metric("purchase_rate", **KW)
     assert len(trend.to_frame()) == 2
 
 
@@ -400,7 +412,7 @@ def test_report_rejects_population_before_con_sql(population: str, expected_code
     con.create_table("raw_events", ibis.memtable(ROWS))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
     recording = _RecordingConnection(con)
-    report = Report(Definitions.model_validate(DEFS), recording)  # ty: ignore[invalid-argument-type]
+    report = MetricTrends(Definitions.model_validate(DEFS), recording)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(InvalidRequestError) as raised:
         report.metric("purchase_rate", population=population, **KW)
@@ -435,14 +447,14 @@ def test_report_population_validation_uses_backend_dialect():
 
     defs = Definitions.model_validate(DEFS)
     snowflake = _DialectStandInConnection(con, population)
-    scoped = Report(defs, snowflake).metric(  # ty: ignore[invalid-argument-type]
+    scoped = MetricTrends(defs, snowflake).metric(  # ty: ignore[invalid-argument-type]
         "purchase_rate", population=population, **KW
     )
     assert scoped.denominator == "population"
     assert population in snowflake.sql_calls
 
     # The same population is refused where no declared dialect can parse it.
-    elsewhere = Report(defs, _RecordingConnection(con))  # ty: ignore[invalid-argument-type]
+    elsewhere = MetricTrends(defs, _RecordingConnection(con))  # ty: ignore[invalid-argument-type]
     with pytest.raises(InvalidRequestError) as raised:
         elsewhere.metric("purchase_rate", population=population, **KW)
     assert raised.value.code == "definition.sql.parse"
@@ -465,7 +477,7 @@ def test_completeness_horizon_scoped_to_metrics_own_fact():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(lagging_rows))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-    report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+    report = MetricTrends.from_definitions(Definitions.model_validate(DEFS), con)
     frame = report.metric(
         "revenue", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 25)
     ).to_frame(backend="pandas")
@@ -485,7 +497,7 @@ def test_report_bucketing_is_session_timezone_independent():
     timezone - the declared day boundary decides the day, never `SET
     TimeZone`. Mirrors test_total_period_values_tz_aware_is_session_
     timezone_independent (tests/query/test_report_builders.py) but
-    exercises the full Report facade, including Report._build's own
+    exercises the full MetricTrends facade, including MetricTrends._build's own
     ts.max() horizon computation - the report/calendar path's other
     session-dependent cast site."""
     defs = {
@@ -513,7 +525,7 @@ def test_report_bucketing_is_session_timezone_independent():
         con.raw_sql(
             "INSERT INTO tz_events VALUES ('u1', '2025-01-02 00:30:00+00', 'purchase', 10.0)"
         )
-        tz_report = Report.from_definitions(Definitions.model_validate(defs), con)
+        tz_report = MetricTrends.from_definitions(Definitions.model_validate(defs), con)
         # No explicit end=: the completeness horizon falls back to
         # tbl.ts.max() - the exact bug site. A session-dependent bucketing
         # there changes which periods the dense spine even covers.
@@ -554,7 +566,7 @@ def test_report_buckets_by_the_declared_day_boundary_not_utc():
         "CREATE TABLE tz_events (unit_id VARCHAR, ts TIMESTAMPTZ, event VARCHAR, revenue DOUBLE)"
     )
     con.raw_sql("INSERT INTO tz_events VALUES ('u1', '2025-01-02 00:30:00+00', 'purchase', 10.0)")
-    report = Report.from_definitions(Definitions.model_validate(defs), con)
+    report = MetricTrends.from_definitions(Definitions.model_validate(defs), con)
     frame = report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame(backend="pandas")
     values = dict(zip(frame.period, frame.value, strict=True))
     assert values[dt.date(2025, 1, 1)] == 10.0
@@ -634,7 +646,7 @@ def test_default_report_horizon_capacity(grain, span):
                 ]
             ),
         )
-        report = Report.from_definitions(definitions, con)
+        report = MetricTrends.from_definitions(definitions, con)
         if span > 3653:
             with pytest.raises(CapabilityError) as raised:
                 report.metric("revenue", grain=grain, start=start).to_table().execute()
@@ -760,7 +772,7 @@ def test_default_horizons_are_selected_per_metric_and_frozen():
                 ]
             ),
         )
-        report = Report.from_definitions(definitions, con)
+        report = MetricTrends.from_definitions(definitions, con)
         trends = report.metrics(["fresh", "ratio"], grain="day", start=start)
         assert trends["fresh"].end is None
         assert trends["ratio"].end is None
@@ -968,7 +980,7 @@ def test_mean_trend_variance_survives_extreme_mean():
         con = ibis.duckdb.connect()
         con.create_table("raw_events", ibis.memtable(rows))
         con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-        report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+        report = MetricTrends.from_definitions(Definitions.model_validate(DEFS), con)
         frame = report.metric(
             "revenue", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 11)
         ).to_frame(backend="pandas")
@@ -1008,7 +1020,7 @@ def test_mean_trend_constant_period_has_zero_variance_not_nan():
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(rows))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-    report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+    report = MetricTrends.from_definitions(Definitions.model_validate(DEFS), con)
     frame = report.metric(
         "revenue", grain="week", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 11)
     ).to_frame(backend="pandas")
@@ -1200,7 +1212,7 @@ def test_week_start_defaults_from_definitions():
     con.create_table("raw_events", ibis.memtable(ROWS))
     con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
     defs = Definitions.model_validate({**DEFS, "week_start": "sunday"})
-    t = Report.from_definitions(defs, con).metric("purchase_rate", **KW)
+    t = MetricTrends.from_definitions(defs, con).metric("purchase_rate", **KW)
     assert t.week_start == "sunday"  # governed default, no per-call arg
 
 
@@ -1260,7 +1272,7 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
     import ibis
     import pytest
 
-    from increment import CapabilityError, Report
+    from increment import CapabilityError, MetricTrends
     from increment.semantics.models import Definitions
 
     defs = {
@@ -1283,7 +1295,7 @@ def test_report_population_is_not_silently_dropped_for_total_metrics():
     ]
     con = ibis.duckdb.connect()
     con.create_table("raw_events", ibis.memtable(rows))
-    report = Report.from_definitions(Definitions.model_validate(defs), con)
+    report = MetricTrends.from_definitions(Definitions.model_validate(defs), con)
     kwargs = {"grain": "week", "start": dt.date(2026, 1, 1)}
     baseline = sorted(
         report.metric("total_revenue", **kwargs)  # ty: ignore[invalid-argument-type]
@@ -1318,13 +1330,13 @@ def test_report_to_frame_default_works_without_pandas():
 import sys
 import ibis
 import polars as pl
-from increment import Report
+from increment import MetricTrends
 from increment.semantics.models import Definitions
 from tests.test_reporting import DEFS, KW, ORDER_ROWS, ROWS
 con = ibis.duckdb.connect()
 con.create_table("raw_events", ibis.memtable(ROWS))
 con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
-report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+report = MetricTrends.from_definitions(Definitions.model_validate(DEFS), con)
 sys.modules["pandas"] = None
 result = report.metric("purchase_rate", **KW).to_frame()
 assert isinstance(result, pl.DataFrame)
