@@ -1,40 +1,116 @@
+"""Compare collected test items per tier between a base commit and the working tree.
+
+Both sides are collected with one ``--collect-only`` pass each; tier counts come
+from each item's markers evaluated against ``TIER_MARKERS`` in ``noxfile.py``.
+No count is committed, so parallel changes never conflict on a shared file.
+"""
+
 from __future__ import annotations
 
 import argparse
 import ast
+import json
 import os
-import re
+import shutil
+import subprocess
 import sys
+import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-
+ROOT = Path(__file__).resolve().parents[1]
+TIERS = ("unit", "fast", "slow", "all")
 FANOUT_LIMIT = 12
+_PLUGIN = Path(__file__).with_name("collect_items_plugin.py")
 
 
-def _baseline(path: Path) -> dict[str, int]:
-    values: dict[str, int] = {}
-    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
-        fields = line.split()
-        if not fields:
-            continue
-        if len(fields) != 2 or not fields[1].isdecimal() or fields[0] in values:
-            raise ValueError(f"{path}:{line_number}: expected '<tier> <items>'")
-        values[fields[0]] = int(fields[1])
-    return values
+@dataclass(frozen=True)
+class Collection:
+    tiers: Mapping[str, int]
+    nodeids: tuple[str, ...]
 
 
-def _collected_items(output: str) -> int:
-    selected = re.search(r"(\d+)\s*/\s*\d+\s+tests?\s+collected", output)
-    if selected:
-        return int(selected.group(1))
-    match = re.search(r"(\d+)\s+(?:tests?\s+)?collected", output)
-    if match:
-        return int(match.group(1))
-    file_counts = re.findall(r"^.*\.py:\s+(\d+)\s*$", output, flags=re.MULTILINE)
-    if file_counts:
-        return sum(map(int, file_counts))
-    raise ValueError("stdin does not contain pytest --collect-only per-file counts")
+def tier_markers(noxfile: Path = ROOT / "noxfile.py") -> dict[str, str]:
+    """The marker expression of each counted tier, read without importing nox."""
+    for node in ast.parse(noxfile.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "TIER_MARKERS" for t in node.targets
+        ):
+            markers = ast.literal_eval(node.value)
+            return {tier: markers[tier] for tier in TIERS}
+    raise ValueError(f"{noxfile}: TIER_MARKERS not found")
+
+
+def collect(
+    checkout: Path, tests: str = "tests", markers: Mapping[str, str] | None = None
+) -> Collection:
+    """Collect *tests* inside *checkout* with that checkout's own source on the path."""
+    markers = dict(markers or tier_markers())
+    with tempfile.TemporaryDirectory(prefix="collect-items-") as scratch:
+        plugin_dir = Path(scratch) / "plugin"
+        plugin_dir.mkdir()
+        shutil.copy(_PLUGIN, plugin_dir / _PLUGIN.name)
+        output = Path(scratch) / "items.json"
+        path = os.pathsep.join(
+            p for p in (str(plugin_dir), str(checkout), os.environ.get("PYTHONPATH", "")) if p
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": path,
+            "INCREMENT_COLLECT_OUTPUT": str(output),
+            "INCREMENT_COLLECT_TIERS": json.dumps(markers),
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                "slow or not slow",
+                "-p",
+                "collect_items_plugin",
+                "-p",
+                "no:cacheprovider",
+                tests,
+            ],
+            cwd=checkout,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode not in (0, 5) or not output.exists():
+            tail = "\n".join((result.stdout + result.stderr).splitlines()[-20:])
+            raise RuntimeError(
+                f"collection failed in {checkout} (exit {result.returncode}):\n{tail}"
+            )
+        data = json.loads(output.read_text(encoding="utf-8"))
+    return Collection(tiers=data["tiers"], nodeids=tuple(data["nodeids"]))
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args], text=True, stderr=subprocess.PIPE
+    ).strip()
+
+
+def collect_base(repo: Path, base: str, tests: str = "tests") -> Collection:
+    """Collect the merge base of *base* and ``HEAD`` in a throwaway worktree."""
+    commit = _git(repo, "merge-base", base, "HEAD")
+    with tempfile.TemporaryDirectory(prefix="collect-base-") as scratch:
+        checkout = Path(scratch) / "base"
+        _git(repo, "worktree", "add", "--detach", "--quiet", str(checkout), commit)
+        try:
+            return collect(checkout, tests)
+        finally:
+            _git(repo, "worktree", "remove", "--force", str(checkout))
+
+
+def deltas(base: Mapping[str, int], head: Mapping[str, int]) -> dict[str, int]:
+    return {tier: head[tier] - base[tier] for tier in TIERS}
 
 
 def _has_grid_reason(decorator: ast.expr) -> bool:
@@ -88,11 +164,6 @@ def _grid_markers(root: Path) -> set[str]:
     return marked
 
 
-def pytest_collection_finish(session: pytest.Session) -> None:
-    for item in session.items:
-        print(item.nodeid)
-
-
 def _check_fanout(nodeids: str, root: Path) -> list[str]:
     counts: dict[str, int] = {}
     for line in nodeids.splitlines():
@@ -108,67 +179,43 @@ def _check_fanout(nodeids: str, root: Path) -> list[str]:
     ]
 
 
-def check_counts(
-    tier: str,
-    baseline_path: Path,
-    items: int,
-    nodeids: str = "",
-    tests_root: Path = Path("tests"),
-) -> tuple[int, str]:
-    try:
-        baselines = _baseline(baseline_path)
-        if tier not in baselines:
-            raise ValueError(f"{baseline_path}: no baseline for tier {tier}")
-    except (OSError, ValueError) as error:
-        return 2, f"{error}\n"
-    baseline = baselines[tier]
-    findings = _check_fanout(nodeids, tests_root) if nodeids else []
-    if findings:
-        message = (
-            "Collected parameter fan-out findings "
-            "(informational; they do not fail this check):\n"
-            "Literal or computed parameter grids over 12 collected items require a reasoned grid marker.\n"
-            + "\n".join(findings)
-            + "\n"
-        )
-    else:
-        message = ""
-    if items > baseline:
-        delta = items - baseline
-        message += (
-            "Count check failed:\n"
-            f"Tier: {tier}\n"
-            f"Observed: {items} items\n"
-            f"Baseline: {baseline} items\n"
-            f"Delta: +{delta} items\n"
-            f"Edit .github/collect-baseline to `{tier} {items}` and state "
-            f"`tests: +{delta} items — <reason>` in the PR description.\n"
-        )
-        return 1, message
-    message += (
-        f"{tier} {items} (baseline {baseline}; lower count — lower the baseline)\n"
-        if items < baseline
-        else f"{tier} {items} (baseline {baseline})\n"
+def _fanout_message(nodeids: Sequence[str], tests_root: Path) -> str:
+    findings = _check_fanout("\n".join(nodeids), tests_root)
+    if not findings:
+        return ""
+    return (
+        "Collected parameter fan-out findings "
+        "(informational; they do not fail this check):\n"
+        "Literal or computed parameter grids over 12 collected items require a reasoned grid marker.\n"
+        + "\n".join(findings)
+        + "\n"
     )
-    return 0, message
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--tier", required=True)
-    parser.add_argument("--baseline", required=True, type=Path)
-    parser.add_argument("--items", type=int)
-    parser.add_argument("--tests-root", type=Path, default=Path("tests"))
-    args = parser.parse_args()
-    output = sys.stdin.read() if args.items is None else ""
+def report(base: Mapping[str, int], head: Mapping[str, int]) -> str:
+    return "".join(
+        f"{tier} {base[tier]} -> {head[tier]} ({delta:+d})\n"
+        for tier, delta in deltas(base, head).items()
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base", default="origin/main", help="compare against the merge base with this ref"
+    )
+    parser.add_argument("--repo", type=Path, default=Path("."))
+    parser.add_argument("--tests", default="tests")
+    args = parser.parse_args(argv)
+    repo = args.repo.resolve()
     try:
-        items = args.items if args.items is not None else _collected_items(output)
-    except ValueError as error:
-        print(error, file=sys.stderr)
+        base = collect_base(repo, args.base, args.tests)
+        head = collect(repo, args.tests)
+    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as error:
+        print(f"could not collect test items: {error}", file=sys.stderr)
         return 2
-    code, message = check_counts(args.tier, args.baseline, items, output, args.tests_root)
-    print(message, end="", file=sys.stdout if code != 2 else sys.stderr)
-    return code
+    print(_fanout_message(head.nodeids, repo / args.tests) + report(base.tiers, head.tiers), end="")
+    return 0
 
 
 if __name__ == "__main__":

@@ -7,51 +7,52 @@ import pytest
 
 from scripts import check_item_increase_approval as check
 
+BASE = {"unit": 10, "fast": 20, "slow": 5, "all": 25}
+
+
+def test_increase_needs_a_reason_covering_its_delta() -> None:
+    head = {**BASE, "unit": 13, "fast": 23, "all": 28}
+
+    assert check.check_increases(BASE, head, "")[0] == 1
+    assert check.check_increases(BASE, head, "tests: +2 items — partial")[0] == 1
+    assert check.check_increases(BASE, head, "tests: +3 items — new regressions")[0] == 0
+
+
+def test_lower_counts_need_no_reason() -> None:
+    head = {**BASE, "unit": 7, "fast": 17, "all": 22}
+
+    assert check.check_increases(BASE, head, "")[0] == 0
+
 
 @pytest.mark.integration
-class TestItemIncreaseApproval:
-    @staticmethod
-    def _git(repo: Path, *args: str) -> str:
-        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+def test_parallel_branches_each_pass_against_the_base_and_merge_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
 
-    def _repo(self, tmp_path: Path) -> tuple[Path, str]:
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True
-        )
-        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-        (repo / ".github").mkdir()
-        baseline = repo / ".github/collect-baseline"
-        baseline.write_text("unit 10\nfast 20\nslow 5\nall 30\n")
-        subprocess.run(["git", "-C", str(repo), "add", ".github/collect-baseline"], check=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "base"], check=True)
-        return repo, self._git(repo, "rev-parse", "HEAD")
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
-    def test_every_tier_increase_needs_a_covering_reason(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        repo, base = self._repo(tmp_path)
-        (repo / ".github/collect-baseline").write_text("unit 11\nfast 23\nslow 5\nall 33\n")
-        subprocess.run(["git", "-C", str(repo), "add", ".github/collect-baseline"], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "commit", "-q", "-m", "raise baselines"], check=True
-        )
-        monkeypatch.setenv(
-            "GITHUB_PR_BODY",
-            "tests: +1 items — add one unit regression\ntests: +3 items — include all collected tier additions",
-        )
-        assert check.main(["--base", base, "--repo", str(repo)]) == 0
-        assert "unit: baseline increase +1" in capsys.readouterr().out
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (repo / "tests/test_base.py").write_text("def test_base(): pass\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "base")
+    for branch, tests in (("one", 1), ("two", 2)):
+        git("checkout", "-q", "-b", branch, "main")
+        body = "".join(f"def test_{branch}_{i}(): pass\n" for i in range(tests))
+        (repo / f"tests/test_{branch}.py").write_text(body)
+        git("add", ".")
+        git("commit", "-q", "-m", branch)
+    monkeypatch.chdir(repo)
 
-        monkeypatch.setenv("GITHUB_PR_BODY", "tests: +2 items — only covers part of the increase")
-        assert check.main(["--base", base, "--repo", str(repo)]) == 1
-        assert "fast: baseline increased by 3" in capsys.readouterr().out
-
-    def test_unchanged_baselines_need_no_reason(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        repo, base = self._repo(tmp_path)
-        monkeypatch.delenv("GITHUB_PR_BODY", raising=False)
-        assert check.main(["--base", base, "--repo", str(repo)]) == 0
+    monkeypatch.setenv("GITHUB_PR_BODY", "")
+    assert check.main(["--base", "main", "--repo", str(repo)]) == 1
+    monkeypatch.setenv("GITHUB_PR_BODY", "tests: +2 items — two regressions")
+    assert check.main(["--base", "main", "--repo", str(repo)]) == 0
+    git("checkout", "-q", "one")
+    monkeypatch.setenv("GITHUB_PR_BODY", "tests: +1 items — one regression")
+    assert check.main(["--base", "main", "--repo", str(repo)]) == 0
+    git("merge", "-q", "--no-edit", "two")

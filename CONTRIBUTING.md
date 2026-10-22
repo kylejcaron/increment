@@ -363,9 +363,12 @@ H5 limits literal `parametrize` fan-out: over twelve expanded cases require
 boundary cases plus a Hypothesis property or a reasoned `@pytest.mark.grid`.
 Existing literal-grid exceptions are recorded under `# H5` in
 `tests/test_hygiene_allowlist.txt`; that baseline can only decrease.
-`grid(reason)` is registered in `pyproject.toml`. `make check-items` compares
-collected unit, fast, slow and all item counts with `.github/collect-baseline`;
-an increase requires `tests: +N items — <reason>` in the PR description.
+`grid(reason)` is registered in `pyproject.toml`. No item count is committed.
+The `item-increase-reason` check collects the pull request's merge base and
+head and compares unit, fast, slow and all item counts; a tier that rises
+requires a PR-description line `tests: +N items — <reason>` with `N` at least
+that rise (always spelled `items`). Lower counts need nothing.
+`make check-items BASE=<ref>` prints the same comparison for the working tree.
 Computed grids are reported separately from the literal fan-out check.
 
 Together, the weakening check reports fewer test functions or assertions,
