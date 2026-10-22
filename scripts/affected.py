@@ -6,13 +6,12 @@ import argparse
 import ast
 import subprocess
 import sys
+import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-FAST_MARKER = "not slow and not parameter_recovery and not numerical_certification"
-SLOW_MARKER = "slow and not parameter_recovery and not numerical_certification and not examples"
-_FULL_TIER_PATHS = {"pyproject.toml", "uv.lock", "conftest.py", "tach.toml", "Makefile"}
+_FULL_TIER_PATHS = {"uv.lock", "conftest.py", "Makefile"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,10 +262,42 @@ def _test_module_importers(root: Path, module_names: set[str]) -> set[str]:
     return test_importers
 
 
+def _pyproject_full_tier_change(base: str, root: Path) -> bool:
+    try:
+        previous = tomllib.loads(_git("show", f"{base}:pyproject.toml", root=root))
+        current = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (subprocess.CalledProcessError, OSError, tomllib.TOMLDecodeError):
+        return True
+
+    def relevant(data: dict) -> dict:
+        project = data.get("project", {})
+        tool = data.get("tool", {})
+        return {
+            "project.dependencies": project.get("dependencies"),
+            "project.optional-dependencies": project.get("optional-dependencies"),
+            "dependency-groups": data.get("dependency-groups"),
+            "tool.pytest": {key: value for key, value in tool.items() if key.startswith("pytest")},
+            "tool.uv": tool.get("uv"),
+        }
+
+    return relevant(previous) != relevant(current)
+
+
+def _changed_markers(tier: str, root: Path) -> str:
+    for node in ast.parse((root / "noxfile.py").read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "TIER_MARKERS" for target in node.targets
+        ):
+            return ast.literal_eval(node.value)[tier]
+    raise RuntimeError("noxfile.py does not define TIER_MARKERS")
+
+
 def select(base: str, root: Path) -> Selection:
     """Classify changed paths into locally runnable checks."""
     changed = _changed_paths(base, root)
-    full_tier = any(path in _FULL_TIER_PATHS for path in changed)
+    full_tier = any(path in _FULL_TIER_PATHS for path in changed) or (
+        "pyproject.toml" in changed and _pyproject_full_tier_change(base, root)
+    )
     test_files: set[str] = set()
     doc_pages: set[str] = set()
     use_tach = False
@@ -275,7 +306,10 @@ def select(base: str, root: Path) -> Selection:
     uncovered: set[str] = set()
 
     for path in changed:
-        if path in _FULL_TIER_PATHS:
+        if path in _FULL_TIER_PATHS or path == "pyproject.toml":
+            continue
+        if path == "tach.toml":
+            use_tach = True
             continue
         if path == "README.md" or (path.startswith("docs/") and path.endswith(".md")):
             if (root / path).is_file():
@@ -329,7 +363,7 @@ def _without_xdist_worker_args(arguments: Sequence[str]) -> list[str]:
 def _pytest_invocations(
     selection: Selection, base: str, tier: str, extra_args: Sequence[str]
 ) -> list[list[str]]:
-    markers = ["-m", {"fast": FAST_MARKER, "slow": SLOW_MARKER}[tier]]
+    markers = ["-m", _changed_markers(tier, Path(__file__).resolve().parent.parent)]
 
     if selection.full_tier:
         roots = ["tests"] if selection.doc_pages else []
@@ -377,7 +411,7 @@ def _combined_pytest_status(statuses: Sequence[int]) -> int | None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
-    parser.add_argument("--tier", choices=("fast", "slow"), default="fast")
+    parser.add_argument("--tier", choices=("fast", "unit", "slow"), default="fast")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     arguments = parser.parse_args(argv)
     extra_args = arguments.pytest_args
