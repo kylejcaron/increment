@@ -35,6 +35,7 @@ from increment.estimation.readout_types import (
 from increment.estimation.results import LiftEstimate
 from increment.readouts._common import _raise, _runtime_method_roles, _runtime_methods
 from increment.readouts._metric_rows import _rows_digest
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 from increment.readouts._source_digest import component, composite_source
 
@@ -636,7 +637,7 @@ def _indexed_cell_outcomes(rows, computations):
     return row_map, failure_map
 
 
-def scope_design_results(  # noqa: PLR0913
+def scope_design_results(  # noqa: PLR0913, PLR0915
     src: Any,
     design: Any,
     plan: Any,
@@ -758,6 +759,7 @@ def scope_design_results(  # noqa: PLR0913
         }
     )
     configs_by_metric = {config.metric.name: config for config in configs}
+    metric_types = declared_metric_types(config.metric for config in configs)
 
     projection = {
         "source_snapshot_id": snapshot_id,
@@ -768,7 +770,11 @@ def scope_design_results(  # noqa: PLR0913
     }
 
     def project(row, failure):
-        return _project_scoped_row(row, failure, projection)
+        return _project_scoped_row(
+            row,
+            failure,
+            {**projection, "metric_type": declared_metric_type(row, metric_types)},
+        )
 
     output = [project(row, None) for row in rows]
     records = []

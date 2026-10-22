@@ -8,6 +8,7 @@ from increment.estimation.readout_types import CellKey, ReadoutScope, cell_order
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean
 from increment.readouts._common import _raise
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 
 
@@ -252,7 +253,7 @@ def _randomized_cell_failures(
     return cell_failures, complete, scope_reason_context
 
 
-def _scoped_randomized_results(
+def _scoped_randomized_results(  # noqa: PLR0915
     src,
     selected,
     configs,
@@ -365,6 +366,7 @@ def _scoped_randomized_results(
     result_by_cell = {}
     for row in rows:
         result_by_cell[(row.metric, row.group_id, row.method, row.method_role)] = row
+    metric_types = declared_metric_types(selected)
     output = []
     records = []
     # Keep returned rows in request/registry order; only persisted scope keys are canonical-sorted.
@@ -435,6 +437,7 @@ def _scoped_randomized_results(
             row = row.model_copy(
                 update={
                     "source_snapshot_id": snapshot_id,
+                    "metric_type": declared_metric_type(row, metric_types),
                     "analysis_population": population,
                     "sampling_available": failure is None,
                     "sampling_reason_code": None if failure is None else failure.code,

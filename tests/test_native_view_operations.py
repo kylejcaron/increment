@@ -83,6 +83,7 @@ def _assert_model_rows_match(actual_rows, expected_rows, *, ignore_source_scope=
     if ignore_source_scope:
         scope_fields = {
             "source_snapshot_id",
+            "metric_type",
             "decision_scope_complete",
             "decision_scope_reason_code",
             "decision_scope_reason_context",
