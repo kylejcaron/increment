@@ -17,6 +17,7 @@ from increment.errors import CapabilityError, CodedError, IncrementWarning, Unsu
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
 from increment.semantics.models import CupedCovariateBinding, Measure, MethodSpec
+from tests._override_warnings import allow_declared_overrides
 from tests.capability_consumers_scalar import PLANNING_BASELINE, completed, refused
 
 
@@ -1157,6 +1158,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
             con.disconnect()
 
     @pytest.mark.slow
+    @allow_declared_overrides
     def test_triggered_cuped_planning_uses_assignment_anchored_preperiod(  # noqa: PLR0915
         self, tmp_path
     ):

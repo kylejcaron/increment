@@ -7,6 +7,8 @@ from datetime import date
 
 import pytest
 
+from tests._override_warnings import allow_declared_overrides
+
 pytestmark = pytest.mark.slow
 
 
@@ -80,6 +82,7 @@ def test_fixed_snapshot_keeps_old_rows_headline_and_csv_after_live_correction():
 @pytest.mark.filterwarnings(
     "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning"
 )
+@allow_declared_overrides
 def test_native_cuped_means_are_raw_and_adjusted_headline_matches_frame(tmp_path):
     from increment.dashboard import DashboardConfig, prepare_dashboard
     from increment.errors import IncrementWarning
