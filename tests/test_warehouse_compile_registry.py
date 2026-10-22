@@ -11,7 +11,11 @@ from integration.warehouse_execution._compile import (
 )
 
 # Each worker captures the public readouts once; shards spread rendering across workers.
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    pytest.mark.compile_registry,
+]
 _SHARDS = 8
 
 

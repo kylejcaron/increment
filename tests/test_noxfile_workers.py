@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from noxfile import _xdist_args
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from noxfile import TIER_MARKERS, _xdist_args
 
 
 def test_ci_keeps_auto_workers() -> None:
@@ -29,3 +35,31 @@ def test_workers_variable_overrides_allowance() -> None:
         "--dist",
         "loadgroup",
     )
+
+
+@pytest.mark.integration
+def test_compile_registry_runs_only_in_its_own_tier() -> None:
+    """The slow tier leaves the registry to its own tier, which selects exactly that module."""
+
+    def collected(tier: str) -> set[str]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                TIER_MARKERS[tier],
+                "tests/test_warehouse_compile_registry.py",
+                "tests/test_noxfile_workers.py",
+            ],
+            cwd=Path(__file__).parents[1],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return {line.split("::")[0] for line in result.stdout.splitlines() if "::" in line}
+
+    assert "tests/test_warehouse_compile_registry.py" not in collected("slow")
+    assert collected("compile-registry") == {"tests/test_warehouse_compile_registry.py"}
