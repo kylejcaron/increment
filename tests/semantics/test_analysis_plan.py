@@ -2,7 +2,6 @@
 the per-experiment margin fields on ExperimentMetric bindings."""
 
 import pytest
-from pydantic import ValidationError
 
 from increment.errors import DefinitionError, InvalidRequestError
 from increment.semantics.models import AnalysisPlan, ExperimentMetric, InferenceSpec
@@ -165,24 +164,25 @@ def test_always_valid_without_secondaries_allowed():
 
 @pytest.mark.parametrize("alpha", [0.0, 1.0, -0.1, 1.1])
 def test_alpha_out_of_bounds_refused(alpha: float):
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         AnalysisPlan(alpha=alpha)
+    assert raised.value.code == "model.field.range"
 
 
 @pytest.mark.parametrize("q", [0.0, 1.0, -0.1, 1.1])
 def test_q_out_of_bounds_refused(q: float):
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         AnalysisPlan(q=q)
+    assert raised.value.code == "model.field.range"
 
 
 # ── extra=forbid ─────────────────────────────────────────────────────────
 
 
 def test_analysis_plan_forbids_extra_fields():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         AnalysisPlan(bogus_field="x")  # ty: ignore[unknown-argument]  # proving extra=forbid rejects it
-    assert exc_info.value.errors()[0]["type"] == "extra_forbidden"
-    assert exc_info.value.errors()[0]["loc"] == ("bogus_field",)
+    assert exc_info.value.code == "model.field.unknown"
 
 
 # ── InferenceSpec: field/kind mismatch ──────────────────────────────────
@@ -211,10 +211,10 @@ def test_obsolete_inference_fields_refuse_before_any_source_iteration(field, val
     from tests.sequential_cases import registered_spec
 
     payload = {**registered_spec().model_dump(), field: value}
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         InferenceSpec.model_validate(payload)
-    assert {error["type"] for error in exc_info.value.errors()} == {"extra_forbidden"}
-    assert {error["loc"] for error in exc_info.value.errors()} == {(field,)}
+    assert exc_info.value.code == "model.field.unknown"
+    assert exc_info.value.context["field"] == field
 
 
 # ── ExperimentMetric margins (per-experiment tolerance) ─────────────────
@@ -227,17 +227,15 @@ def test_experiment_metric_margin_and_margin_abs_mutually_exclusive():
 
 
 def test_experiment_metric_margin_must_be_positive():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         ExperimentMetric(metric="m", margin=0.0)
-    assert exc_info.value.errors()[0]["type"] == "greater_than"
-    assert exc_info.value.errors()[0]["loc"] == ("margin",)
+    assert exc_info.value.code == "model.field.range"
 
 
 def test_experiment_metric_margin_abs_must_be_positive():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         ExperimentMetric(metric="m", margin_abs=-1.0)
-    assert exc_info.value.errors()[0]["type"] == "greater_than"
-    assert exc_info.value.errors()[0]["loc"] == ("margin_abs",)
+    assert exc_info.value.code == "model.field.range"
 
 
 def test_experiment_metric_margin_alone_allowed():

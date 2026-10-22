@@ -88,7 +88,7 @@ from pydantic import ValidationError
 
 from increment import Analysis
 from increment._analysis_config import UNSET
-from increment.errors import CodedError, IncrementWarning
+from increment.errors import CodedError, IncrementWarning, InvalidRequestError
 from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
 from tests.warning_codes import warning_codes
@@ -442,11 +442,20 @@ def _read_with_advisories(analysis: Any, name: str, case: ParityCase) -> tuple[A
 def _assert_names_absent_field(case_id: str, name: str, exc: Exception, absent: Absence) -> None:
     """The constructor failed because of the declared field, not for another reason.
 
-    A schema absence must carry a validation error that locates the field and rejects it as
-    an unknown input. A keyword absence must name a keyword the constructor's signature does
-    not accept. A case declaring several unsupported inputs is held only to the one it names,
-    so each is checked by the cell that declares it alone.
+    A coded model-field refusal must locate the absent field in its structured context. A
+    keyword absence must name a keyword the constructor's signature does not accept. A case
+    declaring several unsupported inputs is held only to the one it names, so each is checked
+    by the cell that declares it alone.
     """
+    if isinstance(exc, InvalidRequestError):
+        assert exc.code == "model.field.unknown", (
+            f"{case_id}: {name} did not refuse {absent.field!r} as an unknown model field: "
+            f"{exc.code!r}"
+        )
+        assert exc.context.get("field") == absent.field, (
+            f"{case_id}: {name} refusal named {exc.context.get('field')!r}, not {absent.field!r}"
+        )
+        return
     if isinstance(exc, ValidationError):
         located = [
             error

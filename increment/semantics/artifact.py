@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime
 from typing import Annotated, Any, ClassVar, Literal, cast
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment._artifact_identity import (
     context_digest,
@@ -22,9 +22,8 @@ from increment._artifact_identity import (
     manifest_digest,
 )
 from increment._canonical import canonical_json_bytes
-from increment.errors import InvalidRequestError, raiser, refusals
+from increment.errors import CodedValidationMixin, InvalidRequestError, raiser, refusals
 from increment.semantics.models import (
-    _Base,
     _definition_refusal,
     _ExplicitOnlyFields,
     _validate_day_boundary,
@@ -207,7 +206,7 @@ def _validate_json_payload(value: str, field_name: str) -> str:
     return value
 
 
-class _ArtifactBase(_Base):
+class _ArtifactBase(CodedValidationMixin, BaseModel):
     model_config = ConfigDict(
         frozen=True,
         extra="forbid",

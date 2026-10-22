@@ -71,16 +71,14 @@ def test_mean_metric_accepts_explicit_average_basis(aggregation):
 
 
 def test_bare_avg_is_rejected():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         MeanMetric(
             name="avg_rev",
             entity="user_id",
             fact="revenue",
             aggregation="avg",  # ty: ignore[invalid-argument-type]
         )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("aggregation",)
-    assert error["type"] == "literal_error"
+    assert exc_info.value.code == "model.field.literal"
 
 
 def test_calendar_day_average_is_mean_only():
@@ -98,7 +96,7 @@ def test_calendar_day_average_is_mean_only():
 
 
 def test_fact_source_requires_entity():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         Definitions(
             fact_sources=[
                 FactSource(
@@ -111,9 +109,7 @@ def test_fact_source_requires_entity():
             ],
             metrics=[TotalMetric(name="total_revenue", fact="revenue", aggregation="sum")],
         )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("entities",)
-    assert error["type"] == "too_short"
+    assert exc_info.value.code == "model.field.length"
 
 
 def test_mean_metric_accepts_winsorization():
@@ -149,7 +145,7 @@ def test_mean_metric_accepts_winsorization():
     ],
 )
 def test_winsorization_rejects_invalid_declarations(kwargs: dict[str, float], code: str | None):
-    expected = DefinitionError if code is not None else ValidationError
+    expected = DefinitionError if code is not None else InvalidRequestError
     with pytest.raises(expected) as exc_info:
         Winsorization.model_validate(kwargs)
     if code is not None:
@@ -395,13 +391,15 @@ def test_extra_forbid_nested_in_metric():
 
 
 def test_extra_forbid_nested_in_fact():
-    with pytest.raises(ValidationError, match="extra"):
+    with pytest.raises(InvalidRequestError) as raised:
         Fact(name="f", column="c", typo_desc="oops")  # ty: ignore[unknown-argument]  # proving extra=forbid rejects it
+    assert raised.value.code == "model.field.unknown"
 
 
 def test_extra_forbid_nested_in_filter():
-    with pytest.raises(ValidationError, match="extra"):
+    with pytest.raises(InvalidRequestError) as raised:
         Filter(property="p", op="equals", values=["x"], bogus_opt="y")  # ty: ignore[unknown-argument]  # proving extra=forbid rejects it
+    assert raised.value.code == "model.field.unknown"
 
 
 # ── Cross-reference validation on Definitions ──────────────────────────
@@ -1629,7 +1627,7 @@ def test_margin_with_neutral_direction_rejected():
 
 
 def test_margin_must_be_positive():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         MeanMetric(
             name="revenue",
             entity="user_id",
@@ -1638,9 +1636,7 @@ def test_margin_must_be_positive():
             preferred_direction="increase",
             margin=-0.01,
         )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("margin",)
-    assert error["type"] == "greater_than"
+    assert exc_info.value.code == "model.field.range"
 
 
 def test_explicit_direction_without_margin_still_allowed():
@@ -1903,7 +1899,7 @@ def test_margin_abs_with_neutral_direction_rejected():
 
 
 def test_margin_abs_must_be_positive():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         MeanMetric(
             name="revenue",
             entity="user_id",
@@ -1912,9 +1908,7 @@ def test_margin_abs_must_be_positive():
             preferred_direction="increase",
             margin_abs=-0.01,
         )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("margin_abs",)
-    assert error["type"] == "greater_than"
+    assert exc_info.value.code == "model.field.range"
 
 
 def test_margin_and_margin_abs_mutually_exclusive():
@@ -2073,7 +2067,7 @@ class TestRolloutCost:
     def test_rollout_cost_domain(self):
         # Relative lift must exceed -1 (log1p domain); -0.02 is legal since the direction
         # guard, not the domain, is what enforces sense here.
-        with pytest.raises(ValidationError):
+        with pytest.raises(InvalidRequestError) as raised:
             MeanMetric(
                 name="revenue",
                 entity="user_id",
@@ -2082,6 +2076,7 @@ class TestRolloutCost:
                 preferred_direction="increase",
                 rollout_cost=-1.0,
             )
+        assert raised.value.code == "model.field.range"
 
     def test_rollout_cost_accepts_valid_negative_value(self):
         # Confirms the other side of the -1.0 boundary actually constructs: a small measured
@@ -2334,8 +2329,9 @@ def test_resolve_alternative_valid_values_still_pass():
 
 def test_window_days_nonpositive_refused():
     for bad in (-7, 0):
-        with pytest.raises(ValidationError):
+        with pytest.raises(InvalidRequestError) as raised:
             MeanMetric(name="m", entity="u", fact="f", aggregation="sum", window_days=bad)
+        assert raised.value.code == "model.field.range"
     ok = MeanMetric(name="m", entity="u", fact="f", aggregation="sum", window_days=1)
     assert ok.window_days == 1
 
@@ -2343,8 +2339,9 @@ def test_window_days_nonpositive_refused():
 def test_negative_n_pre_periods_refused():
     """n_pre_periods=-5 must refuse, not construct and silently behave as 0 (a silent CUPED
     disable)."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         _experiment(n_pre_periods=-5)
+    assert raised.value.code == "model.field.range"
     assert _experiment(n_pre_periods=0).n_pre_periods == 0
 
 
@@ -2628,8 +2625,9 @@ def test_method_spec_refuses_finite_sample_with_cuped_and_unknown_values():
     with pytest.raises(InvalidRequestError) as exc_info:
         MethodSpec(name="cuped", variance_reduction="cuped", conversion_inference="finite_sample")
     assert exc_info.value.code == "conversion_inference.finite_sample.cuped"
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         MethodSpec(name="unadjusted", conversion_inference="asymptotic")  # ty: ignore[invalid-argument-type]
+    assert raised.value.code == "model.field.literal"
 
 
 def _finite_sample_definitions(metric_type: str) -> dict:
@@ -2770,15 +2768,16 @@ def test_one_hazard_has_one_code_and_context_across_every_layer():
 
 
 def test_prior_spec_requires_positive_sigma():
-    with pytest.raises(ValidationError):
-        NormalPriorSpec(mu=0.0, sigma=0.0)
-    with pytest.raises(ValidationError):
-        NormalPriorSpec(mu=0.0, sigma=-1.0)
+    for sigma in (0.0, -1.0):
+        with pytest.raises(InvalidRequestError) as raised:
+            NormalPriorSpec(mu=0.0, sigma=sigma)
+        assert raised.value.code == "model.field.range"
 
 
 def test_experiment_metric_binding_forbids_extra_fields():
-    with pytest.raises(ValidationError, match="extra"):
+    with pytest.raises(InvalidRequestError) as raised:
         ExperimentMetric(metric="orders", bogus_field="x")  # ty: ignore[unknown-argument]  # proving extra=forbid rejects it
+    assert raised.value.code == "model.field.unknown"
 
 
 def test_experiment_metric_shorthand_and_binding_coexist_in_declaration_order():
@@ -3135,7 +3134,7 @@ def test_preferred_direction_dump_includes_when_declared():
 
 
 def test_margin_rejects_infinity():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         MeanMetric(
             name="revenue",
             entity="user_id",
@@ -3144,10 +3143,11 @@ def test_margin_rejects_infinity():
             preferred_direction="decrease",
             margin=float("inf"),
         )
+    assert raised.value.code == "model.field.nonfinite"
 
 
 def test_margin_abs_rejects_infinity():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         MeanMetric(
             name="revenue",
             entity="user_id",
@@ -3156,10 +3156,11 @@ def test_margin_abs_rejects_infinity():
             preferred_direction="decrease",
             margin_abs=float("inf"),
         )
+    assert raised.value.code == "model.field.nonfinite"
 
 
 def test_rollout_cost_rejects_infinity():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         MeanMetric(
             name="revenue",
             entity="user_id",
@@ -3168,22 +3169,25 @@ def test_rollout_cost_rejects_infinity():
             preferred_direction="increase",
             rollout_cost=float("inf"),
         )
+    assert raised.value.code == "model.field.nonfinite"
 
 
 def test_normal_prior_spec_rejects_infinity_and_nan():
-    with pytest.raises(ValidationError):
-        NormalPriorSpec(mu=float("inf"), sigma=1.0)
-    with pytest.raises(ValidationError):
-        NormalPriorSpec(mu=float("nan"), sigma=1.0)
-    with pytest.raises(ValidationError):
+    for value in (float("inf"), float("nan")):
+        with pytest.raises(InvalidRequestError) as raised:
+            NormalPriorSpec(mu=value, sigma=1.0)
+        assert raised.value.code == "model.field.nonfinite"
+    with pytest.raises(InvalidRequestError) as raised:
         NormalPriorSpec(mu=0.0, sigma=float("inf"))
+    assert raised.value.code == "model.field.nonfinite"
 
-
-def test_experiment_metric_binding_margin_rejects_infinity():
-    with pytest.raises(ValidationError):
-        ExperimentMetric(metric="revenue", margin=float("inf"))
-    with pytest.raises(ValidationError):
-        ExperimentMetric(metric="revenue", margin_abs=float("inf"))
+    for build in (
+        lambda: ExperimentMetric(metric="revenue", margin=float("inf")),
+        lambda: ExperimentMetric(metric="revenue", margin_abs=float("inf")),
+    ):
+        with pytest.raises(InvalidRequestError) as raised:
+            build()
+        assert raised.value.code == "model.field.nonfinite"
 
 
 # ── Declaration-time validation gaps (2e7z) ─────────────────────────────
@@ -3207,8 +3211,9 @@ def test_ratio_metric_rejects_identical_numerator_and_denominator():
 
 
 def test_method_spec_variance_reduction_rejects_unregistered_value():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         MethodSpec(name="custom", variance_reduction="bogus")  # ty: ignore[invalid-argument-type]
+    assert raised.value.code == "model.field.literal"
 
 
 def test_measure_window_days_rejects_bool():
@@ -3844,8 +3849,7 @@ def test_coded_refusal_carries_same_code_on_every_construction_path(construct):
     ],
     ids=["init", "model_validate", "model_validate_json"],
 )
-def test_missing_field_validation_error_stays_plain_on_every_direct_entry_path(construct):
-    """A nested non-CodedModel field remains pydantic ValidationError."""
+def test_missing_field_validation_error_is_coded_on_every_direct_entry_path(construct):
     raw = {
         "fact_sources": [
             {
@@ -3856,11 +3860,12 @@ def test_missing_field_validation_error_stays_plain_on_every_direct_entry_path(c
             }
         ],
     }
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         construct(raw)
-    error = exc_info.value.errors()[0]
-    assert error["type"] == "missing"
-    assert error["loc"] == ("fact_sources", 0, "sql")
+    assert exc_info.value.code == "model.field.missing"
+    assert exc_info.value.context["model"] == "FactSource"
+    assert exc_info.value.context["field"] == "sql"
+    assert exc_info.value.context["loc"] == ("fact_sources", 0, "sql")
 
 
 # ── Declared designs on Experiment ──────────────────────────────────────
@@ -4105,3 +4110,31 @@ def test_window_edges_inverted_by_local_day_are_refused_at_a_negative_boundary()
             observation_end=dt.datetime(2025, 1, 15, 4, tzinfo=aware),
         )
     assert shortened.value.code == "definition.experiment.observation_end_before_end"
+
+
+def test_semantic_missing_and_literal_errors_are_coded():
+    from increment.semantics.models import CupedCovariate, InferenceSpec
+
+    with pytest.raises(InvalidRequestError) as missing:
+        CupedCovariate(name="x")  # ty: ignore[missing-argument]
+    assert missing.value.code == "model.field.missing"
+
+    with pytest.raises(InvalidRequestError) as literal:
+        InferenceSpec(kind="bogus")  # ty: ignore[invalid-argument-type]
+    assert literal.value.code == "model.field.literal"
+
+
+def test_coded_validation_error_survives_pickle_and_deepcopy():
+    import copy
+    import pickle
+
+    from increment.semantics.models import CupedCovariate
+
+    with pytest.raises(InvalidRequestError) as raised:
+        CupedCovariate(name="x")  # ty: ignore[missing-argument]
+    for restored in (
+        pickle.loads(pickle.dumps(raised.value)),
+        copy.deepcopy(raised.value),
+    ):
+        assert restored.code == "model.field.missing"
+        assert restored.context["field"] == "kind"

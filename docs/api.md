@@ -978,14 +978,15 @@ outcomes. `InvalidRequestError` codes and their `context`:
 `CodedModel`, `CodedValidationMixin` and `unwrap_coded` are public from
 `increment.errors`, not the root `increment` namespace.
 
-`CodedModel` and every definition model in `increment.semantics.models`
-(which use `CodedValidationMixin`) surface coded validator refusals from direct
-construction and direct `model_validate`, `model_validate_json`, and
-`model_validate_strings` calls. Definition-specific validators raise
-`DefinitionError`; shared finite-sample metric-type and CUPED refusals raise
-`InvalidRequestError` with the same `conversion_inference.finite_sample.*` code
-and structured context as frame, estimation and planning requests. Catch
-`CodedError` when handling both kinds by code. Pydantic schema boundaries such
+`CodedModel` and every public input model that inherits it surface known
+field-validation failures from direct construction and direct `model_validate`,
+`model_validate_json`, and `model_validate_strings` calls as
+`InvalidRequestError` refusals with stable `model.field.*` codes and structured
+context. Definition-specific validators raise `DefinitionError`; shared
+finite-sample metric-type and CUPED refusals raise `InvalidRequestError` with
+the same `conversion_inference.finite_sample.*` code and structured context as
+frame, estimation and planning requests. Catch `CodedError` when handling both
+kinds by code. Pydantic schema boundaries such
 as `TypeAdapter` and an ordinary `BaseModel` containing one of these models
 still raise `ValidationError`: Pydantic captures the refusal because
 `CodedError` intentionally remains compatible with `ValueError`.
@@ -998,8 +999,8 @@ than `pydantic.ValidationError`. Code that catches validation failures from
 these models must catch `(pydantic.ValidationError,
 increment.errors.InvalidRequestError)` (or `ValueError`) rather than
 replacing one with the other. Uncoded-validator, root-level, and nested
-non-coded-model failures remain `ValidationError`, as do plain field
-constraints on the other definition models.
+non-coded-model failures are reported as `definition.validation` with field
+locations when loading YAML definitions.
 
 ```python
 from pydantic import TypeAdapter, ValidationError

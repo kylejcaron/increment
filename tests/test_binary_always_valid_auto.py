@@ -359,10 +359,11 @@ def test_segment_metadata_names_one_dimension_with_distinct_levels(segments):
 
 
 def test_segment_levels_are_labels_never_collapsed_from_native_values():
-    from pydantic import ValidationError
+    from increment.errors import InvalidRequestError
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         InferenceSpec.model_validate({"kind": "always_valid", "segments": {"tier": (1, "1")}})
+    assert raised.value.code == "model.field.type"
     levels = ["US", "CA"]
     spec = InferenceSpec(kind="always_valid", segments={"country": levels})
     levels.append("GB")

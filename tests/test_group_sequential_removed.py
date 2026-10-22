@@ -6,18 +6,18 @@ from fractions import Fraction as F
 from typing import Any, cast
 
 import pytest
-from pydantic import ValidationError
 
 from increment.errors import CapabilityError, WireFormatError
 from increment.semantics.models import InferenceSpec
 
 
 def test_inference_spec_rejects_the_group_sequential_kind():
+    from increment.errors import InvalidRequestError
     from tests.sequential_cases import registration
 
-    with pytest.raises(ValidationError) as raised:
+    with pytest.raises(InvalidRequestError) as raised:
         InferenceSpec.model_validate({"kind": "group_sequential", "registration": registration()})
-    assert raised.value.errors()[0]["loc"] == ("kind",)
+    assert raised.value.code == "model.field.literal"
 
 
 def test_wire_group_sequential_payload_refuses_with_the_invalid_inference_code():

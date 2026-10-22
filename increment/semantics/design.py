@@ -31,7 +31,7 @@ from pydantic import (
 
 from increment.errors import (
     CapabilityError,
-    CodedValidationMixin,
+    CodedModel,
     InvalidRequestError,
     RefusalSpec,
     raiser,
@@ -140,7 +140,7 @@ def _validate_allocation_semantics(
         refuse(_ALLOCATION_INVALID, control_group=control_group, allocation=dict(allocation))
 
 
-class Randomized(BaseModel):
+class Randomized(CodedModel, BaseModel):
     """A randomized assignment with a named control arm."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -182,7 +182,7 @@ class Randomized(BaseModel):
         return hash((self.mechanism, self.control_group, items, self.allocation_scheme))
 
 
-class UptakeSpec(BaseModel):
+class UptakeSpec(CodedModel, BaseModel):
     """The binary uptake fact of an encouragement design.
 
     ``fact`` names the uptake event (0/1 column on the dataframe path,
@@ -201,7 +201,7 @@ class UptakeSpec(BaseModel):
         return None if v is None else _reject_bool(v)
 
 
-class ExclusionRestriction(CodedValidationMixin, BaseModel):
+class ExclusionRestriction(CodedModel, BaseModel):
     """Explicit acknowledgment that assignment moves the outcome only
     through uptake. Untestable from data, so it must be declared, like
     ``Observational.adjustment``: assumptions stay visible, never implicit.
@@ -220,7 +220,7 @@ class ExclusionRestriction(CodedValidationMixin, BaseModel):
         return value
 
 
-class Encouragement(BaseModel):
+class Encouragement(CodedModel, BaseModel):
     """A randomized encouragement: assignment is random, uptake is chosen.
 
     Identifies ITT and compliance without an exclusion declaration; LATE
@@ -283,7 +283,7 @@ class Encouragement(BaseModel):
         )
 
 
-class AdjustmentSet(BaseModel):
+class AdjustmentSet(CodedModel, BaseModel):
     """Covariates declared sufficient to identify treatment effect in an
     observational comparison; a declaration, not a validation - callers
     must argue elsewhere that it satisfies conditional ignorability.
@@ -314,7 +314,7 @@ class AdjustmentSet(BaseModel):
         return v
 
 
-class IdentificationGate(BaseModel):
+class IdentificationGate(CodedModel, BaseModel):
     """Overlap/positivity policy for an observational comparison.
 
     Defaults refuse rather than silently proceed when propensities are
@@ -332,7 +332,7 @@ class IdentificationGate(BaseModel):
     max_smd: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
 
 
-class Observational(CodedValidationMixin, BaseModel):
+class Observational(CodedModel, BaseModel):
     """A non-randomized comparison identified via an explicit adjustment set."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")

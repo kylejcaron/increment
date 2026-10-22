@@ -133,8 +133,9 @@ def test_shared_assignment_refuses_and_nested_forged_assignment_is_revalidated()
     values["assignment"] = values["assignment"].model_copy(
         update={"sequence": IndependentBernoulliOrder().model_copy(update={"probability_ct": 0})}
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as caught:
         UnitCycleVarianceEnvelope(**values, cycles_per_unit=1, residual_variance_upper=1)
+    assert caught.value.code == "model.field.range"
 
 
 def test_joint_law_copies_lists_and_relative_weights_need_no_probability_tolerance():

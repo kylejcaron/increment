@@ -12,7 +12,6 @@ from uuid import uuid4
 
 import ibis
 import pytest
-from pydantic import ValidationError
 
 from increment import Analysis, IdentificationError, Method
 from increment.breakout.estimates import (
@@ -1572,11 +1571,9 @@ def test_run_forwards_alternative_label(unit_summary_analysis):
     assert {r.alternative for r in one_sided} == {"greater"}
     assert all(r.require_lift().level == pytest.approx(0.90) for r in one_sided)
 
-    with pytest.raises(ValidationError) as raised:
+    with pytest.raises(InvalidRequestError) as raised:
         AnalysisPlan(alternative="bigger")  # ty: ignore[invalid-argument-type]  - the bad literal IS the case under test
-    [error] = raised.value.errors()
-    assert error["loc"] == ("alternative",)
-    assert error["type"] == "literal_error"
+    assert raised.value.code == "model.field.literal"
 
 
 @pytest.mark.slow
