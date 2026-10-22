@@ -665,13 +665,14 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             (getattr(row, "method", None), getattr(row, "method_role", None))
         )
     for row in visible_rows:
-        lines.append(
-            _decision_line(
-                row,
-                control_group=group.control_group,
-                treatment_group=group.treatment_group,
+        if not _is_daily_value(row):
+            lines.append(
+                _decision_line(
+                    row,
+                    control_group=group.control_group,
+                    treatment_group=group.treatment_group,
+                )
             )
-        )
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
@@ -733,11 +734,16 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
             low = "−∞" if estimate.lb is None else f"{estimate.lb * factor:.6g}"
             high = "+∞" if estimate.ub is None else f"{estimate.ub * factor:.6g}"
             parts.append(f"interval=[{low}, {high}]{suffix}")
-    stat_sig = getattr(row, "stat_sig", None)
-    try:
-        verdict = stat_sig() if callable(stat_sig) else None
-    except CodedError:
-        verdict = None
+    if hasattr(row, "control_group") and hasattr(row, "estimate"):
+        from increment.estimation.contrast import contrast_stat_sig
+
+        verdict = contrast_stat_sig(row)
+    else:
+        stat_sig = getattr(row, "stat_sig", None)
+        try:
+            verdict = stat_sig() if callable(stat_sig) else None
+        except CodedError:
+            verdict = None
     parts.append(f"stat_sig={verdict if verdict is not None else 'unavailable'}")
     return "; ".join(parts)
 
