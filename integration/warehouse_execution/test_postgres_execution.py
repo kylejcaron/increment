@@ -27,6 +27,7 @@ from integration.warehouse_execution._suite import (
     run_materialized_cache_correction_probe,
     run_ratio_metric_probe,
 )
+from tests._override_warnings import allow_declared_overrides
 
 pytestmark = pytest.mark.warehouse_postgres
 
@@ -550,6 +551,7 @@ def test_permanent_shadow_sentinel_bare_name_cleanup_mutation(
         _run_permanent_shadow_probe(postgres_nonpublic_con, monkeypatch, cleanup, bare_cleanup=True)
 
 
+@allow_declared_overrides
 def test_warehouse_cuped_matches_the_dataframe_oracle(postgres_con, tmp_path):
     """Ratio CUPED and the adjusted sequential laws through both warehouse
     readers on live PostgreSQL agree with the dataframe oracle."""
