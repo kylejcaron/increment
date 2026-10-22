@@ -3,13 +3,14 @@
 
 
 CHECK_ITEMS_TESTS ?= tests
+CHECK_ITEMS_REPO ?= .
 BASE ?= origin/main
 UNIT_CPU_ARGS ?= $(if $(filter unit fast,$(TIER)),--unit-cpu-budget,)
 
 
 # Collected items per tier: merge base of BASE versus the working tree.
 check-items:
-	$(SLOT) uv run --no-sync python -m scripts.check_collect_count --base $(BASE) --tests $(CHECK_ITEMS_TESTS)
+	$(SLOT) uv run --no-sync python -m scripts.check_collect_count --base $(BASE) --repo $(CHECK_ITEMS_REPO) --tests $(CHECK_ITEMS_TESTS)
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 mutate:

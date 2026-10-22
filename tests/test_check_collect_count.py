@@ -88,6 +88,21 @@ class TestCollection:
         assert "test_unmarked: 13 collected items" in out
         assert "test_marked" not in out
 
+    def test_make_check_items_reports_the_working_tree_delta(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path, {"tests/test_one.py": "def test_one(): pass\n"})
+        (repo / "tests/test_two.py").write_text("def test_two(): pass\n")
+
+        result = subprocess.run(
+            ["make", "check-items", f"CHECK_ITEMS_REPO={repo}", "BASE=main"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "unit 1 -> 2 (+1)" in result.stdout
+
     def test_plain_make_defaults_to_install(self) -> None:
         result = subprocess.run(
             ["make", "--dry-run"], cwd=ROOT, text=True, capture_output=True, check=False

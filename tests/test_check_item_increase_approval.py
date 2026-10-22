@@ -18,6 +18,18 @@ def test_increase_needs_a_reason_covering_its_delta() -> None:
     assert check.check_increases(BASE, head, "tests: +3 items — new regressions")[0] == 0
 
 
+def test_each_tier_is_matched_to_its_own_covering_reason() -> None:
+    head = {**BASE, "unit": 11, "fast": 23, "all": 28}
+
+    code, message = check.check_increases(BASE, head, "tests: +1 items — one unit regression")
+
+    uncovered = {
+        line.split(":")[0] for line in message.splitlines() if "add a PR-description" in line
+    }
+    assert code == 1
+    assert uncovered == {"fast", "all"}
+
+
 def test_lower_counts_need_no_reason() -> None:
     head = {**BASE, "unit": 7, "fast": 17, "all": 22}
 
@@ -48,6 +60,10 @@ def test_parallel_branches_each_pass_against_the_base_and_merge_cleanly(
         git("commit", "-q", "-m", branch)
     monkeypatch.chdir(repo)
 
+    git("checkout", "-q", "main")
+    monkeypatch.delenv("GITHUB_PR_BODY", raising=False)
+    assert check.main(["--base", "main", "--repo", str(repo)]) == 0
+    git("checkout", "-q", "two")
     monkeypatch.setenv("GITHUB_PR_BODY", "")
     assert check.main(["--base", "main", "--repo", str(repo)]) == 1
     monkeypatch.setenv("GITHUB_PR_BODY", "tests: +2 items — two regressions")
