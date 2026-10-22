@@ -73,7 +73,9 @@ design = Randomized(
 plan = AnalysisPlan(primary="revenue", guardrails=["complaints"])
 metrics = [
     "revenue",
-    MetricSpec(name="complaints", type="conversion", missing="drop", preferred_direction="decrease"),
+    MetricSpec(
+        name="complaints", type="conversion", missing="drop", preferred_direction="decrease"
+    ),
 ]
 with warnings.catch_warnings(record=True) as analysis_warnings:
     warnings.simplefilter("always")
