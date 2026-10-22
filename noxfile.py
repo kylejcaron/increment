@@ -15,20 +15,24 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def _xdist_args(environ: Mapping[str, str], cpu_count: int) -> tuple[str, ...]:
+def _xdist_args(environ: Mapping[str, str]) -> tuple[str, ...]:
     """Return the standard worker arguments for the current execution lane."""
-    workers = "auto" if "CI" in environ else environ.get("WORKERS", str(max(1, cpu_count // 3)))
+    workers = "auto" if "CI" in environ else environ.get("WORKERS", "__test_slots_workers__")
     return ("-n", workers, "--dist", "loadgroup")
 
 
-PYTEST_ARGS = _xdist_args(os.environ, os.cpu_count() or 1)
+PYTEST_ARGS = _xdist_args(os.environ)
 
 
 def _run_heavy(session: nox.Session, *command: str, **kwargs) -> None:
     """Acquire the machine-wide slot before running a heavy command."""
-    from scripts.test_slots import hold_slot
+    from scripts.test_slots import _workers, hold_slot
 
     hold_slot()
+    workers = str(_workers())
+    command = tuple(
+        workers if argument == "__test_slots_workers__" else argument for argument in command
+    )
     session.run(*command, **kwargs)
 
 
