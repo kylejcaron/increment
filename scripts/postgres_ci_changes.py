@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import subprocess
 import sys
@@ -14,6 +15,43 @@ from certification_ci_changes import _dependency_closure, _module_for_path
 _GATE_FILES = {"pyproject.toml", "uv.lock", "noxfile.py", "Makefile"}
 _ROOT_DOCS = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 _DOC_SUFFIXES = (".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+_POSTGRES_SUITE = Path("integration/warehouse_execution/test_postgres_execution.py")
+
+
+def _module_file(root: Path, module: str) -> Path | None:
+    base = root.joinpath(*module.split("."))
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate.relative_to(root)
+    return None
+
+
+def _suite_test_dependencies(root: Path) -> set[str]:
+    """Repository test helpers the live PostgreSQL suite imports, transitively."""
+    seen: set[Path] = set()
+    pending = [_POSTGRES_SUITE]
+    while pending:
+        path = pending.pop()
+        if path in seen or not (root / path).is_file():
+            continue
+        seen.add(path)
+        for node in ast.walk(ast.parse((root / path).read_text(encoding="utf-8"))):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                names = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+            for name in names:
+                if name.split(".")[0] not in {"tests", "integration"}:
+                    continue
+                parts = name.split(".")
+                for end in range(1, len(parts) + 1):
+                    found = _module_file(root, ".".join(parts[:end]))
+                    if found is not None:
+                        pending.append(found)
+    return {path.as_posix() for path in seen}
 
 
 def _requires_postgres(event: str, base: str, head: str) -> bool:
@@ -36,7 +74,8 @@ def _requires_postgres(event: str, base: str, head: str) -> bool:
         module_names = {item["path"] for item in graph["modules"]}
         query_roots = {name for name in module_names if name.startswith("increment.query")}
         query_modules = _dependency_closure(root, query_roots)
-    except (OSError, KeyError, ValueError, tomllib.TOMLDecodeError):
+        suite_helpers = _suite_test_dependencies(root)
+    except (OSError, KeyError, SyntaxError, ValueError, tomllib.TOMLDecodeError):
         print("Cannot determine query dependency graph; requiring PostgreSQL.", file=sys.stderr)
         return True
     for index in range(0, len(entries), 2):
@@ -49,7 +88,7 @@ def _requires_postgres(event: str, base: str, head: str) -> bool:
         if path.startswith("integration/warehouse_execution/"):
             return True
         if path.startswith("tests/"):
-            if "postgres" in path.lower():
+            if "postgres" in path.lower() or path in suite_helpers:
                 return True
             continue
         module = _module_for_path(path, module_names)

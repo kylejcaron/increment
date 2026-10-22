@@ -151,6 +151,30 @@ def test_non_postgres_test_change_does_not_require_postgres(repository):
     assert not _required(repo, base)
 
 
+def test_shared_helper_of_the_postgres_suite_requires_postgres(repository):
+    repo, _ = repository
+    suite = repo / "integration/warehouse_execution/test_postgres_execution.py"
+    suite.parent.mkdir(parents=True)
+    suite.write_text("from tests.shared_cases import CASES\n")
+    (repo / "tests").mkdir(exist_ok=True)
+    (repo / "tests/shared_cases.py").write_text("CASES = ()\n")
+    (repo / "tests/test_general.py").write_text("def test_general(): pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "suite")
+    base = _git(repo, "rev-parse", "HEAD")
+
+    _change(repo, "tests/shared_cases.py")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "helper")
+    assert _required(repo, base)
+
+    helper_commit = _git(repo, "rev-parse", "HEAD")
+    _change(repo, "tests/test_general.py")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "unrelated test")
+    assert not _required(repo, helper_commit)
+
+
 def test_source_renamed_into_docs_still_requires_postgres(repository):
     repo, base = repository
     (repo / "docs").mkdir()
