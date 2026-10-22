@@ -654,6 +654,24 @@ class ReadoutMetadata(_ReadoutModel):
     partial: bool = False
     partial_reason: tuple[Literal["slice", "filter", "cross_snapshot_concat"], ...] = ()
 
+    def __repr__(self) -> str:
+        return (
+            "ReadoutMetadata(\n"
+            f"  snapshot_id={self.scope.snapshot_id!r}, cells={len(self.cells)}, "
+            f"partial={self.partial}, partial_reason={self.partial_reason!r}\n"
+            ")"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        return [
+            ("snapshot_id", self.scope.snapshot_id),
+            ("cells", len(self.cells)),
+            ("partial", self.partial),
+            ("partial_reason", self.partial_reason),
+        ]
+
     @property
     def sampling(self):
         return _FrozenMapping(

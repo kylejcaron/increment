@@ -47,6 +47,21 @@ from tests.test_unit_day_artifact_facade import _extensions, _published
 from tests.warning_codes import warning_codes
 
 
+def test_analysis_repr_and_run_signature_are_readable_without_changing_unset_identity():
+    import inspect
+
+    from increment._analysis_config import UNSET
+
+    analysis = make_analysis()
+    display = repr(analysis)
+    signature = str(inspect.signature(Analysis.run))
+    assert "Analysis(" in display and "\n" in display
+    assert "experiment=" in display and "design=" in display
+    assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
+    assert "<not set>" in signature and "0x" not in signature
+    assert inspect.signature(Analysis.run).parameters["decision_method"].default is UNSET
+
+
 def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
 

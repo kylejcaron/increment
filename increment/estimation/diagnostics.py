@@ -116,6 +116,30 @@ class SRMResult(BaseModel):
     def _serialize_counts(self, value: Mapping[str, int | float]) -> dict[str, int | float]:
         return dict(value)
 
+    def __repr__(self) -> str:
+        return (
+            "SRMResult(\n"
+            f"  inference={self.inference!r}, is_srm={self.is_srm}, "
+            f"observed={dict(self.observed)!r}, expected={dict(self.expected)!r},\n"
+            f"  chi2_stat={self.chi2_stat:.4g}, p_value={self.fixed_p_value:.4g}, "
+            f"alpha={self.alpha:.4g}, grain={self.grain!r}\n"
+            ")"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        return [
+            ("inference", self.inference),
+            ("is_srm", self.is_srm),
+            ("observed", dict(self.observed)),
+            ("expected", dict(self.expected)),
+            ("chi2_stat", self.chi2_stat),
+            ("fixed_p_value", self.fixed_p_value),
+            ("alpha", self.alpha),
+            ("grain", self.grain),
+        ]
+
 
 class NotApplicable(BaseModel):
     """A diagnostic check that does not apply to the current design.

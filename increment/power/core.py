@@ -913,11 +913,12 @@ class PowerResult(CodedModel, BaseModel):
             else f"power_lower={self.power_lower:.4g}, power_upper={self.power_upper:.4g}, "
         )
         return (
-            f"PowerResult({size}, power={self.power:.4g}, "
-            f"power_basis={self.power_basis!r}, {bounds}"
-            f"numerical_qualification={self.numerical_qualification!r}, "
-            f"mde_relative={mde}, effective_var={self.effective_var:.4g}, "
-            f"plan={sequential}{planned})"
+            "PowerResult(\n"
+            f"  {size},\n"
+            f"  power={self.power:.4g}, power_basis={self.power_basis!r}, {bounds}\n"
+            f"  mde_relative={mde}, effective_var={self.effective_var:.4g},\n"
+            f"  plan={sequential}{planned}\n"
+            ")"
         )
 
     __str__ = __repr__
@@ -949,7 +950,6 @@ class PowerResult(CodedModel, BaseModel):
             args.append(("power_lower", self.power_lower))
             args.append(("power_upper", self.power_upper))
         args += [
-            ("numerical_qualification", self.numerical_qualification),
             ("mde_relative", mde),
             ("effective_var", self.effective_var),
             ("plan", sequential),

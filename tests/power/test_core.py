@@ -124,13 +124,14 @@ class TestClosedForm:
         assert "n_per_arm=" in display and "n_total=" in display
         assert "power=" in display and "mde_relative=" in display
         assert "relative" in display and "asymptotic" in display
-        assert "closed_form_model_only_v1" in display
-        assert "effective_var=" in display
-        assert "inference_to_declare=" not in display
+        assert "closed_form_model_only_v1" not in display
+        assert (
+            result.model_dump(mode="json")["numerical_qualification"] == "closed_form_model_only_v1"
+        )
         from rich.pretty import pretty_repr
 
         rich_display = pretty_repr(result)
-        assert "numerical_qualification" in rich_display
+        assert "closed_form_model_only_v1" not in rich_display
         assert "inference_to_declare" not in rich_display
 
     def test_power_result_repr_distinguishes_sequential_expected_size(self):
@@ -147,12 +148,15 @@ class TestClosedForm:
         assert "sequential" in display
         assert "n_total=" in display
         assert "power=" in display
-        assert "numerical_qualification=" in display
-        assert "sequential_crossing_quadrature_v1" in display
-        assert "inference_to_declare=" not in display
+        assert "sequential_crossing_quadrature_v1" not in display
+        assert (
+            result.model_dump(mode="json")["numerical_qualification"]
+            == "sequential_crossing_quadrature_v1"
+        )
         from rich.pretty import pretty_repr
 
         rich_display = pretty_repr(result)
+        assert "sequential_crossing_quadrature_v1" not in rich_display
         assert "expected_n_total" in rich_display and "n_total" in rich_display
 
 

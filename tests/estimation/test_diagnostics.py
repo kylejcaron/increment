@@ -764,6 +764,19 @@ def test_srm_result_min_expected_count_is_json_portable():
     assert SRMResult.model_validate_json(payload).min_expected_count is None
 
 
+def test_srm_result_repr_shows_allocation_summary_without_internal_mappings():
+    result = sample_ratio_mismatch(
+        {"a": 100, "b": 100},
+        expected={"a": 0.5, "b": 0.5},
+        inference="fixed",
+    )
+    display = repr(result)
+    assert "\n" in display and "SRMResult(" in display
+    assert "observed={'a': 100, 'b': 100}" in display
+    assert "expected={'a': 0.5, 'b': 0.5}" in display
+    assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
+
+
 @pytest.mark.parametrize(
     "code,build",
     [

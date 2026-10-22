@@ -2540,6 +2540,22 @@ class Analysis:
 
         return source_snapshot(self._state.source, previous=previous)
 
+    def __repr__(self) -> str:
+        return (
+            "Analysis(\n"
+            f"  experiment={self._state.experiment_name!r},\n"
+            f"  design={type(self._design).__name__ if self._design else 'unknown'}\n"
+            ")"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        return [
+            ("experiment", self._state.experiment_name),
+            ("design", type(self._design).__name__ if self._design else "unknown"),
+        ]
+
     def run(
         self,
         *,
