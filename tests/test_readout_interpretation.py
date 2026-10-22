@@ -414,6 +414,8 @@ def test_unscoped_plain_list_reports_unknown_scope_and_integrity():
     assert interpretation.groups
     assert {group.integrity_status for group in interpretation.groups} == {"unknown"}
     assert all(group.control_group is None for group in interpretation.groups)
+    text = render_readout_text(interpretation)
+    assert "control identity unknown → treatment" in text
 
 
 def test_small_cluster_advisory_survives_suppressed_warning_and_json_restore():
@@ -593,8 +595,66 @@ def test_switchback_contrast_is_sampling_available_and_renders_its_effect():
     interpretation = _interpret(results)
     assert interpretation.groups[0].available_cells
     result = cast(Any, results[0])
-    assert f"{result.estimate.value:.6g}" in render_readout_text(interpretation)
-    assert f"{result.null_abs:.6g}" in render_readout_text(interpretation)
+    text = render_readout_text(interpretation)
+    assert f"{result.estimate.value:.6g}" in text
+    assert f"{result.null_abs:.6g}" in text
+    decision = next(line for line in text.splitlines() if line.startswith("value:"))
+    assert f"effect={result.estimate.value:.6g}" in decision
+    assert "%" not in decision
+    assert f"interval=[{result.estimate.lb:.6g}, {result.estimate.ub:.6g}]" in decision
+    from increment.tables import contrast_results_to_readout
+
+    expected_verdict = contrast_results_to_readout([result])[0]["stat_sig"]
+    assert f"stat_sig={expected_verdict}" in decision
+
+
+def test_decision_line_uses_interpreted_control_group():
+    results = _run_mean(_mean_frame(), control="holdout")
+    text = render_readout_text(interpret_readout(results, results.metadata))
+    decision = next(line for line in text.splitlines() if " → " in line)
+
+    assert "holdout → treatment" in decision
+
+
+def test_daily_value_readout_skips_decision_comparison_but_lift_keeps_it():
+    import datetime as dt
+
+    from increment.breakout.estimates import run_daily, run_daily_lift
+    from increment.estimation.armstats import centered_row_from_raw_sums
+
+    summary = []
+    for group, mean in (("control", 5.0), ("treatment", 6.0)):
+        n = 10
+        sum_y = n * mean
+        summary.append(
+            centered_row_from_raw_sums(
+                {
+                    "ds": dt.date(2025, 1, 1),
+                    "experiment_id": "daily",
+                    "metric": "value",
+                    "group_id": group,
+                    "n": float(n),
+                    "sum_y": sum_y,
+                    "sum_y2": 4.0 * (n - 1) + sum_y**2 / n,
+                    "sum_x": None,
+                    "sum_x2": None,
+                    "sum_xy": None,
+                    "sum_den": None,
+                    "sum_den2": None,
+                    "sum_yden": None,
+                }
+            )
+        )
+    from increment.semantics.models import MeanMetric
+
+    metric = MeanMetric(name="value", entity="user", fact="value")
+    values = run_daily(summary, [metric])
+    daily_lifts = run_daily_lift(summary, [metric], control_group="control")
+
+    value_text = render_readout_text(interpret_readout(values, None))
+    lift_text = render_readout_text(interpret_readout(daily_lifts, None))
+    assert " → " not in value_text
+    assert " → " in lift_text and "stat_sig=" in lift_text
 
 
 def test_effect_carriers_and_winsor_geometry_render_without_reinversion():
@@ -941,3 +1001,18 @@ def test_absolute_scale_null_is_not_labeled_as_relative_lift():
     text = render_readout_text(interpret_readout([row], None))
     assert "null (absolute units): 0" in text
     assert "null (relative lift):" not in text
+
+
+def test_readout_leads_with_arm_counts_means_and_relative_decision():
+    results = _run_mean(_mean_frame())
+    text = render_readout_text(interpret_readout(results, results.metadata))
+    lines = text.splitlines()
+    decision = next(line for line in lines if "control → treatment" in line)
+
+    assert "n control=100" in decision and "n treatment=100" in decision
+    assert "mean control=4.95" in decision and "mean treatment=5.15" in decision
+    assert "effect=4.0404%" in decision and "interval=[" in decision
+    assert "stat_sig=" in decision
+    assert lines.index(decision) < lines.index(
+        next(line for line in lines if line.startswith("Integrity:"))
+    )

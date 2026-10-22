@@ -41,6 +41,9 @@ def input_evidence(value: Any, *, field: str | None = None) -> Any:
                 "failure_code",
                 "failure_context",
                 "inference",
+                # Display copies of arm means already summarized by the input rows.
+                "mean_control",
+                "mean_treat",
             }
         }
     if isinstance(value, (list, tuple)):

@@ -899,6 +899,25 @@ def contrast_evidence_available(result: ContrastResult) -> bool:
     )
 
 
+def contrast_stat_sig(result: ContrastResult) -> bool:
+    """Return the contrast's table/readout decision verdict."""
+    if not contrast_evidence_available(result):
+        return False
+    estimate = result.estimate
+    if result.method == "switchback_unit_variance_envelope":
+        assert result.residual_p_value is not None
+        return result.residual_p_value < result.alpha
+    if result.alternative == "greater":
+        return estimate.lb is not None and estimate.lb > result.null_abs
+    if result.alternative == "less":
+        return estimate.ub is not None and estimate.ub < result.null_abs
+    return (
+        estimate.lb is not None
+        and estimate.ub is not None
+        and not (estimate.lb <= result.null_abs <= estimate.ub)
+    )
+
+
 def estimate_contrast(
     stats: ContrastStats, procedure: ContrastDecisionProcedure
 ) -> DecisionComputation[ContrastResult]:
@@ -960,6 +979,7 @@ __all__ = [
     "ContrastPartition",
     "compute_contrast",
     "contrast_evidence_available",
+    "contrast_stat_sig",
     "contrast_runtime_support",
     "estimate_contrast",
     "reduce_contrast_partitions",

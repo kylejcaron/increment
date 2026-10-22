@@ -2240,3 +2240,34 @@ class TestDecisionAvailability:
         assert failure is None and evidence is not None
         assert evidence.p_value == 1.0
         assert evidence.reference == "relative_margin_conservative_nonrejection"
+
+
+def test_arm_facts_are_optional_and_round_trip_in_saved_rows():
+    row = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.3, lb=0.1, ub=0.5, level=0.95),
+        n_control=4,
+        n_treat=3,
+        mean_control=10.0,
+        mean_treat=13.0,
+    )
+
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+
+    assert (
+        restored.n_control,
+        restored.n_treat,
+        restored.mean_control,
+        restored.mean_treat,
+    ) == (4, 3, 10.0, 13.0)
+    empty = LiftEstimate(
+        metric="m",
+        group_id="t",
+        method="m",
+        method_role="decision",
+        lift=Estimate(value=0.1),
+    )
+    assert "n_control" not in empty.model_dump()
