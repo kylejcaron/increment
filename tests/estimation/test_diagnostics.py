@@ -167,6 +167,12 @@ class TestSampleRatioMismatch:
         assert always_valid_log_e_value is not None
         assert always_valid_log_e_value < -math.log(0.05)
         assert always_valid.is_srm is False
+        display = repr(always_valid)
+        assert "fixed_p_value=" in display
+        assert "log_e_value=" in display
+        args = always_valid.__repr_args__()
+        assert ("fixed_p_value", always_valid.fixed_p_value) in args
+        assert ("log_e_value", always_valid.log_e_value) in args
 
     def test_negative_counts_refused(self):
         with pytest.raises(InvalidRequestError) as exc_info:
@@ -202,6 +208,10 @@ class TestSampleRatioMismatch:
         result = sample_ratio_mismatch(counts, expected={"control": 0.5, "treatment": 0.5})
         assert result.mixed_assignment_units == 7
         assert result.unassigned_units == 3
+        assert "mixed_assignment_units=7" in repr(result)
+        assert "unassigned_units=3" in repr(result)
+        assert ("mixed_assignment_units", 7) in result.__repr_args__()
+        assert ("unassigned_units", 3) in result.__repr_args__()
         assert result.df == 1  # two arms only
         assert set(result.observed) == {"control", "treatment"}
         assert set(result.expected) == {"control", "treatment"}
@@ -322,7 +332,8 @@ class TestSampleRatioMismatch:
         )
 
         assert result.min_expected_count == pytest.approx(3.0)
-        assert result.low_expected_count is True
+        assert "low_expected_count=True" in repr(result)
+        assert ("low_expected_count", True) in result.__repr_args__()
 
     def test_healthy_large_allocation_does_not_flag_low_expected_count(self):
         """Thousands of units per arm are nowhere near the Cochran floor."""
@@ -762,6 +773,19 @@ def test_srm_result_min_expected_count_is_json_portable():
     payload = minimal.model_dump_json()
     assert json.loads(payload)["min_expected_count"] is None
     assert SRMResult.model_validate_json(payload).min_expected_count is None
+
+
+def test_srm_result_repr_shows_allocation_summary_without_internal_mappings():
+    result = sample_ratio_mismatch(
+        {"a": 100, "b": 100},
+        expected={"a": 0.5, "b": 0.5},
+        inference="fixed",
+    )
+    display = repr(result)
+    assert "\n" in display and "SRMResult(" in display
+    assert "observed={'a': 100, 'b': 100}" in display
+    assert "expected={'a': 0.5, 'b': 0.5}" in display
+    assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
 
 
 @pytest.mark.parametrize(

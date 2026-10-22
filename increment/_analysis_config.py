@@ -51,6 +51,9 @@ if TYPE_CHECKING:
 class _Unset:
     __slots__ = ()
 
+    def __repr__(self) -> str:
+        return "<not set>"
+
 
 UNSET = _Unset()
 
