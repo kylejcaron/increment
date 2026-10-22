@@ -189,6 +189,9 @@ def _base_liftestimate_to_row(
         posterior_latent_mean=getattr(est, "posterior_latent_mean", None),
         posterior_latent_sd=getattr(est, "posterior_latent_sd", None),
         posterior_prob_favorable=getattr(est, "posterior_prob_favorable", None),
+        posterior_prob_favorable_reason_code=getattr(
+            est, "posterior_prob_favorable_reason_code", None
+        ),
         posterior_components=components_json,
         failure_code=getattr(est, "failure_code", None),
         failure_context=getattr(est, "failure_context", None),
@@ -388,6 +391,7 @@ def estimates_to_readout(
             row["posterior_chance_to_beat"] = None
             row["posterior_risk_if_shipped"] = None
             row["posterior_prob_favorable"] = None
+            row["posterior_prob_favorable_reason_code"] = None
         else:
             row = _liftestimate_to_row(est)
             row["view_partial"] = view_partial
