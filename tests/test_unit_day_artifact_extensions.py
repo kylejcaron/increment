@@ -1450,6 +1450,7 @@ def test_clustered_artifact_publishes_cluster_grain_randomization_counts(tmp_pat
         adopted.close()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch):
     """A dimension extension whose rows omit a unit present in exposures is
@@ -1498,6 +1499,7 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
         native.close()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_dimension_relation_verifier_rejects_missing_and_empty_coverage(tmp_path) -> None:
     import ibis
@@ -1560,6 +1562,7 @@ def test_dimension_relation_verifier_rejects_missing_and_empty_coverage(tmp_path
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.integration
 def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys(

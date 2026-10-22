@@ -210,6 +210,7 @@ def test_encouragement_decision_identity_ignores_companion_evidence(panel, role,
         )
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("route", ["native", "artifact"])
 @pytest.mark.parametrize("decision_kind", ["scalar", "mixed", "naive"])

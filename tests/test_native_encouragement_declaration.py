@@ -285,6 +285,7 @@ def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):
     assert all(row["tenure"] == pytest.approx(30.0) for row in rows)
 
 
+@pytest.mark.slow
 def test_native_encouragement_artifact_publish_and_reopen_carries_design(con, tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore

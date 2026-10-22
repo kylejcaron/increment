@@ -207,6 +207,7 @@ def _produce(frame, metric=None, request=None, transfer_log=None):
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("ratio", [False, True])
 @pytest.mark.parametrize("arm_scales", [(1.0, 1.0)])
 def test_categorical_warehouse_eligible_cells_preserve_original_unit_inference(ratio, arm_scales):
@@ -280,6 +281,7 @@ def test_categorical_warehouse_refuses_out_of_range_rms_before_cell_transfer(
     assert all("y" not in columns and "y_den" not in columns for columns, _ in transfers)
 
 
+@pytest.mark.slow
 def test_categorical_outcome_exponent_tracks_arm_l2_norm():
     import math
 
@@ -458,6 +460,7 @@ def test_categorical_encoded_bound_accounts_for_long_arm_labels():
     assert len(json.dumps(asdict(cells), ensure_ascii=True).encode()) <= bound <= 8 * 1024 * 1024
 
 
+@pytest.mark.slow
 def test_categorical_warehouse_transfer_omits_absolute_outcome_sums():
     values = [1.0] * 7 + [-0.125]
     frame = pd.DataFrame(
@@ -488,6 +491,7 @@ def test_categorical_warehouse_transfer_omits_absolute_outcome_sums():
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "alias",
     [
@@ -710,6 +714,7 @@ def categorical_sources(tmp_path, request):
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_categorical_source_fitter_uses_native_and_verified_artifact_relations(
     categorical_sources, monkeypatch
 ):
@@ -751,6 +756,7 @@ def test_categorical_source_fitter_uses_native_and_verified_artifact_relations(
     assert transferred and max(transferred) <= 8
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("categorical_sources", [True], indirect=True)
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 def test_integer_fact_domain_routes_through_qr_without_unit_keyed_transfer(
@@ -835,6 +841,7 @@ def _intercept_transfers(monkeypatch, native, artifact, *, outcome_cells: bool):
     return transferred
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 def test_categorical_warehouse_export_replays_without_unit_transfer(
     categorical_sources, ingress, tmp_path, monkeypatch
@@ -881,6 +888,7 @@ def test_categorical_warehouse_export_replays_without_unit_transfer(
         )
 
 
+@pytest.mark.slow
 def test_native_format13_export_uses_one_readout_snapshot(
     categorical_sources, tmp_path, monkeypatch
 ):
@@ -901,6 +909,7 @@ def test_native_format13_export_uses_one_readout_snapshot(
     assert len(snapshots) == 1
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("categorical_sources", [True], indirect=True)
 @pytest.mark.parametrize("ingress", ["native", "artifact"])
 def test_ineligible_categorical_export_uses_qr_without_cell_or_unit_transfer(

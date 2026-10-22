@@ -131,6 +131,7 @@ def _rebound_linear(binding):
     )
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("binding", ["property", "measure"])
 def test_native_multicovariate_override_acquires_effective_binding(tmp_path, binding):
@@ -170,6 +171,7 @@ def test_native_multicovariate_override_acquires_effective_binding(tmp_path, bin
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("binding", ["property", "measure"])
 def test_artifact_multicovariate_override_refuses_unpublished_binding_before_reads(
@@ -198,6 +200,7 @@ def test_artifact_multicovariate_override_refuses_unpublished_binding_before_rea
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_native_scalar_imputation_uses_population_before_window_censoring(tmp_path):
     import yaml
@@ -529,6 +532,7 @@ def test_portable_moments_enforce_recorded_scalar_preparation(tmp_path, monkeypa
     assert reads == []
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_artifact_publication_deduplicates_shared_measure_covariate(tmp_path):
     import yaml
@@ -722,6 +726,7 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tmp_path):
     from typing import Any
@@ -771,6 +776,7 @@ def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tm
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monkeypatch):
     from datetime import datetime

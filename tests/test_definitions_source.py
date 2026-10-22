@@ -326,6 +326,7 @@ def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_an
         assert actual == pytest.approx(expected)
 
 
+@pytest.mark.slow
 def test_adopted_breakout_refusal_has_stable_extension_code():
     from increment.query.artifact_contract import ArtifactContractError
     from tests.test_unit_day_artifact_facade import _extensions, _native
@@ -369,6 +370,7 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
     assert max(row.ds for row in asof_rows) == dt.date(2025, 3, 10)
 
 
+@pytest.mark.slow
 def test_panel_cache_distinguishes_same_name_metric_variant(seeded_analysis):
     """A caller's same-name metric variant must not reuse the declared panel."""
     native = _native_source(seeded_analysis)
@@ -663,6 +665,7 @@ def test_asof_readout_requests_covariate_only_for_cuped_method(seeded_pre_period
     assert calls == [False]
 
 
+@pytest.mark.slow
 def test_direct_unadjusted_daily_asof_do_not_query_pre_period_stats(
     seeded_pre_period_con, monkeypatch
 ):

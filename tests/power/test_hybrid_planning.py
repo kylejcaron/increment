@@ -213,6 +213,7 @@ class TestAStructuralFiniteRouteUnderAuto:
         routing = Routing(dense_min_count(key.tail_alpha), 1.0)
         return RejectionGeometry(key, route, routing=routing)
 
+    @pytest.mark.slow
     def test_the_finite_floor_is_the_runtimes_structural_threshold(self):
         key = _binomial_key(self._procedure(), self.N, self.N)
         floor = _binomial.finite_floor(key)

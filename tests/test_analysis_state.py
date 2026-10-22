@@ -216,6 +216,7 @@ experiments:
     assert ("error_rate", "guardrail") in roles
 
 
+@pytest.mark.slow
 def test_plan_declaring_only_secondaries_resolves_every_test_as_secondary():
     """The minimal migration case - a plan with just ``secondaries:`` -
     resolves every declared test to role="secondary" under a real declared
@@ -226,6 +227,7 @@ def test_plan_declaring_only_secondaries_resolves_every_test_as_secondary():
     assert {role for _, role in _run_roles(analysis)} == {"secondary"}
 
 
+@pytest.mark.slow
 def test_constructor_with_new_experiment_resolves_plan_against_it(con):
     """Constructing from a different declared experiment resolves its plan
     fresh rather than carrying the original experiment's roles forward."""
@@ -276,6 +278,7 @@ def test_constructor_with_new_experiment_after_metric_narrowing_keeps_plan_catal
     assert ("avg_session_duration", "primary") in _run_roles(analysis)
 
 
+@pytest.mark.slow
 def test_constructor_with_new_metric_adds_a_plan_test_entry(con):
     """Constructing with an additional metric gives it a real plan entry."""
     analysis = Analysis.from_definitions(

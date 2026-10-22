@@ -489,6 +489,7 @@ class TestMcseAndSrmRateAggregation:
     `srm_rate` is the fraction of successful replications flagged, not a
     single first-replication check."""
 
+    @pytest.mark.slow
     def test_mcse_present_alongside_bias_and_coverage(self):
         scenario = Scenario(
             n_units=2000,

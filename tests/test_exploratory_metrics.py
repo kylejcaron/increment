@@ -348,6 +348,7 @@ def test_all_failed_methods_still_refuse_the_readout(zero_denominator_warehouse)
     assert refused.value.code == "readout.estimate_lift_every"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("source_fixture", ["warehouse", "triggered_warehouse"])
 def test_capability_refusal_propagates_after_a_valid_sibling(request, monkeypatch, source_fixture):
     from increment.readouts import _passes
@@ -424,6 +425,7 @@ def test_cuped_sensitivity_guard_keeps_the_decision_cell(constant_covariate_ware
     assert cuped_cell.cell.alternative == "greater"
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_triggered_added_bad_metric_preserves_typed_cell_identity_and_reason(
     triggered_warehouse,
@@ -459,6 +461,7 @@ def test_triggered_added_bad_metric_preserves_typed_cell_identity_and_reason(
     assert {context["reason"] for context in contexts} == {"zero_variance"}
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_triggered_ratio_guard_keeps_its_failed_cell_and_good_metric_siblings(
     triggered_warehouse_without_followup_sessions,
@@ -505,6 +508,7 @@ def test_triggered_ratio_guard_keeps_its_failed_cell_and_good_metric_siblings(
     assert all(row.lift is not None for row in cuped_rows)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("alpha", PLAN_ALPHAS)
 @pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
 @pytest.mark.parametrize("name", ADDED)
@@ -606,6 +610,7 @@ def test_asof_view_families_are_scoped_by_metric_and_look(warehouse):
     assert len(scopes) == len(set(scopes))
 
 
+@pytest.mark.slow
 def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
     analysis = _analysis(
         warehouse,
@@ -656,6 +661,7 @@ def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(wareho
         assert all(row.family_q is None for row in rows)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", ADDED)
 @pytest.mark.parametrize("alpha", [0.01, 0.1])
 def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name, alpha):
@@ -769,6 +775,7 @@ def test_sequential_plans_refuse_added_metrics_and_uncorrected_segments(warehous
     assert refused.value.code == "facade.analysis.uncorrected_segments_sequential"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
 def test_uncorrected_segments_are_the_unadjusted_run_breakout_rows(warehouse, correction):
     names = ["revenue", "purchase_rate"]

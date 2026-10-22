@@ -1090,6 +1090,7 @@ class TestClusterTransport:
         assert result.n_clusters == _N_CLUSTERS
         assert result.ate == pytest.approx(reference.ate)
 
+    @pytest.mark.slow
     def test_row_permutation_preserves_cluster_alignment_and_results(self):
         frame = _cluster_frame()
         shuffled = frame.take(np.random.default_rng(7).permutation(frame.num_rows))
@@ -1273,6 +1274,7 @@ class TestClusterTransport:
         result = validate_cate(_source(), "revenue", control="control", interact=["spend"])
         assert result.n_clusters is None
 
+    @pytest.mark.slow
     def test_targeting_rule_carries_cluster_count_grain_and_required_columns(self):
         src = _cluster_source(pure_arms=True, intervention_grain="cluster")
         rule = targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.3)
@@ -1541,6 +1543,7 @@ def cluster_policy_payload(_cluster_policy_json):
     return copy.deepcopy(_cluster_policy_json)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("serialized", [False, True])
 @pytest.mark.parametrize("count", [-1, 0, True, 1.5, "2"])
 @pytest.mark.parametrize("model", ["rule", "validation"])

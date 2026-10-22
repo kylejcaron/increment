@@ -578,6 +578,7 @@ def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_ar
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_axis(
     tmp_path,
@@ -701,6 +702,7 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
             con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_winsorized_daily_hazard_covers_every_adapter_that_can_express_it(tmp_path) -> None:
     """Winsorization applies to a mean metric on a source that serves the day axis. An

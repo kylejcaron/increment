@@ -147,6 +147,7 @@ def _exact_pooled_moments(partitions: list[ArmStats]) -> tuple[float, float]:
     return float(exact_mean), float(exact_cy2 / (total_n - 1))
 
 
+@pytest.mark.slow
 @given(_partitions_and_a_permutation())
 @_SETTINGS
 def test_combine_is_order_invariant_against_exact_large_offset_oracle(data):

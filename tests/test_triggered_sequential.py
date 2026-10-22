@@ -330,6 +330,7 @@ def test_triggered_registration_is_derived_before_data(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("late_anchor", ["inside_prefix", "after_prefix"])
 def test_triggered_prefix_extends_and_a_late_trigger_refuses(tmp_path, late_anchor):
     table = _events()
@@ -475,6 +476,7 @@ def test_artifact_capture_refuses_an_uncertified_trigger_feed(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 def test_assigned_only_process_continues_assigned_only_and_refuses_backfill(tmp_path):
     analysis, _ = _analysis(tmp_path, _events())
     try:
@@ -882,6 +884,7 @@ def test_assigned_checkpoint_exposes_next_same_metric_triggered_block(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 def test_metric_freeze_reaches_the_triggered_chain_once_it_is_ready(tmp_path):
     analysis, _ = _analysis(tmp_path, _events(treatment_trigger_delay=6))
     try:

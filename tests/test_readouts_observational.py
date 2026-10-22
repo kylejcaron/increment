@@ -2048,6 +2048,7 @@ def _adopted_categorical_artifact(defs_path, con) -> Analysis:
     return Analysis.from_unit_day_artifact(store, ref, expected_context=context)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
 @pytest.mark.parametrize("constructor", ["from_definitions", "from_unit_day_artifact"])
 @pytest.mark.parametrize("method", ["iptw", "aipw", "dml"])
@@ -2108,6 +2109,7 @@ def test_categorical_null_level_in_warehouse_source_matches_frame_when_imputed(t
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("constructor", ["from_definitions", "from_unit_day_artifact"])
 def test_categorical_null_level_refuses_by_name_on_definitions_paths(tmp_path, constructor):
     """Under the default ``missing="refuse"`` policy a NULL level refuses by

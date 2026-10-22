@@ -194,6 +194,7 @@ def test_breakout_summaries_preserves_fixed_value_winsorization(pricing_con):
     assert set(summary["winsor_upper_bound"].to_pylist()) == {15.0}
 
 
+@pytest.mark.slow
 def test_breakout_summaries_keep_multi_source_keys(con):
     analysis = _analysis_with_cross_source_breakouts(con)
 
@@ -220,6 +221,7 @@ def test_run_breakout_preserves_all_declared_sources(con):
     assert {result.source for result in results} == {"src_a", "src_b"}
 
 
+@pytest.mark.slow
 def test_day_source_matches_daily_and_asof_views(pricing_analysis):
     from increment.breakout.estimates import DailyMetricValues
     from increment.breakout.estimates import run_daily as _run_daily_values

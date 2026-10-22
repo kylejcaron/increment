@@ -362,6 +362,7 @@ def test_warehouse_qr_ratio_absolute_is_unavailable_when_se_overflows(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_warehouse_qr_support_transfers_do_not_reconstruct_denominator_extreme(
     tmp_path,
 ):
@@ -590,6 +591,7 @@ def test_artifact_assigned_breakout_uses_single_canonical_escape(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.slow
 def test_warehouse_qr_p4_three_arm_fit_has_bounded_statements_and_sql(tmp_path):
     rows = _mixed_scale_rows(0)
     categories = ("north", "south", "west", "east")
@@ -627,6 +629,7 @@ def test_warehouse_qr_p4_three_arm_fit_has_bounded_statements_and_sql(tmp_path):
     assert max(map(len, bm_statements)) <= 80_000
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("offset", [1.0e12, 1.0e15])
 @pytest.mark.parametrize("ratio", [False, True])
 def test_relative_projection_preserves_small_effect_at_large_offset(offset, ratio, tmp_path):
@@ -800,6 +803,7 @@ def test_native_readout_relative_lift_matches_local_at_large_offset(offset, tmp_
         connection.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("ratio", [False, True])
 def test_far_apart_positive_means_match_local_relative_projection(ratio, tmp_path):
     rows = [
@@ -840,6 +844,7 @@ def test_all_nan_imputed_covariate_matches_local_constant_drop(tmp_path):
     assert actual.adjusted_means == pytest.approx(local.adjusted_means)
 
 
+@pytest.mark.slow
 def test_ratio_projection_preserves_adjustment_contrast_at_large_means(tmp_path):
     rows = [
         {

@@ -129,6 +129,7 @@ class TestRouteForCounts:
             == "finite_sample"
         )
 
+    @pytest.mark.slow
     @settings(max_examples=300, deadline=None)
     @given(
         n_c=st.integers(min_value=1, max_value=10**9),

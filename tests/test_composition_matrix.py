@@ -688,6 +688,7 @@ def test_matrix_statuses_are_well_formed():
 # Capability probes, one per capability, parameterized over metric types
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
 def test_estimate(metric_type, native):
     cell = _cell("estimate", metric_type)

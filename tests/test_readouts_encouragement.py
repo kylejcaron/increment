@@ -2033,6 +2033,7 @@ def test_guardrail_metric_reports_itt_and_late_via_analysis_run(con):
     )
 
 
+@pytest.mark.slow
 def test_analysis_run_native_groups_encouragement_dispatch_by_declared_methods(con):
     """A declared method-role binding on one metric splits the combined
     summary table into separate ``estimate_encouragement`` calls per group

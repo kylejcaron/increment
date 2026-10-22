@@ -1128,6 +1128,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
         finally:
             con.disconnect()
 
+    @pytest.mark.slow
     @pytest.mark.integration
     def test_artifact_with_trigger_evidence_matches_definitions(self, tmp_path):
         from increment.semantics.artifact import (

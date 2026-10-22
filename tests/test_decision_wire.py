@@ -497,6 +497,7 @@ def test_a_legacy_unadjusted_method_decodes_to_the_route_it_ran():
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("label", ["custom", "control_v2", "ols"])
 def test_a_legacy_free_form_method_label_replays_on_the_route_it_ran(label):
     """``Method.name`` is a free-form label: the historical randomized estimator sent every
@@ -648,6 +649,7 @@ def _executed_row_kinds(restored: CompiledDecisionPlan, metric_type: str) -> lis
     return _method_row_kinds(_decision_method(restored), metric_type)
 
 
+@pytest.mark.slow
 def test_a_legacy_plan_replays_on_every_metric_type_it_could_be_stored_for():
     """The decoded plan runs: a conversion metric on the finite-sample route it always took (not
     on ``auto``'s delta method), and a mean metric on its ordinary route without the refusal an
@@ -659,6 +661,7 @@ def test_a_legacy_plan_replays_on_every_metric_type_it_could_be_stored_for():
     assert _executed_row_kinds(mean, "mean") == ["t"]
 
 
+@pytest.mark.slow
 def test_a_legacy_absolute_margin_plan_replays_on_the_route_it_ran():
     """A dense absolute-margin conversion decision stored before the field existed ran the
     finite-sample route, so it replays there and not on ``auto``'s delta method."""

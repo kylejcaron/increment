@@ -280,6 +280,7 @@ def test_pilot_work_centers_are_reused_as_readonly_numpy_arrays():
         assert actual.bandwidth == expected.bandwidth
 
 
+@pytest.mark.slow
 def test_multi_contrast_reuses_pool_and_preserves_references_across_subblocks(monkeypatch):
     import increment.estimation._winsor_bootstrap as bootstrap
 

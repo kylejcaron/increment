@@ -395,6 +395,7 @@ def _deployed_family_outcome(
     return outcome
 
 
+@pytest.mark.slow
 def test_deployed_sequential_family_retains_missing_cells_and_stops_on_discovery():
     """Fast-tier deployed-route witness, unmarked so the default tier is
     never left with ``e_bh_select`` studies as its only family evidence.

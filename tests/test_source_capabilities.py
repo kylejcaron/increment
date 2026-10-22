@@ -416,6 +416,7 @@ def _assert_policy_complete() -> None:
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("metric_type", list(GATE_POLICY))
 def test_gate_outcome_matches_declared_policy_on_every_substrate(
     metric_type: str, _substrates: dict[str, object]

@@ -1428,6 +1428,7 @@ def test_native_gaussian_capture_refuses_before_public_replay():
     assert raised.value.code == "sequential.route.unsupported"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("publication", [False, True])
 def test_assignment_validation_cannot_split_the_source_snapshot(monkeypatch, publication):
     from increment.query.artifact_publish import artifact_context
@@ -1941,6 +1942,7 @@ def _role_plan(specs, *, alpha, q):
     )
 
 
+@pytest.mark.slow
 def test_always_valid_plan_reports_every_role_at_its_declared_budget():
     """Contract: the primary at alpha, each guardrail one-sided at alpha unsplit,
     and the secondaries as an e-BH family at q -- every role reported, and only

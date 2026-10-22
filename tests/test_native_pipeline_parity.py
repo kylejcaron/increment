@@ -198,6 +198,7 @@ def _drop_uptake_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in row.items() if k not in _UPTAKE_FIELDS} for row in rows]
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_metric_summary_pipeline_matches_pinned_baseline(tmp_path):
     analysis = _encouragement_breakout_analysis()
