@@ -413,6 +413,9 @@ class Baseline(CodedModel, BaseModel):
     avg_cluster_size: float = 1.0
     cluster_size_cv: float = 0.0
     cluster_participation: float | None = None
+    metric_type: Literal["mean", "conversion", "retention", "ratio", "quantile"] = Field(
+        default="mean", exclude_if=lambda v: v == "mean"
+    )
 
     @model_validator(mode="after")
     def _check(self) -> Baseline:
@@ -517,7 +520,12 @@ class Baseline(CodedModel, BaseModel):
 
     @classmethod
     def from_summary(
-        cls, s: SummaryStats, cuped_rho: float = 0.0, *, confidence: float = 0.80
+        cls,
+        s: SummaryStats,
+        cuped_rho: float = 0.0,
+        *,
+        confidence: float = 0.80,
+        metric_type: Literal["mean", "conversion", "retention", "ratio", "quantile"] = "mean",
     ) -> Baseline:
         """Build from a pilot experiment's summary statistics.
 
@@ -540,7 +548,7 @@ class Baseline(CodedModel, BaseModel):
         inflated_var = s.var * df / _chi2.isf(confidence, df)
         if not math.isfinite(inflated_var):
             _raise("power.baseline.confidence_produces_non")
-        return cls(mean=s.mean, var=inflated_var, cuped_rho=cuped_rho)
+        return cls(mean=s.mean, var=inflated_var, cuped_rho=cuped_rho, metric_type=metric_type)
 
     @classmethod
     def from_proportion(cls, p: float, cuped_rho: float = 0.0) -> Baseline:
@@ -548,7 +556,7 @@ class Baseline(CodedModel, BaseModel):
 
         This is the natural constructor for conversion / retention metrics.
         """
-        return cls(mean=p, var=p * (1 - p), cuped_rho=cuped_rho)
+        return cls(mean=p, var=p * (1 - p), cuped_rho=cuped_rho, metric_type="conversion")
 
     @classmethod
     def from_absorption(cls, mean: float, var: float, icc: float) -> Baseline:
@@ -620,7 +628,7 @@ class Baseline(CodedModel, BaseModel):
         if mean_den <= 0:
             _raise("power.baseline.mean_den", mean_den=mean_den)
         var = ratio_linearized_variance(mean_num, mean_den, var_num, var_den, cov_num_den)
-        return cls(mean=mean_num / mean_den, var=var, cuped_rho=cuped_rho)
+        return cls(mean=mean_num / mean_den, var=var, cuped_rho=cuped_rho, metric_type="ratio")
 
 
 class _ProjectionMemo:
@@ -660,6 +668,9 @@ class QuantileBaseline(Baseline):
     model_config = ConfigDict(frozen=True)
     metric_name: str
     quantile_q: float = Field(gt=0.0, lt=1.0)
+    metric_type: Literal["mean", "conversion", "retention", "ratio", "quantile"] = Field(
+        default="quantile", frozen=True, exclude_if=lambda v: v == "mean"
+    )
     cuped_rho: float = Field(default=0.0, frozen=True)
     # The pilot's own control-arm values, ascending -- the deterministic
     # SE projection's only input: not a fitted parametric quantity, not a
@@ -3624,11 +3635,18 @@ def _sequential_companion(
 # Solvers
 
 
-# Public sizing signature is the API for power planning.
+def default_procedure(baseline: Baseline) -> ArmPlanningProcedure:
+    """Choose the ordinary procedure implied by a baseline's declared metric."""
+    return ArmPlanningProcedure.standard(
+        baseline.metric_type,
+        clustered=baseline.cluster_icc > 0.0 or baseline.avg_cluster_size > 1.0,
+    )
+
+
 def required_sample_size(  # noqa: PLR0915
     relative_lift: float,
     baseline: Baseline,
-    procedure: ArmPlanningProcedure,
+    procedure: ArmPlanningProcedure | None = None,
     design: PowerDesign | None = None,
     *,
     planned_looks: int | None = None,
@@ -3678,6 +3696,7 @@ def required_sample_size(  # noqa: PLR0915
     A supplied ``planned_looks`` must be a positive integer, validated even
     when ``inference`` is fixed.
     """
+    procedure = default_procedure(baseline) if procedure is None else procedure
     procedure, baseline = _prepare_solver(procedure, baseline)
     decision = cast("RelativeDecisionPolicy", procedure.decision)
     if design is None:
@@ -3926,7 +3945,7 @@ def achieved_power(
     n_per_arm: int,
     relative_lift: float,
     baseline: Baseline,
-    procedure: ArmPlanningProcedure,
+    procedure: ArmPlanningProcedure | None = None,
     design: PowerDesign | None = None,
     *,
     planned_looks: int | None = None,
@@ -3950,6 +3969,7 @@ def achieved_power(
     is decided, and a plan whose control window holds any other is refused too.
     The look schedule resolves as in ``required_sample_size``.
     """
+    procedure = default_procedure(baseline) if procedure is None else procedure
     return _achieved_power(
         n_per_arm, relative_lift, baseline, procedure, design, planned_looks, cache={}
     )
@@ -3967,6 +3987,7 @@ def planned_enclosure(
     Unlike ``achieved_power``, this does not admit or publish a point probability.
     Calibration may retain ``power`` with its bounds even when ``reported`` refuses.
     """
+    procedure = default_procedure(baseline) if procedure is None else procedure
     procedure, baseline = _prepare_solver(procedure, baseline)
     decision = cast("RelativeDecisionPolicy", procedure.decision)
     design = PowerDesign() if design is None else PowerDesign.model_validate(design)
@@ -4083,7 +4104,7 @@ def _achieved_power(
 def minimum_detectable_effect(
     n_per_arm: int,
     baseline: Baseline,
-    procedure: ArmPlanningProcedure,
+    procedure: ArmPlanningProcedure | None = None,
     design: PowerDesign | None = None,
     *,
     planned_looks: int | None = None,
@@ -4114,7 +4135,12 @@ def minimum_detectable_effect(
     nonzero minimum detectable effect exists.
     """
     return _minimum_detectable_effect(
-        n_per_arm, baseline, procedure, design, planned_looks, cache={}
+        n_per_arm,
+        baseline,
+        default_procedure(baseline) if procedure is None else procedure,
+        design,
+        planned_looks,
+        cache={},
     )
 
 

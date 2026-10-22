@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import select_metrics
 from increment._source_operations import TriggeredPopulationOperation
@@ -286,7 +286,11 @@ def _unit_baseline(
         baseline = _ratio_baseline(control)
     else:
         baseline = Baseline.from_summary(
-            SummaryStats(n=control.n, mean=control.mean_y(), var=control.var_y())
+            SummaryStats(n=control.n, mean=control.mean_y(), var=control.var_y()),
+            metric_type=cast(
+                "Literal['mean', 'conversion', 'retention', 'ratio', 'quantile']",
+                "mean" if spec.type in ("total", "active") else spec.type,
+            ),
         )
     if not wants_cuped:
         return baseline
@@ -404,7 +408,11 @@ def _clustered_baseline(
     else:
         fields = _one_way_cluster_design(y, clusters)
         baseline = Baseline.from_summary(
-            SummaryStats(n=y.size, mean=float(y.mean()), var=float(y.var(ddof=1)))
+            SummaryStats(n=y.size, mean=float(y.mean()), var=float(y.var(ddof=1))),
+            metric_type=cast(
+                "Literal['mean', 'conversion', 'retention', 'ratio', 'quantile']",
+                "mean" if spec.type in ("total", "active") else spec.type,
+            ),
         )
     return baseline.model_copy(update=fields)
 

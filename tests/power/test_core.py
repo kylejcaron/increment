@@ -830,7 +830,7 @@ class TestEdgeCases:
         kwargs: dict[str, float] = {"mean": 1.0, "var": 1.0}
         kwargs[field] = bad
         with pytest.raises(InvalidRequestError) as exc_info:
-            Baseline(**kwargs)
+            Baseline(**cast(Any, kwargs))
         assert exc_info.value.code == "power.finite"
         assert exc_info.value.context["name"] == field
 
@@ -1665,9 +1665,11 @@ class TestSegmentPairwise:
         baseline_a = Baseline(
             mean=1.0,
             var=1.0,
-            **(unsupported if baseline_side == "a" else {}),
+            **cast(Any, unsupported if baseline_side == "a" else {}),
         )
-        baseline_b = Baseline(mean=1.0, var=1.0, **unsupported) if baseline_side == "b" else None
+        baseline_b = (
+            Baseline(mean=1.0, var=1.0, **cast(Any, unsupported)) if baseline_side == "b" else None
+        )
 
         with pytest.raises(InvalidRequestError) as exc_info:
             if solver == "required":
@@ -4835,3 +4837,37 @@ class TestQuantilePlanningMatchesReadoutRefusals:
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_baseline_metric_type_round_trips_and_default_dump_is_unchanged():
+    mean = Baseline(mean=1.0, var=2.0)
+    conversion = Baseline.from_proportion(0.1)
+    assert mean.metric_type == "mean"
+    assert "metric_type" not in mean.model_dump()
+    assert conversion.metric_type == "conversion"
+    assert Baseline.model_validate(conversion.model_dump()).metric_type == "conversion"
+
+
+@pytest.mark.parametrize(
+    ("baseline", "clustered"),
+    [
+        pytest.param(Baseline(mean=1.0, var=2.0), False, id="mean"),
+        pytest.param(Baseline.from_proportion(0.1), False, id="conversion"),
+        pytest.param(Baseline(mean=0.1, var=0.09, metric_type="retention"), False, id="retention"),
+        pytest.param(Baseline.from_ratio(2.0, 1.0, 3.0, 0.5, 0.2), False, id="ratio"),
+        pytest.param(
+            _quantile_baseline("latency", 0.5, np.arange(1.0, 101.0)), False, id="quantile"
+        ),
+        pytest.param(
+            Baseline(mean=1.0, var=2.0, cluster_icc=0.05, avg_cluster_size=10.0),
+            True,
+            id="clustered-mean",
+        ),
+    ],
+)
+def test_omitted_procedure_matches_metric_standard(baseline, clustered):
+    expected_procedure = ArmPlanningProcedure.standard(baseline.metric_type, clustered=clustered)
+    omitted = required_sample_size(0.2, baseline)
+    explicit = required_sample_size(0.2, baseline, expected_procedure)
+    assert omitted.n_per_arm == explicit.n_per_arm
+    assert omitted.power == explicit.power
