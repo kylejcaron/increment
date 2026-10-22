@@ -1,5 +1,7 @@
+import re
 from pathlib import Path
 from typing import get_args
+from urllib.parse import urljoin, urlsplit
 
 import pytest
 
@@ -28,6 +30,17 @@ def test_render_is_deterministic_and_contains_static_fallback():
     assert "Evidence" in first
     assert "cluster × cuped" in first
     assert "Evidence source: probe" in first
+
+
+def test_confounding_link_resolves_on_directory_style_site():
+    output = render_reference()
+    href = next(
+        href
+        for href in re.findall(r'href="([^"]+)"', output)
+        if urlsplit(href).fragment == "how-strong-would-an-omitted-confounder-need-to-be"
+    )
+    target = urlsplit(urljoin("https://example.test/guides/compatibility/", href))
+    assert target.path == "/guides/observational/"
 
 
 def test_render_surfaces_scenario_finding_details_and_provenance():

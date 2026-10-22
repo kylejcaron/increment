@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from increment.estimation._adjust.overlap import IdentificationError
     from increment.estimation.armstats import SummaryStats
     from increment.estimation.cate import Covariate
+    from increment.estimation.confounding import confounding_sensitivity
     from increment.estimation.decision_types import AsymptoticSequentialEvidence
     from increment.estimation.diagnostics import allocation_posterior_bands, sample_ratio_mismatch
     from increment.estimation.engine import Method
@@ -313,6 +314,7 @@ __all__ = [
     "sample_ratio_mismatch",
     "allocation_posterior_bands",
     "absorb_factor",
+    "confounding_sensitivity",
     "estimate_cate",
     "validate_cate",
     "select_targeting_rule",
@@ -390,6 +392,7 @@ _LAZY_IMPORTS = {
     "refuse": ("increment.errors", "refuse"),
     "warn": ("increment.errors", "warn"),
     "absorb_factor": ("increment.absorption", "absorb_factor"),
+    "confounding_sensitivity": ("increment.estimation.confounding", "confounding_sensitivity"),
     "estimate_cate": ("increment.cate", "estimate_cate"),
     "validate_cate": ("increment.cate", "validate_cate"),
     "Covariate": ("increment.estimation.cate", "Covariate"),

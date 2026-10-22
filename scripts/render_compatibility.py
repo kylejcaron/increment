@@ -328,6 +328,37 @@ def render_reference() -> str:
         + '<script id="compatibility-data" type="application/json">'
         + data.replace("</", "<\\/")
         + "</script>\n"
+        + '\n<section id="confounding-sensitivity-interactions">'
+        + "<h2>Observational confounding sensitivity</h2>"
+        + "<p>For fixed-horizon IPTW/AIPW conversion risk ratios, "
+        + '<a href="../observational/#how-strong-would-an-omitted-confounder-need-to-be">'
+        + "confounding sensitivity</a> transforms an existing LiftEstimate; "
+        + "eligibility is read from the row's declared metric type (conversion or retention), "
+        + "never asserted by the caller. Robustness is not identification.</p>"
+        + '<div class="compatibility-scroll"><table class="compatibility-pairs">'
+        + "<thead><tr><th>Interaction</th><th>Status</th><th>Reason</th></tr></thead><tbody>"
+        + "<tr><th>CUPED</th><td>NOT APPLICABLE</td>"
+        + "<td>Observational adjustment refuses CUPED.</td></tr>"
+        + "<tr><th>Ratio metrics</th><td>REFUSED</td>"
+        + "<td>Refused from the row's metric type "
+        + "(<code>sensitivity.confounding.outcome_unsupported</code>); observational "
+        + "adjustment also refuses ratio metrics upstream.</td></tr>"
+        + "<tr><th>Clustering</th><td>SUPPORTED</td>"
+        + "<td>Inherits the reported interval; public unit-summary IPTW/AIPW conversion "
+        + "rows with declared dependence clusters are exercised.</td></tr>"
+        + "<tr><th>Sequential inference</th><td>REFUSED</td>"
+        + "<td>Only fixed inference is accepted; "
+        + "<code>sensitivity.confounding.sequential_unsupported</code>.</td></tr>"
+        + "<tr><th>Winsorization</th><td>NOT APPLICABLE</td>"
+        + "<td>Not applicable to the binary metric types.</td></tr>"
+        + "<tr><th>Breakouts</th><td>REFUSED</td>"
+        + "<td>BreakoutEstimate is not a LiftEstimate subclass; this function accepts "
+        + "LiftEstimate rows only.</td></tr>"
+        + "<tr><th>Multiplicity roles</th><td>SUPPORTED</td>"
+        + "<td>Uses the reported, possibly family-adjusted, interval at its reported level.</td></tr>"
+        + "</tbody></table></div>"
+        + "<p>DML slopes and continuous outcomes are not covered. The conservative marginal "
+        + "bound supplies no tighter estimator-scoped construction.</p></section>\n"
     )
 
 

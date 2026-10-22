@@ -2,6 +2,7 @@
 # Keep this inventory in exact parity with increment.__all__; the check rejects
 # both unjustified root names and entries for names no longer exported.
 Analysis: Declare an experiment and its analysis inputs.
+confounding_sensitivity: Assess how strong unmeasured confounding would need to be to explain an observational conversion risk ratio.
 moments_from_summaries: Build a moments input from per-arm mean, variance, or conversion summaries.
 MetricTrends: Evaluate governed metrics over calendar time without declaring an experiment.
 Definitions: Load experiment and metric definitions from YAML.
