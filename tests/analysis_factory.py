@@ -34,6 +34,7 @@ def held_source(analysis: Analysis) -> object:
     """The source an analysis currently holds, without reopening a closed artifact."""
     return analysis._state.source
 
+
 def _native_source(analysis: Analysis) -> DefinitionsMomentSource:
     return cast("DefinitionsMomentSource", _moment_source(analysis))
 

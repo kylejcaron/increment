@@ -49,6 +49,7 @@ from tests.warning_codes import warning_codes
 
 def test_analysis_repr_and_run_signature_are_readable_without_changing_unset_identity():
     import inspect
+
     import pandas as pd
 
     from increment import CupedCovariate
@@ -83,8 +84,7 @@ def test_analysis_repr_and_run_signature_are_readable_without_changing_unset_ide
     assert "<not set>" in signature and "0x" not in signature
     assert {row.method for row in _lift_rows(analysis.run())} == {"cuped"}
     assert {
-        row.method
-        for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
+        row.method for row in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
     } == {"unadjusted"}
 
 
