@@ -11,7 +11,7 @@ from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel
 
 from increment._literals import Backend, default_frame_backend
-from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
+from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.results import BinomialConfidenceSet, Estimate
 from increment.estimation.sequential_result import SequentialInferenceResult
 
@@ -71,11 +71,13 @@ def _is_optional_bool(annotation: Any) -> bool:
     return bool in args and type(None) in args
 
 
-def _nullable_bool_fields(model: type[BaseModel], estimate_field: str | None) -> list[str]:
+def _nullable_bool_fields(
+    model: type[BaseModel], estimate_field: str | None, columns: Sequence[str]
+) -> list[str]:
     fields = [
         name for name, info in model.model_fields.items() if _is_optional_bool(info.annotation)
     ]
-    if estimate_field is not None:
+    if estimate_field is not None and "stat_sig" in columns:
         fields.append("stat_sig")
     return fields
 
@@ -252,17 +254,9 @@ def _append_decision_frame_values(
         try:
             data["p_value"].append(row_p_value(cast(Any, estimate)))
             data["p_value_reason_code"].append(None)
-        except Exception as exc:
-            code = getattr(exc, "code", None)
-            if code not in (
-                "sequential.route.unsupported",
-                "estimation.results.lift.p_value_cluster_robust_null_abs",
-                "estimation.results.lift.p_value_missing_log_mean_or_se",
-                "estimation.results.lift.liftestimate_dof_set",
-            ):
-                raise
+        except CodedError as exc:
             data["p_value"].append(None)
-            data["p_value_reason_code"].append(code)
+            data["p_value_reason_code"].append(exc.code)
 
 
 def to_frame[M: BaseModel](
@@ -464,7 +458,7 @@ def to_frame[M: BaseModel](
         for name in nullable_strings:
             frame[name] = pd.array(data[name], dtype="string")
 
-    nullable_bools = _nullable_bool_fields(model, estimate_field)
+    nullable_bools = _nullable_bool_fields(model, estimate_field, columns)
     if backend == "pandas" and nullable_bools:
         # Rewritten after construction: narwhals resolves nw.Boolean() to
         # whichever pandas dtype the values happen to allow.

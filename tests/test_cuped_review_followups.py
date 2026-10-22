@@ -218,6 +218,37 @@ def test_zero_se_sensitivity_row_with_absolute_margin_does_not_abort_the_readout
     assert getattr(raised.value, "code", None) == (
         "estimation.results.lift.p_value_null_abs_missing_abs_se"
     )
+    import pandas as pd
+
+    from increment.breakout.estimates import LiftEstimates
+    from increment.estimation.results import Estimate
+
+    valid = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="plain",
+        method_role="decision",
+        lift=Estimate(
+            value=0.1,
+            lb=0.02,
+            ub=0.18,
+            level=0.95,
+            alpha=0.05,
+            log_mean=0.1,
+            log_se=0.04,
+        ),
+        alpha=0.05,
+        sampling_available=True,
+        reference_kind="normal",
+    )
+    frame = cast(pd.DataFrame, LiftEstimates([linear, valid]).to_frame(backend="pandas"))
+    linear_projection = frame.loc[frame["method"] == "linear"].iloc[0]
+    plain_projection = frame.loc[frame["method"] == "plain"].iloc[0]
+    assert pd.isna(linear_projection["p_value"])
+    assert linear_projection["p_value_reason_code"] == (
+        "estimation.results.lift.p_value_null_abs_missing_abs_se"
+    )
+    assert pd.notna(plain_projection["p_value"])
 
 
 def _fcr_rows(*, segment: bool) -> list[dict[str, Any]]:
