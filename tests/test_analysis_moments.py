@@ -333,6 +333,21 @@ def test_current_moments_require_the_nullable_success_count_field():
     assert exc.value.code == "moments.count_field_missing"
 
 
+def test_moments_metric_name_requires_explicit_type() -> None:
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_moments(
+            _legacy_fixed10_rows(),
+            metrics=["revenue"],
+            control="control",
+        )
+    assert raised.value.code == "frame.metrics.type_required"
+    assert raised.value.context == {
+        "metric": "revenue",
+        "dtype": "unavailable",
+        "options": ("mean", "conversion"),
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", 3)]
 )

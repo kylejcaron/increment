@@ -1186,8 +1186,9 @@ def from_switchback_panel(  # noqa: PLR0915
             reason="unsupported_assignment_mechanism",
         )
     control, treatment = _switchback_groups(identification)
+    nwf = nw.from_native(frame, eager_only=True)
 
-    specs = coerce_metrics(metrics)
+    specs = coerce_metrics(metrics, schema=nwf.schema)
     unsupported = [spec.name for spec in specs if spec.type not in ("mean", "conversion")]
     if unsupported:
         _reject_metric(
@@ -1313,7 +1314,7 @@ def from_switchback_panel(  # noqa: PLR0915
     window = assignment.window
     total_steps = window.washout_steps + window.observation_steps
 
-    nwf = nw.from_native(frame, eager_only=True)
+    # nwf retains raw dtypes for metric inference above.
     roles = [
         ("unit", unit),
         ("cycle", cycle),

@@ -733,6 +733,13 @@ On the dataframe path (`Analysis.from_unit_summary` / `from_unit_panel`), your
 columns already hold per-unit values, so a metric is a column plus a type. The
 mapping form `{"revenue": "mean", "converted": "conversion"}` covers the
 simple cases; explicit `MetricSpec` objects unlock the rest:
+For floating-point and boolean columns, you can start with column names:
+`metrics=["revenue", "converted"]`. Floating-point columns use `mean` and
+boolean columns use `conversion`. Integer columns are intentionally not
+inferred: choose `mean` or `conversion` explicitly, because an integer column
+may represent either a count or a 0/1 indicator. A bare name cannot be used
+with `Analysis.from_moments`, which has no source dataframe schema.
+
 
 ```python
 import random

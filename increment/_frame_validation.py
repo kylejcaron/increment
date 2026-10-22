@@ -864,11 +864,12 @@ def _coerce_source_metrics(
     metrics: MetricsArg,
     *,
     design: Randomized | Encouragement | Observational | None,
+    schema: Mapping[str, Any] | None = None,
 ) -> list[MetricSpec]:
     """Admit empty encouragement catalogs; compiled plans validate required outcomes."""
     if not metrics and isinstance(design, Encouragement):
         return []
-    return coerce_metrics(metrics)
+    return coerce_metrics(metrics, schema=schema)
 
 
 def _resolve_uptake_column(

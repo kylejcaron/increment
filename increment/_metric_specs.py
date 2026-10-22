@@ -78,7 +78,8 @@ _REFUSALS = refusals(
         "frame.metric.cuped_linear_supported_metrics": "metric {name!r}: cuped_multicovariate is supported only for mean, conversion, and ratio metrics, got {type!r}",
         "frame.metric.covariate_names_unique": "metric {name!r} methods must declare unique covariate names",
         "frame.metric.scalar_and_set_covariates": "metric {name!r} cannot combine scalar and multicovariate CUPED declarations on the same method",
-        "frame.metrics_entries_metricspec": "metrics entries must be MetricSpec or mapping, got {type_name}",
+        "frame.metrics.type_required": "metric {metric!r} has dtype {dtype!r}; choose type='mean' or type='conversion'",
+        "frame.metrics_entries_metricspec": "metrics entries must be a metric name, MetricSpec, or mapping, got {type_name}",
         "frame.duplicate_metric_name": "duplicate metric name {name!r}: moments are keyed by name, so two specs sharing one name silently interleave their rows and cross-pair arms. Give each metric a distinct name.",
         "frame.metric_type_retention": "metric {name!r}: type='retention' needs threshold_days -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='retention', threshold_days=...)",
         "frame.metric_type_quantile": "metric {name!r}: type='quantile' needs quantile -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='quantile', quantile=...)",
@@ -277,31 +278,64 @@ class MetricSpec(CodedModel, BaseModel):
         return list(dict.fromkeys(cols))
 
 
-MetricsArg = Mapping[str, str] | Sequence["MetricSpec | Mapping[str, Any]"]
+MetricsArg = str | Mapping[str, str] | Sequence["str | MetricSpec | Mapping[str, Any]"]
 
 
-def coerce_metrics(metrics: MetricsArg) -> list[MetricSpec]:
-    """Accept the terse ``{"revenue": "mean"}`` form or explicit MetricSpecs."""
+def coerce_metrics(
+    metrics: MetricsArg, *, schema: Mapping[str, Any] | None = None
+) -> list[MetricSpec]:
+    """Coerce declarations, inferring simple names from dataframe dtypes."""
+    if isinstance(metrics, str):
+        metrics = [metrics]
     if not metrics:
         _raise("frame.metrics_empty_supply")
 
+    def named(name: str) -> MetricSpec:
+        if schema is None:
+            _raise(
+                "frame.metrics.type_required",
+                metric=name,
+                dtype="unavailable",
+                options=("mean", "conversion"),
+            )
+        dtype = schema.get(name)
+        if dtype is None:
+            _raise(
+                "frame.metrics.type_required",
+                metric=name,
+                dtype="missing",
+                options=("mean", "conversion"),
+            )
+        if dtype.is_boolean():
+            return MetricSpec(name=name, type="conversion")
+        if dtype.is_float():
+            return MetricSpec(name=name, type="mean")
+        _raise(
+            "frame.metrics.type_required",
+            metric=name,
+            dtype=str(dtype),
+            options=("mean", "conversion"),
+        )
+
     if isinstance(metrics, Mapping):
         terse = cast("Mapping[str, str]", metrics)
-        return [MetricSpec(name=n, type=_as_type(n, k)) for n, k in terse.items()]
-
-    out: list[MetricSpec] = []
-    for spec in metrics:
-        if isinstance(spec, MetricSpec):
-            out.append(spec)
-        elif isinstance(spec, Mapping):
-            out.append(MetricSpec(**spec))
-        else:
-            _raise("frame.metrics_entries_metricspec", type_name=type(spec).__name__)
+        out = [MetricSpec(name=n, type=_as_type(n, k)) for n, k in terse.items()]
+    elif isinstance(metrics, Sequence):
+        out = []
+        for spec in metrics:
+            if isinstance(spec, str):
+                out.append(named(spec))
+            elif isinstance(spec, MetricSpec):
+                out.append(spec)
+            elif isinstance(spec, Mapping):
+                out.append(MetricSpec(**spec))
+            else:
+                _raise("frame.metrics_entries_metricspec", type_name=type(spec).__name__)
+    else:
+        _raise("frame.metrics_entries_metricspec", type_name=type(metrics).__name__)
 
     seen: set[str] = set()
     for spec in out:
-        # Moments are keyed by name: a duplicate would silently interleave
-        # rows and cross-pair arms downstream.
         if spec.name in seen:
             _raise("frame.duplicate_metric_name", name=spec.name)
         seen.add(spec.name)

@@ -56,6 +56,10 @@ assignment probabilities; `allocation_scheme="independent"` is correct here
 because the generator used independent Bernoulli assignments. Do not declare
 this law for blocked or otherwise constrained assignment.
 
+For a floating-point column, a bare name infers a mean; a boolean column
+infers a conversion. Use `MetricSpec` to set options such as missing-value
+handling, or to explicitly choose the meaning of an integer column.
+
 ```python
 import warnings
 
@@ -68,13 +72,8 @@ design = Randomized(
 )
 plan = AnalysisPlan(primary="revenue", guardrails=["complaints"])
 metrics = [
-    MetricSpec(name="revenue", type="mean"),
-    MetricSpec(
-        name="complaints",
-        type="conversion",
-        missing="drop",
-        preferred_direction="decrease",
-    ),
+    "revenue",
+    MetricSpec(name="complaints", type="conversion", missing="drop", preferred_direction="decrease"),
 ]
 with warnings.catch_warnings(record=True) as analysis_warnings:
     warnings.simplefilter("always")
