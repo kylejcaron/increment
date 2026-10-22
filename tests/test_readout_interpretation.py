@@ -602,6 +602,10 @@ def test_switchback_contrast_is_sampling_available_and_renders_its_effect():
     assert f"effect={result.estimate.value:.6g}" in decision
     assert "%" not in decision
     assert f"interval=[{result.estimate.lb:.6g}, {result.estimate.ub:.6g}]" in decision
+    from increment.tables import contrast_results_to_readout
+
+    expected_verdict = contrast_results_to_readout([result])[0]["stat_sig"]
+    assert f"stat_sig={expected_verdict}" in decision
 
 
 def test_decision_line_uses_interpreted_control_group():
@@ -610,6 +614,47 @@ def test_decision_line_uses_interpreted_control_group():
     decision = next(line for line in text.splitlines() if " → " in line)
 
     assert "holdout → treatment" in decision
+
+
+def test_daily_value_readout_skips_decision_comparison_but_lift_keeps_it():
+    import datetime as dt
+
+    from increment.breakout.estimates import run_daily, run_daily_lift
+    from increment.estimation.armstats import centered_row_from_raw_sums
+
+    summary = []
+    for group, mean in (("control", 5.0), ("treatment", 6.0)):
+        n = 10
+        sum_y = n * mean
+        summary.append(
+            centered_row_from_raw_sums(
+                {
+                    "ds": dt.date(2025, 1, 1),
+                    "experiment_id": "daily",
+                    "metric": "value",
+                    "group_id": group,
+                    "n": float(n),
+                    "sum_y": sum_y,
+                    "sum_y2": 4.0 * (n - 1) + sum_y**2 / n,
+                    "sum_x": None,
+                    "sum_x2": None,
+                    "sum_xy": None,
+                    "sum_den": None,
+                    "sum_den2": None,
+                    "sum_yden": None,
+                }
+            )
+        )
+    from increment.semantics.models import MeanMetric
+
+    metric = MeanMetric(name="value", entity="user", fact="value")
+    values = run_daily(summary, [metric])
+    daily_lifts = run_daily_lift(summary, [metric], control_group="control")
+
+    value_text = render_readout_text(interpret_readout(values, None))
+    lift_text = render_readout_text(interpret_readout(daily_lifts, None))
+    assert " → " not in value_text
+    assert " → " in lift_text and "stat_sig=" in lift_text
 
 
 def test_effect_carriers_and_winsor_geometry_render_without_reinversion():
