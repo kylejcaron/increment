@@ -9474,8 +9474,76 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
     )
 
 
+def _bare_metric_name_frame_case() -> ParityCase:
+    records = [
+        {
+            "unit_id": f"u{i}",
+            "group": "control" if i < 20 else "treatment",
+            "revenue": float(i % 20 + 1),
+            "converted": i % 2 == 1,
+        }
+        for i in range(40)
+    ]
+    summary = pd.DataFrame(records)
+    panel = summary.assign(day=dt.date(2025, 1, 10))
+    design = Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+    )
+    long_form = [
+        MetricSpec(name="revenue", type="mean"),
+        MetricSpec(name="converted", type="conversion"),
+    ]
+
+    def build(frame: pd.DataFrame, metrics: Any, *, is_panel: bool = False) -> Analysis:
+        constructor = Analysis.from_unit_panel if is_panel else Analysis.from_unit_summary
+        return constructor(
+            frame,
+            unit="unit_id",
+            group="group",
+            design=design,
+            metrics=metrics,
+            **({"date": "day"} if is_panel else {}),
+        )
+
+    def estimate_values(rows: Any) -> dict[tuple[str, str], Any]:
+        return {(row.metric, row.group_id): row.require_lift() for row in rows}
+
+    def compare_long_form(rows: Any) -> None:
+        expected = estimate_values(rows)
+        for frame, is_panel in ((summary, False), (panel, True)):
+            source = build(frame, long_form, is_panel=is_panel)
+            try:
+                actual = estimate_values(source.run())
+                assert actual.keys() == expected.keys()
+                for identity, lift in actual.items():
+                    for field in ("value", "lb", "ub"):
+                        assert getattr(lift, field) == pytest.approx(
+                            getattr(expected[identity], field)
+                        )
+            finally:
+                source.close()
+
+    return ParityCase(
+        id="bare_metric_name_summary_panel",
+        build={
+            "from_unit_summary": lambda: build(summary, ["revenue", "converted"]),
+            "from_unit_panel": lambda: build(panel, ["revenue", "converted"], is_panel=True),
+        },
+        metrics=("revenue", "converted"),
+        readout_probe=compare_long_form,
+        waive={
+            "from_definitions": "SOURCE: column-name shorthand is for dataframe metric declarations.",
+            "from_unit_day_artifact": "SOURCE: column-name shorthand is for dataframe metric declarations.",
+            "from_moments": "SOURCE: moments have no dataframe schema for type inference.",
+            "from_switchback_panel": "SOURCE: this parity case compares summary and panel frames.",
+        },
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     _categorical_cuped_moments_case(),
+    _bare_metric_name_frame_case(),
     _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),

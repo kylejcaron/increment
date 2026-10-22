@@ -1677,6 +1677,34 @@ def test_frame_reexports_metric_specs_identity() -> None:
     assert frame.synthesise_metric is metric_specs.synthesise_metric
 
 
+def test_metric_names_infer_type_from_raw_schema() -> None:
+    names = coerce_metrics(
+        ["converted", "revenue"],
+        schema={"converted": nw.Boolean(), "revenue": nw.Float64()},
+    )
+    assert names == [
+        MetricSpec(name="converted", type="conversion"),
+        MetricSpec(name="revenue", type="mean"),
+    ]
+
+
+def test_single_metric_string_is_one_metric_name() -> None:
+    assert coerce_metrics("revenue", schema={"revenue": nw.Float64()}) == [
+        MetricSpec(name="revenue", type="mean")
+    ]
+
+
+def test_integer_metric_name_requires_explicit_type() -> None:
+    with pytest.raises(InvalidRequestError) as raised:
+        coerce_metrics(["orders"], schema={"orders": nw.Int64()})
+    assert raised.value.code == "frame.metrics.type_required"
+    assert raised.value.context == {
+        "metric": "orders",
+        "dtype": "Int64",
+        "options": ("mean", "conversion"),
+    }
+
+
 def test_metric_spec_impute_missing_is_a_named_refusal_with_a_route() -> None:
     raised = refused(
         IMPUTE_POOLED_MEAN,
