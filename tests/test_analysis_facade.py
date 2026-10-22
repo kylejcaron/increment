@@ -2235,6 +2235,17 @@ def test_public_artifact_adoption_constructs_and_reopens(published_artifact):
     assert adopted.run(metrics=["purchase_rate"])
 
 
+def test_closed_artifact_analysis_repr_does_not_reopen_its_source(published_artifact):
+    _con, _native, context, store, ref = published_artifact
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    adopted.close()
+    source = adopted._state.source
+
+    for display in (repr(adopted), str(adopted), repr(adopted.__repr_args__())):
+        assert display
+        assert adopted._state.source is source
+
+
 @pytest.mark.slow
 def test_public_artifact_adoption_has_one_build_and_no_upstream_work(monkeypatch):
     from ibis.backends.duckdb import Backend

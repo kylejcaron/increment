@@ -167,6 +167,12 @@ class TestSampleRatioMismatch:
         assert always_valid_log_e_value is not None
         assert always_valid_log_e_value < -math.log(0.05)
         assert always_valid.is_srm is False
+        display = repr(always_valid)
+        assert "fixed_p_value=" in display
+        assert "log_e_value=" in display
+        args = always_valid.__repr_args__()
+        assert ("fixed_p_value", always_valid.fixed_p_value) in args
+        assert ("log_e_value", always_valid.log_e_value) in args
 
     def test_negative_counts_refused(self):
         with pytest.raises(InvalidRequestError) as exc_info:

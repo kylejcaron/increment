@@ -117,28 +117,40 @@ class SRMResult(BaseModel):
         return dict(value)
 
     def __repr__(self) -> str:
+        evidence = (
+            f", log_e_value={self.log_e_value:.4g}"
+            if self.inference == "always_valid" and self.log_e_value is not None
+            else (", log_e_value=None" if self.inference == "always_valid" else "")
+        )
         return (
             "SRMResult(\n"
             f"  inference={self.inference!r}, is_srm={self.is_srm}, "
             f"observed={dict(self.observed)!r}, expected={dict(self.expected)!r},\n"
-            f"  chi2_stat={self.chi2_stat:.4g}, p_value={self.fixed_p_value:.4g}, "
-            f"alpha={self.alpha:.4g}, grain={self.grain!r}\n"
+            f"  chi2_stat={self.chi2_stat:.4g}, fixed_p_value={self.fixed_p_value:.4g}"
+            f"{evidence}, alpha={self.alpha:.4g}, grain={self.grain!r}\n"
             ")"
         )
 
     __str__ = __repr__
 
     def __repr_args__(self) -> list[tuple[str, object]]:
-        return [
+        args: list[tuple[str, object]] = [
             ("inference", self.inference),
             ("is_srm", self.is_srm),
             ("observed", dict(self.observed)),
             ("expected", dict(self.expected)),
             ("chi2_stat", self.chi2_stat),
             ("fixed_p_value", self.fixed_p_value),
-            ("alpha", self.alpha),
-            ("grain", self.grain),
         ]
+        if self.inference == "always_valid":
+            args.append(("log_e_value", self.log_e_value))
+        args.extend(
+            [
+                ("alpha", self.alpha),
+                ("grain", self.grain),
+            ]
+        )
+        return args
 
 
 class NotApplicable(BaseModel):
