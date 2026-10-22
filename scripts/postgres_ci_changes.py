@@ -41,8 +41,15 @@ def _suite_test_dependencies(root: Path) -> set[str]:
             names: list[str] = []
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                names = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level:
+                    package = list(path.with_suffix("").parts)
+                    if path.name != "__init__.py":
+                        package = package[:-1]
+                    package = package[: len(package) - (node.level - 1)]
+                    module = ".".join([*package, *([module] if module else [])])
+                names = [module, *(f"{module}.{alias.name}" for alias in node.names)]
             for name in names:
                 if name.split(".")[0] not in {"tests", "integration"}:
                     continue
