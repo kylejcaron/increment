@@ -17,6 +17,7 @@ from increment._literals import PreferredDirection
 from increment.errors import (
     CodedModel,
     InvalidRequestError,
+    RefusalSpec,
     raiser,
     refusals,
 )
@@ -78,7 +79,12 @@ _REFUSALS = refusals(
         "frame.metric.cuped_linear_supported_metrics": "metric {name!r}: cuped_multicovariate is supported only for mean, conversion, and ratio metrics, got {type!r}",
         "frame.metric.covariate_names_unique": "metric {name!r} methods must declare unique covariate names",
         "frame.metric.scalar_and_set_covariates": "metric {name!r} cannot combine scalar and multicovariate CUPED declarations on the same method",
-        "frame.metrics.type_required": "metric {metric!r} has dtype {dtype!r}; choose type='mean' or type='conversion'",
+        "frame.metrics.type_required": RefusalSpec(
+            "frame.metrics.type_required",
+            InvalidRequestError,
+            template="metric {metric!r} has dtype {dtype!r}; choose type='mean' or type='conversion'",
+            keys=frozenset({"metric", "dtype", "options"}),
+        ),
         "frame.metrics_entries_metricspec": "metrics entries must be a metric name, MetricSpec, or mapping, got {type_name}",
         "frame.duplicate_metric_name": "duplicate metric name {name!r}: moments are keyed by name, so two specs sharing one name silently interleave their rows and cross-pair arms. Give each metric a distinct name.",
         "frame.metric_type_retention": "metric {name!r}: type='retention' needs threshold_days -- use the explicit MetricSpec form: MetricSpec(name={name!r}, type='retention', threshold_days=...)",
