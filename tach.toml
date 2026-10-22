@@ -677,6 +677,7 @@ expose = [
   "Correction",
   "default_frame_backend",
   "MultiplicityCorrection",
+  "MetricType",
   "PreferredDirection",
   "Role",
   "RowRole",

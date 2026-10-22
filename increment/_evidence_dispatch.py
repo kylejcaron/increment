@@ -138,6 +138,7 @@ class ContrastHandler:
             results.append(compute_contrast(stats[metric.name], procedure).results[0])
         return scope_contrast_results(
             results,
+            metrics=request.metrics,
             stats=stats,
             procedures=request.procedures,
             source_identity_record=source_identity(source),

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from increment._literals import (
     Alternative,
     Backend,
+    MetricType,
     PreferredDirection,
     Role,
     default_frame_backend,
@@ -196,6 +197,8 @@ class ContrastResult(CodedModel, BaseModel):
     response_meaning: Literal["retained_total", "pre_normalized_retained_mean"] | None = None
     analysis_population: Literal["assigned"] = "assigned"
     source_snapshot_id: str | None = None
+    #: The declared ``Metric.type`` behind ``metric``; None when unknown (see ``LiftEstimate``).
+    metric_type: MetricType | None = Field(default=None, exclude_if=lambda value: value is None)
     decision_scope_complete: bool | None = None
     decision_scope_reason_code: str | None = None
     decision_scope_reason_context: Mapping[str, object] | None = None
@@ -585,6 +588,7 @@ class ContrastResults(list[ContrastResult]):
             "response_meaning",
             "analysis_population",
             "source_snapshot_id",
+            "metric_type",
             "decision_scope_complete",
             "decision_scope_reason_code",
             "decision_scope_reason_context",

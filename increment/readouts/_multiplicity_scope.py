@@ -17,6 +17,7 @@ from increment.estimation.readout_types import (
     cell_order,
     family_identity,
 )
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import input_evidence
 
 
@@ -377,6 +378,7 @@ def scoped_collection(  # noqa: PLR0913
     configs: Sequence[Any],
     request: Any,
     *,
+    metrics: Sequence[Any],
     route: str,
     view: Literal["run", "breakout", "daily", "asof"],
     design: Any,
@@ -391,7 +393,8 @@ def scoped_collection(  # noqa: PLR0913
     ``source_components`` are provenance components of evidence the rows were
     computed from but do not carry themselves (per-unit evidence digests);
     they enter the source half of the snapshot identity, as the headline
-    route's evidence components do.
+    route's evidence components do. ``metrics`` are the declared metrics the
+    rows were read for; every non-compliance row must name one of them.
     """
     from hashlib import sha256
 
@@ -454,9 +457,13 @@ def scoped_collection(  # noqa: PLR0913
             "components": [dict(item) for item in source_components],
         }
     snapshot_id = "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
+    metric_types = declared_metric_types(metrics)
     stamped = []
     for row in rows:
-        update = {"source_snapshot_id": snapshot_id}
+        update = {
+            "source_snapshot_id": snapshot_id,
+            "metric_type": declared_metric_type(row, metric_types),
+        }
         if hasattr(row, "sampling_available") and row.sampling_available is None:
             update["sampling_available"] = True
         stamped.append(row.model_copy(update=update))

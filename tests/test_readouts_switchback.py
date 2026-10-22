@@ -856,7 +856,7 @@ def test_envelope_refuses_arm_native_artifact_and_all_day_axis_routes(method, kw
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
-def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
+def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):  # noqa: PLR0915
     import narwhals as nw
 
     from increment.decision_wire import compiled_plan_from_json, compiled_plan_to_json
@@ -907,6 +907,7 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     replay_row = replay.results[0]
     scope_fields = {
         "source_snapshot_id",
+        "metric_type",
         "decision_scope_complete",
         "decision_scope_reason_code",
         "decision_scope_reason_context",
@@ -924,6 +925,7 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     assert result.source_snapshot_id is not None
     assert result.decision_scope_complete is True
     assert result.decision_scope_reason_code is None
+    assert result.metric_type == "mean"
     from increment.estimation.readout_types import ReadoutResults
 
     restored_collection = ReadoutResults.model_validate_json(results.model_dump_json())
