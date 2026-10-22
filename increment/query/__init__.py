@@ -1,0 +1,12 @@
+import warnings
+
+# Ibis' DuckDB backend calls DuckDB's deprecated fetch_arrow_table API.
+# Remove when Ibis switches APIs (lock: Ibis 12.0.0 / DuckDB 1.5.5;
+# floors: Ibis 10.1.0 / DuckDB 1.3.2 on Python 3.12-13, Ibis 11.0.0 /
+# DuckDB 1.4.3 on Python 3.14).
+warnings.filterwarnings(
+    "ignore",
+    message=r"fetch_arrow_table\(\) is deprecated",
+    category=DeprecationWarning,
+    module=r"ibis\.backends\.duckdb",
+)
