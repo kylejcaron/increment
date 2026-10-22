@@ -208,6 +208,10 @@ class TestSampleRatioMismatch:
         result = sample_ratio_mismatch(counts, expected={"control": 0.5, "treatment": 0.5})
         assert result.mixed_assignment_units == 7
         assert result.unassigned_units == 3
+        assert "mixed_assignment_units=7" in repr(result)
+        assert "unassigned_units=3" in repr(result)
+        assert ("mixed_assignment_units", 7) in result.__repr_args__()
+        assert ("unassigned_units", 3) in result.__repr_args__()
         assert result.df == 1  # two arms only
         assert set(result.observed) == {"control", "treatment"}
         assert set(result.expected) == {"control", "treatment"}
@@ -328,7 +332,8 @@ class TestSampleRatioMismatch:
         )
 
         assert result.min_expected_count == pytest.approx(3.0)
-        assert result.low_expected_count is True
+        assert "low_expected_count=True" in repr(result)
+        assert ("low_expected_count", True) in result.__repr_args__()
 
     def test_healthy_large_allocation_does_not_flag_low_expected_count(self):
         """Thousands of units per arm are nowhere near the Cochran floor."""
