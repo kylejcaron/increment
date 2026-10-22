@@ -2,64 +2,30 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.check_collect_count import _check_fanout, _collected_items, check_counts, main
+from scripts.check_collect_count import _check_fanout, collect, main
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_count_above_baseline_fails_with_pr_line(tmp_path: Path) -> None:
-    baseline = tmp_path / "baseline"
-    baseline.write_text("unit 10\n")
-    status, output = check_counts("unit", baseline, 13)
-    assert status == 1
-    assert "Tier: unit\nObserved: 13 items\nBaseline: 10 items\nDelta: +3 items" in output
-    assert "tests: +3 items — <reason>" in output
-    assert "Literal or computed parameter grids over 12" not in output
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
-def test_count_at_or_below_baseline_passes_and_prints_lower_count(tmp_path: Path) -> None:
-    baseline = tmp_path / "baseline"
-    baseline.write_text("unit 10\n")
-    status, output = check_counts("unit", baseline, 8)
-    assert status == 0
-    assert "lower count" in output
-    assert "unit 8" in output
-
-
-def test_collection_summary_uses_selected_count_when_tests_are_deselected() -> None:
-    assert _collected_items("11351/19954 tests collected (8603 deselected)") == 11351
-
-
-def test_count_increase_still_reports_actual_over_cap_fanout(tmp_path: Path) -> None:
-    tests_root = tmp_path / "tests"
-    tests_root.mkdir()
-    (tests_root / "test_dynamic.py").write_text(
-        "import pytest\n@pytest.mark.parametrize('value', values)\ndef test_computed(value): pass\n"
-    )
-    baseline = tmp_path / "baseline"
-    baseline.write_text("unit 10\n")
-    nodeids = "".join(f"tests/test_dynamic.py::test_computed[{i}]\n" for i in range(13))
-
-    status, output = check_counts("unit", baseline, 13, nodeids, tests_root)
-
-    assert status == 1
-    assert (
-        "Collected parameter fan-out findings (informational; they do not fail this check):"
-        in output
-    )
-    assert "tests/test_dynamic.py::test_computed: 13 collected items" in output
-    assert (
-        "Literal or computed parameter grids over 12 collected items require a reasoned grid marker."
-        in output
-    )
-    failure = output[output.index("Count check failed:") :]
-    assert "PR description" in failure
-    assert "`tests: +3 items — <reason>`" in failure
+def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    for name, text in files.items():
+        (repo / name).write_text(text)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo
 
 
 def test_actual_class_method_nodeid_honors_reasoned_grid_marker(tmp_path: Path) -> None:
@@ -77,32 +43,35 @@ def test_actual_class_method_nodeid_honors_reasoned_grid_marker(tmp_path: Path) 
     assert _check_fanout(nodeids, tests_root) == []
 
 
-def test_explicit_items_does_not_read_stdin(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    baseline = tmp_path / "baseline"
-    baseline.write_text("unit 10\n")
-
-    class NoRead:
-        def read(self) -> str:
-            raise AssertionError("stdin must not be read when --items is supplied")
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["check_collect_count", "--tier", "unit", "--baseline", str(baseline), "--items", "8"],
-    )
-    monkeypatch.setattr(sys, "stdin", NoRead())
-    assert main() == 0
-    assert "unit 8 (baseline 10; lower count — lower the baseline)" in capsys.readouterr().out
-
-
 @pytest.mark.integration
-class TestMakeCheckItems:
-    def test_make_collects_and_filters_actual_grid_fanout(self, tmp_path: Path) -> None:
-        scratch = tmp_path / "tests"
-        scratch.mkdir()
-        (scratch / "test_grid.py").write_text(
+class TestCollection:
+    def test_each_tier_counts_items_by_their_markers(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            {
+                "tests/test_mix.py": (
+                    "import pytest\n"
+                    "def test_plain(): pass\n"
+                    "@pytest.mark.integration\n"
+                    "def test_boundary(): pass\n"
+                    "@pytest.mark.slow\n"
+                    "def test_heavy(): pass\n"
+                    "@pytest.mark.slow\n"
+                    "@pytest.mark.parameter_recovery\n"
+                    "def test_recovery(): pass\n"
+                )
+            },
+        )
+
+        counts = collect(repo).tiers
+
+        assert counts == {"unit": 1, "fast": 2, "slow": 1, "all": 4}
+
+    def test_working_tree_delta_and_unmarked_grid_are_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _repo(tmp_path, {"tests/test_one.py": "def test_one(): pass\n"})
+        (repo / "tests/test_grid.py").write_text(
             "import pytest\n"
             "@pytest.mark.parametrize('value', range(13))\n"
             "def test_unmarked(value): pass\n"
@@ -110,16 +79,21 @@ class TestMakeCheckItems:
             "@pytest.mark.grid('large sweep')\n"
             "def test_marked(value): pass\n"
         )
-        baseline = tmp_path / "baseline"
-        baseline.write_text("unit 26\n")
+        monkeypatch.chdir(repo)
+
+        assert main(["--base", "main", "--repo", str(repo)]) == 0
+
+        out = capsys.readouterr().out
+        assert "unit 1 -> 27 (+26)" in out
+        assert "test_unmarked: 13 collected items" in out
+        assert "test_marked" not in out
+
+    def test_make_check_items_reports_the_working_tree_delta(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path, {"tests/test_one.py": "def test_one(): pass\n"})
+        (repo / "tests/test_two.py").write_text("def test_two(): pass\n")
+
         result = subprocess.run(
-            [
-                "make",
-                "check-items",
-                f"CHECK_ITEMS_TESTS={scratch}",
-                f"CHECK_ITEMS_BASELINE={baseline}",
-                "CHECK_ITEMS_TIERS=unit",
-            ],
+            ["make", "check-items", f"CHECK_ITEMS_REPO={repo}", "BASE=main"],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -127,9 +101,7 @@ class TestMakeCheckItems:
         )
 
         assert result.returncode == 0, result.stderr + result.stdout
-        assert "unit 26 (baseline 26)" in result.stdout
-        assert "test_unmarked: 13 collected items" in result.stdout
-        assert "test_marked" not in result.stdout
+        assert "unit 1 -> 2 (+1)" in result.stdout
 
     def test_plain_make_defaults_to_install(self) -> None:
         result = subprocess.run(

@@ -3,19 +3,13 @@
 
 
 CHECK_ITEMS_TESTS ?= tests
-CHECK_ITEMS_BASELINE ?= .github/collect-baseline
-CHECK_ITEMS_TIERS ?= unit fast slow all
+CHECK_ITEMS_REPO ?= .
 UNIT_CPU_ARGS ?= $(if $(filter unit fast,$(TIER)),--unit-cpu-budget,)
 
 
+# Collected items per tier: merge base of BASE versus the working tree.
 check-items:
-	@set -e; for tier in $(CHECK_ITEMS_TIERS); do \
-		output=$$(mktemp); \
-		if $(MAKE) test-tier TIER=$$tier PYTEST_XDIST_ARGS= UNIT_CPU_ARGS= PYTEST_ARGS='--collect-only -q -p scripts.check_collect_count $(CHECK_ITEMS_TESTS)' >$$output; then \
-			cat $$output | uv run --no-sync python scripts/check_collect_count.py --tier $$tier --baseline $(CHECK_ITEMS_BASELINE) --tests-root $(CHECK_ITEMS_TESTS); \
-			rm -f $$output; \
-		else status=$$?; cat $$output; rm -f $$output; exit $$status; fi; \
-	done
+	$(SLOT) uv run --no-sync python -m scripts.check_collect_count --base $(or $(BASE),origin/main) --repo $(CHECK_ITEMS_REPO) --tests $(CHECK_ITEMS_TESTS)
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 mutate:

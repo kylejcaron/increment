@@ -9,14 +9,19 @@ permissions: {}
 jobs:
   item-increase-reason:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - name: Require a reason for each increased tier baseline
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Require a reason for each tier whose collected items rise
         env:
           BASE_REF: ${{ github.base_ref }}
           GITHUB_PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 scripts/check_item_increase_approval.py --base "origin/$BASE_REF"
+        run: uv run --no-sync python -m scripts.check_item_increase_approval --base "origin/$BASE_REF"
