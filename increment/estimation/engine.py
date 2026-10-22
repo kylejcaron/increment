@@ -1870,6 +1870,17 @@ def _infer_clustered_lift_result(
     )
 
 
+def _cluster_arm_unit_facts(arm: ArmStats) -> tuple[int | None, float | None]:
+    """Return unit count and raw unit outcome mean from cluster totals."""
+    if arm.x_role != "cluster_size" or arm.ref_x is None or arm.cx1 is None:
+        return None, None
+    unit_count = round(arm.n * arm.ref_x + arm.cx1)
+    if unit_count <= 0:
+        return None, None
+    outcome_total = arm.n * arm.ref_y + arm.cy1
+    return unit_count, outcome_total / unit_count
+
+
 def _welch_arm_ns(
     contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, prior: Prior | None
 ) -> tuple[int, int] | None:
@@ -1924,7 +1935,22 @@ def _infer_lift_result(
             null_abs,
             preferred_direction,
         )
-        return result.model_copy(update=_winsorization_result_fields(control, treatment)), None
+        cluster_result = result.model_copy(update=_winsorization_result_fields(control, treatment))
+        if strategy.n_clusters is not None:
+            control_n, control_mean = _cluster_arm_unit_facts(control)
+            treatment_n, treatment_mean = _cluster_arm_unit_facts(treatment)
+            if strategy.metric_type in {"ratio", "quantile"}:
+                # A per-unit outcome mean is not the arm's value of a ratio metric.
+                control_mean = treatment_mean = None
+            cluster_result = cluster_result.model_copy(
+                update={
+                    "n_control": control_n,
+                    "n_treat": treatment_n,
+                    "mean_control": control_mean,
+                    "mean_treat": treatment_mean,
+                }
+            )
+        return cluster_result, None
     log_rr, se_t, se_c, abs_t, abs_se_t, abs_c, abs_se_c = moments
     abs_diff = abs_t - abs_c
     abs_se: float | None = math.hypot(abs_se_t, abs_se_c)
@@ -1998,8 +2024,14 @@ def _infer_lift_result(
             },
         )
     update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
+    if strategy.n_clusters is None and strategy.metric_type not in {"ratio", "quantile"}:
+        update.update(
+            n_control=control.n,
+            n_treat=treatment.n,
+            mean_control=control.mean_y(),
+            mean_treat=treatment.mean_y(),
+        )
     if inference is None and strategy.ratio_notes:
-        # Fixed-horizon ratio rows carry the advisories; infer_lift sets no note of its own.
         update["note"] = "; ".join(strategy.ratio_notes)
     return result.model_copy(update=update), None
 

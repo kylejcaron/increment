@@ -2544,3 +2544,51 @@ class TestEncouragementItiRetainsBinomialRoute:
         assert plain.reference_kind == "binomial"
         assert uptake.reference_kind == "binomial"
         assert uptake.binomial_set == plain.binomial_set
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::increment.errors.IncrementRuntimeWarning")
+def test_clustered_arm_facts_use_unit_counts_and_unit_means():
+    import pyarrow as pa
+
+    from increment import Analysis, MetricSpec
+    from increment.estimation.results import LiftEstimate
+
+    sizes = {"control": (1, 2, 5), "treatment": (2, 3, 4)}
+    rows = [
+        {
+            "unit": f"{group}-{cluster}-{i}",
+            "group": group,
+            "store": f"{group}-{cluster}",
+            "revenue": float(10 * cluster + i + (group == "treatment")),
+            "sessions": float(1 + i),
+        }
+        for group, cluster_sizes in sizes.items()
+        for cluster, size in enumerate(cluster_sizes)
+        for i in range(size)
+    ]
+    revenue = {g: [float(r["revenue"]) for r in rows if r["group"] == g] for g in sizes}
+    frame = pa.Table.from_pylist(rows)
+
+    (mean_row,) = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="group",
+        control="control",
+        cluster="store",
+        metrics=[MetricSpec(name="revenue", type="mean")],
+    ).run()
+    (ratio_row,) = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="group",
+        control="control",
+        cluster="store",
+        metrics=[MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")],
+    ).run()
+
+    assert isinstance(mean_row, LiftEstimate) and isinstance(ratio_row, LiftEstimate)
+    assert (mean_row.n_control, mean_row.n_treat) == (8, 9)
+    assert mean_row.mean_control == pytest.approx(sum(revenue["control"]) / 8, rel=1e-12)
+    assert mean_row.mean_treat == pytest.approx(sum(revenue["treatment"]) / 9, rel=1e-12)
+    assert (ratio_row.mean_control, ratio_row.mean_treat) == (None, None)

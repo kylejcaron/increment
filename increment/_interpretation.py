@@ -11,7 +11,7 @@ from increment.estimation.readout_types import (
     ReadoutMetadata,
     render_readout_failure,
 )
-from increment.estimation.results import _selection_qualification
+from increment.estimation.results import _selection_qualification, row_verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,6 +664,14 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             (getattr(row, "method", None), getattr(row, "method_role", None))
         )
     for row in visible_rows:
+        if not _is_daily_value(row):
+            lines.append(
+                _decision_line(
+                    row,
+                    control_group=group.control_group,
+                    treatment_group=group.treatment_group,
+                )
+            )
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
@@ -695,6 +703,44 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             )
             lines.append(f"{row.metric} selection: {selection}; separate from interval evidence.")
     return lines
+
+
+def _decision_line(row, *, control_group: str | None, treatment_group: str | None) -> str:
+    estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
+    control = control_group if control_group is not None else "control identity unknown"
+    treatment = treatment_group if treatment_group is not None else "treatment identity unknown"
+    parts = [f"{row.metric}: {control} → {treatment}"]
+    for name, label in (
+        ("n_control", "n control"),
+        ("n_treat", "n treatment"),
+        ("mean_control", "mean control"),
+        ("mean_treat", "mean treatment"),
+    ):
+        value = getattr(row, name, None)
+        if value is not None:
+            parts.append(f"{label}={value:.6g}" if name.startswith("mean_") else f"{label}={value}")
+    scale = (
+        "absolute"
+        if hasattr(row, "control_group")
+        else getattr(row, "value_scale", "absolute" if hasattr(row, "control") else "relative")
+    )
+    if estimate is not None:
+        factor = 100 if scale == "relative" else 1
+        value = estimate.value * factor
+        suffix = "%" if factor == 100 else ""
+        parts.append(f"effect={value:.6g}{suffix}")
+        if estimate.lb is not None or estimate.ub is not None:
+            low = "−∞" if estimate.lb is None else f"{estimate.lb * factor:.6g}"
+            high = "+∞" if estimate.ub is None else f"{estimate.ub * factor:.6g}"
+            parts.append(f"interval=[{low}, {high}]{suffix}")
+    if hasattr(row, "control_group") and hasattr(row, "estimate"):
+        from increment.estimation.contrast import contrast_stat_sig
+
+        verdict = contrast_stat_sig(row)
+    else:
+        verdict = row_verdict(row)
+    parts.append(f"stat_sig={verdict if verdict is not None else 'unavailable'}")
+    return "; ".join(parts)
 
 
 def _display_source(source_id: str | None) -> str | None:

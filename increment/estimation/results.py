@@ -868,6 +868,11 @@ class _RowIdentity(CodedModel, BaseModel):
     control_weight_n: int | None = None
     treatment_weight_n: int | None = None
 
+    n_control: int | None = Field(default=None, exclude_if=lambda v: v is None)
+    n_treat: int | None = Field(default=None, exclude_if=lambda v: v is None)
+    mean_control: float | None = Field(default=None, exclude_if=lambda v: v is None)
+    mean_treat: float | None = Field(default=None, exclude_if=lambda v: v is None)
+
     @model_validator(mode="after")
     def _freeze_readout_contexts(self):
         _freeze_row_contexts(self)
@@ -2232,6 +2237,17 @@ def row_stat_sig(row: DecisionRow) -> bool | None:
     if row.alternative == "less":
         return lift.ub is not None and lift.ub < row.null_lift
     return lift.excludes(row.null_lift)
+
+
+def row_verdict(row: Any) -> bool | None:
+    """The row's ``stat_sig()`` verdict, or None when the row cannot compute one."""
+    stat_sig = getattr(row, "stat_sig", None)
+    if not callable(stat_sig):
+        return None
+    try:
+        return stat_sig()
+    except CodedError:
+        return None
 
 
 def row_p_value(row: DecisionRow) -> float | None:

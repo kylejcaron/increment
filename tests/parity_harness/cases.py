@@ -9474,6 +9474,15 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
     )
 
 
+def _arm_facts_parity_case() -> ParityCase:
+    case = _fixed_horizon_case(
+        id="arm-facts-parity",
+        breakout=False,
+        include_cuped=False,
+    )
+    return replace(case, waive={"from_switchback_panel": "SOURCE: fixed-horizon frame inputs."})
+
+
 def _bare_metric_name_frame_case() -> ParityCase:
     records = [
         {
@@ -9542,6 +9551,7 @@ def _bare_metric_name_frame_case() -> ParityCase:
 
 
 PARITY_CASES: tuple[ParityCase, ...] = (
+    _arm_facts_parity_case(),
     _categorical_cuped_moments_case(),
     _bare_metric_name_frame_case(),
     _triggered_sitewide_population_results_case(),

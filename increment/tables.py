@@ -30,7 +30,7 @@ from increment._interpretation import (
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
-from increment.estimation.contrast import contrast_evidence_available
+from increment.estimation.contrast import contrast_stat_sig
 from increment.estimation.contrast_results import ContrastResult
 from increment.estimation.results import (
     DECIDABLE_SEQUENTIAL_STATUSES,
@@ -285,22 +285,7 @@ def contrast_results_to_readout(
     rows: list[dict[str, Any]] = []
     for result in results:
         estimate = result.estimate
-        # Sample-SE availability applies only to the explicit t approximation.
-        if not contrast_evidence_available(result):
-            stat_sig = False
-        elif result.method == "switchback_unit_variance_envelope":
-            assert result.residual_p_value is not None
-            stat_sig = result.residual_p_value < result.alpha
-        elif result.alternative == "greater":
-            stat_sig = estimate.lb is not None and estimate.lb > result.null_abs
-        elif result.alternative == "less":
-            stat_sig = estimate.ub is not None and estimate.ub < result.null_abs
-        else:
-            stat_sig = (
-                estimate.lb is not None
-                and estimate.ub is not None
-                and not (estimate.lb <= result.null_abs <= estimate.ub)
-            )
+        stat_sig = contrast_stat_sig(result)
         rows.append(
             {
                 "metric": result.metric,
