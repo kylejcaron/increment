@@ -90,6 +90,7 @@ from increment._metric_specs import (
     CupedCovariate,
     MetricsArg,
     MetricSpec,
+    _metrics_need_schema,
     coerce_metrics,
     synthesise_metric,
 )
@@ -835,11 +836,12 @@ class FrameTotalsSource(SequentialSourceMixin):
         intervention_grain: Literal["unit", "cluster"] = "unit",
         exposure_date: str | None = None,
     ) -> FrameTotalsSource:
-        """Build a source from a one-row-per-unit dataframe. See :func:`from_unit_summary`."""
         require_eager_frame(frame, constructor="from_unit_summary")
-        nwf = nw.from_native(frame, eager_only=True)
+        schema = (
+            nw.from_native(frame, eager_only=True).schema if _metrics_need_schema(metrics) else None
+        )
         specs = _apply_plan_methods(
-            _coerce_source_metrics(metrics, design=design, schema=nwf.schema), plan
+            _coerce_source_metrics(metrics, design=design, schema=schema), plan
         )
         _reject_windowed_specs(specs)
         synthesised_metrics = [synthesise_metric(s) for s in specs]
@@ -907,6 +909,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             if registration is not None
             else []
         )
+        nwf = nw.from_native(frame, eager_only=True)
         roles = [("unit", unit), ("group", group)]
         if exposure_date is not None:
             roles.append(("exposure_date", exposure_date))
@@ -2104,9 +2107,11 @@ class FramePanelSource(SequentialSourceMixin):
     ) -> FramePanelSource:
         """Build a source from a one-row-per-unit-per-day dataframe. See :func:`from_unit_panel`."""
         require_eager_frame(frame, constructor="from_unit_panel")
-        nwf = nw.from_native(frame, eager_only=True)
+        schema = (
+            nw.from_native(frame, eager_only=True).schema if _metrics_need_schema(metrics) else None
+        )
         specs = _apply_plan_methods(
-            _coerce_source_metrics(metrics, design=design, schema=nwf.schema), plan
+            _coerce_source_metrics(metrics, design=design, schema=schema), plan
         )
         if isinstance(design, Encouragement):
             retention = [spec.name for spec in specs if spec.type == "retention"]
@@ -2178,6 +2183,7 @@ class FramePanelSource(SequentialSourceMixin):
             exposure_date=exposure_date,
             specs=specs,
         )
+        nwf = nw.from_native(frame, eager_only=True)
         roles = [("unit", unit), ("group", group), ("date", date)]
         if uptake is not None:
             roles.append((uptake_role, uptake))

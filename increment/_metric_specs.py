@@ -342,6 +342,17 @@ def coerce_metrics(
     return out
 
 
+def _metrics_need_schema(metrics: MetricsArg) -> bool:
+    """Whether any bare metric name needs the source dataframe's dtype."""
+    if isinstance(metrics, str):
+        return True
+    return (
+        isinstance(metrics, Sequence)
+        and not isinstance(metrics, Mapping)
+        and any(isinstance(metric, str) for metric in metrics)
+    )
+
+
 def _as_type(name: str, kind: str) -> MetricSpecType:
     """Validate a terse metric type, with a pointed message for the ones
     that need extra fields the terse ``{"name": "type"}`` form cannot carry.
