@@ -567,6 +567,28 @@ def test_effective_encouragement_design_survives_a_query_free_round_trip() -> No
     )
     assert declared_context.design == declared_experiment.resolved_design()
 
+    legacy_context = ac.compile_unit_day_artifact_context(
+        "encouragement_test",
+        definitions,
+        encouragement_uptake=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked", window_days=3),
+            one_sided=True,
+            min_first_stage_z=0.001,
+            exclusion_restriction={
+                "justification": "only uptake changes outcomes",
+            },
+        ),
+    )
+
+    def add_legacy_acknowledgement(payload: dict[str, Any]) -> None:
+        payload["experiment"]["design"]["exclusion_restriction"]["acknowledged"] = True
+
+    with pytest.raises(ac.ArtifactContractError) as refused:
+        _artifact_source_context(_reseal(legacy_context, add_legacy_acknowledgement))
+    assert refused.value.code == "artifact.context.legacy_exclusion_acknowledged"
+    assert refused.value.context["route"] == "re-materialize the artifact"
+
 
 def test_undeclared_day_boundary_is_inherited_from_definitions_and_explicit_wins() -> None:
     from increment.query.source import _artifact_source_context

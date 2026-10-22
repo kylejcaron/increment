@@ -143,7 +143,7 @@ def test_encouragement_scalar_families_match_standalone(panel, secondary):
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment affects outcomes through uptake"
+            justification="assignment affects outcomes through uptake"
         ),
     )
 
@@ -263,7 +263,7 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel, role, miss
                 control_group="control",
                 uptake=UptakeSpec(fact="uptake"),
                 exclusion_restriction=ExclusionRestriction(
-                    acknowledged=True, justification="assignment affects outcomes through uptake"
+                    justification="assignment affects outcomes through uptake"
                 ),
             ),
             uptake="uptake",
@@ -337,7 +337,7 @@ def test_encouragement_scalar_families_share_one_weak_stage_diagnostic(panel):
             control_group="control",
             uptake=UptakeSpec(fact="uptake"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment affects outcomes through uptake"
+                justification="assignment affects outcomes through uptake"
             ),
         ),
         uptake="uptake",
@@ -371,7 +371,7 @@ def test_encouragement_refuses_multicovariate_sensitivity():
             control_group="control",
             uptake=UptakeSpec(fact="uptake"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment affects outcomes through uptake"
+                justification="assignment affects outcomes through uptake"
             ),
         ),
     ) as analysis:

@@ -29,9 +29,7 @@ _N = 240
 _DESIGN = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="took"),
-    exclusion_restriction=ExclusionRestriction(
-        acknowledged=True, justification="test fixture, not a real design"
-    ),
+    exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
 )
 
 

@@ -186,8 +186,7 @@ def native_fixture(
                                 "uptake": {"fact": "clicked", "window_days": uptake_window},
                                 "one_sided": True,
                                 "exclusion_restriction": {
-                                    "acknowledged": True,
-                                    "justification": "Only uptake changes the outcome",
+                                    "justification": "Only uptake changes the outcome"
                                 },
                             }
                         }

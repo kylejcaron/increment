@@ -133,7 +133,7 @@ def _native_encouragement_analysis(con, table_name: str) -> Analysis:
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="the encouraged button gates revenue"
+                justification="the encouraged button gates revenue"
             ),
             one_sided=True,
         ),

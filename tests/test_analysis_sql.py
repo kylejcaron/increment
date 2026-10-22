@@ -200,9 +200,7 @@ def test_constructor_with_new_experiment_refreshes_the_declared_design_control_g
     encouragement = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="page_view"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="test double, not a real design"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="test double, not a real design"),
     )
     a = make_analysis_like(a, design=encouragement)
     a = make_analysis_like(

@@ -521,17 +521,6 @@ def test_explicit_design_can_omit_control_argument():
     assert analysis.unit_counts() == {"control": 2, "treatment": 2}
 
 
-def test_exclusion_justification_refusal_is_coded_and_roundtrips():
-    from increment.semantics.design import ExclusionRestriction
-
-    with pytest.raises(InvalidRequestError) as raised:
-        ExclusionRestriction(acknowledged=True, justification="short")
-    error = raised.value
-    assert error.code == "design.exclusion_restriction.justification"
-    assert pickle.loads(pickle.dumps(error)).code == error.code
-    assert copy.deepcopy(error).code == error.code
-
-
 def test_mixed_boolean_moments_keep_canonical_assignment_count_identity(tmp_path):
     import json
 

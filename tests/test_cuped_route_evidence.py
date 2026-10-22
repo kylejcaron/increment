@@ -46,7 +46,7 @@ def _frame(records, methods, *, panel: bool, encouragement: bool = False):
                 control_group="control",
                 uptake=UptakeSpec(fact="uptake"),
                 exclusion_restriction=ExclusionRestriction(
-                    acknowledged=True, justification="assignment affects outcomes through uptake"
+                    justification="assignment affects outcomes through uptake"
                 ),
             ),
             uptake="uptake",

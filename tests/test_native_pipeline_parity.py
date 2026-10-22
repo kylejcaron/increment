@@ -31,9 +31,7 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "native_pipeline_parity.json"
 DESIGN = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="took"),
-    exclusion_restriction=ExclusionRestriction(
-        acknowledged=True, justification="test fixture, not a real design"
-    ),
+    exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
     one_sided=True,
 )
 

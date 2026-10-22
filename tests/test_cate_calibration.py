@@ -315,7 +315,7 @@ def test_validate_cate_refuses_encouragement_design():
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment acts only through uptake"
+            justification="assignment acts only through uptake"
         ),
     )
     src = _confounded_source(design=encouragement)

@@ -394,10 +394,7 @@ def _additive_late(t: ArmStats, c: ArmStats) -> tuple[float, float]:
             "mechanism": "encouragement",
             "control_group": "c",
             "uptake": {"fact": "help_click"},
-            "exclusion_restriction": {
-                "acknowledged": True,
-                "justification": "unclicked button assumed inert",
-            },
+            "exclusion_restriction": {"justification": "unclicked button assumed inert"},
         }
     )
     metric = MeanMetric(name="m", entity="user_id", fact="purchase", aggregation="sum")

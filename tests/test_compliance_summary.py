@@ -28,9 +28,7 @@ def design(window=None):
     return Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=window),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="Only uptake changes the outcome"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="Only uptake changes the outcome"),
         one_sided=True,
         min_first_stage_z=0.001,
     )

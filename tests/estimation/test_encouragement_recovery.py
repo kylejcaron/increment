@@ -22,10 +22,7 @@ def _design(**over):
         "mechanism": "encouragement",
         "control_group": "control",
         "uptake": {"fact": "help_click"},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "unclicked button assumed inert",
-        },
+        "exclusion_restriction": {"justification": "unclicked button assumed inert"},
     }
     base.update(over)
     return Encouragement.model_validate(base)

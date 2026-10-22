@@ -170,7 +170,7 @@ def test_from_unit_summary_encouragement_end_to_end() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         # A low z-floor keeps LATE emitted on this small, imperfect-compliance
         # fixture (4 units/arm) instead of exercising the default weak-instrument suppression path.
@@ -232,7 +232,7 @@ def test_encouragement_uptake_column_derives_from_the_design() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     common: dict[str, Any] = {
@@ -270,7 +270,7 @@ def test_explicit_uptake_column_overrides_the_declared_fact() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
 
@@ -300,7 +300,7 @@ def test_derived_uptake_column_missing_from_frame_names_its_source(
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     with pytest.raises(InvalidRequestError) as exc:
@@ -376,7 +376,7 @@ def test_from_unit_panel_derives_uptake_column_alongside_the_window() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     common: dict[str, Any] = {
@@ -427,7 +427,7 @@ def test_from_unit_panel_uptake_window() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     windowed = from_unit_panel(
@@ -498,7 +498,7 @@ def test_from_unit_panel_uptake_window_anchors_to_each_units_own_entry() -> None
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     src = from_unit_panel(
@@ -547,7 +547,7 @@ def test_from_unit_panel_uptake_window_with_real_dates() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     src = from_unit_panel(
@@ -572,7 +572,7 @@ def _encouragement_design(window_days: int | None = None):
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=window_days),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
 

@@ -1895,9 +1895,7 @@ def _analysis_with_asof_encouragement_events(con):
         _design=Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
-            exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="button gates revenue"
-            ),
+            exclusion_restriction=ExclusionRestriction(justification="button gates revenue"),
             one_sided=True,
         ),
     )

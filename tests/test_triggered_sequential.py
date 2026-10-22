@@ -73,7 +73,6 @@ def _definitions(
         "        window_days: 2\n"
         "      one_sided: false\n"
         "      exclusion_restriction:\n"
-        "        acknowledged: true\n"
         "        justification: the surface gates revenue\n"
         if encouragement
         else ""

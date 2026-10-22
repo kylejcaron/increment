@@ -101,7 +101,7 @@ _ENCOURAGEMENT = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="uptake"),
     exclusion_restriction=ExclusionRestriction(
-        acknowledged=True, justification="probe fixture: assignment only moves y via uptake"
+        justification="probe fixture: assignment only moves y via uptake"
     ),
     # Low z-floor keeps LATE emitted on a deliberately tiny fixture.
     min_first_stage_z=0.5,

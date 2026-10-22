@@ -1983,7 +1983,7 @@ def test_analysis_from_unit_summary_encouragement_uptake():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         # Low z-floor: keep LATE reported on this 4-units-per-arm fixture
         # instead of exercising weak-instrument suppression here.
@@ -2134,7 +2134,7 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             one_sided=True,
             min_first_stage_z=4.0,  # default floor - 1/20 compliance must trip it
@@ -2197,7 +2197,7 @@ def test_analysis_from_unit_panel_encouragement_staggered_entry():
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         min_first_stage_z=0.001,
     )

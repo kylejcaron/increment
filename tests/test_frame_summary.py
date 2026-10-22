@@ -888,7 +888,6 @@ def test_run_does_not_warn_for_defaulted_fixed_horizon_encouragement_cuped(
             control_group="control",
             uptake=UptakeSpec(fact="took"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True,
                 justification="assignment affects revenue through uptake",
             ),
             allocation={"control": 0.5, "treatment": 0.5},
@@ -928,7 +927,6 @@ def test_run_does_not_recommend_cuped_for_compliance_only_encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="took"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True,
                 justification="assignment affects revenue through uptake",
             ),
             allocation={"control": 0.5, "treatment": 0.5},

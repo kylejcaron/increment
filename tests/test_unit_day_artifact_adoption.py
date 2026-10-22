@@ -23,7 +23,12 @@ from increment.query.artifact_contract import (
     _with_sum_within_extrema_sql,
     compile_unit_day_artifact_context,
 )
-from increment.query.artifact_digest import digest_relation, manifest_sha256
+from increment.query.artifact_digest import (
+    canonical_json,
+    context_digest,
+    digest_relation,
+    manifest_sha256,
+)
 from increment.query.artifact_reader import ArtifactMomentSource
 from increment.query.builders import (
     asof_group_summary,
@@ -46,6 +51,7 @@ from increment.query.schemas import (
     UNIT_DAY_ARTIFACT_RELATION_SCHEMAS,
 )
 from increment.semantics.artifact import (
+    ArtifactContext,
     ArtifactRelationRef,
     BaseRelations,
     Freshness,
@@ -186,6 +192,39 @@ def reader_snapshot():
         yield manifest, ref, snapshot, cast(ArtifactStore, Store())
     finally:
         con.disconnect()
+
+
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_legacy_exclusion_context_refuses_before_unit_counts_backend_access(
+    reader_snapshot, monkeypatch, acknowledged: bool
+) -> None:
+    manifest, ref, snapshot, store = reader_snapshot
+    payload = json.loads(manifest.context.canonical_json)
+    payload["experiment"]["design"] = {
+        "mechanism": "encouragement",
+        "control_group": "control",
+        "uptake": {"fact": "clicked"},
+        "exclusion_restriction": {
+            "acknowledged": acknowledged,
+            "justification": "legacy assumption statement",
+        },
+        "one_sided": False,
+    }
+    raw = canonical_json(payload)
+    context = ArtifactContext(canonical_json=raw, sha256=context_digest(raw))
+    legacy_manifest = manifest.model_copy(update={"context": context})
+    legacy_manifest = legacy_manifest.model_copy(
+        update={"manifest_sha256": manifest_sha256(legacy_manifest)}
+    )
+    legacy_ref = ref.model_copy(update={"manifest_sha256": legacy_manifest.manifest_sha256})
+    monkeypatch.setattr(snapshot, "read_manifest", lambda *args, **kwargs: legacy_manifest)
+
+    with pytest.raises(ArtifactContractError) as refused:
+        ArtifactMomentSource.open(store, legacy_ref, expected_context=context).unit_counts()
+
+    assert refused.value.code == "artifact.context.legacy_exclusion_acknowledged"
+    assert snapshot.calls == {"exposures": 0, "measure_stats": 0}
+    assert snapshot.executions == []
 
 
 @pytest.mark.slow

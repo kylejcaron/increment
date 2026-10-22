@@ -1945,7 +1945,7 @@ def test_readout_table_encouragement_pipeline_renders_three_distinct_rows():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         min_first_stage_z=0.5,
     )

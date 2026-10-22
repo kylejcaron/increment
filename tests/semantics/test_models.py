@@ -3893,8 +3893,7 @@ def test_experiment_encouragement_declaration_parses_via_resolved_design():
                 "uptake": {"fact": "clicked", "window_days": 7},
                 "one_sided": True,
                 "exclusion_restriction": {
-                    "acknowledged": True,
-                    "justification": "assignment moves revenue only via uptake",
+                    "justification": "assignment moves revenue only via uptake"
                 },
             },
         }
@@ -3977,8 +3976,7 @@ def test_experiment_encouragement_design_validates_uptake_fact():
                             "mechanism": "encouragement",
                             "uptake": {"fact": "clicked_nonexistent"},
                             "exclusion_restriction": {
-                                "acknowledged": True,
-                                "justification": "assignment moves revenue only via uptake",
+                                "justification": "assignment moves revenue only via uptake"
                             },
                         },
                     }
@@ -4005,8 +4003,7 @@ def test_experiment_encouragement_design_rejects_statistical_tuning_key():
                     "uptake": {"fact": "clicked"},
                     "min_first_stage_z": 2.0,
                     "exclusion_restriction": {
-                        "acknowledged": True,
-                        "justification": "assignment moves revenue only via uptake",
+                        "justification": "assignment moves revenue only via uptake"
                     },
                 },
             }

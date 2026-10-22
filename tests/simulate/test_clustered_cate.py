@@ -961,9 +961,7 @@ def _compliance_source(order):
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         one_sided=True,
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="Only uptake changes Y"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="Only uptake changes Y"),
         min_first_stage_z=0.001,
     )
     pairs = [(2, 0), (4, 1), (7, 5), (12, 11)] * 10

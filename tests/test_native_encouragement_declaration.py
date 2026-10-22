@@ -61,7 +61,6 @@ def _encouragement_defs() -> dict:
                     "uptake": {"fact": "clicked"},
                     "one_sided": True,
                     "exclusion_restriction": {
-                        "acknowledged": True,
                         "justification": "assignment moves revenue only via uptake",
                     },
                 },
@@ -198,7 +197,6 @@ def test_native_encouragement_declaration_runs_and_matches_dataframe_oracle(
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=(
                 ExclusionRestriction(
-                    acknowledged=True,
                     justification="assignment moves revenue only via uptake",
                 )
                 if exclusion_declared
@@ -755,7 +753,6 @@ def test_compile_unit_day_artifact_context_refuses_conflicting_encouragement_upt
                         "mechanism": "encouragement",
                         "uptake": {"fact": "clicked"},
                         "exclusion_restriction": {
-                            "acknowledged": True,
                             "justification": "assignment moves revenue only via uptake",
                         },
                     },
@@ -767,7 +764,7 @@ def test_compile_unit_day_artifact_context_refuses_conflicting_encouragement_upt
         control_group="control",
         uptake=UptakeSpec(fact="a_different_fact"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="a different, conflicting declaration"
+            justification="a different, conflicting declaration"
         ),
     )
     with pytest.raises(ArtifactContractError) as exc:

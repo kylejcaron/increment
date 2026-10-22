@@ -9345,7 +9345,7 @@
     "tests/semantics/test_cluster_models.py::test_cluster_with_factors_refuses_at_load": 0.001,
     "tests/semantics/test_cluster_models.py::test_cluster_with_mean_metric_loads": 0.001,
     "tests/semantics/test_cluster_models.py::test_cluster_with_ratio_metric_loads": 0.001,
-    "tests/semantics/test_design.py::test_acknowledged_false_rejected": 0.001,
+    "tests/semantics/test_design.py::test_exclusion_restriction_needs_only_nonempty_justification": 0.001,
     "tests/semantics/test_design.py::test_adjustment_set_accepts_covariates": 0,
     "tests/semantics/test_design.py::test_adjustment_set_distinct_covariates_pass": 0,
     "tests/semantics/test_design.py::test_adjustment_set_duplicate_covariates_refused": 0,

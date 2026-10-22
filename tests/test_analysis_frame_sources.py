@@ -396,7 +396,7 @@ def test_encouragement_breakout_deduplicates_multiple_empty_segments():
                 control_group="control",
                 uptake=UptakeSpec(fact="clicked"),
                 exclusion_restriction=ExclusionRestriction(
-                    acknowledged=True, justification="assignment affects y through uptake"
+                    justification="assignment affects y through uptake"
                 ),
                 min_first_stage_z=0.001,
             ),
@@ -471,7 +471,7 @@ def _encouragement_summary_breakout_analysis(frame, metrics):
             uptake=UptakeSpec(fact="clicked"),
             one_sided=True,
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment affects y through uptake"
+                justification="assignment affects y through uptake"
             ),
             min_first_stage_z=0.001,
         ),
@@ -648,7 +648,7 @@ def test_unit_summary_breakout_remaps_resolved_default_uptake():
             control_group="control",
             uptake=UptakeSpec(fact="ds"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves y through uptake"
+                justification="assignment only moves y through uptake"
             ),
         ),
         breakouts=("segment",),
@@ -1416,7 +1416,7 @@ def test_from_unit_panel_encouragement_breakout_retains_estimands():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         min_first_stage_z=0.001,
     )
@@ -1467,7 +1467,7 @@ def encouragement_panel_analysis():
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             min_first_stage_z=0.001,
         ),
@@ -1505,7 +1505,7 @@ def test_compliance_asof_snapshot_identity_tracks_arm_counts():
                 control_group="control",
                 uptake=UptakeSpec(fact="clicked"),
                 exclusion_restriction=ExclusionRestriction(
-                    acknowledged=True, justification="assignment only changes uptake"
+                    justification="assignment only changes uptake"
                 ),
                 min_first_stage_z=0.001,
             ),
@@ -1567,7 +1567,7 @@ def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only affects uptake"
+                justification="assignment only affects uptake"
             ),
         ),
         uptake="clicked",
@@ -1649,7 +1649,6 @@ def _make_windowed_encouragement_panel_analysis(
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=2),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="assignment affects revenue only through uptake",
         ),
         one_sided=one_sided,
@@ -1792,7 +1791,7 @@ def test_from_unit_panel_encouragement_breakout_skips_missing_control_segment():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         min_first_stage_z=0.001,
     )
@@ -1832,7 +1831,7 @@ def test_encouragement_breakout_all_control_free_segments_warn_and_skip():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     metrics = [MeanMetric(name="revenue", entity="user_id", fact="purchase")]

@@ -22,10 +22,7 @@ def _uptake_design():
             "control_group": "control",
             "one_sided": False,
             "uptake": {"fact": "clicked", "window_days": 2},
-            "exclusion_restriction": {
-                "acknowledged": True,
-                "justification": "inert encouragement",
-            },
+            "exclusion_restriction": {"justification": "inert encouragement"},
         }
     )
 
@@ -1441,9 +1438,7 @@ def test_automatic_segments_under_encouragement_keep_the_breakout_estimand_refus
     design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="inert encouragement"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="inert encouragement"),
         allocation={"control": 0.5, "treatment": 0.5},
     )
     specs = [MetricSpec(name="outcome", type="conversion")]

@@ -113,7 +113,6 @@ def _cuped_encouragement_source():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="assignment only changes outcomes through uptake",
         ),
         min_first_stage_z=0.5,
@@ -2079,10 +2078,7 @@ def test_breakout_encouragement_role_exploratory_alpha_from_plan():
         {
             "control_group": "control",
             "uptake": {"fact": "help_click"},
-            "exclusion_restriction": {
-                "acknowledged": True,
-                "justification": "unclicked button assumed inert",
-            },
+            "exclusion_restriction": {"justification": "unclicked button assumed inert"},
         }
     )
     plan = AnalysisPlan(alpha=0.10)

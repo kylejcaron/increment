@@ -28,7 +28,6 @@ design = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="clicked"),
     exclusion_restriction=ExclusionRestriction(
-        acknowledged=True,
         justification=("the randomized prompt affects revenue only through help-button clicks"),
     ),
     one_sided=False,
@@ -62,6 +61,11 @@ assignment_and_uptake = Analysis.from_unit_summary(
 
 The default requests all three estimands. If exclusion is not declared, any request containing `late` raises `identification.encouragement.exclusion_required` before reading outcomes, even if a weak first stage would later make LATE unavailable. The same omission works in YAML and survives artifact and moments round trips. Supported sequential ITT/compliance monitoring also needs no exclusion declaration; declaring one does not make sequential LATE supported.
 
+
+An exclusion object needs only `justification`; a concise mechanism statement is
+enough. Existing artifacts that serialize the retired exclusion field refuse
+with a route to re-materialize the artifact.
+
 ## Declare on `from_definitions`
 
 The control arm and target allocation come from the experiment's own
@@ -84,7 +88,6 @@ experiments:
         window_days: 7
       one_sided: true
       exclusion_restriction:
-        acknowledged: true
         justification: "the button can only move deflection by being clicked"
 ```
 

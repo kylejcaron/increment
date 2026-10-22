@@ -808,6 +808,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "artifact.observational.governed_evidence_missing": None,
         "breakout.alpha": "estimation.diagnostics.alpha",
         "breakout.alpha_too_small": "estimation.meta.alpha_too_small",
+        "design.exclusion_restriction.justification": None,
         "breakout.segment_contrast_interval": "breakout.segment_contrast_absolute_interval",
         "contrast.assignment": None,
         "decision.absolute_decision.one_sided_nominal": "decision.relative_decision.one_sided_nominal",

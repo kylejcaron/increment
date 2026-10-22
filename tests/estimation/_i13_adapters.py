@@ -115,7 +115,6 @@ def estimate_of(cell: AcceptanceCell, sample: DGPSample, _i: int) -> IntervalRes
             uptake=UptakeSpec(fact="took"),
             one_sided=True,
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True,
                 justification="DGP outcome depends only on uptake and potential outcomes",
             ),
         )
