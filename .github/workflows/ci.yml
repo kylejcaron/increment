@@ -115,6 +115,32 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  compile-registry:
+    name: warehouse compile registry
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - id: key
+        run: |
+          value=$(uv run --no-sync python -c 'from integration.warehouse_execution._compile import _captured_compile_cache_key; print(_captured_compile_cache_key("snowflake").removeprefix("snowflake-"))')
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+      - name: Restore or save compiled warehouse registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pytest_cache/warehouse_compile_registry
+          key: compile-registry-${{ steps.key.outputs.value }}
+      - run: make test-tier TIER=compile-registry WORKERS=auto PYTEST_ARGS="--durations=25"
+
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.
   # Also builds the documentation when changed paths require it, saving a job.
@@ -295,7 +321,7 @@ jobs:
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, slow, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening]
+    needs: [lint, test, slow, compile-registry, build, changes, warehouse-postgres, numerical-certification, wheel-smoke-macos, wheel-smoke-windows, test-weakening]
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -346,8 +372,8 @@ jobs:
           TEST_WEAKENING_RESULT: ${{ needs.test-weakening.result }}
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.changes.result }}"
-          echo "lint/test/slow/build/decision/wheel-smoke jobs -> $results"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.compile-registry.result }} ${{ needs.build.result }} ${{ needs.changes.result }}"
+          echo "lint/test/slow/compile-registry/build/decision/wheel-smoke jobs -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }
           done

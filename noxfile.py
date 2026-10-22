@@ -103,7 +103,12 @@ TIER_MARKERS = {
     "fast": "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
     "unit": "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress",
     "integration-fast": "not slow and integration and not parameter_recovery and not numerical_certification and not examples and not stress",
-    "slow": ("slow and not parameter_recovery and not numerical_certification and not examples"),
+    # The compile registry builds once in its own CI job instead of in every slow shard.
+    "slow": (
+        "slow and not parameter_recovery and not numerical_certification and not examples"
+        " and not compile_registry"
+    ),
+    "compile-registry": "compile_registry",
     "parameter-recovery": "parameter_recovery",
     "numerical-certification": "numerical_certification",
     "scientific": "(parameter_recovery or numerical_certification)",
