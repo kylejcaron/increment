@@ -697,6 +697,7 @@ def _third_arm_rows() -> list[dict[str, Any]]:
     return rows
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster:UserWarning")
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_serves_a_clustered_multi_arm_experiment(tmp_path):

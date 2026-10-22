@@ -560,6 +560,7 @@ def test_portable_subset_validates_only_selected_winsorization_declarations(tmp_
     assert global_refusal.value.code == "moments.format.mixed"
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_mixed_winsorization_metrics_survive_run_and_export(tmp_path):
     """A fixed-value-winsorized metric and an unwinsorized one must both

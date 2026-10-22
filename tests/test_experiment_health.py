@@ -347,6 +347,7 @@ def test_health_second_call_sees_new_rows(tmp_path, monkeypatch) -> None:
     _health_snapshot_scenario(tmp_path, monkeypatch)
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) -> None:
     """Matched native/artifact diagnostics; portable shapes do not retain trigger evidence."""
@@ -500,6 +501,7 @@ def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> 
         assert check.code is not None
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_triggered_health_without_declared_allocation_is_unavailable_for_native_and_artifact(
     tmp_path,
