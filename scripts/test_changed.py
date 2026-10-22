@@ -9,7 +9,7 @@ import pytest
 from _pytest.mark import Expression, MarkMatcher
 
 
-def _fast_marker() -> str:
+def _marker_expression(tier: str = "fast") -> str:
     root = Path(__file__).resolve().parent.parent
     tree = ast.parse((root / "noxfile.py").read_text(encoding="utf-8"))
     for node in tree.body:
@@ -17,7 +17,7 @@ def _fast_marker() -> str:
             isinstance(target, ast.Name) and target.id == "TIER_MARKERS" for target in node.targets
         ):
             markers = ast.literal_eval(node.value)
-            return markers["fast"]
+            return markers[tier]
     raise RuntimeError("noxfile.py does not define TIER_MARKERS")
 
 
@@ -39,9 +39,14 @@ class _WholeSelectedFiles:
 
 
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tier", choices=("fast", "unit"), default="fast")
+    arguments = parser.parse_args()
     return int(
         pytest.main(
-            ["--testmon", "--testmon-forceselect", "-m", _fast_marker()],
+            ["--testmon", "--testmon-forceselect", "-m", _marker_expression(arguments.tier)],
             plugins=[_WholeSelectedFiles()],
         )
     )

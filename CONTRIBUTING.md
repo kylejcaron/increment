@@ -75,8 +75,11 @@ then rerun `make install`. Hook execution must not depend on a disposable
 checkout's `.venv`. Inspect existing custom/legacy ownership before installation;
 never force-replace shared hooks while active worktrees are unprepared.
 
-The pre-push checks run lint, type-checking and the affected fast tier.
-`make check` is an optional broader local check; CI remains the PR test gate.
+The pre-push checks run lint, type-checking, a warning-only `test-weakening`
+report and `prepush-tests`. The latter runs the changed unit tests, uses
+pytest-testmon after seeding its database from the unit tier, and records a
+successful receipt keyed by the tree and merge base so identical pushes skip
+testing. Pushes MAY use `git push --no-verify`; CI is the required PR gate.
 Numerical certification is selected from the certified modules' transitive
 `tach.toml` import graph, certification-test changes and CI/build configuration;
 unrelated module changes such as `increment/dashboard/_html.py` do not select it.
@@ -211,8 +214,13 @@ result is a successful no-op, not evidence that uncovered paths were tested.
 Affected checks are local feedback, not a replacement for required slow,
 parity, fixtures, public-smoke, documentation, scientific or full-suite gates.
 CI is the authoritative full-suite gate. The pre-push hook runs lint,
-type-checking and the affected fast tier; `make check` is an optional broader
-local check. Send pytest options through `PYTEST_ARGS` when using Make targets.
+type-checking, the warning-only weakening report and changed unit tests through
+`prepush-tests`; it skips a successful receipt for an identical tree and merge
+base. Pushes MAY use `git push --no-verify`, with CI as the required gate.
+CI accepts test-reduction approval only through the `test-reduction-approved`
+PR label; local checks continue to accept the `Test-Reduction-Approved:`
+trailer on a reducing commit. `make check` is an optional broader local check.
+Send pytest options through `PYTEST_ARGS` when using Make targets.
 
 For an optional local inner loop, run `make test-changed` to use
 pytest-testmon and run the whole files containing selected tests. The first
@@ -386,8 +394,9 @@ assertion counts and reports added skip/xfail behavior, loosened tolerances,
 reduced Hypothesis `max_examples` and raised timeouts. Assertion counts include
 `assert` statements and recognized assertion calls such as `pytest.raises`,
 `pytest.warns`, `pytest.approx` and testing-library `assert_*` functions.
-An unapproved finding fails the check; exit `0` means no unapproved findings,
-`1` means findings and `2` means invalid arguments, base or repository.
+The check command returns `1` for findings and `2` for invalid arguments, base
+or repository. The pre-push hook turns findings into a warning and exits
+successfully; the required CI job remains the gate for the PR.
 Locally, only a `Test-Reduction-Approved:` trailer on the reducing commit
 approves its findings; it cannot approve working-tree findings. CI ignores
 trailers and approves committed findings only when the PR has the
@@ -432,7 +441,7 @@ pytest-split distributes tests evenly.
 Make targets default to `max(1, CPU count // TEST_SLOTS, CPU count // held slots)` workers after acquiring their slot; override with
 `WORKERS=auto` or a specific count. CI passes `WORKERS=auto`; ordinary
 commands accept `PYTEST_ARGS` for pytest options. The pre-push checks run
-lint, type-checking and the affected fast tier; the CI matrix is the full-suite
+lint, type-checking and the unit tests the change executed (testmon selection, skipped for an already-passed tree); the CI matrix is the full-suite
 gate.
 
 The test bootstrap defaults numerical-library thread pools to one per process,

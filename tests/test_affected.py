@@ -71,7 +71,7 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
     assert selection.test_files == ()
     assert _pytest_arguments(selection, base, "fast", ["-n", "2"]) == [
         "-m",
-        "not slow and not parameter_recovery and not numerical_certification",
+        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
         "--tach-base",
         base,
         "-n",
@@ -97,14 +97,14 @@ def test_source_and_doc_change_runs_tach_scope_and_doc_page(tmp_path: Path) -> N
     assert _pytest_invocations(selection, base, "fast", []) == [
         [
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
             "--tach-base",
             base,
             "tests",
         ],
         [
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
             "docs/guides/cuped.md",
         ],
     ]
@@ -129,7 +129,7 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
     assert _pytest_invocations(selection, base, "fast", []) == [
         [
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
             "--tach-base",
             base,
             "--ignore=tests/test_explicit.py",
@@ -137,7 +137,7 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
         ],
         [
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
             "tests/test_explicit.py",
         ],
     ]
@@ -243,10 +243,43 @@ def test_empty_subrun_is_ignored_when_combining_mixed_selection(
     assert capsys.readouterr().out == expected_stdout
 
 
-def test_config_change_runs_full_tier(tmp_path: Path) -> None:
-    root, base = _repo(tmp_path, {"pyproject.toml": "[tool]\n"})
+def test_keywords_only_pyproject_change_does_not_run_full_tier(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path, {"pyproject.toml": '[project]\nname = "example"\nkeywords = ["old"]\n'}
+    )
+    selection = _change(
+        root, base, "pyproject.toml", '[project]\nname = "example"\nkeywords = ["new"]\n'
+    )
+    assert selection.full_tier is False
 
-    selection = _change(root, base, "pyproject.toml", "[tool]\nchanged = true\n")
+
+def test_dependency_change_runs_full_tier(tmp_path: Path) -> None:
+    root, base = _repo(tmp_path, {"pyproject.toml": '[project]\ndependencies = ["a"]\n'})
+    selection = _change(root, base, "pyproject.toml", '[project]\ndependencies = ["b"]\n')
+    assert selection.full_tier is True
+
+
+def test_tach_change_runs_tach_without_tests(tmp_path: Path) -> None:
+    root, base = _repo(tmp_path, {"tach.toml": "[tool.tach]\n"})
+    selection = _change(root, base, "tach.toml", "[tool.tach]\nchanged = true\n")
+    assert selection.use_tach is True
+    assert selection.full_tier is False
+
+
+def test_unit_tier_uses_unit_marker_expression(tmp_path: Path) -> None:
+    root, base = _repo(tmp_path, {"tests/test_example.py": "def test_old(): pass\n"})
+    selection = _change(root, base, "tests/test_example.py", "def test_new(): pass\n")
+    assert _pytest_arguments(selection, base, "unit", []) == [
+        "-m",
+        "not slow and not integration and not parameter_recovery and not numerical_certification and not examples and not stress",
+        "tests/test_example.py",
+    ]
+
+
+def test_config_change_runs_full_tier(tmp_path: Path) -> None:
+    root, base = _repo(tmp_path, {"pyproject.toml": "[tool.pytest.ini_options]\n"})
+
+    selection = _change(root, base, "pyproject.toml", "[tool.pytest.ini_options]\naddopts = '-q'\n")
 
     assert selection.full_tier is True
     assert selection.test_files == ()
@@ -256,12 +289,12 @@ def test_full_tier_preserves_doc_pages_and_uncovered_paths(tmp_path: Path) -> No
     root, base = _repo(
         tmp_path,
         {
-            "pyproject.toml": "[tool]\n",
+            "pyproject.toml": '[project]\ndependencies = ["a"]\n',
             "docs/guides/cuped.md": "# CUPED\n",
             "scripts/x.py": "VALUE = 1\n",
         },
     )
-    (root / "pyproject.toml").write_text("[tool]\nchanged = true\n")
+    (root / "pyproject.toml").write_text('[project]\ndependencies = ["b"]\n')
     (root / "docs/guides/cuped.md").write_text("# CUPED\nchanged\n")
     (root / "scripts/x.py").write_text("VALUE = 2\n")
 
@@ -272,7 +305,7 @@ def test_full_tier_preserves_doc_pages_and_uncovered_paths(tmp_path: Path) -> No
     assert selection.uncovered == ("scripts/x.py",)
     assert _pytest_arguments(selection, base, "fast", []) == [
         "-m",
-        "not slow and not parameter_recovery and not numerical_certification",
+        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
         "tests",
         "docs/guides/cuped.md",
     ]
@@ -345,9 +378,11 @@ def test_slow_tier_marker_expression_is_used(tmp_path: Path) -> None:
     root, base = _repo(tmp_path, {"tests/test_example.py": "def test_old(): pass\n"})
     selection = _change(root, base, "tests/test_example.py", "def test_new(): pass\n")
 
+    from noxfile import TIER_MARKERS
+
     assert _pytest_arguments(selection, base, "slow", []) == [
         "-m",
-        "slow and not parameter_recovery and not numerical_certification and not examples",
+        TIER_MARKERS["slow"],
         "tests/test_example.py",
     ]
 
@@ -363,7 +398,7 @@ def test_small_selection_runs_without_workers() -> None:
     )
     assert _pytest_arguments(selection, "base", "fast", ["-n", "4", "--dist", "loadgroup"]) == [
         "-m",
-        "not slow and not parameter_recovery and not numerical_certification",
+        "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
         *selection.test_files,
     ]
 
@@ -375,7 +410,7 @@ def test_small_selection_runs_without_workers() -> None:
     ):
         assert _pytest_arguments(selection, "base", "fast", worker_args) == [
             "-m",
-            "not slow and not parameter_recovery and not numerical_certification",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
             *selection.test_files,
         ]
     larger = Selection(
