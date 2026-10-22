@@ -202,10 +202,21 @@ class ExperimentHealth(CodedModel, BaseModel):
         return self
 
     def __repr__(self) -> str:
-        return f"ExperimentHealth(checks={len(self.checks)})"
+        details = [
+            f"checks={len(self.checks)}",
+            f"source_snapshot_id={self.source_snapshot_id!r}",
+            f"source_cutoff={self.source_cutoff!r}",
+        ]
+        return "ExperimentHealth(\n  " + ",\n  ".join(details) + "\n)"
 
-    def __str__(self) -> str:
-        return repr(self)
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        return [
+            ("checks", len(self.checks)),
+            ("source_snapshot_id", self.source_snapshot_id),
+            ("source_cutoff", self.source_cutoff),
+        ]
 
     def __reduce__(self):
         return _restore_experiment_health, (self.model_dump(mode="python"),)

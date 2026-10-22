@@ -9,6 +9,23 @@ from increment.estimation.decision_types import EValueEvidence
 from increment.estimation.readout_types import CellKey, IntegrityResult, StreamingDigest
 
 
+def test_readout_metadata_repr_shows_snapshot_and_record_count():
+    from types import SimpleNamespace
+
+    from increment.estimation.readout_types import ReadoutMetadata
+
+    metadata = ReadoutMetadata.model_construct(
+        scope=SimpleNamespace(snapshot_id="snapshot-1"),
+        cells=(),
+        partial=False,
+        partial_reason=(),
+    )
+    display = repr(metadata)
+    assert "\n" in display and "ReadoutMetadata(" in display
+    assert "snapshot-1" in display and "cells=0" in display
+    assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
+
+
 def test_streaming_digest_is_order_independent_but_counts_duplicates():
     rows = [{"id": "a", "value": 1.0}, {"id": "b", "value": None}]
     forward = StreamingDigest()

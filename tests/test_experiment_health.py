@@ -12,6 +12,18 @@ from increment.results import ExperimentHealth, HealthCheck, SRMResult
 from increment.semantics.design import Randomized
 
 
+def test_experiment_health_repr_shows_source_and_check_count_without_storage_details():
+    report = ExperimentHealth(
+        checks=(),
+        source_snapshot_id="snapshot-1",
+        source_cutoff="2026-10-22",
+    )
+    display = repr(report)
+    assert "\n" in display and "ExperimentHealth(" in display
+    assert "checks=0" in display and "snapshot-1" in display
+    assert not any(token in display for token in ("0x", "sha256:", "mappingproxy", "_v1"))
+
+
 def test_health_models_are_frozen_and_own_nested_context() -> None:
     source = {"risk": ["counterfactual trigger invariance is unknown"]}
     check = HealthCheck(

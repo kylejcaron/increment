@@ -116,6 +116,58 @@ class SRMResult(BaseModel):
     def _serialize_counts(self, value: Mapping[str, int | float]) -> dict[str, int | float]:
         return dict(value)
 
+    def __repr__(self) -> str:
+        evidence = (
+            f", log_e_value={self.log_e_value:.4g}"
+            if self.inference == "always_valid" and self.log_e_value is not None
+            else (", log_e_value=None" if self.inference == "always_valid" else "")
+        )
+        accounting = "".join(
+            f", {name}={value}"
+            for name, value in (
+                ("unassigned_units", self.unassigned_units),
+                ("mixed_assignment_units", self.mixed_assignment_units),
+            )
+            if value
+        )
+        sparse_warning = ", low_expected_count=True" if self.low_expected_count else ""
+        return (
+            "SRMResult(\n"
+            f"  inference={self.inference!r}, is_srm={self.is_srm}, "
+            f"observed={dict(self.observed)!r}, expected={dict(self.expected)!r},\n"
+            f"  chi2_stat={self.chi2_stat:.4g}, fixed_p_value={self.fixed_p_value:.4g}"
+            f"{evidence}{sparse_warning}{accounting}, alpha={self.alpha:.4g}, "
+            f"grain={self.grain!r}\n"
+            ")"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        args: list[tuple[str, object]] = [
+            ("inference", self.inference),
+            ("is_srm", self.is_srm),
+            ("observed", dict(self.observed)),
+            ("expected", dict(self.expected)),
+            ("chi2_stat", self.chi2_stat),
+            ("fixed_p_value", self.fixed_p_value),
+        ]
+        if self.inference == "always_valid":
+            args.append(("log_e_value", self.log_e_value))
+        if self.low_expected_count:
+            args.append(("low_expected_count", True))
+        if self.unassigned_units:
+            args.append(("unassigned_units", self.unassigned_units))
+        if self.mixed_assignment_units:
+            args.append(("mixed_assignment_units", self.mixed_assignment_units))
+        args.extend(
+            [
+                ("alpha", self.alpha),
+                ("grain", self.grain),
+            ]
+        )
+        return args
+
 
 class NotApplicable(BaseModel):
     """A diagnostic check that does not apply to the current design.

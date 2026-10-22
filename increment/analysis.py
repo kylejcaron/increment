@@ -2540,6 +2540,23 @@ class Analysis:
 
         return source_snapshot(self._state.source, previous=previous)
 
+    def __repr__(self) -> str:
+        study = getattr(self._state, "study", None)
+        design = None if study is None else study.identification
+        details = [f"  experiment={self._state.experiment_name!r}"]
+        if design is not None:
+            details.append(f"  design={type(design).__name__}")
+        return "Analysis(\n" + ",\n".join(details) + "\n)"
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        study = getattr(self._state, "study", None)
+        args: list[tuple[str, object]] = [("experiment", self._state.experiment_name)]
+        if study is not None:
+            args.append(("design", type(study.identification).__name__))
+        return args
+
     def run(
         self,
         *,
