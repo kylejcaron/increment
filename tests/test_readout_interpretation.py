@@ -414,6 +414,8 @@ def test_unscoped_plain_list_reports_unknown_scope_and_integrity():
     assert interpretation.groups
     assert {group.integrity_status for group in interpretation.groups} == {"unknown"}
     assert all(group.control_group is None for group in interpretation.groups)
+    text = render_readout_text(interpretation)
+    assert "control identity unknown → treatment" in text
 
 
 def test_small_cluster_advisory_survives_suppressed_warning_and_json_restore():
@@ -593,8 +595,21 @@ def test_switchback_contrast_is_sampling_available_and_renders_its_effect():
     interpretation = _interpret(results)
     assert interpretation.groups[0].available_cells
     result = cast(Any, results[0])
-    assert f"{result.estimate.value:.6g}" in render_readout_text(interpretation)
-    assert f"{result.null_abs:.6g}" in render_readout_text(interpretation)
+    text = render_readout_text(interpretation)
+    assert f"{result.estimate.value:.6g}" in text
+    assert f"{result.null_abs:.6g}" in text
+    decision = next(line for line in text.splitlines() if line.startswith("value:"))
+    assert f"effect={result.estimate.value:.6g}" in decision
+    assert "%" not in decision
+    assert f"interval=[{result.estimate.lb:.6g}, {result.estimate.ub:.6g}]" in decision
+
+
+def test_decision_line_uses_interpreted_control_group():
+    results = _run_mean(_mean_frame(), control="holdout")
+    text = render_readout_text(interpret_readout(results, results.metadata))
+    decision = next(line for line in text.splitlines() if " → " in line)
+
+    assert "holdout → treatment" in decision
 
 
 def test_effect_carriers_and_winsor_geometry_render_without_reinversion():

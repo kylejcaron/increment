@@ -534,3 +534,67 @@ def test_to_frame_projects_decision_statistics(backend):
     assert projected["stat_sig"] == row.stat_sig()
     assert projected["p_value"] == pytest.approx(row.p_value())
     assert pd.isna(projected["p_value_reason_code"])
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+def test_to_frame_keeps_unavailable_stat_sig_missing(backend):
+    pytest.importorskip(backend)
+    from increment.breakout.estimates import LiftEstimates
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    valid = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(
+            value=0.1,
+            lb=0.02,
+            ub=0.18,
+            level=0.95,
+            alpha=0.05,
+            log_mean=0.1,
+            log_se=0.04,
+        ),
+        sampling_available=True,
+        reference_kind="normal",
+    )
+    failed = valid.model_copy(update={"group_id": "failed", "sampling_available": False})
+    frame: Any = LiftEstimates([failed, valid]).to_frame(backend=backend)
+
+    if backend == "pandas":
+        values = frame["stat_sig"].tolist()
+        assert str(frame["stat_sig"].dtype) == "boolean"
+    elif backend == "polars":
+        values = frame["stat_sig"].to_list()
+    else:
+        values = frame.column("stat_sig").to_pylist()
+    assert values[0] is None or pd.isna(values[0])
+    assert values[1] is True
+
+
+def test_to_frame_projects_p_value_when_sampling_availability_is_unrecorded():
+    from increment.breakout.estimates import LiftEstimates
+    from increment.estimation.results import Estimate, LiftEstimate
+
+    row = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(
+            value=0.1,
+            lb=0.02,
+            ub=0.18,
+            level=0.95,
+            alpha=0.05,
+            log_mean=0.1,
+            log_se=0.04,
+        ),
+        alpha=0.05,
+        sampling_available=None,
+        reference_kind="normal",
+    )
+    assert row.p_value() is not None
+    frame: Any = LiftEstimates([row]).to_frame(backend="pandas")
+    assert frame.loc[0, "p_value"] == pytest.approx(row.p_value())

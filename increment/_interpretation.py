@@ -665,7 +665,13 @@ def _render_group_rows(group, visible_rows) -> list[str]:
             (getattr(row, "method", None), getattr(row, "method_role", None))
         )
     for row in visible_rows:
-        lines.append(_decision_line(row))
+        lines.append(
+            _decision_line(
+                row,
+                control_group=group.control_group,
+                treatment_group=group.treatment_group,
+            )
+        )
         cell = cells_by_key.get(CellKey.from_row(row))
         if cell is not None and cell.posterior_available is False:
             lines.append(
@@ -699,10 +705,10 @@ def _render_group_rows(group, visible_rows) -> list[str]:
     return lines
 
 
-def _decision_line(row) -> str:
+def _decision_line(row, *, control_group: str | None, treatment_group: str | None) -> str:
     estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
-    control = getattr(row, "control_group", getattr(row, "control", "control"))
-    treatment = getattr(row, "treatment", getattr(row, "group_id", "treatment"))
+    control = control_group if control_group is not None else "control identity unknown"
+    treatment = treatment_group if treatment_group is not None else "treatment identity unknown"
     parts = [f"{row.metric}: {control} → {treatment}"]
     for name, label in (
         ("n_control", "n control"),
@@ -713,7 +719,11 @@ def _decision_line(row) -> str:
         value = getattr(row, name, None)
         if value is not None:
             parts.append(f"{label}={value:.6g}" if name.startswith("mean_") else f"{label}={value}")
-    scale = getattr(row, "value_scale", "absolute" if hasattr(row, "control") else "relative")
+    scale = (
+        "absolute"
+        if hasattr(row, "control_group")
+        else getattr(row, "value_scale", "absolute" if hasattr(row, "control") else "relative")
+    )
     if estimate is not None:
         factor = 100 if scale == "relative" else 1
         value = estimate.value * factor
