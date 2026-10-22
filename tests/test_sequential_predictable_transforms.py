@@ -143,7 +143,7 @@ def test_predeclared_cuped_narrows_the_asymptotic_interval_and_labels_the_row():
         unit="unit",
         group="arm",
         control="control",
-        outcome="outcome_pre",
+        metric="outcome_pre",
         covariate="covariate_pre",
     )
     frame = _experiment_frame(rng)

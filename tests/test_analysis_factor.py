@@ -468,7 +468,7 @@ class TestFactorSummaries:
         )
         tbl = analysis.factor_summaries()["revenue:country:events"]
 
-        res = absorb_factor(tbl, factor="country", control_group="control")
+        res = absorb_factor(tbl, factor="country", control="control")
 
         assert res.n_levels_used >= 3
         assert res.se > 0

@@ -151,6 +151,21 @@ class TestSitewide:
     impact, one metric at a time."""
 
     @pytest.mark.integration
+    def test_sitewide_takes_metric_keyword(self, pricing_site_noise_con):
+        analysis = make_analysis_like(
+            Analysis(
+                "pricing_tier_test",
+                definitions_path="examples/definitions/",
+                con=pricing_site_noise_con,
+            ),
+            [_REVENUE_PER_USER],
+            plan=_REVENUE_PER_USER_PLAN,
+        )
+        positional = analysis.sitewide("revenue_per_user")
+        keyword = analysis.sitewide(metric="revenue_per_user")
+        assert keyword == positional
+
+    @pytest.mark.integration
     def test_sum_metric_includes_non_exposed_site_noise(self, pricing_site_noise_con):
         """A MeanMetric(aggregation='sum') sitewide() reads the WHOLE
         site's purchase revenue in the window, not just enrolled units'

@@ -76,8 +76,8 @@ def test_effect_and_se_are_invariant_to_a_large_location_shift():
     The raw-sum wire format lost this entirely: sum(y**2) at mu=1e9 carries
     no within-cell dispersion at all.
     """
-    base = absorb_factor(_table(_offset_rows(0.0)), factor="country", control_group="control")
-    shifted = absorb_factor(_table(_offset_rows(1e9)), factor="country", control_group="control")
+    base = absorb_factor(_table(_offset_rows(0.0)), factor="country", control="control")
+    shifted = absorb_factor(_table(_offset_rows(1e9)), factor="country", control="control")
     assert shifted.effect == pytest.approx(base.effect, rel=1e-9)
     assert shifted.se == pytest.approx(base.se, rel=1e-9)
     # icc and the unadjusted SE are differences of mean-square terms, one
@@ -90,11 +90,11 @@ class TestHappyPath:
     @pytest.mark.filterwarnings(
         "ignore:factor .* levels survived absorption, below 40:RuntimeWarning"
     )
-    def test_matches_hand_built_absorb_one_way(self):
+    def test_absorb_factor_takes_control(self):
         """Pivoting the group_summary-shaped table must reproduce the
         parallel-array call to absorb_one_way exactly (levels sorted the
         same way the adapter sorts them: CA, MX, US by string)."""
-        result = absorb_factor(_table(_ROWS), factor="country", control_group="control")
+        result = absorb_factor(_table(_ROWS), factor="country", control="control")
         # Levels sorted by str(level): "CA" < "MX" < "US".
         n_c = [20.0, 5.0, 10.0]
         s_c = [40.0, 2.5, 10.0]
@@ -110,11 +110,11 @@ class TestHappyPath:
         "ignore:factor .* levels survived absorption, below 40:RuntimeWarning"
     )
     def test_arm_order_does_not_matter(self):
-        """control_group picks the control arm regardless of row order or
+        """control picks the control arm regardless of row order or
         which group_id happens to sort first."""
         rows = list(reversed(_ROWS))
-        result = absorb_factor(_table(rows), factor="country", control_group="control")
-        result2 = absorb_factor(_table(_ROWS), factor="country", control_group="control")
+        result = absorb_factor(_table(rows), factor="country", control="control")
+        result2 = absorb_factor(_table(_ROWS), factor="country", control="control")
         assert result.effect == pytest.approx(result2.effect)
 
 
@@ -124,7 +124,7 @@ class TestGuards:
 
         rows = [{k: v for k, v in r.items() if k != "cy2"} for r in _ROWS]
         with pytest.raises(InvalidRequestError) as exc_info:
-            absorb_factor(_table(rows), factor="country", control_group="control")
+            absorb_factor(_table(rows), factor="country", control="control")
         assert exc_info.value.code == "absorption.summary_missing_columns"
         assert exc_info.value.context["missing"] == ("cy2",)
 
@@ -132,14 +132,14 @@ class TestGuards:
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            absorb_factor(object(), factor="country", control_group="control")  # ty: ignore[invalid-argument-type]
+            absorb_factor(object(), factor="country", control="control")  # ty: ignore[invalid-argument-type]
         assert exc_info.value.code == "absorption.summary_eager_dataframe"
 
     def test_control_group_absent_raises(self):
         from increment.errors import InvalidRequestError
 
         with pytest.raises(InvalidRequestError) as exc_info:
-            absorb_factor(_table(_ROWS), factor="country", control_group="nonexistent")
+            absorb_factor(_table(_ROWS), factor="country", control="nonexistent")
         assert exc_info.value.code == "absorption.control_group_present"
         assert exc_info.value.context["control_group"] == "nonexistent"
 
@@ -148,7 +148,7 @@ class TestGuards:
 
         rows = _ROWS + [_cell("US", "treatment_b", 8, 12.0, 24.0)]
         with pytest.raises(InvalidRequestError) as exc_info:
-            absorb_factor(_table(rows), factor="country", control_group="control")
+            absorb_factor(_table(rows), factor="country", control="control")
         assert exc_info.value.code == "absorption.absorb_factor_needs"
 
     def test_duplicate_level_arm_rows_refused(self):
@@ -160,7 +160,7 @@ class TestGuards:
 
         rows = _ROWS + [_cell("US", "treatment", 12, 180.0, 3600.0)]
         with pytest.raises(InvalidRequestError) as exc_info:
-            absorb_factor(_table(rows), factor="country", control_group="control")
+            absorb_factor(_table(rows), factor="country", control="control")
         assert exc_info.value.code == "absorption.summary_duplicate_rows"
         assert (
             "US" in exc_info.value.context["named"]  # ty: ignore[unsupported-operator]
@@ -175,7 +175,7 @@ class TestLevelCountGuard:
 
     def test_few_levels_warns_of_sandwich_fragility(self):
         with pytest.warns(IncrementRuntimeWarning) as rec:
-            absorb_factor(_table(_offset_rows(0.0)), factor="country", control_group="control")
+            absorb_factor(_table(_offset_rows(0.0)), factor="country", control="control")
         assert "absorption.factor_levels_below_sandwich_floor" in warning_codes(rec)
 
     def test_forty_levels_does_not_warn(self):
@@ -183,11 +183,11 @@ class TestLevelCountGuard:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            absorb_factor(_table(_many_level_rows(40)), factor="country", control_group="control")
+            absorb_factor(_table(_many_level_rows(40)), factor="country", control="control")
 
     def test_thirty_nine_levels_warns(self):
         with pytest.warns(IncrementRuntimeWarning) as rec:
-            absorb_factor(_table(_many_level_rows(39)), factor="country", control_group="control")
+            absorb_factor(_table(_many_level_rows(39)), factor="country", control="control")
         assert "absorption.factor_levels_below_sandwich_floor" in warning_codes(rec)
 
 
@@ -197,7 +197,7 @@ class TestLevelPresentInOnlyOneArm:
     )
     def test_level_missing_from_one_arm_treated_as_zero_cell(self):
         rows = _ROWS + [_cell("BR", "control", 4, 4.0, 8.0)]
-        result = absorb_factor(_table(rows), factor="country", control_group="control")
+        result = absorb_factor(_table(rows), factor="country", control="control")
         # Levels sorted by str(level): "BR" < "CA" < "MX" < "US".
         n_c = [4.0, 20.0, 5.0, 10.0]
         s_c = [4.0, 40.0, 2.5, 10.0]
