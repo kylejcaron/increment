@@ -23,6 +23,7 @@ from increment.breakout.estimates import LiftEstimates
 from increment.errors import (
     CapabilityError,
     DefinitionError,
+    IncrementWarning,
     InvalidRequestError,
     UnsupportedRequestError,
 )
@@ -294,9 +295,14 @@ def test_run_plain_cuped_methods_have_unique_to_frame_rows():
             )
         ],
     )
-    results = analysis.run(
-        decision_method=Method(name="plain"),
-        sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+    with pytest.warns(IncrementWarning) as caught:
+        results = analysis.run(
+            decision_method=Method(name="plain"),
+            sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+        )
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
     )
 
     rows = cast(pd.DataFrame, results.to_frame(backend="pandas"))

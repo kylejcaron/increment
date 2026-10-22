@@ -491,11 +491,14 @@ covers precedence and the dataframe equivalent,
     overrides `decision_method`/`sensitivity_methods`/`prior` for that one metric
     only:
 
-    A call-wide role-aware `run(decision_method=..., sensitivity_methods=...)`/`run(prior=...)` still wins over a
+    A call-wide role-aware `run(decision_method=..., sensitivity_methods=...)`/`run(prior=...)` takes precedence over a
     declared binding for every metric it names -- the binding only fills in
-    when the call leaves that field unset. This precedence is per-metric,
-    independently: one `run()` call may dispatch several metrics under
-    different adjustment sets and different priors at once.
+    when the call leaves that field unset. A differing override of a metric's
+    non-default declared value emits one warning for that setting per `run()`;
+    matching overrides and overrides of undeclared defaults do not warn.
+    This precedence is per-metric, independently: one `run()` call may
+    dispatch several metrics under different adjustment sets and different
+    priors at once.
 
 ## Randomization grain vs analysis grain
 

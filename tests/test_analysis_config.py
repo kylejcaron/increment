@@ -20,7 +20,7 @@ import pytest
 from increment import Analysis
 from increment._analysis_config import select_metrics
 from increment.decision import ArmDecisionProcedure
-from increment.errors import InvalidRequestError
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.frame import MetricSpec, from_unit_summary
@@ -35,6 +35,7 @@ from increment.semantics.models import (
     MethodSpec,
     NormalPriorSpec,
 )
+from tests.warning_codes import warning_codes
 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
@@ -488,19 +489,25 @@ def test_prior_overrides_inherit_clear_replace_without_mutating_declaration():
         lift = row.require_lift()
         return lift.value, lift.lb, lift.ub
 
+    def override_prior(value):
+        with pytest.warns(IncrementWarning) as caught:
+            report = declared.run(prior=value)
+        assert warning_codes(caught) == ["analysis.run.override_replaces_declared"]
+        return report
+
     inherited = interval(declared.run())
-    cleared = interval(declared.run(prior=None))
-    replaced = interval(declared.run(prior=replacement))
+    cleared = interval(override_prior(None))
+    replaced = interval(override_prior(replacement))
     assert inherited == pytest.approx(cleared)
     assert inherited == pytest.approx(interval(unshrunk.run()))
     assert replaced == pytest.approx(inherited)
     [inherited_row] = lift_rows(declared.run())
-    [replaced_row] = lift_rows(declared.run(prior=replacement))
+    [replaced_row] = lift_rows(override_prior(replacement))
     assert inherited_row.posterior_available
     assert replaced_row.posterior_available
     assert inherited_row.posterior_estimate != pytest.approx(inherited_row.require_lift().value)
     assert replaced_row.posterior_estimate != pytest.approx(replaced_row.require_lift().value)
-    [cleared_row] = lift_rows(declared.run(prior=None))
+    [cleared_row] = lift_rows(override_prior(None))
     assert not cleared_row.posterior_available
     assert cleared_row.posterior_estimate is None
     assert interval(declared.run()) == pytest.approx(inherited)

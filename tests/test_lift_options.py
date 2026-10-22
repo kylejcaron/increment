@@ -1,9 +1,11 @@
 """Call-time lift option overrides as they reach run_daily_lift's rows."""
 
+import warnings
+
 import pytest
 
-from increment import Analysis, AnalysisPlan
-from increment.errors import InvalidRequestError
+from increment import Analysis, AnalysisPlan, MetricSpec, Normal
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.engine import Method
 from increment.estimation.priors import StudentTPrior
 
@@ -17,6 +19,7 @@ def _panel_analysis(**overrides):
             "group": "control" if i % 2 == 0 else "treat",
             "ds": "2025-01-01",
             "y": float(i % 3) + 1.0 + (0.5 if i % 2 else 0.0),
+            "z": float(i % 4) + 2.0 + (0.5 if i % 2 else 0.0),
         }
         for i in range(12)
     ]
@@ -26,7 +29,7 @@ def _panel_analysis(**overrides):
         group="group",
         date="ds",
         control="control",
-        metrics={"y": "mean"},
+        metrics=overrides.pop("metric_specs", {"y": "mean"}),
         **overrides,
     )
 
@@ -61,6 +64,103 @@ def test_explicit_methods_stamp_decision_and_sensitivity_roles():
         ("dec", "decision"),
         ("sens", "sensitivity"),
     }
+
+
+def test_run_warns_once_per_setting_when_override_replaces_declaration():
+    declared_decision = Method(name="declared")
+    declared_sensitivity = Method(name="declared-sensitivity")
+    declared_prior = Normal(mu=0.0, sigma=0.1)
+    metrics = [
+        MetricSpec(
+            name=name,
+            type="mean",
+            decision_method=declared_decision,
+            sensitivity_methods=(declared_sensitivity,),
+            prior=declared_prior,
+        )
+        for name in ("y", "z")
+    ]
+    analysis = _panel_analysis(metric_specs=metrics)
+
+    with pytest.warns(IncrementWarning) as caught:
+        rows = analysis.run(
+            decision_method=Method(name="override"),
+            sensitivity_methods=[Method(name="override-sensitivity")],
+            prior=StudentTPrior(nu=4.0, scale=0.05),
+        )
+
+    warnings = [record.message for record in caught if isinstance(record.message, IncrementWarning)]
+    assert [warning.code for warning in warnings] == [
+        "analysis.run.override_replaces_declared",
+        "analysis.run.override_replaces_declared",
+        "analysis.run.override_replaces_declared",
+    ]
+    assert {warning.context["setting"] for warning in warnings} == {
+        "decision_method",
+        "sensitivity_methods",
+        "prior",
+    }
+    assert all(warning.context["metrics"] == ("y", "z") for warning in warnings)
+    by_setting = {warning.context["setting"]: warning for warning in warnings}
+    assert by_setting["decision_method"].context["declared"] == (
+        ("y", declared_decision),
+        ("z", declared_decision),
+    )
+    assert by_setting["decision_method"].context["override"] == Method(name="override")
+    assert by_setting["sensitivity_methods"].context["override"] == (
+        Method(name="override-sensitivity"),
+    )
+    assert by_setting["prior"].context["declared"] == (
+        ("y", declared_prior),
+        ("z", declared_prior),
+    )
+    assert all(row.prior_spec == StudentTPrior(nu=4.0, scale=0.05) for row in rows)
+    assert {(row.metric, row.method, row.method_role) for row in rows} == {
+        ("y", "override", "decision"),
+        ("y", "override-sensitivity", "sensitivity"),
+        ("z", "override", "decision"),
+        ("z", "override-sensitivity", "sensitivity"),
+    }
+
+
+def test_run_does_not_warn_when_override_matches_or_nothing_declared():
+    declared = Method(name="declared")
+    analysis = _panel_analysis(
+        metric_specs=[
+            MetricSpec(name="y", type="mean", decision_method=declared),
+            MetricSpec(name="z", type="mean"),
+        ]
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", IncrementWarning)
+        rows = analysis.run(decision_method=declared)
+    overrides = [
+        record.message
+        for record in caught
+        if getattr(record.message, "code", None) == "analysis.run.override_replaces_declared"
+    ]
+    assert overrides == []
+    assert {row.method for row in rows} == {"declared"}
+
+
+def test_explicit_prior_none_override_is_reported():
+    analysis = _panel_analysis(
+        metric_specs=[MetricSpec(name="y", type="mean", prior=Normal(mu=0.0, sigma=0.1))]
+    )
+
+    with pytest.warns(IncrementWarning) as caught:
+        rows = analysis.run(prior=None)
+    overrides = [
+        record.message
+        for record in caught
+        if isinstance(record.message, IncrementWarning)
+        and record.message.code == "analysis.run.override_replaces_declared"
+    ]
+    assert len(overrides) == 1
+    assert overrides[0].context["setting"] == "prior"
+    assert overrides[0].context["metrics"] == ("y",)
+    assert all(row.posterior_available is None for row in rows)
 
 
 def test_decision_method_override_wins_over_the_unadjusted_default():

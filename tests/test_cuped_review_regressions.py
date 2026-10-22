@@ -8,6 +8,7 @@ import pytest
 from increment import Analysis, AnalysisPlan, Method, MetricSpec
 from increment._source_types import MomentSource
 from increment.breakout.estimates import BreakoutEstimate
+from increment.errors import IncrementWarning
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
@@ -66,18 +67,23 @@ def test_failed_linear_sensitivity_does_not_break_ordinary_secondary_fcr() -> No
         _rows(unsupported=True),
         plan=AnalysisPlan(q=0.2, secondaries=["outcome"]),
     )
-    result = cast(
-        list[LiftEstimate],
-        list(
-            analysis.run(
-                decision_method=Method(name="plain"),
-                sensitivity_methods=[
-                    Method.cuped_multicovariate(
-                        name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
-                    )
-                ],
-            )
-        ),
+    with pytest.warns(IncrementWarning) as caught:
+        result = cast(
+            list[LiftEstimate],
+            list(
+                analysis.run(
+                    decision_method=Method(name="plain"),
+                    sensitivity_methods=[
+                        Method.cuped_multicovariate(
+                            name="linear", covariates=CupedCovariate(name="pre", kind="categorical")
+                        )
+                    ],
+                )
+            ),
+        )
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
     )
     by_method = {row.method: row for row in result}
     assert by_method["plain"].lift is not None
@@ -123,9 +129,14 @@ def test_linear_methods_with_same_construction_share_one_fit(
         ),
     ]
 
-    result = cast(
-        list[LiftEstimate],
-        list(analysis.run(decision_method=methods[0], sensitivity_methods=[methods[1]])),
+    with pytest.warns(IncrementWarning) as caught:
+        result = cast(
+            list[LiftEstimate],
+            list(analysis.run(decision_method=methods[0], sensitivity_methods=[methods[1]])),
+        )
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
     )
 
     assert {row.method for row in result} == {method.name for method in methods}

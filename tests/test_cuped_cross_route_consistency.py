@@ -4,7 +4,7 @@ import pyarrow as pa
 import pytest
 
 from increment import Analysis, Method, MetricSpec
-from increment.errors import CodedError
+from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from tests.test_cuped_route_evidence import _records, _scalar
 
@@ -135,13 +135,27 @@ def _rebound_linear(binding):
 @pytest.mark.integration
 @pytest.mark.parametrize("binding", ["property", "measure"])
 def test_native_multicovariate_override_acquires_effective_binding(tmp_path, binding):
+    import warnings
+
     from increment.semantics.models import CupedCovariate
 
     path, con, table = _linear_binding_case(tmp_path)
     requested = _rebound_linear(binding)
     try:
         with Analysis.from_definitions("cov_test", path, con) as native:
-            (actual,) = native.run(decision_method=requested, sensitivity_methods=())
+            with pytest.warns(IncrementWarning) as caught:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"fetch_arrow_table\(\) is deprecated",
+                    category=DeprecationWarning,
+                )
+                (actual,) = native.run(decision_method=requested, sensitivity_methods=())
+            assert {
+                getattr(warning.message, "context", {})["setting"]
+                for warning in caught
+                if getattr(warning.message, "code", None)
+                == "analysis.run.override_replaces_declared"
+            } == {"decision_method"}
         with Analysis.from_unit_summary(
             table,
             unit="unit",
@@ -500,7 +514,12 @@ def test_portable_moments_enforce_recorded_scalar_preparation(tmp_path, monkeypa
             if override == "matching_renamed"
             else original
         )
-        (actual,) = restored.run(decision_method=requested, sensitivity_methods=())
+        with pytest.warns(IncrementWarning) as caught:
+            (actual,) = restored.run(decision_method=requested, sensitivity_methods=())
+        assert any(
+            getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+            for warning in caught
+        )
         assert isinstance(actual, LiftEstimate) and isinstance(expected, LiftEstimate)
         assert actual.require_lift().value == pytest.approx(
             expected.require_lift().value, rel=1e-10
@@ -622,7 +641,15 @@ def test_sequential_subset_retains_unselected_declared_family_methods(override):
         if override
         else {}
     )
-    subset = analysis.run(metrics=["outcome"], **kwargs)
+    if override:
+        with pytest.warns(IncrementWarning) as caught:
+            subset = analysis.run(metrics=["outcome"], **kwargs)
+        assert {getattr(warning.message, "context", {})["setting"] for warning in caught} == {
+            "decision_method",
+            "sensitivity_methods",
+        }
+    else:
+        subset = analysis.run(metrics=["outcome"], **kwargs)
     assert full.metadata is not None and subset.metadata is not None
 
     def methods_in_families(result, name):
@@ -776,6 +803,23 @@ def test_open_ended_snapshot_uses_connection_sql_dialect_for_backend_override(tm
         con.disconnect()
 
 
+def _run_with_override_warning(analysis, **kwargs):
+    import warnings
+
+    with pytest.warns(IncrementWarning) as caught:
+        warnings.filterwarnings(
+            "ignore",
+            message=r"fetch_arrow_table\(\) is deprecated",
+            category=DeprecationWarning,
+        )
+        rows = analysis.run(**kwargs)
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
+    )
+    return rows
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monkeypatch):
@@ -873,9 +917,11 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
     try:
         with Analysis.from_definitions("cov_test", path, con) as native:
             selected = ["revenue"]
+
             baseline = next(
                 iter(
-                    native.run(
+                    _run_with_override_warning(
+                        native,
                         metrics=selected,
                         decision_method=Method.unadjusted(),
                         sensitivity_methods=(),
@@ -884,14 +930,16 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
             )
             full_run = {
                 row.metric: row
-                for row in native.run(
+                for row in _run_with_override_warning(
+                    native,
                     decision_method=Method.unadjusted(),
                     sensitivity_methods=(),
                 )
             }
             with_companion = next(
                 iter(
-                    native.run(
+                    _run_with_override_warning(
+                        native,
                         metrics=selected,
                         decision_method=Method.unadjusted(),
                         sensitivity_methods=(methods[0],),
@@ -925,7 +973,8 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
             def read_pinned(isolated):
                 return next(
                     iter(
-                        isolated.run(
+                        _run_with_override_warning(
+                            isolated,
                             metrics=selected,
                             decision_method=Method.unadjusted(),
                             sensitivity_methods=(),
@@ -936,7 +985,8 @@ def test_native_unadjusted_companion_uses_shared_declared_horizon(tmp_path, monk
             captured = native.dashboard_snapshot(read_pinned, metrics=native.metrics)
             after_capture = next(
                 iter(
-                    native.run(
+                    _run_with_override_warning(
+                        native,
                         metrics=selected,
                         decision_method=Method.unadjusted(),
                         sensitivity_methods=(),

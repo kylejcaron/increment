@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from increment.analysis import Analysis
-from increment.errors import DefinitionError, InvalidRequestError
+from increment.errors import DefinitionError, IncrementWarning, InvalidRequestError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
@@ -602,7 +602,12 @@ def test_method_override_replaces_acquired_scalar_covariate_and_clears_sensitivi
             )
         ],
     )
-    overridden = analysis.run(decision_method=override, sensitivity_methods=())[0]
+    with pytest.warns(IncrementWarning) as caught:
+        overridden = analysis.run(decision_method=override, sensitivity_methods=())[0]
+    assert {getattr(record.message, "context", {})["setting"] for record in caught} == {
+        "decision_method",
+        "sensitivity_methods",
+    }
     reference = Analysis.from_unit_summary(
         frame,
         unit="unit",

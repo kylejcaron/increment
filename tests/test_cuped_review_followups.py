@@ -758,7 +758,12 @@ def test_scalar_missing_refusal_is_rechecked_for_call_time_override():
         covariates=CupedCovariate(name="history", kind="continuous", missing="refuse"),
     )
 
-    (row,) = analysis.run(decision_method=override)
+    with pytest.warns(IncrementWarning) as caught:
+        (row,) = analysis.run(decision_method=override)
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
+    )
     assert isinstance(row, LiftEstimate)
     assert row.lift is None
     assert row.method == override.name and row.method_role == "decision"

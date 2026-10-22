@@ -292,6 +292,15 @@ _register_warning(
     ),
 )
 
+_register_warning(
+    "analysis.run.override_replaces_declared",
+    IncrementWarning,
+    lambda *, setting, metrics, declared, override: (
+        f"run({setting}=...) replaces the declared {setting} for metrics "
+        f"{metrics!r}; declared values are {declared!r}, override is {override!r}."
+    ),
+)
+
 
 # Shared by frame panels and warehouse artifacts: the same unit_frame hazard.
 FRAME_UNIT_FRAME_PANEL = RefusalSpec(

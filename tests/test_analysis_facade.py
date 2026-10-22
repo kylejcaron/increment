@@ -355,16 +355,19 @@ def test_analysis_run_native_randomized_forwards_prior(seeded_con, seeded_defs):
             for r in _lift_rows(analysis.run(decision_method=Method(name="unadjusted")))
             if r.metric == "purchase_rate"
         )
-        shrunk = next(
-            r
-            for r in _lift_rows(
-                analysis.run(
-                    prior=Normal(mu=0.0, sigma=0.01),
-                    decision_method=Method(name="unadjusted"),
+        with pytest.warns(IncrementWarning) as caught:
+            with _ignore_ibis_deprecation():
+                shrunk_rows = _lift_rows(
+                    analysis.run(
+                        prior=Normal(mu=0.0, sigma=0.01),
+                        decision_method=Method(name="unadjusted"),
+                    )
                 )
-            )
-            if r.metric == "purchase_rate"
+        assert any(
+            getattr(record.message, "code", None) == "analysis.run.override_replaces_declared"
+            for record in caught
         )
+        shrunk = next(r for r in shrunk_rows if r.metric == "purchase_rate")
 
     assert flat.require_lift().value > 0.0
     assert shrunk.require_lift() == flat.require_lift()
@@ -1417,7 +1420,9 @@ def test_run_call_wide_prior_overrides_declared_per_metric_prior(informative_pri
         metrics=[MetricSpec(name="revenue", prior=Normal(mu=0.0, sigma=100.0))],
     )
     declared = _lift_rows(analysis.run())[0]
-    overridden = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
+    with pytest.warns(IncrementWarning) as caught:
+        overridden = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
+    assert "analysis.run.override_replaces_declared" in warning_codes(caught)
 
     assert overridden.require_lift() == declared.require_lift()
     assert overridden.posterior_estimate != pytest.approx(declared.require_lift().value), (
@@ -2880,3 +2885,45 @@ def test_unit_summary_to_frame_defaults_to_pandas_input_backend():
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_compliance_only_run_does_not_warn_about_unused_outcome_overrides():
+    import pandas as pd
+
+    from increment.estimation.inference import Normal
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    frame = pd.DataFrame(
+        {
+            "user_id": [f"u{i:02d}" for i in range(8)],
+            "variant": ["control"] * 4 + ["treatment"] * 4,
+            "revenue": [10.0, 12.0, 9.0, 20.0, 25.0, 30.0, 28.0, 15.0],
+            "clicked": [0, 0, 0, 1, 1, 1, 1, 0],
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="revenue", type="mean", prior=Normal(mu=0.0, sigma=0.1))],
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only moves revenue via uptake"
+            ),
+            min_first_stage_z=0.5,
+        ),
+        uptake="clicked",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = analysis.run(estimands=("compliance",), prior=None)
+
+    assert {row.estimand for row in rows} == {"compliance"}
+    assert not [
+        warning
+        for warning in caught
+        if getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+    ]
