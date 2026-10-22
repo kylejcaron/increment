@@ -302,10 +302,17 @@ FRAME_UNIT_FRAME_PANEL = RefusalSpec(
     ),
 )
 
+_UNSUPPORTED_FRAME_INPUT = RefusalSpec(
+    "source.frame.input_type",
+    InvalidRequestError,
+    template="{constructor} does not accept {input_type} as an eager frame. {route}",
+)
+
 _REFUSALS = refusals(
     InvalidRequestError,
     {
         "frame.validation.metric_covariate_impute_all_null": _METRIC_COVARIATE_IMPUTE_ALL_NULL,
+        "source.frame.input_type": _UNSUPPORTED_FRAME_INPUT,
         "frame.validation.metric_covariate_column": _METRIC_COVARIATE_MISSING,
         "frame.validation.design_control_group": "design.control_group={control_group!r} disagrees with control={control!r} -- one control, declared once",
         "frame.validation.dtype_disagree_day": "{ds_name!r} (dtype {ds_dtype}) and {anchor_name!r} (dtype {anchor_dtype}) disagree on day-axis kind -- one is an explicit numeric day index and the other is a calendar date/datetime. Declare both the same kind.",
@@ -343,6 +350,34 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def require_eager_frame(frame: object, *, constructor: str) -> None:
+    """Refuse unsupported frame kinds without reading supported frame data."""
+    frame_type = type(frame)
+    module = frame_type.__module__
+    input_type = frame_type.__name__
+    if module.startswith("ibis"):
+        refuse(
+            _UNSUPPORTED_FRAME_INPUT,
+            constructor=constructor,
+            input_type=input_type,
+            route="Analysis.from_definitions",
+        )
+    if input_type == "LazyFrame" and module.startswith("polars"):
+        refuse(
+            _UNSUPPORTED_FRAME_INPUT,
+            constructor=constructor,
+            input_type=input_type,
+            route=".collect()",
+        )
+    if issubclass(frame_type, list):
+        refuse(
+            _UNSUPPORTED_FRAME_INPUT,
+            constructor=constructor,
+            input_type=input_type,
+            route="a supported eager dataframe, such as pandas, Polars, or Arrow",
+        )
 
 
 def canonical_control_for_frame(frame: Any, group: str, control: object) -> str:

@@ -84,6 +84,7 @@ from increment._frame_validation import (  # noqa: F401
     canonical_control_for_frame,
     canonical_design_for_frame,
     refuse_observational_quantile,
+    require_eager_frame,
 )
 from increment._metric_specs import (
     CupedCovariate,
@@ -835,6 +836,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         exposure_date: str | None = None,
     ) -> FrameTotalsSource:
         """Build a source from a one-row-per-unit dataframe. See :func:`from_unit_summary`."""
+        require_eager_frame(frame, constructor="from_unit_summary")
         specs = _apply_plan_methods(_coerce_source_metrics(metrics, design=design), plan)
         _reject_windowed_specs(specs)
         synthesised_metrics = [synthesise_metric(s) for s in specs]
@@ -1049,7 +1051,9 @@ def from_unit_summary(  # noqa: PLR0913
     Parameters
     ----------
     frame : IntoDataFrame
-        A narwhals-supported eager frame with one row per unit.
+        A narwhals-supported eager frame with one row per unit. A lazy Polars frame
+        must be collected first; ibis tables should use
+        :meth:`Analysis.from_definitions`.
     unit, group : str
         Columns identifying the unit and its variant label.
     control : str
@@ -2098,6 +2102,7 @@ class FramePanelSource(SequentialSourceMixin):
         _summary_reducer: bool = False,
     ) -> FramePanelSource:
         """Build a source from a one-row-per-unit-per-day dataframe. See :func:`from_unit_panel`."""
+        require_eager_frame(frame, constructor="from_unit_panel")
         specs = _apply_plan_methods(_coerce_source_metrics(metrics, design=design), plan)
         if isinstance(design, Encouragement):
             retention = [spec.name for spec in specs if spec.type == "retention"]
@@ -2346,7 +2351,9 @@ def from_unit_panel(  # noqa: PLR0913
     Parameters
     ----------
     frame : IntoDataFrame
-        Eager frame with at most one row per (*unit*, *date*).
+        Eager frame with at most one row per (*unit*, *date*). A lazy Polars frame
+        must be collected first; ibis tables should use
+        :meth:`Analysis.from_definitions`.
     unit, group, control, cluster : str
         As :func:`from_unit_summary`.
     date : str

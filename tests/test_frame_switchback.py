@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import polars as pl
@@ -32,6 +32,79 @@ from tests.capability_consumers_scalar import (
     UNBOUNDED_RETENTION_SEQUENTIAL,
     refused,
 )
+
+
+def test_frame_input_type_refusals_name_the_route(monkeypatch):
+    import ibis
+
+    def forbidden_collect(self, *args, **kwargs):
+        raise AssertionError("LazyFrame must not be collected")
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", forbidden_collect)
+
+    cases: tuple[tuple[Any, str, str], ...] = (
+        (
+            ibis.memtable(
+                {
+                    "unit": ["u"],
+                    "cycle": [0],
+                    "period": ["control"],
+                    "step": [0],
+                    "group": ["control"],
+                    "value": [1],
+                }
+            ),
+            "Table",
+            "Analysis.from_definitions",
+        ),
+        (
+            pl.DataFrame(
+                {
+                    "unit": ["u"],
+                    "cycle": [0],
+                    "period": ["control"],
+                    "step": [0],
+                    "group": ["control"],
+                    "value": [1],
+                }
+            ).lazy(),
+            "LazyFrame",
+            ".collect()",
+        ),
+        (
+            [
+                {
+                    "unit": "u",
+                    "cycle": 0,
+                    "period": "control",
+                    "step": 0,
+                    "group": "control",
+                    "value": 1,
+                }
+            ],
+            "list",
+            "a supported eager dataframe, such as pandas, Polars, or Arrow",
+        ),
+    )
+    for frame, input_type, route in cases:
+        with pytest.raises(InvalidRequestError) as caught:
+            from_switchback_panel(
+                cast(Any, frame),
+                unit="unit",
+                cycle="cycle",
+                period="period",
+                step="step",
+                group="group",
+                metrics={"value": "mean"},
+                identification=_identification(),
+                assignment=_assignment(),
+            )
+        assert caught.value.code == "source.frame.input_type"
+        assert caught.value.context == {
+            "constructor": "from_switchback_panel",
+            "input_type": input_type,
+            "route": route,
+        }
 
 
 def test_exact_shared_block_sums_preserve_signed_binary_values():
@@ -151,9 +224,9 @@ def test_invalid_envelope_identity_refuses_before_frame_access(monkeypatch, mism
         reference = reference.model_copy(update={"metric": "unknown"})
 
     def fail(*args, **kwargs):
-        pytest.fail("reference identity must be checked before frame access")
+        pytest.fail("reference identity must be checked before column access")
 
-    monkeypatch.setattr("increment.switchback.nw.from_native", fail)
+    monkeypatch.setattr("increment._frame_validation._validate_columns", fail)
     with pytest.raises(InvalidRequestError) as caught:
         from_switchback_panel(
             pl.DataFrame(),

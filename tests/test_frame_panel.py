@@ -34,6 +34,55 @@ from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests.warning_codes import warning_codes
 
+
+def test_frame_input_type_refusals_name_the_route(monkeypatch):
+    import ibis
+    import polars as pl
+
+    cases: tuple[tuple[Any, str, str], ...] = (
+        (
+            ibis.memtable(
+                {"user_id": ["u"], "variant": ["control"], "date": ["2026-01-01"], "value": [1]}
+            ),
+            "Table",
+            "Analysis.from_definitions",
+        ),
+        (
+            pl.DataFrame(
+                {"user_id": ["u"], "variant": ["control"], "date": ["2026-01-01"], "value": [1]}
+            ).lazy(),
+            "LazyFrame",
+            ".collect()",
+        ),
+        (
+            [{"user_id": "u", "variant": "control", "date": "2026-01-01", "value": 1}],
+            "list",
+            "a supported eager dataframe, such as pandas, Polars, or Arrow",
+        ),
+    )
+
+    def forbidden_collect(self, *args, **kwargs):
+        raise AssertionError("LazyFrame must not be collected")
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", forbidden_collect)
+    for frame, input_type, route in cases:
+        with pytest.raises(InvalidRequestError) as caught:
+            from_unit_panel(
+                cast(Any, frame),
+                unit="user_id",
+                group="variant",
+                date="date",
+                control="control",
+                metrics={"value": "mean"},
+            )
+        assert caught.value.code == "source.frame.input_type"
+        assert caught.value.context == {
+            "constructor": "from_unit_panel",
+            "input_type": input_type,
+            "route": route,
+        }
+
+
 _DESIGN = Randomized(
     control_group="control",
     allocation={"control": 0.5, "treatment": 0.5},
