@@ -187,6 +187,72 @@ def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
     assert integrity.code == "integrity.switchback_assignment_law"
 
 
+def test_switchback_metric_names_match_explicit_specs() -> None:
+    rows = _rows()
+    inferred = Analysis.from_switchback_panel(
+        pl.DataFrame(rows),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics=["mean", "converted"],
+        identification=_identification(),
+        assignment=_assignment(),
+    )
+    explicit = Analysis.from_switchback_panel(
+        pl.DataFrame(rows),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics=[
+            MetricSpec(name="mean", type="mean"),
+            MetricSpec(name="converted", type="conversion"),
+        ],
+        identification=_identification(),
+        assignment=_assignment(),
+    )
+    try:
+        by_metric_inferred = {row.metric: row for row in inferred.run()}
+        by_metric_explicit = {row.metric: row for row in explicit.run()}
+        assert by_metric_inferred.keys() == by_metric_explicit.keys()
+        for metric, result in by_metric_inferred.items():
+            expected = by_metric_explicit[metric]
+            assert isinstance(result, ContrastResult)
+            assert isinstance(expected, ContrastResult)
+            for field in ("value", "lb", "ub"):
+                assert getattr(result.estimate, field) == pytest.approx(
+                    getattr(expected.estimate, field)
+                )
+    finally:
+        inferred.close()
+        explicit.close()
+
+
+def test_switchback_integer_metric_name_requires_explicit_type() -> None:
+    rows = [dict(row, orders=int(cast(float, row["mean"]))) for row in _rows()]
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_switchback_panel(
+            pl.DataFrame(rows),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics=["orders"],
+            identification=_identification(),
+            assignment=_assignment(),
+        )
+    assert raised.value.code == "frame.metrics.type_required"
+    assert raised.value.context == {
+        "metric": "orders",
+        "dtype": "Int64",
+        "options": ("mean", "conversion"),
+    }
+
+
 def test_artifact_context_refuses_switchback_source_with_method_context():
     analysis = Analysis.from_switchback_panel(
         pl.DataFrame(_rows()),
