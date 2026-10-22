@@ -39,6 +39,7 @@ from increment.semantics.models import (
     MeanMetric,
     RetentionMetric,
 )
+from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import held_source, make_analysis, make_analysis_like
 from tests.sequential_cases import registration
@@ -47,6 +48,7 @@ from tests.test_unit_day_artifact_facade import _extensions, _published
 from tests.warning_codes import warning_codes
 
 
+@allow_declared_overrides
 def test_analysis_repr_and_run_signature_are_readable_without_changing_unset_identity():
     import inspect
 
