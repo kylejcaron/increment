@@ -281,6 +281,7 @@ def test_native_breakout_uses_callwide_methods_not_declared_methods(con, correct
     assert {row.method for row in explicit} == {"call-wide"}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
 def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correction):
     from increment.estimation import Normal

@@ -235,6 +235,7 @@ def test_breakout_null_and_reserved_label_stay_distinct(route, tmp_path):
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("unsupported_count", [1, 60])
 def test_breakout_fit_uses_admitted_arm_roster(unsupported_count, tmp_path):
     rows = []

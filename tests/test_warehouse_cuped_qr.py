@@ -105,7 +105,7 @@ def test_qr_scratch_reuses_two_temp_relations_without_intermediate_drops(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("p", [1, 4, 20, 50])
+@pytest.mark.parametrize("p", [1, 4, 20, pytest.param(50, marks=pytest.mark.slow)])
 def test_duckdb_householder_factor_matches_numpy(p, tmp_path):
     from increment.query._cuped_qr import factor_design_relation
 
@@ -434,6 +434,7 @@ def test_duckdb_qr_unit_summary_preserves_leverage_refusal_witness(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
 def test_qr_unit_summary_statement_size_at_supported_p(dialect, tmp_path, monkeypatch):
@@ -857,6 +858,7 @@ def test_warehouse_inference_reductions_match_dense_oracle_and_local_fit(  # noq
         connection.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_warehouse_ratio_bm_reductions_match_local_components(tmp_path):  # noqa: PLR0915
     from increment.estimation.cuped import FitState, ProjectionSpec, fit_cuped_multicovariate
@@ -2386,6 +2388,7 @@ def test_unchanged_warehouse_qr_requests_keep_stable_identity():
     assert first.identity != changed.identity
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("denominator_scale", (1.0e-50, 1.0e-40, 1.0e-20))
 def test_qr_ratio_with_near_zero_denominators_matches_local_fit(denominator_scale, tmp_path):
@@ -2618,6 +2621,7 @@ def test_qr_encoder_routes_more_than_200_levels_with_coded_refusal():
         connection.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("invalid_arm", ("variant-b", "control"))
 def test_ratio_qr_withholds_nonpositive_arm_before_fit(invalid_arm, tmp_path):

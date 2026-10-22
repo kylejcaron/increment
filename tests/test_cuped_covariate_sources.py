@@ -87,6 +87,7 @@ def test_native_measure_covariate_is_scoped_before_assignment(tmp_path):
     assert rows["u1"] is None
 
 
+@pytest.mark.slow
 def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
     import datetime as dt
 
@@ -161,6 +162,7 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
     assert artifact_values == values
 
 
+@pytest.mark.slow
 def test_occurrence_only_count_measure_acquires_native_and_artifact(tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -537,6 +539,7 @@ def test_multiple_primary_artifact_binding_resolves_property_alias(tmp_path):
     assert rows
 
 
+@pytest.mark.slow
 def test_artifact_deduplicates_omitted_and_explicit_resolved_source(tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -572,6 +575,7 @@ def test_artifact_deduplicates_omitted_and_explicit_resolved_source(tmp_path):
     assert {row["unit_id"]: row["pre_tenure"] for row in rows} == tenure
 
 
+@pytest.mark.slow
 def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -667,6 +671,7 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
     assert {row["unit_id"]: row["pre_tenure"] for row in rows} == tenure
 
 
+@pytest.mark.slow
 def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -947,6 +952,7 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_path):
     import pyarrow as pa
     import pytest
@@ -1091,6 +1097,7 @@ def test_cuped_evidence_digest_accepts_infinities_without_rewriting_values():
     assert frame.get_column("covariate").to_list() == [float("inf"), float("-inf")]
 
 
+@pytest.mark.slow
 def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkeypatch):
     import pytest
 
@@ -1283,6 +1290,7 @@ def _scalar_native_case(tmp_path, *, bare=False, mixed=False):
     return path, con, methods, tenure, groups, revenue
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bare", [False, True])
 @pytest.mark.parametrize("mixed", [False, True])
 def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed):

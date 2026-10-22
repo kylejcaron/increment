@@ -337,6 +337,7 @@ def _secondary_family_cluster_defs() -> Definitions:
     )
 
 
+@pytest.mark.slow
 def test_clustered_secondary_family_selects_strict_subset_with_fcr_intervals():
     """A clustered declared-plan run with 4 in-family secondaries across 2
     treatment arms (8 (metric, arm) cells): `sec_a`'s unambiguous lift is
@@ -372,6 +373,7 @@ def test_clustered_secondary_family_selects_strict_subset_with_fcr_intervals():
             assert by_cell[(name, arm)].require_lift().alpha == pytest.approx(PLAN_ALPHA)
 
 
+@pytest.mark.slow
 def test_clustered_secondary_family_preserves_declaration_order(con):
     """Secondaries append AFTER every other role's rows internally (they
     run through the deferred family-selection pass appended once the
@@ -479,6 +481,7 @@ def test_clustered_secondary_family_preserves_declaration_order(con):
     }
 
 
+@pytest.mark.slow
 def test_clustered_secondary_discovery_parity_with_frame_path():
     """Same per-unit values, same 4 declared secondaries, engineered the
     same way as the cluster test above: one path runs `readouts.run` on
@@ -722,6 +725,7 @@ def _quantile_secondary_family_defs() -> Definitions:
     )
 
 
+@pytest.mark.slow
 def test_quantile_secondary_family_includes_prior_bound_sampling_member():
     """A declared prior does not exclude the quantile cell's sampling evidence."""
     con = ibis.duckdb.connect()

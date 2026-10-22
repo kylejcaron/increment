@@ -149,6 +149,7 @@ def test_binary_secondary_family_uses_e_bh_selection_at_q():
     assert {rows_by_metric[n].discovery for n in ("signups", "sessions")} == {True, False}
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_conversion_state_and_interval_agree_on_every_path(duck):
     check_path_parity(

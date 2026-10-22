@@ -360,6 +360,7 @@ def test_run_rejects_unidentifiable_estimand_on_native_randomized_path(con):
     assert raised.value.code == "readout.assignment.estimands"
 
 
+@pytest.mark.slow
 def test_run_itt_estimand_works_on_native_randomized_path(seeded_defs, seeded_con):
     """itt (the only estimand a Randomized design identifies) still works
     on the native path. Runs on the seeded warehouse: the 4-unit micro
@@ -845,6 +846,7 @@ def test_panel_and_summary_sql_compile_for_advertised_dialects(con, dialect):
     assert all(sql.strip() for sql in [*panel.values(), *summary.values()])
 
 
+@pytest.mark.slow
 def test_explicit_backend_overrides_connection_name(con):
     """An explicit ``backend=`` constructor argument reaches the SQL renderer:
     the emitted SQL is compiled for that dialect, not the connection's."""

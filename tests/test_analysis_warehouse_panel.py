@@ -28,6 +28,7 @@ def test_frame_sql_adapter_remains_distinct_from_warehouse_adoption() -> None:
     assert not callable(getattr(SqlPanelSource, "from_table", None))
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_artifact_open_is_the_adopted_panel_replacement() -> None:
     _connection, native, context, store = _native()

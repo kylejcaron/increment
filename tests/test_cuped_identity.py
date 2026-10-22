@@ -77,6 +77,9 @@ def _frame_readout(
     return factory(pa.Table.from_pylist(rows), **kwargs).run(estimands=("itt",))
 
 
+@pytest.mark.grid(
+    "Decision/companion evidence types are crossed with panel and role because identity preservation is independently required for each output family."
+)
 @pytest.mark.parametrize("panel", [False, True])
 @pytest.mark.parametrize("role", ["primary", "secondary"])
 @pytest.mark.parametrize(
@@ -207,6 +210,7 @@ def test_encouragement_decision_identity_ignores_companion_evidence(panel, role,
         )
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("route", ["native", "artifact"])
 @pytest.mark.parametrize("decision_kind", ["scalar", "mixed", "naive"])

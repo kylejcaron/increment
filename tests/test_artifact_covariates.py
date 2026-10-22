@@ -116,6 +116,7 @@ def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_
     assert rows["u0"] == units["u0"]["tenure"]
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_observational_property_wins_over_same_named_measure_binding_on_replay(tmp_path):
     defs_path, con, tenure, *_ = covariate_defs_and_con(tmp_path, observational=True)
@@ -146,6 +147,7 @@ def test_observational_property_wins_over_same_named_measure_binding_on_replay(t
     assert {row["unit_id"]: row["tenure"] for row in artifact_rows.to_pylist()} == expected
 
 
+@pytest.mark.slow
 def test_artifact_scalar_cuped_uses_named_property_covariate(tmp_path):
     defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=False)
     defs_path.write_text(
@@ -307,6 +309,7 @@ def test_numeric_covariate_wire_is_untouched_by_the_level_relation(tmp_path):
     assert UnitCovariateExtension.model_validate(payload).model_dump(mode="json") == payload
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("missing", ["zero", "impute", "refuse"])
 @pytest.mark.parametrize("null_value", ["null", "nan"])
 def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missing, null_value):
@@ -396,6 +399,7 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("mixed", [False, True])
 def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed):
     from increment.estimation.results import LiftEstimate
@@ -424,6 +428,7 @@ def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_artifact_implicit_and_named_scalar_families_match_standalone(tmp_path):
     import json
 
@@ -496,6 +501,7 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("missing", ["zero", "impute", "refuse"])
 def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path, missing):
     from increment import Method

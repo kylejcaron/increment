@@ -415,6 +415,7 @@ def _union_horizon_analysis(con, defs, *, store, metrics=None):
     return analysis
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_store_never_changes_the_numeric_answer_for_an_unbounded_avg_metric():
     """Regression: an unbounded (no ``window_days``) ``avg`` MeanMetric on

@@ -368,6 +368,7 @@ def _assert_breakout_rows_agree(native_rows: Any, artifact_rows: Any) -> None:
     assert {row.analysis_population for row in artifact_rows} == {"assigned", "triggered"}
 
 
+@pytest.mark.slow
 def test_representative_publication_matches_golden_manifest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -660,6 +661,7 @@ def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysi
         native.close()
 
 
+@pytest.mark.slow
 def test_dashboard_snapshot_refuses_an_artifact_backed_analysis_and_it_stays_usable() -> None:
     _con, _native_analysis, context, store, ref = _published()
     metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
@@ -687,6 +689,7 @@ def test_artifact_source_reports_closed_only_after_close() -> None:
     assert source.closed is True
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("closer", ["parent", "triggered"])
 def test_closing_either_view_of_a_snapshot_closes_both(tmp_path: Path, closer: str) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
@@ -707,6 +710,7 @@ def test_closing_either_view_of_a_snapshot_closes_both(tmp_path: Path, closer: s
     assert (parent.closed, triggered.closed) == (True, True)
 
 
+@pytest.mark.slow
 def test_public_extension_selection_uses_the_immutable_catalog() -> None:
     _con, native, context, store = _native()
     request = next(
@@ -748,6 +752,7 @@ def test_artifact_reader_and_source_openers_share_hydrated_contract() -> None:
         assert reader.breakouts == facade.breakouts == (request.property_name,)
 
 
+@pytest.mark.slow
 def test_refresh_preserves_artifact_identity_and_rejects_cross_context() -> None:
     _con, native, context, store, first = _published()
     second = native.publish_unit_day_artifact(store, refresh_of=first)
@@ -789,6 +794,7 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
 
 
 # Guards site-volume lookup from confusing a metric's logical name with its physical measure key.
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_serves_logical_metric_names(tmp_path: Path) -> None:
 
@@ -911,6 +917,7 @@ def test_duckdb_cuped_artifact_journey_uses_bounded_integrity_transfers(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_naive_exposure_and_trigger_timestamps_and_declared_covariate_are_warehouse_only(  # noqa: PLR0915
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1130,6 +1137,7 @@ def test_publication_accepts_integer_and_boolean_property_covariates(
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_adopted_run_warns_for_published_cuped_covariate(tmp_path: Path) -> None:
     import warnings
@@ -1327,6 +1335,7 @@ def test_dimension_extensions_are_left_joined_to_exposures(tmp_path: Path, as_of
 
 
 # Guards partial breakout extension coverage from refusing by name.
+@pytest.mark.slow
 def test_incomplete_breakout_coverage_refuses_before_reduction(tmp_path: Path) -> None:
     definitions = _definitions(
         tmp_path,
@@ -1346,6 +1355,7 @@ def test_incomplete_breakout_coverage_refuses_before_reduction(tmp_path: Path) -
 
 
 # Guards refused artifact opens from leaking the snapshot handle after context validation fails.
+@pytest.mark.slow
 def test_refused_open_releases_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     _con, native, context, store, ref = _published()
     bad_context = _expected_context("examples/definitions", "pricing_tier_test")
@@ -1409,6 +1419,7 @@ def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> N
     }
 
 
+@pytest.mark.slow
 def test_open_ended_experiment_omits_site_volume(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, open_ended=True)
     _con, native, context, store = _native(definitions=definitions)
@@ -1461,6 +1472,7 @@ def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) ->
     assert any(row["ref_x"] is not None for row in triggered_rows)
 
 
+@pytest.mark.slow
 def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_path: Path) -> None:
     from tests.test_analysis_trigger import _clustered_trigger_events, _defs_yaml_clustered
 
@@ -1512,6 +1524,7 @@ def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_pat
     native.close()
 
 
+@pytest.mark.slow
 def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal(
     tmp_path: Path,
 ) -> None:
@@ -1569,6 +1582,7 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_clustered_sitewide_supplies_assignment_counts(tmp_path: Path) -> None:
@@ -2161,6 +2175,7 @@ def test_triggered_assignment_count_publication_requires_snapshot_evidence_befor
         native.close()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Path) -> None:
     """Regression: the enrolled-unit semi-join must not shrink site_volume's
@@ -2198,6 +2213,7 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     assert result.site_total_volume == pytest.approx(float(expected_events))  # ty: ignore[unresolved-attribute]
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.parametrize(
     ("day_boundary", "window_start", "window_end"),
@@ -2291,6 +2307,7 @@ def test_site_volume_context_without_observation_end_is_unchanged(
     assert entry.canonical_definition_json == frozen["site_volume_definition_json"]
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_extension_matches_unpinned_total_when_filtered_on_a_joined_dim(
     tmp_path: Path,
@@ -2494,6 +2511,7 @@ def test_equal_instants_in_different_offsets_share_one_context_for_adoption_and_
         native.close()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("declared", [False, True], ids=["inherited", "explicit"])
 def test_adopted_experiment_keeps_inherited_versus_explicit_day_boundary(
     tmp_path: Path, declared: bool
@@ -2548,6 +2566,7 @@ def _secret_sql_definitions(tmp_path: Path, secrets: dict[str, str]) -> Path:
     return _rewritten_definitions(tmp_path, "secrets", edit)
 
 
+@pytest.mark.slow
 def test_publication_never_persists_or_returns_source_sql(tmp_path: Path) -> None:
     secrets = {
         "used_fact": "SECRET_USED_FACT_2f8a",

@@ -277,6 +277,7 @@ def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_pa
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.parametrize("store", ["auto", "always", "none"])
 @pytest.mark.parametrize(
@@ -351,6 +352,7 @@ def test_artifact_adoption_rejects_trigger_cutoff_mismatch(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
     analysis = _analysis(tmp_path)
@@ -389,6 +391,7 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_refuses_incomplete_calendar_outcomes(tmp_path):
     analysis = _analysis(tmp_path, watermark=dt.datetime(2024, 1, 8, tzinfo=dt.UTC))
@@ -414,6 +417,7 @@ def test_triggered_sitewide_refuses_incomplete_calendar_outcomes(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_assigned_sitewide_uses_experiment_end_for_native_and_artifact(tmp_path):
     events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
@@ -473,6 +477,7 @@ def test_assigned_sitewide_uses_experiment_end_for_native_and_artifact(tmp_path)
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_missing_outcome_watermark_refuses_triggered_but_not_assigned_sitewide(tmp_path):
     # The cutoff covers the experiment end, but no feed watermark certifies it.
@@ -506,6 +511,7 @@ def test_missing_outcome_watermark_refuses_triggered_but_not_assigned_sitewide(t
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_scales_complete_three_arm_roster(tmp_path):
     events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
@@ -572,6 +578,7 @@ def test_native_sitewide_without_snapshot_evidence_has_no_snapshot_identity(tmp_
         analysis.close()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_artifact_snapshot_identity_changes_between_publications(tmp_path):
     first = _analysis(tmp_path / "first")
@@ -598,6 +605,7 @@ def test_sitewide_artifact_snapshot_identity_changes_between_publications(tmp_pa
                 _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_non_utc_boundary_matches_artifact(tmp_path):
     analysis = _analysis(tmp_path, day_boundary="UTC+05:00")
@@ -626,6 +634,7 @@ def test_triggered_sitewide_non_utc_boundary_matches_artifact(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_without_members_refuses_alike_on_both_ingresses(tmp_path):
     analysis = _analysis(tmp_path, events=_events(n_per_arm=50, trigger_rate=0.0, effect=0.5))
@@ -648,6 +657,7 @@ def test_triggered_sitewide_without_members_refuses_alike_on_both_ingresses(tmp_
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
     rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
@@ -704,6 +714,7 @@ def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_balance_counts_assigned_arm_with_no_members(tmp_path):
     # A declared roster includes U even though nobody in that arm triggered.
@@ -793,6 +804,7 @@ def test_triggered_sitewide_artifact_without_assignment_counts_refuses(tmp_path)
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_artifact_rejects_inconsistent_assignment_counts(tmp_path, monkeypatch):
     analysis = _analysis(tmp_path)
@@ -827,6 +839,7 @@ def test_triggered_sitewide_artifact_rejects_inconsistent_assignment_counts(tmp_
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_artifact_rejects_corrupted_assignment_counts(tmp_path):
     analysis = _analysis(tmp_path)
@@ -1092,6 +1105,7 @@ def test_triggered_sitewide_result_discloses_population_and_provenance(tmp_path)
         analysis.close()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_ratio_component_baseline(tmp_path):
     definitions = tmp_path / "ratio.yml"
@@ -1276,6 +1290,7 @@ def _clustered_analysis(tmp_path):
     )
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric 'revenue':increment.errors.IncrementRuntimeWarning")
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1315,6 +1330,7 @@ def test_windowed_assigned_sitewide_refuses_before_evidence_load(tmp_path):
         analysis.close()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_count_metric_sitewide_counts_events_alike_on_both_ingresses(tmp_path):
     rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()

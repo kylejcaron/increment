@@ -938,6 +938,7 @@ def test_guardrail_one_sided_without_margin():
     assert ub_b is not None and ub_b < 0.0
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.integration
 def test_av_plan_uses_e_bh_and_keeps_nominal_cs():

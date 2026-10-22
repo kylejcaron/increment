@@ -9222,6 +9222,7 @@ def _mixed_cuped_multicovariate_case() -> ParityCase:  # noqa: PLR0915
 
     return ParityCase(
         id="mixed-cuped-multicovariate-fixed-horizon",
+        slow=True,
         build={
             "from_definitions": lambda: definition_analysis(artifact=False),
             "from_unit_day_artifact": lambda: definition_analysis(artifact=True),
@@ -9457,6 +9458,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
 
     return ParityCase(
         id="categorical-cuped-moments-format-13",
+        slow=True,
         build={
             "from_definitions": lambda: definition_analysis(breakout=True),
             "from_unit_day_artifact": lambda: definition_analysis(artifact=True, breakout=True),

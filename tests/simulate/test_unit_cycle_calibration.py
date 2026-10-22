@@ -314,6 +314,9 @@ def test_source_reference_reaches_compiled_analysis(noise):
     assert row.method == "switchback_unit_variance_envelope"
 
 
+@pytest.mark.grid(
+    "The exact quadrature sweeps participation, persistent-noise correlation and response meaning; each axis changes the analytic covariance contract."
+)
 @pytest.mark.parametrize(
     "p,rho,response_meaning",
     tuple(

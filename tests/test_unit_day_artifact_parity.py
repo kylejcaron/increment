@@ -270,6 +270,7 @@ def published_pair(publication):
         adopted.close()
 
 
+@pytest.mark.slow
 @_shared_publication
 @pytest.mark.parametrize("ingress", ["definitions", "artifact"])
 @pytest.mark.parametrize(
@@ -314,6 +315,7 @@ def test_fixed_export_refuses_invalid_backend_counts(
         adopted.close()
 
 
+@pytest.mark.slow
 def test_nonbinary_native_and_artifact_exports_keep_nullable_integer_counts(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -374,6 +376,7 @@ def covariate_pair(covariate_publication):
         adopted.close()
 
 
+@pytest.mark.slow
 def test_adopted_reduction_does_no_upstream_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -403,6 +406,7 @@ def test_adopted_reduction_does_no_upstream_work(
     native.close()
 
 
+@pytest.mark.slow
 @_shared_publication
 @pytest.mark.parametrize("grain", ["total", "daily", "asof"])
 def test_definitions_and_adopted_reducers_match_staggered_denominators(
@@ -433,6 +437,7 @@ def test_definitions_and_adopted_reducers_match_staggered_denominators(
         assert all(value > 0 for value in denominators.values())
 
 
+@pytest.mark.slow
 def test_calendar_day_boundary_is_preserved_across_adoption(tmp_path: Path) -> None:
     definitions_path = _definitions(tmp_path)
     payload = __import__("yaml").safe_load(definitions_path.read_text())
@@ -483,6 +488,7 @@ def test_adopted_native_only_operations_refuse_with_exact_codes(
         assert raised.value.context
 
 
+@pytest.mark.slow
 def test_extension_operation_declarations_follow_selected_manifest_extensions(
     tmp_path: Path,
 ) -> None:
@@ -632,6 +638,7 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
 
 
 # Guards clustered publication/adoption by comparing cluster-identity evidence values.
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
 def test_cluster_identity_extension_matches_native_sitewide_evidence(tmp_path: Path) -> None:
     from increment.query.artifact_publish import artifact_context
@@ -758,6 +765,7 @@ experiments:
 """
 
 
+@pytest.mark.slow
 def test_cluster_extension_spine_parity_matches_native_for_late_enrolled_treatment(
     tmp_path: Path,
 ) -> None:
@@ -936,6 +944,7 @@ def test_boolean_dimension_labels_match_native_and_string_case_is_preserved(
 
 
 # Guards adopted factor summaries against dropping the CUPED covariate moments.
+@pytest.mark.slow
 @_shared_covariate_publication
 def test_adopted_factor_summaries_carry_the_native_covariate_moments(
     covariate_pair: tuple[Any, ...],
@@ -1103,6 +1112,7 @@ def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: P
         native.close()
 
 
+@pytest.mark.slow
 def test_v3_trigger_population_count_mismatch_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1512,6 +1522,7 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
         native.close()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
 def test_ratio_snapshot_spine_uses_only_its_minimum_measure_edge(tmp_path: Path) -> None:
     cutoff = datetime(2030, 1, 1, tzinfo=UTC)
@@ -1664,6 +1675,7 @@ def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -
         native.close()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_ratio_requires_certified_watermark_for_each_component(
     tmp_path: Path,
@@ -1997,6 +2009,7 @@ def test_manifest_base_relation_mutations_refuse_exactly(
 
 
 # Guards a verify-then-rebind race by mutating the physical relation after verification.
+@pytest.mark.slow
 def test_verify_then_rebind_keeps_the_original_snapshot() -> None:
     connection, native, context, store = _native()
     reference = native.publish_unit_day_artifact(store)
@@ -2330,6 +2343,7 @@ def test_every_absent_extension_family_has_the_same_coded_refusal(
     assert native_error.value.code == "artifact.extension.missing"
 
 
+@pytest.mark.slow
 def test_site_volume_zero_relation_and_incomplete_coverage_are_distinct(
     tmp_path: Path,
 ) -> None:

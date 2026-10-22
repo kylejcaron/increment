@@ -329,6 +329,7 @@ class TestStandardConversionPlan10pctBaseline10pctLift:
         assert at.power_lower <= low <= high <= at.power_upper
 
 
+@pytest.mark.slow
 def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     """The size search runs over assigned units, so the returned size and
     its assigned predecessor are judged at the analyzed counts
@@ -497,6 +498,7 @@ def test_a_curve_through_a_size_the_runtime_refuses_is_refused_with_the_same_cod
     assert raised.value.code == "power.binomial_arm_ceiling_exceeded"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("planner", ["achieved_power", "minimum_detectable_effect"])
 def test_a_tail_level_the_float_margin_dominates_is_refused_where_the_runtime_refuses_it(
     monkeypatch, planner
@@ -776,6 +778,7 @@ class TestPlanningReplayBound:
             achieved_power(100_000_000, 0.02, Baseline.from_proportion(0.05), _conversion())
         assert raised.value.code == self._CODE
 
+    @pytest.mark.slow
     def test_a_size_search_that_meets_the_bound_refuses_at_the_largest_plannable_size(
         self, monkeypatch
     ):
@@ -1481,6 +1484,7 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
         assert found.mde_relative == pytest.approx(expected, rel=1e-8, abs=1e-8)
         assert found.power >= 0.8
 
+    @pytest.mark.slow
     @pytest.mark.parametrize(
         ("target", "band"),
         [(0.33, "first"), (0.40, "second")],
@@ -1506,6 +1510,7 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
         assert found.mde_relative == pytest.approx(expected, rel=1e-8, abs=1e-8)
         assert found.power >= target
 
+    @pytest.mark.slow
     def test_a_peak_target_is_found_near_its_peak_or_explicitly_unresolved(self, monkeypatch):
         """A tangent target has no transverse crossing. It may be met by an admitted
         evaluated point or explicitly refused, but never silently moved to a later band."""
@@ -2001,6 +2006,7 @@ class TestAnIntervalBoundReadsOnlyTheCellsItDependsOn:
     bound over an interval of treatment rates read before the reserved evaluations are decided
     is the bound read after, and the evaluations decide as a fresh geometry's."""
 
+    @pytest.mark.slow
     @pytest.mark.parametrize(
         ("alternative", "ratio", "p_c", "rates"),
         [

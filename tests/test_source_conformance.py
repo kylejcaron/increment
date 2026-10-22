@@ -102,6 +102,7 @@ def test_each_adapter_advertises_a_complete_moment_source_contract(
         source.close()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("adapter_index", range(len(_ADAPTER_NAMES)), ids=_ADAPTER_NAMES)
 @pytest.mark.integration
 def test_absent_grains_and_extensions_are_stable_coded_refusals(

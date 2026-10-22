@@ -248,6 +248,7 @@ class TestLatticeSumsStreamOverBlocks:
         for tail in tails:
             assert blocked[tail] == pytest.approx(whole[tail], rel=1e-12, abs=0.0)
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("alternative", ["two-sided", "greater"])
     def test_hybrid_noncoverage_does_not_depend_on_the_block_size(self, monkeypatch, alternative):
         def result():
@@ -271,6 +272,7 @@ class TestLatticeSumsStreamOverBlocks:
         np.testing.assert_array_equal(blocked[0], whole[0])
         np.testing.assert_array_equal(blocked[1], whole[1])
 
+    @pytest.mark.slow
     def test_enumeration_does_not_depend_on_the_block_size(self, monkeypatch):
         monkeypatch.setattr(cr, "dense_min_count", lambda tail: self.FLOOR)
         design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
@@ -285,6 +287,7 @@ class TestLatticeSumsStreamOverBlocks:
         assert whole.asymptotic_part > 0.0
         assert whole.finite_part > 0.0
 
+    @pytest.mark.slow
     def test_only_the_pairs_the_finite_route_decides_are_replayed(self):
         """With a routing floor the replay skips every pair the delta method decides and leaves it
         unrejecting; at every other pair it is the whole-window replay."""

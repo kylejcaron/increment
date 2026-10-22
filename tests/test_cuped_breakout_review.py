@@ -179,6 +179,7 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
     assert all(row.lift is not None for row in result)
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_definitions_and_artifact_breakouts_supply_cuped_unit_evidence(tmp_path) -> None:
     import yaml
@@ -687,6 +688,7 @@ def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
     assert calls == 2
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tmp_path):
     import datetime as dt

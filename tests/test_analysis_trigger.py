@@ -474,6 +474,7 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
         con.disconnect()
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_trigger_after_enrollment_end_remains_eligible_at_snapshot_cutoff(tmp_path):
     rows = {
@@ -1722,6 +1723,7 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 def test_triggered_cate_randomized_artifact_without_covariates_preserves_population(tmp_path):
     from collections import Counter
 
@@ -1974,6 +1976,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
     from tests.analysis_factory import _native_source, native_connection
@@ -2029,6 +2032,7 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.slow
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path):
     from tests.analysis_factory import _native_source, native_connection
@@ -3278,6 +3282,7 @@ def test_triggered_empty_dimension_respects_declared_observation_horizon(tmp_pat
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_path):
     analysis, con = _country_analysis(
         tmp_path,
@@ -3305,6 +3310,7 @@ def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_p
         con.disconnect()
 
 
+@pytest.mark.slow
 def test_triggered_early_look_roster_keeps_null_and_literal_sentinel_native_and_artifact(
     tmp_path,
 ):

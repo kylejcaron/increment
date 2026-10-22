@@ -113,6 +113,7 @@ def _native_case(tmp_path, *, decision=None, sensitivity=(), breakout=False):
     return path, con, methods
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_artifact_single_scalar_export_replays_its_bound_family(tmp_path):
     path, con, methods = _native_case(tmp_path)
@@ -540,6 +541,7 @@ def test_public_scalar_operations_refuse_before_evidence(
     assert reads == []
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize("operation", _scalar_operation_cases("export"))
 def test_public_export_carries_each_scalar_family(tmp_path, operation):

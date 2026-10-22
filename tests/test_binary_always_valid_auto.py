@@ -450,6 +450,7 @@ def test_end_to_end_binary_always_valid_returns_an_interval_and_a_decision():
     assert row.require_sequential_result().checkpoint.model.law == "bernoulli"
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_binary_always_valid_state_and_interval_agree_on_every_path(duck):
     check_path_parity(

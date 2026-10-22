@@ -816,6 +816,7 @@ def test_campaign_replication_agrees_on_a_shared_stream(case):
 # --- accumulators and curtailment -------------------------------------------
 
 
+@pytest.mark.slow
 def test_case_outcome_sums_the_replication_records():
     """``CaseOutcome`` is the exact sum of the records the observer sees."""
     case = RuntimeCase(name="outcome", looks=3, batch=4, stopping="first_rejection")

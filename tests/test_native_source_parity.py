@@ -73,6 +73,7 @@ def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
     assert raised.value.code == "source.native.operation"
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path):
     defs_path, con = _quantile_defs_and_con(tmp_path, include_unassigned=True)
