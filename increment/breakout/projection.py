@@ -71,6 +71,15 @@ def _is_optional_bool(annotation: Any) -> bool:
     return bool in args and type(None) in args
 
 
+def _nullable_bool_fields(model: type[BaseModel], estimate_field: str | None) -> list[str]:
+    fields = [
+        name for name, info in model.model_fields.items() if _is_optional_bool(info.annotation)
+    ]
+    if estimate_field is not None:
+        fields.append("stat_sig")
+    return fields
+
+
 def _is_optional_string(annotation: Any) -> bool:
     """Whether a field is a nullable string or string-valued literal."""
     args = get_args(annotation)
@@ -240,10 +249,6 @@ def _append_decision_frame_values(
             data["p_value_reason_code"].append(code)
             continue
         data["stat_sig"].append(stat_sig)
-        if stat_sig is None or getattr(estimate, "sampling_available", None) is not True:
-            data["p_value"].append(None)
-            data["p_value_reason_code"].append(None)
-            continue
         try:
             data["p_value"].append(row_p_value(cast(Any, estimate)))
             data["p_value_reason_code"].append(None)
@@ -459,9 +464,7 @@ def to_frame[M: BaseModel](
         for name in nullable_strings:
             frame[name] = pd.array(data[name], dtype="string")
 
-    nullable_bools = [
-        name for name, info in model.model_fields.items() if _is_optional_bool(info.annotation)
-    ]
+    nullable_bools = _nullable_bool_fields(model, estimate_field)
     if backend == "pandas" and nullable_bools:
         # Rewritten after construction: narwhals resolves nw.Boolean() to
         # whichever pandas dtype the values happen to allow.
