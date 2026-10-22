@@ -109,13 +109,13 @@ print(results)
 <!-- output -->
 ```text
 assigned — treatment vs control
-revenue: control → treatment; n control=463; n treatment=537; mean control=9.94656; mean treatment=11.0983; effect=11.5788%; interval=[6.21892, 17.2092]%; stat_sig=True
+revenue: control → treatment; n control=463; n treatment=537; mean control=9.94656; mean treatment=11.0983; effect=11.5788%; interval=[6.21892, 17.2092]%; estimand=itt; stat_sig=True
 revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
 revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 revenue additive effect: 1.15169, set [0.638286, 1.6651].
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
-complaints: control → treatment; effect=-13.7803%; interval=[-100, 66.6805]%; stat_sig=False
+complaints: control → treatment; effect=-13.7803%; interval=[-100, 66.6805]%; estimand=itt; stat_sig=False
 complaints (guardrail, relative lift): -0.137803, set [-1, 0.666805] at 0.9 confidence.
 complaints interpretation: does not reject; inconclusive, not evidence of no effect.
 complaints additive effect: -0.00535734, set [-0.0249109, 0.0141962].
