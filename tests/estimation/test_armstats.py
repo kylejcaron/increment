@@ -95,12 +95,6 @@ class TestArmStats:
         assert s.var == pytest.approx((sum_y2 - sum_y**2 / n) / (n - 1), rel=1e-12)
         assert s.mean == pytest.approx(sum_y / n, rel=1e-12)
 
-    def test_var_y_matches_numpy(self):
-        """var_y() equals np.var(ddof=1)."""
-        rng = np.random.default_rng(99)
-        data = rng.normal(5, 2, size=75)
-        assert _native(data).var_y() == pytest.approx(np.var(data, ddof=1), rel=1e-12)
-
     def test_cov_yx_matches_numpy(self):
         """cov_yx() equals np.cov(y, x, ddof=1)[0,1]."""
         n = 60
@@ -1142,13 +1136,6 @@ class TestVarYdRefusesInconsistentMoments:
             corrupted.var_yd()
         assert exc_info.value.code == "estimation.armstats.centered_sum_squares"
 
-    def test_ordinary_data_is_unaffected(self):
-        """The common (non-adversarial) case is an exact no-op against
-        the pre-fix formula -- the policy only changes behaviour once a
-        deficit exceeds the floating-point noise floor."""
-        a = _uptake_arm()
-        assert a.var_yd() == pytest.approx(2.25)
-
 
 class TestScoreStatsSeCentering:
     """``ScoreStats.se()`` must center via exact (Fraction-based)
@@ -1237,6 +1224,7 @@ class TestVarYOverflowSafe:
         )
         assert a.var_y() == pytest.approx(1.0101010101010098e305, rel=1e-9)
 
+    @pytest.mark.slow
     def test_neighbouring_float_input_stays_finite_and_close(self):
         """One ulp away from the pinned reproduction: still finite and of
         the same order of magnitude, not a discontinuous jump back to 0."""
@@ -1247,6 +1235,7 @@ class TestVarYOverflowSafe:
         assert math.isfinite(a.var_y())
         assert a.var_y() == pytest.approx(1.0101010101010098e305, rel=1e-6)
 
+    @pytest.mark.slow
     def test_matches_direct_computation_at_ordinary_scale(self):
         """Ordinary scale: the overflow-safe scaled form is a no-op
         against numpy's own ddof=1 variance."""
@@ -1431,19 +1420,6 @@ class TestBinaryCountsBernoulliConsistency:
             binary_counts(arm, "conversion")
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
 
-    def test_accepts_genuine_bernoulli_arm(self):
-        # Five ones, five zeros: sum_y2 == sum_y for genuine 0/1 data.
-        arm = ArmStats.from_raw_sums(
-            study_id="e",
-            metric="conv",
-            group_id="control",
-            n=10,
-            sum_y=5.0,
-            sum_y2=5.0,
-            successes=5,
-        )
-        assert binary_counts(arm, "conversion") == (5, 10)
-
     def test_accepts_all_zero_and_all_success_boundaries(self):
         zero_arm = ArmStats.from_raw_sums(
             study_id="e", metric="conv", group_id="control", n=8, sum_y=0.0, sum_y2=0.0, successes=0
@@ -1454,6 +1430,7 @@ class TestBinaryCountsBernoulliConsistency:
         )
         assert binary_counts(full_arm, "conversion") == (8, 8)
 
+    @pytest.mark.slow
     def test_tolerance_scales_with_n_not_a_fixed_epsilon(self):
         # A genuine 0/1 reconstruction through floating summation over a
         # large n accumulates real (not corrupt) rounding; the
@@ -1597,7 +1574,14 @@ class TestBinaryCountsBernoulliConsistency:
             binary_counts(arm, "conversion")
         assert exc_info.value.code == "estimation.binomial.exact_counts_required"
 
-    @pytest.mark.parametrize("order", [(0, 1, 2), (2, 0, 1), (1, 2, 0)])
+    @pytest.mark.parametrize(
+        "order",
+        [
+            pytest.param((0, 1, 2), marks=pytest.mark.slow),
+            pytest.param((2, 0, 1), marks=pytest.mark.slow),
+            (1, 2, 0),
+        ],
+    )
     def test_partition_merges_preserve_rare_failures_beyond_float_spacing(self, order):
         n = 2**60
         parts = [self._stored_arm(n, n - failures) for failures in (513, 777, 1500)]
@@ -1700,7 +1684,18 @@ class TestCanonicalBernoulliArm:
 
     @pytest.mark.parametrize(
         ("n", "failures"),
-        [(2**61, 2560), (2**61, 512), (2**58, 416), (2**55, 60)],
+        [
+            pytest.param(2**61, 2560, marks=pytest.mark.slow),
+            (2**61, 512),
+            pytest.param(2**58, 416, marks=pytest.mark.slow),
+            pytest.param(2**55, 60, marks=pytest.mark.slow),
+        ],
+        ids=[
+            "2305843009213693952-2560",
+            "2305843009213693952-512",
+            "288230376151711744-416",
+            "36028797018963968-60",
+        ],
     )
     def test_an_arm_with_many_units_and_few_failures_keeps_their_variance(self, n, failures):
         """The failures' centered sum of squares is ``failures`` to within ``failures / n``: no

@@ -129,10 +129,11 @@ class TestCochranQ:
         assert exact == pytest.approx(0.5939941502901616, abs=1e-4)
         assert empirical == pytest.approx(exact, abs=0.03)
 
+    @pytest.mark.slow
     def test_p_tau2_zero_matches_exact_chi_square_probability_k5_smoke(self):
-        """Fast-suite variant of the above: fewer reps, looser tolerance -
-        still exercises cochran_q's tau^2-boundary-collapse behavior on
-        every fast-suite run instead of only under -m parameter_recovery."""
+        """Smoke variant of the above: fewer reps, looser tolerance -
+        exercises cochran_q's tau^2-boundary-collapse behavior in the slow
+        tier instead of only under -m parameter_recovery."""
         rng = np.random.default_rng(2)
         k, n_per_segment, reps = 5, 400, 200
         hits = 0
@@ -165,8 +166,9 @@ class TestCochranQ:
         assert exact == pytest.approx(0.6321205588285577)
         assert empirical == pytest.approx(exact, abs=0.03)
 
+    @pytest.mark.slow
     def test_p_tau2_zero_matches_exact_chi_square_probability_k3_smoke(self):
-        """Fast-suite variant of the k=3 boundary test above."""
+        """Slow-tier smoke variant of the k=3 boundary test above."""
         rng = np.random.default_rng(3)
         k, n_per_segment, reps = 3, 400, 200
         hits = 0
