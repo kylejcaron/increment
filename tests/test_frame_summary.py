@@ -77,6 +77,11 @@ def test_frame_input_type_refusals_name_the_route(monkeypatch):
             "list",
             "a supported eager dataframe, such as pandas, Polars, or Arrow",
         ),
+        (
+            {"user_id": ["u"], "variant": ["control"], "value": [1]},
+            "dict",
+            "a supported eager dataframe, such as pandas, Polars, or Arrow",
+        ),
     )
 
     def forbidden_collect(self, *args, **kwargs):

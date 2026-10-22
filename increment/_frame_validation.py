@@ -358,11 +358,14 @@ def require_eager_frame(frame: object, *, constructor: str) -> None:
     module = frame_type.__module__
     input_type = frame_type.__name__
     if module.startswith("ibis"):
+        # A switchback panel has no definitions route; materialize the table instead.
+        route = (
+            "table.to_pyarrow()"
+            if constructor == "from_switchback_panel"
+            else "Analysis.from_definitions"
+        )
         refuse(
-            _UNSUPPORTED_FRAME_INPUT,
-            constructor=constructor,
-            input_type=input_type,
-            route="Analysis.from_definitions",
+            _UNSUPPORTED_FRAME_INPUT, constructor=constructor, input_type=input_type, route=route
         )
     if input_type == "LazyFrame" and module.startswith("polars"):
         refuse(
@@ -371,7 +374,7 @@ def require_eager_frame(frame: object, *, constructor: str) -> None:
             input_type=input_type,
             route=".collect()",
         )
-    if issubclass(frame_type, list):
+    if nw.from_native(frame, eager_only=True, pass_through=True) is frame:
         refuse(
             _UNSUPPORTED_FRAME_INPUT,
             constructor=constructor,

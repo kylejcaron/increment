@@ -55,7 +55,7 @@ def test_frame_input_type_refusals_name_the_route(monkeypatch):
                 }
             ),
             "Table",
-            "Analysis.from_definitions",
+            "table.to_pyarrow()",
         ),
         (
             pl.DataFrame(
