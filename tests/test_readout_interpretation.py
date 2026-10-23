@@ -680,7 +680,7 @@ def test_encouragement_headlines_identify_itt_and_late():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment affects outcome through uptake"
+            justification="assignment affects outcome through uptake"
         ),
         one_sided=True,
         min_first_stage_z=0.001,
