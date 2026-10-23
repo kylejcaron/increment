@@ -29,7 +29,7 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 
 # Contributor guidelines
 
-Increment turns experiment data into decisions. Six public constructors load
+Increment turns experiment data into decisions. Six public constructors load data
 (`Analysis.from_definitions`, `from_unit_day_artifact`, `from_unit_summary`,
 `from_unit_panel`, `from_switchback_panel`, `from_moments`); one evidence layer
 answers typed requests; estimators compute from data; readouts assemble results.
@@ -104,7 +104,10 @@ parity matrix and a guide — not every loader.
   are listed with a one-line user task in `tests/public_exports.txt` (and public
   parameter spellings in `tests/public_parameters.txt` where that inventory
   exists); `tests/test_consumer_standard.py` enforces the inventories and the
-  vocabulary check. A root-export change is an API cutover recorded in
+  vocabulary check. A term a guide defines for users is listed with that
+  guide in `tests/consumer_jargon.txt`; existing occurrences are counted per
+  file in `tests/consumer_jargon_baseline.txt`, and those counts may fall but
+  never grow. A root-export change is an API cutover recorded in
   release notes.
 
 ## Numbers
