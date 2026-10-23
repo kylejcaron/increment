@@ -1107,7 +1107,7 @@ def test_analysis_native_rejects_unknown_store_before_loading(seeded_con, monkey
     def fail_load(_path):
         pytest.fail("invalid store reached definitions loader")
 
-    monkeypatch.setattr("increment.analysis.load", fail_load)
+    monkeypatch.setattr("increment.semantics.loader.load", fail_load)
     with pytest.raises(InvalidRequestError) as raised:
         Analysis.from_definitions(
             "new_onboarding_v2",

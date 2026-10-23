@@ -109,7 +109,6 @@ from typing import Literal
 
 import numpy as np
 from scipy.special import ndtr as _ndtr
-from scipy.stats import binom as _binom
 
 from increment._literals import Alternative
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
@@ -1366,6 +1365,8 @@ def _window_bounds(n: int, p: float) -> tuple[int, int]:
         return 0, 0
     if p >= 1.0:
         return n, n
+    from scipy.stats import binom as _binom
+
     return max(0, int(_binom.ppf(_OUTER_TAIL, n, p))), min(n, int(_binom.isf(_OUTER_TAIL, n, p)))
 
 

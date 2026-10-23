@@ -82,7 +82,6 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
 
 import numpy as np
-from scipy.stats import binom, norm
 
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.variance import stable_log_ratio
@@ -299,6 +298,8 @@ def _check_alpha(alpha: float) -> None:
 
 def _binomial_bracket_rank(n: int, q: float, tail: float, *, upper: bool = False) -> int:
     """Largest certified rank, seeded by the inverse CDF without trusting it."""
+    from scipy.stats import binom
+
     rank = int(binom.ppf(tail, n, 1 - q if upper else q)) + 1
     while rank > 1 and not _binomial_tail_within(n, q, tail, upper=upper, k=rank - 1):
         rank -= 1
@@ -506,6 +507,8 @@ class _SortedArm:
     def se(self, alpha: float) -> tuple[float, float, float]:
         """``(Q̂(q), se, classical_se)`` at ``alpha``."""
         half, classical = self.half_widths(alpha)
+        from scipy.stats import norm
+
         z = norm.isf(alpha / 2)
         return self.arm.point, half / z, classical / z
 
@@ -574,6 +577,8 @@ def _inverted_p_value(control: _SortedArm, treatment: _SortedArm, null: float) -
             half_t = treatment.half_width(alpha)
         except InvalidRequestError:
             return False
+        from scipy.stats import norm
+
         z = norm.isf(alpha / 2)
         se_c, se_t = half_c / z, half_t / z
         crit = _resolve_fixed_horizon(

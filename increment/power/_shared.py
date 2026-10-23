@@ -5,8 +5,6 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, cast
 
-from scipy.stats import norm as _norm
-
 from increment.errors import InvalidRequestError, RefusalSpec, refuse
 from increment.power._noncentral_t import _scalar_power_from_nc
 from increment.power._validation import _require_relative_domain
@@ -92,6 +90,8 @@ def mde_theta(
     null_power = power_at(theta0, se2, design, procedure, dof=dof)
     if design.power <= null_power:
         return 0.0
+    from scipy.stats import norm as _norm
+
     z_alpha = float(_norm.isf(procedure.compiled_tail_alpha))
     z_power = float(_norm.ppf(design.power))
     alternative = decision.alternative

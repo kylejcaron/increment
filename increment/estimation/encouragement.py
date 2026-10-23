@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from narwhals.typing import IntoDataFrame
-from scipy.stats import norm as _norm
 
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation.advisory import ReadoutAdvisory
@@ -634,6 +633,8 @@ def _nn_estimate(
             "route.unsupported",
             "additive SE-only sequential inference has no matching raw likelihood",
         )
+    from scipy.stats import norm as _norm
+
     posterior = normal_posterior(point, se, prior=None)
     z = _norm.isf(alpha_eff / 2.0)
     mu, sig = posterior.mu, posterior.sigma

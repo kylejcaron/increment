@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-from scipy.stats import norm as _norm
 
 from increment._literals import (
     ALTERNATIVE_VALUES,
@@ -207,18 +206,26 @@ class Normal(CodedModel, BaseModel):
 
     def cdf(self, value: float) -> float:
         """Probability mass at or below ``value``."""
+        from scipy.stats import norm as _norm
+
         return float(_norm.cdf((value - self.mu) / self.sigma))
 
     def survival(self, value: float) -> float:
         """Probability mass strictly above ``value``."""
+        from scipy.stats import norm as _norm
+
         return float(_norm.sf((value - self.mu) / self.sigma))
 
     def quantile(self, probability: float) -> float:
         """Value whose cumulative probability is ``probability``."""
+        from scipy.stats import norm as _norm
+
         return self.mu + self.sigma * float(_norm.ppf(probability))
 
     def isf(self, tail_probability: float) -> float:
         """Value whose upper-tail probability is ``tail_probability``."""
+        from scipy.stats import norm as _norm
+
         return self.mu + self.sigma * float(_norm.isf(tail_probability))
 
     def probability_between(self, lower: float, upper: float) -> float:
@@ -229,6 +236,8 @@ class Normal(CodedModel, BaseModel):
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
         """Expected magnitude below zero on the requested reporting scale."""
+        from scipy.stats import norm as _norm
+
         z = self.mu / self.sigma
         if scale == "linear":
             return float(self.sigma * _norm.pdf(z) - self.mu * _norm.cdf(-z))
@@ -241,6 +250,8 @@ class Normal(CodedModel, BaseModel):
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
         """Expected magnitude above zero on the requested reporting scale."""
+        from scipy.stats import norm as _norm
+
         z = self.mu / self.sigma
         if scale == "linear":
             return float(self.sigma * _norm.pdf(z) + self.mu * _norm.cdf(z))
@@ -337,6 +348,8 @@ def posterior_fields(
     null_abs: float | None = None,
 ) -> PosteriorFields:
     """Persist the supported working-likelihood posterior separately."""
+    from scipy.stats import norm as _norm
+
     if prior is None:
         return {}
     alpha_eff = _alpha_eff_for(alternative, alpha)
@@ -429,6 +442,8 @@ def _resolve_fixed_horizon(
     independent_means: IndependentMeanReference | None = None,
 ) -> FixedHorizonReference:
     """Validate shared options and resolve one interval reference."""
+    from scipy.stats import norm as _norm
+
     if alternative not in ALTERNATIVE_VALUES:
         refuse(UNKNOWN_ALTERNATIVE, alternative=alternative)
     if not 0.0 < alpha < 1.0:

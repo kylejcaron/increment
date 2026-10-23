@@ -59,9 +59,6 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
 from scipy.special import ndtr as _ndtr
 from scipy.special import ndtri as _ndtri
-from scipy.stats import chi2 as _chi2
-from scipy.stats import ncx2 as _ncx2
-from scipy.stats import norm as _norm
 
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import Alternative, ConversionInference
@@ -545,6 +542,8 @@ class Baseline(CodedModel, BaseModel):
         if not 0.0 < confidence < 1.0:
             _raise("power.baseline.confidence")
         df = s.n - 1
+        from scipy.stats import chi2 as _chi2
+
         inflated_var = s.var * df / _chi2.isf(confidence, df)
         if not math.isfinite(inflated_var):
             _raise("power.baseline.confidence_produces_non")
@@ -1119,6 +1118,8 @@ class _QuantileProjection:
             repeated=min(arm.repeated, 1),
         )
         changes = np.flatnonzero(pilot_sorted[1:] != pilot_sorted[:-1]) + 1
+        from scipy.stats import norm as _norm
+
         return cls(
             pilot=pilot_sorted,
             alpha=alpha,
@@ -3246,6 +3247,8 @@ def _binomial_size(
     target = design.power
     floor = _assigned_minimum_per_arm(procedure, baseline)
     z_target = float(_ndtri(target))
+    from scipy.stats import norm as _norm
+
     z_alpha = float(_norm.isf(procedure.compiled_tail_alpha))
     rate = _alternative_rate(math.log(baseline.mean), theta)
     dense_from = (
@@ -4327,6 +4330,9 @@ def joint_q_power_fixed(
     # strictly overstates lambda (lambda_w = min_c sum_k w_k (theta_k - c)^2).
     theta_bar_w = float((w * theta_arr).sum() / w.sum())
     lam = float((w * (theta_arr - theta_bar_w) ** 2).sum())
+    from scipy.stats import chi2 as _chi2
+    from scipy.stats import ncx2 as _ncx2
+
     crit = _chi2.isf(alpha, k - 1)
     return float(_ncx2.sf(crit, k - 1, lam))
 
@@ -4381,6 +4387,9 @@ def joint_q_power_random(
     _require_finite("tau_b", tau_b)
     if tau_b < 0:
         _raise("power.tau_b", tau_b=tau_b)
+
+    from scipy.stats import chi2 as _chi2
+    from scipy.stats import ncx2 as _ncx2
 
     crit = _chi2.isf(alpha, k - 1)
     if np.ptp(var_arr) < 1e-12 * var_arr.max():

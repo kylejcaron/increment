@@ -22,7 +22,20 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
-from ibis.backends.sql import SQLBackend
+if TYPE_CHECKING:
+    from ibis.backends.sql import SQLBackend
+
+    from increment.breakout.estimates import (
+        BreakoutEstimates,
+        DailyLiftEstimates,
+        DailyMetricValues,
+        LiftEstimates,
+    )
+    from increment.query.artifact_contract import ArtifactContext, ArtifactStore
+    from increment.query.session import SourceSnapshotEvidence, WarehouseSession
+    from increment.semantics.artifact import ArtifactExtensionRequest, UnitDayArtifactRef
+    from increment.semantics.models import Experiment
+
 
 from increment import readouts
 from increment._analysis_config import (
@@ -44,7 +57,6 @@ from increment._day_axis import (
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
 from increment._literals import Backend, Correction, ValueScale
-from increment._sitewide import SitewideReadouts, SitewideRequest
 from increment._source_operations import (
     AllocationHistoryOperation,
     DashboardBreakoutReads,
@@ -71,15 +83,6 @@ from increment._whole_window import (
     _require_analysis_operation,
     reject_role_overrides_under_contrast,
 )
-from increment.breakout.estimates import (
-    BreakoutEstimates,
-    DailyLiftEstimates,
-    DailyMetricValues,
-    LiftEstimates,
-    reject_quantile_metrics,
-    reject_retention_metrics,
-)
-from increment.breakout.estimates import run_daily_lift as _run_daily_lift_estimates
 from increment.decision import (
     AnalysisState,
     ArmAnalysisState,
@@ -109,24 +112,6 @@ from increment.plan import (
     compile_decision_plan,
     with_unassigned_procedures,
 )
-from increment.query.artifact_contract import (
-    ArtifactContractError,
-    ArtifactStore,
-    unit_day_artifact_extension_catalog,
-)
-from increment.query.artifact_digest import canonical_json
-from increment.query.fact_resolution import _require_design
-from increment.query.integrity import validate_trigger_fires_in_every_arm
-from increment.query.native_contract import NativeCoreSource, NativeViewSource
-from increment.query.native_source import DefinitionsMomentSource
-from increment.query.session import SourceSnapshotEvidence, WarehouseSession
-from increment.query.source import open_artifact
-from increment.semantics.artifact import (
-    ArtifactContext,
-    ArtifactExtensionRequest,
-    UnitDayArtifactRef,
-)
-from increment.semantics.loader import load, verify_sql_admission_matches_execution
 from increment.semantics.models import Breakout, Definitions, Experiment
 from increment.semantics.unit_cycle import UnitCycleReference
 from increment.sequential_source import native_observation_mapping
@@ -343,6 +328,7 @@ class _ArtifactOpenSpec:
 
 
 def _stamp_exploratory_rows(rows):
+    from increment.breakout.estimates import LiftEstimates
     from increment.estimation.multiplicity import multiplicity_status
     from increment.estimation.readout_types import (
         CellKey,
@@ -535,6 +521,10 @@ class Analysis:
         on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
         source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> None:
+        from increment.query.native_source import DefinitionsMomentSource
+        from increment.query.session import WarehouseSession
+        from increment.semantics.loader import load, verify_sql_admission_matches_execution
+
         if on_mixed_assignment not in ("error", "warn", "exclude"):
             _refuse(_INVALID_MIXED_ASSIGNMENT_POLICY, on_mixed_assignment=on_mixed_assignment)
         if store not in ("auto", "always", "none"):
@@ -684,7 +674,10 @@ class Analysis:
     def _ensure_artifact_source(self) -> MomentSource:
         source = cast("MomentSource", self._state.source)
         spec = self._artifact_open_spec
+
         if spec is not None and cast("ArtifactMomentSource", source).closed:
+            from increment.query.source import open_artifact
+
             source = open_artifact(
                 spec.store,
                 spec.ref,
@@ -787,6 +780,12 @@ class Analysis:
         context: ArtifactContext,
         extensions: Sequence[Any],
     ) -> tuple[Any, ...]:
+        from increment.query.artifact_contract import (
+            ArtifactContractError,
+            unit_day_artifact_extension_catalog,
+        )
+        from increment.query.artifact_digest import canonical_json
+
         entries = unit_day_artifact_extension_catalog(context)
         selected: list[Any] = []
         seen: set[str] = set()
@@ -830,6 +829,8 @@ class Analysis:
         refresh_of: UnitDayArtifactRef | None = None,
     ) -> UnitDayArtifactRef:
         """Publish this definitions-backed arm analysis as an immutable artifact."""
+        from increment.query.native_contract import NativeCoreSource
+
         state = self._require_arm_state("publish_unit_day_artifact")
         if not isinstance(state, DefinitionsArmAnalysisState):
             _refuse(
@@ -866,6 +867,8 @@ class Analysis:
         verification: Literal["lazy_digest"] = "lazy_digest",
     ) -> Analysis:
         """Open one caller-trusted immutable artifact generation."""
+        from increment.query.source import open_artifact
+
         source = open_artifact(
             store,
             ref,
@@ -1014,7 +1017,10 @@ class Analysis:
         ``run_breakout`` reads. This source remains total-only: it does not
         expose daily or as-of methods, or a synthetic day axis.
         """
+        from increment.query.fact_resolution import _require_design
+
         _require_design(control, design, constructor="Analysis.from_unit_summary")
+
         if control is None:
             assert design is not None
             control = str(design.control_group)
@@ -1102,7 +1108,10 @@ class Analysis:
         refuses; ``"exclude"`` drops those units, with the count
         surfaced in ``unit_counts()`` and :meth:`srm`.
         """
+        from increment.query.fact_resolution import _require_design
+
         _require_design(control, design, constructor="Analysis.from_unit_panel")
+
         if control is None:
             assert design is not None
             control = str(design.control_group)
@@ -1130,7 +1139,7 @@ class Analysis:
         return analysis
 
     @classmethod
-    def from_moments(
+    def from_moments(  # noqa: PLR0915
         cls,
         rows: Sequence[Mapping[str, object]],
         *,
@@ -1203,7 +1212,10 @@ class Analysis:
         from increment.sources import MomentsSource
 
         design = canonical_design_for_moments(design)
+        from increment.query.fact_resolution import _require_design
+
         _require_design(control, design, constructor="Analysis.from_moments")
+
         if control is None:
             assert design is not None
             control = canonical_control_for_moments(design.control_group)
@@ -2113,6 +2125,8 @@ class Analysis:
         ``Baseline(..., trigger_rate=...)``, then ``required_sample_size(...)``,
         to plan a follow-up at the right size.
         """
+        from increment.query.native_contract import NativeCoreSource
+
         source = self._src
         if classify_source(source) == "artifact":
             if "triggered_counts" not in source.operations:
@@ -2134,6 +2148,8 @@ class Analysis:
         return src.trigger_rates()
 
     def _validate_trigger_fires_in_every_arm(self) -> None:
+        from increment.query.integrity import validate_trigger_fires_in_every_arm
+
         validate_trigger_fires_in_every_arm(self.trigger_rates(), self._experiment.trigger)
 
     def _cate_source(self, method: str) -> MomentSource:
@@ -2224,6 +2240,8 @@ class Analysis:
         if population not in ("assigned", "triggered"):
             _refuse(_INVALID_POPULATION, population=population)
         experiment = getattr(self, "_experiment", None)
+        from increment._sitewide import SitewideReadouts, SitewideRequest
+
         return SitewideReadouts(src=self._src, experiment=experiment).run(
             SitewideRequest(
                 metric_name=metric,
@@ -2383,6 +2401,8 @@ class Analysis:
         horizon_metrics: Sequence[Metric] | None = None,
     ) -> Any:
         """Return one native metric's live panel tuple, independent of TEMP tables."""
+        from increment.query.native_contract import NativeCoreSource
+
         src = _require_analysis_operation(
             self._src,
             "panel_sql",
@@ -2401,6 +2421,8 @@ class Analysis:
 
     def panel_sql(self, breakouts: list[Breakout] | None = None) -> dict[str, str]:
         """Return per-metric panel SQL without executing."""
+        from increment.query.native_contract import NativeCoreSource
+
         src = _require_analysis_operation(
             self._src,
             "panel_sql",
@@ -2620,6 +2642,8 @@ class Analysis:
             (``assigned`` or ``triggered``); the two populations are distinct
             result identities.
         """
+        from increment.breakout.estimates import LiftEstimates
+
         if isinstance(self._state, ContrastAnalysisState) and population == "triggered":
             _refuse(
                 _TRIGGER_UNSUPPORTED,
@@ -3014,6 +3038,9 @@ class Analysis:
             no trigger is declared. Triggered experiments add ``:assigned`` /
             ``:triggered`` key suffixes and an ``analysis_population`` column.
         """
+        from increment.breakout.estimates import reject_quantile_metrics, reject_retention_metrics
+        from increment.query.native_contract import NativeViewSource
+
         self._require_arm_state("breakout_summaries")
         native = _require_analysis_operation(
             self._src,
@@ -3076,6 +3103,9 @@ class Analysis:
             Triggered experiments include both populations and an
             ``analysis_population`` column; empty when no factors are declared.
         """
+        from increment.breakout.estimates import reject_quantile_metrics
+        from increment.query.native_contract import NativeViewSource
+
         self._require_arm_state("factor_summaries")
         native = _require_analysis_operation(
             self._src,
@@ -3186,6 +3216,8 @@ class Analysis:
         correction: Correction | None = None,
         population: Literal["assigned", "triggered"] | None = None,
     ) -> BreakoutEstimates:
+        from increment.breakout.estimates import BreakoutEstimates
+
         state = self._state
         experiment = (
             state.experiment
@@ -3302,6 +3334,8 @@ class Analysis:
     ) -> BreakoutEstimates:
         """:meth:`run_breakout`, optionally under an explicit *correction* in place of the
         plan's breakout multiplicity (``"none"`` leaves every cell standing alone)."""
+        from increment.breakout.estimates import BreakoutEstimates
+
         added = self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
         if isinstance(self._state, ContrastAnalysisState):
             reject_role_overrides_under_contrast(
@@ -3485,6 +3519,8 @@ class Analysis:
         compiled unassigned procedures at the plan's alpha, matching the method/prior
         defaults the facade already resolves for them.
         """
+        from increment.breakout.estimates import run_daily_lift as _run_daily_lift_estimates
+
         plan = with_unassigned_procedures(
             self._plan,
             cast("Sequence[Metric]", kwargs["metrics"]),
@@ -3517,6 +3553,8 @@ class Analysis:
         correction: Correction | None = None,
     ) -> DailyLiftEstimates:
         """Mark added metrics exploratory under the effective view correction."""
+        from increment.breakout.estimates import DailyLiftEstimates
+
         names = {metric.name for metric in added}
         if not names:
             return rows

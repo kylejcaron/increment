@@ -28,8 +28,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from scipy.stats import norm as _norm
-from scipy.stats import t as _t
 
 from increment._display import format_interval
 from increment._literals import (
@@ -2357,6 +2355,9 @@ def row_p_value(row: DecisionRow) -> float | None:
     null = math.log1p(row.null_lift) if scale == "log" else row.null_lift
     z = (e.log_mean - null) / e.log_se
     reference_df = row.reference_df
+    from scipy.stats import norm as _norm
+    from scipy.stats import t as _t
+
     distribution = _t if reference_df is not None else _norm
     shapes = (reference_df,) if reference_df is not None else ()
     if row.alternative == "greater":
@@ -2625,6 +2626,9 @@ def _additive_tail_p_value(
     interval was cut from: Student-t at ``df`` when given, Normal otherwise.
     Directional alternatives use one tail over the composite null."""
     z = (abs_diff - null) / abs_se
+    from scipy.stats import norm as _norm
+    from scipy.stats import t as _t
+
     distribution = _t if df is not None else _norm
     shapes = (df,) if df is not None else ()
     if alternative == "greater":
@@ -2702,6 +2706,8 @@ def _recover_fixed_open_interval_parameters(
         _raise("estimation.results.lift.open_interval_unrecoverable")
     if persisted is not None:
         return persisted
+    from scipy.stats import norm as _norm
+
     z = tail_isf(_norm.isf, estimate.alpha, what="open fixed Normal interval")
     if abs(z) <= math.sqrt(math.ulp(1.0)):
         _raise("estimation.results.lift.open_interval_unrecoverable")
@@ -2840,6 +2846,8 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
             _raise("estimation.results.lift.fcr_prior_unsupported")
         if e.alpha is None:
             _raise("estimation.results.lift.open_interval_unrecoverable")
+        from scipy.stats import norm as _norm
+
         isf = student_t_isf if estimate.reference_kind == "t" else _norm.isf
         shapes = (estimate.reference_df,) if estimate.reference_df is not None else ()
         critical = tail_isf(isf, e.alpha, *shapes, what="fixed FCR endpoint")
@@ -3054,6 +3062,9 @@ def _joint_statistic(reference: JointContrastReference, ratio: Fraction) -> Frac
 
 
 def _joint_p_value(reference: JointContrastReference, null: float, alternative: str) -> float:
+    from scipy.stats import norm as _norm
+    from scipy.stats import t as _t
+
     boundary = Fraction(null)
     statistic = _joint_statistic(reference, boundary)
     if alternative != "two-sided":
@@ -3101,6 +3112,7 @@ def _joint_p_value(reference: JointContrastReference, null: float, alternative: 
                 left=False,
                 upper=False,
             )
+
             log_tail = float(_t.logsf(z, reference.df) if reference.kind == "t" else _norm.logsf(z))
     if not math.isfinite(log_tail):
         _raise("estimation.results.joint.unavailable", reason="tail_unresolvable")
@@ -3341,6 +3353,8 @@ def _central_inversion(reference: JointContrastReference, alpha: float, alternat
     set's pre-closure geometry and the central interval the row displays
     under the library's one-sided display convention.
     """
+    from scipy.stats import norm as _norm
+
     if alternative != "two-sided" and alpha >= 0.5:
         _raise("estimation.results.joint.invalid_set", reason="directional alpha must be below 0.5")
     tail = alpha / 2.0 if alternative == "two-sided" else alpha

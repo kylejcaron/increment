@@ -24,8 +24,6 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, model_validator
 from scipy.fft import dst
 from scipy.special import expit, log_ndtr
-from scipy.stats import chi2 as chi2_dist
-from scipy.stats import norm as norm_dist
 
 from increment.errors import (
     CodedModel,
@@ -157,6 +155,8 @@ def cochran_q(
     mu = float((w * est_arr).sum() / w_sum)
     df = k - 1
     q = float((w * (est_arr - mu) ** 2).sum())
+    from scipy.stats import chi2 as chi2_dist
+
     p_value = float(chi2_dist.sf(q, df))
 
     # DerSimonian-Laird: tau^2 = max(0, (Q - df) / (sum(w) - sum(w^2)/sum(w))).
@@ -195,6 +195,8 @@ def _higgins_thompson_i2_ci(q: float, k: int, alpha: float) -> tuple[float | Non
     else:
         se_ln_h = np.sqrt(1.0 / (2 * (k - 2)) * (1.0 - 1.0 / (3 * (k - 2) ** 2)))
 
+    from scipy.stats import norm as norm_dist
+
     z = two_sided_critical_value(norm_dist.isf, alpha, what="Higgins-Thompson I^2 interval")
     h_lo = max(1.0, float(np.exp(ln_h - z * se_ln_h)))
     h_hi = float(np.exp(ln_h + z * se_ln_h))
@@ -223,6 +225,8 @@ def pairwise_contrast_arrays(
 
     diff = est_a - est_b
     se = float(np.sqrt(var_a + var_b))
+    from scipy.stats import norm as norm_dist
+
     z = two_sided_critical_value(norm_dist.isf, alpha, what="pairwise segment contrast")
     lower, upper = wald_bounds(diff, z, se, what="pairwise segment contrast")
     return diff, se, lower, upper
@@ -922,6 +926,8 @@ def marginalized_segment_intervals(
 
     posterior = _tau_posterior(est_arr, var_arr, tau_prior_scale)
     theta = posterior.theta
+
+    from scipy.stats import norm as norm_dist
 
     z = two_sided_critical_value(norm_dist.isf, alpha, what="marginalized segment interval")
     se = np.sqrt(posterior.variance)

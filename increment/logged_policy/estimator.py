@@ -8,7 +8,6 @@ from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from scipy.stats import t as t_dist
 
 from increment.compatibility import IndependentUnitFloor
 from increment.errors import CodedModel
@@ -363,6 +362,8 @@ def estimate_policy_contrast(
     if nonfinite:
         _raise("logged_policy.inference.unrepresentable", nonfinite=nonfinite, **reported)
     lb, ub = wald_bounds(estimate, q, se, what="logged-policy contrast interval")
+    from scipy.stats import t as t_dist
+
     p_value = (
         float(2.0 * t_dist.sf(abs(estimate) / se, df))
         if se > 0.0

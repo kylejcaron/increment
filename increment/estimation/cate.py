@@ -23,7 +23,6 @@ from typing import Literal, overload
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
-from scipy.stats import chi2, f
 
 from increment._identity import canonical_id_strings
 from increment.errors import (
@@ -1173,6 +1172,8 @@ def _cluster_wald(beta: np.ndarray, covariance: np.ndarray, reference_df: int) -
         _raise("estimation.cate.singular_wald", dimension=dimension)
     if not math.isfinite(statistic) or statistic < 0.0:
         _raise("estimation.cate.uncertainty_unavailable", query="interaction Wald test")
+    from scipy.stats import f
+
     return WaldTest(
         statistic=statistic,
         df=dimension,
@@ -1453,6 +1454,8 @@ def fit_cate(  # noqa: PLR0915
                 ard_coef=None if beta_ard is None else beta_ard[j],
             )
         )
+
+    from scipy.stats import chi2
 
     if positions:
         if cluster_wald is not None:
