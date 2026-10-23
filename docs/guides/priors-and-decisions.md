@@ -30,7 +30,7 @@ for r in results:
     print(f"sampling_lift={r.lift.value:+.2%} posterior_estimate={r.posterior_estimate!r}")
 ```
 
-Pass `prior=` to `run(...)`, not to an `Analysis` constructor. A call-time prior overrides the declared prior for that call; `prior=None` resets to flat. If omitted, `AnalysisPlan` or `ExperimentMetric` declarations supply the default.
+Pass `prior=` to `run(...)`, not to an `Analysis` constructor. A call-time prior takes precedence over a metric's declared prior for that run; `prior=None` resets to flat. A differing override of a non-default declared prior emits one warning for that run. If omitted, `AnalysisPlan` or `ExperimentMetric` declarations supply the default.
 
 Choose `Normal` for a single bell-shaped prior, `StudentTPrior` for heavier tails, or `MixturePrior` for a mix of shapes. The declared prior and updated posterior are stored separately.
 

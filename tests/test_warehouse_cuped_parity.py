@@ -16,6 +16,7 @@ import yaml
 from increment.errors import DefinitionError
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Definitions
+from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
 from tests.warehouse_cuped_cases import (
     check_day_axis_parity,
@@ -236,6 +237,7 @@ def duck():
 
 
 @pytest.mark.slow
+@allow_declared_overrides
 def test_ratio_cuped_fixed_horizon_matches_the_dataframe_oracle(duck, tmp_path):
     intervals = check_fixed_horizon_parity(duck, "duckdb", "events", tmp_path)
     plain, adjusted = intervals["duckdb"]

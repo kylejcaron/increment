@@ -6,6 +6,7 @@ import narwhals as nw
 import pytest
 
 from increment.analysis import Analysis
+from increment.errors import IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.semantics import load
 from tests.analysis_factory import _moment_source
@@ -1099,7 +1100,7 @@ def test_cuped_evidence_digest_accepts_infinities_without_rewriting_values():
 
 @pytest.mark.slow
 def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkeypatch):
-    import pytest
+    import warnings
 
     from increment import Method
     from increment.frame import CupedCovariate
@@ -1117,20 +1118,28 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
     )
     analysis = Analysis.from_definitions("cov_test", defs_path, con, store="none")
     try:
+        with pytest.warns(IncrementWarning) as caught:
+            warnings.filterwarnings(
+                "ignore",
+                message=r"fetch_arrow_table\(\) is deprecated",
+                category=DeprecationWarning,
+            )
+            override_rows = analysis.run(
+                decision_method=Method(name="plain"),
+                sensitivity_methods=[
+                    Method.cuped_multicovariate(
+                        name="linear",
+                        covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                    )
+                ],
+            )
+        assert any(
+            getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+            for warning in caught
+        )
         baseline = next(
             row.require_lift()
-            for row in cast(
-                list[LiftEstimate],
-                analysis.run(
-                    decision_method=Method(name="plain"),
-                    sensitivity_methods=[
-                        Method.cuped_multicovariate(
-                            name="linear",
-                            covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
-                        )
-                    ],
-                ),
-            )
+            for row in cast(list[LiftEstimate], override_rows)
             if row.group_id == "treatment" and row.method == "linear"
         )
         source = _native_source(analysis)
@@ -1155,21 +1164,31 @@ def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkey
 
         monkeypatch.setattr(cuped_query, "fit_multicovariate_source", mutate_before_fit)
         monkeypatch.setattr(type(source), "unit_frame", no_unit_frame)
-        after = next(
-            row.require_lift()
-            for row in cast(
-                list[LiftEstimate],
-                analysis.run(
-                    decision_method=Method(name="plain"),
-                    sensitivity_methods=[
-                        Method.cuped_multicovariate(
-                            name="linear",
-                            covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
-                        )
-                    ],
-                ),
+        with pytest.warns(IncrementWarning) as caught:
+            warnings.filterwarnings(
+                "ignore",
+                message=r"fetch_arrow_table\(\) is deprecated",
+                category=DeprecationWarning,
             )
-            if row.group_id == "treatment" and row.method == "linear"
+            after = next(
+                row.require_lift()
+                for row in cast(
+                    list[LiftEstimate],
+                    analysis.run(
+                        decision_method=Method(name="plain"),
+                        sensitivity_methods=[
+                            Method.cuped_multicovariate(
+                                name="linear",
+                                covariates=CupedCovariate(name="pre_tenure", kind="continuous"),
+                            )
+                        ],
+                    ),
+                )
+                if row.group_id == "treatment" and row.method == "linear"
+            )
+        assert any(
+            getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+            for warning in caught
         )
         assert mutated
         assert after.value == pytest.approx(baseline.value, rel=1e-10, abs=1e-10)
@@ -1208,19 +1227,24 @@ def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
             )
         ],
     )
-    results = cast(
-        list[LiftEstimate],
-        list(
-            analysis.run(
-                decision_method=Method(name="plain"),
-                sensitivity_methods=[
-                    Method.cuped_multicovariate(
-                        name="linear",
-                        covariates=CupedCovariate(name="pre", kind="continuous"),
-                    )
-                ],
-            )
-        ),
+    with pytest.warns(IncrementWarning) as caught:
+        results = cast(
+            list[LiftEstimate],
+            list(
+                analysis.run(
+                    decision_method=Method(name="plain"),
+                    sensitivity_methods=[
+                        Method.cuped_multicovariate(
+                            name="linear",
+                            covariates=CupedCovariate(name="pre", kind="continuous"),
+                        )
+                    ],
+                )
+            ),
+        )
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
     )
     treatment = next(
         row for row in results if row.group_id == "treatment" and row.method == "linear"
@@ -1294,6 +1318,8 @@ def _scalar_native_case(tmp_path, *, bare=False, mixed=False):
 @pytest.mark.parametrize("bare", [False, True])
 @pytest.mark.parametrize("mixed", [False, True])
 def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed):
+    import warnings
+
     import pyarrow as pa
 
     from increment import Method, MetricSpec
@@ -1318,8 +1344,22 @@ def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed
         with Analysis.from_definitions("cov_test", path, con) as native:
             joint = {row.method: row for row in native.run() if isinstance(row, LiftEstimate)}
             for method in methods:
-                (alone,) = native.run(decision_method=method, sensitivity_methods=())
-                assert isinstance(alone, LiftEstimate)
+                with pytest.warns(IncrementWarning) as caught:
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"fetch_arrow_table\(\) is deprecated",
+                        category=DeprecationWarning,
+                    )
+                    (alone,) = native.run(decision_method=method, sensitivity_methods=())
+                expected_warnings = {"sensitivity_methods"}
+                if method != methods[0]:
+                    expected_warnings.add("decision_method")
+                assert {
+                    getattr(warning.message, "context", {})["setting"]
+                    for warning in caught
+                    if getattr(warning.message, "code", None)
+                    == "analysis.run.override_replaces_declared"
+                } == expected_warnings
                 factory = (
                     Method.cuped
                     if method.variance_reduction == "cuped"
@@ -1347,6 +1387,7 @@ def test_native_method_families_match_standalone_and_frame(tmp_path, bare, mixed
                     (expected,) = frame.run()
                 assert isinstance(expected, LiftEstimate)
                 for actual in (joint[method.name], alone):
+                    assert isinstance(actual, LiftEstimate)
                     assert actual.require_lift().value == pytest.approx(
                         expected.require_lift().value, rel=1e-10
                     )
@@ -1366,7 +1407,19 @@ def test_native_breakout_uses_effective_scalar_family(tmp_path):
     )
     try:
         with Analysis.from_definitions("cov_test", path, con) as analysis:
-            (expected,) = analysis.run(decision_method=methods[1], sensitivity_methods=())
+            import warnings
+
+            with pytest.warns(IncrementWarning) as caught:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"fetch_arrow_table\(\) is deprecated",
+                    category=DeprecationWarning,
+                )
+                (expected,) = analysis.run(decision_method=methods[1], sensitivity_methods=())
+            assert any(
+                getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+                for warning in caught
+            )
             assert isinstance(expected, LiftEstimate)
             (actual,) = analysis.run_breakout(decision_method=methods[1], sensitivity_methods=())
             assert actual.dimension_value == "all"

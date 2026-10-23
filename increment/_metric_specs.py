@@ -125,14 +125,18 @@ class MetricSpec(CodedModel, BaseModel):
         mean-filled; use ``"zero"`` or ``"drop"``.
     decision_method : Method | None
         Decision estimator for this metric. Omitted uses IPTW for an
-        observational design, otherwise unadjusted; ``run(decision_method=...)``
-        overrides it without changing the declared sensitivities.
+        observational design, otherwise unadjusted. A call-time
+        ``run(decision_method=...)`` takes precedence for that run; if it
+        replaces this declared value, ``run()`` warns.
     sensitivity_methods : tuple[Method, ...]
         Additional estimators reported after the decision estimator. Each
-        CUPED method owns its covariate declarations and missing policy.
+        CUPED method owns its covariate declarations and missing policy. A
+        call-time ``run(sensitivity_methods=...)`` replaces this list for
+        that run; if it replaces a non-empty declaration, ``run()`` warns.
     prior : Normal | None
-        Informative prior for this metric's ``run()`` rows; omitted = inherit
-        the call's ``prior=``.
+        Informative prior for this metric's rows. Omitted uses no declared
+        prior. A call-time ``run(prior=...)`` takes precedence for that run;
+        if it replaces this prior, ``run()`` warns.
     preferred_direction : {"increase", "decrease", "neutral"} | None
         The metric's declared favorable side; ``None`` (default) means
         undeclared, not "increase" -- ``synthesise_metric`` forwards it

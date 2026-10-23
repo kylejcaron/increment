@@ -89,6 +89,7 @@ from pydantic import ValidationError
 from increment import Analysis
 from increment._analysis_config import UNSET
 from increment.errors import CodedError, IncrementWarning
+from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
 from tests.warning_codes import warning_codes
 
@@ -372,6 +373,7 @@ class CaseResult:
     advisory_counts: dict[str, int] = field(default_factory=dict)
 
 
+@allow_declared_overrides
 def _read(analysis: Any, case: ParityCase) -> Any:
     """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
     (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and

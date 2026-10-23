@@ -10,6 +10,7 @@ import pytest
 from increment.analysis import Analysis
 from increment.errors import CodedError
 from increment.semantics.artifact import UnitDayArtifactManifest
+from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import _moment_source
 from tests.covariate_cases import categorical_defs_and_con, covariate_defs_and_con
 
@@ -401,6 +402,7 @@ def test_artifact_scalar_missing_policy_matches_native_and_frame(tmp_path, missi
 
 @pytest.mark.slow
 @pytest.mark.parametrize("mixed", [False, True])
+@allow_declared_overrides
 def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed):
     from increment.estimation.results import LiftEstimate
     from tests.test_cuped_covariate_sources import _scalar_native_case
@@ -429,6 +431,7 @@ def test_artifact_bare_property_method_catalog_publish_adopt_run(tmp_path, mixed
 
 
 @pytest.mark.slow
+@allow_declared_overrides
 def test_artifact_implicit_and_named_scalar_families_match_standalone(tmp_path):
     import json
 
@@ -503,6 +506,7 @@ def test_artifact_named_scalar_breakout_refuses_before_query(tmp_path, monkeypat
 
 @pytest.mark.slow
 @pytest.mark.parametrize("missing", ["zero", "impute", "refuse"])
+@allow_declared_overrides
 def test_artifact_scalar_override_applies_effective_missing_preparation(tmp_path, missing):
     from increment import Method
     from increment.estimation.results import LiftEstimate

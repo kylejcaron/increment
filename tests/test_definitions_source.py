@@ -25,6 +25,7 @@ from increment.semantics.models import (
     MultiplicitySpec,
     Winsorization,
 )
+from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, make_analysis_like, native_connection
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
@@ -302,6 +303,7 @@ def test_dimensioned_daily_duration_matches_raw_events(dimension_first):
 
 
 @pytest.mark.slow
+@allow_declared_overrides
 def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_analyses):
     from increment.estimation.engine import Method
     from increment.estimation.inference import Normal

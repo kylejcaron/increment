@@ -11,6 +11,7 @@ from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate, from_unit_panel, from_unit_summary
 from increment.readouts import breakout, run
+from tests._override_warnings import allow_declared_overrides
 
 
 def _records() -> list[dict[str, Any]]:
@@ -286,6 +287,7 @@ def test_mixed_breakout_collision_mapping_matches_each_standalone():
 @pytest.mark.parametrize("role", ["decision", "sensitivity"])
 @pytest.mark.parametrize("missing", ["refuse", "impute"])
 @pytest.mark.slow
+@allow_declared_overrides
 def test_scalar_missing_failure_is_local_to_its_method(tmp_path, ingress, role, missing):
     treatment_group = "treatment"
     expected_code = (

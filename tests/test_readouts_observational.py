@@ -169,7 +169,6 @@ def test_unadjusted_sensitivity_keeps_observational_design_default():
 
 @pytest.mark.parametrize("decision_name", [None, "unadjusted"])
 def test_declared_and_call_time_methods_match_explicit_secondary_decision(decision_name):
-    from contextlib import nullcontext
 
     from increment.frame import MetricSpec
     from increment.semantics.models import AnalysisPlan
@@ -195,7 +194,7 @@ def test_declared_and_call_time_methods_match_explicit_secondary_decision(decisi
         design=_OBS_TRIM,
         plan=AnalysisPlan(secondaries=["revenue"], q=0.01),
     )
-    with pytest.warns(IncrementWarning) if decision is None else nullcontext():
+    with pytest.warns(IncrementWarning) as caught:
         declared_rows = lift_rows(declared.run())
         call_rows = lift_rows(
             call_time.run(sensitivity_methods=[sensitivity])
@@ -210,6 +209,10 @@ def test_declared_and_call_time_methods_match_explicit_secondary_decision(decisi
         )
         inherited = lift_rows(declared.run(decision_method=Method(name="unadjusted")))
         cleared = lift_rows(declared.run(sensitivity_methods=[]))
+    assert any(
+        getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+        for warning in caught
+    )
     expected_roles = [(decision_name or "iptw", "decision"), ("dml", "sensitivity")]
     assert oracle[0].family_threshold == pytest.approx(0.01)
     for rows in (declared_rows, call_rows):
@@ -1706,7 +1709,16 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
             assert expected["spend_per_click"].require_lift().value == pytest.approx(0.6)
         for clear in (False, True, True, False):
             kwargs = {"prior": None} if clear else {}
-            rows = lift_rows(bound.run(decision_method=decision, **kwargs))
+            if clear:
+                with pytest.warns(IncrementWarning) as caught:
+                    rows = lift_rows(bound.run(decision_method=decision, **kwargs))
+                assert any(
+                    getattr(warning.message, "code", None)
+                    == "analysis.run.override_replaces_declared"
+                    for warning in caught
+                )
+            else:
+                rows = lift_rows(bound.run(decision_method=decision, **kwargs))
             rows = [
                 row
                 for row in rows

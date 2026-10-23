@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from increment import Analysis, CupedCovariate, Method, MetricSpec
-from increment.errors import UnsupportedRequestError
+from increment.errors import IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 
 
@@ -216,14 +216,16 @@ def test_selected_scalar_secondary_with_override_matches_standalone(mixed):
             metrics=[MetricSpec(name="outcome", decision_method=_scalar("a"))],
             plan=AnalysisPlan(secondaries=["outcome"], q=0.1),
         ) as analysis:
-            return {
-                row.method: row
-                for row in analysis.run(
+            with pytest.warns(IncrementWarning) as caught:
+                rows = analysis.run(
                     decision_method=decision,
                     sensitivity_methods=tuple(companions) if joint else (),
                 )
-                if isinstance(row, LiftEstimate)
-            }
+            assert any(
+                getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+                for warning in caught
+            )
+            return {row.method: row for row in rows if isinstance(row, LiftEstimate)}
 
     actual = run(True)["b"]
     expected = run(False)["b"]
@@ -277,9 +279,22 @@ def test_encouragement_scalar_override_rechecks_missing_policy(panel, role, miss
     try:
         bad, good, naive = _scalar("a", missing=missing), _scalar("b"), Method.unadjusted()
         methods = (bad, naive, good) if role == "decision" else (naive, bad, good)
-        rows = analysis.run(
-            decision_method=methods[0], sensitivity_methods=methods[1:], estimands=("itt", "late")
+        expects_override_warning = role == "sensitivity" or missing == "refuse"
+        warning_context = (
+            pytest.warns(IncrementWarning) if expects_override_warning else nullcontext()
         )
+        with warning_context as run_warnings:
+            rows = analysis.run(
+                decision_method=methods[0],
+                sensitivity_methods=methods[1:],
+                estimands=("itt", "late"),
+            )
+        if expects_override_warning:
+            assert run_warnings is not None
+            assert any(
+                getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+                for warning in run_warnings
+            )
         failed = [row for row in rows if isinstance(row, LiftEstimate) and row.method == bad.name]
         assert {row.estimand for row in failed} == {"itt", "late"}
         assert all(row.lift is None for row in failed)

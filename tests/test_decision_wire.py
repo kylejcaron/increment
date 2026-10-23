@@ -47,6 +47,7 @@ from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.semantics.models import NormalPriorSpec
 from increment.semantics.unit_cycle import UnitCycleTApproximation
+from tests._override_warnings import allow_declared_overrides
 
 _METRIC_A = "revenue_2024-01-15"
 _METRIC_B = "orders_2024-01-16"
@@ -89,6 +90,7 @@ def _view_policies() -> CompiledViewPolicies:
     [(True, True, True), (True, False, None), (False, True, None)],
     ids=["legacy-bound-prior-restored", "explicit-no-family", "prior-free-exclusion"],
 )
+@allow_declared_overrides
 def test_portable_prior_reset_restores_declared_family(
     tmp_path, bound_prior, named_family, expected_discovery
 ):

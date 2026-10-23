@@ -2647,10 +2647,19 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
         plan=AnalysisPlan(secondaries=["y"]),
     )
 
+    def clear_declared_prior():
+        with pytest.warns(IncrementWarning) as caught:
+            rows = lift_rows(prior_bound.run(prior=None))
+        assert any(
+            getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
+            for warning in caught
+        )
+        return rows[0]
+
     try:
         inherited_before = lift_rows(prior_bound.run())[0]
-        reset_first = lift_rows(prior_bound.run(prior=None))[0]
-        reset_second = lift_rows(prior_bound.run(prior=None))[0]
+        reset_first = clear_declared_prior()
+        reset_second = clear_declared_prior()
         expected = lift_rows(prior_free.run())[0]
         inherited_after = lift_rows(prior_bound.run())[0]
 

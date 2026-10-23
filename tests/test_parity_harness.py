@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from increment import Analysis
 
+from tests._override_warnings import allow_declared_overrides
 from tests.capability_contracts import CONSTRUCTORS
 from tests.parity_harness.cases import PARITY_CASES, Absence
 from tests.parity_harness.runner import assert_parity, run_case
@@ -68,6 +69,7 @@ def test_qr_cuped_rows_cover_six_ingresses_and_record_unavailable_sources():
         "from_moments",
     ],
 )
+@allow_declared_overrides
 def test_prior_reset_matches_independent_prior_free_analysis(constructor):
     from increment import Analysis, AnalysisPlan, Method, MetricSpec
     from tests.analysis_factory import lift_rows

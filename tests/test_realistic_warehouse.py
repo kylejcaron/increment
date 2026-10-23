@@ -34,6 +34,7 @@ from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from increment.results import NotApplicable, SRMResult
 from increment.semantics.models import RatioMetric, RetentionMetric
+from tests._override_warnings import allow_declared_overrides
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import make_analysis_like
 from tests.warning_codes import warning_codes
@@ -494,6 +495,7 @@ def test_duckdb_sequential_capture_streams_bounded_batches_without_closing_conne
     connection.disconnect()
 
 
+@allow_declared_overrides
 def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # noqa: PLR0915
     """Exercise unequal allocation, an immature late cohort, and nullable CUPED input."""
     import pyarrow as pa
@@ -584,7 +586,13 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     with pytest.warns(IncrementWarning) as censoring_warnings:
         source_result = source.run(decision_method=Method(name="unadjusted"))
     assert censoring_warnings
-    for warning in censoring_warnings:
+    relevant_censoring_warnings = [
+        warning
+        for warning in censoring_warnings
+        if getattr(warning.message, "code", None) != "analysis.run.override_replaces_declared"
+    ]
+    assert relevant_censoring_warnings
+    for warning in relevant_censoring_warnings:
         assert isinstance(warning.message, IncrementWarning)
         assert warning.message.code == "frame.censoring.dropped_units"
         assert warning.message.context["dropped"] == 49

@@ -2580,13 +2580,18 @@ class Analysis:
             Narrow the estimated metrics. ``None`` (default) selects
             every declared metric.
         decision_method : Method | _Unset
-            Decision estimator override; UNSET inherits each metric's declaration.
+            Decision estimator override; UNSET inherits each metric's
+            declaration. An explicit override replaces a declared,
+            non-default value for that run.
         sensitivity_methods : Sequence[Method] | _Unset
             Additional estimator overrides; UNSET inherits each declaration.
+            An explicit override replaces a declared, non-default value for
+            that run.
         prior : Normal | StudentTPrior | MixturePrior | None | _Unset
-            Informative prior override; UNSET inherits, None resets it. A
-            mixture prior is refused on observational/encouragement rows -
-            pass ``Normal``.
+            Informative prior override; UNSET inherits each declaration, None
+            resets it. An explicit override replaces a declared, non-default
+            value for that run. A mixture prior is refused on
+            observational/encouragement rows - pass ``Normal``.
         estimands : Sequence[str] | None
             Under :class:`Encouragement` only: among ``"itt"``/
             ``"compliance"``/``"late"``, default all three.
@@ -2690,12 +2695,72 @@ class Analysis:
         state = self._state
         assert not isinstance(state, ContrastAnalysisState)
         source = state.source
+
+        # A compliance-only encouragement read uses no outcome configuration.
         if (
             estimands is not None
             and not {"itt", "late"}.intersection(estimands)
             and getattr(source.context.design, "mechanism", None) == "encouragement"
         ):
             return
+        selected_names = {metric.name for metric in selected}
+        declared_configs = {
+            config.metric.name: config
+            for config in source.context.configs
+            if config.metric.name in selected_names
+        }
+        default_decision = (
+            Method(name="iptw")
+            if getattr(source.context.design, "mechanism", None) == "observational"
+            else Method(name="unadjusted")
+        )
+        conflicts: dict[str, list[tuple[str, object]]] = {
+            "decision_method": [],
+            "sensitivity_methods": [],
+            "prior": [],
+        }
+        for name, config in declared_configs.items():
+            if (
+                decision_method is not UNSET
+                and not config.decision_defaulted
+                and config.decision_method != default_decision
+                and config.decision_method != decision_method
+            ):
+                conflicts["decision_method"].append((name, config.decision_method))
+            if (
+                sensitivity_methods is not UNSET
+                and config.sensitivity_methods
+                and tuple(config.sensitivity_methods)
+                != tuple(cast(Sequence[Method], sensitivity_methods))
+            ):
+                conflicts["sensitivity_methods"].append((name, tuple(config.sensitivity_methods)))
+            if (
+                prior is not UNSET
+                and config.prior is not None
+                and not config.prior_is_global
+                and config.prior != prior
+            ):
+                conflicts["prior"].append((name, config.prior))
+
+        overrides = {
+            "decision_method": decision_method,
+            "sensitivity_methods": (
+                tuple(cast(Sequence[Method], sensitivity_methods))
+                if sensitivity_methods is not UNSET
+                else sensitivity_methods
+            ),
+            "prior": prior,
+        }
+        for setting, declarations in conflicts.items():
+            if declarations:
+                _warn(
+                    "analysis.run.override_replaces_declared",
+                    setting=setting,
+                    metrics=tuple(name for name, _ in declarations),
+                    declared=tuple(declarations),
+                    override=overrides[setting],
+                )
+
         config_sources: list[tuple[Any, MomentSource]] = []
         if selected:
             config_sources.extend(
