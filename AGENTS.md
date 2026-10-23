@@ -43,7 +43,7 @@ parity matrix and a guide — not every loader.
 | `increment/semantics/` | Pydantic declarations of experiments, metrics, designs, plans | import Ibis or SQLGlot (`loader.py` may import SQLGlot lazily to validate SQL) |
 | `increment/query/` | Warehouse relations, SQL builders, Ibis sessions, artifacts | hold statistical logic |
 | `increment/frame.py`, `increment/_frame_*.py` | Narwhals dataframe loaders and reducers | import Ibis or `increment.query` |
-| Evidence layer: `increment/_evidence_types.py` (types), `increment/_source_types.py` (loader contract), `increment/readouts/_metric_rows.py` and `increment/readouts/_evidence.py` (acquisition) | Typed evidence requests, loader capability declarations, refusals, digests | compute estimates |
+| Evidence layer: `increment/_source_types.py` (loader contract) and `increment/readouts/_metric_rows.py` (acquisition) | Typed evidence requests, loader capability declarations, refusals, digests | compute estimates |
 | `increment/estimation/` | Estimators and inference on data values | call a source, construct a query, or branch on loader kind |
 | `increment/readouts/`, `increment/breakout/`, `increment/_day_axis.py` | Assemble results from evidence | call source methods or probe a source with `isinstance`/`getattr`/`hasattr` |
 | `increment/power/` | Sample size, power and MDE solvers | access a warehouse |
@@ -54,8 +54,8 @@ parity matrix and a guide — not every loader.
   (`increment/cate.py::estimate_cate`; in `increment/estimation/`: `adjust.py::estimate_ate`
   and `observational_evidence`, `quantile.py::estimate_quantile_lift`,
   `winsor.py::raw_state_from_source`) call a source; a facade loads and
-  delegates. Direct calls that still exist elsewhere are being removed task by
-  task under the plan dated 2026-10-22; do not add one.
+  delegates. Some statistics code still calls a source directly; do not add
+  another.
 - What a loader can answer is declared once on the loader and checked before any
   data is read. Do not probe a source for capabilities.
 - One hazard, one refusal code, on every constructor. Raise the registered
