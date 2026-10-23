@@ -14,6 +14,30 @@ from increment.semantics.design import (
 )
 
 
+def test_design_field_errors_are_coded():
+    from increment.errors import InvalidRequestError
+
+    for validate in (
+        lambda: Randomized(control_group="c", allocation_schem={}),  # ty: ignore[unknown-argument]
+        lambda: Randomized.model_validate({"control_group": "c", "allocation_schem": {}}),
+    ):
+        with pytest.raises(InvalidRequestError) as raised:
+            validate()
+        assert raised.value.code == "model.field.unknown"
+
+
+def test_nested_field_error_is_attributed():
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as raised:
+        Encouragement(
+            control_group="c",
+            uptake={"fact": "signup", "window_days": 0},
+        )
+    assert raised.value.code == "model.field.range"
+    assert raised.value.context["loc"] == ("uptake", "window_days")
+
+
 def test_randomized_defaults():
     r = Randomized(control_group="control")
     assert r.mechanism == "randomized"
@@ -27,8 +51,9 @@ def test_randomized_frozen_mutation_raises():
 
 
 def test_adjustment_set_requires_at_least_one_covariate():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         AdjustmentSet(covariates=())
+    assert raised.value.code == "model.field.length"
 
 
 def test_adjustment_set_accepts_covariates():
@@ -50,17 +75,18 @@ def test_identification_gate_defaults():
 
 
 def test_identification_gate_min_propensity_bounds():
-    with pytest.raises(ValidationError):
-        IdentificationGate(min_propensity=0.0)
-    with pytest.raises(ValidationError):
-        IdentificationGate(min_propensity=0.5)
+    for value in (0.0, 0.5):
+        with pytest.raises(InvalidRequestError) as raised:
+            IdentificationGate(min_propensity=value)
+        assert raised.value.code == "model.field.range"
 
 
 def test_identification_gate_max_smd_rejects_negative():
     """max_smd is a magnitude (>= 0): a negative threshold would silently force
     refuse-always, exactly the misconfiguration this gate catches at declaration time."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         IdentificationGate(max_smd=-0.1)
+    assert raised.value.code == "model.field.range"
 
 
 def test_identification_gate_max_smd_allows_zero():
@@ -139,8 +165,9 @@ def _enc(**over):
 
 
 def test_acknowledged_false_rejected():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         ExclusionRestriction(acknowledged=False, justification="x" * 20)  # ty: ignore[invalid-argument-type]  # proving Literal[True] at runtime
+    assert raised.value.code == "model.field.literal"
 
 
 def test_justification_must_be_substantive():
@@ -150,8 +177,9 @@ def test_justification_must_be_substantive():
 
 
 def test_uptake_window_days_must_be_positive():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         UptakeSpec(fact="help_click", window_days=0)
+    assert raised.value.code == "model.field.range"
 
 
 def test_min_first_stage_z_floor_positive():
@@ -162,19 +190,21 @@ def test_min_first_stage_z_floor_positive():
 def test_observational_rejects_unknown_field():
     """A typo'd identification field (`gaet` for `gate`) must refuse: silently dropping it
     would discard the user's explicit overlap policy and apply the default instead."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         Observational(
             control_group="c",
             adjustment=AdjustmentSet(covariates=("age",)),
             gaet=IdentificationGate(overlap="trim"),  # ty: ignore[unknown-argument]  # proving extra=forbid at runtime
         )
+    assert raised.value.code == "model.field.unknown"
 
 
 def test_randomized_rejects_unknown_field():
     """Typo'd fields must refuse loudly, not be silently swallowed; allocation is a real
     field consumed as srm()'s default expected shares."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         Randomized(control_group="control", alocation={"control": 0.5, "treat": 0.5})  # ty: ignore[unknown-argument]
+    assert raised.value.code == "model.field.unknown"
     design = Randomized(control_group="control", allocation={"control": 0.5, "treat": 0.5})
     assert design.allocation == {"control": 0.5, "treat": 0.5}
 
@@ -216,17 +246,17 @@ def test_randomized_rejects_unknown_field():
 def test_every_design_model_rejects_unknown_fields(build):
     """The design layer holds the causal assumptions: every model in it must forbid unknown
     fields, matching semantics.models._Base."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         build()
+    assert raised.value.code == "model.field.unknown"
 
 
 def test_adjustment_set_duplicate_covariates_refused():
     """A duplicated covariate enters the design matrix twice downstream
     (rank deficiency or silently doubled weight, learner-dependent)."""
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         AdjustmentSet(covariates=("age", "age", "region"))
-    inner = exc_info.value.errors()[0]["ctx"]["error"]
-    assert inner.code == "definition.adjustment_set.adjustmentset_covariates_contains"
+    assert exc_info.value.code == "definition.adjustment_set.adjustmentset_covariates_contains"
 
 
 def test_adjustment_set_distinct_covariates_pass():
@@ -263,29 +293,29 @@ def test_encouragement_min_first_stage_z_rejects_infinity():
 
 
 def test_identification_gate_max_smd_rejects_infinity():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         IdentificationGate(max_smd=float("inf"))
+    assert raised.value.code == "model.field.nonfinite"
 
 
 def test_uptake_window_days_rejects_bool():
     """bool is an int subclass; True/False must never silently become 1/0."""
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         UptakeSpec(fact="help_click", window_days=True)
-    inner = exc_info.value.errors()[0]["ctx"]["error"]
-    assert inner.code == "definition.assignment.reject_bool"
+    assert exc_info.value.code == "definition.assignment.reject_bool"
 
 
 def test_reject_bool_code_is_shared_across_assignment_and_design():
     """The same bool guard is reached through both model entry points."""
     from increment.semantics.assignment import SwitchbackWindow
 
-    with pytest.raises(ValidationError) as via_assignment:
+    with pytest.raises(InvalidRequestError) as via_assignment:
         SwitchbackWindow(washout_steps=True, observation_steps=1)
-    with pytest.raises(ValidationError) as via_design:
+    with pytest.raises(InvalidRequestError) as via_design:
         UptakeSpec(fact="help_click", window_days=True)
 
-    assignment_code = via_assignment.value.errors()[0]["ctx"]["error"].code
-    design_code = via_design.value.errors()[0]["ctx"]["error"].code
+    assignment_code = via_assignment.value.code
+    design_code = via_design.value.code
     assert assignment_code == design_code == "definition.assignment.reject_bool"
 
 
@@ -301,10 +331,9 @@ def test_reject_bool_code_is_shared_across_assignment_and_design():
     ],
 )
 def test_randomized_allocation_refuses(allocation):
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         Randomized(control_group="control", allocation=allocation)
-    inner = exc_info.value.errors()[0]["ctx"]["error"]
-    assert inner.code == "design.allocation.invalid"
+    assert exc_info.value.code == "design.allocation.invalid"
 
 
 def test_randomized_allocation_need_not_sum_to_one():
@@ -314,9 +343,9 @@ def test_randomized_allocation_need_not_sum_to_one():
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
 def test_randomized_allocation_refuses_non_finite_weights(bad):
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         Randomized(control_group="control", allocation={"control": bad, "t": 1.0})
-    assert exc_info.value.errors()[0]["ctx"]["error"].code == "design.allocation.invalid"
+    assert exc_info.value.code == "design.allocation.invalid"
 
 
 def test_randomized_hash_equal_for_equal_designs_and_distinct_across_allocations():
@@ -336,7 +365,7 @@ def test_randomized_hashes_regardless_of_allocation():
 
 
 def test_encouragement_allocation_refuses():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="took_up"),
@@ -345,8 +374,7 @@ def test_encouragement_allocation_refuses():
             ),
             allocation={},
         )
-    inner = exc_info.value.errors()[0]["ctx"]["error"]
-    assert inner.code == "design.allocation.invalid"
+    assert exc_info.value.code == "design.allocation.invalid"
 
 
 def test_encouragement_hashes_regardless_of_allocation():

@@ -4,7 +4,6 @@ import copy
 import pickle
 
 import pytest
-from pydantic import ValidationError
 
 from increment.analysis import Analysis
 from increment.errors import DefinitionError, IncrementWarning, InvalidRequestError
@@ -450,8 +449,9 @@ def test_definition_covariate_refusal_roundtrips_through_copy_and_pickle():
 
 
 def test_unsupported_kind_is_rejected_by_the_declaration_schema():
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         CupedCovariate.model_validate({"name": "x", "kind": "ordinal"})
+    assert raised.value.code == "model.field.literal"
 
 
 def test_scalar_cuped_can_share_a_declared_covariate_with_cuped_linear():

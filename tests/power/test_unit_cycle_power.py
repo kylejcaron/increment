@@ -456,7 +456,7 @@ def test_forged_law_validation_is_translated_to_law_refusal():
         (
             "sequence",
             law().assignment.sequence.model_copy(update={"probability_ct": 0.0}),
-            "power.unit_cycle.law",
+            "model.field.range",
         ),
         (
             "window",
@@ -482,18 +482,13 @@ def test_nested_forged_assignment_is_refused_at_law_boundary(
     with pytest.raises(InvalidRequestError) as error:
         unit_cycle_law_moments(forged)
     assert error.value.code == expected_code
-
-
-def test_forged_law_refusal_names_the_rejected_nested_field():
-    assignment = law().assignment
-    sequence = assignment.sequence.model_copy(update={"probability_ct": 0.0})
-    forged = law().model_copy(update={"assignment": {**dict(assignment), "sequence": sequence}})
-    with pytest.raises(InvalidRequestError) as error:
-        unit_cycle_law_moments(forged)
-    assert error.value.code == "power.unit_cycle.law"
-    field = error.value.context["field"]
-    assert isinstance(field, str)
-    assert field.startswith("law.assignment")
+    if nested_field == "sequence":
+        assert error.value.context["field"] == "probability_ct"
+        assert error.value.context["loc"] == (
+            "sequence",
+            "independent_bernoulli_order",
+            "probability_ct",
+        )
 
 
 def test_available_power_must_match_rejections_in_serialized_result():

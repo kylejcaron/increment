@@ -30,7 +30,15 @@ from increment._literals import (
     PreferredDirection,
     ValueScale,
 )
-from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals, refuse
+from increment.errors import (
+    CodedError,
+    CodedModel,
+    InvalidRequestError,
+    RefusalSpec,
+    raiser,
+    refusals,
+    refuse,
+)
 from increment.estimation.binomial_rr import UNKNOWN_ALTERNATIVE
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.priors import (
@@ -182,7 +190,7 @@ class LiftPosterior(Protocol):
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float: ...
 
 
-class Normal(BaseModel):
+class Normal(CodedModel, BaseModel):
     """Normal distribution: scalar parameters (no array support needed;
     estimates are scalar per metric x method x arm).
     """

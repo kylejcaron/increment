@@ -616,9 +616,9 @@ def unchecked_change(model, path, value, mode):
         ("baseline", "cycles_per_unit", None, "power.switchback.baseline"),
         ("baseline", "effect_bounds", (1.0,), "model.field.missing"),
         ("baseline", "aggregation", "any", "power.switchback.bounded_model_required"),
-        ("baseline", "assignment.periods_per_cycle", 3, "power.switchback.baseline"),
-        ("baseline", "assignment.sequence.probability_ct", 0.0, "power.switchback.baseline"),
-        ("baseline", "assignment.window.washout_steps", -1, "power.switchback.baseline"),
+        ("baseline", "assignment.periods_per_cycle", 3, "model.field.literal"),
+        ("baseline", "assignment.sequence.probability_ct", 0.0, "model.field.range"),
+        ("baseline", "assignment.window.washout_steps", -1, "model.field.range"),
         (
             "baseline",
             "assignment.window.carryover_order",
@@ -648,9 +648,13 @@ def test_solvers_revalidate_before_calculation(solver, mode, input_name, path, v
 
 @pytest.mark.parametrize("mapping", [MappingProxyType, UserDict])
 @pytest.mark.parametrize(
-    "nested,field,value", [("sequence", "probability_ct", 0.0), ("window", "washout_steps", -1)]
+    "nested,field,value,code",
+    [
+        ("sequence", "probability_ct", 0.0, "model.field.range"),
+        ("window", "washout_steps", -1, "model.field.range"),
+    ],
 )
-def test_solvers_revalidate_nested_models_in_mapping(solver, mapping, nested, field, value):
+def test_solvers_revalidate_nested_models_in_mapping(solver, mapping, nested, field, value, code):
     b = baseline()
     assignment = dict(b.assignment)
     assignment[nested] = assignment[nested].model_copy(update={field: value})
@@ -658,7 +662,7 @@ def test_solvers_revalidate_nested_models_in_mapping(solver, mapping, nested, fi
 
     with pytest.raises(InvalidRequestError) as exc:
         solver(forged, procedure())
-    assert exc.value.code == "power.switchback.baseline"
+    assert exc.value.code == code
     with pytest.raises(TypeError):
         exc.value.context["changed"] = True  # ty: ignore[invalid-assignment]
 

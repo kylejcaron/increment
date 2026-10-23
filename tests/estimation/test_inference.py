@@ -5,7 +5,6 @@ import sys
 from typing import Literal, TypedDict, cast
 
 import pytest
-from pydantic import ValidationError
 from scipy.stats import norm as _norm_dist
 from scipy.stats import t as _t_dist
 
@@ -46,10 +45,12 @@ class TestNormal:
     def test_sigma_positive(self):
         """Sigma must be > 0."""
         Normal(mu=0.0, sigma=1e-6)  # tiny positive is fine
-        with pytest.raises(ValidationError):
+        with pytest.raises(InvalidRequestError) as raised:
             Normal(mu=0.0, sigma=0.0)
-        with pytest.raises(ValidationError):
+        assert raised.value.code == "model.field.range"
+        with pytest.raises(InvalidRequestError) as raised:
             Normal(mu=0.0, sigma=-1.0)
+        assert raised.value.code == "model.field.range"
 
     def test_precision(self):
         n = Normal(mu=0.0, sigma=2.0)

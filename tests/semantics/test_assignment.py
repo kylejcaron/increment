@@ -45,24 +45,22 @@ def test_switchback_sequence_dispatches_shared_schedule_order():
 
 
 def test_switchback_assignment_rejects_sequence_and_window_violations():
-    with pytest.raises(ValidationError):
-        IndependentBernoulliOrder(probability_ct=0.0)
-    with pytest.raises(ValidationError):
-        IndependentBernoulliOrder(probability_ct=1.0)
-    with pytest.raises(ValidationError):
-        SharedScheduleOrder(probability_ct=0.0)
-    with pytest.raises(ValidationError):
-        SharedScheduleOrder(probability_ct=1.0)
-    with pytest.raises(ValidationError):
-        SwitchbackWindow(washout_steps=-1, observation_steps=1)
-    with pytest.raises(ValidationError):
-        SwitchbackWindow(washout_steps=0, observation_steps=0)
-    with pytest.raises(ValidationError):
-        SwitchbackAssignment(
+    for build in (
+        lambda: IndependentBernoulliOrder(probability_ct=0.0),
+        lambda: IndependentBernoulliOrder(probability_ct=1.0),
+        lambda: SharedScheduleOrder(probability_ct=0.0),
+        lambda: SharedScheduleOrder(probability_ct=1.0),
+        lambda: SwitchbackWindow(washout_steps=-1, observation_steps=1),
+        lambda: SwitchbackWindow(washout_steps=0, observation_steps=0),
+        lambda: SwitchbackAssignment(
             periods_per_cycle=3,  # ty: ignore[invalid-argument-type]
             sequence=IndependentBernoulliOrder(),
             window=SwitchbackWindow(washout_steps=0, observation_steps=1),
-        )
+        ),
+    ):
+        with pytest.raises(InvalidRequestError) as raised:
+            build()
+        assert raised.value.code.startswith("model.field.")
 
 
 def test_parallel_envelope_keeps_identification_separate_from_assignment():
@@ -71,11 +69,12 @@ def test_parallel_envelope_keeps_identification_separate_from_assignment():
     assert envelope.identification.control_group == "control"
     with pytest.raises(ValidationError):
         envelope.assignment = ParallelAssignment()  # ty: ignore[invalid-assignment]
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidRequestError) as raised:
         ParallelStudyEnvelope(
             identification=Randomized(control_group="control"),
             typo=True,  # ty: ignore[unknown-argument]
         )
+    assert raised.value.code == "model.field.unknown"
 
 
 def test_switchback_envelope_requires_one_treatment_arm_and_randomized_identification():
@@ -94,7 +93,7 @@ def test_switchback_envelope_requires_one_treatment_arm_and_randomized_identific
             assignment=envelope.assignment,
         )
     assert exc_info.value.code == "facade.study.switchback_study.identification_allocation_exactly"
-    with pytest.raises(ValidationError) as raised:
+    with pytest.raises(InvalidRequestError) as raised:
         SwitchbackStudyEnvelope.model_validate(
             {
                 "kind": "switchback",
@@ -106,10 +105,8 @@ def test_switchback_envelope_requires_one_treatment_arm_and_randomized_identific
                 "assignment": envelope.assignment.model_dump(),
             }
         )
-    assert {error["loc"] for error in raised.value.errors()} == {
-        ("identification", "mechanism"),
-        ("identification", "adjustment"),
-    }
+    assert raised.value.code == "model.field.literal"
+    assert raised.value.context["loc"] == ("identification", "mechanism")
     with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackStudyEnvelope(
             identification=Randomized(
@@ -159,12 +156,12 @@ def test_switchback_allocation_refuses_identically_at_envelope_and_panel(allocat
 def test_switchback_window_rejects_bool_steps():
     """bool is an int subclass in Python; washout/observation steps must
     never silently become 1/0 from True/False."""
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackWindow(washout_steps=True, observation_steps=1)
-    assert exc_info.value.errors()[0]["ctx"]["error"].code == "definition.assignment.reject_bool"
-    with pytest.raises(ValidationError) as exc_info:
+    assert exc_info.value.code == "definition.assignment.reject_bool"
+    with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackWindow(washout_steps=0, observation_steps=True)
-    assert exc_info.value.errors()[0]["ctx"]["error"].code == "definition.assignment.reject_bool"
+    assert exc_info.value.code == "definition.assignment.reject_bool"
 
 
 @pytest.mark.parametrize("order", [0, 1, 2])
@@ -184,41 +181,35 @@ def test_switchback_window_accepts_carryover_orders_zero_one_two_under_both_laws
 
 
 def test_switchback_window_rejects_bool_carryover_order():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackWindow(washout_steps=0, observation_steps=2, carryover_order=True)
-    assert exc_info.value.errors()[0]["ctx"]["error"].code == "definition.assignment.reject_bool"
+    assert exc_info.value.code == "definition.assignment.reject_bool"
 
 
 def test_switchback_window_rejects_nonintegral_carryover_order():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackWindow(washout_steps=0, observation_steps=2, carryover_order=1.5)
-    assert (
-        exc_info.value.errors()[0]["ctx"]["error"].code
-        == "definition.assignment.carryover_order_type"
-    )
+    assert exc_info.value.code == "definition.assignment.carryover_order_type"
 
 
 def test_switchback_window_rejects_negative_carryover_order():
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackWindow(washout_steps=0, observation_steps=2, carryover_order=-1)
-    assert (
-        exc_info.value.errors()[0]["ctx"]["error"].code
-        == "definition.assignment.carryover_order_range"
-    )
+    assert exc_info.value.code == "definition.assignment.carryover_order_range"
 
 
 def test_switchback_window_rejects_carryover_order_at_or_past_observation_steps():
     """An order at or past observation_steps would empty the retained
     window entirely; both boundaries are refused with the same coded range
     error naming the offending order and observation_steps."""
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         SwitchbackWindow(washout_steps=0, observation_steps=2, carryover_order=2)
-    error = exc_info.value.errors()[0]["ctx"]["error"]
-    assert error.code == "definition.assignment.carryover_order_range"
-    assert error.context["carryover_order"] == 2
-    assert error.context["observation_steps"] == 2
-    with pytest.raises(ValidationError):
+    assert exc_info.value.code == "definition.assignment.carryover_order_range"
+    assert exc_info.value.context["carryover_order"] == 2
+    assert exc_info.value.context["observation_steps"] == 2
+    with pytest.raises(InvalidRequestError) as raised:
         SwitchbackWindow(washout_steps=0, observation_steps=2, carryover_order=3)
+    assert raised.value.code == "definition.assignment.carryover_order_range"
 
 
 def test_switchback_window_default_carryover_order_is_zero():

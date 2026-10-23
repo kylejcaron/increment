@@ -244,9 +244,31 @@ def load(path: str | Path) -> Definitions:
             exc.message, code=exc.code, context={**exc.context, "path": str(path_obj)}
         ) from exc
     except InvalidRequestError as exc:
-        raise _DefinitionError(
-            str(exc), code=exc.code, context={**dict(exc.context), "path": str(path_obj)}
-        ) from exc
+        validation_error = exc.__context__
+        if not isinstance(validation_error, ValidationError) or not exc.code.startswith(
+            "model.field."
+        ):
+            raise _DefinitionError(
+                str(exc), code=exc.code, context={**dict(exc.context), "path": str(path_obj)}
+            ) from exc
+        errors = tuple(
+            {
+                "field": ".".join(str(part) for part in error["loc"]) or None,
+                "type": error["type"],
+                "reason": error["msg"],
+                "input": _safe_error_value(error.get("input")),
+            }
+            for error in validation_error.errors(include_url=False)
+        )
+        try:
+            refuse(
+                _VALIDATION,
+                path=str(path_obj),
+                errors=errors,
+                route="repair the listed definition fields and reload",
+            )
+        except _DefinitionError as error:
+            raise error from exc
     except ValidationError as exc:
         errors = tuple(
             {

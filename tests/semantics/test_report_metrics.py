@@ -1,7 +1,6 @@
 """Report-only metric types: total and active."""
 
 import pytest
-from pydantic import ValidationError
 
 from increment.errors import DefinitionError, InvalidRequestError
 from increment.semantics.models import ActiveMetric, Definitions, TotalMetric
@@ -28,8 +27,11 @@ def test_total_metric_parses_without_entity():
 def test_active_metric_requires_entity():
     m = ActiveMetric(name="wau", entity="user_id", fact="page_view")
     assert m.type == "active"
-    with pytest.raises(ValidationError):
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as raised:
         ActiveMetric(name="wau", fact="page_view")  # ty: ignore[missing-argument]
+    assert raised.value.code == "model.field.missing"
 
 
 def test_total_and_active_join_the_metric_union():

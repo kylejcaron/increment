@@ -1740,19 +1740,19 @@ def test_metric_spec_impute_missing_is_a_named_refusal_with_a_route() -> None:
 def test_warehouse_metrics_cannot_declare_a_missing_policy(model, payload) -> None:
     """A warehouse metric is declared over event facts, where an absent event is zero by
     construction; the schema has no missing field for a frame-only impute policy."""
-    from pydantic import ValidationError
+    from increment.errors import InvalidRequestError
 
     assert model.model_validate(payload).name == payload["name"]
     declared = {**payload, "missing": "impute"}
     for ingress in ("from_definitions", "from_unit_day_artifact"):
-        with pytest.raises(ValidationError) as raised:
+        with pytest.raises(InvalidRequestError) as raised:
             observe(
                 IMPUTE_POOLED_MEAN,
                 f"{ingress}-missing-policy-not-declarable",
                 lambda: model.model_validate(declared),
             )
-        assert [error["loc"] for error in raised.value.errors()] == [("missing",)]
-        assert {error["type"] for error in raised.value.errors()} == {"extra_forbidden"}
+        assert raised.value.code == "model.field.unknown"
+        assert raised.value.context["field"] == "missing"
 
 
 def test_metric_spec_declares_method_owned_mixed_covariates_with_independent_missing_policies():

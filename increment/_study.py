@@ -101,7 +101,7 @@ def refuse_allocation_defect(
     )
 
 
-class ParallelStudyEnvelope(BaseModel):
+class ParallelStudyEnvelope(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["parallel"] = "parallel"

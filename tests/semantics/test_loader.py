@@ -254,6 +254,44 @@ def test_field_constraint_violation_surfaces_as_a_coded_definition_error(tmp_pat
     assert restored.context == raised.value.context
 
 
+def test_finite_sample_cuped_refusal_preserves_its_domain_code(tmp_path: Path):
+    definition_path = tmp_path / "defs.yaml"
+    definition_path.write_text(
+        "dialect: duckdb\n"
+        "fact_sources:\n"
+        "- name: events\n"
+        "  sql: SELECT * FROM events\n"
+        "  timestamp_column: event_at\n"
+        "  entities: [user_id]\n"
+        "  facts:\n"
+        "  - {name: exposure, column: null}\n"
+        "  - {name: purchase, column: revenue}\n"
+        "exposures: [{name: assignment, fact: exposure}]\n"
+        "metrics:\n"
+        "- {type: conversion, name: orders, entity: user_id, fact: purchase, window_days: 7}\n"
+        "experiments:\n"
+        "- name: exp\n"
+        "  exposure: assignment\n"
+        "  unit: user_id\n"
+        "  start: '2026-01-01'\n"
+        "  end: '2026-01-14'\n"
+        "  control_group: control\n"
+        "  plan:\n"
+        "    primary:\n"
+        "      metric: orders\n"
+        "      decision_method:\n"
+        "        name: unadjusted\n"
+        "        variance_reduction: cuped\n"
+        "        conversion_inference: finite_sample\n"
+    )
+
+    with pytest.raises(DefinitionError) as raised:
+        load(definition_path)
+
+    assert raised.value.code == "conversion_inference.finite_sample.cuped"
+    assert raised.value.context["path"] == str(definition_path)
+
+
 def test_recursive_yaml_anchor_rejected_not_infinite_loop(tmp_path: Path):
     """A self-referencing anchor list must refuse cleanly (caught by the
     non-mapping-element shape guard) instead of crashing or hanging."""

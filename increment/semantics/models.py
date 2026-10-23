@@ -38,7 +38,7 @@ from increment._literals import (
     Correction,
     PreferredDirection,
 )
-from increment.errors import CodedModel, CodedValidationMixin, DefinitionError, RefusalSpec
+from increment.errors import CodedModel, DefinitionError, RefusalSpec
 from increment.semantics.design import (
     ALLOCATION_SCHEME_INCOMPATIBLE,
     AllocationScheme,
@@ -642,7 +642,7 @@ def _require_nonblank_source_sql(kind: str, name: str, sql: str) -> None:
 # Base / mixin
 
 
-class _Base(CodedValidationMixin, BaseModel):
+class _Base(CodedModel, BaseModel):
     # Prevent silent field typos at every level, not just the top; freeze
     # every declaration so post-validation mutation (direct or through a
     # nested caller-owned instance) cannot silently invalidate it; deep-copy
@@ -2825,7 +2825,7 @@ def _with_inherited_day_boundary(experiment: Experiment, day_boundary: str) -> E
 
 # Definitions is the direct coded-error boundary for nested semantic declarations.
 # Schema-driven validation uses unwrap_coded at the caller's boundary.
-class Definitions(CodedModel, _Base):
+class Definitions(_Base):
     """Top-level semantic definitions loaded from a directory or YAML file.
 
     Construct it with the validated source, metric, exposure, and experiment

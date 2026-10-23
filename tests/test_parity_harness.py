@@ -858,12 +858,12 @@ def _definitions_schema_builder(*, metric_type: str, winsorization: bool, missin
 
 
 def _schema_absence_case(build, field):
-    from pydantic import ValidationError
+    from increment.errors import InvalidRequestError
 
     return _case(
         {"from_definitions": build},
         waive={"from_definitions": "SOURCE: schema absence"},
-        absence={"from_definitions": Absence(ValidationError, field)},
+        absence={"from_definitions": Absence(InvalidRequestError, field)},
         refusal_only=True,
     )
 
@@ -882,7 +882,7 @@ def test_schema_absence_fails_when_the_error_is_about_another_field():
     winsorization guard gone, the unrelated missing-policy error must not satisfy it."""
     other = _definitions_schema_builder(metric_type="mean", winsorization=False, missing="drop")
     case = _schema_absence_case(other, "winsorization")
-    with pytest.raises(AssertionError, match="none rejects 'winsorization'"):
+    with pytest.raises(AssertionError, match="refusal named 'missing'"):
         run_case(case)
 
 

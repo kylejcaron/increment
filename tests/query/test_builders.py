@@ -16,7 +16,6 @@ import ibis
 import numpy as np
 import pyarrow as pa
 import pytest
-from pydantic import ValidationError
 
 from increment.errors import (
     CapabilityError,
@@ -6288,11 +6287,11 @@ def test_resolved_measure_key_is_filter_order_insensitive():
 def test_filter_refuses_unknown_op():
     """An unknown filter op is rejected when the filter is defined, so it can
     never reach the SQL builder as a silently-dropped or misapplied filter."""
-    with pytest.raises(ValidationError) as exc_info:
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as exc_info:
         Filter(property="amount", op="bogus_op", values=[1])  # ty: ignore[invalid-argument-type]
-    assert [(error["loc"], error["type"]) for error in exc_info.value.errors()] == [
-        (("op",), "literal_error")
-    ]
+    assert exc_info.value.code == "model.field.literal"
 
 
 # NULL-valued event rows - complete-case on value-based refs

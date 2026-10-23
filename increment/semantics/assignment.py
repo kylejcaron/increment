@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from increment.errors import InvalidRequestError, raiser, refusals
+from increment.errors import CodedModel, InvalidRequestError, raiser, refusals
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -28,7 +28,7 @@ def _reject_bool(v: object) -> object:
     return v
 
 
-class _AssignmentModel(BaseModel):
+class _AssignmentModel(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
