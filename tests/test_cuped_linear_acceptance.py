@@ -209,7 +209,6 @@ def test_composition_gates_refuse_before_source_acquisition(case: str, expected_
             control_group="control",
             uptake=UptakeSpec(fact="uptake"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True,
                 justification="The test-only encouragement affects revenue through uptake.",
             ),
         )

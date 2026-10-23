@@ -2,6 +2,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from increment.errors import InvalidRequestError
+from increment.semantics import Definitions
 from increment.semantics.design import (
     AdjustmentSet,
     Design,
@@ -155,25 +156,63 @@ def _enc(**over):
         "mechanism": "encouragement",
         "control_group": "control",
         "uptake": {"fact": "help_click"},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "An unclicked button is inert.",
-        },
+        "exclusion_restriction": {"justification": "An unclicked button is inert."},
     }
     base.update(over)
     return base
 
 
-def test_acknowledged_false_rejected():
-    with pytest.raises(InvalidRequestError) as raised:
-        ExclusionRestriction(acknowledged=False, justification="x" * 20)  # ty: ignore[invalid-argument-type]  # proving Literal[True] at runtime
-    assert raised.value.code == "model.field.literal"
+def _definitions_with_design(design):
+    return Definitions.model_validate(
+        {
+            "experiments": [
+                {
+                    "name": "experiment",
+                    "exposure": "assigned",
+                    "unit": "user_id",
+                    "start": "2025-01-01T00:00:00+00:00",
+                    "control_group": "control",
+                    "plan": {},
+                    "design": design,
+                }
+            ]
+        }
+    )
 
 
-def test_justification_must_be_substantive():
-    with pytest.raises(InvalidRequestError) as raised:
-        ExclusionRestriction(acknowledged=True, justification="ok")
-    assert raised.value.code == "design.exclusion_restriction.justification"
+def test_exclusion_restriction_needs_only_nonempty_justification():
+    assert ExclusionRestriction(justification="x").justification == "x"
+
+    for build in (
+        lambda: ExclusionRestriction(justification=""),
+        lambda: _definitions_with_design(_enc(exclusion_restriction={"justification": ""})),
+    ):
+        with pytest.raises(InvalidRequestError) as raised:
+            build()
+        assert raised.value.code == "model.field.length"
+
+    with pytest.raises(InvalidRequestError) as missing:
+        ExclusionRestriction()  # ty: ignore[missing-argument]  # testing missing field at runtime
+    assert missing.value.code == "model.field.missing"
+
+    with pytest.raises(InvalidRequestError) as missing_nested:
+        _definitions_with_design(_enc(exclusion_restriction={}))
+    assert missing_nested.value.code == "model.field.missing"
+
+    with pytest.raises(InvalidRequestError) as unknown:
+        ExclusionRestriction(justification="x", acknowledged=True)  # ty: ignore[unknown-argument]  # testing extra=forbid at runtime
+    assert unknown.value.code == "model.field.unknown"
+
+    with pytest.raises(InvalidRequestError) as unknown_nested:
+        _definitions_with_design(
+            _enc(
+                exclusion_restriction={
+                    "acknowledged": True,
+                    "justification": "x",
+                }
+            )
+        )
+    assert unknown_nested.value.code == "model.field.unknown"
 
 
 def test_uptake_window_days_must_be_positive():
@@ -215,14 +254,13 @@ def test_randomized_rejects_unknown_field():
         lambda: Randomized(control_group="c", bogus=1),  # ty: ignore[unknown-argument]
         lambda: UptakeSpec(fact="help_click", bogus=1),  # ty: ignore[unknown-argument]
         lambda: ExclusionRestriction(
-            acknowledged=True,
             justification="x" * 20,
             bogus=1,  # ty: ignore[unknown-argument]
         ),
         lambda: Encouragement(
             control_group="c",
             uptake=UptakeSpec(fact="help_click"),
-            exclusion_restriction=ExclusionRestriction(acknowledged=True, justification="x" * 20),
+            exclusion_restriction=ExclusionRestriction(justification="x" * 20),
             bogus=1,  # ty: ignore[unknown-argument]
         ),
         lambda: AdjustmentSet(covariates=("age",), bogus=1),  # ty: ignore[unknown-argument]
@@ -369,9 +407,7 @@ def test_encouragement_allocation_refuses():
         Encouragement(
             control_group="control",
             uptake=UptakeSpec(fact="took_up"),
-            exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="pre-registered design"
-            ),
+            exclusion_restriction=ExclusionRestriction(justification="pre-registered design"),
             allocation={},
         )
     assert exc_info.value.code == "design.allocation.invalid"
@@ -381,9 +417,7 @@ def test_encouragement_hashes_regardless_of_allocation():
     e = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="took_up"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="pre-registered design"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="pre-registered design"),
         allocation={"control": 0.5, "other": 0.5},
     )
     assert isinstance(hash(e), int)

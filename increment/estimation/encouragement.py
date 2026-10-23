@@ -109,7 +109,8 @@ _REFUSALS = refusals(
             "identification.encouragement.exclusion_required",
             IdentificationError,
             template=(
-                "LATE requires an acknowledged ExclusionRestriction; request "
+                "LATE requires an ExclusionRestriction with a non-empty "
+                "justification; request "
                 "estimands=('itt', 'compliance') or declare exclusion_restriction "
                 "on the encouragement design (requested estimands={estimands!r})"
             ),

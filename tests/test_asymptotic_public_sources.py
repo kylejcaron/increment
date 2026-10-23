@@ -555,7 +555,7 @@ def test_public_encouragement_itt_uses_the_asymptotic_mean_law():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="encouragement affects revenue only through clicks"
+            justification="encouragement affects revenue only through clicks"
         ),
     )
     registration = mean_registration(
@@ -1129,7 +1129,7 @@ def test_automatic_encouragement_keeps_its_corrected_breakout_refusal(segments):
         allocation={"control": 1, "treatment": 1},
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="The encouragement only affects uptake."
+            justification="The encouragement only affects uptake."
         ),
     )
     plan = AnalysisPlan(

@@ -2426,7 +2426,7 @@ def _sequential_composed_itt_and_uptake_case(
         control_group="control",
         uptake=UptakeSpec(fact="converted", window_days=1),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="the in-window purchase mediates the revenue effect"
+            justification="the in-window purchase mediates the revenue effect"
         )
         if exclusion_declared
         else None,
@@ -2440,7 +2440,7 @@ def _sequential_composed_itt_and_uptake_case(
         control_group="control",
         uptake=UptakeSpec(fact="purchase", window_days=1),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="the in-window purchase mediates the revenue effect"
+            justification="the in-window purchase mediates the revenue effect"
         )
         if exclusion_declared
         else None,
@@ -2450,8 +2450,7 @@ def _sequential_composed_itt_and_uptake_case(
         "mechanism": "encouragement",
         "uptake": {"fact": "purchase", "window_days": 1},
         "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "the in-window purchase mediates the revenue effect",
+            "justification": "the in-window purchase mediates the revenue effect"
         },
     }
     if not exclusion_declared:
@@ -2665,12 +2664,12 @@ def _sequential_unbounded_retention_catalog_case() -> ParityCase:
     defs_dict["experiments"][0]["design"] = {
         "mechanism": "encouragement",
         "uptake": {"fact": "purchase", "window_days": 1},
-        "exclusion_restriction": {"acknowledged": True, "justification": justification},
+        "exclusion_restriction": {"justification": justification},
     }
     declared = Definitions.model_validate(defs_dict)
     exp = declared.experiment("exp")
     assert exp is not None
-    exclusion = ExclusionRestriction(acknowledged=True, justification=justification)
+    exclusion = ExclusionRestriction(justification=justification)
     native_design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="purchase", window_days=1),
@@ -2851,7 +2850,7 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         control_group="control",
         uptake=UptakeSpec(fact="converted", window_days=1),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="the in-window purchase mediates the revenue effect"
+            justification="the in-window purchase mediates the revenue effect"
         ),
         allocation={"control": 0.5, "treatment": 0.5},
     )
@@ -2863,7 +2862,7 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         control_group="control",
         uptake=UptakeSpec(fact="purchase", window_days=1),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="the in-window purchase mediates the revenue effect"
+            justification="the in-window purchase mediates the revenue effect"
         ),
         allocation={"control": 0.5, "treatment": 0.5},
     )
@@ -2871,8 +2870,7 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         "mechanism": "encouragement",
         "uptake": {"fact": "purchase", "window_days": 1},
         "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "the in-window purchase mediates the revenue effect",
+            "justification": "the in-window purchase mediates the revenue effect"
         },
     }
     defs = Definitions.model_validate(defs_dict)
@@ -3785,8 +3783,7 @@ def _encouragement_defs_dict(plan: AnalysisPlan) -> dict[str, Any]:
                     "uptake": {"fact": "clicked"},
                     "one_sided": True,
                     "exclusion_restriction": {
-                        "acknowledged": True,
-                        "justification": "assignment moves revenue only via uptake",
+                        "justification": "assignment moves revenue only via uptake"
                     },
                 },
             }
@@ -4019,7 +4016,7 @@ def _encouragement_declared_definitions_case(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment moves revenue only via uptake"
+                justification="assignment moves revenue only via uptake"
             )
             if exclusion_declared
             else None,
@@ -4168,7 +4165,7 @@ def _encouragement_guardrail_case(
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment moves revenue only via uptake"
+                justification="assignment moves revenue only via uptake"
             ),
             one_sided=True,
             allocation={"control": 0.5, "treatment": 0.5},
@@ -4510,7 +4507,7 @@ def _encouragement_retention_case() -> ParityCase:
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment moves revenue only via uptake"
+                justification="assignment moves revenue only via uptake"
             ),
             one_sided=True,
             allocation={"control": 0.5, "treatment": 0.5},
@@ -4705,8 +4702,7 @@ def _fcr_reestimation_defs_dict(plan: AnalysisPlan) -> dict[str, Any]:
                     "uptake": {"fact": "clicked"},
                     "one_sided": True,
                     "exclusion_restriction": {
-                        "acknowledged": True,
-                        "justification": "assignment moves revenue only via uptake",
+                        "justification": "assignment moves revenue only via uptake"
                     },
                 },
             }
@@ -4759,7 +4755,7 @@ def _encouragement_fcr_reestimation_case() -> ParityCase:
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment moves revenue only via uptake"
+                justification="assignment moves revenue only via uptake"
             ),
             one_sided=True,
             allocation={"control": 1 / 3, "a": 1 / 3, "b": 1 / 3},
@@ -6249,7 +6245,7 @@ _ENCOURAGEMENT_ITT_DESIGN = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="uptake"),
     exclusion_restriction=ExclusionRestriction(
-        acknowledged=True, justification="uptake does not gate the conversion outcome"
+        justification="uptake does not gate the conversion outcome"
     ),
 )
 _ENCOURAGEMENT_ITT_N_PER_ARM = 90
@@ -6393,8 +6389,7 @@ def _encouragement_itt_defs_dict(plan: AnalysisPlan | None = None) -> dict[str, 
                     "mechanism": "encouragement",
                     "uptake": {"fact": "clicked"},
                     "exclusion_restriction": {
-                        "acknowledged": True,
-                        "justification": "uptake does not gate the conversion outcome",
+                        "justification": "uptake does not gate the conversion outcome"
                     },
                 },
             }
@@ -8170,8 +8165,7 @@ def _conversion_route_encouragement_case() -> ParityCase:
                 "mechanism": "encouragement",
                 "uptake": {"fact": "clicked"},
                 "exclusion_restriction": {
-                    "acknowledged": True,
-                    "justification": "uptake does not gate the conversion outcome",
+                    "justification": "uptake does not gate the conversion outcome"
                 },
             },
             plan.model_dump(mode="json"),

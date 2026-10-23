@@ -934,9 +934,7 @@ def test_encouragement_design_with_cluster_constructs_at_entry():
     design = Encouragement(
         control_group="C",
         uptake=UptakeSpec(fact="took"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="test fixture, not a real design"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
     )
     src = from_unit_summary(
         tbl,

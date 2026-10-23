@@ -1317,7 +1317,6 @@ def _analysis_with_encouragement_country_breakout(con):
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True,
                 justification="clicking is the only path from assignment to revenue",
             ),
             one_sided=True,

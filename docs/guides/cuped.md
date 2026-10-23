@@ -612,7 +612,6 @@ analysis = inc.Analysis.from_unit_summary(
         control_group="control",
         uptake=inc.UptakeSpec(fact="clicked"),
         exclusion_restriction=inc.ExclusionRestriction(
-            acknowledged=True,
             justification="The prompt only changes behavior through the click.",
         ),
     ),
@@ -699,7 +698,6 @@ analysis = inc.Analysis.from_unit_summary(
         control_group="control",
         uptake=inc.UptakeSpec(fact="took"),
         exclusion_restriction=inc.ExclusionRestriction(
-            acknowledged=True,
             justification="The banner only changes behavior through the click.",
         ),
         one_sided=True,

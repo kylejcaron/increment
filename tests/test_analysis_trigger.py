@@ -299,7 +299,6 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
         "        window_days: 7\n"
         "      one_sided: true\n"
         "      exclusion_restriction:\n"
-        "        acknowledged: true\n"
         "        justification: button gates revenue\n",
     )
     path = tmp_path / "encouragement.yml"
@@ -425,7 +424,7 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
             "      mechanism: encouragement\n"
             "      uptake: {fact: clicked, window_days: 2}\n"
             "      one_sided: true\n"
-            "      exclusion_restriction: {acknowledged: true, justification: gates revenue}\n",
+            "      exclusion_restriction: {justification: gates revenue}\n",
         )
         .replace(
             "    aggregation: sum",

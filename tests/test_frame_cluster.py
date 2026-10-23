@@ -166,9 +166,7 @@ def test_clustered_moments_carry_uptake_in_x_family():
     design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="took"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="test fixture, not a real design"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
     )
     took = {"u1", "u4", "u5"}
     rows = [{**r, "took": 1 if r["user_id"] in took else 0} for r in _rows()]
@@ -400,9 +398,7 @@ def test_cluster_with_encouragement_design_constructs():
     design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="test fixture, not a real design"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
     )
     rows = [{**r, "took_up": 0} for r in _rows()]
     src = _source(rows=rows, design=design, uptake="took_up")
@@ -416,9 +412,7 @@ def test_cluster_with_covariate_and_encouragement_refuses():
     design = Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="test fixture, not a real design"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
     )
     rows = [{**r, "took_up": 0} for r in _rows()]
     with pytest.raises(CapabilityError) as raised:

@@ -3094,10 +3094,7 @@ def test_publish_preserves_nanosecond_exposure_window_boundaries(tmp_path: Path)
         "mechanism": "encouragement",
         "one_sided": False,
         "uptake": {"fact": "purchase", "window_days": 14},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "synthetic test data",
-        },
+        "exclusion_restriction": {"justification": "synthetic test data"},
     }
     definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
     connection, native, context, store = _native(definitions=definitions)

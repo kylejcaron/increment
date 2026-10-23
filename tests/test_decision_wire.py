@@ -779,7 +779,6 @@ def _golden_asymptotic_plan() -> CompiledDecisionPlan:
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="the prompt affects revenue only through clicks",
         ),
         allocation={"control": 0.5, "treatment": 0.5},

@@ -35,7 +35,7 @@ _ENCOURAGEMENT = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="clicked"),
     exclusion_restriction=ExclusionRestriction(
-        acknowledged=True, justification="prompt affects revenue only through clicks"
+        justification="prompt affects revenue only through clicks"
     ),
     allocation={"control": 0.5, "treatment": 0.5},
 )

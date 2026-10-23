@@ -38,7 +38,7 @@ def _encouragement(frame):
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="uptake does not gate the outcome"
+            justification="uptake does not gate the outcome"
         ),
     )
     return Analysis.from_unit_summary(
@@ -75,7 +75,7 @@ def test_encouragement_scope_matches_itt_only_family_selection():
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="uptake does not gate the outcome"
+            justification="uptake does not gate the outcome"
         ),
     )
     analysis = Analysis.from_unit_summary(

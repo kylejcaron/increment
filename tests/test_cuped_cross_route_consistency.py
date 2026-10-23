@@ -707,8 +707,7 @@ def test_native_scalar_snapshot_pins_separate_encouragement_uptake(tmp_path):
         control_group="control",
         uptake=UptakeSpec(fact="activated"),
         exclusion_restriction={
-            "acknowledged": True,
-            "justification": "Assignment affects outcomes only through activation.",
+            "justification": "Assignment affects outcomes only through activation."
         },
     )
     definitions["experiments"][0]["design"] = design.model_dump(

@@ -377,7 +377,7 @@ def test_native_encouragement_refuses_a_quantile_metric(tmp_path):
             control_group="C",
             uptake=UptakeSpec(fact="enrolled"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="test-only encouragement fixture"
+                justification="test-only encouragement fixture"
             ),
         ),
     )

@@ -768,7 +768,7 @@ class TestBenjaminiHochbergFamilyMembersRouteAtTheirOwnLevel:
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves conversion via uptake"
+                justification="assignment only moves conversion via uptake"
             ),
             one_sided=True,
             min_first_stage_z=0.001,

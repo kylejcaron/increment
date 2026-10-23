@@ -180,7 +180,6 @@ def _(
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="the randomized prompt affects revenue only through help-button clicks",
         ),
         one_sided=False,
@@ -368,7 +367,6 @@ def _(
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=_window_days),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="the randomized prompt affects revenue only through help-button clicks",
         ),
         one_sided=False,

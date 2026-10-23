@@ -157,7 +157,7 @@ def _encouragement_design(window_days: int | None = None):
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=window_days),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
 

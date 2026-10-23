@@ -70,10 +70,7 @@ def _design(**over):
         "mechanism": "encouragement",
         "control_group": "control",
         "uptake": {"fact": "help_click"},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "unclicked button assumed inert",
-        },
+        "exclusion_restriction": {"justification": "unclicked button assumed inert"},
     }
     base.update(over)
     return Encouragement.model_validate(base)
@@ -1001,7 +998,6 @@ def test_cluster_warning_is_attributed_to_public_caller():
         control_group="control",
         uptake=UptakeSpec(fact="took"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="test fixture",
         ),
         one_sided=True,
@@ -1550,7 +1546,7 @@ def test_encouragement_itt_conversion_keeps_binomial_reference():
         control_group="control",
         uptake=UptakeSpec(fact="uptake"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="uptake does not gate the conversion outcome"
+            justification="uptake does not gate the conversion outcome"
         ),
     )
     [encouragement] = Analysis.from_unit_summary(

@@ -31,10 +31,7 @@ DESIGN = Encouragement.model_validate(
         "mechanism": "encouragement",
         "control_group": "control",
         "uptake": {"fact": "help_click"},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "unclicked button assumed inert",
-        },
+        "exclusion_restriction": {"justification": "unclicked button assumed inert"},
         # Two-sided: always-takers give the control arm real uptake, which is
         # what puts a nonzero cov(X, D) in BOTH arms.
         "one_sided": False,

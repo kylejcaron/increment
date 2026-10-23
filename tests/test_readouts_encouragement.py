@@ -50,10 +50,7 @@ def _design(**over):
         "mechanism": "encouragement",
         "control_group": "control",
         "uptake": {"fact": "help_click"},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "unclicked button assumed inert",
-        },
+        "exclusion_restriction": {"justification": "unclicked button assumed inert"},
     }
     base.update(over)
     return Encouragement.model_validate(base)
@@ -248,7 +245,7 @@ def test_run_default_estimands_on_encouragement_design():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         # Low z-floor: keep LATE reported on this 4-units-per-arm fixture
         # instead of exercising weak-instrument suppression here.
@@ -272,7 +269,7 @@ def test_run_narrowed_estimands_on_encouragement_design_are_honored():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
         min_first_stage_z=0.5,
     )
@@ -1067,7 +1064,7 @@ def test_srm_runs_under_encouragement_design_not_suppressed():
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             allocation={"control": 0.5, "treatment": 0.5},
             allocation_scheme=allocation_scheme,
@@ -1543,7 +1540,7 @@ def _guardrail_analysis(con):
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             one_sided=True,
             min_first_stage_z=0.001,
@@ -1701,7 +1698,7 @@ def _multi_arm_guardrail_analysis(con):
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             one_sided=True,
             min_first_stage_z=0.001,
@@ -2287,7 +2284,7 @@ def _uptake_named_secondary_analysis(con):
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves the outcome via uptake"
+                justification="assignment only moves the outcome via uptake"
             ),
             one_sided=True,
             min_first_stage_z=0.001,
@@ -2521,7 +2518,7 @@ def _uptake_guardrail_analysis(con, *, guardrail_metric_name="uptake"):
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             one_sided=True,
             min_first_stage_z=0.001,
@@ -2877,7 +2874,6 @@ def _frame_encouragement_design() -> Encouragement:
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="assignment only moves the outcome via uptake",
         ),
         # Low z-floor keeps LATE reported on these tiny fixtures instead of
@@ -3145,7 +3141,7 @@ def test_asof_encouragement_reports_one_compliance_row_at_plan_alpha():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves the outcome via uptake"
+            justification="assignment only moves the outcome via uptake"
         ),
         min_first_stage_z=0.001,
     )
@@ -3229,7 +3225,7 @@ def test_asof_compliance_ignores_per_metric_cohort_disagreement():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves the outcome via uptake"
+            justification="assignment only moves the outcome via uptake"
         ),
         min_first_stage_z=0.001,
     )

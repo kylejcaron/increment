@@ -1482,7 +1482,7 @@ def test_value_scale_refused_under_an_encouragement_design():
         control_group="C",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     src = FakeMomentSource([], metrics=[metric], capabilities={"total"}, design=design)

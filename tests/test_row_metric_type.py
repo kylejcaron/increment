@@ -248,7 +248,7 @@ def test_encouragement_rows_carry_metric_type_and_compliance_stays_unknown():
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
             min_first_stage_z=0.5,
         ),

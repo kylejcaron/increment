@@ -617,7 +617,7 @@ def test_native_health_includes_unwatermarked_separate_uptake_feed(tmp_path) -> 
             "      mechanism: encouragement\n"
             "      uptake: {fact: clicked, window_days: 1}\n"
             "      one_sided: true\n"
-            "      exclusion_restriction: {acknowledged: true, justification: gates outcome}\n",
+            "      exclusion_restriction: {justification: gates outcome}\n",
         )
     )
     analysis = Analysis.from_definitions("exp", definitions, con)

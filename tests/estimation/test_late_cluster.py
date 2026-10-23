@@ -50,9 +50,7 @@ from tests.warning_codes import warning_codes
 DESIGN = Encouragement(
     control_group="control",
     uptake=UptakeSpec(fact="took"),
-    exclusion_restriction=ExclusionRestriction(
-        acknowledged=True, justification="test fixture, not a real design"
-    ),
+    exclusion_restriction=ExclusionRestriction(justification="test fixture, not a real design"),
     one_sided=True,
 )
 METRIC = MeanMetric(name="revenue", entity="user_id", fact="purchase", aggregation="sum")

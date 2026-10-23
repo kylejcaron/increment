@@ -173,7 +173,7 @@ def test_always_valid_multi_arm_uptake_cells_share_the_compliance_allocation():
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="the prompt affects conversion only through clicks"
+            justification="the prompt affects conversion only through clicks"
         ),
         allocation={"control": 0.5, "a": 0.25, "b": 0.25},
     )

@@ -709,7 +709,7 @@ class TestEncouragementSeamRefusals:
             control_group="control",
             uptake=UptakeSpec(fact="clicked"),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment moves revenue via uptake"
+                justification="assignment moves revenue via uptake"
             ),
         )
 
@@ -821,7 +821,7 @@ def _encouragement_design() -> Encouragement:
         control_group="control",
         uptake=UptakeSpec(fact="clicked"),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment moves revenue via uptake"
+            justification="assignment moves revenue via uptake"
         ),
     )
 

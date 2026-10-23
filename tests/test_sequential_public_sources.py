@@ -1095,10 +1095,7 @@ def _native_fixture(
                 "control_group": "control",
                 "one_sided": False,
                 "uptake": {"fact": "clicked", "window_days": 2},
-                "exclusion_restriction": {
-                    "acknowledged": True,
-                    "justification": "inert encouragement",
-                },
+                "exclusion_restriction": {"justification": "inert encouragement"},
             }
         )
         fact_sources.append(
@@ -1489,7 +1486,7 @@ def test_metric_free_sequential_frames_require_uptake_only_registration(tmp_path
             "control_group": "control",
             "one_sided": False,
             "uptake": {"fact": "clicked"},
-            "exclusion_restriction": {"acknowledged": True, "justification": "uptake only"},
+            "exclusion_restriction": {"justification": "uptake only"},
         }
     )
     base = registration("bernoulli")
@@ -1576,7 +1573,7 @@ def test_automatic_metric_free_sequential_compliance(kind, family, baseline_rate
             "control_group": "control",
             "allocation": {"control": 0.5, "treatment": 0.5},
             "uptake": {"fact": "clicked"},
-            "exclusion_restriction": {"acknowledged": True, "justification": "uptake only"},
+            "exclusion_restriction": {"justification": "uptake only"},
         }
     )
     frame = _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24).rename(columns={"outcome": "clicked"})

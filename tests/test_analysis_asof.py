@@ -411,9 +411,7 @@ def _asof_encouragement_design(*, uptake_window_days: int | None = None) -> Enco
     return Encouragement(
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=uptake_window_days),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="button gates revenue"
-        ),
+        exclusion_restriction=ExclusionRestriction(justification="button gates revenue"),
         one_sided=True,
     )
 

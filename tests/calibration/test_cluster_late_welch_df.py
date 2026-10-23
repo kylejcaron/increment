@@ -228,7 +228,7 @@ def _encouragement_design():
         control_group="control",
         uptake=inc.UptakeSpec(fact="took"),
         exclusion_restriction=inc.ExclusionRestriction(
-            acknowledged=True, justification="The nudge only acts through uptake."
+            justification="The nudge only acts through uptake."
         ),
         one_sided=True,
     )

@@ -181,7 +181,7 @@ def _encouragement_design(**over) -> Encouragement:
         "control_group": "control",
         "uptake": UptakeSpec(fact="clicked"),
         "exclusion_restriction": ExclusionRestriction(
-            acknowledged=True, justification="unclicked button assumed inert"
+            justification="unclicked button assumed inert"
         ),
         "one_sided": True,
     }

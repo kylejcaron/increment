@@ -496,7 +496,7 @@ def test_asof_encouragement_uptake_moments_match_group_summary() -> None:
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
+            justification="assignment only moves revenue via uptake"
         ),
     )
     metric = synthesise_metric(MetricSpec(name="revenue", type="mean"))
@@ -577,7 +577,7 @@ def test_asof_uptake_window_without_exposure_uses_first_observed_numeric_day() -
             control_group="control",
             uptake=UptakeSpec(fact="clicked", window_days=3),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment only moves revenue via uptake"
+                justification="assignment only moves revenue via uptake"
             ),
         ),
     )
@@ -1063,7 +1063,7 @@ def test_sparse_panel_oracle_matches_dense_across_execution_kernels(
             control_group="control",
             uptake=UptakeSpec(fact="clicked", window_days=3),
             exclusion_restriction=ExclusionRestriction(
-                acknowledged=True, justification="assignment affects outcome only through uptake"
+                justification="assignment affects outcome only through uptake"
             ),
         )
         grains = ("daily", "asof")
@@ -1512,7 +1512,7 @@ def test_sparse_compliance_snapshot_keeps_enrolled_units_with_only_future_rows()
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment affects outcomes only through uptake"
+            justification="assignment affects outcomes only through uptake"
         ),
     )
     source = from_unit_panel(
@@ -2239,7 +2239,7 @@ def test_streamed_asof_restores_identity_after_reordered_exposure_joins(
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=3),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment affects outcome only through uptake"
+            justification="assignment affects outcome only through uptake"
         ),
     )
     exposure_column = "exposed" if exposure_mode == "explicit" else None
@@ -2314,7 +2314,7 @@ def test_streamed_asof_allows_outcome_and_uptake_to_share_a_column(
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=2),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment affects outcomes only through uptake"
+            justification="assignment affects outcomes only through uptake"
         ),
     )
     source = from_unit_panel(

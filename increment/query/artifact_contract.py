@@ -205,6 +205,7 @@ _REFUSAL_CODES = (
     "artifact.manifest.invalid",
     "artifact.identifier.unsafe",
     "artifact.context.mismatch",
+    "artifact.context.legacy_exclusion_acknowledged",
     "artifact.refresh.invalid_ref",
     "artifact.refresh.context_mismatch",
     "artifact.relation.schema_mismatch",
@@ -472,7 +473,16 @@ def validate_artifact_context(context: Any) -> Any:
             "artifact.context.mismatch", "context hash does not match canonical JSON"
         )
     _validate_window_days(parsed)
-    return context
+    experiment = parsed.get("experiment")
+    design = experiment.get("design") if isinstance(experiment, Mapping) else None
+    exclusion = design.get("exclusion_restriction") if isinstance(design, Mapping) else None
+    if isinstance(exclusion, Mapping) and "acknowledged" in exclusion:
+        raise ArtifactContractError(
+            "artifact.context.legacy_exclusion_acknowledged",
+            "artifact context uses the retired exclusion acknowledgement field; "
+            "re-materialize the artifact",
+            context={"route": "re-materialize the artifact"},
+        )
 
 
 def _validate_window_days(parsed: Any) -> None:

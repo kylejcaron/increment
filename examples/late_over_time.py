@@ -181,7 +181,6 @@ def _(Encouragement, ExclusionRestriction, UptakeSpec, W):
         control_group="control",
         uptake=UptakeSpec(fact="clicked", window_days=W),
         exclusion_restriction=ExclusionRestriction(
-            acknowledged=True,
             justification="the randomized prompt affects revenue only through the click.",
         ),
         one_sided=False,

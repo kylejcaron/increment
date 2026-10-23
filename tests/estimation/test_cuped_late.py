@@ -36,10 +36,7 @@ def _design(**over):
         "mechanism": "encouragement",
         "control_group": "control",
         "uptake": {"fact": "help_click"},
-        "exclusion_restriction": {
-            "acknowledged": True,
-            "justification": "unclicked button assumed inert",
-        },
+        "exclusion_restriction": {"justification": "unclicked button assumed inert"},
         "one_sided": False,
         "min_first_stage_z": 3.0,
     }
