@@ -69,6 +69,7 @@ A valid sampling result does not guarantee an available posterior. Check `poster
 ## `prob_favorable`, `p_value`, and `stat_sig`
 
 Use `stat_sig()` for the row's sampling decision, `p_value()` for a sampling p-value, and `prob_favorable()` for a stored posterior probability. An unavailable verdict is not a non-rejection.
+For a neutral metric, neither accessor assigns a favorable side: `prob_favorable()` and `chance_to_beat_favorable()` return `None`. When a posterior is available, the readout still displays its estimate and `chance_to_beat()` probability, which do not require a preferred direction.
 
 !!! warning "Probability access is not sequential inference"
     `prob_favorable()` and `p_value()` require fixed-horizon inference; sequential rows refuse with `CapabilityError` code `sequential.route.unsupported`. `prob_favorable()` also needs the metric's `preferred_direction`, not its test `alternative`. Posterior accessors return `None` when no supported posterior is stored; they never reconstruct one from sampling evidence. A selected sequential interval also refuses `prob_beyond`.

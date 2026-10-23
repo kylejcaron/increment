@@ -812,6 +812,9 @@ def test_estimates_to_readout_qualifies_only_stored_posterior_values():
     (row,) = estimates_to_readout([posterior])
     assert row["posterior_chance_to_beat"] == pytest.approx(posterior.chance_to_beat())
     assert row["posterior_risk_if_shipped"] == pytest.approx(posterior.risk_if_shipped())
+    assert row["posterior_prob_favorable_reason_code"] == (
+        "estimation.posterior.favorable_direction_required"
+    )
     assert "chance_to_beat" not in row
     assert "risk_if_shipped" not in row
 

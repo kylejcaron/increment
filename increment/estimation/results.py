@@ -830,6 +830,9 @@ class _RowIdentity(CodedModel, BaseModel):
     # Stored at the declared relative null on the metric's good side; None for
     # absolute-margin nulls.
     posterior_prob_favorable: float | None = None
+    posterior_prob_favorable_reason_code: str | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     absolute_error_code: str | None = None
     absolute_error_context: Mapping[str, object] | None = None
     relative_error_code: str | None = None
@@ -872,6 +875,28 @@ class _RowIdentity(CodedModel, BaseModel):
     n_treat: int | None = Field(default=None, exclude_if=lambda v: v is None)
     mean_control: float | None = Field(default=None, exclude_if=lambda v: v is None)
     mean_treat: float | None = Field(default=None, exclude_if=lambda v: v is None)
+
+    def _posterior(self) -> LiftPosterior | None:
+        """Reconstruct the stored posterior shared by every decision-row view."""
+        if self.posterior_available is not True or self.inference != "fixed":
+            return None
+        if self.posterior_model == "normal":
+            if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
+                return None
+            from increment.estimation.inference import Normal
+
+            return Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
+        if self.posterior_model == "mixture" and self.posterior_components is not None:
+            import numpy as np
+
+            from increment.estimation.priors import MixturePosterior
+
+            return MixturePosterior(
+                weights=np.asarray(self.posterior_components.weights, dtype=float),
+                means=np.asarray(self.posterior_components.means, dtype=float),
+                sigmas=np.asarray(self.posterior_components.sigmas, dtype=float),
+            )
+        return None
 
     @model_validator(mode="after")
     def _freeze_readout_contexts(self):
@@ -2010,33 +2035,9 @@ class LiftEstimate(_RowIdentity):
             return None
         return self.winsor_treatment_n_upper / self.winsor_treatment_n
 
-    def _posterior(self) -> LiftPosterior | None:
-        """Read only the posterior state persisted on this row."""
-        if getattr(self, "posterior_available", None) is not True:
-            return None
-        if self.inference != "fixed":
-            return None
-        if self.posterior_model == "normal":
-            if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
-                return None
-            from increment.estimation.inference import Normal
-
-            return Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
-        if self.posterior_model == "mixture" and self.posterior_components is not None:
-            import numpy as np
-
-            from increment.estimation.priors import MixturePosterior
-
-            return MixturePosterior(
-                weights=np.asarray(self.posterior_components.weights, dtype=float),
-                means=np.asarray(self.posterior_components.means, dtype=float),
-                sigmas=np.asarray(self.posterior_components.sigmas, dtype=float),
-            )
-        return None
-
     def chance_to_beat(self) -> float | None:
         """Stored posterior probability that lift is positive, if available."""
-        return self.prob_beyond(0.0)
+        return row_chance_to_beat(self)
 
     def prob_beyond(self, threshold: float) -> float | None:
         """Stored-posterior probability that lift exceeds ``threshold``."""
@@ -2073,7 +2074,11 @@ class LiftEstimate(_RowIdentity):
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        if self.preferred_direction is None or self.null_abs is not None:
+        if (
+            self.preferred_direction is None
+            or self.preferred_direction == "neutral"
+            or self.null_abs is not None
+        ):
             return None
         threshold = math.log1p(self.null_lift) if self.posterior_scale == "log" else self.null_lift
         if self.preferred_direction == "decrease":
@@ -2103,7 +2108,11 @@ class LiftEstimate(_RowIdentity):
     def chance_to_beat_favorable(self) -> float | None:
         """Stored posterior probability on the favorable side of zero."""
         chance = self.chance_to_beat()
-        if chance is None or self.preferred_direction is None:
+        if (
+            chance is None
+            or self.preferred_direction is None
+            or self.preferred_direction == "neutral"
+        ):
             return None
         return 1.0 - chance if self.preferred_direction == "decrease" else chance
 
@@ -2181,6 +2190,14 @@ if TYPE_CHECKING:
     from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 
     type DecisionRow = LiftEstimate | BreakoutEstimate | DailyLiftEstimate
+
+
+def row_chance_to_beat(row: DecisionRow) -> float | None:
+    """Stored-posterior probability that a decision row's lift is positive."""
+    if isinstance(row, LiftEstimate):
+        return row.prob_beyond(0.0)
+    posterior = row._posterior()
+    return None if posterior is None else posterior.survival(0.0)
 
 
 def row_stat_sig(row: DecisionRow) -> bool | None:

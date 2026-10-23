@@ -267,6 +267,7 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
                 "multiplicity_status",
                 "relative_unavailable_reason",
                 "view_partial",
+                "posterior_prob_favorable_reason_code",
             ),
         ),
         (
@@ -305,6 +306,7 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
                 "decision_scope_complete",
                 "multiplicity_status",
                 "relative_unavailable_reason",
+                "posterior_prob_favorable_reason_code",
                 "excluded",
                 "view_partial",
             ),
@@ -346,6 +348,7 @@ def test_to_frame_summary_presets_match_full_frame_subsets():
                 "multiplicity_status",
                 "unavailable",
                 "relative_unavailable_reason",
+                "posterior_prob_favorable_reason_code",
                 "view_partial",
             ),
         ),

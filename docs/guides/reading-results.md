@@ -187,6 +187,14 @@ assignment-law evidence.
   recorded reason; do not reconstruct a posterior from sampling fields. Read
   the valid sampling interval if that is the question, or choose a supported
   posterior route if a Bayesian decision is required.
+
+When a prior is supplied and the posterior is available, the readout also
+prints its posterior estimate and `chance_to_beat()` probability, including
+when no preferred direction is declared. The frame field
+`posterior_prob_favorable_reason_code` distinguishes an absolute-margin null,
+missing direction, and a neutral direction; it is null when a favorable
+probability is available or the posterior itself is unavailable.
+
 - **A triggered result answers a different population question.** It includes
   units at their first eligible trigger and anchors their outcome window there.
   Keep it separate from the assigned-population result and its multiplicity

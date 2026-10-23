@@ -4,8 +4,9 @@ import copy
 import math
 import pickle
 from collections.abc import Sequence
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
+import pandas as pd
 import pytest
 
 from increment.errors import InvalidRequestError
@@ -124,6 +125,62 @@ def test_sparse_conversion_preserves_exact_sampling_and_guard_reason():
     assert row.posterior_reason_context is not None
     assert row.posterior_reason_context["reason"] == "delta_method_unreliable"
     assert row.chance_to_beat() is None
+
+
+def test_favorable_probability_reason_is_persisted_by_state():
+    from increment.estimation.inference import posterior_fields
+
+    def favorable_fields(
+        preferred_direction: Literal["increase", "decrease", "neutral"] | None,
+        *,
+        null_abs: float | None = None,
+    ):
+        return posterior_fields(
+            point=0.08,
+            se=0.05,
+            prior=Normal(mu=0.0, sigma=0.1),
+            alpha=0.05,
+            alternative="two-sided",
+            scale="log",
+            preferred_direction=preferred_direction,
+            null_abs=null_abs,
+        )
+
+    absolute = favorable_fields(None, null_abs=0.01)
+    assert absolute["posterior_prob_favorable_reason_code"] == (
+        "estimation.posterior.favorable_absolute_null"
+    )
+    missing = favorable_fields(None)
+    assert missing["posterior_prob_favorable_reason_code"] == (
+        "estimation.posterior.favorable_direction_required"
+    )
+    neutral = favorable_fields("neutral")
+    assert neutral["posterior_prob_favorable"] is None
+    assert neutral["posterior_prob_favorable_reason_code"] == (
+        "estimation.posterior.favorable_direction_neutral"
+    )
+    directional = favorable_fields("increase")
+    assert directional["posterior_prob_favorable_reason_code"] is None
+
+
+def test_favorable_probability_reason_round_trips_in_row_and_frame():
+    row = estimate_lift(
+        summary=identical_arms(),
+        metrics=[MeanMetric(name="rev", entity="user", fact="rev")],
+        control_group="control",
+        prior=Normal(mu=0.0, sigma=0.1),
+    ).results[0]
+    assert row.posterior_prob_favorable_reason_code == (
+        "estimation.posterior.favorable_direction_required"
+    )
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored.posterior_prob_favorable_reason_code == row.posterior_prob_favorable_reason_code
+    from increment.breakout.estimates import LiftEstimates
+
+    frame = cast(pd.DataFrame, LiftEstimates([row]).to_frame(backend="pandas"))
+    assert frame["posterior_prob_favorable_reason_code"].tolist() == [
+        row.posterior_prob_favorable_reason_code
+    ]
 
 
 def test_no_prior_has_no_plugin_probability():

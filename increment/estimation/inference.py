@@ -311,6 +311,7 @@ class PosteriorFields(TypedDict, total=False):
     posterior_latent_mean: float | None
     posterior_latent_sd: float | None
     posterior_prob_favorable: float | None
+    posterior_prob_favorable_reason_code: str | None
     posterior_components: PosteriorComponents | None
     prior_spec: StudentTPrior | MixturePrior | None
 
@@ -375,6 +376,15 @@ def posterior_fields(
             if null_abs is None and preferred_direction == "decrease"
             else posterior.survival(null_lift if scale == "linear" else math.log1p(null_lift))
             if null_abs is None and preferred_direction == "increase"
+            else None
+        ),
+        "posterior_prob_favorable_reason_code": (
+            "estimation.posterior.favorable_absolute_null"
+            if null_abs is not None
+            else "estimation.posterior.favorable_direction_required"
+            if preferred_direction is None
+            else "estimation.posterior.favorable_direction_neutral"
+            if preferred_direction == "neutral"
             else None
         ),
         "posterior_components": posterior_components,
