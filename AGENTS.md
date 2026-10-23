@@ -71,8 +71,9 @@ parity matrix and a guide — not every loader.
 - A new method or design states the evidence it requests and classifies its
   interaction with CUPED, ratio metrics, clustering, sequential inference,
   winsorization, breakouts and multiplicity as supported, source-limited,
-  construction-limited, not-expressible or unfinished — the parity matrix's
-  vocabulary (`tests/parity_harness/matrix.py`). The matrix and the recorded
+  construction-limited, not-expressible, unfinished or unsound (mathematically
+  invalid, with its derivation) — the parity matrix's vocabulary
+  (`tests/parity_harness/matrix.py`). The matrix and the recorded
   consumer contracts are the capability record;
   `docs/reference/capabilities-by-entry-point.md` and
   `docs/guides/compatibility.md` are rendered from them
