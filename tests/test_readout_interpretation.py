@@ -617,45 +617,59 @@ def test_decision_line_uses_interpreted_control_group():
 
 
 def test_encouragement_headlines_identify_itt_and_late():
-    from types import SimpleNamespace
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 
-    from increment._interpretation import _decision_line
-
-    common = {"metric": "conversion", "lift": None, "estimate": None}
-    itt = _decision_line(
-        SimpleNamespace(**common, estimand="itt"),
+    rows = [
+        {
+            "unit": f"{group}-{unit}",
+            "arm": group,
+            "clicked": int(group == "treatment" and unit < 28),
+            "value": float(unit % 10 + (2 if group == "treatment" and unit < 28 else 0)),
+        }
+        for group in ("control", "treatment")
+        for unit in range(40)
+    ]
+    design = Encouragement(
         control_group="control",
-        treatment_group="encouraged",
+        uptake=UptakeSpec(fact="clicked"),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="assignment affects outcome through uptake"
+        ),
+        one_sided=True,
+        min_first_stage_z=0.001,
     )
-    late = _decision_line(
-        SimpleNamespace(**common, estimand="late"),
-        control_group="control",
-        treatment_group="encouraged",
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        results = Analysis.from_unit_summary(
+            pd.DataFrame(rows),
+            unit="unit",
+            group="arm",
+            design=design,
+            metrics=[MetricSpec(name="value", type="mean")],
+        ).run(estimands=("itt", "late"))
+    headlines = [line for line in str(results).splitlines() if line.startswith("value: ")]
 
-    assert itt != late
-    assert "estimand=itt" in itt
-    assert "estimand=late" in late
+    assert any("estimand=itt" in line for line in headlines)
+    assert any("estimand=late" in line for line in headlines)
+    assert len(set(headlines)) == len(headlines)
 
 
 def test_breakout_headline_names_dimension_value():
-    from types import SimpleNamespace
+    frame = _mean_frame()
+    frame["country"] = ["US", "CA"] * (len(frame) // 2)
+    rows = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="value", type="mean")],
+        breakouts=["country"],
+    ).run_breakout()
+    headlines = [line for line in str(rows).splitlines() if " → " in line]
 
-    from increment._interpretation import _decision_line
-
-    headline = _decision_line(
-        SimpleNamespace(
-            metric="conversion",
-            lift=None,
-            estimate=None,
-            dimension="country",
-            dimension_value="US",
-        ),
-        control_group="control",
-        treatment_group="treatment",
-    )
-
-    assert "country=US" in headline
+    assert any("country=US" in line for line in headlines)
+    assert any("country=CA" in line for line in headlines)
+    assert len(set(headlines)) == len(headlines)
 
 
 def test_daily_value_readout_skips_decision_comparison_but_lift_keeps_it():
