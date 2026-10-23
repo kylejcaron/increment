@@ -281,13 +281,13 @@ raise `results.frame.unknown_columns`.
 <!-- output -->
 ```text
 assigned — treatment vs control
-converted: control → treatment; stat_sig=True
+converted: control → treatment; estimand=itt; stat_sig=True
 converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 converted additive effect: 0.36036, set [0.270641, 0.45008].
 converted binomial set central: [1.61559, +∞] at 0.95 confidence.
 converted test alternative: two-sided; null (relative lift): 0.
 converted result identity: method unadjusted; method role decision; estimand itt.
-revenue: control → treatment; n control=89; n treatment=111; mean control=14.764; mean treatment=16.1622; effect=9.46974%; interval=[3.27365, 16.0376]%; stat_sig=True
+revenue: control → treatment; n control=89; n treatment=111; mean control=14.764; mean treatment=16.1622; effect=9.46974%; interval=[3.27365, 16.0376]%; estimand=itt; stat_sig=True
 revenue (outcome, relative lift): 0.0946974, set [0.0327365, 0.160376] at 0.95 confidence.
 revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 revenue additive effect: 1.39812, set [0.504942, 2.29129].

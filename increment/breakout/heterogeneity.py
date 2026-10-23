@@ -20,7 +20,7 @@ import math
 from collections.abc import Callable
 from typing import Literal, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from increment._literals import ValueScale
 from increment.breakout.estimates import (
@@ -476,6 +476,29 @@ class HeterogeneitySummary(BaseModel):
     n_excluded_design: int
     n_excluded_outcome: int
     pooled: Estimate
+    i2_reason_code: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    def __repr__(self) -> str:
+        scale = "relative (log-RR)" if self.scale == "relative" else "absolute (additive)"
+        identity = ", ".join(
+            f"{name}={value!r}"
+            for name, value in (
+                ("metric", self.metric),
+                ("group_id", self.group_id),
+                ("dimension", self.dimension),
+                ("source", self.source),
+                ("estimand", self.estimand),
+                ("value_scale", self.value_scale),
+                ("scale", scale),
+                ("method", self.method),
+                ("analysis_population", self.analysis_population),
+            )
+            if value is not None
+        )
+        i2 = (
+            f"i2={self.i2!r}" if self.i2_reason_code is None else f"i2=None ({self.i2_reason_code})"
+        )
+        return f"HeterogeneitySummary({identity}, k={self.k}, q={self.q:.4g}, {i2})"
 
 
 class SegmentEstimate(CodedModel, BaseModel):
@@ -1041,6 +1064,13 @@ def segment_heterogeneity(  # noqa: PLR0915
                     n_excluded_design=n_design,
                     n_excluded_outcome=n_outcome,
                     pooled=pooled,
+                    i2_reason_code=(
+                        "estimation.meta.i2_outcome_excluded"
+                        if n_outcome > 0
+                        else "estimation.meta.i2_small_k"
+                        if het.k < 5
+                        else None
+                    ),
                 )
             )
 

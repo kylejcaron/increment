@@ -1101,6 +1101,10 @@ class TestMixedEstimandGrouping:
         assert late_abs[0].scale == "absolute"
         assert late_abs[0].k == 5
         assert late_abs[0].n_excluded_outcome == 0
+        assert late_abs[0].i2_reason_code is None
+        rendered = repr(summary)
+        assert "estimand='itt'" in rendered
+        assert "estimand='late'" in rendered
         assert {(row.estimand, row.scale) for row in segments} == {
             ("itt", "relative"),
             ("itt", "absolute"),
@@ -1143,6 +1147,38 @@ class TestSegmentHeterogeneity:
         assert len(segments) == 6
         assert {seg.dimension_value for seg in segments} == {"US", "CA", "MX"}
         assert {seg.estimator for seg in segments} == {"raw", "shrunken"}
+        assert s.i2 is None
+        assert s.i2_reason_code == "estimation.meta.i2_small_k"
+
+    def test_heterogeneity_repr_names_scale(self):
+        estimates = BreakoutEstimates(
+            [
+                _het_estimate("US", 0.10, math.sqrt(0.02), abs_diff=0.5, abs_se=0.1),
+                _het_estimate("CA", 0.30, math.sqrt(0.05), abs_diff=1.2, abs_se=0.2),
+                _het_estimate("MX", -0.05, math.sqrt(0.01), abs_diff=-0.4, abs_se=0.15),
+            ]
+        )
+        summary, _ = segment_heterogeneity(estimates)
+        rendered = repr(summary)
+
+        assert "relative (log-RR)" in rendered
+        assert "absolute (additive)" in rendered
+
+    def test_heterogeneity_repr_distinguishes_sources(self):
+        estimates = BreakoutEstimates(
+            [
+                _het_estimate("US", 0.10, math.sqrt(0.02)),
+                _het_estimate("CA", 0.30, math.sqrt(0.05)),
+                _het_estimate("MX", -0.05, math.sqrt(0.01)),
+            ]
+        )
+        summary, _ = segment_heterogeneity(estimates)
+        first = summary[0]
+        second = first.model_copy(update={"source": "other_source"})
+
+        assert first.source != second.source
+        assert repr(first) != repr(second)
+        assert "other_source" in repr(second)
 
     def test_two_treatment_arms_produce_two_independent_summaries(self):
         """A two-arm breakout: group_id is part of the grouping key, so each arm's Q statistic is computed independently - merging them previously inflated Q by 17.1%."""
@@ -1166,6 +1202,9 @@ class TestSegmentHeterogeneity:
         # unaffected by treatment_b's presence in `estimates`.
         assert by_group["treatment_a"].q == pytest.approx(2.338235294117647)
         assert by_group["treatment_b"].q != pytest.approx(by_group["treatment_a"].q)
+        rendered = repr(summary)
+        assert "group_id='treatment_a'" in rendered
+        assert "group_id='treatment_b'" in rendered
 
     def test_both_scales_shipped_when_both_populated(self):
         estimates = BreakoutEstimates(
@@ -1409,6 +1448,7 @@ class TestSegmentHeterogeneity:
         assert s.i2 is None
         assert s.i2_lb is None
         assert s.i2_ub is None
+        assert s.i2_reason_code == "estimation.meta.i2_outcome_excluded"
         assert s.q == pytest.approx(2.338235294117647)  # unaffected
         assert math.isfinite(s.pooled.value)  # unaffected
         # BR still gets dense rows, excluded and NaN.
@@ -1996,6 +2036,7 @@ class TestHeterogeneitySummaryToFrame:
             "lb",
             "ub",
             "open_side",
+            "i2_reason_code",
             "view_partial",
         ]
 

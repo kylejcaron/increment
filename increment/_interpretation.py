@@ -733,6 +733,13 @@ def _decision_line(row, *, control_group: str | None, treatment_group: str | Non
             low = "−∞" if estimate.lb is None else f"{estimate.lb * factor:.6g}"
             high = "+∞" if estimate.ub is None else f"{estimate.ub * factor:.6g}"
             parts.append(f"interval=[{low}, {high}]{suffix}")
+    estimand = getattr(row, "estimand", None)
+    if estimand is not None:
+        parts.append(f"estimand={estimand}")
+    dimension = getattr(row, "dimension", None)
+    dimension_value = getattr(row, "dimension_value", None)
+    if dimension is not None and dimension_value is not None:
+        parts.append(f"{dimension}={dimension_value}")
     if hasattr(row, "control_group") and hasattr(row, "estimate"):
         from increment.estimation.contrast import contrast_stat_sig
 
