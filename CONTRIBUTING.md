@@ -109,6 +109,7 @@ Notebook examples use Marimo; the development environment does not include
 Jupyter Notebook, JupyterLab, or ipywidgets.
 
 ### Tests and quality checks
+Policy: see AGENTS.md › Tests.
 
 #### Test categories and runtime expectations
 
@@ -262,8 +263,7 @@ checks at meaningful milestones rather than after each decorator edit.
 
 #### Test economy
 
-A test exists to fail when the code is wrong. Per test this suite is cheap;
-its cost is item count. In October 2026 the recorded CI durations showed
+The suite's cost is item count. In October 2026 the recorded CI durations showed
 about 20,000 collected items from about 9,000 test functions (fast tier
 18,189 items, 619 CPU-seconds, median 2 ms; slow tier 1,825 items, 1,760
 CPU-seconds, median 0.3 s; certification 82 items, 852 CPU-seconds).
@@ -289,10 +289,6 @@ Where new tests go:
 - One test file per source module, `tests/<pkg>/test_<module>.py`. Do not
   add a file for a facet of an existing feature; the
   `test_unit_day_artifact_*` family is the pattern to stop, not extend.
-- Query-builder and estimation behavior is asserted through one ingress path
-  plus the parity harness (`tests/test_parity_harness.py`,
-  `tests/test_parity_matrix.py`). Do not re-assert the same result through
-  dataframe, SQL and artifact ingress separately.
 - Dashboard behavior is asserted on the prepared payload
   (`increment.dashboard` data structures). Rendering tests are a small set of
   `slow` plus `integration` smokes; a new dashboard test renders only when the
@@ -544,12 +540,6 @@ three Python versions, which nightly does not cover, plus all three live
 warehouse backends. Weekly failures create or update a GitHub issue labelled
 `weekly-failure`.
 
-Tests run in parallel and must not depend on execution order or state created
-by another test. Mark functional slow tests with `slow`; simulation-based
-coverage and parameter-recovery checks also use `parameter_recovery`, while
-deterministic inferential certification uses `numerical_certification`. See
-[AGENTS.md](AGENTS.md) for the repository's architecture, parity, numerical,
-and test-contract requirements.
 
 #### Refusal registry gate
 
@@ -770,15 +760,10 @@ Use `--help` for each command's options. Campaign output directories must be
 new; incomplete runs retain their evidence and do not certify the full design.
 
 ### Documentation and comments
+Policy: see AGENTS.md › Documentation.
 
-Write concrete, current explanations. Lead guides with the task and required
-inputs. Keep assumptions, statistical guarantees, limitations, and citations
-explicit. Do not include internal work-item labels, agent instructions, or
-competitor comparisons in user documentation.
 
-Comments should explain an invariant or a non-obvious choice and normally stay
-brief. Preserve derivations and assumptions when their detail is necessary.
-Run:
+Run the audit:
 
 ```bash
 make audit-verbosity
@@ -789,9 +774,6 @@ need a first-line `# prose: allow-long <specific justification>`. Do not split
 blocks or add blank lines merely to evade the check. Public API docstrings are
 not length-capped; their detail should remain useful to callers.
 
-For root-export justifications and analyst-facing language requirements, see
-the consumer standard in [AGENTS.md](AGENTS.md#import-organization-and-user-facing-language)
-and its checks in `tests/test_consumer_standard.py`.
 
 Exercise documentation snippets and build the complete site with:
 
@@ -815,6 +797,7 @@ repository owner must create and activate that label. The existing
 `documentation` label remains for documentation-only release notes.
 
 ### Capability composition
+Policy: see AGENTS.md › Making a change.
 
 Every public capability declares its behavior for every metric type in
 `tests/compatibility_catalog.py`, with enforcement in
@@ -844,10 +827,9 @@ Every public capability declares its behavior for every metric type in
    `source.*` code and recorded in the enumerated parity harness
    (`tests/parity_harness/`).
 
-Compatibility probes establish composition behavior. Statistical calibration
-belongs in the capability's dedicated tests.
 
 ### Adding a method or design
+Policy: see AGENTS.md › Making a change.
 
 Have an approved tracking issue before implementing a new estimator, inference
 route, or experiment design: a Kata issue for maintainers and automated
@@ -947,22 +929,11 @@ The wheel smoke sessions install the built artifact outside the source
 checkout, ensuring imports do not accidentally resolve against local files.
 
 ## Project coordination
+Policy: see AGENTS.md › Working with others.
 
-Repository architecture and engineering requirements live in
-[AGENTS.md](AGENTS.md).
-
-Maintainers and automated contributors use
-[kata](https://github.com/kenn-io/kata) for internal work tracking. External
-contributors may use GitHub issues and pull requests and do not need Kata.
-Maintainers using Kata should run `kata quickstart`, search before creating an
-issue, and prefer adding evidence to an existing issue over opening a
-duplicate.
-
-Roborev is optional. The checked-in `.roborev.toml` contains only
-repository-specific review criteria; agent, model, reasoning, timeout, and
-credential settings come from each contributor's global configuration.
 
 ### Review and handoffs
+Policy: see AGENTS.md › Working with others.
 
 Pin the integration branch, absolute worktree and task base before dispatch.
 Assign disjoint files and one writer for shared result schemas, serialization
