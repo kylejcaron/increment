@@ -3,6 +3,7 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
+from increment._evidence_types import MetricEvidence
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import PreferredDirection, Role
 from increment.errors import CodedError
@@ -16,7 +17,6 @@ from increment.estimation.quantile import estimate_quantile_lift_computation
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.readouts._common import _raise, _runtime_method_roles, _warn
-from increment.readouts._metric_rows import MetricRows
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
 
@@ -202,7 +202,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     family: bool = False,
     family_member: bool = False,
     route_tail: float | None = None,
-    evidence: MetricRows | None = None,
+    evidence: MetricEvidence | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Estimate randomized whole-window cells independently.
 
@@ -422,9 +422,9 @@ def _estimate_pass(  # noqa: PLR0913
     failures: list[DecisionComputation[LiftEstimate]] = []
     for method in methods:
         if method.variance_reduction == "cuped":
-            if not isinstance(evidence, MetricRows):
+            if not isinstance(evidence, MetricEvidence):
                 raise AssertionError(
-                    "Scalar estimation requires method-scoped MetricRows evidence."
+                    "Scalar estimation requires method-scoped MetricEvidence evidence."
                 )
             try:
                 evidence.rows_for_method(method)
@@ -510,7 +510,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
     `evidence` is what the caller already read for this metric: total moment
     rows for a moments metric, the native unit frame for a quantile metric.
     """
-    rows_summary = list(evidence.rows) if isinstance(evidence, MetricRows) else evidence
+    rows_summary = list(evidence.rows) if isinstance(evidence, MetricEvidence) else evidence
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         from increment.winsor import winsor_refuse
 
@@ -557,7 +557,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             alpha=alpha_for,
             method_roles=method_roles,
             inference=inference,
-            unit_rows=evidence.unit_frame if isinstance(evidence, MetricRows) else evidence,
+            unit_rows=evidence.unit_frame if isinstance(evidence, MetricEvidence) else evidence,
         )
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
@@ -565,7 +565,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             computation,
         )
 
-    if isinstance(evidence, MetricRows) and any(
+    if isinstance(evidence, MetricEvidence) and any(
         method.variance_reduction == "cuped_multicovariate" for method in methods
     ):
         from increment.estimation.engine import (
@@ -750,7 +750,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                 metrics=[metric],
                 summary=(
                     evidence.rows_for_method(method)
-                    if method.variance_reduction == "cuped" and isinstance(evidence, MetricRows)
+                    if method.variance_reduction == "cuped" and isinstance(evidence, MetricEvidence)
                     else rows_summary or []
                 ),
                 control_group=design.control_group,
@@ -794,6 +794,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
         family=retry == "family",
         family_member=family_member,
         route_tail=route_tail,
-        evidence=evidence if isinstance(evidence, MetricRows) else None,
+        evidence=evidence if isinstance(evidence, MetricEvidence) else None,
     )
     return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation

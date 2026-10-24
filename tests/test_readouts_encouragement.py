@@ -1792,17 +1792,18 @@ def test_encouragement_missing_control_defers_to_family_gate(con):
     ]
     from dataclasses import replace
 
+    import increment.readouts._metric_rows as metric_rows
     from increment._analysis_config import effective_methods
-    from increment.readouts._metric_rows import _load_metric_rows
 
     evidence_by_metric = {}
     for metric, config in zip(metrics, src.context.configs, strict=True):
-        evidence = _load_metric_rows(
+        evidence = metric_rows.load_metric_evidence(
             src,
-            metric,
-            by=(),
-            control_group="control",
-            methods=effective_methods(config, design=src.context.design),
+            metric_rows.MetricEvidenceRequest(
+                metric=metric,
+                control_group="control",
+                methods=tuple(effective_methods(config, design=src.context.design)),
+            ),
         )
         evidence_by_metric[metric.name] = replace(
             evidence,

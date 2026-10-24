@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset, effective_methods
+from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
 from increment._source_operations import ReadoutExecutionOperation, ReadoutSnapshotOperation
@@ -27,7 +28,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
-from increment.readouts._metric_rows import MetricRows, _load_metric_rows
+from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
 from increment.readouts._randomized import (
@@ -293,12 +294,14 @@ def _run_plan_and_roster(src, design, configs, population):
 def _load_encouragement_evidence(src, selected, configs, design, by):
     config_by_metric = {config.metric.name: config for config in configs}
     return {
-        metric.name: _load_metric_rows(
+        metric.name: load_metric_evidence(
             src,
-            metric,
-            by=by,
-            control_group=design.control_group,
-            methods=effective_methods(config_by_metric[metric.name], design=design),
+            MetricEvidenceRequest(
+                metric=metric,
+                control_group=design.control_group,
+                by=tuple(by),
+                methods=tuple(effective_methods(config_by_metric[metric.name], design=design)),
+            ),
         )
         for metric in selected
     }
@@ -348,7 +351,7 @@ def _run_prepared(
         if by and compliance_only:
             _raise_readout_request("readout.run.segment_unsupported", metric="uptake")
         rows_by_metric: dict[str, list[Mapping[str, Any]]] = {}
-        evidence_by_metric: dict[str, MetricRows] = {}
+        evidence_by_metric: dict[str, MetricEvidence] = {}
         if not compliance_only:
             reject_quantile_metrics(
                 selected,

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._analysis_config import overlay_configs, validate_scalar_route
+from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._source_operations import ReadoutSnapshotOperation
 from increment._source_types import (
@@ -11,7 +11,7 @@ from increment._source_types import (
     ScalarBreakoutMomentSource,
     ScalarMethodMomentSource,
 )
-from increment.errors import CodedError, refuse
+from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._source_digest import input_evidence
 from increment.semantics.design import Encouragement
@@ -20,87 +20,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._source_types import RawOutcomeSource
-    from increment.errors import RefusalSpec
     from increment.semantics.models import Metric
     from increment.sources import MomentSource
-
-
-@dataclass(frozen=True, slots=True)
-class MetricRows:
-    """One metric's aggregate rows and/or per-unit estimator evidence."""
-
-    rows: tuple[Mapping[str, Any], ...]
-    unit_frame: Any | None
-    observed_arms: frozenset[str]
-    n_treatment_arms: int
-    evidence_kind: str
-    evidence_sha256: str
-    evidence_count: int
-    decision_evidence_components: tuple[tuple[str, str, int], ...]
-    evidence_components: tuple[tuple[str, str, int], ...] = ()
-    covariate_columns: tuple[tuple[str, str], ...] = ()
-    method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
-    method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
-    method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
-    categorical_evidence: tuple[tuple[str, Any], ...] = ()
-    warehouse_cuped_fits: tuple[tuple[str, Any], ...] = ()
-    warehouse_cuped_breakout_fits: tuple[tuple[str, str, str, Any, tuple[object, ...]], ...] = ()
-
-    def categorical_for(self, method: Any) -> Any | None:
-        """Retained joint categorical evidence for one multicovariate method."""
-        return next(
-            (evidence for name, evidence in self.categorical_evidence if name == method.name),
-            None,
-        )
-
-    def warehouse_fit_for(self, method: Any) -> Any | None:
-        """Return this request's finalized warehouse fit, if it was acquired."""
-        return next(
-            (fit for name, fit in self.warehouse_cuped_fits if name == method.name),
-            None,
-        )
-
-    def warehouse_breakout_fit_for(
-        self, method: Any, *, dimension: str, dimension_value: str
-    ) -> Any | None:
-        return next(
-            (
-                fit
-                for name, fit_dimension, value, fit, _identity in self.warehouse_cuped_breakout_fits
-                if name == method.name and fit_dimension == dimension and value == dimension_value
-            ),
-            None,
-        )
-
-    def rows_for_method(
-        self,
-        method: Any,
-        *,
-        dimension: str | None = None,
-        dimension_value: str | None = None,
-    ) -> tuple[Mapping[str, Any], ...]:
-        """Return the produced input family, replaying only its own cell refusal."""
-        for name, spec, context in self.method_refusals:
-            if name == method.name:
-                refuse(spec, **context)
-        for name, cell_dimension, value, spec, context in self.method_cell_refusals:
-            if name != method.name:
-                continue
-            if dimension is None:
-                raise AssertionError("Partitioned scalar evidence requires a segment.")
-            if cell_dimension == dimension and value == dimension_value:
-                refuse(spec, **context)
-        for name, rows in self.method_rows:
-            if name == method.name:
-                if dimension is None:
-                    return rows
-                return tuple(
-                    row
-                    for row in rows
-                    if ("__null__" if row.get(dimension) is None else str(row[dimension]))
-                    == dimension_value
-                )
-        raise AssertionError(f"Scalar evidence for method {method.name!r} was not acquired.")
 
 
 def _frame_digest_and_arms(frame):
@@ -201,22 +122,22 @@ def _decision_unit_component(frame, method, acquired_columns):
     return ("unit_evidence_rows", *_frame_digest_and_arms(projected)[1:])
 
 
-def _load_metric_rows(  # noqa: PLR0915
-    src: MomentSource,
-    metric: Metric,
-    *,
-    by: Sequence[str],
-    control_group: str,
-    methods: Sequence[Any] = (),
-    covariates: Sequence[Any] = (),
-    _snapshot_active: bool = False,
-) -> MetricRows:
-    """Load one metric's rows once.
+def load_metric_evidence(src: MomentSource, request: MetricEvidenceRequest) -> MetricEvidence:
+    """Load one metric's rows once for a typed evidence request."""
+    return _load_metric_evidence(src, request)
 
-    Callers needing the quantile-specific alternative/cluster/breakout guard
-    (`_refuse_unsupported_quantile`, which needs `test`/`cluster` -- outside
-    this function's contract) call it before `_load_metric_rows`.
-    """
+
+def _load_metric_evidence(  # noqa: PLR0915
+    src: MomentSource,
+    request: MetricEvidenceRequest,
+    *,
+    _snapshot_active: bool = False,
+) -> MetricEvidence:
+    metric = request.metric
+    by = request.by
+    control_group = request.control_group
+    methods = request.methods
+    covariates = request.covariates
     has_linear = any(
         getattr(method, "variance_reduction", None) == "cuped_multicovariate" for method in methods
     )
@@ -238,15 +159,7 @@ def _load_metric_rows(  # noqa: PLR0915
                 configs=configs,
                 uptake_facts=uptake_facts,
             ) as pinned:
-                return _load_metric_rows(
-                    pinned,
-                    metric,
-                    by=by,
-                    control_group=control_group,
-                    methods=methods,
-                    covariates=covariates,
-                    _snapshot_active=True,
-                )
+                return _load_metric_evidence(pinned, request, _snapshot_active=True)
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         import narwhals as nw
 
@@ -260,7 +173,9 @@ def _load_metric_rows(  # noqa: PLR0915
 
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
         if not observed - {str(control_group)}:
-            return MetricRows(
+            return MetricEvidence(
+                cluster=src.context.cluster,
+                control_group=control_group,
                 rows=(),
                 unit_frame=None,
                 observed_arms=observed,
@@ -285,7 +200,9 @@ def _load_metric_rows(  # noqa: PLR0915
         observed = frozenset(a.group_id for a in raw.arms)
         # Keep the immutable raw state with the loaded evidence so repeated
         # family passes reinvert without fetching or changing the cutoff pool.
-        return MetricRows(
+        return MetricEvidence(
+            cluster=src.context.cluster,
+            control_group=control_group,
             rows=tuple(
                 {"group_id": a.group_id, "_winsor_raw_state": raw, "_winsor_references": references}
                 for a in raw.arms
@@ -304,7 +221,9 @@ def _load_metric_rows(  # noqa: PLR0915
         native = src.unit_frame(metric)
         frame = nw.from_native(native, eager_only=True)
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
-        return MetricRows(
+        return MetricEvidence(
+            cluster=src.context.cluster,
+            control_group=control_group,
             rows=(),
             unit_frame=native,
             observed_arms=observed,
@@ -358,7 +277,9 @@ def _load_metric_rows(  # noqa: PLR0915
         ),
     )
     if not has_linear:
-        return MetricRows(
+        return MetricEvidence(
+            cluster=src.context.cluster,
+            control_group=control_group,
             rows=tuple(rows),
             unit_frame=None,
             observed_arms=observed,
@@ -392,7 +313,9 @@ def _load_metric_rows(  # noqa: PLR0915
                     for item in categorical_components
                     if item[0] == f"categorical_cells:{methods[0].name}"
                 )
-            return MetricRows(
+            return MetricEvidence(
+                cluster=src.context.cluster,
+                control_group=control_group,
                 rows=tuple(rows),
                 unit_frame=None,
                 observed_arms=observed | cell_arms,
@@ -503,7 +426,9 @@ def _load_metric_rows(  # noqa: PLR0915
         )
         evidence_components = (*categorical_components, *fit_components)
         decision_method_name = methods[0].name if methods else None
-        return MetricRows(
+        return MetricEvidence(
+            cluster=src.context.cluster,
+            control_group=control_group,
             rows=tuple(rows),
             unit_frame=None,
             observed_arms=observed | cell_arms,
@@ -545,7 +470,9 @@ def _load_metric_rows(  # noqa: PLR0915
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
     if decision_is_linear:
         decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
-    return MetricRows(
+    return MetricEvidence(
+        cluster=src.context.cluster,
+        control_group=control_group,
         rows=tuple(rows),
         unit_frame=native,
         observed_arms=observed | unit_arms,
@@ -657,7 +584,7 @@ def _breakout_fit_record(identity: tuple[object, ...], evidence: Any) -> dict[st
 
 def _load_breakout_metric_rows(
     src, metric, methods, *, dimension, control_group, source_name=None, population="assigned"
-) -> MetricRows:
+) -> MetricEvidence:
     """Acquire effective scalar inputs without promoting a segment failure."""
     if any(method.variance_reduction == "cuped" for method in methods) and not isinstance(
         src, ScalarBreakoutMomentSource
@@ -784,7 +711,9 @@ def _load_breakout_metric_rows(
         for name, fit_dimension, value, fit, identity in warehouse_breakout_fits
     )
     components = (ordinary_component, *method_components, *warehouse_components)
-    return MetricRows(
+    return MetricEvidence(
+        cluster=src.context.cluster,
+        control_group=control_group,
         rows=base,
         unit_frame=None,
         observed_arms=observed,

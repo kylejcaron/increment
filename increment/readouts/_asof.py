@@ -10,6 +10,7 @@ from increment._analysis_config import (
     overlay_configs,
     select_metrics,
 )
+from increment._evidence_types import MetricEvidence
 from increment._policy_alpha import resolve_cell_alpha
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._readout_request import _raise as _raise_readout_request
@@ -33,7 +34,7 @@ from increment.readouts._common import (
     _sequential_inference,
     _validate_encouragement_asof_inference,
 )
-from increment.readouts._metric_rows import MetricRows, _rows_digest_and_arms
+from increment.readouts._metric_rows import _rows_digest_and_arms
 from increment.readouts._passes import _estimate_pass
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
@@ -48,14 +49,16 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
-def _asof_metric_rows(rows, methods, control_group) -> MetricRows:
+def _asof_metric_rows(rows, methods, control_group, cluster) -> MetricEvidence:
     """Identify the methods sharing one acquired implicit pre-period family."""
     rows = tuple(rows)
     observed, digest, count = _rows_digest_and_arms(
         {**row, "ds": serialize_day_axis(row["ds"])} for row in rows
     )
     component = ("moments_rows", digest, count)
-    return MetricRows(
+    return MetricEvidence(
+        cluster=cluster,
+        control_group=control_group,
         rows=rows,
         unit_frame=None,
         observed_arms=observed,
@@ -79,12 +82,12 @@ def _load_asof_rows_by_metric(
     by: Sequence[str],
     completed_windows_only: bool,
     control_group: str,
-) -> dict[str, dict[Any, MetricRows]]:
+) -> dict[str, dict[Any, MetricEvidence]]:
     """Load and bucket each metric's as-of moments by date."""
     common_moment_kwargs: dict[str, Any] = (
         {"completed_windows_only": True} if completed_windows_only else {}
     )
-    by_metric_date: dict[str, dict[Any, MetricRows]] = {}
+    by_metric_date: dict[str, dict[Any, MetricEvidence]] = {}
     for metric in selected:
         moment_kwargs = dict(common_moment_kwargs)
         if any(method.variance_reduction == "cuped" for method in methods_by_metric[metric.name]):
@@ -97,7 +100,9 @@ def _load_asof_rows_by_metric(
         for row in rows:
             dated.setdefault(row["ds"], []).append(row)
         by_metric_date[metric.name] = {
-            date: _asof_metric_rows(rows, methods_by_metric[metric.name], control_group)
+            date: _asof_metric_rows(
+                rows, methods_by_metric[metric.name], control_group, src.context.cluster
+            )
             for date, rows in dated.items()
         }
     return by_metric_date
@@ -149,7 +154,7 @@ def _asof_encouragement_rows(metric, evidence, context, alpha):
 
 def _estimate_asof_metric_date(
     metric: Metric,
-    evidence: MetricRows,
+    evidence: MetricEvidence,
     date_value: Any,
     context: _AsofMetricContext,
 ) -> list[LiftEstimate]:
