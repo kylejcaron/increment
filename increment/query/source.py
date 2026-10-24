@@ -413,7 +413,8 @@ class SqlPanelSource:
 
         if outcome_stage == "raw":
             require_evidence(self, raw_outcomes=True)
-        require_evidence(self, unit_rows=True)
+
+        require_evidence(self, unit_rows=True, covariates=covariates)
         refuse_unit_rows(
             self,
             offered=False,

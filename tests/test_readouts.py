@@ -128,6 +128,34 @@ def test_same_readout_serves_both_substrates(con, unit_summary_frame):
     assert a[0].require_lift().ub == pytest.approx(b[0].require_lift().ub, rel=1e-12)
 
 
+@pytest.mark.integration
+def test_sql_moments_source_names_covariate_before_unit_rows_refusal(con):
+    from increment.query.source import SqlPanelSource
+
+    frame = pa.table(
+        {
+            "unit": ["c1", "c2", "t1", "t2"],
+            "arm": ["C", "C", "T", "T"],
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+            "x": [0.0, 1.0, 2.0, 3.0],
+        }
+    )
+    source = SqlPanelSource.from_frame_via_memtable(
+        con,
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=[_revenue_spec()],
+        design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",))),
+    )
+
+    with pytest.raises(CapabilityError) as raised:
+        source.unit_frame(source.context.metrics[0], covariates=("x",))
+
+    assert raised.value.code == "evidence.covariate_unavailable"
+    assert raised.value.context["requested"] == ("x",)
+
+
 @pytest.mark.slow
 def test_memtable_missingness_keeps_enrollment_and_absent_denominator(con):
     from increment.frame import FrameTotalsSource
