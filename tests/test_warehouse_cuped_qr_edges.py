@@ -173,7 +173,7 @@ def test_categorical_ratio_withholds_invalid_arm_before_fit(tmp_path):
 
     try:
         evidence = fit_multicovariate_source(Source(), metric, request)
-        from increment.query.cuped import _WarehouseCupedFitEvidence
+        from increment._evidence_types import _WarehouseCupedFitEvidence
 
         assert isinstance(evidence, _WarehouseCupedFitEvidence)
         assert dict(evidence.withheld).keys() == {"variant-b"}

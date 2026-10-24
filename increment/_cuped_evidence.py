@@ -133,20 +133,6 @@ class CupedEvidence:
         ]
 
 
-@dataclass(frozen=True, slots=True)
-class _WarehouseCupedFitEvidence:
-    fit: Any
-    arm_order: tuple[str, ...]
-    withheld: tuple[tuple[str, CodedError], ...] = ()
-
-
-def warehouse_cuped_fit_evidence(
-    fit: Any, arm_order: tuple[str, ...], withheld: tuple[tuple[str, CodedError], ...] = ()
-) -> _WarehouseCupedFitEvidence:
-    """Build the single warehouse-fit envelope used by live and fitted sources."""
-    return _WarehouseCupedFitEvidence(fit, tuple(arm_order), tuple(withheld))
-
-
 def method_key(method: Any) -> str:
     """Canonical identity of a request, excluding only its display label."""
     return canonical_json_bytes(method.model_dump(mode="json", exclude={"name"})).decode()
