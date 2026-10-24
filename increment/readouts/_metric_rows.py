@@ -252,6 +252,13 @@ def _load_metric_evidence(  # noqa: PLR0915
         import narwhals as nw
 
         require_evidence(src, unit_rows=True)
+        design = src.context.design
+        if getattr(design, "mechanism", None) == "observational":
+            from increment.estimation._readout_refusals import refuse_observational_quantile
+
+            refuse_observational_quantile(
+                metric, authenticate=getattr(src, "validated_metric", None)
+            )
         native = src.unit_frame(metric)
         frame = nw.from_native(native, eager_only=True)
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
