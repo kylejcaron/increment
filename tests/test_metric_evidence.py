@@ -89,10 +89,37 @@ def _assert_identity_equal(expected, actual):
 
 # QR floats differ at machine epsilon across BLAS platforms, making hashes platform-dependent;
 # numerical fit payloads are tracked separately.
+def _canonicalize_denominator_support(value):
+    if isinstance(value, list):
+        return [_canonicalize_denominator_support(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: (
+                sorted(
+                    (_canonicalize_denominator_support(item) for item in item_value),
+                    key=str,
+                )
+                if key == "denominator_support"
+                else _canonicalize_denominator_support(item_value)
+            )
+            for key, item_value in value.items()
+        }
+    if isinstance(value, str) and value.lstrip().startswith("{"):
+        try:
+            return json.dumps(
+                _canonicalize_denominator_support(json.loads(value)),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
 def _normalize_warehouse_replay_rows(rows):
     normalized = []
     for source_row in rows:
-        row = dict(source_row)
+        row = {key: _canonicalize_denominator_support(value) for key, value in source_row.items()}
         row.pop("source_snapshot_id", None)
         row.pop("family_id", None)
         retained = json.loads(row["retained_family"])
@@ -112,6 +139,23 @@ def _normalize_warehouse_replay_rows(rows):
         row["retained_family"] = json.dumps(retained, sort_keys=True, separators=(",", ":"))
         normalized.append(row)
     return normalized
+
+
+def test_warehouse_replay_comparison_ignores_denominator_support_order():
+    rows = [
+        {
+            "evidence": '{"denominator_support":[{"arm":"control"},{"arm":"treatment"}]}',
+            "retained_family": "[]",
+        }
+    ]
+    reordered = [
+        {
+            "evidence": '{"denominator_support":[{"arm":"treatment"},{"arm":"control"}]}',
+            "retained_family": "[]",
+        }
+    ]
+
+    assert _normalize_warehouse_replay_rows(rows) == _normalize_warehouse_replay_rows(reordered)
 
 
 def _warehouse_fit_payload(cube_path):
