@@ -492,7 +492,6 @@ def _load_metric_evidence(  # noqa: PLR0915
             ),
             method_rows=method_rows,
             method_refusals=tuple(method_refusals),
-            warehouse_cuped_fits=tuple(warehouse_fits),
             method_fit_answers=method_fit_answers,
         )
 
@@ -687,8 +686,8 @@ def _load_breakout_metric_rows(
         if isinstance(src, ScalarBreakoutMomentSource)
         else tuple(src.moments(metric, grain="total", by=(dimension,)))
     )
-    warehouse_breakout_fits = []
     breakout_fit_answers = []
+    warehouse_components = []
     fit_source = getattr(src, "_source", src)
     segment_values = (
         sorted({"__null__" if row.get(dimension) is None else str(row[dimension]) for row in base})
@@ -738,8 +737,12 @@ def _load_breakout_metric_rows(
                 continue
             breakout_fit_answers.append((method_fit_request, answer))
             fit = answer.failure if answer.failure is not None else answer.envelope
-            warehouse_breakout_fits.append(
-                (method.name, dimension, segment_value, fit, answer.fit_identity)
+            warehouse_components.append(
+                (
+                    f"warehouse_qr_breakout:{method.name}:{dimension}:{segment_value}",
+                    _rows_raw_digest_and_arms((_breakout_fit_record(answer.fit_identity, fit),))[1],
+                    1,
+                )
             )
     families = []
     failures = []
@@ -787,14 +790,7 @@ def _load_breakout_metric_rows(
             (f"scalar_method:{method.name}", *_rows_raw_digest_and_arms(records)[1:])
         )
 
-    warehouse_components = tuple(
-        (
-            f"warehouse_qr_breakout:{name}:{fit_dimension}:{value}",
-            _rows_raw_digest_and_arms((_breakout_fit_record(identity, fit),))[1],
-            1,
-        )
-        for name, fit_dimension, value, fit, identity in warehouse_breakout_fits
-    )
+    warehouse_components = tuple(warehouse_components)
     components = (ordinary_component, *method_components, *warehouse_components)
     return MetricEvidence(
         cluster=src.context.cluster,
@@ -818,6 +814,5 @@ def _load_breakout_metric_rows(
         method_rows=tuple(families),
         method_refusals=tuple(failures),
         method_cell_refusals=tuple(cell_failures),
-        warehouse_cuped_breakout_fits=tuple(warehouse_breakout_fits),
         method_fit_answers=tuple(breakout_fit_answers),
     )

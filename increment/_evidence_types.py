@@ -73,6 +73,17 @@ class MethodFitAnswer:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedMulticovariateFit:
+    """Selected retained, warehouse, or local input for a mixed-CUPED fit."""
+
+    origin: Literal["warehouse", "retained_fitted", "retained_categorical", "local"]
+    envelope: Any | None = None
+    cells: Any | None = None
+    failure: CodedError | None = None
+    fit_identity: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class BreakoutSlicesRequest:
     """Acquire source views for a batch of declared breakout identities."""
 
@@ -194,46 +205,7 @@ class MetricEvidence:
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
     method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
-    warehouse_cuped_fits: tuple[tuple[str, Any], ...] = ()
     method_fit_answers: tuple[tuple[MethodFitRequest, MethodFitAnswer], ...] = ()
-    warehouse_cuped_breakout_fits: tuple[tuple[str, str, str, Any, tuple[object, ...]], ...] = ()
-
-    def categorical_for(self, method: Any) -> MethodFitAnswer | None:
-        """Retained joint categorical cells for one multicovariate method."""
-        answer = self.method_fit_for(method)
-        return answer if answer is not None and answer.origin == "retained_categorical" else None
-
-    def method_fit_for(
-        self, method: Any, *, cell: BreakoutCell | None = None
-    ) -> MethodFitAnswer | None:
-        """Return the acquired answer matching a method and optional breakout cell."""
-        return next(
-            (
-                answer
-                for request, answer in self.method_fit_answers
-                if request.method.name == method.name and request.cell == cell
-            ),
-            None,
-        )
-
-    def warehouse_fit_for(self, method: Any) -> Any | None:
-        """Return this request's finalized warehouse fit, if it was acquired."""
-        return next(
-            (fit for name, fit in self.warehouse_cuped_fits if name == method.name),
-            None,
-        )
-
-    def warehouse_breakout_fit_for(
-        self, method: Any, *, dimension: str, dimension_value: str
-    ) -> Any | None:
-        return next(
-            (
-                fit
-                for name, fit_dimension, value, fit, _identity in self.warehouse_cuped_breakout_fits
-                if name == method.name and fit_dimension == dimension and value == dimension_value
-            ),
-            None,
-        )
 
     def rows_for_method(
         self,

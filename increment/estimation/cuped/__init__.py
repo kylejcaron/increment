@@ -1,7 +1,15 @@
 """Scalar and multicovariate CUPED estimators."""
 
+from increment._evidence_types import (
+    BreakoutCell,
+    BreakoutIdentity,
+    MethodFitAnswer,
+    MethodFitRequest,
+    PreparedMulticovariateFit,
+)
 from increment.estimation.cuped.encoding import MISSING_CATEGORY, MulticovariateCupedLayout
 from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
+from increment.estimation.cuped.prepare import prepare_multicovariate_fit
 from increment.estimation.cuped.scalar import (
     AdjustedRatioMoments,
     CupedFit,
@@ -21,6 +29,12 @@ from increment.estimation.cuped.types import (
 )
 
 __all__ = [
+    "BreakoutCell",
+    "BreakoutIdentity",
+    "MethodFitAnswer",
+    "MethodFitRequest",
+    "PreparedMulticovariateFit",
+    "prepare_multicovariate_fit",
     "CategoricalCells",
     "FitState",
     "InferenceSummary",

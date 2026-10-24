@@ -688,6 +688,7 @@ expose = [
 from = ["increment._evidence_types"]
 expose = [
   "EvidenceScope", "BreakoutIdentity", "BreakoutCell", "MethodFitRequest", "MethodFitAnswer",
+  "PreparedMulticovariateFit",
   "BreakoutSlicesRequest", "BreakoutSlice", "BreakoutSlices",
   "BreakoutUnitRowsRequest", "BreakoutUnitRows", "BreakoutRoute", "DayAxisRoute",
   "DayAxisRequest", "DayAxisRows", "ComplianceRequest", "ComplianceSeriesRequest",
