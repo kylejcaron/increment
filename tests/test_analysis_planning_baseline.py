@@ -4,7 +4,7 @@ that can supply it."""
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import ibis
 import numpy as np
@@ -92,7 +92,9 @@ class TestPlanningBaselineOnDataframeRoutes:
         source = _native_source(analysis)
         moments = source.moments
         monkeypatch.setattr(
-            source, "moments", lambda metric, **kwargs: moments(metric, grain="daily", **kwargs)
+            source,
+            "moments",
+            lambda metric, **kwargs: moments(metric, grain="daily"),
         )
         with pytest.raises(CapabilityError) as raised:
             analysis.planning_baseline("revenue")
@@ -2074,6 +2076,47 @@ class TestPlanningBaselineOnSwitchback:
 class TestPlanningBaselineOnMoments:
     """from_moments declares no trigger and carries no per-unit rows."""
 
+    def test_triggered_format13_moments_refuse_assigned_planning(self, tmp_path):
+        import json
+
+        from increment.frame import MetricSpec
+
+        method = Method.cuped_multicovariate(
+            name="categorical",
+            covariates=CupedCovariate(name="segment", kind="categorical"),
+        )
+        metric = MetricSpec(name="revenue", decision_method=method)
+        frame = _unit_summary_frame(with_covariate=True)
+        frame["segment"] = [("west", "north", "south")[i % 3] for i in range(len(frame))]
+        direct = Analysis.from_unit_summary(
+            frame,
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            metrics=[metric],
+        )
+        destination = tmp_path / "triggered-format13.parquet"
+        direct.export(destination)
+        rows = pq.read_table(destination).to_pylist()
+        assert {row["moments_format"] for row in rows} == {13}
+        for row in rows:
+            row["trigger_name"] = "exposure"
+            if row.get("record_kind") == "cuped_evidence":
+                payload = row["cuped_evidence"]
+                json.loads(payload)
+                payload = payload.replace('"population":"assigned"', '"population":"triggered"')
+                payload = payload.replace('"trigger_name":null', '"trigger_name":"exposure"')
+                row["cuped_evidence"] = payload
+            else:
+                row["population"] = "triggered"
+        replayed = Analysis.from_moments(
+            rows, metrics=[metric], control="control", experiment_id="triggered-replay"
+        )
+        with pytest.raises(CapabilityError) as raised:
+            replayed.planning_baseline("revenue")
+        assert raised.value.code == "evidence.operation_unavailable"
+        assert raised.value.context["requested"] == {"population": "assigned"}
+
     def test_from_moments_keeps_the_default_trigger_rate(self, tmp_path):
         """A from_moments source declares no trigger, so trigger_rate stays at
         its Baseline default rather than raising or misreading one."""
@@ -2120,3 +2163,49 @@ class TestPlanningBaselineOnMoments:
         )
         assert isinstance(raised, CapabilityError)
         assert raised.context["metric"] == "revenue"
+
+
+class TestLegacyPlanningSources:
+    def test_method_only_encouragement_source_keeps_compliance(self, monkeypatch):
+        from tests.analysis_factory import held_source
+        from tests.parity_harness.cases import PARITY_CASES
+
+        case = next(c for c in PARITY_CASES if c.id == "encouragement_declared_definitions")
+        analysis = case.build["from_unit_summary"]()
+        expected = analysis.planning_baseline("revenue")
+        source = held_source(analysis)
+        monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
+        assert analysis.planning_baseline("revenue") == expected
+
+    @pytest.mark.integration
+    def test_method_only_clustered_source_keeps_cluster_counts(self, tmp_path, monkeypatch):
+        from tests.analysis_factory import held_source
+
+        con, _path, analysis = _triggered_analysis(tmp_path, clustered=True)
+        try:
+            expected = analysis.planning_baseline("revenue")
+            source = held_source(analysis)
+            monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
+            assert analysis.planning_baseline("revenue") == expected
+        finally:
+            con.disconnect()
+
+    @pytest.mark.integration
+    def test_legacy_triggered_wrapper_refuses_assigned_population(self, tmp_path, monkeypatch):
+        from increment.sources import MomentSource
+        from tests.analysis_factory import held_source
+
+        con, _path, analysis = _triggered_analysis(tmp_path)
+        try:
+            source = cast("MomentSource", held_source(analysis))
+            monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
+            triggered = cast("Any", source).triggered_source()
+            replayed = Analysis._from_source(
+                triggered, design=triggered.context.design, experiment=None
+            )
+            with pytest.raises(CapabilityError) as raised:
+                replayed.planning_baseline("revenue")
+            assert raised.value.code == "evidence.operation_unavailable"
+            assert raised.value.context["requested"] == {"population": "assigned"}
+        finally:
+            con.disconnect()

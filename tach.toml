@@ -73,7 +73,11 @@ depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment._health"
-depends_on = ["increment._source_operations", "increment.estimation"]
+depends_on = [
+  "increment._evidence_types",
+  "increment.estimation",
+  "increment.evidence",
+]
 
 [[modules]]
 path = "increment._plan_compatibility"
@@ -97,11 +101,11 @@ depends_on = []
 
 [[modules]]
 path = "increment._source_types"
-depends_on = ["increment._moment_plan", "increment.errors"]
+depends_on = ["increment._moment_plan", "increment._evidence_types", "increment.errors"]
 
 [[modules]]
 path = "increment._evidence_refusals"
-depends_on = ["increment._source_types", "increment.errors"]
+depends_on = ["increment._source_types", "increment._evidence_types", "increment.errors"]
 
 
 [[modules]]
@@ -236,8 +240,7 @@ depends_on = [
 [[modules]]
 path = "increment.sources"
 depends_on = [
-  "increment._canonical", "increment._cuped_evidence", "increment._evidence_types", "increment._immutable", "increment._source_identity",
-  "increment._evidence_refusals",
+  "increment._canonical", "increment._cuped_evidence", "increment._evidence_refusals", "increment._evidence_types", "increment._immutable", "increment._source_identity",
   "increment.estimation.decision_types",
   "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",
   "increment.decision", "increment.decision_wire", "increment.errors", "increment.plan", "increment.semantics",
@@ -474,7 +477,7 @@ path = "increment._breakout_readouts"
 depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._evidence_types",
-  "increment._source_types", "increment._day_axis",
+  "increment._source_types", "increment._day_axis", "increment.evidence",
   "increment.breakout.estimates", "increment.errors", "increment.readouts",
   "increment.query", "increment._metric_specs",
   "increment._evidence_refusals",
@@ -486,14 +489,17 @@ path = "increment._sitewide"
 depends_on = [
   "increment._source_operations", "increment._whole_window", "increment.errors",
   "increment._evidence_refusals",
+  "increment._evidence_types", "increment.evidence",
   "increment.estimation", "increment.query", "increment.semantics",
 ]
 
 [[modules]]
 path = "increment._planning_baseline"
 depends_on = [
-  "increment._analysis_config", "increment._source_operations", "increment.errors",
-  "increment.estimation", "increment.power", "increment.power.core", "increment.query", "increment.sources",
+  "increment._analysis_config", "increment._evidence_refusals", "increment._evidence_types",
+  "increment._source_operations", "increment._source_types", "increment.errors",
+  "increment.estimation", "increment.power",
+  "increment.power.core", "increment.query", "increment.readouts", "increment.sources",
 ]
 
 [[modules]]
@@ -504,6 +510,7 @@ depends_on = [
   "increment._frame_validation",
   "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
   "increment._evidence_types",
+  "increment.evidence",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
   "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
@@ -543,11 +550,12 @@ depends_on = [
   "increment._frame_panel", "increment._immutable",
   "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
   "increment.plan",
-  "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.query",
+  "increment.breakout.estimates", "increment.errors", "increment.estimation",
   "increment._source_identity",
   "increment._evidence_types",
   "increment._evidence_refusals",
   "increment.readouts", "increment.semantics", "increment.sources",
+  "increment.evidence",
   "increment.sequential_state",
 ]
 
@@ -563,7 +571,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.cate"
-depends_on = ["increment._identity", "increment._source_types", "increment.errors", "increment.estimation", "increment.sources"]
+depends_on = ["increment._evidence_refusals", "increment._evidence_types", "increment._identity", "increment._source_types", "increment.errors", "increment.estimation", "increment.readouts", "increment.sources"]
 
 [[modules]]
 path = "increment.absorption"
@@ -597,6 +605,13 @@ depends_on = [
   "increment.analysis", "increment.cate", "increment.estimation", "increment.frame",
   "increment.logged_policy", "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.errors",
+]
+
+[[modules]]
+path = "increment.evidence"
+depends_on = [
+  "increment._evidence_refusals", "increment._evidence_types", "increment._source_types",
+  "increment.readouts",
 ]
 
 [[interfaces]]
@@ -687,12 +702,16 @@ expose = [
 [[interfaces]]
 from = ["increment._evidence_types"]
 expose = [
-  "EvidenceScope", "BreakoutIdentity", "BreakoutCell", "MethodFitRequest", "MethodFitAnswer",
+  "EvidenceScope", "BreakoutIdentity", "BreakoutCell", "BreakoutMethodMomentsRequest",
+  "MethodFitRequest", "MethodFitAnswer", "ScalarBreakoutRows",
   "PreparedMulticovariateFit",
   "BreakoutSlicesRequest", "BreakoutSlice", "BreakoutSlices",
   "BreakoutUnitRowsRequest", "BreakoutUnitRows", "BreakoutRoute", "DayAxisRoute",
   "DayAxisRequest", "DayAxisRows", "ComplianceRequest", "ComplianceSeriesRequest",
   "MetricEvidence", "MetricEvidenceRequest",
+  "MomentsRequest", "MomentRows", "UnitRowsRequest", "UnitRows",
+  "CountsRequest", "CountEvidence", "SequentialCaptureRequest", "SequentialCapture",
+  "EvidenceScopeResult",
   "_WarehouseCupedFitEvidence", "warehouse_cuped_fit_evidence",
 ]
 

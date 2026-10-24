@@ -11,6 +11,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
+from increment._evidence_types import CountsRequest
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_identity import source_identity
 from increment.breakout.estimates import LiftEstimates
@@ -34,6 +35,7 @@ from increment.estimation.readout_types import (
 )
 from increment.estimation.results import LiftEstimate
 from increment.readouts._common import _raise, _runtime_method_roles, _runtime_methods
+from increment.readouts._evidence import load_counts
 from increment.readouts._metric_rows import _rows_digest
 from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._multiplicity_scope import attach_multiplicity_scope
@@ -209,7 +211,9 @@ def resolve_roster(
                 try:
                     counts = {
                         arm: count
-                        for arm, count in assignment_counts(population=population).items()
+                        for arm, count in load_counts(
+                            src, CountsRequest(kind="assignment", population=population)
+                        ).counts.items()
                         if arm is not None
                     }
                 except CapabilityError:
@@ -219,7 +223,11 @@ def resolve_roster(
             if callable(cluster_counts):
                 try:
                     counts = {
-                        arm: count for arm, count in cluster_counts().items() if arm is not None
+                        arm: count
+                        for arm, count in load_counts(
+                            src, CountsRequest(kind="cluster")
+                        ).counts.items()
+                        if arm is not None
                     }
                 except CapabilityError:
                     pass
@@ -228,7 +236,11 @@ def resolve_roster(
             if callable(count_method):
                 try:
                     counts = {
-                        arm: count for arm, count in count_method().items() if arm is not None
+                        arm: count
+                        for arm, count in load_counts(
+                            src, CountsRequest(kind="unit", population=population)
+                        ).counts.items()
+                        if arm is not None
                     }
                 except CapabilityError:
                     pass

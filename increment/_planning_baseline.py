@@ -28,9 +28,18 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import select_metrics
+from increment._evidence_refusals import require_evidence
+from increment._evidence_types import (
+    ComplianceRequest,
+    CountsRequest,
+    MomentsRequest,
+    UnitRowsRequest,
+)
 from increment._source_operations import TriggeredPopulationOperation
+from increment._source_types import evidence_is_declared
 from increment.errors import CapabilityError, RefusalSpec, raiser, refusals
 from increment.query.integrity import validate_trigger_fires_in_every_arm
+from increment.readouts._evidence import load_compliance, load_counts, load_moments, load_unit_rows
 from increment.sources import require_operation
 
 if TYPE_CHECKING:
@@ -94,6 +103,20 @@ _REFUSALS = refusals(
 )
 _raise = raiser(_REFUSALS)
 
+
+def _require_declared_evidence(source: object, request: object) -> None:
+    """Validate provider declarations without rejecting legacy method-only support."""
+    if not evidence_is_declared(source):
+        return
+    underlying = getattr(source, "_source", None)
+    if underlying is not None and not evidence_is_declared(underlying):
+        if isinstance(request, ComplianceRequest):
+            return
+        if isinstance(request, CountsRequest) and request.kind == "cluster":
+            request = CountsRequest(kind="unit", population=request.population)
+    require_evidence(source, request=request)
+
+
 # Source operations the triggered population needs, and the artifact
 # extension that supplies each.
 _TRIGGER_EVIDENCE = (
@@ -123,18 +146,20 @@ def planning_baseline(
     if design is None:
         _raise("analysis.planning_baseline.design_unavailable", metric=metric)
     control_group = design.control_group
-    population, trigger_rate = _analyzed_population(
+    population_source, population, trigger_rate = _analyzed_population(
         source, metric=metric, control_group=control_group, trigger=trigger, rates=trigger_rates
     )
     if spec.type == "quantile":
-        quantile = _quantile_baseline(population, spec, control_group)
+        quantile = _quantile_baseline(population_source, spec, control_group, population=population)
         return _with_trigger_rate(quantile, trigger_rate)
     if context.cluster is not None:
-        baseline = _clustered_baseline(population, spec, control_group, trigger=trigger)
+        baseline = _clustered_baseline(
+            population_source, spec, control_group, trigger=trigger, population=population
+        )
         if trigger is not None:
             baseline = _with_cluster_participation(
                 source,
-                population,
+                population_source,
                 baseline,
                 metric=metric,
                 control_group=control_group,
@@ -145,9 +170,11 @@ def planning_baseline(
         wants_cuped = config.decision_method.variance_reduction == "cuped" or any(
             m.variance_reduction == "cuped" for m in config.sensitivity_methods
         )
-        baseline = _unit_baseline(population, spec, control_group, wants_cuped=wants_cuped)
+        baseline = _unit_baseline(
+            population_source, spec, control_group, wants_cuped=wants_cuped, population=population
+        )
     if design.mechanism == "encouragement":
-        compliance = _compliance(population, design)
+        compliance = _compliance(population_source, design)
         baseline = baseline.model_copy(update={"compliance": compliance})
     return type(baseline).model_validate(_with_trigger_rate(baseline, trigger_rate).model_dump())
 
@@ -167,9 +194,15 @@ def _with_cluster_participation(
     assigned_clusters: int | None = None
     analyzed_clusters: int | None = None
     try:
-        assigned_units = assigned.unit_counts()[control_group]
-        assigned_clusters = assigned.cluster_counts()[control_group]
-        analyzed_clusters = analyzed.cluster_counts()[control_group]
+        unit_request = CountsRequest(kind="unit", population="assigned")
+        _require_declared_evidence(assigned, unit_request)
+        assigned_units = load_counts(assigned, unit_request).counts[control_group]
+        assigned_cluster_request = CountsRequest(kind="cluster", population="assigned")
+        _require_declared_evidence(assigned, assigned_cluster_request)
+        assigned_clusters = load_counts(assigned, assigned_cluster_request).counts[control_group]
+        analyzed_cluster_request = CountsRequest(kind="cluster", population="triggered")
+        _require_declared_evidence(analyzed, analyzed_cluster_request)
+        analyzed_clusters = load_counts(analyzed, analyzed_cluster_request).counts[control_group]
     except (AttributeError, CapabilityError, KeyError):
         _raise(
             "analysis.planning_baseline.trigger_membership_unavailable",
@@ -226,11 +259,10 @@ def _analyzed_population(
     control_group: str,
     trigger: str | None,
     rates: Callable[[], dict[str, float]],
-) -> tuple[MomentSource, float]:
-    """``(population source, control arm's trigger rate)``: the assigned
-    population at rate 1.0 unless a trigger is declared."""
+) -> tuple[MomentSource, Literal["assigned", "triggered"], float]:
+    """Return the pinned population source and control arm's trigger rate."""
     if trigger is None:
-        return source, 1.0
+        return source, "assigned", 1.0
     missing = tuple(
         extension
         for operation, extension in _TRIGGER_EVIDENCE
@@ -245,11 +277,19 @@ def _analyzed_population(
         )
     observed = rates()
     validate_trigger_fires_in_every_arm(observed, trigger)
-    triggered = require_operation(source, "triggered_source", TriggeredPopulationOperation)
-    return triggered.triggered_source(), observed[control_group]
+    triggered = require_operation(
+        source, "triggered_source", TriggeredPopulationOperation
+    ).triggered_source()
+    return triggered, "triggered", observed[control_group]
 
 
-def _quantile_baseline(source: MomentSource, spec: QuantileMetric, control_group: str) -> Baseline:
+def _quantile_baseline(
+    source: MomentSource,
+    spec: QuantileMetric,
+    control_group: str,
+    *,
+    population: Literal["assigned", "triggered"],
+) -> Baseline:
     """The pilot's real per-unit control-arm values, or a SOURCE refusal
     when the source cannot supply them."""
     import narwhals as nw
@@ -257,7 +297,9 @@ def _quantile_baseline(source: MomentSource, spec: QuantileMetric, control_group
     from increment.power.core import QuantileBaseline
 
     try:
-        rows = source.unit_frame(spec)
+        request = UnitRowsRequest(metric=spec, population=population)
+        _require_declared_evidence(source, request)
+        rows = load_unit_rows(source, request)
     except CapabilityError as exc:
         if exc.code != "evidence.unit_rows_unavailable":
             raise
@@ -270,14 +312,21 @@ def _quantile_baseline(source: MomentSource, spec: QuantileMetric, control_group
 
 
 def _unit_baseline(
-    source: MomentSource, spec: Metric, control_group: str, *, wants_cuped: bool
+    source: MomentSource,
+    spec: Metric,
+    control_group: str,
+    *,
+    wants_cuped: bool,
+    population: Literal["assigned", "triggered"],
 ) -> Baseline:
     """mean/var (and ``cuped_rho``) from the control arm's unit-grain moments."""
     from increment.estimation.armstats import SummaryStats
     from increment.estimation.engine import _df_to_arms
     from increment.power import Baseline
 
-    rows = cast("list[Mapping[str, Any]]", source.moments(spec, include_covariate=wants_cuped))
+    request = MomentsRequest(metric=spec, include_covariate=wants_cuped, population=population)
+    _require_declared_evidence(source, request)
+    rows = cast("list[Mapping[str, Any]]", load_moments(source, request))
     arms = _df_to_arms(rows)
     control = next(a for a in arms if a.group_id == control_group)
     if wants_cuped and control.ref_x is None:
@@ -364,7 +413,12 @@ def _cuped_rho(arms: list[ArmStats], control: ArmStats, *, ratio: bool, metric: 
 
 
 def _clustered_baseline(
-    source: MomentSource, spec: Metric, control_group: str, *, trigger: str | None
+    source: MomentSource,
+    spec: Metric,
+    control_group: str,
+    *,
+    trigger: str | None,
+    population: Literal["assigned", "triggered"],
 ) -> Baseline:
     """Per-unit mean/var and the design-effect fields from the control arm's
     per-unit rows: a clustered source's moments are cluster totals, not units."""
@@ -374,10 +428,14 @@ def _clustered_baseline(
     from increment.estimation.armstats import SummaryStats
     from increment.power import Baseline
 
-    frame = nw.from_native(source.unit_frame(spec), eager_only=True)
+    request = UnitRowsRequest(metric=spec, population=population)
+    _require_declared_evidence(source, request)
+    frame = nw.from_native(load_unit_rows(source, request), eager_only=True)
     rows = frame.filter(nw.col("group_id") == control_group)
     if trigger is not None:
-        eligible_units = source.unit_counts()[control_group]
+        count_request = CountsRequest(kind="unit", population="triggered")
+        _require_declared_evidence(source, count_request)
+        eligible_units = load_counts(source, count_request).counts[control_group]
         if len(rows) != eligible_units:
             _raise(
                 "analysis.planning_baseline.trigger_metric_population_unavailable",
@@ -421,10 +479,10 @@ def _compliance(source: MomentSource, design: Encouragement) -> float:
     """The first treatment arm's uptake rate minus control's, from the
     source's design-level compliance state -- the same state the runtime's
     compliance row reads, at unit grain under a cluster too."""
-    rates = {
-        arm.group_id: arm.uptake_total / arm.n_units
-        for arm in source.compliance_summary(design).arms
-    }
+    request = ComplianceRequest(design=design)
+    _require_declared_evidence(source, request)
+    summary = load_compliance(source, request)
+    rates = {arm.group_id: arm.uptake_total / arm.n_units for arm in summary.arms}
     control = rates.pop(design.control_group)
     return next(iter(rates.values())) - control
 

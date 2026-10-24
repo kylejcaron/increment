@@ -382,8 +382,8 @@ def test_export_refuses_invalid_provider_counts_before_writing(field, value, mon
     )
     moments = source.moments
 
-    def invalid_moments(metric):
-        rows = [dict(row) for row in moments(metric)]
+    def invalid_moments(metric, **kwargs):
+        rows = [dict(row) for row in moments(metric, **kwargs)]
         rows[0][field] = value
         return rows
 

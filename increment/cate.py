@@ -24,8 +24,14 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 import narwhals as nw
 import numpy as np
 
+from increment._evidence_refusals import require_evidence
+from increment._evidence_types import UnitRowsRequest
 from increment._identity import canonical_id_strings
-from increment._source_types import unit_frame_covariate_columns
+from increment._source_types import (
+    declared_evidence,
+    evidence_is_declared,
+    unit_frame_covariate_columns,
+)
 from increment.errors import (
     InvalidRequestError,
     RefusalSpec,
@@ -55,6 +61,7 @@ from increment.estimation.targeting import (
     targeting_rule_arrays,
     validate_cate_arrays,
 )
+from increment.readouts._evidence import load_unit_rows
 from increment.sources import MomentSource
 
 if TYPE_CHECKING:
@@ -220,7 +227,16 @@ def _unit_design(
         _raise("cate.does_support_ratio", caller=caller, metric=metric)
     if resolved.type == "quantile":
         _raise("cate.cate_supported_quantile", metric=metric)
-    frame = nw.from_native(source.unit_frame(resolved, covariates=requested), eager_only=True)
+    evidence = declared_evidence(source)
+    population = (
+        "triggered"
+        if "triggered" in evidence.populations and "assigned" not in evidence.populations
+        else "assigned"
+    )
+    request = UnitRowsRequest(metric=resolved, covariates=tuple(requested), population=population)
+    if evidence_is_declared(source):
+        require_evidence(source, request=request)
+    frame = nw.from_native(load_unit_rows(source, request), eager_only=True)
     # A covariate named like one of the frame's own columns is served under a
     # scratch column; every read below goes through its declared name.
     served = unit_frame_covariate_columns(requested)

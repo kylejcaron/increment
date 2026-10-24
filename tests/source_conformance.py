@@ -23,7 +23,7 @@ class ArmAdapter:
     name: str
     factory: Callable[[], Any]
     metric_name: str = "revenue"
-    breakout_factory: Callable[[], Any] | None = None
+    analysis_factory: Callable[[], Any] | None = None
 
     def build(self) -> tuple[Any, Any]:
         source = self.factory()
@@ -225,6 +225,21 @@ def frame_panel_source() -> Any:
     )
 
 
+def frame_panel_analysis() -> Any:
+    from increment import Analysis
+
+    return Analysis.from_unit_panel(
+        unit_panel_table(),
+        unit="user_id",
+        group="variant",
+        date="ds",
+        control="control",
+        metrics={"revenue": "mean"},
+        experiment_id="panel-conformance",
+        breakouts=["segment"],
+    )
+
+
 def _current_fixed11_rows() -> list[dict[str, Any]]:
     import tempfile
 
@@ -334,7 +349,13 @@ def sql_totals_source() -> Any:
 
 
 def definitions_source(
-    tmp_path: Path, *, trigger: bool = False, store: Literal["auto", "always", "none"] = "none"
+    tmp_path: Path,
+    *,
+    trigger: bool = False,
+    store: Literal["auto", "always", "none"] = "none",
+    partial_trigger: bool = False,
+    cluster: bool = False,
+    return_analysis: bool = False,
 ) -> tuple[Any, Any]:
     """Build an in-memory definitions source with one breakout.
 
@@ -356,6 +377,7 @@ def definitions_source(
         )
     ):
         user = f"u{index + 1}"
+        membership = {"store_id": f"{group}-store"} if cluster else {}
         rows.extend(
             [
                 {
@@ -363,6 +385,7 @@ def definitions_source(
                     "ts": dt.datetime(2026, 1, 1, 9),
                     "event": "assignment",
                     "group_id": group,
+                    **membership,
                     "country_code": country,
                     "revenue": None,
                 },
@@ -373,10 +396,11 @@ def definitions_source(
                             "ts": dt.datetime(2026, 1, 1, 10),
                             "event": "trigger",
                             "group_id": group,
+                            **membership,
                             "revenue": None,
                         }
                     ]
-                    if trigger
+                    if trigger and (not partial_trigger or index < 3)
                     else []
                 ),
                 {
@@ -384,6 +408,7 @@ def definitions_source(
                     "ts": dt.datetime(2026, 1, 1, 12),
                     "event": "purchase",
                     "group_id": None,
+                    **membership,
                     "country_code": country,
                     "revenue": value,
                 },
@@ -431,7 +456,7 @@ def definitions_source(
                 "end": "2026-01-03",
                 "control_group": "control",
                 "plan": {"primary": "revenue"},
-                "breakouts": [{"property": "country"}],
+                "breakouts": [] if cluster else [{"property": "country"}],
             }
         ],
     }
@@ -439,6 +464,8 @@ def definitions_source(
         defs["fact_sources"][0]["facts"].append({"name": "trigger", "column": None})
         defs["exposures"].append({"name": "trigger", "fact": "trigger"})
         defs["experiments"][0]["trigger"] = "trigger"
+    if cluster:
+        defs["experiments"][0]["cluster"] = "store_id"
     defs_path = tmp_path / "conformance.yaml"
     defs_path.write_text(yaml.safe_dump(defs, sort_keys=False))
     con = ibis.duckdb.connect()
@@ -454,7 +481,9 @@ def definitions_source(
         ),
     )
     experiment = analysis.experiment
-    return analysis._src, experiment.breakouts[0]
+    return (analysis if return_analysis else analysis._src), (
+        experiment.breakouts[0] if experiment.breakouts else None
+    )
 
 
 def unit_day_artifact_source(tmp_path: Path) -> Any:
@@ -462,12 +491,96 @@ def unit_day_artifact_source(tmp_path: Path) -> Any:
     return _artifact_analysis(tmp_path)._src
 
 
+def native_day_source(tmp_path: Path) -> Any:
+    source, _ = definitions_source(tmp_path)
+    return source.day_source(metrics=source.context.metrics)
+
+
+def definitions_triggered_source(tmp_path: Path) -> Any:
+    source, _ = definitions_source(tmp_path, trigger=True)
+    return source.triggered_source()
+
+
+def _encouragement_panel_inputs() -> tuple[Any, Any]:
+    from datetime import date
+
+    import pyarrow as pa
+
+    from increment.semantics.design import Encouragement
+
+    design = Encouragement.model_validate(
+        {
+            "mechanism": "encouragement",
+            "control_group": "control",
+            "uptake": {"fact": "clicked"},
+            "exclusion_restriction": {"justification": "the prompt has no direct effect"},
+        }
+    )
+    rows = [
+        {
+            "unit": f"{arm}-{index}",
+            "arm": arm,
+            "day": date(2026, 1, day),
+            "exposure": date(2026, 1, 1),
+            "revenue": float(index + day),
+            "clicked": int(arm == "treatment" and index % 2 == 0),
+        }
+        for index in range(2)
+        for day in (1, 2)
+        for arm in ("control", "treatment")
+    ]
+    return pa.Table.from_pylist(rows), design
+
+
+def encouragement_panel_source() -> Any:
+    from datetime import date
+
+    from increment.frame import from_unit_panel
+
+    rows, design = _encouragement_panel_inputs()
+    return from_unit_panel(
+        rows,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        exposure_date="exposure",
+        uptake="clicked",
+        observation_end=date(2026, 1, 4),
+        design=design,
+        metrics={"revenue": "mean"},
+    )
+
+
+def encouragement_panel_analysis() -> Any:
+    from datetime import date
+
+    from increment import Analysis
+
+    rows, design = _encouragement_panel_inputs()
+    return Analysis.from_unit_panel(
+        rows,
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposure",
+        uptake="clicked",
+        observation_end=date(2026, 1, 4),
+        design=design,
+        metrics={"revenue": "mean"},
+    )
+
+
 def arm_adapters(tmp_path: Path) -> tuple[ArmAdapter, ...]:
     """Factories for every arm adapter present at the Barrier D base."""
     return (
-        ArmAdapter("definitions", lambda: definitions_source(tmp_path)[0]),
+        ArmAdapter(
+            "definitions",
+            lambda: definitions_source(tmp_path)[0],
+            analysis_factory=lambda: definitions_source(tmp_path, return_analysis=True)[0],
+        ),
         ArmAdapter("frame_summary", frame_summary_source),
-        ArmAdapter("frame_panel", frame_panel_source),
+        ArmAdapter("frame_panel", frame_panel_source, analysis_factory=frame_panel_analysis),
         ArmAdapter("moments", moments_source),
         ArmAdapter("legacy_fixed10", legacy_fixed10_moments_source),
         ArmAdapter("legacy_fixed10_with_counts", legacy_fixed10_moments_with_counts_source),
@@ -477,6 +590,21 @@ def arm_adapters(tmp_path: Path) -> tuple[ArmAdapter, ...]:
             "unit_day_artifact",
             lambda: unit_day_artifact_source(tmp_path),
             metric_name="purchase_rate",
+            analysis_factory=lambda: unit_day_artifact_analysis(tmp_path),
+        ),
+    )
+
+
+def provider_adapters(tmp_path: Path) -> tuple[ArmAdapter, ...]:
+    """Factories reserved for typed evidence-provider conformance."""
+    return (
+        *arm_adapters(tmp_path),
+        ArmAdapter("native_day", lambda: native_day_source(tmp_path)),
+        ArmAdapter("definitions_triggered", lambda: definitions_triggered_source(tmp_path)),
+        ArmAdapter(
+            "encouragement_panel",
+            encouragement_panel_source,
+            analysis_factory=encouragement_panel_analysis,
         ),
     )
 
@@ -638,6 +766,7 @@ def public_result_factories(tmp_path: Path) -> tuple[tuple[str, Callable[[], Any
 __all__ = [
     "ArmAdapter",
     "arm_adapters",
+    "provider_adapters",
     "breakout_moments_source",
     "definitions_source",
     "frame_panel_source",

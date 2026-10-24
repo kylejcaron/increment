@@ -69,11 +69,15 @@ class BreakoutReadouts:
 
     def _slices(self, req: BreakoutRequest) -> Iterator[BreakoutSlice]:
         breakouts = self._experiment.breakouts if self._experiment is not None else ()
-        identities = (
-            tuple(BreakoutIdentity(item.property, item.source) for item in breakouts)
-            if breakouts
-            else tuple(BreakoutIdentity(dimension, None) for dimension in self._src.breakouts)
-        )
+        if breakouts:
+            identities = tuple(BreakoutIdentity(item.property, item.source) for item in breakouts)
+        else:
+            from increment.evidence import evidence_provider
+
+            identities = tuple(
+                BreakoutIdentity(dimension, None)
+                for dimension in evidence_provider(self._src).evidence.breakouts
+            )
         if not identities:
             return iter(())
         evidence = load_breakout_evidence(

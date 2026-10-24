@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
-from increment._source_operations import SitewideEvidenceOperation, TriggeredCountsOperation
+from increment._evidence_types import CountsRequest
+from increment._source_operations import SitewideEvidenceOperation
 from increment._whole_window import (
     _UNKNOWN_METRIC,
     _is_artifact_source,
@@ -21,6 +22,7 @@ from increment.estimation.sitewide import (
     sitewide_impact,
     sitewide_impact_ratio,
 )
+from increment.evidence import evidence_provider
 from increment.query.builders import check_cluster_size_balance, validate_site_volume_metric
 from increment.semantics.models import Metric, RatioMetric
 
@@ -153,9 +155,12 @@ class SitewideReadouts:
                     sample_ratio_mismatch,
                 )
 
-                grain, triggered_counts, unit_counts = cast(
-                    "TriggeredCountsOperation", self._src
-                ).triggered_counts()
+                triggered = evidence_provider(self._src).counts(CountsRequest(kind="triggered"))
+                grain, triggered_counts, unit_counts = (
+                    cast("Literal['unit', 'cluster']", triggered.grain),
+                    dict(triggered.counts),
+                    dict(triggered.unit_counts),
+                )
                 # An assigned arm nobody in which triggered is a zero, not a missing arm.
                 support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
                 srm = sample_ratio_mismatch(

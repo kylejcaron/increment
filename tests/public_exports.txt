@@ -58,6 +58,8 @@ extension_source_provenance_sha256: Calculate the digest of extension source pro
 ArtifactExtensionRef: Identify an optional artifact extension in a published source.
 ExtensionRequestBase: Declare a request for optional artifact evidence.
 BreakoutDimensionRequest: Request breakout values when publishing an artifact.
+BreakoutMethodMomentsRequest: Request method-specific aggregate evidence for one breakout cell.
+ScalarBreakoutRows: Carry method-specific scalar rows for one breakout dimension.
 FactorDimensionRequest: Request factor values when publishing an artifact.
 ClusterIdentityRequest: Request cluster identities when publishing an artifact.
 CupedPreperiodRequest: Request pre-period values needed to replay CUPED.
@@ -164,3 +166,40 @@ ParallelStudyEnvelope: Record design and allocation assumptions for a parallel-a
 SwitchbackStudyEnvelope: Record design and schedule assumptions for a switchback study.
 StudyEnvelope: Carry a study's assignment and design metadata through analysis.
 SourceSnapshotEvidence: Record the event-time cutoff and completeness evidence for each source feed.
+BreakoutCell: Identify one value requested from a breakout dimension in a custom evidence provider.
+BreakoutIdentity: Preserve the dimension and source identity of breakout evidence.
+BreakoutSlice: Return one breakout's source view from a custom evidence provider.
+BreakoutSlices: Return the selected breakout source views with their evidence route.
+BreakoutSlicesRequest: Request source views for declared breakout dimensions.
+BreakoutUnitRows: Return per-unit rows for one breakout dimension.
+BreakoutUnitRowsRequest: Request per-unit estimator rows for a breakout dimension.
+ComplianceRequest: Request compliance evidence from a custom provider.
+ComplianceSeriesRequest: Request date-ordered compliance evidence from a custom provider.
+ComplianceSummary: Return design-level compliance evidence from a custom provider.
+CountEvidence: Return population counts from a custom evidence provider.
+CountsRequest: Request a specific population count from a custom provider.
+DayAxisRequest: Request daily or as-of rows from a custom evidence provider.
+DayAxisRows: Return the acquired rows and route for a daily or as-of request.
+EvidenceCapabilities: Declare the evidence a custom provider can supply.
+EvidenceProvider: Implement typed statistical evidence for a custom data source.
+EvidenceScope: Describe evidence to keep available during one analysis.
+EvidenceScopeResult: Return the open source view for an evidence scope.
+MethodFitAnswer: Return method-specific adjustment evidence from a custom provider.
+MethodFitRequest: Request method-specific adjustment evidence from a custom provider.
+MetricEvidence: Return acquired evidence for one metric.
+MetricEvidenceRequest: Request aggregate and estimator evidence for one metric.
+MomentRows: Type the aggregate rows returned by a custom provider.
+MomentsRequest: Request aggregate metric rows at a chosen time grain.
+PreparedMulticovariateFit: Carry selected inputs into a mixed-covariate adjustment.
+SequentialCapture: Return a captured sequential data prefix from a custom provider.
+SequentialCaptureRequest: Request a finalized prefix of sequential data.
+SourceContext: Describe the study design and metric settings available to a custom provider.
+UnitRows: Type the per-unit observations returned by a custom provider.
+UnitRowsRequest: Request per-unit observations for an estimator.
+evidence_provider: Adapt a built-in source to the typed evidence provider contract.
+request_evidence: Validate and answer one typed evidence request.
+warehouse_cuped_fit_evidence: Build the standard envelope for warehouse adjustment evidence.
+require_evidence: Validate a typed evidence request before a source reads data.
+BreakoutRoute: Identify which source route can supply a breakout request.
+DayAxisRoute: Identify the source route used for daily or as-of evidence.
+ScalarEvidenceDeclaration: Declare scalar evidence behavior in a custom provider's capabilities.

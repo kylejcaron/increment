@@ -6,28 +6,32 @@ from increment._analysis_config import overlay_configs, validate_scalar_route
 from increment._evidence_types import (
     BreakoutCell,
     BreakoutIdentity,
+    BreakoutMethodMomentsRequest,
     EvidenceScope,
     MethodFitAnswer,
     MethodFitRequest,
     MetricEvidence,
     MetricEvidenceRequest,
+    MomentsRequest,
+    UnitRowsRequest,
 )
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_types import (
-    CategoricalEvidenceSource,
-    ScalarBreakoutMomentSource,
-    ScalarMethodMomentSource,
-)
+from increment._source_types import CategoricalEvidenceSource, declared_evidence
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
-from increment.readouts._evidence import evidence_scope
+from increment.readouts._evidence import (
+    evidence_scope,
+    load_breakout_method_moments,
+    load_method_fit,
+    load_moments,
+    load_unit_rows,
+)
 from increment.readouts._source_digest import input_evidence
 from increment.semantics.design import Encouragement
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from increment._source_types import RawOutcomeSource
     from increment.semantics.models import Metric
     from increment.sources import MomentSource
 
@@ -99,20 +103,21 @@ def _rows_digest(rows):
 
 
 def _scalar_method_rows(src, metric, methods, decision, *, by):
-    if not isinstance(src, ScalarMethodMomentSource):
+    scalar = declared_evidence(src).scalar
+    if scalar is None or not scalar.method_evidence:
         validate_scalar_route(
             overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
             route=type(src).__name__,
             representation="implicit",
             design=src.context.design,
         )
-        rows = tuple(src.moments(metric, grain="total", by=by))
+        rows = load_moments(src, MomentsRequest(metric=metric, grain="total", by=by))
         return list(rows), tuple((method.name, rows) for method in methods), ()
     families = []
     refusals = []
     for method in methods:
         try:
-            family_rows = tuple(src.moments_for_method(metric, method, by=by))
+            family_rows = load_moments(src, MomentsRequest(metric=metric, method=method, by=by))
         except CodedError as exc:
             if exc.code not in SCALAR_COVARIATE_REFUSALS:
                 raise
@@ -123,12 +128,14 @@ def _scalar_method_rows(src, metric, methods, decision, *, by):
     if selected is not None:
         rows = list(selected)
     elif decision.variance_reduction != "cuped":
-        rows = list(src.moments_for_method(metric, decision, by=by))
+        rows = list(load_moments(src, MomentsRequest(metric=metric, method=decision, by=by)))
     else:
         from increment.estimation.engine import Method
 
         assert any(name == decision.name for name, _spec, _context in refusals)
-        rows = list(src.moments_for_method(metric, Method.unadjusted(), by=by))
+        rows = list(
+            load_moments(src, MomentsRequest(metric=metric, method=Method.unadjusted(), by=by))
+        )
     return rows, tuple(families), tuple(refusals)
 
 
@@ -166,8 +173,10 @@ def _load_percentile_winsor_evidence(
     winsor_preflight(metric, context)
     population, missingness = winsor_identity(src, metric)
     require_evidence(src, unit_rows=True, raw_outcomes=True)
-    raw_source = cast("RawOutcomeSource", src)
-    native = raw_source.unit_frame(metric, outcome_stage="raw")
+    native = load_unit_rows(
+        src,
+        UnitRowsRequest(metric=metric, outcome_stage="raw", population=population),
+    )
     frame = nw.from_native(native, eager_only=True)
     observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
     if not observed - {str(control_group)}:
@@ -267,7 +276,7 @@ def _load_metric_evidence(  # noqa: PLR0915
             refuse_observational_quantile(
                 metric, authenticate=getattr(src, "validated_metric", None)
             )
-        native = src.unit_frame(metric)
+        native = load_unit_rows(src, UnitRowsRequest(metric=metric))
         frame = nw.from_native(native, eager_only=True)
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
         return MetricEvidence(
@@ -288,14 +297,15 @@ def _load_metric_evidence(  # noqa: PLR0915
     ]
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals = ()
+    scalar = declared_evidence(src).scalar
     if scalar_methods:
         rows, method_rows, method_refusals = _scalar_method_rows(
             src, metric, scalar_methods, methods[0], by=by
         )
-    elif methods and isinstance(src, ScalarMethodMomentSource):
-        rows = list(src.moments_for_method(metric, methods[0], by=by))
+    elif methods and scalar is not None and scalar.method_evidence:
+        rows = list(load_moments(src, MomentsRequest(metric=metric, method=methods[0], by=by)))
     else:
-        rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
+        rows = list(load_moments(src, MomentsRequest(metric=metric, grain="total", by=by)))
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
     ordinary_component = ("moments_rows", moments_sha256, moments_count)
     if has_linear:
@@ -359,7 +369,7 @@ def _load_metric_evidence(  # noqa: PLR0915
         if getattr(method, "variance_reduction", None) == "cuped_multicovariate"
     )
     method_fit_answers = tuple(
-        (method_fit_request, _acquire_method_fit(src, method_fit_request))
+        (method_fit_request, load_method_fit(src, method_fit_request))
         for method_fit_request in method_fit_requests
     )
     retained_answers = tuple(
@@ -509,7 +519,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     covariate_names = tuple(item.name for item in covariates)
     acquired_columns = unit_frame_covariate_columns(covariate_names)
     require_evidence(src, unit_rows=True, covariates=covariate_names)
-    native = src.unit_frame(metric, covariates=covariate_names)
+    native = load_unit_rows(src, UnitRowsRequest(metric=metric, covariates=covariate_names))
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
     if decision_is_linear:
@@ -673,12 +683,31 @@ def _breakout_fit_record(identity: tuple[object, ...], evidence: Any) -> dict[st
     }
 
 
+def acquire_breakout_method_moments(
+    src, metric, method, *, by, source_name=None, population="assigned"
+):
+    """Acquire one method-specific breakout input through the shared evidence loader."""
+    from increment._evidence_types import BreakoutIdentity, BreakoutMethodMomentsRequest
+    from increment.readouts._evidence import load_breakout_method_moments
+
+    return load_breakout_method_moments(
+        src,
+        BreakoutMethodMomentsRequest(
+            metric=metric,
+            method=method,
+            breakout=BreakoutIdentity(by[0], source_name),
+            population=population,
+        ),
+    )
+
+
 def _load_breakout_metric_rows(
     src, metric, methods, *, dimension, control_group, source_name=None, population="assigned"
 ) -> MetricEvidence:
     """Acquire effective scalar inputs without promoting a segment failure."""
-    if any(method.variance_reduction == "cuped" for method in methods) and not isinstance(
-        src, ScalarBreakoutMomentSource
+    scalar = declared_evidence(src).scalar
+    if any(method.variance_reduction == "cuped" for method in methods) and not (
+        scalar is not None and scalar.breakout_evidence
     ):
         validate_scalar_route(
             overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None),
@@ -689,9 +718,17 @@ def _load_breakout_metric_rows(
     from increment.estimation.engine import Method
 
     base = (
-        src.breakout_moments_for_method(metric, Method.unadjusted(), by=(dimension,)).rows
-        if isinstance(src, ScalarBreakoutMomentSource)
-        else tuple(src.moments(metric, grain="total", by=(dimension,)))
+        load_breakout_method_moments(
+            src,
+            BreakoutMethodMomentsRequest(
+                metric=metric,
+                method=Method.unadjusted(),
+                breakout=BreakoutIdentity(dimension, source_name),
+                population=population,
+            ),
+        ).rows
+        if scalar is not None and scalar.breakout_evidence
+        else load_moments(src, MomentsRequest(metric=metric, grain="total", by=(dimension,)))
     )
     breakout_fit_answers = []
     warehouse_components = []
@@ -739,7 +776,7 @@ def _load_breakout_metric_rows(
                     is_null=is_null,
                 ),
             )
-            answer = _acquire_method_fit(src, method_fit_request)
+            answer = load_method_fit(src, method_fit_request)
             if answer.origin == "unavailable":
                 continue
             breakout_fit_answers.append((method_fit_request, answer))
@@ -757,11 +794,13 @@ def _load_breakout_metric_rows(
     for method in methods:
         if method.variance_reduction != "cuped":
             continue
-        if not isinstance(src, ScalarBreakoutMomentSource):
+        if scalar is None or not scalar.breakout_evidence:
             families.append((method.name, base))
             continue
         try:
-            acquired = src.breakout_moments_for_method(metric, method, by=(dimension,))
+            acquired = acquire_breakout_method_moments(
+                src, metric, method, by=(dimension,), source_name=source_name, population=population
+            )
         except CodedError as exc:
             if exc.code not in SCALAR_COVARIATE_REFUSALS:
                 raise

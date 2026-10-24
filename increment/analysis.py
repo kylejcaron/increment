@@ -54,7 +54,7 @@ from increment._day_axis import (
     DayAxisReadouts,
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
-from increment._evidence_types import DayAxisRequest, EvidenceScope
+from increment._evidence_types import CountsRequest, DayAxisRequest, EvidenceScope
 from increment._literals import Backend, Correction, ValueScale
 from increment._source_operations import (
     AllocationHistoryOperation,
@@ -104,6 +104,7 @@ from increment.estimation.assignment_integrity import (
 )
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
+from increment.evidence import evidence_provider
 from increment.plan import (
     bind_automatic_sequential_plan,
     compile_decision_plan,
@@ -112,7 +113,6 @@ from increment.plan import (
 from increment.readouts._evidence import (
     NATIVE_ROUTE,
     day_axis_route,
-    evidence_scope,
     is_artifact_route,
     source_route,
 )
@@ -1453,14 +1453,14 @@ class Analysis:
                 "with a warehouse-backed source."
             ),
         )
-        with evidence_scope(
-            self._src,
+        scoped = evidence_provider(self._src).scope(
             EvidenceScope(
                 metrics=tuple(metrics),
                 snapshot=True,
                 include_breakouts=True,
-            ),
-        ) as pinned:
+            )
+        )
+        with scoped.source as pinned:
             return self._with_pinned_source(pinned, operation)
 
     def _with_pinned_source(self, pinned: MomentSource, operation: Callable[[Analysis], _T]) -> _T:
@@ -2009,7 +2009,11 @@ class Analysis:
             UnitCountsOperation,
             message="unit_counts() requires a source with enrolled total-grain counts.",
         )
-        return source.unit_counts()
+        request = CountsRequest(
+            kind="unit",
+            population=getattr(source, "population", "assigned"),
+        )
+        return dict(evidence_provider(source).counts(request).counts)
 
     def srm(
         self,
@@ -2103,7 +2107,12 @@ class Analysis:
                     allocation=getattr(self._design, "allocation", None),
                     inference=inference,
                 )
-                grain, counts, unit_counts = src.triggered_counts()
+                triggered = evidence_provider(src).counts(CountsRequest(kind="triggered"))
+                grain, counts, unit_counts = (
+                    cast("Literal['unit', 'cluster']", triggered.grain),
+                    dict(triggered.counts),
+                    dict(triggered.unit_counts),
+                )
                 counts = complete_srm_support(counts, expected=expected)
                 if unit_counts:
                     unit_counts = complete_srm_support(unit_counts, expected=expected)
