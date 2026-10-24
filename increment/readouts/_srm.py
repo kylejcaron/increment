@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from increment._evidence_types import CountsRequest
 from increment.estimation.diagnostics import (
     NotApplicable,
     SRMResult,
@@ -10,6 +11,7 @@ from increment.estimation.diagnostics import (
     sample_ratio_mismatch,
 )
 from increment.readouts._common import _raise
+from increment.readouts._evidence import load_counts
 from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL, MomentSource
 
 
@@ -99,7 +101,9 @@ def srm(
         allocation=getattr(design, "allocation", None),
         inference=inference,
     )
-    counts = complete_srm_support(src.unit_counts(), expected=expected)
+    counts = complete_srm_support(
+        load_counts(src, CountsRequest(kind="unit")).counts, expected=expected
+    )
     if src.context.cluster is None:
         return sample_ratio_mismatch(counts, expected=expected, alpha=alpha, inference=inference)
     # Accounting keys stay in the tested dict - sample_ratio_mismatch lifts
@@ -109,7 +113,9 @@ def srm(
     }
     return sample_ratio_mismatch(
         {
-            **complete_srm_support(src.cluster_counts(), expected=expected),
+            **complete_srm_support(
+                load_counts(src, CountsRequest(kind="cluster")).counts, expected=expected
+            ),
             **accounting,
         },
         expected=expected,

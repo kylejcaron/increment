@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment.semantics.models import Breakout, Metric
@@ -238,3 +239,90 @@ class MetricEvidence:
                     == dimension_value
                 )
         raise AssertionError(f"Scalar evidence for method {method.name!r} was not acquired.")
+
+
+@dataclass(frozen=True, slots=True)
+class MomentsRequest:
+    """Select aggregate metric evidence at one time grain."""
+
+    metric: Metric
+    grain: Literal["total", "daily", "asof"] = "total"
+    by: tuple[str, ...] = ()
+    method: Any | None = None
+    include_covariate: bool = False
+    completed_windows_only: bool = False
+    population: Literal["assigned", "triggered"] = "assigned"
+
+
+MomentRows = tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutMethodMomentsRequest:
+    """Select method-specific moment rows and refusals for one breakout."""
+
+    metric: Metric
+    method: Any
+    breakout: BreakoutIdentity
+    population: Literal["assigned", "triggered"] = "assigned"
+    completed_windows_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ScalarBreakoutRows:
+    """Method-specific moments and scalar refusals indexed by segment."""
+
+    rows: tuple[Mapping[str, Any], ...]
+    refusals: tuple[tuple[str, str, RefusalSpec, Mapping[str, object]], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class UnitRowsRequest:
+    """Select per-unit observations needed for an estimator."""
+
+    metric: Metric
+    covariates: tuple[str, ...] = ()
+    outcome_stage: Literal["transformed", "raw"] = "transformed"
+    population: Literal["assigned", "triggered"] = "assigned"
+
+
+UnitRows = Any
+
+
+@dataclass(frozen=True, slots=True)
+class CountsRequest:
+    """Select enrolled-unit, cluster, assignment, or triggered counts."""
+
+    kind: Literal["unit", "cluster", "assignment", "triggered"]
+    population: Literal["assigned", "triggered"] = "assigned"
+
+
+@dataclass(frozen=True, slots=True)
+class CountEvidence:
+    """Counts for the requested population and randomization grain."""
+
+    population: str
+    grain: str
+    counts: Mapping[str, int]
+    unit_counts: Mapping[str, int] = dataclass_field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SequentialCaptureRequest:
+    """Capture a registered finalized prefix of sequential data."""
+
+    finalized: bool
+    as_of: object | None = None
+    previous: Any | None = None
+    freeze: tuple[str, ...] = ()
+
+
+SequentialCapture = Any
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScopeResult:
+    """A source view kept open for the lifetime of one analysis."""
+
+    source: Any
+    scope: EvidenceScope

@@ -1963,6 +1963,32 @@ def test_breakout_rows_keep_their_source_on_every_branch(mechanism, correction):
     assert {row.source for row in segment_heterogeneity(estimates).summary} == {"src_a", "src_b"}
 
 
+def test_breakout_accepts_unnamed_request_for_scoped_source():
+    from increment.sources import BreakoutMomentsSource
+    from tests.source_conformance import _format3_row, mean_metric
+
+    metric = mean_metric()
+    rows = []
+    for country in ("US", "CA"):
+        for group in ("control", "treatment"):
+            row = _format3_row(group=group)
+            row["country"] = country
+            rows.append(row)
+    source = BreakoutMomentsSource(
+        rows,
+        dimension="country",
+        metrics=[metric],
+        study_id="named-breakout",
+        source_name="events",
+        design=Randomized(control_group="control"),
+    )
+
+    estimates = readouts.breakout(source, "country", correction="none")
+
+    assert estimates
+    assert {estimate.dimension_value for estimate in estimates} == {"US", "CA"}
+
+
 @pytest.mark.integration
 def test_registered_sequential_breakout_tests_a_plan_bound_margin_against_its_registered_null():
     """Only fixed-horizon breakouts refuse a margin: they build no shifted

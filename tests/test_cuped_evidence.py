@@ -1010,9 +1010,26 @@ def test_categorical_decode_preserves_trigger_identity():
     )
     from increment.errors import InvalidRequestError
     from increment.estimation.cuped.cells import categorical_cells
+    from increment.evidence import EvidenceCapabilities
 
     class TriggeredAdapter:
         _population = "triggered"
+        evidence = EvidenceCapabilities(
+            kind="definitions",
+            grains=frozenset({"total"}),
+            breakouts=(),
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=frozenset({"triggered"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
 
         def __init__(self, trigger_name):
             self.context = SimpleNamespace(trigger_name=trigger_name)
@@ -1060,9 +1077,26 @@ def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
 
     from increment._cuped_evidence import parse_cuped_evidence, portable_cuped_rows
     from increment.estimation.cuped.cells import categorical_cells
+    from increment.evidence import EvidenceCapabilities
 
     class TriggeredAdapter:
         _population = "triggered"
+        evidence = EvidenceCapabilities(
+            kind="definitions",
+            grains=frozenset({"total"}),
+            breakouts=(),
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=frozenset({"triggered"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
         context = SimpleNamespace(trigger_name="activation")
 
         @property
@@ -1112,6 +1146,7 @@ def test_portable_cuped_envelope_preserves_triggered_adapter_identity():
 
 
 def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
+    from increment.semantics.design import Randomized
     from increment.sources import MomentsSource
 
     analysis, spec = _case(family="categorical")
@@ -1128,7 +1163,39 @@ def test_moments_source_restores_triggered_cuped_coordinates(tmp_path):
         row["cuped_evidence"] = canonical_json_bytes(payload).decode()
     cube = MomentsSource(rows, metrics=[spec], study_id="compact")
     assert cube.population == "triggered"
-    assert cube.context.trigger_name == "activation"
+    restored = Analysis.from_moments(
+        rows,
+        metrics=[spec],
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+    )
+    try:
+        from increment import CountEvidence, CountsRequest, evidence_provider
+        from tests.analysis_factory import held_source
+
+        retained = evidence_provider(held_source(restored)).counts(
+            CountsRequest(kind="unit", population="triggered")
+        )
+        assert retained == CountEvidence("triggered", "unit", {"control": 140, "treatment": 140})
+        assigned = next(
+            check
+            for check in restored.health_check().checks
+            if check.check == "assigned_allocation"
+        )
+        assert assigned.availability == "unavailable"
+        assert assigned.code == "evidence.operation_unavailable"
+        triggered = next(
+            check for check in restored.health_check().checks if check.check == "triggered_balance"
+        )
+        assert triggered.analysis_population == "triggered"
+        assert triggered.availability == "unavailable"
+        assert triggered.code == "evidence.operation_unavailable"
+
+    finally:
+        restored.close()
 
 
 def test_equivalent_requests_with_different_labels_share_one_envelope(tmp_path):

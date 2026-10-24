@@ -15,6 +15,7 @@ from fractions import Fraction
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, cast, runtime_checkable
 
+from increment._evidence_types import ScalarBreakoutRows
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment.errors import (
     CapabilityError,
@@ -559,14 +560,6 @@ class SingleScalarFamilySource(Protocol):
 
     @property
     def scalar_anonymous_metrics(self) -> frozenset[str]: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ScalarBreakoutRows:
-    """Method-specific moments and scalar refusals indexed by segment."""
-
-    rows: tuple[Mapping[str, Any], ...]
-    refusals: tuple[tuple[str, str, RefusalSpec, Mapping[str, object]], ...] = ()
 
 
 @runtime_checkable

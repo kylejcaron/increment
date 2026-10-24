@@ -14,16 +14,17 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import _Unset, normalize_display_correction
-from increment._evidence_types import ComplianceSeriesRequest, DayAxisRequest, DayAxisRoute
+from increment._evidence_types import (
+    ComplianceSeriesRequest,
+    CountsRequest,
+    DayAxisRequest,
+    DayAxisRoute,
+)
 from increment._frame_panel import _day_axis_label_order
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
-from increment._source_types import (
-    ComplianceSummary,
-    CovariateColumnCheck,
-    ScalarCovariateMoments,
-)
+from increment._source_types import ComplianceSummary, CovariateColumnCheck
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     DailyLiftEstimate,
@@ -54,7 +55,7 @@ from increment.estimation.engine import (
 )
 from increment.estimation.inference import validate_readout_inference
 from increment.estimation.readout_types import CellFailure, CellKey
-from increment.query.native_contract import NativeViewSource
+from increment.evidence import evidence_provider, request_evidence
 from increment.readouts._common import (
     _sequential_inference,
     _validate_encouragement_asof_inference,
@@ -273,9 +274,7 @@ def validate_day_axis(
             tuple(sorted(src.capabilities)),
             route="use a source with the requested day axis",
         )
-    if route == NATIVE_ROUTE and (
-        "day_source" not in src.operations or not isinstance(src, NativeViewSource)
-    ):
+    if route == NATIVE_ROUTE and "day_source" not in src.operations:
         from increment._evidence_refusals import refuse_grain
 
         refuse_grain(
@@ -991,14 +990,27 @@ def _estimate_day_axis_lift_slice(
 
 
 def _triggered_group_roster(source: MomentSource, experiment: Experiment) -> list[str]:
-    assigned_counts = getattr(source, "assignment_counts", None)
-    if callable(assigned_counts):
-        groups = set(assigned_counts(population="assigned"))
+    provider = evidence_provider(source)
+    if "assignment" in provider.evidence.count_grains:
+        counts = cast(
+            Any,
+            request_evidence(
+                provider,
+                CountsRequest(kind="assignment", population="assigned"),
+            ),
+        ).counts
+        groups = set(counts)
+    elif "unit" in provider.evidence.count_grains:
+        counts = cast(
+            Any,
+            request_evidence(
+                provider,
+                CountsRequest(kind="unit", population="assigned"),
+            ),
+        ).counts
+        groups = set(counts)
     else:
-        unit_counts = getattr(source, "unit_counts", None)
-        if not callable(unit_counts):
-            return []
-        groups = set(unit_counts())
+        return []
     allocation = getattr(
         getattr(getattr(source, "context", None), "design", None), "allocation", None
     )
@@ -1389,6 +1401,7 @@ class DayAxisReadouts:
             }
         else:
             _validate_daily_inference(_sequential_inference(self._plan), method=req.caller)
+        scalar_evidence = evidence_provider(self._src).evidence.scalar
         validate_scalar_route(
             opts.configs,
             route=f"Analysis.{req.caller}",
@@ -1400,9 +1413,9 @@ class DayAxisReadouts:
             registered_plan=self._plan,
             design=self._design,
             covariate_moments_available=(
-                req.grain in self._src.scalar_covariate_grains
-                if isinstance(self._src, ScalarCovariateMoments)
-                else True
+                scalar_evidence is None
+                or scalar_evidence.covariate_grains is None
+                or req.grain in scalar_evidence.covariate_grains
             ),
         )
         design_compliance, compliance_by_date = _compliance_readouts(

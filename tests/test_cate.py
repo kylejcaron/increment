@@ -201,6 +201,24 @@ def _source_ratio(**kwargs):
 
 
 class TestEstimate:
+    def test_method_only_legacy_source_remains_supported(self):
+        source = _source()
+
+        class LegacySource:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def __getattr__(self, name):
+                return getattr(self._wrapped, name)
+
+        result = estimate_cate(
+            cast("MomentsSource", LegacySource(source)),
+            "revenue",
+            control="control",
+            interact=["spend"],
+        )
+        assert result == estimate_cate(source, "revenue", control="control", interact=["spend"])
+
     def test_recovers_the_known_ate(self):
         result = estimate_cate(_source(), "revenue", control="control", interact=["spend"])
         assert isinstance(result, CateResult)
@@ -1318,8 +1336,8 @@ class TestClusterTransport:
         src = _cluster_source(pure_arms=True)
         real_unit_frame = src.unit_frame
 
-        def dropped(metric, *, covariates=()):
-            native = real_unit_frame(metric, covariates=covariates)
+        def dropped(metric, *, covariates=(), outcome_stage="transformed"):
+            native = real_unit_frame(metric, covariates=covariates, outcome_stage=outcome_stage)
             table = native.to_pandas() if hasattr(native, "to_pandas") else native
             return table.drop(columns=["cluster_id"])
 

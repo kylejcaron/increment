@@ -2022,7 +2022,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             return cast(
                 "_ArtifactFacadeSource",
                 self.triggered_source(),
-            ).breakout_source(breakout, metrics=metrics, configs=configs)
+            ).breakout_source(breakout, metrics=metrics, population=population, configs=configs)
         extension = self._extension(
             {
                 "kind": "breakout_dimension",

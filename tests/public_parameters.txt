@@ -8,6 +8,7 @@ alpha: Type-I error probability.
 append: Value appended to a sequential checkpoint.
 ard: Target value used by conditional-effect analysis.
 arm: Label identifying an assignment arm.
+arm_order: Ordered assignment arms associated with a fitted adjustment.
 as_of: Look or time at which to evaluate results.
 assignment: Declared assignment schedule.
 assignment_counts: Counts by arm used to check allocation.
@@ -45,6 +46,7 @@ dimension: Name of a segment or breakout dimension.
 dimension_value_a: First value of a segment contrast.
 dimension_value_b: Second value of a segment contrast.
 effect_delta: Effect size used in unit-cycle planning.
+fit: Fitted adjustment evidence used to improve treatment-effect precision.
 encouragement_uptake: Uptake declaration for an encouragement study.
 envelope: Declared design envelope for planning.
 estimands: Requested causal estimands.
@@ -107,6 +109,7 @@ reveal_cursor: Position of the next sequential reveal.
 role: Semantic role of an artifact relation or metric.
 rollout_cost: Cost used to compare rollout recommendations.
 row: Single relation row.
+provider: Source supplying typed statistical evidence.
 rows: Collection of rows.
 schema: Field schema describing serialized data.
 seed: Random seed for deterministic resampling.
@@ -125,6 +128,7 @@ store: Policy for materializing warehouse reductions.
 study_id: Stable identifier for the study.
 summary: Per-arm summary statistics.
 target: Policy or target population to evaluate.
+withheld: Arm-specific adjustment evidence omitted with its refusal.
 target_power: Desired probability of detecting the target effect.
 tau_prior_scale: Prior scale for segment-level heterogeneity.
 threshold_risk_ratio: Confounding risk ratio the sensitivity bound is evaluated against.
@@ -138,3 +142,8 @@ uptake: Column recording encouragement uptake.
 value: Value to encode or report.
 value_scale: Scale used for a treatment-effect value.
 verification: Verification evidence supplied for the request.
+by: Dimensions requested for grouped statistical evidence.
+covariates: Pre-exposure columns needed for per-unit evidence.
+raw_outcomes: Whether pre-transform outcome rows are required.
+src: Statistical evidence source to validate.
+unit_rows: Whether unit-level observations are required.
