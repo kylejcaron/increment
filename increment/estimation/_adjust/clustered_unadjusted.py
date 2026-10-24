@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from increment.estimation.engine import Method
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,10 +373,17 @@ def _unadjusted_joint_result(
     )
 
 
-def estimate_clustered_unadjusted(
-    src: MomentSource,
+@dataclass(frozen=True, slots=True)
+class ClusteredUnadjustedPreflight:
+    cluster: str
+    alpha: float
+    alternative: str
+    null_lift: float
+    null_abs: float | None
+
+
+def clustered_unadjusted_preflight(
     metric: Metric,
-    control_group: str,
     method: Method,
     *,
     cluster: str,
@@ -385,16 +391,10 @@ def estimate_clustered_unadjusted(
     alternative: str,
     null_lift: float,
     null_abs: float | None,
-) -> list[LiftEstimate]:
-    import narwhals as nw
-
+) -> ClusteredUnadjustedPreflight:
+    from increment.compatibility import Unsupported, refuse_unsupported
     from increment.errors import refuse
-    from increment.estimation.encouragement import ARM_NEEDS_TWO
-    from increment.estimation.engine import _refuse as engine_refuse
-    from increment.estimation.engine import (
-        _validate_typed_direct_compatibility,
-        check_total_clusters,
-    )
+    from increment.estimation.engine import _validate_typed_direct_compatibility
     from increment.estimation.inference import (
         INFER_ATE_NULL_ABS_FINITE,
         INFER_ATE_NULL_LIFT_FINITE,
@@ -412,8 +412,6 @@ def estimate_clustered_unadjusted(
         null_lift=null_lift,
         null_abs=null_abs,
     )
-    from increment.compatibility import Unsupported, refuse_unsupported
-
     if method.variance_reduction == "cuped":
         refuse_unsupported(Unsupported("arm.adjustment.cluster_cuped"), cluster=cluster)
     if metric.type not in ("mean", "conversion", "retention", "ratio"):
@@ -423,18 +421,50 @@ def estimate_clustered_unadjusted(
             metric_type=metric.type,
             cluster=cluster,
         )
-    _resolve_fixed_horizon(
-        alpha,
-        alternative,
-        dof=None,
-        arm_ns=None,
-        prior=None,
-    )
+    _resolve_fixed_horizon(alpha, alternative, dof=None, arm_ns=None, prior=None)
     if not math.isfinite(null_lift):
         refuse(INFER_ATE_NULL_LIFT_FINITE, null_lift=null_lift)
     if null_abs is not None and not math.isfinite(null_abs):
         refuse(INFER_ATE_NULL_ABS_FINITE, null_abs=null_abs)
-    frame = nw.from_native(src.unit_frame(metric), eager_only=True)
+    return ClusteredUnadjustedPreflight(cluster, alpha, alternative, null_lift, null_abs)
+
+
+def estimate_clustered_unadjusted(
+    unit_rows: Any,
+    metric: Metric,
+    control_group: str,
+    method: Method,
+    *,
+    cluster: str,
+    alpha: float,
+    alternative: str,
+    null_lift: float,
+    null_abs: float | None,
+    preflight: ClusteredUnadjustedPreflight | None = None,
+) -> list[LiftEstimate]:
+    import narwhals as nw
+
+    from increment.errors import refuse
+    from increment.estimation.encouragement import ARM_NEEDS_TWO
+    from increment.estimation.engine import _refuse as engine_refuse
+    from increment.estimation.engine import check_total_clusters
+
+    if preflight is None:
+        preflight = clustered_unadjusted_preflight(
+            metric,
+            method,
+            cluster=cluster,
+            alpha=alpha,
+            alternative=alternative,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        )
+    cluster = preflight.cluster
+    alpha = preflight.alpha
+    alternative = preflight.alternative
+    null_lift = preflight.null_lift
+    null_abs = preflight.null_abs
+    frame = nw.from_native(unit_rows, eager_only=True)
     groups: dict[str, list[Mapping[str, Any]]] = {}
     for row in frame.iter_rows(named=True):
         groups.setdefault(str(row["group_id"]), []).append(row)

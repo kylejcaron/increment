@@ -48,6 +48,7 @@ def _estimate_observational(
     value_scale: Mapping[str, ValueScale] | None,
     call_prior: Prior | None,
     evidence: ObservationalEvidence,
+    unit_frame_memo: Any,
     computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Estimate the observational phase after whole-window validation.
@@ -115,6 +116,7 @@ def _estimate_observational(
             _raise_if_empty=False,
             _prior_scale_judged=True,
             evidence=evidence,
+            unit_frame_memo=unit_frame_memo,
         )
         if computations is not None:
             computations.append(computation)
@@ -136,6 +138,7 @@ def _estimate_observational(
                 resolved_null_abs=resolved_null_abs,
                 resolved_alternatives=resolved_alternatives,
                 evidence=evidence,
+                unit_frame_memo=unit_frame_memo,
                 computations=computations,
             )
         )
@@ -164,6 +167,7 @@ def _estimate_observational_secondary_family(
     resolved_null_abs: Mapping[str, float] | None,
     resolved_alternatives: Mapping[str, str] | None,
     evidence: ObservationalEvidence,
+    unit_frame_memo: Any,
     computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Nominal pass at plan.alpha, BH-select at plan.q, FCR-reestimate the
@@ -202,6 +206,7 @@ def _estimate_observational_secondary_family(
             alternatives=resolved_alternatives or None,
             _raise_if_empty=False,
             _prior_scale_judged=True,
+            unit_frame_memo=unit_frame_memo,
             evidence=evidence,
             family_member=family_member,
         )
@@ -300,6 +305,7 @@ def _estimate_observational_secondary_family(
             alternatives=resolved_alternatives or None,
             _raise_if_empty=False,
             _prior_scale_judged=True,
+            unit_frame_memo=unit_frame_memo,
             evidence=evidence,
             route_tail=fcr_route_tail(procedure.alternative, fcr_alpha),
         )

@@ -10,6 +10,12 @@ For randomized lift, `increment/estimation/engine.py` owns `Method`, `estimate_l
 
 `increment/_moment_plan.py` distinguishes counts, references, centered first moments, and centered second/cross moments. These cannot replace unit records or reconstruct membership and arbitrary distributions. Evidence is distinct too: reasons, guarantees, diagnostics, and source availability answer different questions from numeric moments. Preserve these distinctions through source, estimator, result, serialization, and presentation.
 
+## Registering an observational adjustment
+
+`ADJUSTMENTS` callbacks receive materialized inputs, not a source: `(frame, moment_rows, cluster, metric, design, **kwargs)`. `frame` is the unit-level data for that metric and the design's adjustment covariates; `moment_rows` are the metric's already-reduced arm summaries; `cluster` is the declared cluster column or `None`. Keep kernels data-only and derive cluster behavior from this explicit evidence.
+
+`estimate_ate` runs the built-in adjustment preflight before reading unit rows. For a non-built-in registration, the facade reads the metric frame with `design.adjustment.covariates` immediately before invoking the callback. A readout shares a memoized frame read across its estimates and identity calculation; plugin code should use the supplied frame and never reach back to a source.
+
 ## Set up before running the focused commands
 
 Install the test dependencies used below:

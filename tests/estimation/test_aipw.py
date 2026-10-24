@@ -27,8 +27,8 @@ from increment.errors import (
     InvalidRequestError,
     UnsupportedRequestError,
 )
-from increment.estimation._adjust.aipw import aipw_estimate
-from increment.estimation._adjust.iptw import iptw_estimate
+from increment.estimation._adjust.aipw import aipw_estimate as _aipw_kernel
+from increment.estimation._adjust.iptw import iptw_estimate as _iptw_kernel
 from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutcome
 from increment.estimation._adjust.overlap import _fold_ids
 from increment.estimation.adjust import estimate_ate
@@ -133,6 +133,30 @@ def _aipw_src(n: int = 60):
 
 
 _AIPW_DESIGN = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+
+
+def _kernel_call(kernel, source, metric, design, **kwargs):
+    import sys
+
+    input_type = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs
+    return kernel(
+        input_type(
+            source.unit_frame(metric, covariates=design.adjustment.covariates),
+            source.moments(metric),
+            source.context.cluster,
+        ),
+        metric,
+        design,
+        **kwargs,
+    )
+
+
+def aipw_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_aipw_kernel, source, metric, design, **kwargs)
+
+
+def iptw_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_iptw_kernel, source, metric, design, **kwargs)
 
 
 @pytest.mark.parametrize(

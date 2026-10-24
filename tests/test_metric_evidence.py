@@ -6,7 +6,7 @@ import warnings
 from datetime import date
 from numbers import Real
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -258,13 +258,15 @@ class _CountingSource:
     def __init__(self, source: MomentSource):
         self.source = source
         self.unit_frame_reads = 0
+        self.unit_frame_metrics = []
 
     def __getattr__(self, name):
         return getattr(self.source, name)
 
-    def unit_frame(self, *args, **kwargs):
+    def unit_frame(self, metric, *args, **kwargs):
         self.unit_frame_reads += 1
-        return self.source.unit_frame(*args, **kwargs)
+        self.unit_frame_metrics.append(metric.name)
+        return self.source.unit_frame(metric, *args, **kwargs)
 
 
 def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=None):
@@ -282,6 +284,7 @@ def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=Non
             "unit": [f"c{i}" for i in range(6)] + [f"t{i}" for i in range(6)],
             "arm": ["C"] * 6 + ["T"] * 6,
             "store": [f"s{i}" for i in range(12)],
+            "x": [float(i % 3) for i in range(12)],
             "y": [float(i + 1) for i in range(12)],
         }
     )
@@ -298,6 +301,81 @@ def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=Non
     return analysis, _CountingSource(source), source.context.metrics[0]
 
 
+def test_observational_readout_shares_frames_with_identity_digest():
+    from collections import Counter
+
+    from increment import AdjustmentSet
+    from increment.estimation.engine import Method
+    from increment.readouts import run
+    from increment.semantics.design import Observational
+    from tests.analysis_factory import held_source
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(40)],
+            "arm": ["C"] * 20 + ["T"] * 20,
+            "x": [float(i % 5) for i in range(40)],
+            "y": [float(i + 1) for i in range(40)],
+            "z": [float((i * 3) % 11) for i in range(40)],
+        }
+    )
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics={"y": "mean", "z": "mean"},
+        design=design,
+    )
+    source = _CountingSource(cast(MomentSource, held_source(analysis)))
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            rows = run(cast(MomentSource, source), decision_method=Method(name="iptw"))
+        assert {row.metric for row in rows} == {"y", "z"}
+        assert Counter(source.unit_frame_metrics) == Counter({"y": 1, "z": 1})
+    finally:
+        analysis.close()
+
+
+def test_call_time_unadjusted_override_reads_no_moments_cube_unit_frames(tmp_path):
+    from increment import AdjustmentSet
+    from increment.estimation.engine import Method
+    from increment.readouts import run
+    from increment.semantics.design import Observational
+    from tests.analysis_factory import held_source
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(40)],
+            "arm": ["C"] * 20 + ["T"] * 20,
+            "x": [float(i % 5) for i in range(40)],
+            "y": [float(i + 1) for i in range(40)],
+        }
+    )
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+    spec = MetricSpec(name="y", type="mean", decision_method=Method(name="iptw"))
+    original = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        metrics=[spec],
+        design=design,
+    )
+    path = tmp_path / "unadjusted_override.parquet"
+    original.export(path)
+    original.close()
+    cube = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=[spec], design=design)
+    source = _CountingSource(cast(MomentSource, held_source(cube)))
+    try:
+        rows = run(cast(MomentSource, source), decision_method=Method(name="unadjusted"))
+        assert [row.method for row in rows] == ["unadjusted"]
+        assert source.unit_frame_reads == 0
+        assert source.unit_frame_metrics == []
+    finally:
+        cube.close()
+
+
 def test_quantile_lift_from_rows_equals_facade():
     from increment.estimation.quantile import estimate_quantile_lift, quantile_lift_from_rows
 
@@ -308,6 +386,80 @@ def test_quantile_lift_from_rows_equals_facade():
         row_results = quantile_lift_from_rows(rows, metric, "C", design=source.context.design)
         assert isinstance(row_results, list)
         assert [row.model_dump() for row in row_results] == [row.model_dump() for row in facade]
+    finally:
+        analysis.close()
+
+
+def test_adjustment_kernel_runs_on_plain_frames():
+    from increment import AdjustmentSet
+    from increment.estimation.adjust import ADJUSTMENTS, estimate_ate
+    from increment.estimation.engine import Method
+    from increment.semantics.design import Observational
+
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+    analysis, source, metric = _counted_analysis(design=design)
+    try:
+        import sys
+
+        facade = estimate_ate(source, design, methods=[Method(name="iptw")]).results
+        input_type = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs
+        kernel = ADJUSTMENTS.get("iptw")(
+            input_type(
+                source.unit_frame(metric, covariates=["x"]),
+                source.moments(metric),
+                source.context.cluster,
+            ),
+            metric,
+            design,
+        )
+        assert [row.model_dump() for row in kernel] == [row.model_dump() for row in facade]
+    finally:
+        analysis.close()
+
+
+def test_adjusted_observational_methods_share_unit_frame_read():
+    from increment import AdjustmentSet
+    from increment.estimation.adjust import estimate_ate
+    from increment.estimation.engine import Method
+    from increment.semantics.design import Observational
+
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+    analysis, source, _metric = _counted_analysis(design=design)
+    try:
+        estimate_ate(source, design, methods=[Method(name="iptw"), Method(name="dml")])
+        assert source.unit_frame_reads == 1
+    finally:
+        analysis.close()
+
+
+def test_unadjusted_observational_estimator_reads_no_unclustered_unit_rows():
+    from increment import AdjustmentSet
+    from increment.estimation.adjust import estimate_ate
+    from increment.estimation.engine import Method
+    from increment.semantics.design import Observational
+
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+    analysis, source, _metric = _counted_analysis(design=design)
+    try:
+        estimate_ate(source, design, methods=[Method(name="unadjusted")])
+        assert source.unit_frame_reads == 0
+    finally:
+        analysis.close()
+
+
+def test_clustered_unadjusted_observational_estimator_reads_each_metric_once():
+    from increment import AdjustmentSet
+    from increment.estimation.adjust import estimate_ate
+    from increment.estimation.engine import Method
+    from increment.semantics.design import Observational
+
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+    analysis, source, _metric = _counted_analysis(cluster=True, design=design)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            estimate_ate(source, design, methods=[Method(name="unadjusted")])
+        assert source.unit_frame_reads == 1
     finally:
         analysis.close()
 
@@ -403,3 +555,99 @@ def test_quantile_rows_refuse_observational_design():
         assert raised.value.code == "readout.observational.quantile"
     finally:
         analysis.close()
+
+
+def test_adjustment_refusals_precede_unit_frame_reads():
+    from increment import AdjustmentSet
+    from increment.errors import CodedError
+    from increment.estimation.adjust import estimate_ate
+    from increment.estimation.engine import Method
+    from increment.semantics.design import Observational
+
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+
+    cases = (
+        ("null_lifts", "model.field.nonfinite"),
+        ("alpha", "model.field.range"),
+    )
+    for parameter, expected_code in cases:
+        analysis, source, _metric = _counted_analysis(cluster=True, design=design)
+        try:
+            with pytest.raises(CodedError) as raised:
+                if parameter == "null_lifts":
+                    estimate_ate(
+                        cast(Any, source),
+                        design,
+                        methods=[Method(name="unadjusted")],
+                        null_lifts={"y": math.inf},
+                    )
+                else:
+                    estimate_ate(
+                        cast(Any, source),
+                        design,
+                        methods=[Method(name="unadjusted")],
+                        alpha=1.0,
+                    )
+            assert raised.value.code == expected_code
+            assert source.unit_frame_reads == 0
+        finally:
+            analysis.close()
+
+    allow_design = design.model_copy(
+        update={"adjustment": AdjustmentSet(covariates=("x",), missing="allow")}
+    )
+    analysis, source, _metric = _counted_analysis(design=allow_design)
+    try:
+        with pytest.raises(CodedError) as raised:
+            estimate_ate(cast(Any, source), allow_design, methods=[Method(name="iptw")])
+        assert raised.value.code == "adjust.identification.allow_requires_learner"
+        assert source.unit_frame_reads == 0
+    finally:
+        analysis.close()
+
+
+def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_path):
+    from increment.errors import CodedError
+    from increment.estimation.adjust import estimate_ate
+    from increment.estimation.engine import Method
+    from increment.semantics.design import AdjustmentSet, Observational
+
+    rows = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(24)],
+            "arm": ["C"] * 12 + ["T"] * 12,
+            "x": [float(i % 3) for i in range(24)],
+            "revenue": [float(i + 1) for i in range(24)],
+            "orders": [float(i % 4 + 1) for i in range(24)],
+        }
+    )
+    specs = [
+        MetricSpec(name="rpo", type="ratio", numerator="revenue", denominator="orders"),
+        MetricSpec(name="revenue", type="mean"),
+    ]
+    design = Observational(
+        control_group="C",
+        adjustment=AdjustmentSet.model_construct(covariates=()),
+    )
+    original = Analysis.from_unit_summary(
+        rows, unit="unit", group="arm", metrics=specs, design=design
+    )
+    path = tmp_path / "moments.parquet"
+    original.export(path)
+    original.close()
+    cube = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=specs, design=design)
+    from tests.analysis_factory import held_source
+
+    cube_source = cast(MomentSource, held_source(cube))
+    source = _CountingSource(cube_source)
+    try:
+        with pytest.warns(IncrementWarning) as caught:
+            with pytest.raises(CodedError) as raised:
+                estimate_ate(cast(Any, source), design, methods=[Method(name="iptw")])
+        assert "estimation.adjust.skip_unsupported_metric" in {
+            getattr(warning.message, "code", None) for warning in caught
+        }
+        assert raised.value.code == "source.moments.unit_grain"
+        assert source.unit_frame_reads == 1
+    finally:
+        cube.close()

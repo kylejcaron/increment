@@ -24,10 +24,10 @@ from increment.errors import (
     InvalidRequestError,
     UnsupportedRequestError,
 )
-from increment.estimation._adjust.aipw import aipw_estimate
+from increment.estimation._adjust.aipw import aipw_estimate as _aipw_kernel
 from increment.estimation._adjust.common import _bessel_cross
-from increment.estimation._adjust.dml import dml_estimate
-from increment.estimation._adjust.iptw import iptw_estimate
+from increment.estimation._adjust.dml import dml_estimate as _dml_kernel
+from increment.estimation._adjust.iptw import iptw_estimate as _iptw_kernel
 from increment.estimation._adjust.overlap import _cluster_sq
 from increment.estimation.adjust import estimate_ate
 from increment.estimation.armstats import ScoreStats
@@ -50,6 +50,28 @@ if TYPE_CHECKING:
     from increment.sources import Grain, SourceOperation
 
 DESIGN = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("z",)))
+
+
+def _kernel_call(kernel, source, metric, design, **kwargs):
+    import sys
+
+    input_type = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs
+    rows = source.moments(metric)
+    frame = source.unit_frame(metric, covariates=design.adjustment.covariates)
+    return kernel(input_type(frame, rows, source.context.cluster), metric, design, **kwargs)
+
+
+def iptw_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_iptw_kernel, source, metric, design, **kwargs)
+
+
+def dml_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_dml_kernel, source, metric, design, **kwargs)
+
+
+def aipw_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_aipw_kernel, source, metric, design, **kwargs)
+
 
 ESTIMATORS = {"iptw": iptw_estimate, "dml": dml_estimate, "aipw": aipw_estimate}
 
@@ -136,6 +158,24 @@ def _rel_se(est: LiftEstimate) -> float:
 
 # Cluster identity reaches adjusted estimators as `cluster_id` metadata, never as a
 # requested covariate: a conforming source may expose only the canonical column.
+
+
+def test_clustered_unadjusted_uses_its_preflight_once(monkeypatch):
+    import sys
+
+    module = sys.modules["increment.estimation._adjust.clustered_unadjusted"]
+    original = module.clustered_unadjusted_preflight
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "clustered_unadjusted_preflight", counted)
+    source = _source(_table(k_per_arm=3, m=2, seed=37), cluster="store", design=DESIGN)
+    with pytest.warns(IncrementRuntimeWarning):
+        estimate_ate(source, DESIGN, methods=[Method(name="unadjusted")])
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("name", ["iptw", "dml", "aipw"])
@@ -557,8 +597,13 @@ def test_registered_adjustment_preserves_producer_weight_diagnostics():
 
     method_name = "test_weight_diagnostics_passthrough"
 
-    def plugin(source, metric, design, **kwargs):
-        rows = iptw_estimate(source, metric, design, learner=ConstantPropensity, **kwargs)
+    import sys
+
+    def plugin(frame, moment_rows, cluster, metric, design, **kwargs):
+        inputs = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs(
+            frame, moment_rows, cluster
+        )
+        rows = _iptw_kernel(inputs, metric, design, learner=ConstantPropensity, **kwargs)
         return [row.model_copy(update={"method": method_name}) for row in rows]
 
     original_entries = dict(ADJUSTMENTS._entries)

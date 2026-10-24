@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -12,6 +12,8 @@ from increment.estimation._adjust.common import (
     AdjustedContrastRequest,
     AdjustmentCohort,
     AdjustmentData,
+    AdjustmentInputs,
+    AdjustmentPreflight,
     ClusterSupport,
     NuisanceFoldSpec,
     OutcomeRole,
@@ -21,11 +23,11 @@ from increment.estimation._adjust.common import (
     _infer_adjusted_contrast,
     _joint_reference_from_influences,
     _prepare_adjustment_cohort,
-    _prepare_adjustment_requests,
     _refuse_near_zero_adjustment_denominator,
     _resolve_adjustment_missingness,
     _score_stats,
     _validate_contrast,
+    adjustment_requests,
 )
 from increment.estimation._adjust.learners import Learner, LogisticPropensity, RidgeOutcome
 from increment.estimation._adjust.value_scale import resolve_value_scale
@@ -37,7 +39,6 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
 
 
 def _augmented_arm_mean(
@@ -194,10 +195,11 @@ def _aipw_cohort(
 
 # Public estimator signature is the API for AIPW results.
 def aipw_estimate(  # noqa: PLR0913
-    src: MomentSource,
+    inputs: AdjustmentInputs,
     metric: Metric,
     design: Observational,
     *,
+    preflight: AdjustmentPreflight | None = None,
     propensity_learner: Callable[[], Learner] | None = None,
     outcome_learner: Callable[[], Learner] | None = None,
     folds: int = 5,
@@ -208,8 +210,7 @@ def aipw_estimate(  # noqa: PLR0913
     null_abs: float | None = None,
     value_scale: ValueScale = "relative",
     preferred_direction: PreferredDirection | None = None,
-    moment_rows: Sequence[Mapping[str, Any]] | None = None,
-) -> list[LiftEstimate]:
+):
     """AIPW (augmented inverse-propensity-weighted, doubly-robust) estimate
     of unit-weighted ATE-scale relative lift, one entry per non-control
     treatment arm present for *metric*.
@@ -233,14 +234,18 @@ def aipw_estimate(  # noqa: PLR0913
     fold per model, matching `dml_estimate`. Default to
     `LogisticPropensity` and `RidgeOutcome` respectively.
 
-    A cluster declared on the source (`src.cluster`) switches the SE to
-    cluster totals of the influence function with an asymptotic Normal reference,
-    the same seam and small-K policy as `iptw_estimate`.
+    A cluster carried in materialized `inputs` switches the SE to cluster
+    totals of the influence function with an asymptotic Normal reference,
+    using the same seam and small-K policy as `iptw_estimate`. The required
+    input object carries `cluster=None` only when the source declared no
+    cluster.
     """
-    requests, learners = _prepare_adjustment_requests(
-        src,
+    requests, learners = adjustment_requests(
+        inputs.frame,
         metric,
         design,
+        moment_rows=inputs.moment_rows,
+        cluster=inputs.cluster,
         method="AIPW",
         covariates=list(design.adjustment.covariates),
         learner_roles=("propensity_learner", "outcome_learner"),
@@ -253,7 +258,6 @@ def aipw_estimate(  # noqa: PLR0913
         null_abs=null_abs,
         value_scale=value_scale,
         preferred_direction=preferred_direction,
-        moment_rows=moment_rows,
     )
     if not requests:
         return []

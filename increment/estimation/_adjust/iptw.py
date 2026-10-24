@@ -11,8 +11,8 @@ shares the one control mean and its influence.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -21,6 +21,8 @@ from increment.estimation._adjust.common import (
     AdjustedContrastRequest,
     AdjustmentCohort,
     AdjustmentData,
+    AdjustmentInputs,
+    AdjustmentPreflight,
     ClusterSupport,
     NuisancePredictions,
     _apply_overlap_gate,
@@ -32,11 +34,11 @@ from increment.estimation._adjust.common import (
     _infer_adjusted_contrast,
     _joint_reference_from_influences,
     _prepare_adjustment_cohort,
-    _prepare_adjustment_requests,
     _refuse_near_zero_adjustment_denominator,
     _resolve_adjustment_missingness,
     _score_stats,
     _validate_contrast,
+    adjustment_requests,
 )
 from increment.estimation._adjust.encoding import (
     UnseenLevels,
@@ -66,7 +68,6 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
 
 _FITTED_LOGISTIC_NOTE = "Joint fitted-logistic/Hajek estimating-equation covariance."
 _FIXED_PROPENSITY_NOTE = (
@@ -339,11 +340,12 @@ def _iptw_cohort(cohort: AdjustmentCohort, factory: Callable[[], Learner]) -> li
 
 
 def iptw_estimate(
-    src: MomentSource,
+    inputs: AdjustmentInputs,
     metric: Metric,
     design: Observational,
     *,
     learner: Callable[[], Learner] | None = None,
+    preflight: AdjustmentPreflight | None = None,
     prior: Prior | None = None,
     alpha: float = 0.05,
     alternative: str = "two-sided",
@@ -351,8 +353,7 @@ def iptw_estimate(
     null_abs: float | None = None,
     value_scale: ValueScale = "relative",
     preferred_direction: PreferredDirection | None = None,
-    moment_rows: Sequence[Mapping[str, Any]] | None = None,
-) -> list[LiftEstimate]:
+):
     """IPTW (Hajek self-normalized) estimate of relative lift, one entry per
     non-control treatment arm present for *metric*. See the module
     docstring for the Hajek-vs-Horvitz-Thompson choice. Registered under
@@ -365,23 +366,25 @@ def iptw_estimate(
     logistic fit carries its estimating equations into the covariance across
     all of those models.
 
-    A cluster declared on the source (`src.cluster`, e.g.
-    `from_unit_summary(cluster=...)`) switches the SE to the Liang-Zeger
-    reduction over per-cluster influence totals with an asymptotic Normal
-    reference. Each comparison needs at least two distinct clusters among its
-    own treatment and control units, and two per arm when those clusters are
-    arm-pure; below forty such clusters an advisory warning is emitted. A
-    fixed-propensity contrast (generic learner, pattern or trimmed fit) is
-    reduced over those comparison clusters; the fitted logistic correction
-    reaches every cohort row, so its contrasts reduce over every cohort
-    cluster.
-    Read the cluster identity from the source, never a kwarg: a clustered
-    source can never be served an iid SE by a direct call."""
-    requests, learners = _prepare_adjustment_requests(
-        src,
+    A cluster in the materialized `inputs` switches the SE to the
+    Liang-Zeger reduction over per-cluster influence totals with an asymptotic
+    Normal reference. Each comparison needs at least two distinct clusters
+    among its own treatment and control units, and two per arm when those
+    clusters are arm-pure; below forty such clusters an advisory warning is
+    emitted. A fixed-propensity contrast (generic learner, pattern or trimmed
+    fit) is reduced over those comparison clusters; the fitted logistic
+    correction reaches every cohort row, so its contrasts reduce over every
+    cohort cluster. `inputs.cluster` is explicit materialized evidence, so
+    direct kernel calls cannot silently discard a declared cluster.
+    """
+    requests, learners = adjustment_requests(
+        inputs.frame,
         metric,
         design,
+        moment_rows=inputs.moment_rows,
+        cluster=inputs.cluster,
         method="IPTW",
+        preflight=preflight,
         covariates=list(design.adjustment.covariates),
         learner_roles=("learner",),
         method_fields={"learner": "propensity_learner"},
@@ -393,7 +396,6 @@ def iptw_estimate(
         null_abs=null_abs,
         value_scale=value_scale,
         preferred_direction=preferred_direction,
-        moment_rows=moment_rows,
     )
     if not requests:
         return []
