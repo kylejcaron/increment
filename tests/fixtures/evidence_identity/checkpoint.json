@@ -1,0 +1,1879 @@
+{
+  "as_of": "2025-01-11",
+  "checkpoint": [
+    {
+      "assignment_counts": "{\"control\":60,\"treatment\":60}",
+      "decision_plan": "{\"alpha\":0.05,\"compliance\":null,\"declared\":true,\"inference\":{\"kind\":\"asymptotic_mean\",\"registration\":{\"committed_before_data\":true,\"control_group\":\"control\",\"definitions_id\":\"6d7b38021524a86d3ceaa7c6fb57efdccdc381bbf9e1d6fb2e1c9a0a36f58cee\",\"models\":[{\"assignment\":\"iid_fixed_bernoulli_randomization\",\"consistency_and_no_interference\":true,\"construction\":\"direct_shifted_contrast_v1\",\"law\":\"scalar_mean\",\"metric\":\"revenue\",\"moments\":\"finite_2_plus_delta\",\"observable\":\"outcome\",\"positive_limiting_variance\":true,\"positive_population_control\":true,\"rho\":\"161321931575777/562949953421312\",\"segment_membership\":\"pre_assignment\",\"start_count\":2,\"treatment_probability\":\"1/2\",\"unit_model\":\"iid_stationary_potential_outcomes\",\"validity_regime\":\"asymptotic_sequential\"}],\"q\":\"3602879701896397/36028797018963968\",\"reveal\":{\"filtration_id\":\"ea032eac98dfd02b2a944015a2e70995141a928acb403c16f8a82ea7372f5906\",\"immutable_finalized_outcomes\":true,\"independent_unit_vectors\":true,\"longest_window_days\":1,\"outcome_independent_order\":true,\"simultaneous_metrics\":true},\"roster\":[{\"alpha\":\"3602879701896397/72057594037927936\",\"alternative\":\"two-sided\",\"estimand\":\"itt\",\"family\":false,\"group_id\":\"treatment\",\"metric\":\"revenue\",\"null_lift\":\"0\",\"segment\":[]}],\"source_id\":\"exp\",\"version\":2}},\"path\":\"frame\",\"procedures\":{\"revenue\":{\"alpha\":0.05,\"alternative\":\"two-sided\",\"axis\":\"relative\",\"decision_method\":{\"conversion_inference\":\"auto\",\"covariates\":null,\"name\":\"unadjusted\",\"variance_reduction\":\"none\"},\"family\":{\"family\":{\"kind\":\"none\"},\"member\":false},\"inference\":{\"kind\":\"asymptotic_mean\",\"registration\":{\"committed_before_data\":true,\"control_group\":\"control\",\"definitions_id\":\"6d7b38021524a86d3ceaa7c6fb57efdccdc381bbf9e1d6fb2e1c9a0a36f58cee\",\"models\":[{\"assignment\":\"iid_fixed_bernoulli_randomization\",\"consistency_and_no_interference\":true,\"construction\":\"direct_shifted_contrast_v1\",\"law\":\"scalar_mean\",\"metric\":\"revenue\",\"moments\":\"finite_2_plus_delta\",\"observable\":\"outcome\",\"positive_limiting_variance\":true,\"positive_population_control\":true,\"rho\":\"161321931575777/562949953421312\",\"segment_membership\":\"pre_assignment\",\"start_count\":2,\"treatment_probability\":\"1/2\",\"unit_model\":\"iid_stationary_potential_outcomes\",\"validity_regime\":\"asymptotic_sequential\"}],\"q\":\"3602879701896397/36028797018963968\",\"reveal\":{\"filtration_id\":\"ea032eac98dfd02b2a944015a2e70995141a928acb403c16f8a82ea7372f5906\",\"immutable_finalized_outcomes\":true,\"independent_unit_vectors\":true,\"longest_window_days\":1,\"outcome_independent_order\":true,\"simultaneous_metrics\":true},\"roster\":[{\"alpha\":\"3602879701896397/72057594037927936\",\"alternative\":\"two-sided\",\"estimand\":\"itt\",\"family\":false,\"group_id\":\"treatment\",\"metric\":\"revenue\",\"null_lift\":\"0\",\"segment\":[]}],\"source_id\":\"exp\",\"version\":2}},\"kind\":\"relative\",\"methods_explicitly_empty\":false,\"metric\":\"revenue\",\"null_lift\":0,\"prior\":null,\"prior_is_global\":true,\"role\":\"primary\",\"scale\":\"relative\",\"sensitivity_methods\":[]}},\"q\":0.1,\"view_policies\":{\"asof\":{\"axes\":[\"metric\",\"arm\"],\"correction\":\"none\",\"guarantee\":\"none\",\"kind\":\"multiplicity\",\"name\":\"asof\",\"q\":null,\"validity_regime\":\"asymptotic_sequential\"},\"encouragement_breakout\":{\"axes\":[\"metric\",\"arm\",\"segment\"],\"correction\":\"none\",\"guarantee\":\"none\",\"kind\":\"multiplicity\",\"name\":\"breakout\",\"q\":null,\"validity_regime\":\"asymptotic_sequential\"},\"randomized_breakout\":{\"axes\":[\"metric\",\"arm\",\"segment\"],\"correction\":\"bonferroni\",\"guarantee\":\"fwer\",\"kind\":\"multiplicity\",\"name\":\"breakout\",\"q\":0.1,\"validity_regime\":\"asymptotic_sequential\"}},\"wire_version\":5}",
+      "experiment_id": "exp",
+      "moments_format": 10,
+      "record_kind": "sequential_checkpoint",
+      "sequential_snapshot": "{\"ancestors\":[],\"assignment_counts\":{\"control\":60,\"treatment\":60},\"finalized\":true,\"frozen\":[],\"parent_id\":null,\"prefix_id\":\"ef1d7c0a82758384d933451115d8fe4a7b984c96ccf4966f290b3ca9d12045eb\",\"records\":[{\"digest\":\"62d2cf1c90b2249b9ecffacdd6ac092352e5318abf0ba157f894bbc56ff1f5fb\",\"group_id\":\"control\",\"unit_id\":\"c0\"},{\"digest\":\"3dae5ab90dff56fd024c5b1982783e581017ac96ccb1d2f6a9c1a4eb67e2b564\",\"group_id\":\"control\",\"unit_id\":\"c1\"},{\"digest\":\"70df34161ecc9f4a80bd655bc7c6326547fcb0a7d7d41c83d30ebeca0b5d63c9\",\"group_id\":\"control\",\"unit_id\":\"c10\"},{\"digest\":\"fcbdfe23754097aad45b3c0f1735865589672d128daa1a74b4bfa1801b29edcc\",\"group_id\":\"control\",\"unit_id\":\"c11\"},{\"digest\":\"acad82a74024197e16e3f5ad417be28673f6a2346d0495b74d87dd8fe65affee\",\"group_id\":\"control\",\"unit_id\":\"c12\"},{\"digest\":\"361e30b342517353ff3112765216116316a024e4a22268c7168640ab015d9a85\",\"group_id\":\"control\",\"unit_id\":\"c13\"},{\"digest\":\"c588589643b3652dbb175363744133ef86312ba5c7f261d72917e9088f241eb5\",\"group_id\":\"control\",\"unit_id\":\"c14\"},{\"digest\":\"9136857acc2bdeb531415b28c6a8bdfd44dbefa4aa635b5f72709038078c66cd\",\"group_id\":\"control\",\"unit_id\":\"c15\"},{\"digest\":\"3ccf23a771deb4e3df970e7dec8fe2b8126fcfc5dfd9fc3960669fef6e5e3ac4\",\"group_id\":\"control\",\"unit_id\":\"c16\"},{\"digest\":\"d926085033adca151437d36ebea7c5631f0b169932d7a8664d08d3719e3601cd\",\"group_id\":\"control\",\"unit_id\":\"c17\"},{\"digest\":\"e42ae95009c1bedf6643a2bd35fb64bb4c32a03d846562f81ed10590f68cb1b1\",\"group_id\":\"control\",\"unit_id\":\"c18\"},{\"digest\":\"56ce2b7ded11620da592248752504c0bb35556d7d6b6627e86b7feb36a7a7912\",\"group_id\":\"control\",\"unit_id\":\"c19\"},{\"digest\":\"02eab801f0fa9d2542230005f64d3309dfe03fb871b8fe1dab68906fe02fb3d9\",\"group_id\":\"control\",\"unit_id\":\"c2\"},{\"digest\":\"9a0400dc3baf4b392de56b308d875226ced263a513450cf0bee5579d5dd22031\",\"group_id\":\"control\",\"unit_id\":\"c20\"},{\"digest\":\"b03f48948a3cb75a443cbf899059f6cb5f55491c58937a3f0f424026b784223b\",\"group_id\":\"control\",\"unit_id\":\"c21\"},{\"digest\":\"51258c9c459d91dcc976475fe2c77a071405f72d1b33327f2fac207cd3005b80\",\"group_id\":\"control\",\"unit_id\":\"c22\"},{\"digest\":\"fb90ef33fd9b88c8483abb54e226284386931672e835c19ca5520538ac90c1a8\",\"group_id\":\"control\",\"unit_id\":\"c23\"},{\"digest\":\"1da4e6fcc59654f9efe0a56ef320655bea9c13cf61ea9ae85f9f0a23fd3c5829\",\"group_id\":\"control\",\"unit_id\":\"c24\"},{\"digest\":\"62c978f4c57d64f67b2a2a46998760412f7de87484a9372063e93b2714bb74a0\",\"group_id\":\"control\",\"unit_id\":\"c25\"},{\"digest\":\"60c0d19009a06c74fe11bcb474a31d6d8476f2d1588538f7227c7b9c18df2a14\",\"group_id\":\"control\",\"unit_id\":\"c26\"},{\"digest\":\"db136c9e55e95acee1b7dd8aedccaee950ad36e9d6e05f8cd73d43db55ec18ff\",\"group_id\":\"control\",\"unit_id\":\"c27\"},{\"digest\":\"5e303c05baedcba78a227eb0612ed0a1d7ab6be7bbe45b68942cd3146bcfb8bf\",\"group_id\":\"control\",\"unit_id\":\"c28\"},{\"digest\":\"146990c53134a4fedd23068c5757aeb8ab46465f6d0a1530b409ee37d85fff79\",\"group_id\":\"control\",\"unit_id\":\"c29\"},{\"digest\":\"df223374a60942892ddab5f83406fa9b1d8959b7ab74cf5e7d407e0c48f26da9\",\"group_id\":\"control\",\"unit_id\":\"c3\"},{\"digest\":\"b4be2e038ef646cb4146d960e9bdbcd3627d9c37b1725299f963b4cbb0a6b2e6\",\"group_id\":\"control\",\"unit_id\":\"c30\"},{\"digest\":\"bf8a4664ce41758d9cef15f93ecb0fca02467b0e9cd695f1238e49bf32409414\",\"group_id\":\"control\",\"unit_id\":\"c31\"},{\"digest\":\"0f0643618022583215ed5ec271f746c7c421bcebc3bfdf96e3a095a60da79c2f\",\"group_id\":\"control\",\"unit_id\":\"c32\"},{\"digest\":\"264c66d0e5cf4b7403b9d0cdb7345a0a97976ec005f8bbd85cf42c9fda78455a\",\"group_id\":\"control\",\"unit_id\":\"c33\"},{\"digest\":\"cfbc610c2a68f641931eb5b180582cf1acb3d6904e532b25413cedb0d4bb79a5\",\"group_id\":\"control\",\"unit_id\":\"c34\"},{\"digest\":\"a7937c04fb0b66b0f28aefc4634dab0dd021edea2acfd909544fb8d1a9f7cb0f\",\"group_id\":\"control\",\"unit_id\":\"c35\"},{\"digest\":\"fdf38a776553c31d1b885cfdd9a71bb07b54d767d06645ffb7c75d10c6087083\",\"group_id\":\"control\",\"unit_id\":\"c36\"},{\"digest\":\"3058279a04452be9a342c17662d4ac42f78bd3484b28f1dc68109d39ab4a5a2f\",\"group_id\":\"control\",\"unit_id\":\"c37\"},{\"digest\":\"fdb2dba318e83175f6028aaed1decad87eef244c8f9557f7fe61b8714b14026f\",\"group_id\":\"control\",\"unit_id\":\"c38\"},{\"digest\":\"1652d83e0309c00c8ecb341485ce3e3cb303f81a679c336eacfbb0aea5db8587\",\"group_id\":\"control\",\"unit_id\":\"c39\"},{\"digest\":\"9a0eaad3658ff13de03cd698090e4dd2152cb1948dbfdce2bed0e562dce307a8\",\"group_id\":\"control\",\"unit_id\":\"c4\"},{\"digest\":\"a3440e534484694b00588620def339b4c65d0c38d5c65267e34c73bffe5f47cc\",\"group_id\":\"control\",\"unit_id\":\"c40\"},{\"digest\":\"84b59b8f5fd75eaa8de59e05100258a7e51cddfad21f4002200c07a285c00b92\",\"group_id\":\"control\",\"unit_id\":\"c41\"},{\"digest\":\"12e7e056f6eec0ad9856386998da793958c3c4bdf5e2d65b67c2069726a91721\",\"group_id\":\"control\",\"unit_id\":\"c42\"},{\"digest\":\"f3ff6e0c69c340cbc320d132ae35ac7b5a2af43f74f285cdb8b469ba5f1e6fb6\",\"group_id\":\"control\",\"unit_id\":\"c43\"},{\"digest\":\"5679f6e4d0599f30cdcce685b82f5092c36f8b8d81006b5376bf35701da71556\",\"group_id\":\"control\",\"unit_id\":\"c44\"},{\"digest\":\"e5639be4103d1e82369588183621d09a2aa32bbd7a97abd4646a8c86ca04a5d0\",\"group_id\":\"control\",\"unit_id\":\"c45\"},{\"digest\":\"b2f571cb1b3caab750a9688a1f43cbee7fb4b225bf94e61943eb38f1b8dd4e16\",\"group_id\":\"control\",\"unit_id\":\"c46\"},{\"digest\":\"47eddf15c4b8a7f95b547bd948fb90c79c2cc9f924828609ec9e0a87dcf46626\",\"group_id\":\"control\",\"unit_id\":\"c47\"},{\"digest\":\"78ae60dea4973ed7a2fab98bd5c6f62c92b4b16033e810a1634f65e2db38c292\",\"group_id\":\"control\",\"unit_id\":\"c48\"},{\"digest\":\"a9dc6c11583dacde9dea53f9c0cf6c6afb86b4f4b6d43bb3f4f5df568cebb06b\",\"group_id\":\"control\",\"unit_id\":\"c49\"},{\"digest\":\"256f6954a3b30d7dd77c4aa6952120541c2916e788c4a9ccb09e3161324505df\",\"group_id\":\"control\",\"unit_id\":\"c5\"},{\"digest\":\"586c419b5d4255e52216fdeeb9fb11685e482a52b9c344ac8997465498fbc89c\",\"group_id\":\"control\",\"unit_id\":\"c50\"},{\"digest\":\"5f1e74ac65efc11e414c1750f87a0ce067a98b98e51363ab0fd9fc141ffb7cb9\",\"group_id\":\"control\",\"unit_id\":\"c51\"},{\"digest\":\"0b9672d1e0b683eadd5c3a244c93b079d9f45df72e57200672d061c87cb8c86b\",\"group_id\":\"control\",\"unit_id\":\"c52\"},{\"digest\":\"f8c99a064ca0fb063284d37f235e5bf1658fc75b99bb48ce2016c05515868b7c\",\"group_id\":\"control\",\"unit_id\":\"c53\"},{\"digest\":\"532eb74fb34bbfc7fa348f26a608442877790039a6bc51b88654c518da092a94\",\"group_id\":\"control\",\"unit_id\":\"c54\"},{\"digest\":\"48d8b713a91d6ee15d9a5b94129db1afee5462a74555e6f612f3778e62838f90\",\"group_id\":\"control\",\"unit_id\":\"c55\"},{\"digest\":\"b982a382fb6d2fd38e70a506eb5fd7811a0e74e01a3028262a59417a1294d941\",\"group_id\":\"control\",\"unit_id\":\"c56\"},{\"digest\":\"c90a32dbe0f223ea6dff314f29024016f44f45a27cb5cd8b4a038ae20aca0f46\",\"group_id\":\"control\",\"unit_id\":\"c57\"},{\"digest\":\"48b072f1af160001db16ae625e71584bbc8c74abc5f3466ba8a85ce26a3f8002\",\"group_id\":\"control\",\"unit_id\":\"c58\"},{\"digest\":\"a0f33ddc207574a91dfca471778825f8a18fe6977f00fc648dddfa1e01d48a44\",\"group_id\":\"control\",\"unit_id\":\"c59\"},{\"digest\":\"760469b37f29bf08609da8b5d8f7e7ff1ba4f96f092bf7cb035683f95be66f52\",\"group_id\":\"control\",\"unit_id\":\"c6\"},{\"digest\":\"77df1acbe566eba552dd63dfaf17c0c62a8c8fbd225fc4363db87b2ddb57aed9\",\"group_id\":\"control\",\"unit_id\":\"c7\"},{\"digest\":\"383d915607f400bf77f375c5b90d398d111b978f32f90cc130e754a941f2b274\",\"group_id\":\"control\",\"unit_id\":\"c8\"},{\"digest\":\"9ea270e236cc7da278acfa934cf3c46be998b199ef866e24a6d9c6d6cd0e65f8\",\"group_id\":\"control\",\"unit_id\":\"c9\"},{\"digest\":\"b218e32f085078bad7443d153463e4035a2f869479eedfc04e5e7997b070d2b1\",\"group_id\":\"treatment\",\"unit_id\":\"t0\"},{\"digest\":\"a0f89cc6751b14dc4f7479965e202a50c66008c41a2863ed137318cd67bfd215\",\"group_id\":\"treatment\",\"unit_id\":\"t1\"},{\"digest\":\"fb0ed2ac94b40fd45c9abb176d274c782a55034c6635d336af47ea1633f301db\",\"group_id\":\"treatment\",\"unit_id\":\"t10\"},{\"digest\":\"3859230f4910110b105d7c657b570eb514b3bbf5ce301c381540c5c0f29ccf19\",\"group_id\":\"treatment\",\"unit_id\":\"t11\"},{\"digest\":\"03f8459a680f0622d0ce68badfe379ed19bd80ff2cfbb1f275a56e53d8d2c8be\",\"group_id\":\"treatment\",\"unit_id\":\"t12\"},{\"digest\":\"fa9aeb426a1aba395d4de830777521864ab18991631cfef5403f6a5005a016cc\",\"group_id\":\"treatment\",\"unit_id\":\"t13\"},{\"digest\":\"3e1d360c1ccd78911af54e485c72c3959e41090a56264609655743465067bff6\",\"group_id\":\"treatment\",\"unit_id\":\"t14\"},{\"digest\":\"745ec0e2cd58503b0caa8a5f9671933cdbcddf73d9fb60f02005005d0403b02e\",\"group_id\":\"treatment\",\"unit_id\":\"t15\"},{\"digest\":\"dcc5f0c6ee45cd32e93cf8245ded455eb309715c17e9fabad76ff5850935150f\",\"group_id\":\"treatment\",\"unit_id\":\"t16\"},{\"digest\":\"988ff9f293df6b3541f4cc6f52f191868c45ffccee860af9524f7b8788f2829c\",\"group_id\":\"treatment\",\"unit_id\":\"t17\"},{\"digest\":\"2cb74c637ab203757e5a3b94b4606ba4028a83462ec949c44f54bc6c6d191747\",\"group_id\":\"treatment\",\"unit_id\":\"t18\"},{\"digest\":\"7d4f448873038ce1ed8df6c7be0daa804402259e835412e38c212e838ff5ce36\",\"group_id\":\"treatment\",\"unit_id\":\"t19\"},{\"digest\":\"61ccdf7a1c40a377a7ea3ece7ce2646df0e23967853a69547169fa8676b48b92\",\"group_id\":\"treatment\",\"unit_id\":\"t2\"},{\"digest\":\"93b44bb7b8477b810fde0ee5b80875afa2a2143e10543cd55804860302961951\",\"group_id\":\"treatment\",\"unit_id\":\"t20\"},{\"digest\":\"f502955b1c61719339b14001fbaddeead0619d98269bf6579c8e684911150ea8\",\"group_id\":\"treatment\",\"unit_id\":\"t21\"},{\"digest\":\"df66cbdc14941f862627a556919f672b9f51b88a9672cd214f7a52ced9208cf0\",\"group_id\":\"treatment\",\"unit_id\":\"t22\"},{\"digest\":\"ce5a4b236312fe2638d9118041997261ba6f17a936405bc0bc0c90c1b4ca6757\",\"group_id\":\"treatment\",\"unit_id\":\"t23\"},{\"digest\":\"7742584484cfd45127f44937b834f3dba31a03b35967c15799785c2e4a71141a\",\"group_id\":\"treatment\",\"unit_id\":\"t24\"},{\"digest\":\"4e30880e6401d4bc99b2a0d31388e2467b0d0e55fdb7e30227de2371dec5857c\",\"group_id\":\"treatment\",\"unit_id\":\"t25\"},{\"digest\":\"675c64b91ebead86e1d49bc3bf1f235a1a0d908446d5a1de8af450f0ec5d5b43\",\"group_id\":\"treatment\",\"unit_id\":\"t26\"},{\"digest\":\"8a3afa7fe3b6e59d49d5b98ef7cc165caf21ac1e2d587b3f3ed091c2c3344d64\",\"group_id\":\"treatment\",\"unit_id\":\"t27\"},{\"digest\":\"885d2ef7a5e1f2b25ea7e4ff1ccdd42ed5cff21e38441797294b9ac2adb1b93c\",\"group_id\":\"treatment\",\"unit_id\":\"t28\"},{\"digest\":\"111f99192a31dfb4f9db49a10fe652d6fb1d0bf1c44ab804214d726e95f302ed\",\"group_id\":\"treatment\",\"unit_id\":\"t29\"},{\"digest\":\"61f3c3015c378492d2821e1c02d2dfe1e42e1a583fcaa3366b9016e477267427\",\"group_id\":\"treatment\",\"unit_id\":\"t3\"},{\"digest\":\"83ae2fa9034533a642ab3033579367289ef2407298585614399ca6506dedad44\",\"group_id\":\"treatment\",\"unit_id\":\"t30\"},{\"digest\":\"966de2414f174c7b0f034172560269dab471173c06827fa3cdfe4f412db0a7e7\",\"group_id\":\"treatment\",\"unit_id\":\"t31\"},{\"digest\":\"3851ef8233b0faf8aba9ab4ae5fcd3fe877498945f6d60ba4bae6bd15e5e399e\",\"group_id\":\"treatment\",\"unit_id\":\"t32\"},{\"digest\":\"15759792caefdc4f74d6be9491126fcab28179ad3eecb1e19a2754c9be5b39de\",\"group_id\":\"treatment\",\"unit_id\":\"t33\"},{\"digest\":\"fa6e6fcc43a151ca2289d1e56dbf632ee4fbd7e76844bb73b162975743b4a28c\",\"group_id\":\"treatment\",\"unit_id\":\"t34\"},{\"digest\":\"6d5c7ca8ef60919096e77340a1f9e027b757a6a4ed4951566796aa70b5bb8245\",\"group_id\":\"treatment\",\"unit_id\":\"t35\"},{\"digest\":\"3d21196a518ec3e31bb2b44838c0fc397fd4dff9aa78b0249132cda5b3ece8fa\",\"group_id\":\"treatment\",\"unit_id\":\"t36\"},{\"digest\":\"ce5f744ce5b102a7698a65053c03fef18115441141a2606130d52a37c9021adb\",\"group_id\":\"treatment\",\"unit_id\":\"t37\"},{\"digest\":\"34c101edf8be512cee58436909445281449b3906677ab450ed4d0530383e3d43\",\"group_id\":\"treatment\",\"unit_id\":\"t38\"},{\"digest\":\"65f56e86702a96dd74756e11acf6f13746e7a0503b86473697758afe3bf2202c\",\"group_id\":\"treatment\",\"unit_id\":\"t39\"},{\"digest\":\"35d651a220c5643c912cbc51076aba928073f5c84c23934080b1d675f245d45c\",\"group_id\":\"treatment\",\"unit_id\":\"t4\"},{\"digest\":\"6d220611edc15d65e8b7d77c6f82312e5f5d33f541e2844945f64b1574acc0ea\",\"group_id\":\"treatment\",\"unit_id\":\"t40\"},{\"digest\":\"e1e31fcdc58e1274154e51ec5d98e603410c901724b142b5a81af5cd7eda41bf\",\"group_id\":\"treatment\",\"unit_id\":\"t41\"},{\"digest\":\"7e5fc92fa91f88ceb3f6841e7ed077bca07b28608f02c1b0f53a504e2aae2dbc\",\"group_id\":\"treatment\",\"unit_id\":\"t42\"},{\"digest\":\"20c09eea7a2d969343d36087470f8f00c50d460186d463de6e8c91c0c6c8862f\",\"group_id\":\"treatment\",\"unit_id\":\"t43\"},{\"digest\":\"b8956a4c8b8b02aef6fd5d862f1086640f1933f6a0bde5ab2946158e6a63bf35\",\"group_id\":\"treatment\",\"unit_id\":\"t44\"},{\"digest\":\"262f143c35b586e0dceaa45ee65f2b0db081559eff7c5b035dce89e7de055649\",\"group_id\":\"treatment\",\"unit_id\":\"t45\"},{\"digest\":\"a51dc9627b77386c079ef8bbe20a604e9a3271bfbca1fc22b3e0bc39a43ec192\",\"group_id\":\"treatment\",\"unit_id\":\"t46\"},{\"digest\":\"c792136cf9f8595750fd7644030dd34c059be5e74bc835de0d7e2e76da762d57\",\"group_id\":\"treatment\",\"unit_id\":\"t47\"},{\"digest\":\"d6e3d676e8ba8efeebda69908000f68fbae1f778ca8f770092b689e894d8b55c\",\"group_id\":\"treatment\",\"unit_id\":\"t48\"},{\"digest\":\"098dbaf26d358168f2fd74ca941709522f311715a868fa74fb51c6829230478b\",\"group_id\":\"treatment\",\"unit_id\":\"t49\"},{\"digest\":\"5a9089946585dd73eeb2ce452b931ac5616df0eb66c36f1a9d498b3c6205ee44\",\"group_id\":\"treatment\",\"unit_id\":\"t5\"},{\"digest\":\"cefa9e513dedf4bcbb9b3d71ab77925771134e350556879a002f1a4b374d6ec9\",\"group_id\":\"treatment\",\"unit_id\":\"t50\"},{\"digest\":\"b67c647daf7bf850a76fe290c2299d10c1d571ae8926e34d7e4d9b1cd5e953db\",\"group_id\":\"treatment\",\"unit_id\":\"t51\"},{\"digest\":\"b09877d6cd0d5a0b1f1fe0e54421cff0aa662dbc886cfe22ec9375ad601521d7\",\"group_id\":\"treatment\",\"unit_id\":\"t52\"},{\"digest\":\"83925bb00ddf22208d3398149aa3eb62652a9555ca23ec64215f8edfcbf226e6\",\"group_id\":\"treatment\",\"unit_id\":\"t53\"},{\"digest\":\"4a3ebee6caa73d78727c768ed39881236da760e89a66dea6f432122642067dc0\",\"group_id\":\"treatment\",\"unit_id\":\"t54\"},{\"digest\":\"5c209e49251d035f2f849e57b448b307ec7ed49be5632160ae7b2c7a694594c9\",\"group_id\":\"treatment\",\"unit_id\":\"t55\"},{\"digest\":\"1fd9cad5f3eed4693e93557b4cb5c3f0efa43e5e626f5bacc81fa5b52f35f9d9\",\"group_id\":\"treatment\",\"unit_id\":\"t56\"},{\"digest\":\"89e9a9c617895e08eb2f6cd750dec189ba11bb8226bfcbafee0b62e0b3cf1d40\",\"group_id\":\"treatment\",\"unit_id\":\"t57\"},{\"digest\":\"d12712950f7aeed150d076489e9ccb12ddcd20422e0bd920e6bc95e58ecceabd\",\"group_id\":\"treatment\",\"unit_id\":\"t58\"},{\"digest\":\"6f27b9fea431a389cb8c24045df2dc41b6bd2776ae79a0ff83503f33c59efd11\",\"group_id\":\"treatment\",\"unit_id\":\"t59\"},{\"digest\":\"f17f0ebc8164c3cd675a6bedd36c437dcea81ba1665bba46e463c684dbaebb4f\",\"group_id\":\"treatment\",\"unit_id\":\"t6\"},{\"digest\":\"4a7244ca81acb6b3e30883b3a1538dd2990d4c511e24e25600e8e35a715bd59e\",\"group_id\":\"treatment\",\"unit_id\":\"t7\"},{\"digest\":\"e07193c94a4d5f190d35d588d1af684cc6d2a79c15af7b2096705fe9fca85e9b\",\"group_id\":\"treatment\",\"unit_id\":\"t8\"},{\"digest\":\"de810b0b14fcfc78d523df4195e111abe5eb7a2334b05c65e90738c7881f6bd3\",\"group_id\":\"treatment\",\"unit_id\":\"t9\"}],\"registration\":{\"committed_before_data\":true,\"control_group\":\"control\",\"definitions_id\":\"6d7b38021524a86d3ceaa7c6fb57efdccdc381bbf9e1d6fb2e1c9a0a36f58cee\",\"models\":[{\"assignment\":\"iid_fixed_bernoulli_randomization\",\"consistency_and_no_interference\":true,\"construction\":\"direct_shifted_contrast_v1\",\"law\":\"scalar_mean\",\"metric\":\"revenue\",\"moments\":\"finite_2_plus_delta\",\"observable\":\"outcome\",\"positive_limiting_variance\":true,\"positive_population_control\":true,\"rho\":\"161321931575777/562949953421312\",\"segment_membership\":\"pre_assignment\",\"start_count\":2,\"treatment_probability\":\"1/2\",\"unit_model\":\"iid_stationary_potential_outcomes\",\"validity_regime\":\"asymptotic_sequential\"}],\"q\":\"3602879701896397/36028797018963968\",\"reveal\":{\"filtration_id\":\"ea032eac98dfd02b2a944015a2e70995141a928acb403c16f8a82ea7372f5906\",\"immutable_finalized_outcomes\":true,\"independent_unit_vectors\":true,\"longest_window_days\":1,\"outcome_independent_order\":true,\"simultaneous_metrics\":true},\"roster\":[{\"alpha\":\"3602879701896397/72057594037927936\",\"alternative\":\"two-sided\",\"estimand\":\"itt\",\"family\":false,\"group_id\":\"treatment\",\"metric\":\"revenue\",\"null_lift\":\"0\",\"segment\":[]}],\"source_id\":\"exp\",\"version\":2},\"registration_id\":\"274e356aa3ad98485b893498a0876f426e56e172cf48c5d5ae3ab039bd48adee\",\"reveal_cursor\":\"2025-01-11\",\"states\":[{\"group_id\":\"control\",\"law\":\"scalar_mean\",\"mean\":[\"14/3\"],\"metric\":\"revenue\",\"n\":60,\"scatter\":[[\"2200/3\"]],\"segment\":[],\"successes\":null},{\"group_id\":\"treatment\",\"law\":\"scalar_mean\",\"mean\":[\"16/3\"],\"metric\":\"revenue\",\"n\":60,\"scatter\":[[\"2800/3\"]],\"segment\":[],\"successes\":null}],\"version\":2}",
+      "source_identity": "{\"artifacts\":[],\"study_id\":\"exp\"}"
+    }
+  ],
+  "continuation": {
+    "ancestors": [
+      {
+        "assignment_counts": {
+          "control": 60,
+          "treatment": 60
+        },
+        "frozen": [],
+        "n_records": 120,
+        "prefix_id": "ef1d7c0a82758384d933451115d8fe4a7b984c96ccf4966f290b3ca9d12045eb",
+        "states": [
+          {
+            "group_id": "control",
+            "law": "scalar_mean",
+            "mean": [
+              "14/3"
+            ],
+            "metric": "revenue",
+            "n": 60,
+            "scatter": [
+              [
+                "2200/3"
+              ]
+            ],
+            "segment": [],
+            "successes": null
+          },
+          {
+            "group_id": "treatment",
+            "law": "scalar_mean",
+            "mean": [
+              "16/3"
+            ],
+            "metric": "revenue",
+            "n": 60,
+            "scatter": [
+              [
+                "2800/3"
+              ]
+            ],
+            "segment": [],
+            "successes": null
+          }
+        ]
+      }
+    ],
+    "as_of": "2025-01-19",
+    "parent_id": "ef1d7c0a82758384d933451115d8fe4a7b984c96ccf4966f290b3ca9d12045eb",
+    "prefix_id": "414783bed0f4111597d46b814a5c02968ab5be65b4251256fb8ecc151d53f2df",
+    "records": [
+      {
+        "digest": "62d2cf1c90b2249b9ecffacdd6ac092352e5318abf0ba157f894bbc56ff1f5fb",
+        "group_id": "control",
+        "unit_id": "c0"
+      },
+      {
+        "digest": "3dae5ab90dff56fd024c5b1982783e581017ac96ccb1d2f6a9c1a4eb67e2b564",
+        "group_id": "control",
+        "unit_id": "c1"
+      },
+      {
+        "digest": "70df34161ecc9f4a80bd655bc7c6326547fcb0a7d7d41c83d30ebeca0b5d63c9",
+        "group_id": "control",
+        "unit_id": "c10"
+      },
+      {
+        "digest": "fcbdfe23754097aad45b3c0f1735865589672d128daa1a74b4bfa1801b29edcc",
+        "group_id": "control",
+        "unit_id": "c11"
+      },
+      {
+        "digest": "acad82a74024197e16e3f5ad417be28673f6a2346d0495b74d87dd8fe65affee",
+        "group_id": "control",
+        "unit_id": "c12"
+      },
+      {
+        "digest": "361e30b342517353ff3112765216116316a024e4a22268c7168640ab015d9a85",
+        "group_id": "control",
+        "unit_id": "c13"
+      },
+      {
+        "digest": "c588589643b3652dbb175363744133ef86312ba5c7f261d72917e9088f241eb5",
+        "group_id": "control",
+        "unit_id": "c14"
+      },
+      {
+        "digest": "9136857acc2bdeb531415b28c6a8bdfd44dbefa4aa635b5f72709038078c66cd",
+        "group_id": "control",
+        "unit_id": "c15"
+      },
+      {
+        "digest": "3ccf23a771deb4e3df970e7dec8fe2b8126fcfc5dfd9fc3960669fef6e5e3ac4",
+        "group_id": "control",
+        "unit_id": "c16"
+      },
+      {
+        "digest": "d926085033adca151437d36ebea7c5631f0b169932d7a8664d08d3719e3601cd",
+        "group_id": "control",
+        "unit_id": "c17"
+      },
+      {
+        "digest": "e42ae95009c1bedf6643a2bd35fb64bb4c32a03d846562f81ed10590f68cb1b1",
+        "group_id": "control",
+        "unit_id": "c18"
+      },
+      {
+        "digest": "56ce2b7ded11620da592248752504c0bb35556d7d6b6627e86b7feb36a7a7912",
+        "group_id": "control",
+        "unit_id": "c19"
+      },
+      {
+        "digest": "02eab801f0fa9d2542230005f64d3309dfe03fb871b8fe1dab68906fe02fb3d9",
+        "group_id": "control",
+        "unit_id": "c2"
+      },
+      {
+        "digest": "9a0400dc3baf4b392de56b308d875226ced263a513450cf0bee5579d5dd22031",
+        "group_id": "control",
+        "unit_id": "c20"
+      },
+      {
+        "digest": "b03f48948a3cb75a443cbf899059f6cb5f55491c58937a3f0f424026b784223b",
+        "group_id": "control",
+        "unit_id": "c21"
+      },
+      {
+        "digest": "51258c9c459d91dcc976475fe2c77a071405f72d1b33327f2fac207cd3005b80",
+        "group_id": "control",
+        "unit_id": "c22"
+      },
+      {
+        "digest": "fb90ef33fd9b88c8483abb54e226284386931672e835c19ca5520538ac90c1a8",
+        "group_id": "control",
+        "unit_id": "c23"
+      },
+      {
+        "digest": "1da4e6fcc59654f9efe0a56ef320655bea9c13cf61ea9ae85f9f0a23fd3c5829",
+        "group_id": "control",
+        "unit_id": "c24"
+      },
+      {
+        "digest": "62c978f4c57d64f67b2a2a46998760412f7de87484a9372063e93b2714bb74a0",
+        "group_id": "control",
+        "unit_id": "c25"
+      },
+      {
+        "digest": "60c0d19009a06c74fe11bcb474a31d6d8476f2d1588538f7227c7b9c18df2a14",
+        "group_id": "control",
+        "unit_id": "c26"
+      },
+      {
+        "digest": "db136c9e55e95acee1b7dd8aedccaee950ad36e9d6e05f8cd73d43db55ec18ff",
+        "group_id": "control",
+        "unit_id": "c27"
+      },
+      {
+        "digest": "5e303c05baedcba78a227eb0612ed0a1d7ab6be7bbe45b68942cd3146bcfb8bf",
+        "group_id": "control",
+        "unit_id": "c28"
+      },
+      {
+        "digest": "146990c53134a4fedd23068c5757aeb8ab46465f6d0a1530b409ee37d85fff79",
+        "group_id": "control",
+        "unit_id": "c29"
+      },
+      {
+        "digest": "df223374a60942892ddab5f83406fa9b1d8959b7ab74cf5e7d407e0c48f26da9",
+        "group_id": "control",
+        "unit_id": "c3"
+      },
+      {
+        "digest": "b4be2e038ef646cb4146d960e9bdbcd3627d9c37b1725299f963b4cbb0a6b2e6",
+        "group_id": "control",
+        "unit_id": "c30"
+      },
+      {
+        "digest": "bf8a4664ce41758d9cef15f93ecb0fca02467b0e9cd695f1238e49bf32409414",
+        "group_id": "control",
+        "unit_id": "c31"
+      },
+      {
+        "digest": "0f0643618022583215ed5ec271f746c7c421bcebc3bfdf96e3a095a60da79c2f",
+        "group_id": "control",
+        "unit_id": "c32"
+      },
+      {
+        "digest": "264c66d0e5cf4b7403b9d0cdb7345a0a97976ec005f8bbd85cf42c9fda78455a",
+        "group_id": "control",
+        "unit_id": "c33"
+      },
+      {
+        "digest": "cfbc610c2a68f641931eb5b180582cf1acb3d6904e532b25413cedb0d4bb79a5",
+        "group_id": "control",
+        "unit_id": "c34"
+      },
+      {
+        "digest": "a7937c04fb0b66b0f28aefc4634dab0dd021edea2acfd909544fb8d1a9f7cb0f",
+        "group_id": "control",
+        "unit_id": "c35"
+      },
+      {
+        "digest": "fdf38a776553c31d1b885cfdd9a71bb07b54d767d06645ffb7c75d10c6087083",
+        "group_id": "control",
+        "unit_id": "c36"
+      },
+      {
+        "digest": "3058279a04452be9a342c17662d4ac42f78bd3484b28f1dc68109d39ab4a5a2f",
+        "group_id": "control",
+        "unit_id": "c37"
+      },
+      {
+        "digest": "fdb2dba318e83175f6028aaed1decad87eef244c8f9557f7fe61b8714b14026f",
+        "group_id": "control",
+        "unit_id": "c38"
+      },
+      {
+        "digest": "1652d83e0309c00c8ecb341485ce3e3cb303f81a679c336eacfbb0aea5db8587",
+        "group_id": "control",
+        "unit_id": "c39"
+      },
+      {
+        "digest": "9a0eaad3658ff13de03cd698090e4dd2152cb1948dbfdce2bed0e562dce307a8",
+        "group_id": "control",
+        "unit_id": "c4"
+      },
+      {
+        "digest": "a3440e534484694b00588620def339b4c65d0c38d5c65267e34c73bffe5f47cc",
+        "group_id": "control",
+        "unit_id": "c40"
+      },
+      {
+        "digest": "84b59b8f5fd75eaa8de59e05100258a7e51cddfad21f4002200c07a285c00b92",
+        "group_id": "control",
+        "unit_id": "c41"
+      },
+      {
+        "digest": "12e7e056f6eec0ad9856386998da793958c3c4bdf5e2d65b67c2069726a91721",
+        "group_id": "control",
+        "unit_id": "c42"
+      },
+      {
+        "digest": "f3ff6e0c69c340cbc320d132ae35ac7b5a2af43f74f285cdb8b469ba5f1e6fb6",
+        "group_id": "control",
+        "unit_id": "c43"
+      },
+      {
+        "digest": "5679f6e4d0599f30cdcce685b82f5092c36f8b8d81006b5376bf35701da71556",
+        "group_id": "control",
+        "unit_id": "c44"
+      },
+      {
+        "digest": "e5639be4103d1e82369588183621d09a2aa32bbd7a97abd4646a8c86ca04a5d0",
+        "group_id": "control",
+        "unit_id": "c45"
+      },
+      {
+        "digest": "b2f571cb1b3caab750a9688a1f43cbee7fb4b225bf94e61943eb38f1b8dd4e16",
+        "group_id": "control",
+        "unit_id": "c46"
+      },
+      {
+        "digest": "47eddf15c4b8a7f95b547bd948fb90c79c2cc9f924828609ec9e0a87dcf46626",
+        "group_id": "control",
+        "unit_id": "c47"
+      },
+      {
+        "digest": "78ae60dea4973ed7a2fab98bd5c6f62c92b4b16033e810a1634f65e2db38c292",
+        "group_id": "control",
+        "unit_id": "c48"
+      },
+      {
+        "digest": "a9dc6c11583dacde9dea53f9c0cf6c6afb86b4f4b6d43bb3f4f5df568cebb06b",
+        "group_id": "control",
+        "unit_id": "c49"
+      },
+      {
+        "digest": "256f6954a3b30d7dd77c4aa6952120541c2916e788c4a9ccb09e3161324505df",
+        "group_id": "control",
+        "unit_id": "c5"
+      },
+      {
+        "digest": "586c419b5d4255e52216fdeeb9fb11685e482a52b9c344ac8997465498fbc89c",
+        "group_id": "control",
+        "unit_id": "c50"
+      },
+      {
+        "digest": "5f1e74ac65efc11e414c1750f87a0ce067a98b98e51363ab0fd9fc141ffb7cb9",
+        "group_id": "control",
+        "unit_id": "c51"
+      },
+      {
+        "digest": "0b9672d1e0b683eadd5c3a244c93b079d9f45df72e57200672d061c87cb8c86b",
+        "group_id": "control",
+        "unit_id": "c52"
+      },
+      {
+        "digest": "f8c99a064ca0fb063284d37f235e5bf1658fc75b99bb48ce2016c05515868b7c",
+        "group_id": "control",
+        "unit_id": "c53"
+      },
+      {
+        "digest": "532eb74fb34bbfc7fa348f26a608442877790039a6bc51b88654c518da092a94",
+        "group_id": "control",
+        "unit_id": "c54"
+      },
+      {
+        "digest": "48d8b713a91d6ee15d9a5b94129db1afee5462a74555e6f612f3778e62838f90",
+        "group_id": "control",
+        "unit_id": "c55"
+      },
+      {
+        "digest": "b982a382fb6d2fd38e70a506eb5fd7811a0e74e01a3028262a59417a1294d941",
+        "group_id": "control",
+        "unit_id": "c56"
+      },
+      {
+        "digest": "c90a32dbe0f223ea6dff314f29024016f44f45a27cb5cd8b4a038ae20aca0f46",
+        "group_id": "control",
+        "unit_id": "c57"
+      },
+      {
+        "digest": "48b072f1af160001db16ae625e71584bbc8c74abc5f3466ba8a85ce26a3f8002",
+        "group_id": "control",
+        "unit_id": "c58"
+      },
+      {
+        "digest": "a0f33ddc207574a91dfca471778825f8a18fe6977f00fc648dddfa1e01d48a44",
+        "group_id": "control",
+        "unit_id": "c59"
+      },
+      {
+        "digest": "760469b37f29bf08609da8b5d8f7e7ff1ba4f96f092bf7cb035683f95be66f52",
+        "group_id": "control",
+        "unit_id": "c6"
+      },
+      {
+        "digest": "77df1acbe566eba552dd63dfaf17c0c62a8c8fbd225fc4363db87b2ddb57aed9",
+        "group_id": "control",
+        "unit_id": "c7"
+      },
+      {
+        "digest": "383d915607f400bf77f375c5b90d398d111b978f32f90cc130e754a941f2b274",
+        "group_id": "control",
+        "unit_id": "c8"
+      },
+      {
+        "digest": "9ea270e236cc7da278acfa934cf3c46be998b199ef866e24a6d9c6d6cd0e65f8",
+        "group_id": "control",
+        "unit_id": "c9"
+      },
+      {
+        "digest": "b218e32f085078bad7443d153463e4035a2f869479eedfc04e5e7997b070d2b1",
+        "group_id": "treatment",
+        "unit_id": "t0"
+      },
+      {
+        "digest": "a0f89cc6751b14dc4f7479965e202a50c66008c41a2863ed137318cd67bfd215",
+        "group_id": "treatment",
+        "unit_id": "t1"
+      },
+      {
+        "digest": "fb0ed2ac94b40fd45c9abb176d274c782a55034c6635d336af47ea1633f301db",
+        "group_id": "treatment",
+        "unit_id": "t10"
+      },
+      {
+        "digest": "3859230f4910110b105d7c657b570eb514b3bbf5ce301c381540c5c0f29ccf19",
+        "group_id": "treatment",
+        "unit_id": "t11"
+      },
+      {
+        "digest": "03f8459a680f0622d0ce68badfe379ed19bd80ff2cfbb1f275a56e53d8d2c8be",
+        "group_id": "treatment",
+        "unit_id": "t12"
+      },
+      {
+        "digest": "fa9aeb426a1aba395d4de830777521864ab18991631cfef5403f6a5005a016cc",
+        "group_id": "treatment",
+        "unit_id": "t13"
+      },
+      {
+        "digest": "3e1d360c1ccd78911af54e485c72c3959e41090a56264609655743465067bff6",
+        "group_id": "treatment",
+        "unit_id": "t14"
+      },
+      {
+        "digest": "745ec0e2cd58503b0caa8a5f9671933cdbcddf73d9fb60f02005005d0403b02e",
+        "group_id": "treatment",
+        "unit_id": "t15"
+      },
+      {
+        "digest": "dcc5f0c6ee45cd32e93cf8245ded455eb309715c17e9fabad76ff5850935150f",
+        "group_id": "treatment",
+        "unit_id": "t16"
+      },
+      {
+        "digest": "988ff9f293df6b3541f4cc6f52f191868c45ffccee860af9524f7b8788f2829c",
+        "group_id": "treatment",
+        "unit_id": "t17"
+      },
+      {
+        "digest": "2cb74c637ab203757e5a3b94b4606ba4028a83462ec949c44f54bc6c6d191747",
+        "group_id": "treatment",
+        "unit_id": "t18"
+      },
+      {
+        "digest": "7d4f448873038ce1ed8df6c7be0daa804402259e835412e38c212e838ff5ce36",
+        "group_id": "treatment",
+        "unit_id": "t19"
+      },
+      {
+        "digest": "61ccdf7a1c40a377a7ea3ece7ce2646df0e23967853a69547169fa8676b48b92",
+        "group_id": "treatment",
+        "unit_id": "t2"
+      },
+      {
+        "digest": "93b44bb7b8477b810fde0ee5b80875afa2a2143e10543cd55804860302961951",
+        "group_id": "treatment",
+        "unit_id": "t20"
+      },
+      {
+        "digest": "f502955b1c61719339b14001fbaddeead0619d98269bf6579c8e684911150ea8",
+        "group_id": "treatment",
+        "unit_id": "t21"
+      },
+      {
+        "digest": "df66cbdc14941f862627a556919f672b9f51b88a9672cd214f7a52ced9208cf0",
+        "group_id": "treatment",
+        "unit_id": "t22"
+      },
+      {
+        "digest": "ce5a4b236312fe2638d9118041997261ba6f17a936405bc0bc0c90c1b4ca6757",
+        "group_id": "treatment",
+        "unit_id": "t23"
+      },
+      {
+        "digest": "7742584484cfd45127f44937b834f3dba31a03b35967c15799785c2e4a71141a",
+        "group_id": "treatment",
+        "unit_id": "t24"
+      },
+      {
+        "digest": "4e30880e6401d4bc99b2a0d31388e2467b0d0e55fdb7e30227de2371dec5857c",
+        "group_id": "treatment",
+        "unit_id": "t25"
+      },
+      {
+        "digest": "675c64b91ebead86e1d49bc3bf1f235a1a0d908446d5a1de8af450f0ec5d5b43",
+        "group_id": "treatment",
+        "unit_id": "t26"
+      },
+      {
+        "digest": "8a3afa7fe3b6e59d49d5b98ef7cc165caf21ac1e2d587b3f3ed091c2c3344d64",
+        "group_id": "treatment",
+        "unit_id": "t27"
+      },
+      {
+        "digest": "885d2ef7a5e1f2b25ea7e4ff1ccdd42ed5cff21e38441797294b9ac2adb1b93c",
+        "group_id": "treatment",
+        "unit_id": "t28"
+      },
+      {
+        "digest": "111f99192a31dfb4f9db49a10fe652d6fb1d0bf1c44ab804214d726e95f302ed",
+        "group_id": "treatment",
+        "unit_id": "t29"
+      },
+      {
+        "digest": "61f3c3015c378492d2821e1c02d2dfe1e42e1a583fcaa3366b9016e477267427",
+        "group_id": "treatment",
+        "unit_id": "t3"
+      },
+      {
+        "digest": "83ae2fa9034533a642ab3033579367289ef2407298585614399ca6506dedad44",
+        "group_id": "treatment",
+        "unit_id": "t30"
+      },
+      {
+        "digest": "966de2414f174c7b0f034172560269dab471173c06827fa3cdfe4f412db0a7e7",
+        "group_id": "treatment",
+        "unit_id": "t31"
+      },
+      {
+        "digest": "3851ef8233b0faf8aba9ab4ae5fcd3fe877498945f6d60ba4bae6bd15e5e399e",
+        "group_id": "treatment",
+        "unit_id": "t32"
+      },
+      {
+        "digest": "15759792caefdc4f74d6be9491126fcab28179ad3eecb1e19a2754c9be5b39de",
+        "group_id": "treatment",
+        "unit_id": "t33"
+      },
+      {
+        "digest": "fa6e6fcc43a151ca2289d1e56dbf632ee4fbd7e76844bb73b162975743b4a28c",
+        "group_id": "treatment",
+        "unit_id": "t34"
+      },
+      {
+        "digest": "6d5c7ca8ef60919096e77340a1f9e027b757a6a4ed4951566796aa70b5bb8245",
+        "group_id": "treatment",
+        "unit_id": "t35"
+      },
+      {
+        "digest": "3d21196a518ec3e31bb2b44838c0fc397fd4dff9aa78b0249132cda5b3ece8fa",
+        "group_id": "treatment",
+        "unit_id": "t36"
+      },
+      {
+        "digest": "ce5f744ce5b102a7698a65053c03fef18115441141a2606130d52a37c9021adb",
+        "group_id": "treatment",
+        "unit_id": "t37"
+      },
+      {
+        "digest": "34c101edf8be512cee58436909445281449b3906677ab450ed4d0530383e3d43",
+        "group_id": "treatment",
+        "unit_id": "t38"
+      },
+      {
+        "digest": "65f56e86702a96dd74756e11acf6f13746e7a0503b86473697758afe3bf2202c",
+        "group_id": "treatment",
+        "unit_id": "t39"
+      },
+      {
+        "digest": "35d651a220c5643c912cbc51076aba928073f5c84c23934080b1d675f245d45c",
+        "group_id": "treatment",
+        "unit_id": "t4"
+      },
+      {
+        "digest": "6d220611edc15d65e8b7d77c6f82312e5f5d33f541e2844945f64b1574acc0ea",
+        "group_id": "treatment",
+        "unit_id": "t40"
+      },
+      {
+        "digest": "e1e31fcdc58e1274154e51ec5d98e603410c901724b142b5a81af5cd7eda41bf",
+        "group_id": "treatment",
+        "unit_id": "t41"
+      },
+      {
+        "digest": "7e5fc92fa91f88ceb3f6841e7ed077bca07b28608f02c1b0f53a504e2aae2dbc",
+        "group_id": "treatment",
+        "unit_id": "t42"
+      },
+      {
+        "digest": "20c09eea7a2d969343d36087470f8f00c50d460186d463de6e8c91c0c6c8862f",
+        "group_id": "treatment",
+        "unit_id": "t43"
+      },
+      {
+        "digest": "b8956a4c8b8b02aef6fd5d862f1086640f1933f6a0bde5ab2946158e6a63bf35",
+        "group_id": "treatment",
+        "unit_id": "t44"
+      },
+      {
+        "digest": "262f143c35b586e0dceaa45ee65f2b0db081559eff7c5b035dce89e7de055649",
+        "group_id": "treatment",
+        "unit_id": "t45"
+      },
+      {
+        "digest": "a51dc9627b77386c079ef8bbe20a604e9a3271bfbca1fc22b3e0bc39a43ec192",
+        "group_id": "treatment",
+        "unit_id": "t46"
+      },
+      {
+        "digest": "c792136cf9f8595750fd7644030dd34c059be5e74bc835de0d7e2e76da762d57",
+        "group_id": "treatment",
+        "unit_id": "t47"
+      },
+      {
+        "digest": "d6e3d676e8ba8efeebda69908000f68fbae1f778ca8f770092b689e894d8b55c",
+        "group_id": "treatment",
+        "unit_id": "t48"
+      },
+      {
+        "digest": "098dbaf26d358168f2fd74ca941709522f311715a868fa74fb51c6829230478b",
+        "group_id": "treatment",
+        "unit_id": "t49"
+      },
+      {
+        "digest": "5a9089946585dd73eeb2ce452b931ac5616df0eb66c36f1a9d498b3c6205ee44",
+        "group_id": "treatment",
+        "unit_id": "t5"
+      },
+      {
+        "digest": "cefa9e513dedf4bcbb9b3d71ab77925771134e350556879a002f1a4b374d6ec9",
+        "group_id": "treatment",
+        "unit_id": "t50"
+      },
+      {
+        "digest": "b67c647daf7bf850a76fe290c2299d10c1d571ae8926e34d7e4d9b1cd5e953db",
+        "group_id": "treatment",
+        "unit_id": "t51"
+      },
+      {
+        "digest": "b09877d6cd0d5a0b1f1fe0e54421cff0aa662dbc886cfe22ec9375ad601521d7",
+        "group_id": "treatment",
+        "unit_id": "t52"
+      },
+      {
+        "digest": "83925bb00ddf22208d3398149aa3eb62652a9555ca23ec64215f8edfcbf226e6",
+        "group_id": "treatment",
+        "unit_id": "t53"
+      },
+      {
+        "digest": "4a3ebee6caa73d78727c768ed39881236da760e89a66dea6f432122642067dc0",
+        "group_id": "treatment",
+        "unit_id": "t54"
+      },
+      {
+        "digest": "5c209e49251d035f2f849e57b448b307ec7ed49be5632160ae7b2c7a694594c9",
+        "group_id": "treatment",
+        "unit_id": "t55"
+      },
+      {
+        "digest": "1fd9cad5f3eed4693e93557b4cb5c3f0efa43e5e626f5bacc81fa5b52f35f9d9",
+        "group_id": "treatment",
+        "unit_id": "t56"
+      },
+      {
+        "digest": "89e9a9c617895e08eb2f6cd750dec189ba11bb8226bfcbafee0b62e0b3cf1d40",
+        "group_id": "treatment",
+        "unit_id": "t57"
+      },
+      {
+        "digest": "d12712950f7aeed150d076489e9ccb12ddcd20422e0bd920e6bc95e58ecceabd",
+        "group_id": "treatment",
+        "unit_id": "t58"
+      },
+      {
+        "digest": "6f27b9fea431a389cb8c24045df2dc41b6bd2776ae79a0ff83503f33c59efd11",
+        "group_id": "treatment",
+        "unit_id": "t59"
+      },
+      {
+        "digest": "f17f0ebc8164c3cd675a6bedd36c437dcea81ba1665bba46e463c684dbaebb4f",
+        "group_id": "treatment",
+        "unit_id": "t6"
+      },
+      {
+        "digest": "4a7244ca81acb6b3e30883b3a1538dd2990d4c511e24e25600e8e35a715bd59e",
+        "group_id": "treatment",
+        "unit_id": "t7"
+      },
+      {
+        "digest": "e07193c94a4d5f190d35d588d1af684cc6d2a79c15af7b2096705fe9fca85e9b",
+        "group_id": "treatment",
+        "unit_id": "t8"
+      },
+      {
+        "digest": "de810b0b14fcfc78d523df4195e111abe5eb7a2334b05c65e90738c7881f6bd3",
+        "group_id": "treatment",
+        "unit_id": "t9"
+      },
+      {
+        "digest": "dfb9e556ae00dcfb11a316d2145962c1ead187c09c47850180c2b8c8298e7b71",
+        "group_id": "control",
+        "unit_id": "later_control"
+      },
+      {
+        "digest": "be631ecd13da516c071fdb2ee6b5099a46004b09951c96da8278181a6d0c9b8f",
+        "group_id": "treatment",
+        "unit_id": "later_treatment"
+      }
+    ],
+    "registration_id": "274e356aa3ad98485b893498a0876f426e56e172cf48c5d5ae3ab039bd48adee",
+    "rows": [
+      {
+        "advisories": [],
+        "analysis_population": "assigned",
+        "available_cell_count": 0,
+        "comparison": "arm control",
+        "control_group": null,
+        "decision_scope_complete": null,
+        "decision_scope_reason_code": null,
+        "decision_scope_reason_context": null,
+        "dimension": null,
+        "dimension_value": null,
+        "ds": "2025-01-10T00:00:00.000",
+        "ds_basis": "calendar",
+        "failure_code": null,
+        "failure_context": null,
+        "group_id": "control",
+        "hidden_cell_count": 0,
+        "hidden_cells": "[]",
+        "integrity_code": null,
+        "integrity_context": null,
+        "integrity_status": "unknown",
+        "lb": 3.854679863539501,
+        "metric": "revenue",
+        "metric_type": "mean",
+        "multiplicity_status": "unknown",
+        "n": 60,
+        "open_side": null,
+        "point_available": true,
+        "posterior_available": null,
+        "posterior_reason_code": null,
+        "posterior_reason_context": null,
+        "required_cell_count": 0,
+        "retained_family": "[]",
+        "roster_complete": false,
+        "roster_source": "observed_union",
+        "sampling_available": true,
+        "source": null,
+        "source_cell_count": 2,
+        "source_snapshot_id": "sha256:624ad752fba021bd01f78aa4a2af88fa851819b0f202b50230447b2e7e32f9b4",
+        "treatment_group": "control",
+        "ub": 5.649698171764821,
+        "unavailable": null,
+        "unavailable_cell_count": 0,
+        "unavailable_cells": "[]",
+        "value": 4.666666666666667,
+        "view_partial": false
+      },
+      {
+        "advisories": [],
+        "analysis_population": "assigned",
+        "available_cell_count": 0,
+        "comparison": "arm control",
+        "control_group": null,
+        "decision_scope_complete": null,
+        "decision_scope_reason_code": null,
+        "decision_scope_reason_context": null,
+        "dimension": null,
+        "dimension_value": null,
+        "ds": "2025-01-19T00:00:00.000",
+        "ds_basis": "calendar",
+        "failure_code": null,
+        "failure_context": null,
+        "group_id": "control",
+        "hidden_cell_count": 0,
+        "hidden_cells": "[]",
+        "integrity_code": null,
+        "integrity_context": null,
+        "integrity_status": "unknown",
+        "lb": 3.855904711732978,
+        "metric": "revenue",
+        "metric_type": "mean",
+        "multiplicity_status": "unknown",
+        "n": 61,
+        "open_side": null,
+        "point_available": true,
+        "posterior_available": null,
+        "posterior_reason_code": null,
+        "posterior_reason_context": null,
+        "required_cell_count": 0,
+        "retained_family": "[]",
+        "roster_complete": false,
+        "roster_source": "observed_union",
+        "sampling_available": true,
+        "source": null,
+        "source_cell_count": 2,
+        "source_snapshot_id": "sha256:624ad752fba021bd01f78aa4a2af88fa851819b0f202b50230447b2e7e32f9b4",
+        "treatment_group": "control",
+        "ub": 5.621480611551088,
+        "unavailable": null,
+        "unavailable_cell_count": 0,
+        "unavailable_cells": "[]",
+        "value": 4.655737704918033,
+        "view_partial": false
+      },
+      {
+        "advisories": [],
+        "analysis_population": "assigned",
+        "available_cell_count": 0,
+        "comparison": "arm treatment",
+        "control_group": null,
+        "decision_scope_complete": null,
+        "decision_scope_reason_code": null,
+        "decision_scope_reason_context": null,
+        "dimension": null,
+        "dimension_value": null,
+        "ds": "2025-01-10T00:00:00.000",
+        "ds_basis": "calendar",
+        "failure_code": null,
+        "failure_context": null,
+        "group_id": "treatment",
+        "hidden_cell_count": 0,
+        "hidden_cells": "[]",
+        "integrity_code": null,
+        "integrity_context": null,
+        "integrity_status": "unknown",
+        "lb": 4.416197116458808,
+        "metric": "revenue",
+        "metric_type": "mean",
+        "multiplicity_status": "unknown",
+        "n": 60,
+        "open_side": null,
+        "point_available": true,
+        "posterior_available": null,
+        "posterior_reason_code": null,
+        "posterior_reason_context": null,
+        "required_cell_count": 0,
+        "retained_family": "[]",
+        "roster_complete": false,
+        "roster_source": "observed_union",
+        "sampling_available": true,
+        "source": null,
+        "source_cell_count": 2,
+        "source_snapshot_id": "sha256:624ad752fba021bd01f78aa4a2af88fa851819b0f202b50230447b2e7e32f9b4",
+        "treatment_group": "treatment",
+        "ub": 6.440936329230937,
+        "unavailable": null,
+        "unavailable_cell_count": 0,
+        "unavailable_cells": "[]",
+        "value": 5.333333333333334,
+        "view_partial": false
+      },
+      {
+        "advisories": [],
+        "analysis_population": "assigned",
+        "available_cell_count": 0,
+        "comparison": "arm treatment",
+        "control_group": null,
+        "decision_scope_complete": null,
+        "decision_scope_reason_code": null,
+        "decision_scope_reason_context": null,
+        "dimension": null,
+        "dimension_value": null,
+        "ds": "2025-01-19T00:00:00.000",
+        "ds_basis": "calendar",
+        "failure_code": null,
+        "failure_context": null,
+        "group_id": "treatment",
+        "hidden_cell_count": 0,
+        "hidden_cells": "[]",
+        "integrity_code": null,
+        "integrity_context": null,
+        "integrity_status": "unknown",
+        "lb": 4.455698387337185,
+        "metric": "revenue",
+        "metric_type": "mean",
+        "multiplicity_status": "unknown",
+        "n": 61,
+        "open_side": null,
+        "point_available": true,
+        "posterior_available": null,
+        "posterior_reason_code": null,
+        "posterior_reason_context": null,
+        "required_cell_count": 0,
+        "retained_family": "[]",
+        "roster_complete": false,
+        "roster_source": "observed_union",
+        "sampling_available": true,
+        "source": null,
+        "source_cell_count": 2,
+        "source_snapshot_id": "sha256:624ad752fba021bd01f78aa4a2af88fa851819b0f202b50230447b2e7e32f9b4",
+        "treatment_group": "treatment",
+        "ub": 6.449410943042364,
+        "unavailable": null,
+        "unavailable_cell_count": 0,
+        "unavailable_cells": "[]",
+        "value": 5.360655737704918,
+        "view_partial": false
+      }
+    ],
+    "states": [
+      {
+        "group_id": "control",
+        "law": "scalar_mean",
+        "mean": [
+          "284/61"
+        ],
+        "metric": "revenue",
+        "n": 61,
+        "scatter": [
+          [
+            "44760/61"
+          ]
+        ],
+        "segment": [],
+        "successes": null
+      },
+      {
+        "group_id": "treatment",
+        "law": "scalar_mean",
+        "mean": [
+          "327/61"
+        ],
+        "metric": "revenue",
+        "n": 61,
+        "scatter": [
+          [
+            "57100/61"
+          ]
+        ],
+        "segment": [],
+        "successes": null
+      }
+    ]
+  },
+  "later_rows": [
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c0",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c1",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c10",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c11",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c12",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c13",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c14",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c15",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c16",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c17",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c18",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c19",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c2",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c20",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c21",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c22",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c23",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c24",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c25",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c26",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c27",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c28",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c29",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c3",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c30",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c31",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c32",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c33",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c34",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c35",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c36",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c37",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c38",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c39",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c4",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c40",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c41",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c42",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c43",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c44",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c45",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c46",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c47",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c48",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c49",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c5",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c50",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c51",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c52",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c53",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c54",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c55",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c56",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c57",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c58",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c59",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c6",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c7",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c8",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "c9",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-19",
+      "revenue": 4.0,
+      "sessions": 1,
+      "user_id": "later_control",
+      "variant": "control"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-19",
+      "revenue": 7.0,
+      "sessions": 1,
+      "user_id": "later_treatment",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t0",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t1",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t10",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t11",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t12",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t13",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t14",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t15",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t16",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t17",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t18",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t19",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t2",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t20",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t21",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t22",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t23",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t24",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t25",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t26",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t27",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t28",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t29",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t3",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t30",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t31",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t32",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t33",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t34",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t35",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t36",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t37",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t38",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t39",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t4",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t40",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t41",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t42",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t43",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t44",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t45",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t46",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t47",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t48",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t49",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t5",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t50",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t51",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t52",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t53",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t54",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t55",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t56",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t57",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t58",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t59",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t6",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t7",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t8",
+      "variant": "treatment"
+    },
+    {
+      "date": "2025-01-19",
+      "exposure_date": "2025-01-10",
+      "revenue": 0.0,
+      "sessions": 0,
+      "user_id": "t9",
+      "variant": "treatment"
+    }
+  ]
+}
