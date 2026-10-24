@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import math
-from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset, effective_methods
-from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
+from increment._evidence_types import EvidenceScope, MetricEvidence, MetricEvidenceRequest
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
-from increment._source_operations import ReadoutExecutionOperation, ReadoutSnapshotOperation
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.estimation.adjust import bind_unit_frame_memo, observational_evidence
 from increment.estimation.engine import Method
@@ -28,6 +26,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
+from increment.readouts._evidence import evidence_scope
 from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
@@ -157,23 +156,21 @@ def run(
             for metric in selected
         )
     )
-    with ExitStack() as execution:
-        if needs_snapshot and isinstance(src, ReadoutSnapshotOperation):
-            uptake = getattr(design, "uptake", None)
-            uptake_facts = () if uptake is None else (uptake.fact,)
-            src = execution.enter_context(
-                src.readout_snapshot(
-                    metrics=selected,
-                    population=_population,
-                    uptake_facts=uptake_facts,
-                    configs=configs,
-                )
-            )
-        if needs_live_evidence and isinstance(src, ReadoutExecutionOperation):
-            execution.enter_context(src.readout_execution())
+    uptake = getattr(design, "uptake", None)
+    with evidence_scope(
+        src,
+        EvidenceScope(
+            metrics=tuple(selected),
+            population=_population,
+            configs=tuple(configs),
+            uptake_facts=() if uptake is None else (uptake.fact,),
+            snapshot=needs_snapshot,
+            execution=needs_live_evidence,
+        ),
+    ) as scoped:
         return _as_collection(
             _run_prepared(
-                src,
+                scoped,
                 selected,
                 configs,
                 prior=prior,
@@ -181,6 +178,7 @@ def run(
                 estimands=estimands,
                 value_scale=value_scale,
                 population=_population,
+                scope_active=needs_snapshot,
             )
         )
 
@@ -291,7 +289,7 @@ def _run_plan_and_roster(src, design, configs, population):
     return plan, _preflight_roster(src, design, population)
 
 
-def _load_encouragement_evidence(src, selected, configs, design, by):
+def _load_encouragement_evidence(src, selected, configs, design, by, *, scope_active):
     config_by_metric = {config.metric.name: config for config in configs}
     return {
         metric.name: load_metric_evidence(
@@ -302,6 +300,7 @@ def _load_encouragement_evidence(src, selected, configs, design, by):
                 by=tuple(by),
                 methods=tuple(effective_methods(config_by_metric[metric.name], design=design)),
             ),
+            scope_active=scope_active,
         )
         for metric in selected
     }
@@ -317,6 +316,7 @@ def _run_prepared(  # noqa: PLR0915
     estimands: Sequence[str] | None,
     value_scale: Mapping[str, ValueScale] | None,
     population: Literal["assigned", "triggered"],
+    scope_active: bool = False,
 ) -> list[LiftEstimate]:
     """Estimate a validated request inside its source-owned snapshot lifetime."""
     design = _require_design(src, "run")
@@ -360,7 +360,9 @@ def _run_prepared(  # noqa: PLR0915
                 "which a quantile metric has none of",
                 remedy="Drop the encouragement design or the quantile metric.",
             )
-            evidence_by_metric = _load_encouragement_evidence(src, selected, configs, design, by)
+            evidence_by_metric = _load_encouragement_evidence(
+                src, selected, configs, design, by, scope_active=scope_active
+            )
             rows_by_metric = {
                 name: list(evidence.rows) for name, evidence in evidence_by_metric.items()
             }
@@ -526,6 +528,7 @@ def _run_prepared(  # noqa: PLR0915
         computations=computations,
         observed_by_metric=observed_by_metric,
         evidence_by_metric=evidence_by_metric,
+        scope_active=scope_active,
     )
     secondary_out, secondary_refused = _estimate_randomized_secondary_family(
         src,
@@ -539,6 +542,7 @@ def _run_prepared(  # noqa: PLR0915
         computations=computations,
         observed_by_metric=observed_by_metric,
         evidence_by_metric=evidence_by_metric,
+        scope_active=scope_active,
     )
     out.extend(secondary_out)
     refused_cells.extend(secondary_refused)

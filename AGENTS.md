@@ -43,13 +43,13 @@ parity matrix and a guide — not every loader.
 | `increment/semantics/` | Pydantic declarations of experiments, metrics, designs, plans | import Ibis or SQLGlot (`loader.py` may import SQLGlot lazily to validate SQL) |
 | `increment/query/` | Warehouse relations, SQL builders, Ibis sessions, artifacts | hold statistical logic |
 | `increment/frame.py`, `increment/_frame_*.py` | Narwhals dataframe loaders and reducers | import Ibis or `increment.query` |
-| Evidence layer: `increment/_evidence_types.py` (types), `increment/_source_types.py` (loader contract) and `increment/readouts/_metric_rows.py` (acquisition) | Typed evidence requests, loader capability declarations, refusals, digests | compute estimates |
+| Evidence layer: `increment/_evidence_types.py` (types), `increment/_source_types.py` (loader contract), and `increment/readouts/_evidence.py` / `increment/readouts/_metric_rows.py` (acquisition) | Typed evidence requests, loader capability declarations, refusals, digests | compute estimates |
 | `increment/estimation/` | Estimators and inference on data values | call a source, construct a query, or branch on loader kind |
-| `increment/readouts/`, `increment/breakout/`, `increment/_day_axis.py` | Assemble results from evidence | call source methods or probe a source with `isinstance`/`getattr`/`hasattr` |
+| `increment/readouts/` (except the evidence acquisition modules), `increment/breakout/`, `increment/_day_axis.py` | Assemble results from evidence | call source methods or probe a source with `isinstance`/`getattr`/`hasattr` |
 | `increment/power/` | Sample size, power and MDE solvers | access a warehouse |
 | `calibration/` | Certification campaigns | be collected by a bare `pytest` |
 
-- Statistics code receives data (rows, moments, fitted evidence), never a source object. Only the evidence layer's acquisition functions and the public facades (`increment/cate.py::estimate_cate`; in `increment/estimation/`: `adjust.py::estimate_ate` and `observational_evidence`, `quantile.py::estimate_quantile_lift`, `winsor.py::raw_state_from_source`) call a source; a facade loads and delegates. Some statistics code still calls a source directly; do not add another. The boundary is enforced by `tests/test_evidence_boundary.py`.
+- Statistics code receives data (rows, moments, fitted evidence), never a source object. Only the evidence layer's acquisition functions (`readouts/_evidence.py`, `readouts/_metric_rows.py`) and public facades (`analysis.py`, `cate.py::estimate_cate`; in `estimation/`: `adjust.py::estimate_ate` and `observational_evidence`, `quantile.py::estimate_quantile_lift`, `winsor.py::raw_state_from_source`) call a source; acquisition or a facade loads and delegates. Some statistics code still calls a source directly; do not add another. The boundary is enforced by `tests/test_evidence_boundary.py`.
 - Each built-in loader declares what it can answer once on the loader.
   Readout requests use that declaration; custom sources without one retain the
   legacy fallback. Built-in declarations are field-specific to each loader, and

@@ -61,3 +61,52 @@ def test_estimation_reads_sources_only_through_facades():
             if source_probe and (rel.name, owner(node)) not in _ALLOWED:
                 violations.append(f"{rel}:{node.lineno}: source probing outside facade")
     assert not violations, "\n".join(violations)
+
+
+def test_loader_routes_stay_inside_acquisition_and_facades():
+    root = Path(__file__).parents[1] / "increment"
+    allowed = {
+        Path("readouts/_evidence.py"),
+        Path("analysis.py"),
+        Path("_day_axis.py"),
+        Path("_whole_window.py"),
+        Path("_breakout_readouts.py"),
+        Path("_sitewide.py"),
+        Path("readouts/_breakout.py"),
+    }
+    route_names = {"artifact", "moments", "native", "panel", "unsupported"}
+    violations: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root)
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "classify_source":
+                if rel not in allowed:
+                    violations.append(
+                        f"{rel}:{node.lineno}: classify_source outside acquisition/facade"
+                    )
+            if isinstance(node, ast.Attribute) and node.attr == "classify_source":
+                if rel not in allowed:
+                    violations.append(
+                        f"{rel}:{node.lineno}: classify_source outside acquisition/facade"
+                    )
+            route_comparison = isinstance(node, ast.Compare) and any(
+                (isinstance(value, ast.Name) and value.id == "route")
+                or (isinstance(value, ast.Attribute) and value.attr == "route")
+                for value in ast.walk(node)
+            )
+            route_argument = isinstance(node, ast.Call) and any(
+                keyword.arg == "route"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value in route_names
+                for keyword in node.keywords
+            )
+            if (route_comparison or route_argument) and rel not in allowed:
+                if any(
+                    isinstance(value, ast.Constant) and value.value in route_names
+                    for value in ast.walk(node)
+                ):
+                    violations.append(
+                        f"{rel}:{node.lineno}: route literal outside acquisition/facade"
+                    )
+    assert not violations, "\n".join(violations)

@@ -473,7 +473,7 @@ depends_on = [
 path = "increment._breakout_readouts"
 depends_on = [
   "increment._literals",
-  "increment._analysis_config", "increment._evidence_types", "increment._source_operations",
+  "increment._analysis_config", "increment._evidence_types",
   "increment._source_types", "increment._day_axis",
   "increment.breakout.estimates", "increment.errors", "increment.readouts",
   "increment.query", "increment._metric_specs",
@@ -484,7 +484,7 @@ depends_on = [
 [[modules]]
 path = "increment._sitewide"
 depends_on = [
-  "increment._source_operations", "increment._source_types", "increment._whole_window", "increment.errors",
+  "increment._source_operations", "increment._whole_window", "increment.errors",
   "increment._evidence_refusals",
   "increment.estimation", "increment.query", "increment.semantics",
 ]
@@ -681,13 +681,13 @@ expose = [
 from = ["increment._day_axis"]
 expose = [
   "DayAxisReadouts", "EvidenceSlice", "validate_day_axis",
-  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "_day_axis_source_route",
+  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED",
 ]
 
 [[interfaces]]
 from = ["increment._evidence_types"]
 expose = [
-  "BreakoutIdentity", "BreakoutSlicesRequest", "BreakoutSlice", "BreakoutSlices",
+  "EvidenceScope", "BreakoutIdentity", "BreakoutSlicesRequest", "BreakoutSlice", "BreakoutSlices",
   "BreakoutUnitRowsRequest", "BreakoutUnitRows",
   "DayAxisRequest", "DayAxisRows", "ComplianceRequest", "ComplianceSeriesRequest",
   "MetricEvidence", "MetricEvidenceRequest",

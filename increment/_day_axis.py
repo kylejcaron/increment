@@ -60,8 +60,15 @@ from increment.readouts._common import (
     _validate_encouragement_asof_inference,
 )
 from increment.readouts._daily import _validate_daily_inference
-from increment.readouts._evidence import _route as _evidence_route
-from increment.readouts._evidence import load_compliance_series, load_day_axis_rows
+from increment.readouts._evidence import (
+    ARTIFACT_ROUTE,
+    MOMENTS_ROUTE,
+    NATIVE_ROUTE,
+    DayAxisRoute,
+    day_axis_route,
+    load_compliance_series,
+    load_day_axis_rows,
+)
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.sources import MomentSource
 
@@ -164,7 +171,7 @@ def _validate_lift_request(
     src: MomentSource,
     design: Randomized | Encouragement | Observational | None,
     plan: CompiledDecisionPlan,
-    route: Literal["artifact", "moments", "native"],
+    route: DayAxisRoute,
     experiment: Experiment | None,
 ) -> tuple[bool, tuple[str, ...], Encouragement | None]:
     validate_day_axis(
@@ -176,10 +183,6 @@ def _validate_lift_request(
         experiment=experiment,
     )
     return _resolve_lift_estimands(req.estimands, design)
-
-
-def _day_axis_source_route(src: MomentSource) -> Literal["artifact", "moments", "native"]:
-    return _evidence_route(src)
 
 
 def _compliance_readouts(
@@ -214,7 +217,7 @@ def validate_day_axis(
     src: MomentSource,
     design: Randomized | Encouragement | Observational | None,
     plan: CompiledDecisionPlan,
-    route: Literal["artifact", "moments", "native"],
+    route: DayAxisRoute,
     experiment: Experiment | None,
 ) -> None:
     """Validate one day-axis request across native, moments, and artifact routes.
@@ -243,7 +246,7 @@ def validate_day_axis(
         )
     if (
         not compliance_only
-        and route in ("artifact", "native")
+        and route in (ARTIFACT_ROUTE, NATIVE_ROUTE)
         and experiment is not None
         and experiment.cluster is not None
     ):
@@ -258,7 +261,11 @@ def validate_day_axis(
     )
     if compliance_only:
         return
-    if route in ("moments", "artifact") and src.shape != "unit_panel" and not checkpoint_asof:
+    if (
+        route in (MOMENTS_ROUTE, ARTIFACT_ROUTE)
+        and src.shape != "unit_panel"
+        and not checkpoint_asof
+    ):
         from increment._evidence_refusals import refuse_grain
 
         refuse_grain(
@@ -267,7 +274,7 @@ def validate_day_axis(
             tuple(sorted(src.capabilities)),
             route="use a source with the requested day axis",
         )
-    if route == "native" and (
+    if route == NATIVE_ROUTE and (
         "day_source" not in src.operations or not isinstance(src, NativeViewSource)
     ):
         from increment._evidence_refusals import refuse_grain
@@ -279,7 +286,7 @@ def validate_day_axis(
             route="use a source with the requested day axis",
         )
     reject_winsorized_day_axis(list(req.metrics), req.caller)
-    if route == "native":
+    if route == NATIVE_ROUTE:
         # Native routes reject quantiles; moments/artifacts retain the broader metric set.
         moments_reason = "per-day moments" if req.grain == "daily" else "as-of moments"
         reject_quantile_metrics(
@@ -335,7 +342,7 @@ def validate_day_axis(
         refuse(_DAILY_COMPLIANCE_DIMENSION, method=req.caller)
     if req.dimension is None:
         return
-    if route == "moments":
+    if route == MOMENTS_ROUTE:
         if req.dimension not in src.breakouts:
             refuse(
                 _UNKNOWN_DIMENSION,
@@ -354,7 +361,7 @@ def validate_day_axis(
             declared=sorted({b.property for b in declared_breakouts}),
         )
     if (
-        route == "native"
+        route == NATIVE_ROUTE
         and req.caller in ("run_daily", "run_daily_lift")
         and experiment is not None
     ):
@@ -1117,7 +1124,7 @@ def _scope_day_axis_rows(
     rows,
     req: DayAxisRequest,
     *,
-    route: Literal["artifact", "moments", "native"],
+    route: DayAxisRoute,
     plan: Any,
     configs: Sequence[Any] = (),
     design: Any = None,
@@ -1215,8 +1222,8 @@ class DayAxisReadouts:
         self._experiment = experiment
         self._daily_lift = daily_lift
 
-    def _route(self) -> Literal["artifact", "moments", "native"]:
-        return _day_axis_source_route(self._src)
+    def _route(self) -> DayAxisRoute:
+        return day_axis_route(self._src)
 
     def values(self, req: DayAxisRequest) -> DailyMetricValues:
         route = self._route()

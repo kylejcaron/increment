@@ -114,6 +114,7 @@ def _load_family_rows(
     plan: CompiledDecisionPlan,
     *,
     by: Sequence[str],
+    scope_active: bool = False,
 ) -> dict[str, Any]:
     """Each secondary's rows, read once for the nominal pass and reused by the FCR pass. A
     quantile metric is refused before any data is read."""
@@ -130,6 +131,7 @@ def _load_family_rows(
                 methods=tuple(metric_methods),
                 covariates=tuple(config.covariates),
             ),
+            scope_active=scope_active,
         )
     return loaded
 
@@ -303,6 +305,7 @@ def _estimate_randomized_secondary_family(
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
     evidence_by_metric: dict[str, MetricEvidence],
+    scope_active: bool = False,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]]]:
     """Run nominal, selection, and FCR passes for randomized secondaries."""
     if not secondary_entries:
@@ -313,7 +316,9 @@ def _estimate_randomized_secondary_family(
     # Evidence read for the nominal pass (moment rows or a quantile unit
     # frame), reused by the FCR pass instead of re-querying the source.
     refused_cells: list[tuple[str, str, str, str]] = []
-    loaded = _load_family_rows(src, secondary_entries, design, plan, by=by)
+    loaded = _load_family_rows(
+        src, secondary_entries, design, plan, by=by, scope_active=scope_active
+    )
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
         metric_rows = loaded[metric.name]
         rows, metric_observed, observed_groups = _secondary_source_rows(
@@ -474,7 +479,7 @@ def _estimate_randomized_secondary_family(
     return out, refused_cells
 
 
-def _estimate_randomized_non_secondary(
+def _estimate_randomized_non_secondary(  # noqa: PLR0913
     src: MomentSource,
     selected: Sequence[Metric],
     configs: Sequence[ResolvedMetricConfig],
@@ -488,6 +493,7 @@ def _estimate_randomized_non_secondary(
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
     evidence_by_metric: dict[str, MetricEvidence],
+    scope_active: bool = False,
 ) -> tuple[
     list[LiftEstimate],
     list[tuple[str, str, str, str]],
@@ -519,6 +525,7 @@ def _estimate_randomized_non_secondary(
                 methods=tuple(metric_methods),
                 covariates=tuple(config.covariates),
             ),
+            scope_active=scope_active,
         )
         evidence_by_metric[metric.name] = metric_rows
         if is_quantile:

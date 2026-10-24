@@ -13,11 +13,20 @@ from increment._evidence_types import (
     BreakoutIdentity,
     BreakoutSlice,
     BreakoutSlicesRequest,
+    EvidenceScope,
 )
 from increment._literals import Correction
-from increment._source_operations import ReadoutSnapshotOperation
 from increment.errors import refuse as _refuse
-from increment.readouts._evidence import breakout_route, load_breakout_evidence
+from increment.readouts._evidence import (
+    ARTIFACT_ROUTE,
+    NATIVE_ROUTE,
+    PANEL_ROUTE,
+    UNSUPPORTED_ROUTE,
+    BreakoutRoute,
+    breakout_route,
+    evidence_scope,
+    load_breakout_evidence,
+)
 from increment.readouts._requests import _validate_breakout_request
 
 if TYPE_CHECKING:
@@ -27,12 +36,6 @@ if TYPE_CHECKING:
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
     from increment.sources import MomentSource
-
-BreakoutRoute = Literal["artifact", "panel", "native", "unsupported"]
-
-
-def _breakout_route(src: MomentSource) -> BreakoutRoute:
-    return breakout_route(src)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,9 +66,6 @@ class BreakoutReadouts:
                 prior_override=req.prior,
             )
         )
-
-    def _route_evidence(self) -> BreakoutRoute:
-        return _breakout_route(self._src)
 
     def _slices(self, req: BreakoutRequest) -> Iterator[BreakoutSlice]:
         breakouts = self._experiment.breakouts if self._experiment is not None else ()
@@ -102,9 +102,9 @@ class BreakoutReadouts:
                 "route.unsupported",
                 "registered sequential inference has no triggered breakout construction",
             )
-        route = self._route_evidence()
+        route = breakout_route(self._src)
         if (
-            route not in ("artifact", "native")
+            route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
             or self._experiment is None
             or self._experiment.trigger is None
         ):
@@ -122,8 +122,8 @@ class BreakoutReadouts:
         native_src.validate_populations(populations, operation="run_breakout")
 
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
-        route = self._route_evidence()
-        if route == "artifact" and any(
+        route = breakout_route(self._src)
+        if route == ARTIFACT_ROUTE and any(
             metric.type == "quantile" and metric.window_days is not None for metric in req.metrics
         ):
             from increment._metric_specs import MetricSpec
@@ -138,7 +138,7 @@ class BreakoutReadouts:
                     )
             return req
         if (
-            route not in ("artifact", "native")
+            route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
             or self._experiment is None
             or not self._experiment.breakouts
             or not req.metrics
@@ -195,8 +195,8 @@ class BreakoutReadouts:
                 q=req.q,
                 analysis_population=req.population,
             )
-        route = self._route_evidence()
-        if route == "unsupported":
+        route = breakout_route(self._src)
+        if route == UNSUPPORTED_ROUTE:
             from increment._evidence_refusals import refuse_breakout
             from increment._source_types import declared_evidence
 
@@ -212,17 +212,21 @@ class BreakoutReadouts:
                 refusal.breakouts,
                 route="use a source with the requested breakout dimensions",
             )
-        if route in ("artifact", "native"):
+        if route in (ARTIFACT_ROUTE, NATIVE_ROUTE):
             assert self._experiment is not None
             if not self._experiment.breakouts or not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
-        if route == "native":
-            with cast(ReadoutSnapshotOperation, self._src).readout_snapshot(
-                metrics=req.metrics,
-                population="assigned",
-                include_breakouts=True,
-                configs=self._configs(req),
+        if route == NATIVE_ROUTE:
+            with evidence_scope(
+                self._src,
+                EvidenceScope(
+                    metrics=tuple(req.metrics),
+                    population="assigned",
+                    configs=self._configs(req),
+                    snapshot=True,
+                    include_breakouts=True,
+                ),
             ) as pinned:
                 return BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
                     req, route
@@ -245,7 +249,7 @@ class BreakoutReadouts:
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,
                 prior=req.prior,
-                metrics=([metric.name for metric in req.metrics] if route == "panel" else None),
+                metrics=([metric.name for metric in req.metrics] if route == PANEL_ROUTE else None),
                 correction=req.correction,
                 q=req.q,
                 analysis_population=req.population,

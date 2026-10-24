@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import overlay_configs, validate_scalar_route
-from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
+from increment._evidence_types import EvidenceScope, MetricEvidence, MetricEvidenceRequest
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_operations import ReadoutSnapshotOperation
 from increment._source_types import (
     CategoricalEvidenceSource,
     ScalarBreakoutMomentSource,
@@ -13,6 +12,7 @@ from increment._source_types import (
 )
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
+from increment.readouts._evidence import evidence_scope
 from increment.readouts._source_digest import input_evidence
 from increment.semantics.design import Encouragement
 
@@ -139,9 +139,11 @@ def _decision_unit_component(frame, method, acquired_columns):
     return ("unit_evidence_rows", *_frame_digest_and_arms(projected)[1:])
 
 
-def load_metric_evidence(src: MomentSource, request: MetricEvidenceRequest) -> MetricEvidence:
+def load_metric_evidence(
+    src: MomentSource, request: MetricEvidenceRequest, *, scope_active: bool = False
+) -> MetricEvidence:
     """Load one metric's rows once for a typed evidence request."""
-    return _load_metric_evidence(src, request)
+    return _load_metric_evidence(src, request, _snapshot_active=scope_active)
 
 
 def _load_percentile_winsor_evidence(
@@ -226,23 +228,24 @@ def _load_metric_evidence(  # noqa: PLR0915
     )
     has_scalar = any(method.variance_reduction == "cuped" for method in methods)
     if (has_linear or has_scalar) and not _snapshot_active:
-        if isinstance(src, ReadoutSnapshotOperation):
-            population = getattr(src, "population", "assigned")
-            configs = overlay_configs(
-                (metric,), src.context.configs, methods=list(methods), prior=None
-            )
-            uptake_facts = (
-                (src.context.design.uptake.fact,)
-                if isinstance(src.context.design, Encouragement)
-                else ()
-            )
-            with src.readout_snapshot(
+        population = getattr(src, "population", "assigned")
+        configs = overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None)
+        uptake_facts = (
+            (src.context.design.uptake.fact,)
+            if isinstance(src.context.design, Encouragement)
+            else ()
+        )
+        with evidence_scope(
+            src,
+            EvidenceScope(
                 metrics=(metric,),
                 population=population,
                 configs=configs,
                 uptake_facts=uptake_facts,
-            ) as pinned:
-                return _load_metric_evidence(pinned, request, _snapshot_active=True)
+                snapshot=True,
+            ),
+        ) as pinned:
+            return _load_metric_evidence(pinned, request, _snapshot_active=True)
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         return _load_percentile_winsor_evidence(src, metric, control_group)
     if getattr(metric, "type", None) == "quantile":
