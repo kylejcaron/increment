@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from increment._source_types import MomentSource, RawOutcomeSource
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Metric, Winsorization
+    from increment.sources import SourceContext
 
 
 def _pandas_identity_has_missing_sentinel(native_frame: Any) -> bool:
@@ -81,19 +82,9 @@ def _pandas_identity_has_missing_sentinel(native_frame: Any) -> bool:
     return False
 
 
-def raw_state_from_source(source: MomentSource, metric: Metric) -> WinsorRawState:
-    """Capture raw outcomes only from the declared source."""
-    return _raw_state_from_source(source, metric)
-
-
-def _raw_state_from_source(
-    source: MomentSource, metric: Metric, *, native: IntoDataFrame | None = None
-) -> WinsorRawState:
-    """Extract once through the common source protocol; no query construction."""
-    import narwhals as nw
-
+def winsor_preflight(metric: Metric, context: SourceContext) -> Winsorization:
+    """Validate winsor eligibility using only immutable construction state."""
     config = validate_winsor_metric(metric)
-    context = source.context
     if metric not in context.metrics:
         winsor_refuse(
             "pool_mismatch", "Metric differs from the source's immutable construction catalog."
@@ -102,9 +93,38 @@ def _raw_state_from_source(
         winsor_refuse(
             "design_unsupported", "Pooled winsor inference requires independent randomized units."
         )
-    if native is None:
-        raw_source = cast("RawOutcomeSource", source)
-        native = raw_source.unit_frame(metric, outcome_stage="raw")
+    return config
+
+
+def raw_state_from_source(source: MomentSource, metric: Metric) -> WinsorRawState:
+    """Load raw outcomes after validating the winsor request."""
+    context = source.context
+    winsor_preflight(metric, context)
+    spec = getattr(source, "_specs_by_name", {}).get(metric.name)
+    missingness = (
+        spec.missing
+        if spec is not None
+        else f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows"
+    )
+    population = getattr(source, "population", getattr(source, "_population", "assigned"))
+    native = cast("RawOutcomeSource", source).unit_frame(metric, outcome_stage="raw")
+    return raw_state_from_frame(
+        native, metric, context=context, population=population, missingness=missingness
+    )
+
+
+def raw_state_from_frame(
+    native: IntoDataFrame,
+    metric: Metric,
+    *,
+    context: SourceContext,
+    population: Literal["assigned", "triggered"],
+    missingness: str,
+) -> WinsorRawState:
+    """Build a winsor state from materialized raw unit rows."""
+    import narwhals as nw
+
+    config = winsor_preflight(metric, context)
     frame = nw.from_native(native, eager_only=True)
     raw_frame = frame.select("unit_id", "group_id", "y")
     unit_ids = raw_frame.get_column("unit_id")
@@ -114,7 +134,6 @@ def _raw_state_from_source(
     unit_values = unit_ids.to_numpy() if pandas_like else None
     group_values = group_ids.to_numpy() if pandas_like else None
     if pandas_like:
-        assert native is not None
         missing_identity = _pandas_identity_has_missing_sentinel(cast(Any, native))
     else:
         missing_identity = bool(unit_ids.is_null().any() or group_ids.is_null().any())
@@ -174,17 +193,12 @@ def _raw_state_from_source(
         frame,
         native,
     )
-    spec = getattr(source, "_specs_by_name", {}).get(metric.name)
     assert config.upper_percentile is not None
     return WinsorRawState(
         metric=metric.name,
         study_id=context.study_id,
-        population=getattr(source, "population", getattr(source, "_population", "assigned")),
-        missingness=(
-            spec.missing
-            if spec is not None
-            else f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows"
-        ),
+        population=population,
+        missingness=missingness,
         quantile=config.upper_percentile,
         support=config.support,
         inference=config.inference,

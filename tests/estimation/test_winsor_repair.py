@@ -1303,3 +1303,63 @@ def test_rank_wire_rejects_each_endpoint_mutation(field, side, mutation):
     with pytest.raises(CodedError) as error:
         WinsorConfidenceSet.model_validate(payload)
     assert error.value.code == "estimation.winsor.invalid_state"
+
+
+@pytest.mark.parametrize("context_kind", ["clustered", "observational"])
+def test_raw_state_from_frame_refuses_unsupported_context(context_kind):
+    import pandas as pd
+
+    from increment import AdjustmentSet, MetricSpec
+    from increment.errors import CodedError
+    from increment.estimation.winsor import raw_state_from_frame
+    from increment.frame import from_unit_summary
+    from increment.semantics.design import Observational
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(4)],
+            "group": ["C", "C", "T", "T"],
+            "store": [f"s{i}" for i in range(4)],
+            "x": [0.0, 1.0, 0.0, 1.0],
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    source = from_unit_summary(
+        frame,
+        unit="unit",
+        group="group",
+        control="C",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                winsorization={"upper_percentile": 0.75},
+            )
+        ],
+        cluster="store" if context_kind == "clustered" else None,
+        design=(
+            Observational(
+                control_group="C",
+                adjustment=AdjustmentSet(covariates=("x",)),
+            )
+            if context_kind == "observational"
+            else None
+        ),
+    )
+    rows = pd.DataFrame(
+        {
+            "unit_id": ["u0", "u1", "u2", "u3"],
+            "group_id": ["C", "C", "T", "T"],
+            "y": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    with pytest.raises(CodedError) as raised:
+        raw_state_from_frame(
+            rows,
+            source.context.metrics[0],
+            context=source.context,
+            population="assigned",
+            missingness="error",
+        )
+    assert raised.value.code == "estimation.winsor.design_unsupported"

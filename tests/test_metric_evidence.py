@@ -6,6 +6,7 @@ import warnings
 from datetime import date
 from numbers import Real
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -15,6 +16,7 @@ from increment import Analysis, MetricSpec
 from increment.errors import IncrementWarning
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan
+from increment.sources import MomentSource
 from scripts.capture_evidence_identity import (
     _frame_rows,
     _rows,
@@ -250,3 +252,154 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         for analysis in analyses.values():
             analysis.close()
         baseline.close()
+
+
+class _CountingSource:
+    def __init__(self, source: MomentSource):
+        self.source = source
+        self.unit_frame_reads = 0
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+    def unit_frame(self, *args, **kwargs):
+        self.unit_frame_reads += 1
+        return self.source.unit_frame(*args, **kwargs)
+
+
+def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=None):
+    from tests.analysis_factory import held_source
+
+    spec = (
+        MetricSpec(name="y", type="quantile", quantile=0.5)
+        if quantile
+        else MetricSpec(name="y", type="mean", winsorization={"upper_percentile": 0.75})
+        if winsor
+        else MetricSpec(name="y", type="mean")
+    )
+    frame = pd.DataFrame(
+        {
+            "unit": [f"c{i}" for i in range(6)] + [f"t{i}" for i in range(6)],
+            "arm": ["C"] * 6 + ["T"] * 6,
+            "store": [f"s{i}" for i in range(12)],
+            "y": [float(i + 1) for i in range(12)],
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="C" if design is None else None,
+        metrics=[spec],
+        cluster="store" if cluster else None,
+        design=design,
+    )
+    source = cast(MomentSource, held_source(analysis))
+    return analysis, _CountingSource(source), source.context.metrics[0]
+
+
+def test_quantile_lift_from_rows_equals_facade():
+    from increment.estimation.quantile import estimate_quantile_lift, quantile_lift_from_rows
+
+    analysis, source, metric = _counted_analysis(quantile=True)
+    try:
+        facade = estimate_quantile_lift(source, metric, "C")
+        rows = source.unit_frame(metric)
+        row_results = quantile_lift_from_rows(rows, metric, "C", design=source.context.design)
+        assert isinstance(row_results, list)
+        assert [row.model_dump() for row in row_results] == [row.model_dump() for row in facade]
+    finally:
+        analysis.close()
+
+
+def test_read_free_refusals_precede_unit_frame_reads(monkeypatch):
+    from increment.errors import CodedError
+    from increment.estimation.engine import Method
+    from increment.estimation.quantile import estimate_quantile_lift
+    from increment.estimation.winsor import raw_state_from_source
+
+    for inference, methods, code in (
+        (object(), None, "sequential.route.unsupported"),
+        (None, [Method(name="cuped", variance_reduction="cuped")], "arm.metric.quantile_cuped"),
+    ):
+        analysis, source, metric = _counted_analysis(quantile=True)
+        try:
+            with pytest.raises(CodedError) as raised:
+                if inference is not None:
+                    estimate_quantile_lift(source, metric, "C", inference=inference)
+                else:
+                    estimate_quantile_lift(source, metric, "C", methods=methods)
+            assert raised.value.code == code
+            assert source.unit_frame_reads == 0
+        finally:
+            analysis.close()
+
+    from tests.analysis_factory import held_source
+
+    analysis, source, metric = _counted_analysis(winsor=True, cluster=True)
+    try:
+        with pytest.raises(CodedError) as raised:
+            raw_state_from_source(source, metric)
+        assert raised.value.code == "estimation.winsor.design_unsupported"
+        assert source.unit_frame_reads == 0
+
+        backing = cast(MomentSource, held_source(analysis))
+        source_type = type(backing)
+        original_unit_frame = source_type.unit_frame
+        reads = 0
+
+        def count_unit_frame(instance, *args, **kwargs):
+            nonlocal reads
+            reads += 1
+            return original_unit_frame(instance, *args, **kwargs)
+
+        monkeypatch.setattr(source_type, "unit_frame", count_unit_frame)
+        with pytest.raises(CodedError) as raised:
+            analysis.run()
+        assert raised.value.code == "readout.metric.percentile_winsorization"
+        assert reads == 0
+    finally:
+        analysis.close()
+
+
+def test_refusal_precedes_any_loader_read():
+    from increment import AdjustmentSet
+    from increment.errors import CodedError
+    from increment.estimation.quantile import estimate_quantile_lift
+    from increment.semantics.design import Observational
+
+    analysis, source, metric = _counted_analysis(
+        quantile=True,
+        design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("store",))),
+    )
+    try:
+        with pytest.raises(CodedError) as raised:
+            estimate_quantile_lift(source, metric, "C")
+        assert raised.value.code == "readout.observational.quantile"
+        assert source.unit_frame_reads == 0
+    finally:
+        analysis.close()
+
+
+def test_quantile_rows_refuse_observational_design():
+    from increment import AdjustmentSet
+    from increment.errors import CodedError
+    from increment.estimation.quantile import quantile_lift_from_rows
+    from increment.semantics.design import Observational
+
+    analysis, source, metric = _counted_analysis(
+        quantile=True,
+        design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("store",))),
+    )
+    try:
+        with pytest.raises(CodedError) as raised:
+            quantile_lift_from_rows(
+                source.unit_frame(metric),
+                metric,
+                "C",
+                design=source.context.design,
+                authenticate=getattr(source, "validated_metric", None),
+            )
+        assert raised.value.code == "readout.observational.quantile"
+    finally:
+        analysis.close()

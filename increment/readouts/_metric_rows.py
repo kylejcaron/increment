@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import overlay_configs, validate_scalar_route
 from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
@@ -22,6 +22,23 @@ if TYPE_CHECKING:
     from increment._source_types import RawOutcomeSource
     from increment.semantics.models import Metric
     from increment.sources import MomentSource
+
+
+def winsor_identity(
+    src: MomentSource, metric: Metric
+) -> tuple[Literal["assigned", "triggered"], str]:
+    """Return the source-owned population and missingness attached to raw outcomes."""
+    spec = getattr(src, "_specs_by_name", {}).get(metric.name)
+    missingness = (
+        spec.missing
+        if spec is not None
+        else f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows"
+    )
+    population = cast(
+        Literal["assigned", "triggered"],
+        getattr(src, "population", getattr(src, "_population", "assigned")),
+    )
+    return population, missingness
 
 
 def _frame_digest_and_arms(frame):
@@ -163,10 +180,11 @@ def _load_metric_evidence(  # noqa: PLR0915
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         import narwhals as nw
 
-        from increment.estimation.winsor import _raw_state_from_source
+        from increment.estimation.winsor import raw_state_from_frame, winsor_preflight
 
-        # Check the arm inventory before constructing a two-arm inference state.
-        # Reuse this capture so the aggregate arm gate does not trigger another read.
+        context = src.context
+        winsor_preflight(metric, context)
+        population, missingness = winsor_identity(src, metric)
         raw_source = cast("RawOutcomeSource", src)
         native = raw_source.unit_frame(metric, outcome_stage="raw")
         frame = nw.from_native(native, eager_only=True)
@@ -174,7 +192,7 @@ def _load_metric_evidence(  # noqa: PLR0915
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
         if not observed - {str(control_group)}:
             return MetricEvidence(
-                cluster=src.context.cluster,
+                cluster=context.cluster,
                 control_group=control_group,
                 rows=(),
                 unit_frame=None,
@@ -187,7 +205,13 @@ def _load_metric_evidence(  # noqa: PLR0915
                     ("unit_evidence_rows", evidence_sha256, evidence_count),
                 ),
             )
-        raw = _raw_state_from_source(src, metric, native=native)
+        raw = raw_state_from_frame(
+            native,
+            metric,
+            context=context,
+            population=population,
+            missingness=missingness,
+        )
         from increment.estimation.winsor import build_winsor_references
 
         treatments = tuple(arm.group_id for arm in raw.arms if arm.group_id != control_group)

@@ -6,9 +6,9 @@ one spec object per code.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from increment.errors import (
     CapabilityError,
@@ -172,15 +172,10 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
 READOUT_REFUSALS: Mapping[str, RefusalSpec] = MappingProxyType(_REFUSALS)
 
 
-def refuse_observational_quantile(metric: object, *, source: object | None = None) -> NoReturn:
-    """Refuse a quantile metric under an observational design, before any evidence is read.
-
-    No quantile estimator exists for an observational design: the adjusted-mean
-    machinery would otherwise report a mean effect under the quantile metric's name.
-    A *source* that binds metrics to trusted evidence authenticates the caller's metric
-    first (a read-free check), so a tampered binding keeps its own refusal.
-    """
-    authenticate = getattr(source, "validated_metric", None)
+def refuse_observational_quantile(
+    metric: object, *, authenticate: Callable[[Any], Any] | None = None
+) -> NoReturn:
+    """Refuse observational quantiles, authenticating first when requested."""
     if authenticate is not None:
         authenticate(metric)
     refuse(READOUT_REFUSALS["readout.observational.quantile"], metric=getattr(metric, "name", None))

@@ -2446,7 +2446,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
 
     def _refuse_bound_observational_quantile(self, metric: Metric) -> NoReturn:
         """Authenticate the metric against the artifact binding, then refuse it observationally."""
-        refuse_observational_quantile(metric, source=self)
+        refuse_observational_quantile(metric, authenticate=self.validated_metric)
 
     def export_moments(self, path: str | Path) -> None:
         if getattr(self.context.plan.inference, "registration", None) is not None:
