@@ -8,7 +8,21 @@ from increment.semantics.models import Metric
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from increment.errors import RefusalSpec
+    from increment.errors import CodedError, RefusalSpec
+
+
+@dataclass(frozen=True, slots=True)
+class _WarehouseCupedFitEvidence:
+    fit: Any
+    arm_order: tuple[str, ...]
+    withheld: tuple[tuple[str, CodedError], ...] = ()
+
+
+def warehouse_cuped_fit_evidence(
+    fit: Any, arm_order: tuple[str, ...], withheld: tuple[tuple[str, CodedError], ...] = ()
+) -> _WarehouseCupedFitEvidence:
+    """Build the single warehouse-fit envelope used by live and fitted sources."""
+    return _WarehouseCupedFitEvidence(fit, tuple(arm_order), tuple(withheld))
 
 
 @dataclass(frozen=True, slots=True)

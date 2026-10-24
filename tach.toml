@@ -236,7 +236,7 @@ depends_on = [
 [[modules]]
 path = "increment.sources"
 depends_on = [
-  "increment._canonical", "increment._cuped_evidence", "increment._immutable", "increment._source_identity",
+  "increment._canonical", "increment._cuped_evidence", "increment._evidence_types", "increment._immutable", "increment._source_identity",
   "increment._evidence_refusals",
   "increment.estimation.decision_types",
   "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",
@@ -357,7 +357,7 @@ depends_on = [
 [[modules]]
 path = "increment.query"
 depends_on = [
-  "increment._analysis_config", "increment._canonical", "increment._cuped_evidence", "increment._immutable", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
+  "increment._analysis_config", "increment._canonical", "increment._cuped_evidence", "increment._evidence_types", "increment._immutable", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
   "increment._evidence_refusals",
   "increment._source_operations", "increment._source_types",
   "increment.winsor",

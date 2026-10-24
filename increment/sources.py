@@ -1693,10 +1693,8 @@ class MomentsSource(SequentialSourceMixin):
             invalid_evidence("fitted evidence cannot change its breakout fit scope")
         if control != state.control or tuple(arm_order) != tuple(state.identity[6]):
             invalid_evidence("fitted evidence arm or control scope differs from the requested fit")
-        from increment._cuped_evidence import (
-            finalize_fitted_multicovariate,
-            warehouse_cuped_fit_evidence,
-        )
+        from increment._cuped_evidence import finalize_fitted_multicovariate
+        from increment._evidence_types import warehouse_cuped_fit_evidence
 
         withheld = []
         for arm, encoded_context in state.refusal_contexts:

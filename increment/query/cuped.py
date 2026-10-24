@@ -5,10 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
-from increment._cuped_evidence import (
+from increment._cuped_evidence import categorical_identity, method_key
+from increment._evidence_types import (
     _WarehouseCupedFitEvidence,
-    categorical_identity,
-    method_key,
     warehouse_cuped_fit_evidence,
 )
 from increment.estimation.cuped.cells import fit_categorical_cells
