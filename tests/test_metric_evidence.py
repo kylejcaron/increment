@@ -115,7 +115,10 @@ def _normalize_warehouse_replay_rows(rows):
 def _warehouse_fit_payload(cube_path):
     rows = pq.read_table(cube_path).to_pylist()
     return [
-        json.loads(row["cuped_evidence"])["evidence"]["fit_state"]
+        {
+            key: json.loads(row["cuped_evidence"])["evidence"][key]
+            for key in ("fit_state", "inference_summary")
+        }
         for row in rows
         if row.get("record_kind") == "cuped_evidence" and row.get("cuped_evidence")
     ]
