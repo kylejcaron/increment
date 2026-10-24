@@ -108,7 +108,7 @@ class EvidenceScope:
     population: Literal["assigned", "triggered"] = "assigned"
     grain: Literal["total", "daily", "asof"] | None = None
     breakouts: tuple[BreakoutIdentity, ...] = ()
-    configs: tuple[Any, ...] = ()
+    configs: tuple[Any, ...] | None = None
     uptake_facts: tuple[str, ...] = ()
     snapshot: bool = False
     execution: bool = False
