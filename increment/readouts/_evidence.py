@@ -7,6 +7,7 @@ from typing import Any, Literal, cast, overload
 
 from increment._evidence_refusals import require_evidence
 from increment._evidence_types import (
+    BreakoutRoute,
     BreakoutSlice,
     BreakoutSlices,
     BreakoutSlicesRequest,
@@ -15,6 +16,7 @@ from increment._evidence_types import (
     ComplianceRequest,
     ComplianceSeriesRequest,
     DayAxisRequest,
+    DayAxisRoute,
     DayAxisRows,
     EvidenceScope,
 )
@@ -43,8 +45,6 @@ MOMENTS_ROUTE = "moments"
 PANEL_ROUTE = "panel"
 UNSUPPORTED_ROUTE = "unsupported"
 SourceRoute = Literal["artifact", "native", "moments", "panel"]
-DayAxisRoute = Literal["artifact", "moments", "native"]
-BreakoutRoute = Literal["artifact", "native", "panel", "unsupported"]
 
 
 def source_route(src: MomentSource) -> SourceRoute:

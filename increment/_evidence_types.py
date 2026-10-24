@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from increment.semantics.models import Breakout, Metric
 
+BreakoutRoute = Literal["artifact", "native", "panel", "unsupported"]
+DayAxisRoute = Literal["artifact", "moments", "native"]
+
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -56,7 +60,7 @@ class BreakoutSlice:
 
 @dataclass(frozen=True, slots=True)
 class BreakoutSlices:
-    route: str
+    route: BreakoutRoute
     slices: tuple[BreakoutSlice, ...]
 
 
@@ -72,7 +76,7 @@ class BreakoutUnitRowsRequest:
 @dataclass(frozen=True, slots=True)
 class BreakoutUnitRows:
     identity: BreakoutIdentity
-    route: str
+    route: BreakoutRoute
     frame: Any
     unit_frame_has_dimension: bool
 
@@ -96,7 +100,7 @@ class DayAxisRows:
     """Acquired daily/as-of row slices and the source view used to read them."""
 
     source: Any
-    route: str
+    route: DayAxisRoute
     slices: Iterator[Any]
 
 

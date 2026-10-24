@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import _Unset, normalize_display_correction
-from increment._evidence_types import ComplianceSeriesRequest, DayAxisRequest
+from increment._evidence_types import ComplianceSeriesRequest, DayAxisRequest, DayAxisRoute
 from increment._frame_panel import _day_axis_label_order
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
@@ -64,7 +64,6 @@ from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     MOMENTS_ROUTE,
     NATIVE_ROUTE,
-    DayAxisRoute,
     day_axis_route,
     load_compliance_series,
     load_day_axis_rows,

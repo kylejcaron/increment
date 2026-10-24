@@ -11,6 +11,7 @@ from increment._analysis_config import _Unset, overlay_configs
 from increment._day_axis import _TRIGGER_UNSUPPORTED
 from increment._evidence_types import (
     BreakoutIdentity,
+    BreakoutRoute,
     BreakoutSlice,
     BreakoutSlicesRequest,
     EvidenceScope,
@@ -22,7 +23,6 @@ from increment.readouts._evidence import (
     NATIVE_ROUTE,
     PANEL_ROUTE,
     UNSUPPORTED_ROUTE,
-    BreakoutRoute,
     breakout_route,
     evidence_scope,
     load_breakout_evidence,

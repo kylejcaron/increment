@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset
-from increment._day_axis import _TRIGGER_UNSUPPORTED
+from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
@@ -26,7 +26,6 @@ from increment.errors import refuse as _refuse
 from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     NATIVE_ROUTE,
-    DayAxisRoute,
     day_axis_route,
 )
 from increment.readouts._requests import _design_compliance_only, _validate_run_request

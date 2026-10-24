@@ -680,7 +680,7 @@ expose = [
 [[interfaces]]
 from = ["increment._day_axis"]
 expose = [
-  "DayAxisReadouts", "EvidenceSlice", "validate_day_axis",
+  "DayAxisReadouts", "EvidenceSlice", "DayAxisRoute", "validate_day_axis",
   "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED",
 ]
 
@@ -688,7 +688,7 @@ expose = [
 from = ["increment._evidence_types"]
 expose = [
   "EvidenceScope", "BreakoutIdentity", "BreakoutSlicesRequest", "BreakoutSlice", "BreakoutSlices",
-  "BreakoutUnitRowsRequest", "BreakoutUnitRows",
+  "BreakoutUnitRowsRequest", "BreakoutUnitRows", "BreakoutRoute", "DayAxisRoute",
   "DayAxisRequest", "DayAxisRows", "ComplianceRequest", "ComplianceSeriesRequest",
   "MetricEvidence", "MetricEvidenceRequest",
   "_WarehouseCupedFitEvidence", "warehouse_cuped_fit_evidence",
