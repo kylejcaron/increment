@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
     from increment._frame_validation import SwitchbackSchedule
     from increment._metric_specs import MetricsArg, MetricSpec
+    from increment._source_types import EvidenceCapabilities
     from increment.power.switchback import SwitchbackBaseline
     from increment.semantics.models import AnalysisPlan, Metric
 
@@ -264,6 +265,27 @@ class FrameSwitchbackSource:
     contrast context, and construction diagnostics. Raw panel rows are
     released after eager validation and reduction.
     """
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        from increment._source_types import EvidenceCapabilities
+
+        return EvidenceCapabilities(
+            kind="switchback",
+            grains=frozenset(),
+            breakouts=(),
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=frozenset({"assigned"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
 
     def __init__(
         self,

@@ -180,7 +180,7 @@ depends_on = [
   "increment._analysis_config",
   "increment.errors", "increment.estimation.asymptotic_mean", "increment.estimation.sequential",
   "increment.semantics", "increment.sequential_state",
-    "increment._window",
+  "increment._window",
 ]
 
 [[modules]]
@@ -341,6 +341,7 @@ depends_on = [
 [[modules]]
 path = "increment.switchback"
 depends_on = [
+  "increment._source_types",
   "increment._frame_validation", "increment._metric_specs", "increment._study",
   "increment.decision", "increment.errors", "increment.estimation", "increment.power.switchback", "increment.semantics",
   "increment._unit_cycle",

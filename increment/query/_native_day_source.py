@@ -32,7 +32,12 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
-from increment.sources import ComplianceSummary, SourceContext, SourceOperation
+from increment.sources import (
+    ComplianceSummary,
+    EvidenceCapabilities,
+    SourceContext,
+    SourceOperation,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -167,6 +172,29 @@ class _DaySource:
     capabilities: frozenset[Grain] = frozenset({"daily", "asof"})
     operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        return EvidenceCapabilities(
+            kind="definitions",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="warehouse",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=(
+                frozenset({"assigned", "triggered"})
+                if self._experiment.trigger is not None
+                else frozenset({"assigned"})
+            ),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
 
     # Keep source callbacks together: construction and cache state form one adapter.
     def __init__(  # noqa: PLR0913

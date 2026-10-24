@@ -15,15 +15,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from increment._analysis_config import effective_methods
 from increment._literals import Correction, ValueScale
-from increment._source_types import (
-    ConfiguredBreakoutSource,
-    CovariateAvailability,
-    CovariateColumnCheck,
-    ScalarBindingSource,
-    ScalarBreakoutMomentSource,
-    ScalarMethodMomentSource,
-    SingleScalarFamilySource,
-)
+from increment._source_types import CovariateColumnCheck, declared_evidence
 from increment.errors import (
     RefusalSpec,
     refuse,
@@ -312,9 +304,8 @@ class ReadoutRequest:
         if len(metrics) != len(configs):
             _raise("readout.request.readoutrequest_requires_one_resolved")
         context = source.context
-        available_covariates = (
-            source.available_covariates if isinstance(source, CovariateAvailability) else None
-        )
+        evidence = declared_evidence(source)
+        scalar = evidence.scalar
         request = cls(
             context=context,
             metrics=tuple(metrics),
@@ -323,40 +314,24 @@ class ReadoutRequest:
             grain=grain,
             by=tuple(by),
             dimension=dimension,
-            available_covariates=available_covariates,
+            available_covariates=evidence.available_covariates,
             scalar_bindings=(
-                MappingProxyType(
-                    {metric: tuple(bindings) for metric, bindings in source.scalar_bindings.items()}
-                )
-                if isinstance(source, ScalarBindingSource)
+                MappingProxyType(dict(scalar.bindings))
+                if scalar is not None and scalar.bindings is not None
                 else None
             ),
-            scalar_moments_only=(
-                source.scalar_moments_only
-                if isinstance(source, SingleScalarFamilySource)
-                else False
-            ),
-            scalar_recipe_fixed=(
-                source.scalar_recipe_fixed
-                if isinstance(source, SingleScalarFamilySource)
-                else False
-            ),
-            scalar_recipe_configs=(
-                source.scalar_recipe_configs if isinstance(source, SingleScalarFamilySource) else ()
-            ),
-            scalar_anonymous_metrics=(
-                source.scalar_anonymous_metrics
-                if isinstance(source, SingleScalarFamilySource)
-                else frozenset()
-            ),
-            scalar_method_evidence=isinstance(source, ScalarMethodMomentSource),
-            scalar_breakout_evidence=isinstance(
-                source, (ScalarBreakoutMomentSource, ConfiguredBreakoutSource)
-            ),
-            capabilities=frozenset(getattr(source, "capabilities", {"total"})),
-            source_breakouts=tuple(getattr(source, "breakouts", ())),
+            scalar_moments_only=scalar.moments_only if scalar is not None else False,
+            scalar_recipe_fixed=scalar.recipe_fixed if scalar is not None else False,
+            scalar_recipe_configs=scalar.recipe_configs if scalar is not None else (),
+            scalar_anonymous_metrics=scalar.anonymous_metrics
+            if scalar is not None
+            else frozenset(),
+            scalar_method_evidence=scalar.method_evidence if scalar is not None else False,
+            scalar_breakout_evidence=scalar.breakout_evidence if scalar is not None else False,
+            capabilities=evidence.grains,
+            source_breakouts=evidence.breakouts,
             source_name=type(source).__name__,
-            shape=getattr(source, "shape", None),
+            shape=evidence.shape,
             cluster=context.cluster,
             population=population,
             estimands=tuple(estimands) if estimands is not None else None,

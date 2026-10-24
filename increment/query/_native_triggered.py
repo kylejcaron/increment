@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment.query._native_refusals import _refuse_operation
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._source_types import EvidenceCapabilities
     from increment.sources import Grain
 
 
@@ -23,6 +25,26 @@ class TriggeredPopulationSource:
 
     operations: frozenset[SourceOperation] = frozenset()
     shape: Literal["unit_summary", "unit_panel"] | None = None
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        evidence = self._source.evidence
+        scalar = evidence.scalar
+        return replace(
+            evidence,
+            kind="definitions",
+            grains=self.capabilities,
+            breakouts=tuple(self.breakouts),
+            shape=self.shape,
+            operations=self.operations,
+            count_grains=frozenset(
+                {"unit"} | ({"cluster"} if "cluster" in evidence.count_grains else set())
+            ),
+            populations=frozenset({"triggered"}),
+            sequential_capture="none",
+            scalar=replace(scalar, breakout_evidence=False) if scalar is not None else None,
+        )
+
     _population: Literal["triggered"] = "triggered"
 
     def __init__(self, source: Any) -> None:

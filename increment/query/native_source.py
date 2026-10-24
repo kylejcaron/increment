@@ -42,6 +42,7 @@ from increment._frame_validation import (
 from increment._immutable import _FrozenMapping
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
+from increment._source_types import EvidenceCapabilities, ScalarEvidenceDeclaration
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
 from increment.errors import CodedError, RefusalSpec
 from increment.errors import refuse as _refuse
@@ -230,6 +231,40 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         }
     )
     shape: Literal["unit_summary", "unit_panel"] | None = None
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        return EvidenceCapabilities(
+            kind="definitions",
+            grains=self.capabilities,
+            breakouts=tuple(self.breakouts),
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=True,
+            raw_outcomes=True,
+            method_fit="warehouse",
+            compliance_axis="asof" if isinstance(self.context.design, Encouragement) else "none",
+            count_grains=frozenset(
+                {"unit", "assignment"}
+                | ({"cluster"} if self.context.cluster is not None else set())
+                | ({"triggered"} if self.context.trigger_name is not None else set())
+            ),
+            populations=frozenset(
+                {"assigned"} | ({"triggered"} if self.context.trigger_name is not None else set())
+            ),
+            sequential_capture="asof",
+            scalar=ScalarEvidenceDeclaration(
+                bindings=None,
+                moments_only=False,
+                recipe_fixed=False,
+                recipe_configs=(),
+                anonymous_metrics=frozenset(),
+                method_evidence=True,
+                breakout_evidence=True,
+                covariate_grains=None,
+            ),
+            available_covariates=None,
+        )
 
     def __init__(
         self,

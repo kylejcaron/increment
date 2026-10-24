@@ -50,8 +50,12 @@ parity matrix and a guide — not every loader.
 | `calibration/` | Certification campaigns | be collected by a bare `pytest` |
 
 - Statistics code receives data (rows, moments, fitted evidence), never a source object. Only the evidence layer's acquisition functions and the public facades (`increment/cate.py::estimate_cate`; in `increment/estimation/`: `adjust.py::estimate_ate` and `observational_evidence`, `quantile.py::estimate_quantile_lift`, `winsor.py::raw_state_from_source`) call a source; a facade loads and delegates. Some statistics code still calls a source directly; do not add another. The boundary is enforced by `tests/test_evidence_boundary.py`.
-- What a loader can answer is declared once on the loader and checked before any
-  data is read. Do not probe a source for capabilities.
+- Each built-in loader declares what it can answer once on the loader.
+  Readout requests use that declaration; custom sources without one retain the
+  legacy fallback. Built-in declarations are field-specific to each loader, and
+  wrappers narrow the wrapped declaration to the evidence they expose; only the
+  custom source fallback in `declared_evidence` may probe protocols and
+  attributes. `tests/test_evidence_capabilities.py` pins the declaration contract.
 - One hazard, one refusal code, on every constructor. Raise the registered
   `RefusalSpec`; never add a per-loader variant of an existing hazard.
 - `tach check` enforces module dependencies; add one only where the table allows.
