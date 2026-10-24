@@ -512,7 +512,7 @@ def test_percentile_winsorization_export_reloads_resolved_bounds(con, tmp_path):
     assert all(row.winsor_upper_bound == pytest.approx(expected_bound) for row in output_rows)
     with pytest.raises(CapabilityError) as exc_info:
         _reloaded.run()
-    assert exc_info.value.code == "estimation.winsor.raw_state_required"
+    assert exc_info.value.code == "evidence.raw_outcomes_unavailable"
 
 
 def test_portable_subset_validates_only_selected_winsorization_declarations(tmp_path):

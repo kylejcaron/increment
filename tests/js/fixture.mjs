@@ -55,8 +55,8 @@ export const PAYLOAD = {
       owner: "increment.query.native_source",
       probe: "tests/test_composition_matrix.py::test_capability_pairs",
       refusal: {
-        code: "source.moments.cluster_grain",
-        code_display: "source.moments.cluster_grain",
+        code: "evidence.cluster_unavailable",
+        code_display: "evidence.cluster_unavailable",
         exception: "CapabilityError",
         fragment: "wire format carries no cluster marker",
       },

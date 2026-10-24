@@ -1667,12 +1667,8 @@ def test_clustered_artifact_moments_transport_refuses_before_writing(tmp_path: P
                 destination.write_bytes(b"preserve")
                 with pytest.raises(CapabilityError) as raised:
                     adopted.export(destination)
-                assert raised.value.code == "source.moments.cluster_grain"
-                assert raised.value.context["operation"] == "export_moments"
-                assert raised.value.context["source"] == "artifact"
-                assert raised.value.context["cluster"] == "store_id"
-                assert raised.value.context["design"] == "randomized"
-                assert raised.value.context["mechanism"] == "randomized"
+                assert raised.value.code == "evidence.cluster_unavailable"
+                assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
                 assert destination.read_bytes() == b"preserve"
     finally:
         con.disconnect()

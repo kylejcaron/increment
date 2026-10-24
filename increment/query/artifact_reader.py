@@ -1175,10 +1175,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
             and getattr(metric, "winsorization", None) is not None
             and "y_raw" not in totals.columns
         ):
-            from increment.winsor import winsor_refuse
+            from increment._evidence_refusals import refuse_raw_outcomes
 
-            winsor_refuse(
-                "raw_state_required", "Artifact reduction did not retain pre-winsor outcomes."
+            refuse_raw_outcomes(
+                self, offered=False, route="use an artifact that retains pre-winsor outcomes"
             )
         if outcome_stage == "raw" and "y_raw" in totals.columns:
             columns["y"] = totals.y_raw

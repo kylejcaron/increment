@@ -53,7 +53,7 @@ def test_observational_diagnostics_match_on_every_supported_ingress(builder):
         "from_unit_summary",
         "from_unit_panel",
     }
-    assert result.refusals["from_moments"] == "source.moments.covariate_unavailable"
+    assert result.refusals["from_moments"] == "evidence.covariate_unavailable"
     assert "from_switchback_panel" in case.waive
 
 
@@ -72,7 +72,7 @@ def test_observational_conversion_diagnostics_match_on_every_supported_ingress(b
         "from_unit_summary",
         "from_unit_panel",
     }
-    assert result.refusals["from_moments"] == "source.moments.covariate_unavailable"
+    assert result.refusals["from_moments"] == "evidence.covariate_unavailable"
     assert "from_switchback_panel" in case.waive
 
 

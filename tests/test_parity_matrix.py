@@ -216,8 +216,8 @@ def test_percentile_winsor_three_arm_retained_state_matches_across_supported_ing
         "from_unit_summary",
     }
     assert result.refusals == {
-        "from_unit_panel": "estimation.winsor.raw_state_required",
-        "from_moments": "estimation.winsor.raw_state_required",
+        "from_unit_panel": "evidence.raw_outcomes_unavailable",
+        "from_moments": "evidence.raw_outcomes_unavailable",
     }
 
 
@@ -239,8 +239,8 @@ def test_percentile_winsor_zero_outcomes_match_across_supported_ingresses(
         "from_unit_summary",
     }
     assert result.refusals == {
-        "from_unit_panel": "estimation.winsor.raw_state_required",
-        "from_moments": "estimation.winsor.raw_state_required",
+        "from_unit_panel": "evidence.raw_outcomes_unavailable",
+        "from_moments": "evidence.raw_outcomes_unavailable",
     }
 
 
@@ -277,12 +277,12 @@ def test_percentile_winsor_unsupported_ingress_classifications_remain_source_spe
         verdicts = matrix.classify(cell).legs["rows"]
         assert verdicts["from_moments"].status == "source_limited"
         assert verdicts["from_moments"].outcome == matrix.Refuses(
-            "estimation.winsor.raw_state_required"
+            "evidence.raw_outcomes_unavailable"
         )
         if missing in ("error", "zero"):
             assert verdicts["from_unit_panel"].status == "source_limited"
             assert verdicts["from_unit_panel"].outcome == matrix.Refuses(
-                "estimation.winsor.raw_state_required"
+                "evidence.raw_outcomes_unavailable"
             )
         else:
             assert verdicts["from_unit_panel"].outcome == matrix.Refuses(

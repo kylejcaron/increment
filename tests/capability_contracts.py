@@ -184,7 +184,7 @@ CUPED_LINEAR_INTERACTIONS = (
                 "from_unit_panel",
                 InteractionDisposition(
                     "source_limited",
-                    "source.frame_panel.cluster_grain",
+                    "evidence.cluster_unavailable",
                     "The panel is collapsed to one row per unit before clustering could apply.",
                     "construction",
                     "tests/test_cuped_linear_acceptance.py::test_cuped_linear_interactions_preserve_ingress_specific_refusals",

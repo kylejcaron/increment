@@ -170,7 +170,7 @@ order statistic needs, and two different requests reach it:
 
   | Design and request | `run()` raises |
   |---|---|
-  | randomized, two-sided zero null | `source.moments.unit_grain` (those moments are not quantile data) |
+  | randomized, two-sided zero null | `evidence.unit_rows_unavailable` (a moments cube holds no per-unit outcomes) |
   | randomized, one-sided `alternative`, marginless guardrail, or relative or absolute margin | `readout.metric.quantile_alternative` (refused first) |
   | `Observational`, two-sided zero null | `readout.observational.quantile` (the estimator refusal takes precedence over the source limit, because no source could supply it an input) |
   | `Observational`, one-sided `alternative`, marginless guardrail, or absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
@@ -182,4 +182,4 @@ order statistic needs, and two different requests reach it:
   `analysis.planning_baseline.quantile_source_unavailable`; these source limits
   fire before any estimator reads the cube, under either design. A clustered
   cube cannot be exported for a quantile in the first place
-  (`source.moments.cluster_grain`).
+  (`evidence.cluster_unavailable`).

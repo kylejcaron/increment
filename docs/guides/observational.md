@@ -998,7 +998,7 @@ including its working-approximation qualifications, rather than adding coverage.
 
 Conversion-row parity is exercised for `from_unit_summary`, `from_unit_panel`,
 `from_definitions` and `from_unit_day_artifact`. Observational adjusted reads from
-`from_moments` refuse upstream with `source.moments.covariate_unavailable`;
+`from_moments` refuse upstream with `evidence.covariate_unavailable`;
 `from_switchback_panel` refuses with `source.frame.switchback.identification`.
 The accepted estimands are `ate` and `overlap_subpopulation_ate`, on relative scale.
 
@@ -1028,7 +1028,7 @@ bound is not supplied by this construction.
   covariate that genuinely varies within a unit refuses by name too
   (`frame.frame_panel.unit_covariate_varies`), naming the offending units.
   A moments-only source (`from_moments`) raises `CapabilityError`
-  (`source.moments.covariate_unavailable`) naming the covariates: a
+  (`evidence.covariate_unavailable`) naming the covariates: a
   moments cube has no unit grain to attach weights to.
 - **Quantile metrics refuse.** No observational quantile estimator exists:
   the distribution-free order-statistic interval assumes independently

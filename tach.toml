@@ -238,7 +238,6 @@ path = "increment.sources"
 depends_on = [
   "increment._canonical", "increment._cuped_evidence", "increment._immutable", "increment._source_identity",
   "increment._evidence_refusals",
-  "increment.winsor",
   "increment.estimation.decision_types",
   "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",
   "increment.decision", "increment.decision_wire", "increment.errors", "increment.plan", "increment.semantics",

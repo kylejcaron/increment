@@ -169,35 +169,35 @@ def test_absent_grains_and_extensions_are_stable_coded_refusals(
         if adapter.name in {"frame_summary", "frame_panel"}:
             _expect_code(lambda: source.sql(), "evidence.operation_unavailable")
         elif adapter.name == "moments":
-            _expect_code(lambda: source.unit_frame(metric), "source.moments.unit_grain")
+            _expect_code(lambda: source.unit_frame(metric), "evidence.unit_rows_unavailable")
             assert source.unit_counts() == {"control": 2, "treatment": 2}
             _expect_code(lambda: source.sql(), "evidence.operation_unavailable")
         elif adapter.name == "legacy_fixed10":
-            _expect_code(lambda: source.unit_frame(metric), "source.moments.unit_grain")
+            _expect_code(lambda: source.unit_frame(metric), "evidence.unit_rows_unavailable")
             _expect_code(lambda: source.unit_counts(), "source.moments.assignment_counts")
             _expect_code(lambda: source.sql(), "evidence.operation_unavailable")
         elif adapter.name == "legacy_fixed10_with_counts":
-            _expect_code(lambda: source.unit_frame(metric), "source.moments.unit_grain")
+            _expect_code(lambda: source.unit_frame(metric), "evidence.unit_rows_unavailable")
             assert source.unit_counts() == {"control": 2, "treatment": 2}
             _expect_code(lambda: source.sql(), "evidence.operation_unavailable")
         elif adapter.name == "breakout_moments":
-            _expect_code(lambda: source.unit_frame(metric), "source.breakout.unit_grain")
+            _expect_code(lambda: source.unit_frame(metric), "evidence.unit_rows_unavailable")
             _expect_code(lambda: source.unit_counts(), "source.breakout.assignment_counts")
             _expect_code(lambda: source.sql(), "evidence.operation_unavailable")
         elif adapter.name == "sql_totals":
-            _expect_code(lambda: source.unit_frame(metric), "source.sql.unit_grain")
-            _expect_code(lambda: source.cluster_counts(), "source.sql.cluster_grain")
+            _expect_code(lambda: source.unit_frame(metric), "evidence.unit_rows_unavailable")
+            _expect_code(lambda: source.cluster_counts(), "evidence.cluster_unavailable")
             _expect_code(lambda: source.sql(grain="daily"), "evidence.grain_unavailable")
         elif adapter.name == "definitions":
             _expect_code(
                 lambda: source.day_source(metrics=[metric]).unit_frame(metric),
-                "source.native.unit_grain",
+                "evidence.unit_rows_unavailable",
             )
-            _expect_code(lambda: source.cluster_counts(), "source.native.warehouse_cluster_grain")
+            _expect_code(lambda: source.cluster_counts(), "evidence.cluster_unavailable")
             _expect_code(lambda: source.sql(grain="daily"), "evidence.grain_unavailable")
         else:
             _expect_code(lambda: source.unit_frame(metric), "source.frame.unit_frame_panel")
-            _expect_code(lambda: source.cluster_counts(), "source.frame.cluster_grain")
+            _expect_code(lambda: source.cluster_counts(), "evidence.cluster_unavailable")
     finally:
         source.close()
 

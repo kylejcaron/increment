@@ -641,7 +641,7 @@ def test_from_moments_observational_hits_capability_error():
     an = Analysis.from_moments(rows, metrics={"revenue": "mean"}, design=_OBS, plan=AnalysisPlan())
     with pytest.raises(CapabilityError) as exc_info:
         lift_rows(an.run())
-    assert exc_info.value.code == "source.moments.covariate_unavailable"
+    assert exc_info.value.code == "evidence.covariate_unavailable"
 
 
 def test_from_unit_panel_observational_missing_covariate_column():
@@ -2193,7 +2193,7 @@ def _scalar_mean_cube_rows():
         (_OBS, "guardrail", "run", "readout.metric.quantile_alternative"),
         (_OBS, "margin_abs", "run", "readout.metric.quantile_alternative"),
         (_OBS, "margin", "construct", "plan.observational.relative_margin"),
-        (None, "two-sided", "run", "source.moments.unit_grain"),
+        (None, "two-sided", "run", "evidence.unit_rows_unavailable"),
         (None, "alternative", "run", "readout.metric.quantile_alternative"),
         (None, "guardrail", "run", "readout.metric.quantile_alternative"),
         (None, "margin_abs", "run", "readout.metric.quantile_alternative"),

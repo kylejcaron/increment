@@ -1896,7 +1896,10 @@ class TestPlanningBaselineParity:
             ),
         )
         assert isinstance(panel_refusal, CapabilityError)
-        assert panel_refusal.context["cluster"] == "household_id"
+        assert panel_refusal.code == "evidence.cluster_unavailable"
+        assert set(panel_refusal.context) == {"constructor", "requested", "offered", "route"}
+        assert panel_refusal.context["requested"] == "household_id"
+        assert panel_refusal.context["offered"] == ()
 
         clustered = Analysis.from_unit_summary(
             _unit_summary_frame(with_cluster=True),
@@ -1913,7 +1916,10 @@ class TestPlanningBaselineParity:
             lambda: clustered.export(tmp_path / "clustered-moments.parquet"),
         )
         assert isinstance(moments_refusal, CapabilityError)
-        assert moments_refusal.context["cluster"] == "household_id"
+        assert moments_refusal.code == "evidence.cluster_unavailable"
+        assert set(moments_refusal.context) == {"constructor", "requested", "offered", "route"}
+        assert moments_refusal.context["requested"] == "household_id"
+        assert moments_refusal.context["offered"] == ()
         assert not (tmp_path / "clustered-moments.parquet").exists()
 
     def test_encouragement_compliance_matches_across_constructors(self):

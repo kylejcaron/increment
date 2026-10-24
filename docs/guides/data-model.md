@@ -573,7 +573,7 @@ What a clustered experiment supports:
 | Views | Total grain: `run()`. | Daily, as-of, and cohort views, breakouts, and factors: none carries a cluster-robust variance. |
 | Designs | Randomized; observational on unadjusted, IPTW, DML, and AIPW; encouragement ITT and the additive LATE. | Under `Encouragement`: CUPED, ratio metrics, and the complier-relative `late` row ([why](cuped.md#clustered-encouragement-designs)). |
 | Decision stats | Read the interval directly. | `chance_to_beat` and `prob_favorable` on every clustered row: sampling intervals do not provide a Normal posterior. |
-| Exports | Encouragement exports, through the versioned compliance payload. | Ordinary clustered exports from `from_definitions`, `from_unit_summary`, and `from_unit_day_artifact`: `source.moments.cluster_grain`. Analyze the source directly. |
+| Exports | Encouragement exports, through the versioned compliance payload. | Ordinary clustered exports from `from_definitions`, `from_unit_summary`, and `from_unit_day_artifact`: `evidence.cluster_unavailable`. Analyze the source directly. |
 | Labels | One arm per cluster in randomized and encouragement designs; observational dependence clusters may span arms. | A null cluster label; a label in both arms of a randomized or encouragement design. |
 
 !!! warning "Independent information comes from clusters, not rows"

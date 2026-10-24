@@ -252,7 +252,7 @@ def test_unit_counts_on_a_plain_summary_source() -> None:
     assert src.unit_counts() == {"control": 198, "treatment": 182}
     with pytest.raises(CapabilityError) as raised:
         src.cluster_counts()
-    assert raised.value.code == "source.frame.cluster_grain"
+    assert raised.value.code == "evidence.cluster_unavailable"
 
 
 def test_unit_counts_ignore_first_metric_drop_and_declaration_order() -> None:

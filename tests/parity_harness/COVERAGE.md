@@ -82,10 +82,10 @@ A quantile has no moments representation, so no producer exports a quantile cube
 
 | Option | `run()` | `run_breakout()` | day-axis (4 methods) |
 |---|---|---|---|
-| none | `source.moments.unit_grain` (a cube holds no per-unit rows) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
+| none | `evidence.unit_rows_unavailable` (a cube holds no per-unit rows) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
 | ni_margin | `readout.metric.quantile_alternative` (`r3bg`) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
 | observational | `readout.observational.quantile` (estimator refusal) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
-| cluster | `source.moments.cluster_grain` (the producer cannot export a clustered cube) | same | same |
+| cluster | `evidence.cluster_unavailable` (the producer cannot export a clustered cube) | same | same |
 | sequential | `sequential.route.unsupported` from `from_moments` under `error`/`zero` (the exported construction-time checkpoint is replayed under a quantile declaration: scalar mean inference requires a mean, conversion or retention metric); `sequential.route.unsupported` under `drop` is raised earlier, by the mean producer's own registration (outcome-dependent row deletion), before any cube exists | same | same |
 | cuped, winsorization, any window | declaration: `frame.metric.cuped_does_apply`, `frame.metric.winsorization_applies_type`, `frame.metric.window_days_supported` (the replay's own `MetricSpec`) | same | same |
 

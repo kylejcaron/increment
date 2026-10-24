@@ -187,11 +187,6 @@ _FRAME_COMPLIANCE_DESIGN_MISMATCH = RefusalSpec(
     InvalidRequestError,
     template="requested design {requested_design!r} differs from source design {source_design!r}. {route}",
 )
-_FRAME_CLUSTER = RefusalSpec(
-    "source.frame.cluster_grain",
-    CapabilityError,
-    template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
-)
 _FRAME_INTERVENTION_GRAIN = RefusalSpec(
     "source.frame.intervention_grain_without_cluster",
     InvalidRequestError,
@@ -201,17 +196,6 @@ _FRAME_SEQUENTIAL_EXPOSURE = RefusalSpec(
     "source.frame.sequential_exposure_date",
     InvalidRequestError,
     template="{constructor}: sequential inference reveals units in exposure order, so it needs each unit's exposure date. {route}",
-)
-_PANEL_CLUSTER = RefusalSpec(
-    "source.frame_panel.cluster_grain",
-    CapabilityError,
-    lambda *, source, because, operation="cluster_counts()", cluster=None: (
-        f"{operation} is unavailable on {source}"
-        + (f" (cluster={cluster!r})" if cluster is not None else "")
-        + f": {because}. The randomization-grain count needs a declared cluster "
-        "column; build the source with from_unit_summary(..., cluster=...) or "
-        "analyse from definitions declaring Experiment.cluster."
-    ),
 )
 
 
@@ -753,13 +737,17 @@ class FrameTotalsSource(SequentialSourceMixin):
         cluster labels were validated non-null and single-arm at
         construction, so every unit contributes to exactly one arm's count.
         """
-        if self._context.cluster is None:
-            refuse(
-                _FRAME_CLUSTER,
-                source="this frame source",
-                because="no cluster column was declared",
+        from increment._evidence_refusals import refuse_cluster, require_evidence
+
+        cluster = self._context.cluster
+        if cluster is None:
+            require_evidence(self, cluster=True)
+            refuse_cluster(
+                self,
+                offered=(),
+                route="use a source that retains cluster identities or cluster counts",
             )
-        return self._per_group(nw.col(self._context.cluster).n_unique())
+        return self._per_group(nw.col(cluster).n_unique())
 
     def compliance_dates(self) -> Sequence[object]:
         refuse(
@@ -2012,11 +2000,9 @@ class FramePanelSource(SequentialSourceMixin):
         for a retention metric.
         """
         if outcome_stage == "raw":
-            from increment.winsor import winsor_refuse
+            from increment._evidence_refusals import require_evidence
 
-            winsor_refuse(
-                "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
-            )
+            require_evidence(self, raw_outcomes=True)
         spec = self._unit_total_spec(metric)
         admitted = _admit_panel_totals(
             self._sparse_panel,
@@ -2104,13 +2090,14 @@ class FramePanelSource(SequentialSourceMixin):
         return counts
 
     def cluster_counts(self) -> dict[str, int]:
+        from increment._evidence_refusals import CLUSTER_UNAVAILABLE, refuse
+
         refuse(
-            _PANEL_CLUSTER,
-            source="the panel shape",
-            because=(
-                "from_unit_panel takes no cluster= argument, so no randomization "
-                "grain coarser than the unit was ever declared"
-            ),
+            CLUSTER_UNAVAILABLE,
+            constructor="FramePanelSource",
+            requested="cluster",
+            offered=(),
+            route="use from_unit_summary with cluster identities",
         )
 
     def compliance_dates(self) -> Sequence[object]:
@@ -2530,20 +2517,14 @@ def from_unit_panel(  # noqa: PLR0913
         A retention metric read at ``grain="daily"``.
     """
     if cluster is not None:
-        # Same shape problem as the CUPED covariate: a repeated per-day
-        # cluster label isn't decidable from arithmetic alone as one label vs. many.
+        from increment._evidence_refusals import CLUSTER_UNAVAILABLE, refuse
+
         refuse(
-            _PANEL_CLUSTER,
-            source="a per-day panel",
-            because=(
-                "the panel is collapsed to one row per unit before clustering "
-                "could apply, and the collapse is ambiguous on this shape. "
-                "Aggregate to one row per unit yourself and use "
-                "from_unit_summary(cluster=...) instead (clustered inference is "
-                "total-grain only, so the day axis is given up)"
-            ),
-            operation="from_unit_panel(cluster=...)",
-            cluster=cluster,
+            CLUSTER_UNAVAILABLE,
+            constructor="Analysis.from_unit_panel",
+            requested=cluster,
+            offered=(),
+            route="aggregate to one row per unit and use from_unit_summary(cluster=...)",
         )
     return FramePanelSource.from_frame(
         frame,

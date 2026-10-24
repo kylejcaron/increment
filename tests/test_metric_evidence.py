@@ -647,7 +647,7 @@ def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_pa
         assert "estimation.adjust.skip_unsupported_metric" in {
             getattr(warning.message, "code", None) for warning in caught
         }
-        assert raised.value.code == "source.moments.unit_grain"
+        assert raised.value.code == "evidence.unit_rows_unavailable"
         assert source.unit_frame_reads == 1
     finally:
         cube.close()

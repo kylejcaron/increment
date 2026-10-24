@@ -771,7 +771,7 @@ def test_moments_source_raw_refusal():
     source = MomentsSource([], metrics=[metric], study_id="e", plan=AnalysisPlan())
     with pytest.raises(CodedError) as error:
         source.unit_frame(metric, outcome_stage="raw")
-    assert error.value.code == "estimation.winsor.raw_state_required"
+    assert error.value.code == "evidence.raw_outcomes_unavailable"
 
 
 @pytest.mark.parametrize(

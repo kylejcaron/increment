@@ -144,6 +144,69 @@ def load_metric_evidence(src: MomentSource, request: MetricEvidenceRequest) -> M
     return _load_metric_evidence(src, request)
 
 
+def _load_percentile_winsor_evidence(
+    src: MomentSource, metric: Metric, control_group: str
+) -> MetricEvidence:
+    import narwhals as nw
+
+    from increment._evidence_refusals import require_evidence
+    from increment.estimation.winsor import raw_state_from_frame, winsor_preflight
+
+    context = src.context
+    winsor_preflight(metric, context)
+    population, missingness = winsor_identity(src, metric)
+    require_evidence(src, unit_rows=True, raw_outcomes=True)
+    raw_source = cast("RawOutcomeSource", src)
+    native = raw_source.unit_frame(metric, outcome_stage="raw")
+    frame = nw.from_native(native, eager_only=True)
+    observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
+    if not observed - {str(control_group)}:
+        return MetricEvidence(
+            cluster=context.cluster,
+            control_group=control_group,
+            rows=(),
+            unit_frame=None,
+            observed_arms=observed,
+            n_treatment_arms=0,
+            evidence_kind="unit_evidence_rows",
+            evidence_sha256=evidence_sha256,
+            evidence_count=evidence_count,
+            decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
+        )
+    raw = raw_state_from_frame(
+        native,
+        metric,
+        context=context,
+        population=population,
+        missingness=missingness,
+    )
+    from increment.estimation.winsor import build_winsor_references
+
+    treatments = tuple(arm.group_id for arm in raw.arms if arm.group_id != control_group)
+    references = {
+        (metric.name, treatment): reference
+        for treatment, reference in build_winsor_references(raw, control_group, treatments).items()
+    }
+    observed = frozenset(arm.group_id for arm in raw.arms)
+    # Keep the immutable raw state with the loaded evidence so repeated
+    # family passes reinvert without fetching or changing the cutoff pool.
+    return MetricEvidence(
+        cluster=src.context.cluster,
+        control_group=control_group,
+        rows=tuple(
+            {"group_id": arm.group_id, "_winsor_raw_state": raw, "_winsor_references": references}
+            for arm in raw.arms
+        ),
+        unit_frame=None,
+        observed_arms=observed,
+        n_treatment_arms=len(observed - {control_group}),
+        evidence_kind="unit_evidence_rows",
+        evidence_sha256=evidence_sha256,
+        evidence_count=evidence_count,
+        decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
+    )
+
+
 def _load_metric_evidence(  # noqa: PLR0915
     src: MomentSource,
     request: MetricEvidenceRequest,
@@ -181,70 +244,11 @@ def _load_metric_evidence(  # noqa: PLR0915
             ) as pinned:
                 return _load_metric_evidence(pinned, request, _snapshot_active=True)
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
-        import narwhals as nw
-
-        from increment.estimation.winsor import raw_state_from_frame, winsor_preflight
-
-        context = src.context
-        winsor_preflight(metric, context)
-        population, missingness = winsor_identity(src, metric)
-        raw_source = cast("RawOutcomeSource", src)
-        native = raw_source.unit_frame(metric, outcome_stage="raw")
-        frame = nw.from_native(native, eager_only=True)
-
-        observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
-        if not observed - {str(control_group)}:
-            return MetricEvidence(
-                cluster=context.cluster,
-                control_group=control_group,
-                rows=(),
-                unit_frame=None,
-                observed_arms=observed,
-                n_treatment_arms=0,
-                evidence_kind="unit_evidence_rows",
-                evidence_sha256=evidence_sha256,
-                evidence_count=evidence_count,
-                decision_evidence_components=(
-                    ("unit_evidence_rows", evidence_sha256, evidence_count),
-                ),
-            )
-        raw = raw_state_from_frame(
-            native,
-            metric,
-            context=context,
-            population=population,
-            missingness=missingness,
-        )
-        from increment.estimation.winsor import build_winsor_references
-
-        treatments = tuple(arm.group_id for arm in raw.arms if arm.group_id != control_group)
-        references = {
-            (metric.name, treatment): reference
-            for treatment, reference in build_winsor_references(
-                raw, control_group, treatments
-            ).items()
-        }
-        observed = frozenset(a.group_id for a in raw.arms)
-        # Keep the immutable raw state with the loaded evidence so repeated
-        # family passes reinvert without fetching or changing the cutoff pool.
-        return MetricEvidence(
-            cluster=src.context.cluster,
-            control_group=control_group,
-            rows=tuple(
-                {"group_id": a.group_id, "_winsor_raw_state": raw, "_winsor_references": references}
-                for a in raw.arms
-            ),
-            unit_frame=None,
-            observed_arms=observed,
-            n_treatment_arms=len(observed - {control_group}),
-            evidence_kind="unit_evidence_rows",
-            evidence_sha256=evidence_sha256,
-            evidence_count=evidence_count,
-            decision_evidence_components=(("unit_evidence_rows", evidence_sha256, evidence_count),),
-        )
+        return _load_percentile_winsor_evidence(src, metric, control_group)
     if getattr(metric, "type", None) == "quantile":
         import narwhals as nw
 
+        require_evidence(src, unit_rows=True)
         native = src.unit_frame(metric)
         frame = nw.from_native(native, eager_only=True)
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
@@ -492,6 +496,7 @@ def _load_metric_evidence(  # noqa: PLR0915
 
     covariate_names = tuple(item.name for item in covariates)
     acquired_columns = unit_frame_covariate_columns(covariate_names)
+    require_evidence(src, unit_rows=True, covariates=covariate_names)
     native = src.unit_frame(metric, covariates=covariate_names)
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)

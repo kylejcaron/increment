@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis.expr.types as ir
 
-from increment.errors import CapabilityError, RefusalSpec
-from increment.errors import refuse as _refuse
 from increment.query._native_refusals import _refuse_operation, _winsorization_bounds
 from increment.query.builders import (
     _censor_to_observable_window,
@@ -44,19 +42,6 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
     from increment.sources import Grain
-
-_NATIVE_UNIT_GRAIN = RefusalSpec(
-    "source.native.unit_grain",
-    CapabilityError,
-    template="'unit_frame' needs unit-grain rows, which this source does not retain -- only aggregated moments are available here. unit_frame() unavailable; use a frame-backed source (from_unit_summary / from_unit_panel) for unit-grain estimators.",
-    keys=frozenset({"method"}),
-)
-_NATIVE_CLUSTER = RefusalSpec(
-    "source.native.cluster_grain",
-    CapabilityError,
-    template="cluster_counts() is unavailable on {source}: day-axis views carry no cluster-robust variance -- a clustered experiment is refused before this source is ever constructed (Analysis._refuse_clustered_day_axis). The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
-    keys=frozenset({"because"}),
-)
 
 
 def _refuse_unsupported_day_metric(metric: Metric, *, operation: str) -> None:
@@ -618,13 +603,16 @@ class _DaySource:
         covariates: Sequence[str] = (),
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> NoReturn:
-        if outcome_stage == "raw":
-            from increment.winsor import winsor_refuse
+        from increment._evidence_refusals import refuse_unit_rows, require_evidence
 
-            winsor_refuse(
-                "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
-            )
-        _refuse(_NATIVE_UNIT_GRAIN, method="unit_frame")
+        if outcome_stage == "raw":
+            require_evidence(self, raw_outcomes=True)
+        require_evidence(self, unit_rows=True)
+        refuse_unit_rows(
+            self,
+            offered=False,
+            route="use a source that retains unit-level rows",
+        )
 
     def unit_counts(self) -> dict[str, int]:
         _refuse_operation(
@@ -638,13 +626,13 @@ class _DaySource:
         )
 
     def cluster_counts(self) -> dict[str, int]:
-        _refuse(
-            _NATIVE_CLUSTER,
-            source="a definitions day-axis source",
-            because=(
-                "day-axis views carry no cluster-robust variance -- a "
-                "randomization-grain count would silently be unit-grain"
-            ),
+        from increment._evidence_refusals import refuse_cluster, require_evidence
+
+        require_evidence(self, cluster=True)
+        refuse_cluster(
+            self,
+            offered=(),
+            route="use a source that retains cluster identities or cluster counts",
         )
 
     def sql(self, *, grain: Grain = "daily") -> dict[str, str]:

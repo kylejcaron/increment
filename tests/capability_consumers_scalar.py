@@ -414,7 +414,7 @@ PLANNING_BASELINE = ConsumerContract(
             "from_unit_panel",
             "cluster= on a per-day panel whose per-unit collapse cannot carry randomization grain",
             "refused",
-            codes=("source.frame_panel.cluster_grain",),
+            codes=("evidence.cluster_unavailable",),
             reason="panel grain cannot express clustered randomization",
             stage="construction",
             evidence=(
@@ -427,7 +427,7 @@ PLANNING_BASELINE = ConsumerContract(
             "from_moments",
             "exporting a clustered unit summary to a portable cube",
             "refused",
-            codes=("source.moments.cluster_grain",),
+            codes=("evidence.cluster_unavailable",),
             reason="portable moments do not retain randomized cluster identity",
             stage="export",
             evidence=(
@@ -670,7 +670,7 @@ CONFOUNDING_SENSITIVITY = ConsumerContract(
             "from_moments",
             "portable moments cannot supply adjustment covariates",
             "refused",
-            codes=("source.moments.covariate_unavailable",),
+            codes=("evidence.covariate_unavailable",),
             reason="a moments cube retains no per-unit adjustment covariates",
             evidence=(_CONFOUNDING_PUBLIC,),
         ),

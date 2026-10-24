@@ -960,6 +960,18 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "source.moments.sql": "evidence.operation_unavailable",
         "source.breakout.sql": "evidence.operation_unavailable",
         "breakout.metric.daily_winsorization": "evidence.operation_unavailable",
+        "source.moments.unit_grain": "evidence.unit_rows_unavailable",
+        "source.breakout.unit_grain": "evidence.unit_rows_unavailable",
+        "source.native.unit_grain": "evidence.unit_rows_unavailable",
+        "source.sql.unit_grain": "evidence.unit_rows_unavailable",
+        "source.frame.cluster_grain": "evidence.cluster_unavailable",
+        "source.frame_panel.cluster_grain": "evidence.cluster_unavailable",
+        "source.moments.cluster_grain": "evidence.cluster_unavailable",
+        "source.breakout.cluster_grain": "evidence.cluster_unavailable",
+        "source.native.cluster_grain": "evidence.cluster_unavailable",
+        "source.native.warehouse_cluster_grain": "evidence.cluster_unavailable",
+        "source.sql.cluster_grain": "evidence.cluster_unavailable",
+        "source.moments.covariate_unavailable": "evidence.covariate_unavailable",
     }
 )
 """Lookup only: maps a retired refusal code to its canonical replacement,
