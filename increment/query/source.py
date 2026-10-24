@@ -148,7 +148,7 @@ if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
     from increment._analysis_config import ResolvedMetricConfig
-    from increment._source_types import ComplianceSummary
+    from increment._source_types import ComplianceSummary, EvidenceCapabilities
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Breakout, Metric
@@ -243,6 +243,27 @@ class SqlPanelSource:
     breakouts: tuple[str, ...] = ()
     operations: frozenset[SourceOperation] = frozenset({"summary_sql"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        from increment._source_types import EvidenceCapabilities
+
+        return EvidenceCapabilities(
+            kind="moments",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset({"unit"}),
+            populations=frozenset({"assigned"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
 
     def __init__(
         self,
@@ -839,6 +860,63 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             entry.request.property_name
             for entry in catalog
             if entry.request.kind == "breakout_dimension"
+        )
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        from increment._source_types import ScalarEvidenceDeclaration
+        from increment.semantics.design import Encouragement
+
+        has_assignment_counts = any(
+            extension.kind == "assignment_counts" for extension in self._manifest.extensions
+        )
+        has_cluster_identity = self.context.cluster is not None and any(
+            extension.kind == "cluster_identity" for extension in self._manifest.extensions
+        )
+        triggered_view = self._population == "triggered"
+        if triggered_view:
+            count_grains: set[Literal["unit", "cluster", "assignment", "triggered"]] = set()
+            if "triggered_counts" in self.operations:
+                count_grains.update({"unit", "assignment", "triggered"})
+        else:
+            # The assigned exposure relation supports unit counts directly and
+            # assignment counts as a fallback when the assignment grain is unit.
+            count_grains = {"unit"}
+            if has_assignment_counts or self.context.cluster is None or has_cluster_identity:
+                count_grains.add("assignment")
+            if "triggered_counts" in self.operations:
+                count_grains.add("triggered")
+        if has_cluster_identity:
+            count_grains.add("cluster")
+        return replace(
+            super().evidence,
+            kind="artifact",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=True,
+            compliance_axis="asof" if isinstance(self.context.design, Encouragement) else "none",
+            method_fit="warehouse",
+            count_grains=frozenset(count_grains),
+            populations=(
+                frozenset({"triggered"})
+                if triggered_view
+                else frozenset(
+                    {"assigned"}
+                    | ({"triggered"} if "triggered_source" in self.operations else set())
+                )
+            ),
+            scalar=ScalarEvidenceDeclaration(
+                bindings=self.scalar_bindings,
+                moments_only=False,
+                recipe_fixed=False,
+                recipe_configs=(),
+                anonymous_metrics=frozenset(),
+                method_evidence=True,
+                breakout_evidence=True,
+                covariate_grains=None,
+            ),
         )
 
     @classmethod

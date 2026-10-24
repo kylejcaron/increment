@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
 from fractions import Fraction
+from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, cast, runtime_checkable
 
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
     from increment.semantics.models import CupedCovariate, Metric
     from increment.sources import SourceOperation
 Grain = Literal["total", "daily", "asof"]
+Shape = Literal["unit_summary", "unit_panel"]
 
 
 def raise_legacy_compliance_state(*, study_id: str, reason: str) -> NoReturn:
@@ -732,18 +734,156 @@ class MomentSource(Protocol):
     def close(self) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ScalarEvidenceDeclaration:
+    """Scalar evidence retained by a source for readout construction."""
+
+    bindings: Mapping[str, tuple[CupedCovariate, ...]] | None
+    moments_only: bool
+    recipe_fixed: bool
+    recipe_configs: tuple[ResolvedMetricConfig, ...]
+    anonymous_metrics: frozenset[str]
+    method_evidence: bool
+    breakout_evidence: bool
+    covariate_grains: frozenset[Grain] | None
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCapabilities:
+    """Evidence and product operations a source can provide."""
+
+    kind: Literal[
+        "definitions", "artifact", "unit_summary", "unit_panel", "switchback", "moments", "breakout"
+    ]
+    grains: frozenset[Grain]
+    breakouts: tuple[str, ...]
+    shape: Shape | None
+    operations: frozenset[SourceOperation]
+    unit_rows: bool
+    raw_outcomes: bool
+    method_fit: Literal["warehouse", "local", "retained", "none"]
+    compliance_axis: Literal["total", "asof", "none"]
+    count_grains: frozenset[Literal["unit", "cluster", "assignment", "triggered"]]
+    populations: frozenset[Literal["assigned", "triggered"]]
+    sequential_capture: Literal["construction", "asof", "replay", "none"]
+    scalar: ScalarEvidenceDeclaration | None
+    available_covariates: frozenset[str] | None
+
+
+def _source_kind(
+    source: object,
+) -> Literal[
+    "definitions", "artifact", "unit_summary", "unit_panel", "switchback", "moments", "breakout"
+]:
+    name = type(source).__name__
+    if name in {"DefinitionsMomentSource", "TriggeredPopulationSource"}:
+        return "definitions"
+    if "Artifact" in name:
+        return "artifact"
+    if name == "FrameTotalsSource":
+        return "unit_summary"
+    if name == "SqlPanelSource":
+        return "moments"
+    if name == "FramePanelSource":
+        return "unit_panel"
+    if name == "FrameSwitchbackSource":
+        return "switchback"
+    if name in {"BreakoutMomentsSource", "_RestrictedSummaryBreakoutSource"}:
+        return "breakout"
+    return "moments"
+
+
+def _legacy_evidence_from_source(source: object) -> EvidenceCapabilities:
+    """Compatibility declaration for custom sources without an explicit one."""
+    kind = _source_kind(source)
+    grains: frozenset[Grain] = frozenset()
+    if kind != "switchback":
+        grains = cast(
+            "frozenset[Grain]",
+            frozenset(getattr(source, "capabilities", {"total"})),
+        )
+    scalar = None
+    if isinstance(
+        source,
+        ScalarBindingSource
+        | SingleScalarFamilySource
+        | ScalarMethodMomentSource
+        | ScalarBreakoutMomentSource
+        | ConfiguredBreakoutSource
+        | ScalarCovariateMoments,
+    ):
+        scalar = ScalarEvidenceDeclaration(
+            bindings=(
+                {key: tuple(value) for key, value in source.scalar_bindings.items()}
+                if isinstance(source, ScalarBindingSource)
+                else None
+            ),
+            moments_only=source.scalar_moments_only
+            if isinstance(source, SingleScalarFamilySource)
+            else False,
+            recipe_fixed=source.scalar_recipe_fixed
+            if isinstance(source, SingleScalarFamilySource)
+            else False,
+            recipe_configs=source.scalar_recipe_configs
+            if isinstance(source, SingleScalarFamilySource)
+            else (),
+            anonymous_metrics=source.scalar_anonymous_metrics
+            if isinstance(source, SingleScalarFamilySource)
+            else frozenset(),
+            method_evidence=isinstance(source, ScalarMethodMomentSource),
+            breakout_evidence=isinstance(
+                source, (ScalarBreakoutMomentSource, ConfiguredBreakoutSource)
+            ),
+            covariate_grains=source.scalar_covariate_grains
+            if isinstance(source, ScalarCovariateMoments)
+            else None,
+        )
+    return EvidenceCapabilities(
+        kind=kind,
+        grains=grains,
+        breakouts=tuple(getattr(source, "breakouts", ())),
+        shape=getattr(source, "shape", None),
+        operations=frozenset(getattr(source, "operations", ())),
+        unit_rows=hasattr(source, "unit_frame"),
+        raw_outcomes=hasattr(source, "raw_unit_frame"),
+        method_fit="warehouse" if _source_kind(source) == "definitions" else "none",
+        compliance_axis="asof" if _source_kind(source) in {"definitions", "artifact"} else "none",
+        count_grains=frozenset({"unit"}) if hasattr(source, "unit_counts") else frozenset(),
+        populations=frozenset({"triggered"})
+        if getattr(source, "population", "assigned") == "triggered"
+        else frozenset({"assigned", "triggered"})
+        if hasattr(source, "triggered_source")
+        else frozenset({"assigned"}),
+        sequential_capture="asof"
+        if _source_kind(source) in {"definitions", "artifact", "unit_panel"}
+        else "none",
+        scalar=scalar,
+        available_covariates=(
+            source.available_covariates if isinstance(source, CovariateAvailability) else None
+        ),
+    )
+
+
+def declared_evidence(source: object) -> EvidenceCapabilities:
+    """Return declared evidence, deriving it for legacy custom moment sources."""
+    declaration = getattr_static(source, "evidence", None)
+    if declaration is not None:
+        declaration = source.evidence
+        if isinstance(declaration, EvidenceCapabilities):
+            return declaration
+    return _legacy_evidence_from_source(source)
+
+
 SourceRoute = Literal["artifact", "native", "moments", "panel"]
 
 
 def classify_source(src: MomentSource) -> SourceRoute:
-    """Route a source for the readout families that branch on it: artifact sources
-    declare the `artifact_experiment` operation; others are told apart by operations and shape."""
-    operations = getattr(src, "operations", frozenset())
-    if "artifact_experiment" in operations:
+    """Route a source by its declared operations and shape."""
+    evidence = declared_evidence(src)
+    if "artifact_experiment" in evidence.operations:
         return "artifact"
-    if "moments_source" not in operations:
-        shape = getattr(src, "shape", None)
-        return "panel" if shape == "unit_panel" else "moments"
+    if "moments_source" not in evidence.operations:
+        return "panel" if evidence.shape == "unit_panel" else "moments"
     return "native"
 
 

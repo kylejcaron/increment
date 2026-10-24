@@ -26,6 +26,7 @@ from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
     CUPEDEvidenceExportSource,
+    EvidenceCapabilities,
     invalid_compliance_state,
     raise_legacy_compliance_state,
     validate_compliance_design_match,
@@ -798,6 +799,33 @@ class ArtifactMomentSource(SequentialSourceMixin):
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_panel"
     breakouts: tuple[str, ...] = ()
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        count_grains: set[Literal["unit", "cluster", "assignment", "triggered"]] = {
+            "unit",
+            "assignment",
+        }
+        if self.context.cluster is not None and any(
+            extension.kind == "cluster_identity" for extension in self._manifest.extensions
+        ):
+            count_grains.add("cluster")
+        return EvidenceCapabilities(
+            kind="artifact",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=True,
+            raw_outcomes=True,
+            method_fit="none",
+            compliance_axis="asof" if isinstance(self.context.design, Encouragement) else "none",
+            count_grains=frozenset(count_grains),
+            populations=frozenset({"assigned"}),
+            sequential_capture="asof",
+            scalar=None,
+            available_covariates=None,
+        )
 
     def __init__(
         self,

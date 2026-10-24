@@ -95,7 +95,12 @@ from increment._metric_specs import (
     coerce_metrics,
     synthesise_metric,
 )
-from increment._source_types import ScalarBreakoutRows, unit_frame_covariate_columns
+from increment._source_types import (
+    EvidenceCapabilities,
+    ScalarBreakoutRows,
+    ScalarEvidenceDeclaration,
+    unit_frame_covariate_columns,
+)
 from increment._window import (
     maturity_days as _maturity_days,  # noqa: F401 - retained as the private parity alias
 )
@@ -330,6 +335,44 @@ class FrameTotalsSource(SequentialSourceMixin):
     capabilities: frozenset[Grain] = frozenset({"total"})
     operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
     breakouts: tuple[str, ...] = ()
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        return EvidenceCapabilities(
+            kind="unit_summary",
+            grains=self.capabilities,
+            breakouts=tuple(self.breakouts),
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=True,
+            raw_outcomes=True,
+            method_fit="local",
+            compliance_axis=(
+                "total"
+                if isinstance(self.context.design, Encouragement) and self._uptake is not None
+                else "none"
+            ),
+            count_grains=frozenset(
+                {"unit", "cluster"} if self.context.cluster is not None else {"unit"}
+            ),
+            populations=frozenset({"assigned"}),
+            sequential_capture=(
+                "construction"
+                if getattr(self, "_sequential_snapshot", None) is not None
+                else "none"
+            ),
+            scalar=ScalarEvidenceDeclaration(
+                bindings=None,
+                moments_only=False,
+                recipe_fixed=False,
+                recipe_configs=(),
+                anonymous_metrics=frozenset(),
+                method_evidence=True,
+                breakout_evidence=True,
+                covariate_grains=None,
+            ),
+            available_covariates=frozenset(self._frame.columns),
+        )
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913
@@ -1220,6 +1263,21 @@ class _RestrictedSummaryBreakoutSource:
     shape: Literal["unit_panel"] = "unit_panel"
     capabilities: frozenset[Grain] = frozenset({"total"})
 
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        scalar = self._source.evidence.scalar
+        return replace(
+            self._source.evidence,
+            kind="breakout",
+            grains=self.capabilities,
+            breakouts=tuple(self.breakouts),
+            shape=self.shape,
+            operations=self.operations,
+            sequential_capture="none",
+            available_covariates=self.available_covariates,
+            scalar=replace(scalar, method_evidence=False) if scalar is not None else None,
+        )
+
     def __init__(self, source: FramePanelSource, covariate_columns: Mapping[str, str]) -> None:
         self._source = source
         self.operations = source.operations
@@ -1330,6 +1388,35 @@ class FramePanelSource(SequentialSourceMixin):
     operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
     #: `from_unit_panel` takes no `cluster=` argument, so this shape never
     #: carries a randomization-cluster column (see `cluster_counts` below).
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        frame = self._source_frame if self._source_frame is not None else self._sparse_panel
+        return EvidenceCapabilities(
+            kind="unit_panel",
+            grains=self.capabilities,
+            breakouts=tuple(self.breakouts),
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=True,
+            raw_outcomes=False,
+            method_fit="local",
+            compliance_axis="asof",
+            count_grains=frozenset({"unit"}),
+            populations=frozenset({"assigned"}),
+            sequential_capture="asof",
+            scalar=ScalarEvidenceDeclaration(
+                bindings=None,
+                moments_only=False,
+                recipe_fixed=False,
+                recipe_configs=(),
+                anonymous_metrics=frozenset(),
+                method_evidence=True,
+                breakout_evidence=True,
+                covariate_grains=self.scalar_covariate_grains,
+            ),
+            available_covariates=frozenset(frame.columns),
+        )
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913

@@ -47,8 +47,10 @@ from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
     CUPEDEvidenceExportSource,
+    EvidenceCapabilities,
     Grain,
     MomentSource,
+    ScalarEvidenceDeclaration,
     SourceContext,
     invalid_compliance_state,
 )
@@ -1492,6 +1494,52 @@ class MomentsSource(SequentialSourceMixin):
     shape: Literal["unit_summary", "unit_panel"] | None = None
     breakouts: tuple[str, ...] = ()
 
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        from increment._source_types import declared_evidence
+
+        backing = declared_evidence(self._source) if self._source is not None else None
+        retained_fit = any(
+            item.kind in {"fitted_multicovariate", "categorical_cells"}
+            for item in self._evidence.values()
+        )
+        count_grains: set[Literal["unit", "cluster", "assignment", "triggered"]] = set()
+        if self._assignment_counts is not None:
+            count_grains.add("unit")
+        if self._compliance is not None and self._compliance.cluster is not None:
+            count_grains.add("cluster")
+        return EvidenceCapabilities(
+            kind="moments",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=backing.unit_rows if backing is not None else False,
+            raw_outcomes=backing.raw_outcomes if backing is not None else False,
+            method_fit="retained" if retained_fit else "none",
+            compliance_axis="total" if self._compliance is not None else "none",
+            count_grains=frozenset(count_grains),
+            populations=(
+                frozenset({"triggered"})
+                if self.population == "triggered"
+                else frozenset({"assigned"})
+            ),
+            sequential_capture=(
+                "replay" if getattr(self, "_sequential_snapshot", None) is not None else "none"
+            ),
+            scalar=ScalarEvidenceDeclaration(
+                bindings=None,
+                moments_only=self.scalar_moments_only,
+                recipe_fixed=self.scalar_recipe_fixed,
+                recipe_configs=self.scalar_recipe_configs,
+                anonymous_metrics=self.scalar_anonymous_metrics,
+                method_evidence=True,
+                breakout_evidence=False,
+                covariate_grains=None,
+            ),
+            available_covariates=None,
+        )
+
     def __init__(
         self,
         rows: Sequence[Mapping[str, object]],
@@ -2237,6 +2285,41 @@ class BreakoutMomentsSource(SequentialSourceMixin):
     capabilities: frozenset[Grain] = frozenset({"total"})
     operations: frozenset[SourceOperation] = frozenset({"unit_counts"})
     shape: Literal["unit_summary", "unit_panel"] | None = None
+
+    @property
+    def evidence(self) -> EvidenceCapabilities:
+        from increment._source_types import declared_evidence
+
+        backing = declared_evidence(self._source) if self._source is not None else None
+        return EvidenceCapabilities(
+            kind="breakout",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=backing.unit_rows if backing is not None else False,
+            raw_outcomes=backing.raw_outcomes if backing is not None else False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=(
+                frozenset({"triggered"})
+                if self.population == "triggered"
+                else frozenset({"assigned"})
+            ),
+            sequential_capture="none",
+            scalar=ScalarEvidenceDeclaration(
+                bindings=None,
+                moments_only=self.scalar_moments_only,
+                recipe_fixed=self.scalar_recipe_fixed,
+                recipe_configs=self.scalar_recipe_configs,
+                anonymous_metrics=self.scalar_anonymous_metrics,
+                method_evidence=False,
+                breakout_evidence=True,
+                covariate_grains=None,
+            ),
+            available_covariates=None,
+        )
 
     @property
     def scalar_moments_only(self) -> bool:
