@@ -879,7 +879,7 @@ def test_triggered_sitewide_artifact_rejects_corrupted_assignment_counts(tmp_pat
 @pytest.mark.parametrize(
     ("trigger", "source_snapshot_evidence", "code"),
     [
-        (False, True, "source.native.operation"),
+        (False, True, "evidence.operation_unavailable"),
         (True, False, "source.native.trigger_evidence_required"),
     ],
 )

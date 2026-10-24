@@ -1140,7 +1140,7 @@ def test_from_unit_summary_day_axis_raises_capability_error():
     ):
         with pytest.raises(CapabilityError) as exc_info:
             method(dimension="country")
-        assert exc_info.value.code == "facade.analysis.no_definitions"
+        assert exc_info.value.code == "evidence.grain_unavailable"
 
 
 @pytest.mark.parametrize(
@@ -1165,23 +1165,23 @@ def test_from_unit_summary_dimensioned_day_axis_raises_capability_error(method):
     )
     with pytest.raises(CapabilityError) as exc_info:
         getattr(analysis, method)(dimension="country")
-    assert exc_info.value.code == "facade.analysis.no_definitions"
+    assert exc_info.value.code == "evidence.grain_unavailable"
 
 
 @pytest.mark.parametrize(
-    ("method", "expected_code", "named_method"),
+    ("method", "expected_code", "requested"),
     [
-        ("panel_sql", "facade.analysis.operation", None),
-        ("summary_sql", "source.frame.sql_unsupported", None),
-        ("materialize", "facade.analysis.operation", None),
-        ("run_breakout", "facade.analysis.operation", None),
-        ("run_daily_lift", "facade.analysis.no_definitions", "run_daily_lift"),
-        ("run_asof", "facade.analysis.no_definitions", "run_asof"),
-        ("run_asof_lift", "facade.analysis.no_definitions", "run_asof_lift"),
-        ("breakout_summaries", "facade.analysis.operation", None),
+        ("panel_sql", "evidence.operation_unavailable", None),
+        ("summary_sql", "evidence.operation_unavailable", None),
+        ("materialize", "evidence.operation_unavailable", None),
+        ("run_breakout", "evidence.breakout_unavailable", None),
+        ("run_daily_lift", "evidence.grain_unavailable", "daily"),
+        ("run_asof", "evidence.grain_unavailable", "asof"),
+        ("run_asof_lift", "evidence.grain_unavailable", "asof"),
+        ("breakout_summaries", "evidence.breakout_unavailable", None),
     ],
 )
-def test_from_unit_summary_refusals_are_coded_and_actionable(method, expected_code, named_method):
+def test_from_unit_summary_refusals_are_coded_and_actionable(method, expected_code, requested):
     import pandas as pd
 
     df = pd.DataFrame(
@@ -1197,8 +1197,8 @@ def test_from_unit_summary_refusals_are_coded_and_actionable(method, expected_co
     with pytest.raises(CapabilityError) as raised:
         getattr(analysis, method)()
     assert raised.value.code == expected_code
-    if named_method is not None:
-        assert raised.value.context["method"] == named_method
+    if requested is not None:
+        assert raised.value.context["requested"] == requested
     analysis.close()
 
 
@@ -2712,8 +2712,8 @@ def test_moments_checkpoint_reexport_refused(tmp_path):
     target = tmp_path / "reexport.parquet"
     with pytest.raises(CapabilityError) as refused:
         analysis.export(target)
-    assert refused.value.code == "facade.analysis.operation"
-    assert refused.value.context["operation"] == "export_moments"
+    assert refused.value.code == "evidence.operation_unavailable"
+    assert refused.value.context["requested"] == "export_moments"
     assert_refusal(
         "moments_checkpoint_reexport_boundary",
         "moments_checkpoint_reexport_refused",

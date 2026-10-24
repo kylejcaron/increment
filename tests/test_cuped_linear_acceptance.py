@@ -296,7 +296,7 @@ def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
     try:
         with pytest.raises(CapabilityError) as breakout:
             summary.run_breakout()
-        assert breakout.value.code == "facade.analysis.operation"
+        assert breakout.value.code == "evidence.breakout_unavailable"
         with pytest.raises(CapabilityError) as triggered_summary:
             summary.run(population="triggered")
         assert triggered_summary.value.code == "facade.analysis.trigger_unsupported"

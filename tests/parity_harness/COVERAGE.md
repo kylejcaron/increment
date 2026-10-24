@@ -37,8 +37,8 @@ A cell's status is its most significant per-ingress verdict (`Disposition.status
 | Status | Cells |
 |---|---|
 | supported | 522 |
-| source_limited | 512 |
-| construction_limited | 1,316 |
+| source_limited | 544 |
+| construction_limited | 1,284 |
 | not_expressible | 960 |
 | unfinished | 274 |
 | unsound | 0 |
@@ -50,10 +50,10 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 
 | Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
 |---|---|---|---|---|---|---|
-| from_definitions | 676 | 0 | 504 | 3,976 | 220 | 0 |
-| from_unit_day_artifact | 672 | 0 | 500 | 3,976 | 228 | 0 |
+| from_definitions | 676 | 64 | 440 | 3,976 | 220 | 0 |
+| from_unit_day_artifact | 672 | 64 | 436 | 3,976 | 228 | 0 |
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
-| from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
+| from_unit_panel | 480 | 984 | 1,876 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 1,736 | 1,428 | 1,920 | 288 | 0 |
 | from_moments | 144 | 1,582 | 1,628 | 1,728 | 294 | 0 |
 
@@ -82,9 +82,9 @@ A quantile has no moments representation, so no producer exports a quantile cube
 
 | Option | `run()` | `run_breakout()` | day-axis (4 methods) |
 |---|---|---|---|
-| none | `source.moments.unit_grain` (a cube holds no per-unit rows) | `facade.analysis.operation` | `facade.analysis.no_definitions` |
-| ni_margin | `readout.metric.quantile_alternative` (`r3bg`) | `facade.analysis.operation` | `facade.analysis.no_definitions` |
-| observational | `readout.observational.quantile` (estimator refusal) | `facade.analysis.operation` | `facade.analysis.no_definitions` |
+| none | `source.moments.unit_grain` (a cube holds no per-unit rows) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
+| ni_margin | `readout.metric.quantile_alternative` (`r3bg`) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
+| observational | `readout.observational.quantile` (estimator refusal) | `evidence.breakout_unavailable` | `evidence.grain_unavailable` |
 | cluster | `source.moments.cluster_grain` (the producer cannot export a clustered cube) | same | same |
 | sequential | `sequential.route.unsupported` from `from_moments` under `error`/`zero` (the exported construction-time checkpoint is replayed under a quantile declaration: scalar mean inference requires a mean, conversion or retention metric); `sequential.route.unsupported` under `drop` is raised earlier, by the mean producer's own registration (outcome-dependent row deletion), before any cube exists | same | same |
 | cuped, winsorization, any window | declaration: `frame.metric.cuped_does_apply`, `frame.metric.winsorization_applies_type`, `frame.metric.window_days_supported` (the replay's own `MetricSpec`) | same | same |
@@ -129,7 +129,7 @@ No cells are collapsed in full scope; PR scope uses covering cells and dispositi
 
 The 86 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, triggered daily/as-of outcomes and assignment-anchored triggered compliance across definitions and a reopened unit-day artifact, assigned and triggered sitewide impact under a declared trigger across definitions and a site-volume artifact, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal, mixed-catalog checkpoint replay, and clustered assignment-integrity metadata across definitions and a reopened unit-day artifact).
 
-The mixed-catalog checkpoint scenario compares the modeled conversion's rows and retained state across definitions, a reopened unit-day artifact, unit summary, unit panel, and moments replay. The first four routes export and reopen a checkpoint while preserving the unmodeled, unwindowed quantile's catalog entry and level. Explicit quantile estimation refuses with `sequential.route.unsupported`; moments replay refuses re-export with `facade.analysis.operation`. Switchback is source-waived: it cannot declare this quantile catalog or construct the sequential checkpoint.
+The mixed-catalog checkpoint scenario compares the modeled conversion's rows and retained state across definitions, a reopened unit-day artifact, unit summary, unit panel, and moments replay. The first four routes export and reopen a checkpoint while preserving the unmodeled, unwindowed quantile's catalog entry and level. Explicit quantile estimation refuses with `sequential.route.unsupported`; moments replay refuses re-export with `evidence.operation_unavailable`. Switchback is source-waived: it cannot declare this quantile catalog or construct the sequential checkpoint.
 
 ## Fixture choices that bound what a cell proves
 

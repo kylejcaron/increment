@@ -1965,7 +1965,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         ):
             with pytest.raises(CapabilityError) as refused:
                 operation()
-            assert refused.value.code == "facade.analysis.operation"
+            assert refused.value.code == "evidence.operation_unavailable"
             assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
         if adopted is None:
@@ -2110,7 +2110,7 @@ def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress()
             with pytest.raises(CapabilityError) as refused:
                 analysis.sitewide("revenue", population="triggered")
             assert refused.value.code in {
-                "facade.analysis.operation",
+                "evidence.operation_unavailable",
                 "facade.analysis.contrast_unavailable",
             }
     finally:
@@ -2136,7 +2136,7 @@ def test_triggered_sitewide_seam_keeps_source_specific_refusal():
     )
     with pytest.raises(CapabilityError) as raised:
         analysis.sitewide("revenue")
-    assert raised.value.code == "facade.analysis.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_sitewide_unknown_population_refuses():
@@ -2367,7 +2367,7 @@ def test_srm_population_triggered_refuses_on_a_seam_instance():
     )
     with pytest.raises(CapabilityError) as raised:
         a.srm(population="triggered")
-    assert raised.value.code == "facade.analysis.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_srm_rejects_unknown_population_before_assigned_readout():

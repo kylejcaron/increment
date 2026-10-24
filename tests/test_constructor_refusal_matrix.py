@@ -105,19 +105,19 @@ _BUILDERS: tuple[tuple[str, Callable[[], Analysis]], ...] = (
         (
             "from_unit_summary",
             lambda a: a.panel_sql(),
-            "facade.analysis.operation",
+            "evidence.operation_unavailable",
         ),
         (
             "from_unit_panel",
             lambda a: a.materialize(),
-            "facade.analysis.operation",
+            "evidence.operation_unavailable",
         ),
         (
             "from_moments",
             # The source's own grain operation, which no public Analysis method
             # requests; it is the operator contract under test here.
             lambda a: _source_daily_moments(a),
-            "source.moments.grain",
+            "evidence.grain_unavailable",
         ),
     ],
 )
@@ -168,7 +168,7 @@ def test_trigger_refusal_uses_public_trigger_rates(seeded_defs, seeded_con) -> N
     try:
         with pytest.raises(CapabilityError) as raised:
             analysis.trigger_rates()
-        assert raised.value.code == "source.native.operation"
+        assert raised.value.code == "evidence.operation_unavailable"
     finally:
         analysis.close()
 
@@ -224,18 +224,18 @@ _MATRIX: tuple[
 ] = (
     # materialize
     *(
-        (family, "materialize", "facade.analysis.operation", None)
+        (family, "materialize", "evidence.operation_unavailable", None)
         for family in ("from_unit_summary", "from_unit_panel", "from_moments")
     ),
     # SQL
-    ("from_unit_summary", "sql", "source.frame.sql_unsupported", None),
-    ("from_unit_panel", "sql", "source.frame.sql_unsupported", None),
-    ("from_moments", "sql", "source.moments.sql", None),
+    ("from_unit_summary", "sql", "evidence.operation_unavailable", None),
+    ("from_unit_panel", "sql", "evidence.operation_unavailable", None),
+    ("from_moments", "sql", "evidence.operation_unavailable", None),
     (
         "from_definitions",
         "sql",
-        "source.native_sql_grain",
-        {"grain": "daily", "offered": frozenset({"total", "daily", "asof"})},
+        "evidence.grain_unavailable",
+        {"requested": "daily", "offered": ("total",)},
     ),
     # cluster-count
     ("from_unit_summary", "cluster-count", "source.frame.cluster_grain", None),
@@ -244,17 +244,17 @@ _MATRIX: tuple[
     ("from_definitions", "cluster-count", "source.native.warehouse_cluster_grain", None),
     # trigger
     *(
-        (family, "trigger", "facade.analysis.operation", None)
+        (family, "trigger", "evidence.operation_unavailable", None)
         for family in ("from_unit_summary", "from_unit_panel", "from_moments")
     ),
-    ("from_definitions", "trigger", "source.native.operation", None),
+    ("from_definitions", "trigger", "evidence.operation_unavailable", None),
     # sitewide
     *(
         (
             family,
             "sitewide",
-            "facade.analysis.operation",
-            {"operation": "sitewide_evidence"},
+            "evidence.operation_unavailable",
+            {"requested": "sitewide_evidence"},
         )
         for family in ("from_unit_summary", "from_unit_panel", "from_moments")
     ),
@@ -263,36 +263,36 @@ _MATRIX: tuple[
     (
         "from_unit_summary",
         "breakout",
-        "facade.analysis.operation",
-        {"operation": "breakout_sources"},
+        "evidence.breakout_unavailable",
+        {"requested": ("country",)},
     ),
-    ("from_unit_panel", "breakout", "source.frame.undeclared_breakout", None),
-    ("from_moments", "breakout", "facade.analysis.operation", {"operation": "breakout_sources"}),
-    ("from_definitions", "breakout", "source.native.operation", None),
+    ("from_unit_panel", "breakout", "evidence.breakout_unavailable", None),
+    ("from_moments", "breakout", "evidence.breakout_unavailable", {"requested": ("country",)}),
+    ("from_definitions", "breakout", "evidence.breakout_unavailable", None),
     # grain
     (
         "from_unit_summary",
         "grain",
-        "source.frame.grain",
-        {"grain": "daily", "offered": frozenset({"total"})},
+        "evidence.grain_unavailable",
+        {"requested": "daily"},
     ),
     (
         "from_unit_panel",
         "grain",
-        "source.frame_panel.grain",
-        {"grain": "weekly", "offered": frozenset({"total", "daily", "asof"})},
+        "evidence.grain_unavailable",
+        {"requested": "weekly"},
     ),
     (
         "from_moments",
         "grain",
-        "source.moments.grain",
-        {"grain": "daily", "offered": frozenset({"total"})},
+        "evidence.grain_unavailable",
+        {"requested": "daily"},
     ),
     (
         "from_definitions",
         "grain",
-        "source.native.grain",
-        {"grain": "weekly", "offered": frozenset({"daily", "asof"})},
+        "evidence.grain_unavailable",
+        {"requested": "weekly"},
     ),
 )
 
@@ -311,9 +311,7 @@ def _invoke_matrix_operation(analysis: Analysis, family: str, operation: str) ->
     if operation == "sitewide":
         return analysis.sitewide("d7_retention" if family == "from_definitions" else "revenue")
     if operation == "breakout":
-        if family in ("from_unit_panel", "from_definitions"):
-            return source.moments(metric, by=("country",))
-        return analysis.run_breakout()
+        return source.moments(metric, by=("country",))
     if operation == "grain":
         grain = "weekly" if family in ("from_unit_panel", "from_definitions") else "daily"
         return source.moments(metric, grain=cast(Any, grain))

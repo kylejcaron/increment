@@ -350,6 +350,74 @@ def test_triggered_wrapper_capabilities_match_its_methods(tmp_path) -> None:
 
 
 @pytest.mark.integration
+def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypatch) -> None:
+    from increment.errors import CapabilityError
+    from tests.source_conformance import definitions_source
+
+    source, _ = definitions_source(tmp_path, trigger=True)
+    triggered = source.triggered_source()
+    metric = triggered.context.metrics[0]
+    original_moments = type(source).moments
+    reads = 0
+
+    def counted_moments(self, *args, **kwargs):
+        nonlocal reads
+        reads += 1
+        return original_moments(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(source), "moments", counted_moments)
+    try:
+        for grain in ("daily", "asof"):
+            with pytest.raises(CapabilityError) as raised:
+                triggered.moments(metric, grain=grain)
+            assert raised.value.code == "evidence.grain_unavailable"
+            assert reads == 0
+
+        with pytest.raises(CapabilityError) as raised:
+            triggered.moments_for_method(metric, object(), by=("not_declared",))
+        assert raised.value.code == "evidence.breakout_unavailable"
+        assert reads == 0
+
+        total_rows = triggered.moments(metric, grain="total")
+        assert total_rows == original_moments(source, metric)
+        assert reads == 1
+        assert triggered.evidence.sql_grains == frozenset()
+        with pytest.raises(CapabilityError) as raised:
+            triggered.sql(grain="daily")
+        assert raised.value.code == "evidence.operation_unavailable"
+    finally:
+        source.close()
+
+    summary = Analysis.from_unit_summary(
+        unit_summary_table(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+        breakouts=("segment",),
+    )
+    breakout = cast("Any", held_source(summary)).summary_breakout_source
+    assert breakout is not None
+    with pytest.raises(CapabilityError) as raised:
+        breakout.moments(breakout.context.metrics[0], grain="daily", by=("segment",))
+    assert raised.value.code == "evidence.grain_unavailable"
+    assert breakout.moments(breakout.context.metrics[0], grain="total", by=("segment",))
+    summary.close()
+
+
+def test_breakout_moment_source_requires_exactly_its_dimension() -> None:
+    from increment.errors import CapabilityError
+    from tests.source_conformance import breakout_moments_source
+
+    source = breakout_moments_source()
+    with pytest.raises(CapabilityError) as raised:
+        source.moments(source.context.metrics[0])
+    assert raised.value.code == "evidence.breakout_unavailable"
+    assert raised.value.context["requested"] == ()
+    source.close()
+
+
+@pytest.mark.integration
 def test_triggered_cluster_declaration_matches_cluster_counts(tmp_path) -> None:
     analysis = _triggered_analysis(tmp_path, cluster=True)
     source = cast("Any", held_source(analysis))
@@ -422,8 +490,9 @@ def test_call_time_covariate_preflight_keeps_its_code(constructor) -> None:
     analysis.close()
 
 
-def test_custom_source_without_evidence_still_runs() -> None:
-    from increment.readouts import run
+def test_undeclared_custom_source_refuses_with_the_shared_code() -> None:
+    from increment import CapabilityError
+    from increment.readouts import daily, run
 
     analysis = Analysis.from_unit_summary(
         unit_summary_table(),
@@ -436,10 +505,19 @@ def test_custom_source_without_evidence_still_runs() -> None:
 
     class LegacySource:
         def __getattr__(self, name):
+            if name == "evidence":
+                raise AttributeError(name)
             return getattr(source, name)
 
-    assert run(cast("Any", LegacySource())) == analysis.run()
-    analysis.close()
+    legacy = cast("Any", LegacySource())
+    try:
+        assert run(legacy) == analysis.run()
+        with pytest.raises(CapabilityError) as raised:
+            daily(legacy)
+        assert raised.value.code == "evidence.grain_unavailable"
+        assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
+    finally:
+        analysis.close()
 
 
 def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
@@ -788,36 +866,24 @@ def test_declared_capabilities_match_public_method_behavior(
         analysis.close()
         return
 
-    _assert_capability_methods_match_behavior(
-        source,
-        analysis,
-        CodedError,
-        check_moment_grains=constructor not in {"restricted_breakout", "triggered"},
-    )
+    _assert_capability_methods_match_behavior(source, analysis, CodedError)
     if analysis is None:
         source.close()
     else:
         analysis.close()
 
 
-def _assert_capability_methods_match_behavior(
-    source, analysis, error_type, *, check_moment_grains=True
-) -> None:
+def _assert_capability_methods_match_behavior(source, analysis, error_type) -> None:
     evidence = source.evidence
     metric = source.context.metrics[0]
     by = tuple(evidence.breakouts) if evidence.kind == "breakout" else ()
 
-    if check_moment_grains:
-        for grain in ("total", "daily", "asof"):
-            if grain in evidence.grains:
-                assert source.moments(metric, grain=grain, by=by) is not None
-            else:
-                with pytest.raises(error_type):
-                    source.moments(metric, grain=grain, by=by)
-    else:
-        # BASE behavior gap: these wrappers advertise total only but delegate
-        # undeclared grains to their wrapped source; Task 4 makes this explicit.
-        assert evidence.grains == frozenset({"total"})
+    for grain in ("total", "daily", "asof"):
+        if grain in evidence.grains:
+            assert source.moments(metric, grain=grain, by=by) is not None
+        else:
+            with pytest.raises(error_type):
+                source.moments(metric, grain=grain, by=by)
 
     if callable(getattr(source, "unit_frame", None)):
         if evidence.unit_rows:

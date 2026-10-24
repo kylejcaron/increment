@@ -209,7 +209,6 @@ _REFUSALS.update(
             "breakout.retention.unbounded",
             "readout.assignment.estimands",
             "readout.margin.breakout",
-            "readout.metric.daily_winsorization",
             "readout.metric.percentile_winsorization",
             "readout.metric.quantile_alternative",
             "readout.metric.quantile_breakout",
@@ -1146,10 +1145,15 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
     ]
     if view == "daily":
         if winsorized_names:
-            _refuse(
-                "readout.metric.daily_winsorization",
-                view=view,
-                names=winsorized_names,
+            from increment._evidence_refusals import OPERATION_UNAVAILABLE
+            from increment.errors import refuse as refuse_spec
+
+            refuse_spec(
+                OPERATION_UNAVAILABLE,
+                constructor=request.source_name,
+                requested="daily_winsorization",
+                offered=(),
+                route="use total-grain run() or run_breakout()",
             )
         reject_unbounded_retention(
             metrics, view, remedy=UNBOUNDED_RETENTION_DAILY_REMEDY, supported_view="asof"

@@ -355,7 +355,7 @@ outcome or compliance evidence. The facade applies the same admission rule to
 `Analysis.run_asof_lift` and `Analysis.run_daily_lift`, including dimensioned
 reads, and reports the corresponding facade route. Existing operation and
 source capabilities are checked first: a non-panel moments source retains
-`facade.analysis.no_definitions`, and a panel without covariate moments retains
+`evidence.grain_unavailable`, and a panel without covariate moments retains
 `estimation.cuped.arm_no_covariate`.
 
 Registered sequential inputs are validated at construction. A refusing covariate
@@ -1162,7 +1162,7 @@ metric's name and type (`MetricSpec(name="revenue")`) and the experiment's
 design: the embedded plan supplies the decision and sensitivity methods,
 including scalar companions, so estimates, intervals and roles replay. The
 cube has no breakout dimension, so `run_breakout` refuses with
-`facade.analysis.operation`. Warehouse-backed QR also enforces the per-arm
+`evidence.breakout_unavailable`. Warehouse-backed QR also enforces the per-arm
 component/covariate magnitude range $[10^{-50}, 10^{50}]`; violations refuse
 with `query.cuped.magnitude_range` before any unit values can leave the
 warehouse.

@@ -157,38 +157,6 @@ CupedCovariate.__module__ = __name__
 synthesise_metric.__module__ = __name__
 
 
-_FRAME_GRAIN = RefusalSpec(
-    "source.frame.grain",
-    CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-_FRAME_BREAKOUTS_UNSUPPORTED = RefusalSpec(
-    "source.frame.breakouts_unsupported",
-    CapabilityError,
-    template="total-frame moments cannot serve breakout dimensions {dimensions!r}. {route}",
-)
-_FRAME_SQL_UNSUPPORTED = RefusalSpec(
-    "source.frame.sql_unsupported",
-    CapabilityError,
-    template="frame-backed sources have no SQL representation for grain {grain!r}. {route}",
-)
-_FRAME_MULTI_DIMENSION = RefusalSpec(
-    "source.frame.multi_dimension",
-    CapabilityError,
-    template="a panel moments call requires at most one breakout dimension, got {dimensions!r}. {route}",
-)
-_FRAME_UNDECLARED_BREAKOUT = RefusalSpec(
-    "source.frame.undeclared_breakout",
-    CapabilityError,
-    template="breakout dimension {dimension!r} was not declared; declared breakouts are {declared!r}. {route}",
-)
 _FRAME_WINDOWED_ENCOURAGEMENT_TOTAL = RefusalSpec(
     "source.frame.windowed_encouragement_total",
     CapabilityError,
@@ -233,18 +201,6 @@ _FRAME_SEQUENTIAL_EXPOSURE = RefusalSpec(
     "source.frame.sequential_exposure_date",
     InvalidRequestError,
     template="{constructor}: sequential inference reveals units in exposure order, so it needs each unit's exposure date. {route}",
-)
-_PANEL_GRAIN = RefusalSpec(
-    "source.frame_panel.grain",
-    CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
 )
 _PANEL_CLUSTER = RefusalSpec(
     "source.frame_panel.cluster_grain",
@@ -527,8 +483,9 @@ class FrameTotalsSource(SequentialSourceMixin):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
-        if grain != "total":
-            refuse(_FRAME_GRAIN, grain=grain, offered=self.capabilities)
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain, by=by)
         if getattr(metric, "type", None) == "quantile":
             if getattr(self.design, "mechanism", None) == "observational":
                 refuse_observational_quantile(metric)
@@ -546,10 +503,13 @@ class FrameTotalsSource(SequentialSourceMixin):
                     completed_windows_only=completed_windows_only,
                     include_covariate=include_covariate,
                 )
-            refuse(
-                _FRAME_BREAKOUTS_UNSUPPORTED,
-                dimensions=tuple(by),
-                route="request an unbroken total or use a panel source with declared breakouts",
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                (),
+                route="use a source with a breakout reducer to retrieve segmented rows",
             )
         failure = self._moment_failures.get(metric.name)
         if failure is not None:
@@ -568,13 +528,17 @@ class FrameTotalsSource(SequentialSourceMixin):
         self, metric: Metric, method: Any, *, by: Sequence[str]
     ) -> ScalarBreakoutRows:
         """Delegate the effective input to the summary's segment reducer."""
-        if self._summary_breakout_source is None:
-            refuse(
-                _FRAME_BREAKOUTS_UNSUPPORTED,
-                dimensions=tuple(by),
-                route="request an unbroken total or use a panel source with declared breakouts",
+        source = self._summary_breakout_source
+        if source is None:
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                (),
+                route="use a source with a breakout reducer to retrieve segmented rows",
             )
-        return self._summary_breakout_source.breakout_moments_for_method(metric, method, by=by)
+        return source.breakout_moments_for_method(metric, method, by=by)
 
     def moments_for_method(
         self,
@@ -592,7 +556,14 @@ class FrameTotalsSource(SequentialSourceMixin):
         ):
             return self.moments(metric, by=by)
         if by:
-            refuse(_FRAME_GRAIN, grain="breakout", offered=self.capabilities)
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                tuple(self.breakouts),
+                route="use breakout_moments_for_method() to retain the requested dimensions",
+            )
         method_spec = MetricSpec.model_validate(
             {
                 **spec.model_dump(),
@@ -857,8 +828,13 @@ class FrameTotalsSource(SequentialSourceMixin):
         export_source_moments(self, path, observational_refusal=refuse_observational_quantile)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
-        refuse(
-            _FRAME_SQL_UNSUPPORTED, grain=grain, route="use a SQL-backed source for SQL rendering"
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            self,
+            "sql",
+            tuple(sorted(self.operations)),
+            route="use a SQL-backed source for SQL rendering",
         )
 
     def close(self) -> None:
@@ -1288,6 +1264,24 @@ class _RestrictedSummaryBreakoutSource:
     def available_covariates(self) -> frozenset[str]:
         return self._source.available_covariates | self._covariate_columns.keys()
 
+    def moments(
+        self,
+        metric: Metric,
+        *,
+        grain: Grain = "total",
+        by: Sequence[str] = (),
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain, by=by)
+        return self._source.moments(
+            metric,
+            grain=grain,
+            by=by,
+            **kwargs,
+        )
+
     def breakout_moments_for_method(
         self, metric: Metric, method: Any, *, by: Sequence[str]
     ) -> ScalarBreakoutRows:
@@ -1577,21 +1571,17 @@ class FramePanelSource(SequentialSourceMixin):
     def _breakout_key(self, by: Sequence[str]) -> str | None:
         names = tuple(by)
         if len(names) > 1:
-            refuse(
-                _FRAME_MULTI_DIMENSION,
-                dimensions=names,
-                route="request one declared breakout at a time",
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                names,
+                tuple(self.breakouts),
+                route="request one declared breakout dimension at a time",
             )
         if not names:
             return None
         name = names[0]
-        if name not in self.breakouts:
-            refuse(
-                _FRAME_UNDECLARED_BREAKOUT,
-                dimension=name,
-                declared=self.breakouts,
-                route="rebuild with the breakout declared",
-            )
         return name
 
     def moments(
@@ -1603,8 +1593,9 @@ class FramePanelSource(SequentialSourceMixin):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
-        if grain not in self.capabilities:
-            refuse(_PANEL_GRAIN, grain=grain, offered=self.capabilities)
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain)
         if (
             grain == "total"
             and self._uptake is not None
@@ -1618,6 +1609,7 @@ class FramePanelSource(SequentialSourceMixin):
                     "declare it as an unwindowed metric on from_unit_summary"
                 ),
             )
+        require_evidence(self, by=by)
         breakout = self._breakout_key(by)
         if grain == "daily" and isinstance(metric, RetentionMetric):
             refuse(_FRAME_RETENTION_DAILY, metric=metric.name, route="read the total grain instead")
@@ -1825,6 +1817,9 @@ class FramePanelSource(SequentialSourceMixin):
         by: Sequence[str],
     ) -> ScalarBreakoutRows:
         """Reduce one effective input while retaining segment-local refusals."""
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, by=by)
         from increment._analysis_config import overlay_configs
 
         spec = (
@@ -1917,10 +1912,13 @@ class FramePanelSource(SequentialSourceMixin):
         if method.covariates is None:
             return self.moments(metric, by=by)
         if by:
-            refuse(
-                _FRAME_GRAIN,
-                grain="breakout",
-                offered=self.capabilities,
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                tuple(self.breakouts),
+                route="use breakout_moments_for_method() to retain the requested dimensions",
             )
         spec = self._unit_total_spec(metric)
         method_spec = MetricSpec.model_validate(
@@ -2180,8 +2178,13 @@ class FramePanelSource(SequentialSourceMixin):
         export_source_moments(self, path, observational_refusal=refuse_observational_quantile)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
-        refuse(
-            _FRAME_SQL_UNSUPPORTED, grain=grain, route="use a SQL-backed source for SQL rendering"
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            self,
+            "sql",
+            tuple(sorted(self.operations)),
+            route="use a SQL-backed source for SQL rendering",
         )
 
     def close(self) -> None:

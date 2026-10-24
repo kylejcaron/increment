@@ -645,7 +645,7 @@ def test_mixed_cuped_breakout_rows_match_panel_definitions_and_artifact(tmp_path
     try:
         with pytest.raises(CodedError) as raised:
             summary.run_breakout()
-        assert raised.value.code == "facade.analysis.operation"
+        assert raised.value.code == "evidence.breakout_unavailable"
 
         results = [panel.run_breakout(), native.run_breakout(), adopted.run_breakout()]
         expected_keys = {

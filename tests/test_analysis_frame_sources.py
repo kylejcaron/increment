@@ -206,7 +206,7 @@ def test_unit_summary_breakouts_retain_total_only_identity_and_other_reads(tmp_p
     for method in (analysis.run_daily, analysis.run_asof):
         with pytest.raises(CapabilityError) as raised:
             method()
-        assert raised.value.code == "facade.analysis.no_definitions"
+        assert raised.value.code == "evidence.grain_unavailable"
 
     original_counts = analysis.unit_counts()
     original_srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
@@ -1192,9 +1192,8 @@ def test_from_unit_panel_day_axis_winsorization_refusal_is_coded(method):
 
     with pytest.raises(CapabilityError) as raised:
         getattr(analysis, method)()
-    assert raised.value.code == "breakout.metric.daily_winsorization"
-    assert raised.value.context["method"] == method
-    assert raised.value.context["names"] == ("revenue",)
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert raised.value.context["requested"] == ("revenue",)
 
 
 def test_from_unit_panel_daily_readouts_by_dimension(panel_breakout_analysis):
@@ -1373,7 +1372,7 @@ def test_from_unit_panel_run_daily_lift_forwards_methods(panel_breakout_analysis
 def test_from_unit_summary_run_breakout_remains_unsupported(unit_summary_analysis) -> None:
     with pytest.raises(CapabilityError) as raised:
         unit_summary_analysis.run_breakout()
-    assert raised.value.code == "facade.analysis.operation"
+    assert raised.value.code == "evidence.breakout_unavailable"
 
 
 def test_artifact_context_refuses_unit_summary_source_with_operation_context(
@@ -1382,8 +1381,8 @@ def test_artifact_context_refuses_unit_summary_source_with_operation_context(
     with pytest.raises(CapabilityError) as raised:
         _ = unit_summary_analysis.artifact_context
 
-    assert raised.value.code == "facade.analysis.operation"
-    assert raised.value.context["operation"] == "materialize"
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert raised.value.context["requested"] == "materialize"
 
 
 def test_from_unit_panel_encouragement_breakout_retains_estimands():

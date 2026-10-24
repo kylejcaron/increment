@@ -45,21 +45,6 @@ if TYPE_CHECKING:
 
     from increment.sources import Grain
 
-
-_NATIVE_GRAIN = RefusalSpec(
-    "source.native.grain",
-    CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-
-
 _NATIVE_UNIT_GRAIN = RefusalSpec(
     "source.native.unit_grain",
     CapabilityError,
@@ -442,16 +427,16 @@ class _DaySource:
     ) -> list[dict[str, Any]]:
         _refuse_unsupported_day_metric(metric, operation="moments")
         if grain not in self.capabilities:
-            _refuse(
-                _NATIVE_GRAIN,
-                grain=grain,
-                offered=self.capabilities,
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain)
         if by:
-            _refuse_operation(
-                operation="moments",
-                request={"metric": metric.name, "grain": grain, "by": tuple(by)},
-                offered=tuple(sorted(self.capabilities)),
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                self.breakouts,
                 route=(
                     "use breakout_moments(metric, breakout) for a declared breakout; "
                     "moments() serves only the undimensioned day axis"
@@ -540,11 +525,9 @@ class _DaySource:
         """
         _refuse_unsupported_day_metric(metric, operation="breakout_moments")
         if grain not in self.capabilities:
-            _refuse(
-                _NATIVE_GRAIN,
-                grain=grain,
-                offered=self.capabilities,
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain)
         self._preflight_covariate(metric, include_covariate, operation="breakout_moments")
         fs = self._preflight_breakout(breakout, operation="breakout_moments")
         exposures = self._ensure_ready(

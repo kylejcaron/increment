@@ -40,7 +40,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 ("from_moments", "SOURCE: portable moments retain no per-unit breakout dimension"),
             ),
-            refusals=(("from_moments", "facade.analysis.operation"),),
+            refusals=(("from_moments", "evidence.breakout_unavailable"),),
         ),
         "artifact_context_format_one_refusal": ParityDeclaration(
             attempted=("from_unit_day_artifact",),
@@ -151,7 +151,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 ("from_moments", "SOURCE: portable moments retain no per-unit breakout dimension"),
             ),
-            refusals=(("from_moments", "facade.analysis.operation"),),
+            refusals=(("from_moments", "evidence.breakout_unavailable"),),
         ),
         "audit-cluster-export-refusal": ParityDeclaration(
             attempted=(
@@ -277,7 +277,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 ("from_moments", "SOURCE: portable moments retain no per-unit breakout dimension"),
             ),
-            refusals=(("from_moments", "facade.analysis.operation"),),
+            refusals=(("from_moments", "evidence.breakout_unavailable"),),
         ),
         "audit-panel-component-horizon": ParityDeclaration(
             attempted=(
@@ -452,7 +452,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             ),
             refusals=(
                 ("from_unit_summary", "source.frame.constructor"),
-                ("from_moments", "facade.analysis.operation"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "audit-sequential-missing-zero": ParityDeclaration(
@@ -548,7 +548,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: from_switchback_panel needs a switchback-shaped frame (unit/cycle/period/step columns) and only accepts a Randomized identification -- no case in this module builds that shape.",
                 ),
             ),
-            refusals=(("from_moments", "facade.analysis.operation"),),
+            refusals=(("from_moments", "evidence.breakout_unavailable"),),
         ),
         "breakout_store_dimension": ParityDeclaration(
             attempted=(
@@ -568,7 +568,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: from_switchback_panel needs a switchback-shaped frame (unit/cycle/period/step columns) and only accepts a Randomized identification -- no case in this module builds that shape.",
                 ),
             ),
-            refusals=(("from_moments", "facade.analysis.operation"),),
+            refusals=(("from_moments", "evidence.breakout_unavailable"),),
         ),
         "clustered_assignment_integrity_scope": ParityDeclaration(
             attempted=("from_definitions", "from_unit_day_artifact", "from_unit_summary"),
@@ -711,7 +711,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: from_switchback_panel needs a switchback-shaped frame (unit/cycle/period/step columns) and only accepts a Randomized identification -- no case in this module builds that shape.",
                 ),
             ),
-            refusals=(("from_moments", "facade.analysis.operation"),),
+            refusals=(("from_moments", "evidence.breakout_unavailable"),),
         ),
         "dashboard-group-data": ParityDeclaration(
             attempted=(
@@ -1394,7 +1394,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_automatic_breakout_discrete_bh": ParityDeclaration(
@@ -1426,7 +1426,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_automatic_multi_arm_exact": ParityDeclaration(
@@ -1473,7 +1473,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_boolean_segments_automatic_exact_bernoulli": ParityDeclaration(
@@ -1505,7 +1505,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_boolean_segments_registered_asymptotic_mean": ParityDeclaration(
@@ -1537,7 +1537,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_boolean_segments_registered_exact_bernoulli": ParityDeclaration(
@@ -1569,7 +1569,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_composed_family_ebh": ParityDeclaration(
@@ -1673,7 +1673,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_registered_breakout_discrete_bh": ParityDeclaration(
@@ -1705,7 +1705,7 @@ PARITY_DECLARATIONS = MappingProxyType(
             refusals=(
                 ("from_definitions", "sequential.route.unsupported"),
                 ("from_unit_day_artifact", "sequential.route.unsupported"),
-                ("from_moments", "readout.source.dimension"),
+                ("from_moments", "evidence.breakout_unavailable"),
             ),
         ),
         "sequential_registered_registration_native_artifact_identity": ParityDeclaration(

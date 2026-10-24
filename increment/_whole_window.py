@@ -55,13 +55,6 @@ def _select_population(
     return rows.filter(lambda row: row.analysis_population == population)
 
 
-# The source cannot serve `operation`; context names it for callers.
-_ANALYSIS_OPERATION = RefusalSpec(
-    "facade.analysis.operation",
-    CapabilityError,
-    lambda *, message, operation: message,
-)
-
 _UNKNOWN_METRIC = RefusalSpec(
     "facade.analysis.unknown_metric",
     InvalidRequestError,
@@ -76,10 +69,15 @@ def _require_analysis_operation[T](
     *,
     message: str,
 ) -> T:
+    offered = tuple(sorted(getattr(source, "operations", ())))
     if not isinstance(getattr(source, "context", None), SourceContext):
-        _refuse(_ANALYSIS_OPERATION, message=message, operation=operation)
-    if operation not in source.operations:
-        _refuse(_ANALYSIS_OPERATION, message=message, operation=operation)
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(source, operation, offered, route=message)
+    if operation not in offered:
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(source, operation, offered, route=message)
     return require_operation(source, operation, protocol)
 
 

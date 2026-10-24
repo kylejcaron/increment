@@ -474,12 +474,12 @@ def test_adopted_native_only_operations_refuse_with_exact_codes(
 ) -> None:
     _native_analysis, adopted, _context, _store, _reference = published_pair
     for call, code in (
-        (adopted.materialize, "facade.analysis.operation"),
-        (adopted.panel_sql, "facade.analysis.operation"),
-        (adopted.summary_sql, "artifact.operation.unsupported"),
+        (adopted.materialize, "evidence.operation_unavailable"),
+        (adopted.panel_sql, "evidence.operation_unavailable"),
+        (adopted.summary_sql, "evidence.operation_unavailable"),
         (
             lambda: adopted.dashboard_group_data(metrics=adopted.metrics),
-            "facade.analysis.operation",
+            "evidence.operation_unavailable",
         ),
     ):
         with pytest.raises(CapabilityError) as raised:
@@ -604,9 +604,9 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
         # adopted facade refuses with the exact coded contract.
         assert native.materialize() is native
         for call, code in (
-            (adopted.materialize, "facade.analysis.operation"),
-            (adopted.panel_sql, "facade.analysis.operation"),
-            (adopted.summary_sql, "artifact.operation.unsupported"),
+            (adopted.materialize, "evidence.operation_unavailable"),
+            (adopted.panel_sql, "evidence.operation_unavailable"),
+            (adopted.summary_sql, "evidence.operation_unavailable"),
         ):
             with pytest.raises(Exception) as raised:
                 call()
@@ -614,7 +614,7 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
             assert raised.value.context  # ty: ignore[unresolved-attribute]
         with pytest.raises(Exception) as raised:
             adopted.materialize()
-        assert raised.value.code == "facade.analysis.operation"  # ty: ignore[unresolved-attribute]
+        assert raised.value.code == "evidence.operation_unavailable"  # ty: ignore[unresolved-attribute]
         assert native.panel_sql()[native_metric.name]
         assert native.summary_sql()[native_metric.name]
 

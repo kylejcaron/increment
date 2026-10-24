@@ -932,7 +932,7 @@ def test_allocation_history_reconciles_with_the_renamed_unequal_experiment(
 def test_allocation_history_cannot_also_be_refused(storefront: DashboardSnapshot) -> None:
     with pytest.raises(InvalidRequestError) as caught:
         dataclasses.replace(
-            storefront, allocation_history_refusal=("source.native.operation", "unsupported")
+            storefront, allocation_history_refusal=("evidence.operation_unavailable", "unsupported")
         )
     assert caught.value.code == "dashboard.invalid_snapshot"
 

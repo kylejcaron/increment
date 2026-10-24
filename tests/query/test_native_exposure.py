@@ -206,7 +206,7 @@ experiments:
     analysis = Analysis.from_definitions("exp", defs_path, con)
     with pytest.raises(CapabilityError) as exc_info:
         analysis.allocation_history()
-    assert exc_info.value.code == "source.native.operation"
+    assert exc_info.value.code == "evidence.operation_unavailable"
 
 
 @pytest.mark.integration

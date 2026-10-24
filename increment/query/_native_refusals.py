@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, NoReturn
 
+from increment._evidence_refusals import OPERATION_UNAVAILABLE
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, _safe_error_value
 from increment.errors import refuse as _refuse
 from increment.semantics.models import Metric
@@ -56,26 +57,7 @@ _NATIVE_WAREHOUSE_CLUSTER = RefusalSpec(
     CapabilityError,
     template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
 )
-_NATIVE_SQL_GRAIN = RefusalSpec(
-    "source.native_sql_grain",
-    CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-_NATIVE_OPERATION = RefusalSpec(
-    "source.native.operation",
-    CapabilityError,
-    template=(
-        "native source cannot perform {operation!r} for {request!r}; "
-        "available capability is {offered!r}. {route}"
-    ),
-)
+_NATIVE_OPERATION = OPERATION_UNAVAILABLE
 _NATIVE_TRIGGER_EVIDENCE_REQUIRED = RefusalSpec(
     "source.native.trigger_evidence_required",
     CapabilityError,
@@ -116,8 +98,8 @@ def _refuse_operation(
     """Refuse one native operation with its actual request and served capability."""
     _refuse(
         _NATIVE_OPERATION,
-        operation=operation,
-        request={key: _bounded_context_value(value) for key, value in request.items()},
+        constructor="native source",
+        requested=operation,
         offered=_bounded_context_value(offered),
         route=route,
     )

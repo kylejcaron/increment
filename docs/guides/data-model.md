@@ -815,8 +815,7 @@ publication time, and experiment end are not completeness proofs.
 Every adopted artifact exposes `moments_source`, `day_source`, and
 `export_moments` (which exports a moments cube; it does not re-publish the
 artifact). On an adopted artifact, `materialize()` and `panel_sql()` are
-refused with `facade.analysis.operation`, and `summary_sql()` with
-`artifact.operation.unsupported`. Optional operations are enabled only by
+refused with `evidence.operation_unavailable`. Optional operations are enabled only by
 their published evidence:
 
 | Published extension | Enabled operation(s) |
@@ -896,9 +895,11 @@ definition and source-provenance hashes. Supported requests are
     - `artifact.extension.missing`, `artifact.extension.invalid`, and
       `artifact.metric.binding_mismatch`: required evidence is absent,
       malformed/tampered, or inconsistent with the manifest metric binding.
-    - `artifact.operation.unsupported`: the SOURCE cannot perform the requested
-      operation at all — an unsupported grain, or raw SQL a snapshot does not
-      expose.
+    - `artifact.operation.unsupported`: a bare artifact reader cannot provide
+      `cluster_counts()` without cluster identity; use a definitions-backed
+      source with the `cluster_identity` extension. Unsupported grains use
+      `evidence.grain_unavailable`; unsupported operations use
+      `evidence.operation_unavailable`.
     - `artifact.evidence.unavailable`: the requested evidence or shape is not
       available from the selected source or published artifact, even though the
       broader operation is supported — a source lacking a required operation or

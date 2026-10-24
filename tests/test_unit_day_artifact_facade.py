@@ -673,8 +673,8 @@ def test_dashboard_snapshot_refuses_an_artifact_backed_analysis_and_it_stays_usa
 
     with pytest.raises(CapabilityError) as raised:
         adopted.dashboard_snapshot(operation, metrics=metrics)
-    assert raised.value.code == "facade.analysis.operation"
-    assert raised.value.context["operation"] == "readout_snapshot"
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert raised.value.context["requested"] == "readout_snapshot"
     adopted.close()
     assert _purchase_lift(adopted) == pytest.approx(before)
 

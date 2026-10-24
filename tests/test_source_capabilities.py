@@ -50,7 +50,7 @@ def test_triggered_population_source_limits_grains_and_uses_triggered_counts() -
         raised.value,
         operation="sql",
         request={"grain": "total", "population": "triggered"},
-        offered=("total",),
+        offered=(),
     )
 
 
@@ -100,11 +100,9 @@ def test_require_operation_rejects_declaration_drift() -> None:
     assert require_operation(source, "summary_sql", SummarySqlOperation) is source
     with pytest.raises(CapabilityError) as raised:
         require_operation(source, "panel_sql", PanelSQLOperation)
-    assert raised.value.code == "source.operation.unsupported"
-    assert raised.value.context == {
-        "operation": "panel_sql",
-        "source": "SqlPanelSource",
-    }
+    assert raised.value.code == "evidence.operation_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
+    assert raised.value.context["requested"] == "panel_sql"
 
 
 # Capability policy at the validation seam: metric type x view x option x completion x
@@ -130,7 +128,7 @@ _QUANTILE_GRAIN = "readout.metric.quantile_grain"
 # Raised by `validate_readout_source` after the grain and dimension checks, so a source
 # that lacks the grain reports the source limit first.
 _SOURCE_STAGE_CONSTRUCTION_CODES = frozenset({_QUANTILE_GRAIN})
-_DAILY_WINSOR = "readout.metric.daily_winsorization"
+_DAILY_WINSOR = "evidence.operation_unavailable"
 _PERCENTILE_WINSOR = "readout.metric.percentile_winsorization"
 _QUANTILE_BREAKOUT = "readout.metric.quantile_breakout"
 _QUANTILE_CLUSTER = "arm.metric.quantile_cluster"
@@ -344,9 +342,9 @@ def _declared_gate_outcome(
     construction = None if declared == _ACCEPTED else declared
     request_by = tuple(getattr(source, "breakouts", ()))
     if _VIEW_GRAIN[view] not in source.capabilities:
-        source_limit = "readout.source.grain"
+        source_limit = "evidence.grain_unavailable"
     elif view == "breakout" and not request_by:
-        source_limit = "readout.source.dimension"
+        source_limit = "evidence.breakout_unavailable"
     else:
         source_limit = None
     if construction in _SOURCE_STAGE_CONSTRUCTION_CODES:

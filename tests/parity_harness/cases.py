@@ -1125,7 +1125,7 @@ def _artifact_context_format_one_refusal_case() -> ParityCase:
 def _dashboard_group_data_case() -> ParityCase:
     def probe(path: str, analysis: Analysis) -> None:
         if path != "from_definitions":
-            expected_code = "facade.analysis.operation"
+            expected_code = "evidence.operation_unavailable"
             if path == "from_unit_day_artifact":
                 from tests.capability_consumers_auxiliary import assert_expected
 
@@ -1230,7 +1230,7 @@ def _dashboard_breakout_reads_case() -> ParityCase:
         if path != "from_definitions":
             with pytest.raises(CodedError) as caught:
                 analysis.dashboard_breakout_reads(Breakout(property="store"))
-            assert caught.value.code == "facade.analysis.operation"
+            assert caught.value.code == "evidence.breakout_unavailable"
             return
         (declared,) = analysis.experiment.breakouts
         with pytest.raises(CodedError) as caught:
@@ -3204,8 +3204,7 @@ def _registered_segmented_breakout_case(
     survives the segmented roster; confirmed live, the replayed roster
     still names all three `store` cells), but `MomentsSource` declares no
     breakout catalog at all, so `run_breakout` refuses
-    `readout.source.dimension` ("MomentsSource does not support breakout
-    dimension 'store'; declared breakouts: []"), confirmed live.
+    `evidence.breakout_unavailable`, confirmed live.
     `from_switchback_panel` has no sequential construction at all, the
     same permanent SOURCE limitation every other sequential case here
     waives.
@@ -6746,8 +6745,8 @@ def _mixed_quantile_checkpoint_probes(
             if constructor == "from_moments":
                 with pytest.raises(CodedError) as refused:
                     analysis.export(path)
-                assert refused.value.code == "facade.analysis.operation"
-                assert refused.value.context["operation"] == "export_moments"
+                assert refused.value.code == "evidence.operation_unavailable"
+                assert refused.value.context["requested"] == "export_moments"
                 assert not path.exists()
                 return
             analysis.export(path)
@@ -9448,7 +9447,7 @@ def _categorical_cuped_moments_case() -> ParityCase:  # noqa: PLR0915
             return
         with pytest.raises(CodedError) as raised:
             analysis.run_breakout()
-        assert raised.value.code == "facade.analysis.operation"
+        assert raised.value.code == "evidence.breakout_unavailable"
 
     return ParityCase(
         id="categorical-cuped-moments-format-13",

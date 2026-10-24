@@ -649,9 +649,9 @@ def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_s
 # for checkpoint replay) and the readout gate backs it for direct callers, so one hazard
 # has one code per entry method; within an entry method it must not depend on the source.
 _WINSORIZED_DAILY_CODES = {
-    "readouts.daily": "readout.metric.daily_winsorization",
-    "Analysis.run_daily": "breakout.metric.daily_winsorization",
-    "Analysis.run_daily_lift": "breakout.metric.daily_winsorization",
+    "readouts.daily": "evidence.operation_unavailable",
+    "Analysis.run_daily": "evidence.operation_unavailable",
+    "Analysis.run_daily_lift": "evidence.operation_unavailable",
 }
 
 
@@ -723,3 +723,156 @@ def test_winsorized_daily_hazard_covers_every_adapter_that_can_express_it(tmp_pa
         if "daily" in adapter.build()[0].capabilities and can_express_winsorized_mean(adapter)
     }
     assert expressible == set(_WINSORIZED_DAILY_SUBSTRATES)
+
+
+def _evidence_retired_codes() -> set[str]:
+    from increment.errors import RETIRED_CODES
+
+    return {
+        code
+        for code, replacement in RETIRED_CODES.items()
+        if (
+            isinstance(replacement, str)
+            and replacement.startswith("evidence.")
+            or isinstance(replacement, tuple)
+            and any(item.startswith("evidence.") for item in replacement)
+        )
+    }
+
+
+def test_retired_codes_are_not_registered() -> None:
+    from increment.errors import RETIRED_CODES
+
+    registrations = walk_refusal_registries()
+    retired = _evidence_retired_codes()
+    assert retired.isdisjoint(registrations)
+    live = set(registrations)
+    for code in retired:
+        replacement = RETIRED_CODES[code]
+        assert replacement is not None
+        replacements = (replacement,) if isinstance(replacement, str) else replacement
+        assert set(replacements) <= live
+
+
+def test_no_published_page_cites_a_retired_code() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    published = [root / "README.md"]
+    for directory in (root / "docs", root / "examples"):
+        published.extend(
+            path
+            for path in directory.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".md", ".mdx", ".html", ".py", ".ipynb"}
+            and "docs/superpowers/" not in path.as_posix()
+            and "release-notes" not in path.as_posix().lower()
+        )
+    stale = {
+        code: [path.relative_to(root).as_posix() for path in published if code in path.read_text()]
+        for code in sorted(_evidence_retired_codes())
+    }
+    assert {code: paths for code, paths in stale.items() if paths} == {}
+
+
+def test_evidence_refusals_round_trip_pickle_and_deepcopy() -> None:
+    import copy
+    import pickle
+
+    from increment import Analysis, CapabilityError
+    from tests.source_conformance import unit_summary_table
+
+    analysis = Analysis.from_unit_summary(
+        unit_summary_table(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+    )
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            analysis.run_daily()
+        refusal = raised.value
+        assert refusal.code == "evidence.grain_unavailable"
+        assert set(refusal.context) == {"constructor", "requested", "offered", "route"}
+        for restored in (pickle.loads(pickle.dumps(refusal)), copy.deepcopy(refusal)):
+            assert type(restored) is type(refusal)
+            assert restored.code == refusal.code
+            assert restored.context == refusal.context
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_each_evidence_hazard_has_one_code_on_every_constructor(
+    seeded_con, seeded_defs, tmp_path
+) -> None:
+    from typing import Any, cast
+
+    import pyarrow.parquet as pq
+
+    from increment import Analysis, CapabilityError
+    from tests.analysis_factory import held_source
+    from tests.source_conformance import unit_summary_table
+
+    summary = Analysis.from_unit_summary(
+        unit_summary_table(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+        breakouts=("segment",),
+    )
+    moments: Analysis | None = None
+    artifact: Analysis | None = None
+    definitions = Analysis.from_definitions(
+        "new_onboarding_v2", seeded_defs, seeded_con, store="none"
+    )
+    try:
+        summary_source = cast("Any", held_source(summary))
+        metric = summary.metrics[0]
+        with pytest.raises(CapabilityError) as raised:
+            summary_source.moments(metric, grain="daily")
+        assert raised.value.code == "evidence.grain_unavailable"
+        assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+
+        with pytest.raises(CapabilityError) as raised:
+            summary.panel_sql()
+        assert raised.value.code == "evidence.operation_unavailable"
+        assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+
+        path = tmp_path / "evidence-moments.parquet"
+        summary.export(path)
+        moments = Analysis.from_moments(
+            pq.read_table(path).to_pylist(), metrics={"revenue": "mean"}, control="control"
+        )
+        moments_source = cast("Any", held_source(moments))
+        with pytest.raises(CapabilityError) as raised:
+            moments_source.moments(moments.metrics[0], by=("segment",))
+        assert raised.value.code == "evidence.breakout_unavailable"
+        assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+        with pytest.raises(CapabilityError) as raised:
+            moments_source.sql()
+        assert raised.value.code == "evidence.operation_unavailable"
+        assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+
+        definition_source = cast("Any", held_source(definitions))
+        with pytest.raises(CapabilityError) as raised:
+            definition_source.sql(grain="daily")
+        assert raised.value.code == "evidence.grain_unavailable"
+        assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+        from tests.source_conformance import unit_day_artifact_analysis
+
+        artifact = unit_day_artifact_analysis(tmp_path)
+        artifact_source = cast("Any", held_source(artifact))
+        with pytest.raises(CapabilityError) as raised:
+            artifact_source.moments(artifact.metrics[0], grain="weekly")
+        assert raised.value.code == "evidence.grain_unavailable"
+        assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+    finally:
+        summary.close()
+        definitions.close()
+        if moments is not None:
+            moments.close()
+        if artifact is not None:
+            artifact.close()

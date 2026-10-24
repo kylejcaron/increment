@@ -826,7 +826,7 @@ def test_native_encouragement_cluster_refuses_cuped_by_pre_periods():
     analysis = _native_cluster_analysis(n_pre_periods=14)
     with pytest.raises(CapabilityError) as raised:
         analysis.panel_sql()
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 @pytest.mark.integration
@@ -835,7 +835,7 @@ def test_native_encouragement_cluster_refuses_ratio_metric():
     analysis = _native_cluster_analysis(ratio=True)
     with pytest.raises(CapabilityError) as raised:
         analysis.panel_sql()
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_cluster_with_informative_prior_refuses():

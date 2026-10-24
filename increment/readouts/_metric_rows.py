@@ -152,6 +152,9 @@ def _load_metric_evidence(  # noqa: PLR0915
 ) -> MetricEvidence:
     metric = request.metric
     by = request.by
+    from increment._evidence_refusals import require_evidence
+
+    require_evidence(src, by=by)
     control_group = request.control_group
     methods = request.methods
     covariates = request.covariates

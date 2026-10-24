@@ -405,7 +405,7 @@ remove the existing encouragement breakout-readout restrictions.
 `from_definitions` and `from_unit_day_artifact` still refuse segmented capture
 because relational segment capture needs an immutable property-relation
 contract. `from_moments` can replay retained segmented state but carries no
-breakout catalog, so `run_breakout` refuses with `readout.source.dimension`.
+breakout catalog, so `run_breakout` refuses with `evidence.breakout_unavailable`.
 As-of output does not infer segmented historical checkpoints from a moment
 cube. Automatic registration does not change these source boundaries.
 

@@ -70,7 +70,7 @@ def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
     day_source = _native_source(pricing_analysis).day_source(metrics=pricing_analysis.metrics)
     with pytest.raises(CapabilityError) as raised:
         day_source.unit_counts()
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 @pytest.mark.slow
@@ -116,7 +116,7 @@ def test_unit_counts_match_across_definition_summary_and_panel_sources(tmp_path)
     )
     with pytest.raises(CapabilityError) as refused:
         incomplete.unit_counts()
-    assert refused.value.code == "facade.analysis.operation"
+    assert refused.value.code == "evidence.operation_unavailable"
     reference = native.publish_unit_day_artifact(store, extensions=[AssignmentCountsRequest()])
     artifact = Analysis.from_unit_day_artifact(
         store, reference, expected_context=native.artifact_context

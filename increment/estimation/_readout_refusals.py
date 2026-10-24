@@ -44,14 +44,6 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
                 "requires raw independent units and a supported two-sided winsor inference specification"
             ),
         ),
-        "readout.metric.daily_winsorization": RefusalSpec(
-            "readout.metric.daily_winsorization",
-            CapabilityError,
-            lambda *, view, names: (
-                f"{view} does not support winsorized metrics "
-                f"({', '.join(names)}); use run() for inferential reads"
-            ),
-        ),
         # The code predates its shared home: day-axis callers catch it by name.
         "breakout.retention.unbounded": RefusalSpec(
             "breakout.retention.unbounded",

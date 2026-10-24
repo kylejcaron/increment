@@ -175,7 +175,7 @@ def test_readout_request_validates_source_dimension_before_query():
     with pytest.raises(CapabilityError) as raised:
         readouts.run(cast(MomentSource, source), by=["not_declared"])
 
-    assert getattr(raised.value, "code", None) == "readout.source.dimension"
+    assert getattr(raised.value, "code", None) == "evidence.breakout_unavailable"
     assert source.moment_calls == 0
 
 
@@ -185,7 +185,7 @@ def test_readout_request_rejects_dimensions_when_source_declares_none():
     with pytest.raises(CapabilityError) as raised:
         readouts.run(cast(MomentSource, source), by=["segment"])
 
-    assert getattr(raised.value, "code", None) == "readout.source.dimension"
+    assert getattr(raised.value, "code", None) == "evidence.breakout_unavailable"
     assert source.moment_calls == 0
 
 
@@ -412,7 +412,7 @@ def test_breakout_request_rejects_an_unserved_dimension_before_query():
     with pytest.raises(CapabilityError) as raised:
         readouts.breakout(cast(MomentSource, source), "segment", metrics=["metric"])
 
-    assert getattr(raised.value, "code", None) == "readout.source.dimension"
+    assert getattr(raised.value, "code", None) == "evidence.breakout_unavailable"
     assert source.moment_calls == 0
 
 

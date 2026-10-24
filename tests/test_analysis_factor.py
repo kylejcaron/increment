@@ -294,7 +294,7 @@ class TestFactorSummaries:
 
         with pytest.raises(CapabilityError) as raised:
             replacement.factor_summaries()
-        assert raised.value.code == "source.native.operation"
+        assert raised.value.code == "evidence.operation_unavailable"
 
     @pytest.mark.integration
     def test_returns_empty_dict_without_declared_factors(self, con):
@@ -321,7 +321,7 @@ class TestFactorSummaries:
         )
         with pytest.raises(CapabilityError) as raised:
             a.factor_summaries()
-        assert raised.value.code == "facade.analysis.operation"
+        assert raised.value.code == "evidence.operation_unavailable"
 
     @pytest.mark.integration
     def test_pre_exposure_factor_ignores_post_exposure_value(self, con):

@@ -56,8 +56,9 @@ parity matrix and a guide — not every loader.
   wrappers narrow the wrapped declaration to the evidence they expose; only the
   custom source fallback in `declared_evidence` may probe protocols and
   attributes. `tests/test_evidence_capabilities.py` pins the declaration contract.
-- One hazard, one refusal code, on every constructor. Raise the registered
-  `RefusalSpec`; never add a per-loader variant of an existing hazard.
+  One hazard, one code, on every constructor. Raise the registered
+  `RefusalSpec`; `tests/test_refusal_uniqueness.py::test_each_evidence_hazard_has_one_code_on_every_constructor`
+  enforces the public-constructor contract; never add a per-loader variant of an existing hazard.
 - `tach check` enforces module dependencies; add one only where the table allows.
 
 ## Making a change

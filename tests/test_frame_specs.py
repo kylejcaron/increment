@@ -785,7 +785,7 @@ def test_frame_source_moments_refuses_unsupported_grain_before_quantile() -> Non
     metric = _metric(src, "revenue")
     with pytest.raises(CapabilityError) as raised:
         src.moments(metric, grain="daily")
-    assert raised.value.code == "source.frame.grain"
+    assert raised.value.code == "evidence.grain_unavailable"
 
 
 @pytest.mark.parametrize("grain", ["daily", "asof"])
@@ -801,8 +801,8 @@ def test_frame_source_moments_refuses_unsupported_grain(grain: str) -> None:
     with pytest.raises(CapabilityError) as exc_info:
         src.moments(metric, grain=cast(Any, grain))
 
-    assert exc_info.value.code == "source.frame.grain"
-    assert exc_info.value.context["grain"] == grain
+    assert exc_info.value.code == "evidence.grain_unavailable"
+    assert exc_info.value.context["requested"] == grain
 
 
 def test_frame_source_moments_refuses_quantile_metric() -> None:
@@ -1313,10 +1313,10 @@ def _frame_panel_cluster_arg():
 
 _FRAME_MESSAGE_CASES = [
     ("source.frame.quantile_no_moments", _frame_quantile_no_moments),
-    ("source.frame.breakouts_unsupported", _frame_breakouts_unsupported),
-    ("source.frame.sql_unsupported", _frame_sql_unsupported),
-    ("source.frame.multi_dimension", _frame_multi_dimension),
-    ("source.frame.undeclared_breakout", _frame_undeclared_breakout),
+    ("evidence.breakout_unavailable", _frame_breakouts_unsupported),
+    ("evidence.operation_unavailable", _frame_sql_unsupported),
+    ("evidence.breakout_unavailable", _frame_multi_dimension),
+    ("evidence.breakout_unavailable", _frame_undeclared_breakout),
     ("source.frame.windowed_encouragement_total", _frame_windowed_encouragement_total),
     ("source.frame.retention_daily", _frame_retention_daily),
     ("source.frame.quantile_daily", _frame_quantile_daily),
@@ -1325,9 +1325,10 @@ _FRAME_MESSAGE_CASES = [
 
 
 @pytest.mark.parametrize(("expected_code", "builder"), _FRAME_MESSAGE_CASES)
-def test_frame_message_call_sites_are_individually_coded(expected_code, builder) -> None:
-    """Each former ``_FRAME_MESSAGE`` guard now carries its own code, so a
-    caller can branch on the specific capability gap without parsing text."""
+def test_frame_message_call_sites_use_shared_breakout_code_where_needed(
+    expected_code, builder
+) -> None:
+    """Frame-specific refusals retain their codes; breakout gaps use the shared code."""
     with pytest.raises(CapabilityError) as raised:
         builder()
     assert raised.value.code == expected_code

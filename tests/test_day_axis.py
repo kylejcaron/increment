@@ -83,7 +83,7 @@ def test_run_daily_refuses_no_definitions_on_unit_summary_source():
     )
     with pytest.raises(CapabilityError) as raised:
         analysis.run_daily()
-    assert raised.value.code == "facade.analysis.no_definitions"
+    assert raised.value.code == "evidence.grain_unavailable"
 
 
 def test_run_daily_values_carry_slice_fields():

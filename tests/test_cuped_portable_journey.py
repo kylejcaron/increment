@@ -327,7 +327,7 @@ def test_definitions_artifact_moments_journey_replays_companions_without_unit_tr
                 restored.run_breakout()
         finally:
             restored.close()
-        assert breakout.value.code == "facade.analysis.operation"
+        assert breakout.value.code == "evidence.breakout_unavailable"
     finally:
         if adopted is not None:
             adopted.close()

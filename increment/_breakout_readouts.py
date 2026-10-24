@@ -12,7 +12,7 @@ from increment._day_axis import _TRIGGER_UNSUPPORTED
 from increment._literals import Correction
 from increment._source_operations import BreakoutSourcesOperation, ReadoutSnapshotOperation
 from increment._source_types import classify_source
-from increment._whole_window import _ANALYSIS_OPERATION, _require_analysis_operation
+from increment._whole_window import _require_analysis_operation
 from increment.errors import refuse as _refuse
 from increment.readouts._requests import _validate_breakout_request
 
@@ -103,14 +103,25 @@ class BreakoutReadouts:
             return
         assert self._experiment is not None
         breakouts = self._experiment.breakouts
+        if "breakout_sources" not in self._src.operations:
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self._src,
+                tuple(breakout.property for breakout in breakouts),
+                tuple(self._src.breakouts),
+                route=(
+                    "run_breakout() needs a native Analysis.from_definitions or "
+                    "Analysis.from_unit_panel instance with declared breakouts"
+                ),
+            )
         native_src = _require_analysis_operation(
             self._src,
             "breakout_sources",
             BreakoutSourcesOperation,
             message=(
                 "run_breakout() needs a native Analysis.from_definitions or "
-                "Analysis.from_unit_panel instance -- this source has no panel "
-                "breakouts to summarise."
+                "Analysis.from_unit_panel instance with declared breakouts"
             ),
         )
         scoped_sources = native_src.breakout_sources(
@@ -234,14 +245,20 @@ class BreakoutReadouts:
             )
         route = _breakout_route(self._src)
         if route == "unsupported":
-            _refuse(
-                _ANALYSIS_OPERATION,
-                message=(
-                    "run_breakout() needs a native Analysis.from_definitions or "
-                    "Analysis.from_unit_panel instance -- this source has no panel "
-                    "breakouts to summarise."
-                ),
-                operation="breakout_sources",
+            from increment._evidence_refusals import refuse_breakout
+            from increment._source_types import declared_evidence
+
+            refusal = declared_evidence(self._src)
+            requested = (
+                tuple(breakout.property for breakout in self._experiment.breakouts)
+                if self._experiment is not None
+                else tuple(self._src.breakouts)
+            )
+            refuse_breakout(
+                self._src,
+                requested,
+                refusal.breakouts,
+                route="use a source with the requested breakout dimensions",
             )
         if route in ("artifact", "native"):
             assert self._experiment is not None

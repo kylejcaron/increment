@@ -265,8 +265,8 @@ class TestSitewide:
         )
         with pytest.raises(CapabilityError) as raised:
             a.sitewide("revenue")
-        assert raised.value.code == "facade.analysis.operation"
-        assert raised.value.context["operation"] == "sitewide_evidence"
+        assert raised.value.code == "evidence.operation_unavailable"
+        assert raised.value.context["requested"] == "sitewide_evidence"
 
     @pytest.mark.integration
     def test_winsorized_metric_refuses_with_its_own_code(self, pricing_site_noise_con):
