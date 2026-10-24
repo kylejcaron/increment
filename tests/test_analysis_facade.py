@@ -1143,6 +1143,30 @@ def test_from_unit_summary_day_axis_raises_capability_error():
         assert exc_info.value.code == "evidence.grain_unavailable"
 
 
+def test_day_axis_request_refuses_on_a_summary_with_the_shared_code():
+    import pandas as pd
+
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "user_id": ["u1", "u2"],
+                "variant": ["treatment", "control"],
+                "revenue": [25.0, 22.5],
+            }
+        ),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+    )
+    try:
+        with pytest.raises(CapabilityError) as refused:
+            analysis.run_daily()
+        assert refused.value.code == "evidence.grain_unavailable"
+    finally:
+        analysis.close()
+
+
 @pytest.mark.parametrize(
     "method",
     ["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"],

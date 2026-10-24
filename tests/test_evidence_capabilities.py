@@ -1206,11 +1206,17 @@ def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_de
 
     assert day.evidence.grains == frozenset({"daily", "asof"})
     assert day.evidence.unit_rows is False
+    assert day.evidence.method_fit == "none"
+    assert day.evidence.compliance_axis == "none"
     assert day.evidence.count_grains == frozenset()
+    assert day.evidence.populations == frozenset({"assigned"})
     with pytest.raises(CapabilityError):
         day.unit_frame(source.context.metrics[0])
     with pytest.raises(CapabilityError):
         day.unit_counts()
+    if source.context.trigger_name is not None:
+        triggered = source.day_source(metrics=(source.context.metrics[0],), population="triggered")
+        assert triggered.evidence.populations == frozenset({"triggered"})
     analysis.close()
 
 

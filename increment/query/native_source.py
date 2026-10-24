@@ -2911,6 +2911,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             preflight_day_request=self._preflight_day_request,
             note_reduction=self._note_reduction,
             horizon_metrics=effective_horizon,
+            population=population,
             compliance_provider=self.compliance_summary,
             compliance_dates_provider=self.compliance_dates,
             validated_assignments=self._validated_assignments,

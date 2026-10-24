@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment.semantics.models import Metric
 
@@ -9,6 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from increment.errors import CodedError, RefusalSpec
+    from increment.semantics.design import Encouragement
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,43 @@ def warehouse_cuped_fit_evidence(
 ) -> _WarehouseCupedFitEvidence:
     """Build the single warehouse-fit envelope used by live and fitted sources."""
     return _WarehouseCupedFitEvidence(fit, tuple(arm_order), tuple(withheld))
+
+
+@dataclass(frozen=True, slots=True)
+class DayAxisRequest:
+    caller: Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
+    grain: Literal["daily", "asof"]
+    metrics: tuple[Metric, ...]
+    dimension: str | None
+    completed_windows_only: bool = False
+    estimands: tuple[str, ...] | None = None
+    population: Literal["assigned", "triggered"] = "assigned"
+    experiment: Any | None = None
+    covariate_metrics: frozenset[str] = frozenset()
+    by: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DayAxisRows:
+    """Acquired daily/as-of row slices and the source view used to read them."""
+
+    source: Any
+    route: Literal["artifact", "moments", "native"]
+    slices: Iterator[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ComplianceRequest:
+    design: Encouragement
+    as_of: object | None = None
+    completed_windows_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ComplianceSeriesRequest:
+    design: Encouragement
+    completed_windows_only: bool = False
+    population: Literal["assigned", "triggered"] = "assigned"
 
 
 @dataclass(frozen=True, slots=True)
