@@ -515,12 +515,8 @@ def test_export_refuses_on_a_clustered_experiment(tmp_path):
     destination.write_bytes(b"keep me")
     with pytest.raises(CapabilityError) as raised:
         a.export(destination)
-    assert raised.value.code == "source.moments.cluster_grain"
-    assert raised.value.context["operation"] == "export_moments"
-    assert raised.value.context["source"] == "native"
-    assert raised.value.context["cluster"] == "store_id"
-    assert raised.value.context["design"] == "randomized"
-    assert raised.value.context["mechanism"] == "randomized"
+    assert raised.value.code == "evidence.cluster_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
     assert destination.read_bytes() == b"keep me"
 
 

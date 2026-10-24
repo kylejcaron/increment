@@ -167,44 +167,10 @@ if TYPE_CHECKING:
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import AnalysisPlan, ExperimentMetric, Metric
 
-_MOMENTS_UNIT_GRAIN = _RefusalSpec(
-    "source.moments.unit_grain",
-    _CapabilityError,
-    template="{method!r} needs unit-grain rows, which this source does not retain -- only aggregated moments are available here. {method}() unavailable; use a frame-backed source (from_unit_summary / from_unit_panel) for unit-grain estimators.",
-)
-_MOMENTS_COVARIATE_UNAVAILABLE = _RefusalSpec(
-    "source.moments.covariate_unavailable",
-    _CapabilityError,
-    lambda *, covariates: (
-        f"unit_frame: covariates {list(covariates)!r} are not available from a "
-        "moments-backed source -- a moments cube holds no per-unit rows to attach "
-        "covariates or reconstruct observational weight diagnostics from. "
-        "IPTW/AIPW diagnostics need per-arm weight sums, squared-weight sums, "
-        "maximum weight, positive-weight counts, and the weight definition and "
-        "unit/cluster grain (with cluster-total summaries at cluster grain). "
-        "Use the original per-unit data with Analysis.from_definitions, "
-        "from_unit_day_artifact (covariates the experiment declares), "
-        "from_unit_summary, or from_unit_panel instead."
-    ),
-)
 _MOMENTS_COUNTS = _RefusalSpec(
     "source.moments.assignment_counts",
     _CapabilityError,
     template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
-)
-_MOMENTS_CLUSTER_GRAIN = _RefusalSpec(
-    "source.moments.cluster_grain",
-    _CapabilityError,
-    lambda *, operation, source, cluster, design, mechanism, route_forward: (
-        f"cluster_counts is unavailable on {source}: these moments retain no "
-        f"cluster identity or cluster-count evidence. {route_forward}"
-        if operation == "cluster_counts"
-        else (
-            f"{operation} is unavailable on {source}: clustered {design}/{mechanism} "
-            f"source {cluster!r} cannot be transported through the moments adapter "
-            f"because the wire format has no cluster marker. {route_forward}"
-        )
-    ),
 )
 
 
@@ -216,16 +182,15 @@ def refuse_cluster_grain_transport(
     design: object | None,
     route_forward: str,
 ) -> NoReturn:
-    """Refuse ordinary clustered moments transport before destination mutation."""
-    mechanism = getattr(design, "mechanism", design if isinstance(design, str) else None)
-    _refuse(
-        _MOMENTS_CLUSTER_GRAIN,
-        operation=operation,
-        source=source,
-        cluster=cluster,
-        design=mechanism,
-        mechanism=mechanism,
-        route_forward=route_forward,
+    from increment._evidence_refusals import CLUSTER_UNAVAILABLE
+    from increment.errors import refuse
+
+    refuse(
+        CLUSTER_UNAVAILABLE,
+        constructor=source,
+        requested=cluster,
+        offered=(),
+        route=route_forward,
     )
 
 
@@ -267,20 +232,10 @@ def refuse_quantile_moments_export(
     )
 
 
-_BREAKOUT_UNIT_GRAIN = _RefusalSpec(
-    "source.breakout.unit_grain",
-    _CapabilityError,
-    template="{method!r} needs unit-grain rows, which this source does not retain -- only aggregated moments are available here. {method}() unavailable; use a frame-backed source (from_unit_summary / from_unit_panel) for unit-grain estimators.",
-)
 _BREAKOUT_COUNTS = _RefusalSpec(
     "source.breakout.assignment_counts",
     _CapabilityError,
     template="unit_counts() is not supported on a breakout-scoped moments source -- its rows are per (group_id, dimension_value), so a per-group count would silently report one segment's n as the whole arm's. Use DefinitionsMomentSource.moments_source() for total-grain counts.",
-)
-_BREAKOUT_CLUSTER_GRAIN = _RefusalSpec(
-    "source.breakout.cluster_grain",
-    _CapabilityError,
-    template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
 )
 _BREAKOUT_COMPLIANCE = _RefusalSpec(
     "source.breakout.compliance_summary",
@@ -1911,19 +1866,18 @@ class MomentsSource(SequentialSourceMixin):
             return self._source.unit_frame(
                 metric, covariates=covariates, outcome_stage=outcome_stage
             )
+        from increment._evidence_refusals import refuse_unit_rows, require_evidence
+
         if outcome_stage == "raw":
-            from increment.winsor import winsor_refuse
-
-            winsor_refuse(
-                "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
-            )
-        self.refuse_unavailable_covariates(covariates)
-        _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
-
-    @staticmethod
-    def refuse_unavailable_covariates(covariates: Sequence[str]) -> None:
+            require_evidence(self, raw_outcomes=True)
         if covariates:
-            _refuse(_MOMENTS_COVARIATE_UNAVAILABLE, covariates=tuple(covariates))
+            require_evidence(self, covariates=covariates)
+        require_evidence(self, unit_rows=True)
+        refuse_unit_rows(
+            self,
+            offered=False,
+            route="use a source that retains unit-level rows",
+        )
 
     def unit_counts(self) -> dict[str, int]:
         """Return source-level enrolled counts carried by supported cubes."""
@@ -1938,17 +1892,13 @@ class MomentsSource(SequentialSourceMixin):
                 for arm in self._compliance.arms
                 if arm.n_clusters is not None
             }
-        _refuse(
-            _MOMENTS_CLUSTER_GRAIN,
-            operation="cluster_counts",
-            source="moments",
-            cluster=self._context.cluster,
-            design=getattr(self._context.design, "mechanism", None),
-            mechanism=getattr(self._context.design, "mechanism", None),
-            route_forward=(
-                "build the source with from_unit_summary(..., cluster=...) or "
-                "analyse from definitions declaring Experiment.cluster"
-            ),
+        from increment._evidence_refusals import refuse_cluster, require_evidence
+
+        require_evidence(self, cluster=True)
+        refuse_cluster(
+            self,
+            offered=(),
+            route="use a source that retains cluster identities or cluster counts",
         )
 
     def compliance_dates(self) -> Sequence[object]:
@@ -2429,27 +2379,30 @@ class BreakoutMomentsSource(SequentialSourceMixin):
                 population=self._population,
                 outcome_stage=outcome_stage,
             )
-        if outcome_stage == "raw":
-            from increment.winsor import winsor_refuse
+        from increment._evidence_refusals import refuse_unit_rows, require_evidence
 
-            winsor_refuse(
-                "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
-            )
-        _refuse(_BREAKOUT_UNIT_GRAIN, method="unit_frame")
+        if outcome_stage == "raw":
+            require_evidence(self, raw_outcomes=True)
+        if covariates:
+            require_evidence(self, covariates=covariates)
+        require_evidence(self, unit_rows=True)
+        refuse_unit_rows(
+            self,
+            offered=False,
+            route="use a source that retains unit-level rows",
+        )
 
     def unit_counts(self) -> dict[str, int]:
         _refuse(_BREAKOUT_COUNTS)
 
     def cluster_counts(self) -> dict[str, int]:
-        _refuse(
-            _BREAKOUT_CLUSTER_GRAIN,
-            source="a breakout-scoped moments source",
-            because=(
-                "breakout rows carry no cluster-robust variance -- "
-                "group_summary()/breakout_summaries() never pass cluster= "
-                "for a breakout, so a clustered experiment's breakout path "
-                "is non-cluster-robust today"
-            ),
+        from increment._evidence_refusals import refuse_cluster, require_evidence
+
+        require_evidence(self, cluster=True)
+        refuse_cluster(
+            self,
+            offered=(),
+            route="use a source that retains cluster identities or cluster counts",
         )
 
     def compliance_dates(self) -> Sequence[object]:

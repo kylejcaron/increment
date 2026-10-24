@@ -180,12 +180,10 @@ def test_moments_source_refuses_a_clustered_native_source(tmp_path):
         copy.deepcopy(raised.value),
     ):
         assert type(error) is CapabilityError
-        assert error.code == "source.moments.cluster_grain"
-        assert error.context["operation"] == "moments_source"
-        assert error.context["source"] == "native"
-        assert error.context["cluster"] == "store_id"
-        assert error.context["design"] == "randomized"
-        assert error.context["route_forward"]
+        assert error.code == "evidence.cluster_unavailable"
+        assert set(error.context) == {"constructor", "requested", "offered", "route"}
+        assert error.context["requested"] == "store_id"
+        assert error.context["route"]
 
 
 def test_triggered_counts_without_a_declared_trigger_keeps_the_null_trigger(con):

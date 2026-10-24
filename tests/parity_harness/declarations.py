@@ -167,14 +167,14 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_unit_panel",
-                    "SOURCE cannot supply a clustered arm-lift ratio readout: Analysis.from_unit_panel(cluster=...) refuses unconditionally with source.frame_panel.cluster_grain -- the panel is collapsed to one row per unit before clustering could apply, and the collapse is ambiguous on this shape (increment/frame.py); build the clustered arm totals with from_unit_summary(cluster=...) instead.",
+                    "SOURCE cannot supply a clustered arm-lift ratio readout: Analysis.from_unit_panel(cluster=...) refuses unconditionally with evidence.cluster_unavailable -- the panel is collapsed to one row per unit before clustering could apply, and the collapse is ambiguous on this shape; build the clustered arm totals with from_unit_summary(cluster=...) instead.",
                 ),
                 (
                     "from_switchback_panel",
                     "SOURCE cannot supply a clustered arm-lift ratio readout: a switchback panel declares a shared-schedule contrast (ContrastResults), a structurally different estimand shape from the LiftEstimate rows this case compares.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.cluster_grain"),),
+            refusals=(("from_moments", "evidence.cluster_unavailable"),),
         ),
         "audit-compliance-only-empty-catalog": ParityDeclaration(
             attempted=(
@@ -601,14 +601,14 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_unit_panel",
-                    "SOURCE cannot supply a clustered arm-lift ratio readout: Analysis.from_unit_panel(cluster=...) refuses unconditionally with source.frame_panel.cluster_grain -- the panel is collapsed to one row per unit before clustering could apply, and the collapse is ambiguous on this shape (increment/frame.py); build the clustered arm totals with from_unit_summary(cluster=...) instead.",
+                    "SOURCE cannot supply a clustered arm-lift ratio readout: Analysis.from_unit_panel(cluster=...) refuses unconditionally with evidence.cluster_unavailable -- the panel is collapsed to one row per unit before clustering could apply, and the collapse is ambiguous on this shape; build the clustered arm totals with from_unit_summary(cluster=...) instead.",
                 ),
                 (
                     "from_switchback_panel",
                     "SOURCE cannot supply a clustered arm-lift ratio readout: a switchback panel declares a shared-schedule contrast (ContrastResults), a structurally different estimand shape from the LiftEstimate rows this case compares.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.cluster_grain"),),
+            refusals=(("from_moments", "evidence.cluster_unavailable"),),
         ),
         "clustered_zero_relative_variance_preserves_point_and_additive_interval": ParityDeclaration(
             attempted=(
@@ -624,14 +624,14 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_unit_panel",
-                    "SOURCE cannot supply a clustered arm-lift ratio readout: Analysis.from_unit_panel(cluster=...) refuses unconditionally with source.frame_panel.cluster_grain -- the panel is collapsed to one row per unit before clustering could apply, and the collapse is ambiguous on this shape (increment/frame.py); build the clustered arm totals with from_unit_summary(cluster=...) instead.",
+                    "SOURCE cannot supply a clustered arm-lift ratio readout: Analysis.from_unit_panel(cluster=...) refuses unconditionally with evidence.cluster_unavailable -- the panel is collapsed to one row per unit before clustering could apply, and the collapse is ambiguous on this shape; build the clustered arm totals with from_unit_summary(cluster=...) instead.",
                 ),
                 (
                     "from_switchback_panel",
                     "SOURCE cannot supply a clustered arm-lift ratio readout: a switchback panel declares a shared-schedule contrast (ContrastResults), a structurally different estimand shape from the LiftEstimate rows this case compares.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.cluster_grain"),),
+            refusals=(("from_moments", "evidence.cluster_unavailable"),),
         ),
         "conversion_route_breakout_segments": ParityDeclaration(
             attempted=(
@@ -1104,7 +1104,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_aipw_dml_covariate_adjusted": ParityDeclaration(
             attempted=(
@@ -1124,7 +1124,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_categorical_covariate_adjusted": ParityDeclaration(
             attempted=(
@@ -1144,7 +1144,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_categorical_covariate_missing_levels": ParityDeclaration(
             attempted=(
@@ -1173,7 +1173,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
             ),
             refusals=(
-                ("from_moments", "source.moments.covariate_unavailable"),
+                ("from_moments", "evidence.covariate_unavailable"),
                 ("from_definitions", "adjust.identification.missing_covariates"),
                 ("from_unit_day_artifact", "adjust.identification.missing_covariates"),
             ),
@@ -1196,7 +1196,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_iptw_conversion_diagnostics": ParityDeclaration(
             attempted=(
@@ -1216,7 +1216,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_iptw_covariate_adjusted_ate": ParityDeclaration(
             attempted=(
@@ -1236,7 +1236,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_multiplicity_primary_secondary_guardrail": ParityDeclaration(
             attempted=(
@@ -1256,7 +1256,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "SOURCE: a per-unit adjustment set has no analogue on a switchback block/period schedule, and this dataset has none.",
                 ),
             ),
-            refusals=(("from_moments", "source.moments.covariate_unavailable"),),
+            refusals=(("from_moments", "evidence.covariate_unavailable"),),
         ),
         "observational_quantile_refused_at_the_readout_seam": ParityDeclaration(
             attempted=(
@@ -1903,8 +1903,8 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
             ),
             refusals=(
-                ("from_unit_panel", "estimation.winsor.raw_state_required"),
-                ("from_moments", "estimation.winsor.raw_state_required"),
+                ("from_unit_panel", "evidence.raw_outcomes_unavailable"),
+                ("from_moments", "evidence.raw_outcomes_unavailable"),
             ),
         ),
         "winsor-percentile-three-arm": ParityDeclaration(
@@ -1930,8 +1930,8 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
             ),
             refusals=(
-                ("from_unit_panel", "estimation.winsor.raw_state_required"),
-                ("from_moments", "estimation.winsor.raw_state_required"),
+                ("from_unit_panel", "evidence.raw_outcomes_unavailable"),
+                ("from_moments", "evidence.raw_outcomes_unavailable"),
             ),
         ),
         "winsor-percentile-zero-inclusive-2-arm": ParityDeclaration(
@@ -1957,8 +1957,8 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
             ),
             refusals=(
-                ("from_unit_panel", "estimation.winsor.raw_state_required"),
-                ("from_moments", "estimation.winsor.raw_state_required"),
+                ("from_unit_panel", "evidence.raw_outcomes_unavailable"),
+                ("from_moments", "evidence.raw_outcomes_unavailable"),
             ),
         ),
     }

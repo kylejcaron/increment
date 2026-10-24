@@ -520,6 +520,39 @@ def test_undeclared_custom_source_refuses_with_the_shared_code() -> None:
         analysis.close()
 
 
+def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
+    from increment.readouts import run
+
+    analysis = Analysis.from_unit_summary(
+        unit_summary_table(),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[{"name": "revenue", "winsorization": {"upper_percentile": 0.75}}],
+    )
+    source = cast("Any", held_source(analysis))
+
+    class LegacySource:
+        def __getattr__(self, name):
+            if name == "evidence":
+                raise AttributeError(name)
+            return getattr(source, name)
+
+    legacy = cast("Any", LegacySource())
+    try:
+        baseline = analysis.run()
+        estimate = next(iter(baseline)).model_dump()
+        assert estimate["abs_diff"] == pytest.approx(2.375)
+        assert estimate["abs_lb"] == pytest.approx(0.21680716886679186)
+        assert estimate["abs_ub"] == pytest.approx(4.726397841615909)
+        assert estimate["winsor_upper_bound"] == pytest.approx(5.25)
+        assert run(legacy) == baseline
+        metric = analysis.metrics[0]
+        assert legacy.unit_frame(metric).to_pylist() == source.unit_frame(metric).to_pylist()
+    finally:
+        analysis.close()
+
+
 def test_scalar_covariate_grain_declaration_matches_day_axis_behavior() -> None:
     import pyarrow as pa
 
@@ -593,7 +626,7 @@ def test_moments_loader_declaration_matches_baseline(tmp_path) -> None:
     assert evidence.available_covariates is None
     with pytest.raises(CapabilityError) as raised:
         source.unit_frame(source.context.metrics[0])
-    assert getattr(raised.value, "code", None) == "source.moments.unit_grain"
+    assert getattr(raised.value, "code", None) == "evidence.unit_rows_unavailable"
     analysis.close()
 
 
@@ -637,7 +670,7 @@ def test_frame_row_and_raw_outcome_capabilities_match_methods(constructor) -> No
     else:
         with pytest.raises(CapabilityError) as raised:
             source.unit_frame(metric, outcome_stage="raw")
-        assert raised.value.code == "estimation.winsor.raw_state_required"
+        assert raised.value.code == "evidence.raw_outcomes_unavailable"
     analysis.close()
 
 
@@ -656,7 +689,7 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     assert summary_source.unit_counts()
     with pytest.raises(CapabilityError) as summary_cluster:
         summary_source.cluster_counts()
-    assert summary_cluster.value.code == "source.frame.cluster_grain"
+    assert summary_cluster.value.code == "evidence.cluster_unavailable"
     with pytest.raises(CapabilityError) as summary_dates:
         summary_source.compliance_dates()
     assert summary_dates.value.code == "source.frame.compliance_asof"
@@ -675,7 +708,7 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     assert panel_source.unit_counts()
     with pytest.raises(CapabilityError) as panel_cluster:
         panel_source.cluster_counts()
-    assert panel_cluster.value.code == "source.frame_panel.cluster_grain"
+    assert panel_cluster.value.code == "evidence.cluster_unavailable"
     assert panel_source.evidence.compliance_axis == "asof"
     assert panel_source.compliance_dates()
     panel.close()
@@ -733,10 +766,11 @@ def test_sql_source_declares_only_methods_it_serves() -> None:
     assert source.unit_counts()
     with pytest.raises(CapabilityError) as rows:
         source.unit_frame(metric)
-    assert rows.value.code == "source.sql.unit_grain"
+    assert rows.value.code == "evidence.unit_rows_unavailable"
     with pytest.raises(CapabilityError) as raw:
         source.unit_frame(metric, outcome_stage="raw")
-    assert raw.value.code == "estimation.winsor.raw_state_required"
+    assert raw.value.code == "evidence.raw_outcomes_unavailable"
+    assert set(raw.value.context) == {"constructor", "requested", "offered", "route"}
     source.close()
 
 
@@ -752,7 +786,7 @@ def test_breakout_moments_declares_no_unit_or_count_rows() -> None:
     assert evidence.count_grains == frozenset()
     with pytest.raises(CapabilityError) as rows:
         source.unit_frame(metric)
-    assert rows.value.code == "source.breakout.unit_grain"
+    assert rows.value.code == "evidence.unit_rows_unavailable"
     with pytest.raises(CapabilityError) as counts:
         source.unit_counts()
     assert counts.value.code == "source.breakout.assignment_counts"

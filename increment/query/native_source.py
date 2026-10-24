@@ -66,7 +66,6 @@ from increment.query._native_refusals import (
     _NATIVE_COVARIATE_KIND,
     _NATIVE_COVARIATE_UNRESOLVED,
     _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
-    _NATIVE_WAREHOUSE_CLUSTER,
     _percentile_winsorization,
     _refuse_operation,
     _winsorization_bounds,
@@ -4427,10 +4426,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 and getattr(metric, "winsorization", None) is not None
                 and "y_raw" not in totals.columns
             ):
-                from increment.winsor import winsor_refuse
+                from increment._evidence_refusals import refuse_raw_outcomes
 
-                winsor_refuse(
-                    "raw_state_required", "Warehouse reduction did not retain pre-winsor outcomes."
+                refuse_raw_outcomes(
+                    self,
+                    offered=False,
+                    route="use a source that retains pre-winsor outcomes",
                 )
             for name, measure in covariate_measures.items():
                 values = self._pre_period_measure_covariate(measure, name, assigned)
@@ -4493,12 +4494,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return counts
 
     def cluster_counts(self) -> dict[str, int]:
+        from increment._evidence_refusals import refuse_cluster, require_evidence
+
         cluster = self._experiment.cluster
         if cluster is None:
-            _refuse(
-                _NATIVE_WAREHOUSE_CLUSTER,
-                source="this warehouse source",
-                because=f"experiment {self._experiment.name!r} declares no cluster",
+            require_evidence(self, cluster=True)
+            refuse_cluster(
+                self,
+                offered=(),
+                route="use a source that retains cluster identities or cluster counts",
             )
         exposures = self._get_exposures()
         self._validate_cluster_labels(exposures, cluster)

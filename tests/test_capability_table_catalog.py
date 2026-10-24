@@ -187,7 +187,7 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
     )[0][1]
     assert (panel_cluster.status, panel_cluster.codes) == (
         "source_limited",
-        ("source.frame_panel.cluster_grain",),
+        ("evidence.cluster_unavailable",),
     )
 
 

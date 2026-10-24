@@ -28,11 +28,7 @@ import narwhals as nw
 from increment._analysis_config import effective_methods
 from increment._frame_validation import _reject_windowed_specs
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synthesise_metric
-from increment.errors import (
-    CapabilityError,
-    RefusalSpec,
-    refuse,
-)
+from increment.errors import refuse
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
@@ -96,18 +92,6 @@ from increment.sources import (
     MomentSource,
     SourceContext,
     SourceOperation,
-)
-
-_SQL_UNIT_GRAIN = RefusalSpec(
-    "source.sql.unit_grain",
-    CapabilityError,
-    template="'unit_frame' needs unit-grain rows, which this source does not retain -- only aggregated moments are available here. unit_frame() unavailable; use a frame-backed source (from_unit_summary / from_unit_panel) for unit-grain estimators.",
-    keys=frozenset({"method"}),
-)
-_SQL_CLUSTER = RefusalSpec(
-    "source.sql.cluster_grain",
-    CapabilityError,
-    template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
 )
 
 if TYPE_CHECKING:
@@ -425,13 +409,16 @@ class SqlPanelSource:
         covariates: Sequence[str] = (),
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> NoReturn:
-        if outcome_stage == "raw":
-            from increment.winsor import winsor_refuse
+        from increment._evidence_refusals import refuse_unit_rows, require_evidence
 
-            winsor_refuse(
-                "raw_state_required", "This source does not retain exact pre-winsor unit outcomes."
-            )
-        refuse(_SQL_UNIT_GRAIN, method="unit_frame")
+        if outcome_stage == "raw":
+            require_evidence(self, raw_outcomes=True)
+        require_evidence(self, unit_rows=True)
+        refuse_unit_rows(
+            self,
+            offered=False,
+            route="use a source that retains unit-level rows",
+        )
 
     def unit_counts(self) -> dict[str, int]:
         from increment._labels import UNASSIGNED_LABEL
@@ -449,13 +436,13 @@ class SqlPanelSource:
         return counts
 
     def cluster_counts(self) -> dict[str, int]:
-        refuse(
-            _SQL_CLUSTER,
-            source="a SQL-summary source",
-            because=(
-                "this source is built from a pre-aggregated unit-day stats "
-                "table and takes no cluster= argument"
-            ),
+        from increment._evidence_refusals import refuse_cluster, require_evidence
+
+        require_evidence(self, cluster=True)
+        refuse_cluster(
+            self,
+            offered=(),
+            route="use a source that retains cluster identities or cluster counts",
         )
 
     def compliance_dates(self) -> Sequence[object]:

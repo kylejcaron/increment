@@ -213,7 +213,7 @@ def test_cross_ingress_sensitivity_parity(method):
 
     error = refused(CONFOUNDING_SENSITIVITY, "from_moments", moments_request)
     assert isinstance(error, CodedError)
-    assert error.code == "source.moments.covariate_unavailable"
+    assert error.code == "evidence.covariate_unavailable"
 
     from tests.test_frame_switchback import _assignment, _rows
 

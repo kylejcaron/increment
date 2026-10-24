@@ -281,7 +281,7 @@ def test_pooled_mean_has_no_per_unit_frame_on_a_moments_cube(tmp_path) -> None:
     )
     with pytest.raises(CapabilityError) as raised:
         _native_source(adopted).unit_frame(adopted.metrics[0])
-    assert raised.value.code == "source.moments.unit_grain"
+    assert raised.value.code == "evidence.unit_rows_unavailable"
 
 
 def test_pooled_mean_warns_only_for_the_undeclared_column_that_was_filled() -> None:

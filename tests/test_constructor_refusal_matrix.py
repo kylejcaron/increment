@@ -141,12 +141,8 @@ def test_constructor_families_keep_distinct_cluster_refusals(family: str) -> Non
     try:
         with pytest.raises(CapabilityError) as raised:
             _native_source(analysis).cluster_counts()
-        assert raised.value.code in {
-            "source.frame.cluster_grain",
-            "source.frame_panel.cluster_grain",
-            "source.sql.cluster_grain",
-            "source.moments.cluster_grain",
-        }
+        assert raised.value.code == "evidence.cluster_unavailable"
+        assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
     finally:
         analysis.close()
 
@@ -157,7 +153,7 @@ def test_definitions_keeps_native_warehouse_cluster_contract(seeded_defs, seeded
     try:
         with pytest.raises(CapabilityError) as raised:
             _native_source(analysis).cluster_counts()
-        assert raised.value.code == "source.native.warehouse_cluster_grain"
+        assert raised.value.code == "evidence.cluster_unavailable"
     finally:
         analysis.close()
 
@@ -194,9 +190,8 @@ def test_frame_constructor_capability_refusals_precede_frame_access() -> None:
             metrics={"revenue": "mean"},
             cluster="store_id",
         )
-    assert raised.value.code == "source.frame_panel.cluster_grain"
-    assert raised.value.context["operation"] == "from_unit_panel(cluster=...)"
-    assert raised.value.context["cluster"] == "store_id"
+    assert raised.value.code == "evidence.cluster_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
 
 
 def _build_matrix_analysis(
@@ -238,10 +233,10 @@ _MATRIX: tuple[
         {"requested": "daily", "offered": ("total",)},
     ),
     # cluster-count
-    ("from_unit_summary", "cluster-count", "source.frame.cluster_grain", None),
-    ("from_unit_panel", "cluster-count", "source.frame_panel.cluster_grain", None),
-    ("from_moments", "cluster-count", "source.moments.cluster_grain", None),
-    ("from_definitions", "cluster-count", "source.native.warehouse_cluster_grain", None),
+    ("from_unit_summary", "cluster-count", "evidence.cluster_unavailable", None),
+    ("from_unit_panel", "cluster-count", "evidence.cluster_unavailable", None),
+    ("from_moments", "cluster-count", "evidence.cluster_unavailable", None),
+    ("from_definitions", "cluster-count", "evidence.cluster_unavailable", None),
     # trigger
     *(
         (family, "trigger", "evidence.operation_unavailable", None)

@@ -259,7 +259,7 @@ def _quantile_baseline(source: MomentSource, spec: QuantileMetric, control_group
     try:
         rows = source.unit_frame(spec)
     except CapabilityError as exc:
-        if exc.code != "source.moments.unit_grain":
+        if exc.code != "evidence.unit_rows_unavailable":
             raise
         _raise("analysis.planning_baseline.quantile_source_unavailable", metric=spec.name)
     frame = nw.from_native(rows, eager_only=True)

@@ -319,7 +319,9 @@ MATRIX: dict[str, dict[str, Cell]] = {
             note="explicit MetricSpec re-declare round-trips a real export; the "
             "terse form refuses pointing at the explicit form"
         ),
-        "quantile": R("needs unit-grain rows", CapabilityError, code="source.moments.unit_grain"),
+        "quantile": R(
+            "needs unit-grain rows", CapabilityError, code="evidence.unit_rows_unavailable"
+        ),
         "total": NA("no MetricSpec type exists; the terse form refuses by name"),
         "active": NA("no MetricSpec type exists; the terse form refuses by name"),
     },
@@ -405,12 +407,12 @@ PAIRS: dict[tuple[str, str], Cell] = {
     ("cluster", "daily_asof"): R(
         "from_unit_panel(cluster=...) is unavailable on a per-day panel",
         CapabilityError,
-        code="source.frame_panel.cluster_grain",
+        code="evidence.cluster_unavailable",
     ),
     ("cluster", "export"): R(
         "wire format carries no cluster marker",
         CapabilityError,
-        code="source.moments.cluster_grain",
+        code="evidence.cluster_unavailable",
     ),
     ("cluster", "sitewide"): S(
         warns="enrolled units exhaust the treated population",

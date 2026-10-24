@@ -330,7 +330,7 @@ def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
             metrics=[_linear_metric()],
             cluster="cluster",
         )
-    assert panel_cluster.value.code == "source.frame_panel.cluster_grain"
+    assert panel_cluster.value.code == "evidence.cluster_unavailable"
 
 
 def test_cuped_linear_nonpositive_arm_failure_preserves_positive_sibling() -> None:

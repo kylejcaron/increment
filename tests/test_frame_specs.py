@@ -1339,9 +1339,8 @@ def test_from_unit_panel_cluster_shares_the_cluster_grain_code() -> None:
     sibling cluster_counts() capability gap, naming its own operation."""
     with pytest.raises(CapabilityError) as raised:
         _frame_panel_cluster_arg()
-    assert raised.value.code == "source.frame_panel.cluster_grain"
-    assert raised.value.context["operation"] == "from_unit_panel(cluster=...)"
-    assert raised.value.context["cluster"] == "user_id"
+    assert raised.value.code == "evidence.cluster_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
 
 
 def _missing_metric_frame():

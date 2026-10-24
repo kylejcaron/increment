@@ -336,7 +336,7 @@ class TestRefusals:
         )
         with pytest.raises(CapabilityError) as raised:
             estimate_cate(src, "revenue", control="control", interact=["spend"])
-        assert raised.value.code == "source.moments.covariate_unavailable"
+        assert raised.value.code == "evidence.covariate_unavailable"
 
     def test_unknown_metric_is_named(self):
         from increment.errors import InvalidRequestError
@@ -802,7 +802,7 @@ class TestValidateRefusals:
         )
         with pytest.raises(CapabilityError) as raised:
             validate_cate(src, "revenue", control="control", interact=["spend"])
-        assert raised.value.code == "source.moments.covariate_unavailable"
+        assert raised.value.code == "evidence.covariate_unavailable"
 
     def test_unknown_metric_is_named(self):
         from increment.errors import InvalidRequestError
@@ -900,7 +900,7 @@ class TestTargetingRuleRefusals:
         )
         with pytest.raises(CapabilityError) as raised:
             targeting_rule(src, "revenue", control="control", interact=["spend"], fraction=0.25)
-        assert raised.value.code == "source.moments.covariate_unavailable"
+        assert raised.value.code == "evidence.covariate_unavailable"
 
     def test_unknown_metric_is_named(self):
         from increment.errors import InvalidRequestError
@@ -981,7 +981,7 @@ class TestSelectTargetingRule:
                 fractions=(0.2,),
                 seed=11,
             )
-        assert raised.value.code == "source.moments.covariate_unavailable"
+        assert raised.value.code == "evidence.covariate_unavailable"
 
 
 _N_CLUSTERS = 100

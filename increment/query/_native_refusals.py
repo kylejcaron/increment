@@ -52,11 +52,6 @@ _NATIVE_COVARIATE_KIND = RefusalSpec(
 )
 
 
-_NATIVE_WAREHOUSE_CLUSTER = RefusalSpec(
-    "source.native.warehouse_cluster_grain",
-    CapabilityError,
-    template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
-)
 _NATIVE_OPERATION = OPERATION_UNAVAILABLE
 _NATIVE_TRIGGER_EVIDENCE_REQUIRED = RefusalSpec(
     "source.native.trigger_evidence_required",

@@ -453,9 +453,8 @@ def test_from_unit_panel_refuses_cluster():
             metrics={"revenue": "mean"},
             cluster="store_id",
         )
-    assert excinfo.value.code == "source.frame_panel.cluster_grain"
-    assert excinfo.value.context["operation"] == "from_unit_panel(cluster=...)"
-    assert excinfo.value.context["cluster"] == "store_id"
+    assert excinfo.value.code == "evidence.cluster_unavailable"
+    assert set(excinfo.value.context) == {"constructor", "requested", "offered", "route"}
 
 
 # ── end-to-end through the readout layer ─────────────────────────────────
@@ -674,7 +673,7 @@ def test_unit_counts_report_units_not_clusters_under_a_declared_cluster():
 def test_cluster_counts_refuses_without_a_declared_cluster():
     with pytest.raises(CapabilityError) as raised:
         _source(cluster=None).cluster_counts()
-    assert raised.value.code == "source.frame.cluster_grain"
+    assert raised.value.code == "evidence.cluster_unavailable"
 
 
 def test_cluster_counts_refuses_on_the_panel_shape():
@@ -698,7 +697,7 @@ def test_cluster_counts_refuses_on_the_panel_shape():
     )
     with pytest.raises(CapabilityError) as raised:
         src.cluster_counts()
-    assert raised.value.code == "source.frame_panel.cluster_grain"
+    assert raised.value.code == "evidence.cluster_unavailable"
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])

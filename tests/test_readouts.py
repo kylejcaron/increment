@@ -1520,7 +1520,7 @@ def test_cluster_counts_refuses_on_a_moments_source():
     assert src.unit_counts() == {"control": 100, "treatment": 100}
     with pytest.raises(CapabilityError) as exc_info:
         src.cluster_counts()
-    assert exc_info.value.code == "source.moments.cluster_grain"
+    assert exc_info.value.code == "evidence.cluster_unavailable"
 
 
 @pytest.mark.integration
@@ -1536,7 +1536,7 @@ def test_cluster_counts_refuses_on_a_sql_summary_source(con, unit_summary_frame)
     )
     with pytest.raises(CapabilityError) as exc_info:
         src.cluster_counts()
-    assert exc_info.value.code == "source.sql.cluster_grain"
+    assert exc_info.value.code == "evidence.cluster_unavailable"
 
 
 def test_breakout_preserves_breakout_estimates_type():

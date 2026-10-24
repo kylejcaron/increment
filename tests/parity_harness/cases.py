@@ -6028,8 +6028,7 @@ def _clustered_negative_mean_case(*, zero_treatment: bool = False) -> ParityCase
     fix. `from_unit_panel` is waived outright (not attempted): a
     per-day panel is collapsed to one row per unit before clustering could
     apply, and `Analysis.from_unit_panel(cluster=...)` refuses
-    unconditionally with `source.frame_panel.cluster_grain`
-    (`increment/frame.py`) -- the same pre-existing, structural gap the
+    unconditionally with `evidence.cluster_unavailable`
     non-positive-arm-mean row above already waives for the same reason."""
     rows = ds.clustered_negative_mean_event_rows(zero_treatment=zero_treatment)
     plan = (
@@ -6217,9 +6216,13 @@ def _cluster_export_refusal_case() -> ParityCase:
                     destination.write_bytes(original)
                     with pytest.raises(CodedError) as refused:
                         analysis.export(destination)
-                    assert refused.value.code == "source.moments.cluster_grain"
-                    assert refused.value.context["operation"] == "export_moments"
-                    assert refused.value.context["source"] == source
+                    assert refused.value.code == "evidence.cluster_unavailable"
+                    assert set(refused.value.context) == {
+                        "constructor",
+                        "requested",
+                        "offered",
+                        "route",
+                    }
                     assert destination.read_bytes() == original
             except BaseException:
                 analysis.close()

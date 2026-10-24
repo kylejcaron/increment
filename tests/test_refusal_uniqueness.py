@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.analysis_factory import _moment_source
+from tests.analysis_factory import _moment_source, held_source
 from tests.refusal_registry import walk_refusal_registries
 
 
@@ -378,9 +378,63 @@ def _trap_source_reads(monkeypatch: pytest.MonkeyPatch, source: object) -> None:
     def _reached(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("the source was read before the refusal")
 
-    for name in ("moments", "breakout_moments"):
+    for name in ("moments", "breakout_moments", "unit_frame"):
         if hasattr(type(source), name):
             monkeypatch.setattr(type(source), name, _reached)
+
+
+@pytest.mark.parametrize("source_kind", ["moments", "unit_panel"])
+def test_percentile_winsor_refuses_before_raw_unit_frame_read(
+    source_kind: str, tmp_path, monkeypatch
+) -> None:
+    from typing import Any, cast
+
+    import polars as pl
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment import Analysis, CapabilityError, MetricSpec
+
+    metric = MetricSpec(name="revenue", winsorization={"upper_percentile": 0.5})
+    if source_kind == "moments":
+        producer = Analysis.from_unit_summary(
+            pa.table(
+                {
+                    "unit": [1, 2, 3, 4, 5, 6],
+                    "arm": ["control", "control", "control", "treatment", "treatment", "treatment"],
+                    "revenue": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[metric],
+        )
+        path = tmp_path / "percentile-moments.parquet"
+        producer.export(path)
+        analysis = Analysis.from_moments(
+            pq.read_table(path).to_pylist(), metrics=[metric], control="control"
+        )
+    else:
+        analysis = Analysis.from_unit_panel(
+            pl.DataFrame(
+                {
+                    "user_id": ["c1", "c2", "t1", "t2"],
+                    "variant": ["control", "control", "treatment", "treatment"],
+                    "date": ["2025-01-01"] * 4,
+                    "revenue": [1.0, 2.0, 3.0, 4.0],
+                }
+            ),
+            unit="user_id",
+            group="variant",
+            date="date",
+            metrics=[metric],
+            control="control",
+        )
+    _trap_source_reads(monkeypatch, cast("Any", held_source(analysis)))
+    with pytest.raises(CapabilityError) as refusal:
+        analysis.run()
+    assert refusal.value.code == "evidence.raw_outcomes_unavailable"
 
 
 _DAY_AXIS_HAZARD_METRICS = {
@@ -869,6 +923,33 @@ def test_each_evidence_hazard_has_one_code_on_every_constructor(
             artifact_source.moments(artifact.metrics[0], grain="weekly")
         assert raised.value.code == "evidence.grain_unavailable"
         assert isinstance(raised.value.context["route"], str) and raised.value.context["route"]
+        for request, code in (
+            (
+                lambda: moments_source.unit_frame(moments.metrics[0]),
+                "evidence.unit_rows_unavailable",
+            ),
+            (
+                lambda: moments_source.unit_frame(moments.metrics[0], covariates=("spend",)),
+                "evidence.covariate_unavailable",
+            ),
+            (
+                lambda: moments_source.cluster_counts(),
+                "evidence.cluster_unavailable",
+            ),
+            (
+                lambda: moments_source.unit_frame(moments.metrics[0], outcome_stage="raw"),
+                "evidence.raw_outcomes_unavailable",
+            ),
+        ):
+            with pytest.raises(CapabilityError) as raised:
+                request()
+            assert raised.value.code == code
+            assert set(raised.value.context) == {
+                "constructor",
+                "requested",
+                "offered",
+                "route",
+            }
     finally:
         summary.close()
         definitions.close()

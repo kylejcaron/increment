@@ -94,8 +94,8 @@ def test_source_refusal_context_and_message_are_local():
     with pytest.raises(CapabilityError) as raised:
         source.unit_frame(metric)
 
-    assert raised.value.code == "source.moments.unit_grain"
-    assert raised.value.context["method"] == "unit_frame"
+    assert raised.value.code == "evidence.unit_rows_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
 
 
 def test_moments_source_names_covariate_refusal_distinctly():
@@ -104,8 +104,8 @@ def test_moments_source_names_covariate_refusal_distinctly():
     source, metric = _source_for_refusal()
     with pytest.raises(CapabilityError) as raised:
         source.unit_frame(metric, covariates=["tenure"])
-    assert raised.value.code == "source.moments.covariate_unavailable"
-    assert raised.value.context["covariates"] == ("tenure",)
+    assert raised.value.code == "evidence.covariate_unavailable"
+    assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
 
 
 @pytest.mark.parametrize(
@@ -118,8 +118,8 @@ def test_moments_source_names_covariate_refusal_distinctly():
         ),
         (
             lambda source, metric: source.unit_frame(metric),
-            "source.moments.unit_grain",
-            {"method": "unit_frame"},
+            "evidence.unit_rows_unavailable",
+            {"requested": True, "offered": False},
         ),
         (
             lambda source, metric: source.sql(),
