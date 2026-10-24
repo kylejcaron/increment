@@ -40,6 +40,39 @@ class BreakoutIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class BreakoutCell:
+    """One requested cell within a declared breakout identity."""
+
+    breakout: BreakoutIdentity
+    value: object
+    is_null: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MethodFitRequest:
+    """Request method-specific CUPED evidence for a metric or breakout cell."""
+
+    metric: Metric
+    method: Any
+    control: str
+    arm_order: tuple[str, ...]
+    population: Literal["assigned", "triggered"]
+    cell: BreakoutCell | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MethodFitAnswer:
+    """Retained or warehouse method-fit evidence, or its coded acquisition failure."""
+
+    origin: Literal["warehouse", "retained_fitted", "retained_categorical", "unavailable"]
+    envelope: Any | None = None
+    cells: Any | None = None
+    failure: CodedError | None = None
+    fit_identity: tuple[object, ...] = ()
+    evidence_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class BreakoutSlicesRequest:
     """Acquire source views for a batch of declared breakout identities."""
 
@@ -161,14 +194,25 @@ class MetricEvidence:
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
     method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
-    categorical_evidence: tuple[tuple[str, Any], ...] = ()
     warehouse_cuped_fits: tuple[tuple[str, Any], ...] = ()
+    method_fit_answers: tuple[tuple[MethodFitRequest, MethodFitAnswer], ...] = ()
     warehouse_cuped_breakout_fits: tuple[tuple[str, str, str, Any, tuple[object, ...]], ...] = ()
 
-    def categorical_for(self, method: Any) -> Any | None:
-        """Retained joint categorical evidence for one multicovariate method."""
+    def categorical_for(self, method: Any) -> MethodFitAnswer | None:
+        """Retained joint categorical cells for one multicovariate method."""
+        answer = self.method_fit_for(method)
+        return answer if answer is not None and answer.origin == "retained_categorical" else None
+
+    def method_fit_for(
+        self, method: Any, *, cell: BreakoutCell | None = None
+    ) -> MethodFitAnswer | None:
+        """Return the acquired answer matching a method and optional breakout cell."""
         return next(
-            (evidence for name, evidence in self.categorical_evidence if name == method.name),
+            (
+                answer
+                for request, answer in self.method_fit_answers
+                if request.method.name == method.name and request.cell == cell
+            ),
             None,
         )
 
