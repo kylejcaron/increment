@@ -10,7 +10,7 @@ from increment._analysis_config import (
     overlay_configs,
     select_metrics,
 )
-from increment._evidence_types import MetricEvidence
+from increment._evidence_types import ComplianceSeriesRequest, DayAxisRequest, MetricEvidence
 from increment._policy_alpha import resolve_cell_alpha
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._readout_request import _raise as _raise_readout_request
@@ -34,6 +34,7 @@ from increment.readouts._common import (
     _sequential_inference,
     _validate_encouragement_asof_inference,
 )
+from increment.readouts._evidence import load_compliance_series, load_day_axis_rows
 from increment.readouts._metric_rows import _rows_digest_and_arms
 from increment.readouts._passes import _estimate_pass
 from increment.semantics.design import Encouragement
@@ -84,20 +85,28 @@ def _load_asof_rows_by_metric(
     control_group: str,
 ) -> dict[str, dict[Any, MetricEvidence]]:
     """Load and bucket each metric's as-of moments by date."""
-    common_moment_kwargs: dict[str, Any] = (
-        {"completed_windows_only": True} if completed_windows_only else {}
+    covariate_metrics = frozenset(
+        metric.name
+        for metric in selected
+        if any(method.variance_reduction == "cuped" for method in methods_by_metric[metric.name])
+    )
+    evidence = load_day_axis_rows(
+        src,
+        DayAxisRequest(
+            caller="run_asof",
+            grain="asof",
+            metrics=tuple(selected),
+            dimension=None,
+            by=tuple(by),
+            completed_windows_only=completed_windows_only,
+            covariate_metrics=covariate_metrics,
+        ),
     )
     by_metric_date: dict[str, dict[Any, MetricEvidence]] = {}
-    for metric in selected:
-        moment_kwargs = dict(common_moment_kwargs)
-        if any(method.variance_reduction == "cuped" for method in methods_by_metric[metric.name]):
-            moment_kwargs["include_covariate"] = True
-        rows = cast(
-            "list[Mapping[str, Any]]",
-            src.moments(metric, grain="asof", by=by, **moment_kwargs),
-        )
+    for evidence_slice in evidence.slices:
+        metric = evidence_slice.metrics[0]
         dated: dict[Any, list[Mapping[str, Any]]] = {}
-        for row in rows:
+        for row in evidence_slice.rows:
             dated.setdefault(row["ds"], []).append(row)
         by_metric_date[metric.name] = {
             date: _asof_metric_rows(
@@ -381,13 +390,17 @@ def asof_lift(
         metric.name: _runtime_methods(configs[metric.name], design) for metric in outcome_metrics
     }
     from increment._frame_panel import _day_axis_label_order
-    from increment._source_types import compliance_summary_series
 
     compliance_by_date = (
-        compliance_summary_series(
-            src,
-            design,
-            completed_windows_only=completed_windows_only,
+        dict(
+            load_compliance_series(
+                src,
+                ComplianceSeriesRequest(
+                    design=design,
+                    completed_windows_only=completed_windows_only,
+                    population=_population,
+                ),
+            )
         )
         if isinstance(design, Encouragement) and (estimands is None or "compliance" in estimands)
         else {}

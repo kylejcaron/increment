@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._analysis_config import select_metrics
+from increment._evidence_types import DayAxisRequest
 from increment._readout_request import ReadoutRequest, validate_request
 from increment.breakout.estimates import _refuse
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
+from increment.readouts._evidence import load_day_axis_rows
 from increment.sources import MomentSource
 
 if TYPE_CHECKING:
@@ -61,17 +63,18 @@ def daily(
         by=by,
     )
     validate_request(request)
-    moment_kwargs = {"include_covariate": True} if include_covariate else {}
-    return cast(
-        "list[dict[str, Any]]",
-        [
-            r
-            for m in selected
-            for r in src.moments(
-                m,
-                grain="daily",
-                by=by,
-                **moment_kwargs,
-            )
-        ],
+    covariate_metrics = (
+        frozenset(metric.name for metric in selected) if include_covariate else frozenset()
     )
+    rows = load_day_axis_rows(
+        src,
+        DayAxisRequest(
+            caller="run_daily",
+            grain="daily",
+            metrics=tuple(selected),
+            dimension=None,
+            by=tuple(by),
+            covariate_metrics=covariate_metrics,
+        ),
+    )
+    return [row for evidence_slice in rows.slices for row in evidence_slice.rows]

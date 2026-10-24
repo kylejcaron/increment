@@ -365,11 +365,17 @@ def test_day_axis_source_extends_horizon_for_late_adhoc_metric():
         fact="session_end",
         aggregation="sum",
     )
-    daily_rows = analysis.run_daily(metrics=[metric])
-    asof_rows = analysis.run_asof(metrics=[metric])
+    daily_rows = analysis.run_daily(metrics=["avg_session_duration", metric])
+    asof_rows = analysis.run_asof(metrics=["avg_session_duration", metric])
 
     assert max(row.ds for row in daily_rows) == dt.date(2025, 3, 10)
     assert max(row.ds for row in asof_rows) == dt.date(2025, 3, 10)
+    assert max(row.ds for row in daily_rows if row.metric == "avg_session_duration") == dt.date(
+        2025, 2, 6
+    )
+    assert max(row.ds for row in asof_rows if row.metric == "avg_session_duration") == dt.date(
+        2025, 3, 10
+    )
 
 
 @pytest.mark.slow

@@ -8,12 +8,13 @@ cohort; outcome rows retain their own matching first stages.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from collections.abc import Callable, Sequence
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import _Unset, normalize_display_correction
+from increment._evidence_types import ComplianceSeriesRequest, DayAxisRequest
 from increment._frame_panel import _day_axis_label_order
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
@@ -22,8 +23,6 @@ from increment._source_types import (
     ComplianceSummary,
     CovariateColumnCheck,
     ScalarCovariateMoments,
-    classify_source,
-    compliance_summary_series,
 )
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
@@ -31,7 +30,6 @@ from increment.breakout.estimates import (
     DailyLiftEstimates,
     DailyMetricValue,
     DailyMetricValues,
-    DayAxisView,
     _asof_monitoring_note,
     _slice_reference_kind,
     reject_quantile_metrics,
@@ -62,15 +60,15 @@ from increment.readouts._common import (
     _validate_encouragement_asof_inference,
 )
 from increment.readouts._daily import _validate_daily_inference
+from increment.readouts._evidence import _route as _evidence_route
+from increment.readouts._evidence import load_compliance_series, load_day_axis_rows
 from increment.semantics.design import Encouragement, Observational, Randomized
-from increment.semantics.models import RetentionMetric
-from increment.sources import MomentSource, require_operation
+from increment.sources import MomentSource
 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
-    from increment.query.native_contract import DayEvidenceSource
     from increment.semantics.models import Experiment, Metric
 
 DayAxisGrain = Literal["daily", "asof"]
@@ -181,34 +179,7 @@ def _validate_lift_request(
 
 
 def _day_axis_source_route(src: MomentSource) -> Literal["artifact", "moments", "native"]:
-    route = classify_source(src)
-    return "moments" if route == "panel" else route
-
-
-def partition_by_view(
-    metrics: Sequence[Metric], grain: DayAxisGrain
-) -> list[tuple[DayAxisView, tuple[Metric, ...]]]:
-    if grain == "asof":
-        return [("asof", tuple(metrics))] if metrics else []
-    activity = tuple(m for m in metrics if not isinstance(m, RetentionMetric))
-    retention = tuple(m for m in metrics if isinstance(m, RetentionMetric))
-    groups: list[tuple[DayAxisView, tuple[Metric, ...]]] = []
-    if activity:
-        groups.append(("daily", activity))
-    if retention:
-        groups.append(("cohort", retention))
-    return groups
-
-
-@dataclass(frozen=True, slots=True)
-class DayAxisRequest:
-    caller: Literal["run_daily", "run_daily_lift", "run_asof", "run_asof_lift"]
-    grain: DayAxisGrain
-    metrics: tuple[Metric, ...]
-    dimension: str | None
-    completed_windows_only: bool = False
-    estimands: tuple[str, ...] | None = None
-    population: Literal["assigned", "triggered"] = "assigned"
+    return _evidence_route(src)
 
 
 def _compliance_readouts(
@@ -223,24 +194,16 @@ def _compliance_readouts(
     extra["estimands"] = tuple(name for name in estimands if name != "compliance")
     if "compliance" not in estimands:
         return True, {}
-    if req.population == "triggered":
-        from increment._source_operations import TriggeredPopulationOperation
-
-        source = require_operation(
-            source, "triggered_source", TriggeredPopulationOperation
-        ).triggered_source()
-    return True, compliance_summary_series(
-        source, design, completed_windows_only=req.completed_windows_only
+    return True, dict(
+        load_compliance_series(
+            source,
+            ComplianceSeriesRequest(
+                design=design,
+                completed_windows_only=req.completed_windows_only,
+                population=req.population,
+            ),
+        )
     )
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceSlice:
-    rows: list[dict[str, Any]]
-    metrics: tuple[Metric, ...]
-    view: DayAxisView
-    dimension: str | None
-    source_name: str | None
 
 
 # The arm-family guard (`Analysis._require_arm_state`) stays in the facade:
@@ -404,32 +367,6 @@ def validate_day_axis(
                 dimension=req.dimension,
                 undeclared=undeclared,
             )
-
-
-def _asof_kwargs(
-    metric: Metric, req: DayAxisRequest, needs_covariate: Callable[[Metric], bool]
-) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {"grain": req.grain}
-    if req.grain == "asof":
-        kwargs["completed_windows_only"] = req.completed_windows_only
-    if needs_covariate(metric):
-        kwargs["include_covariate"] = True
-    return kwargs
-
-
-def _metric_view_groups(req: DayAxisRequest) -> list[tuple[DayAxisView, tuple[Metric, ...]]]:
-    if req.caller in ("run_daily", "run_asof"):
-        # Value rows are independent; preserve the declared metric order.
-        return [
-            (
-                "asof"
-                if req.grain == "asof"
-                else ("cohort" if isinstance(metric, RetentionMetric) else "daily"),
-                (metric,),
-            )
-            for metric in req.metrics
-        ]
-    return partition_by_view(req.metrics, req.grain)
 
 
 def _stamp_triggered_cell_failures(
@@ -1176,163 +1113,6 @@ def _fill_triggered_early_look_rows(
     return output
 
 
-def _undimensioned_slice(
-    src: MomentSource, req: DayAxisRequest, needs_covariate: Callable[[Metric], bool]
-) -> Iterator[EvidenceSlice]:
-    by: tuple[str, ...] = (req.dimension,) if req.dimension is not None else ()
-    for view, metrics in _metric_view_groups(req):
-        rows: list[dict[str, Any]] = []
-        for metric in metrics:
-            if req.grain == "daily":
-                rows.extend(
-                    readouts.daily(
-                        src, metrics=[metric.name], by=by, include_covariate=needs_covariate(metric)
-                    )
-                )
-            else:
-                rows.extend(
-                    cast(
-                        "list[dict[str, Any]]",
-                        src.moments(
-                            metric,
-                            grain="asof",
-                            by=by,
-                            completed_windows_only=req.completed_windows_only,
-                            **({"include_covariate": True} if needs_covariate(metric) else {}),
-                        ),
-                    )
-                )
-        yield EvidenceSlice(
-            rows=rows,
-            metrics=metrics,
-            view=view,
-            dimension=req.dimension,
-            source_name=None,
-        )
-
-
-class MomentsEvidence:
-    __slots__ = ("src",)
-
-    def __init__(self, *, src: MomentSource) -> None:
-        self.src = src
-
-    def slices(
-        self, req: DayAxisRequest, *, needs_covariate: Callable[[Metric], bool]
-    ) -> Iterator[EvidenceSlice]:
-        yield from _undimensioned_slice(self.src, req, needs_covariate)
-
-
-class ArtifactEvidence:
-    __slots__ = ("src", "experiment")
-
-    def __init__(self, *, src: MomentSource, experiment: Experiment | None) -> None:
-        self.src = src
-        self.experiment = experiment
-
-    def slices(
-        self, req: DayAxisRequest, *, needs_covariate: Callable[[Metric], bool]
-    ) -> Iterator[EvidenceSlice]:
-        if req.dimension is None:
-            yield from _undimensioned_slice(self.src, req, needs_covariate)
-            return
-        matching = [
-            b
-            for b in (self.experiment.breakouts if self.experiment else ())
-            if b.property == req.dimension
-        ]
-        for breakout in matching:
-            for metric in req.metrics:
-                evidence = cast(Any, self.src).breakout_moments(
-                    metric, breakout, **_asof_kwargs(metric, req, needs_covariate)
-                )
-                view: DayAxisView = (
-                    "asof"
-                    if req.grain == "asof"
-                    else ("cohort" if isinstance(metric, RetentionMetric) else "daily")
-                )
-                yield EvidenceSlice(
-                    rows=list(evidence.rows),
-                    metrics=(metric,),
-                    view=view,
-                    dimension=req.dimension,
-                    source_name=evidence.source_name,
-                )
-
-
-class NativeEvidence:
-    __slots__ = ("src", "experiment")
-
-    def __init__(self, *, src: DayEvidenceSource, experiment: Experiment | None) -> None:
-        self.src = src
-        self.experiment = experiment
-
-    def slices(
-        self, req: DayAxisRequest, *, needs_covariate: Callable[[Metric], bool]
-    ) -> Iterator[EvidenceSlice]:
-        if req.dimension is not None:
-            matching = [
-                b
-                for b in (self.experiment.breakouts if self.experiment else ())
-                if b.property == req.dimension
-            ]
-            for breakout in matching:
-                for view, metrics in _metric_view_groups(req):
-                    rows: list[dict[str, Any]] = []
-                    source_name: str | None = None
-                    for index, metric in enumerate(metrics):
-                        evidence = self.src.breakout_moments(
-                            metric, breakout, **_asof_kwargs(metric, req, needs_covariate)
-                        )
-                        rows.extend(evidence.rows)
-                        if index == 0:
-                            source_name = evidence.source_name
-                    yield EvidenceSlice(
-                        rows=rows,
-                        metrics=metrics,
-                        view=view,
-                        dimension=req.dimension,
-                        source_name=source_name,
-                    )
-            return
-        for view, metrics in _metric_view_groups(req):
-            rows = []
-            for metric in metrics:
-                if req.grain == "daily":
-                    rows.extend(
-                        readouts.daily(
-                            self.src,
-                            metrics=[metric.name],
-                            by=(),
-                            include_covariate=needs_covariate(metric),
-                        )
-                    )
-                else:
-                    rows.extend(
-                        self.src.moments(
-                            metric,
-                            grain="asof",
-                            by=(),
-                            completed_windows_only=req.completed_windows_only,
-                            include_covariate=needs_covariate(metric),
-                        )
-                    )
-            yield EvidenceSlice(
-                rows=rows, metrics=metrics, view=view, dimension=None, source_name=None
-            )
-
-
-class DayAxisEvidence(Protocol):
-    """Structural protocol satisfied by NativeEvidence/ArtifactEvidence/MomentsEvidence."""
-
-    @property
-    def src(self) -> Any: ...
-
-    def slices(
-        self, req: DayAxisRequest, *, needs_covariate: Callable[[Metric], bool]
-    ) -> Iterator[EvidenceSlice]: ...
-
-
 def _scope_day_axis_rows(
     rows,
     req: DayAxisRequest,
@@ -1428,51 +1208,15 @@ class DayAxisReadouts:
         design: Randomized | Encouragement | Observational | None,
         experiment: Experiment | None,
         daily_lift: Callable[..., DailyLiftEstimates],
-        evidence: DayAxisEvidence | None = None,
-        route: Literal["artifact", "moments", "native"] | None = None,
     ) -> None:
         self._src = src
         self._plan = plan
         self._design = design
         self._experiment = experiment
         self._daily_lift = daily_lift
-        self._evidence_override = evidence
-        self._route_override = route
 
     def _route(self) -> Literal["artifact", "moments", "native"]:
-        if self._route_override is not None:
-            return self._route_override
         return _day_axis_source_route(self._src)
-
-    def _evidence(
-        self, req: DayAxisRequest, route: Literal["artifact", "moments", "native"]
-    ) -> DayAxisEvidence:
-        if self._evidence_override is not None:
-            return self._evidence_override
-        if route == "native":
-            native_src = require_operation(self._src, "day_source", NativeViewSource).day_source(
-                metrics=list(req.metrics), population=req.population
-            )
-            return cast(
-                DayAxisEvidence, NativeEvidence(src=native_src, experiment=self._experiment)
-            )
-        if route == "artifact":
-            if req.population == "triggered":
-                from increment._source_operations import TriggeredPopulationOperation
-
-                artifact_src = require_operation(
-                    self._src, "triggered_source", TriggeredPopulationOperation
-                ).triggered_source()
-            else:
-                artifact_src = self._src
-            return cast(
-                DayAxisEvidence, ArtifactEvidence(src=artifact_src, experiment=self._experiment)
-            )
-        if req.population == "triggered":
-            from increment._source_operations import TriggeredPopulationOperation
-
-            require_operation(self._src, "triggered_source", TriggeredPopulationOperation)
-        return cast(DayAxisEvidence, MomentsEvidence(src=self._src))
 
     def values(self, req: DayAxisRequest) -> DailyMetricValues:
         route = self._route()
@@ -1484,17 +1228,17 @@ class DayAxisReadouts:
             route=route,
             experiment=self._experiment,
         )
-        evidence = self._evidence(req, route)
+        evidence = load_day_axis_rows(self._src, replace(req, experiment=self._experiment))
         results: list[DailyMetricValue] = []
         failure_rows: list[dict[str, Any]] = []
-        for evidence_slice in evidence.slices(req, needs_covariate=lambda _metric: False):
+        for evidence_slice in evidence.slices:
             raw_rows = _fill_triggered_early_look_rows(
                 evidence_slice.rows,
                 req=req,
                 metrics=evidence_slice.metrics,
                 experiment=self._experiment,
                 source=self._src,
-                edge_source=evidence.src,
+                edge_source=evidence.source.src,
                 source_name=evidence_slice.source_name,
             )
             day_values = _run_daily_values(
@@ -1663,7 +1407,6 @@ class DayAxisReadouts:
             and requested_estimands == ("compliance",)
             and req.dimension is None
         )
-        evidence = None if compliance_only else self._evidence(req, route)
         control_group = getattr(self._design, "control_group", None)
         results: list[DailyLiftEstimate] = []
         failure_rows: list[dict[str, Any]] = []
@@ -1674,9 +1417,21 @@ class DayAxisReadouts:
             effective_plan = with_unassigned_procedures(
                 self._plan, req.metrics, design=self._design
             )
-        evidence_slices = (
-            () if evidence is None else evidence.slices(req, needs_covariate=opts.needs_covariate)
-        )
+        evidence = None
+        evidence_slices = ()
+        if not compliance_only:
+            covariate_metrics = frozenset(
+                metric.name for metric in req.metrics if opts.needs_covariate(metric)
+            )
+            evidence = load_day_axis_rows(
+                self._src,
+                replace(
+                    req,
+                    experiment=self._experiment,
+                    covariate_metrics=covariate_metrics,
+                ),
+            )
+            evidence_slices = evidence.slices
         for evidence_slice in evidence_slices:
             raw_rows = _fill_triggered_early_look_rows(
                 evidence_slice.rows,
@@ -1684,7 +1439,7 @@ class DayAxisReadouts:
                 metrics=evidence_slice.metrics,
                 experiment=self._experiment,
                 source=self._src,
-                edge_source=cast("DayAxisEvidence", evidence).src,
+                edge_source=self._src if evidence is None else evidence.source.src,
                 source_name=evidence_slice.source_name,
             )
             names = {m.name for m in evidence_slice.metrics}

@@ -1,12 +1,13 @@
 """Encouragement/Observational designs declared on from_definitions."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import ibis
 import pytest
 
-from increment.analysis import Analysis
+from increment import Analysis, SourceSnapshotEvidence
 from increment.semantics.models import AnalysisPlan, Definitions
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows
@@ -214,6 +215,43 @@ def test_native_encouragement_declaration_runs_and_matches_dataframe_oracle(
     assert set(native_rows) == set(oracle_rows)
     for key, value in oracle_rows.items():
         assert native_rows[key] == pytest.approx(value, rel=1e-9)
+
+
+def test_native_encouragement_day_source_declares_working_compliance_axis(con, tmp_path):
+    from tests.analysis_factory import held_source
+
+    _seed(con)
+    defs = _encouragement_defs()
+    defs["exposures"].append({"name": "eligibility", "fact": "clicked"})
+    defs["experiments"][0]["trigger"] = "eligibility"
+    defs_path = _write_defs_yaml(defs, tmp_path)
+    cutoff = datetime(2025, 1, 31, tzinfo=UTC)
+    analysis = Analysis.from_definitions(
+        "native_encouragement_exp",
+        defs_path,
+        con,
+        store="none",
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"events": cutoff}),
+    )
+    try:
+        source = cast("Any", held_source(analysis))
+        day = source.day_source(metrics=(source.context.metrics[0],))
+        assert day.evidence.method_fit == "none"
+        assert day.evidence.compliance_axis == "asof"
+        assert day.evidence.populations == frozenset({"assigned"})
+        dates = day.compliance_dates()
+        assert dates
+        summary = day.compliance_summary(source.context.design, as_of=dates[0])
+        assert summary.as_of == dates[0]
+        triggered_day = source.day_source(
+            metrics=(source.context.metrics[0],), population="triggered"
+        )
+        assert triggered_day.evidence.compliance_axis == "none"
+        assert triggered_day.evidence.populations == frozenset({"triggered"})
+        assert triggered_day.compliance_summary(source.context.design, as_of=dates[0]) == summary
+        assert analysis.run_asof_lift(estimands=("compliance",))
+    finally:
+        analysis.close()
 
 
 def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):

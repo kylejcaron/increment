@@ -52,10 +52,10 @@ from increment._day_axis import (
     _CLUSTERED_DAY_AXIS,
     _TRIGGER_UNSUPPORTED,
     DayAxisReadouts,
-    DayAxisRequest,
     _day_axis_source_route,
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
+from increment._evidence_types import DayAxisRequest
 from increment._literals import Backend, Correction, ValueScale
 from increment._source_operations import (
     AllocationHistoryOperation,

@@ -503,6 +503,7 @@ depends_on = [
   "increment.cate",
   "increment._frame_validation",
   "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
+  "increment._evidence_types",
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
   "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
@@ -541,9 +542,10 @@ path = "increment._day_axis"
 depends_on = [
   "increment._frame_panel", "increment._immutable",
   "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
-  "increment._source_operations", "increment.plan",
+  "increment.plan",
   "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.query",
   "increment._source_identity",
+  "increment._evidence_types",
   "increment._evidence_refusals",
   "increment.readouts", "increment.semantics", "increment.sources",
   "increment.sequential_state",
@@ -678,8 +680,16 @@ expose = [
 [[interfaces]]
 from = ["increment._day_axis"]
 expose = [
-  "DayAxisReadouts", "DayAxisRequest", "EvidenceSlice", "validate_day_axis",
+  "DayAxisReadouts", "EvidenceSlice", "validate_day_axis",
   "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "_day_axis_source_route",
+]
+
+[[interfaces]]
+from = ["increment._evidence_types"]
+expose = [
+  "DayAxisRequest", "DayAxisRows", "ComplianceRequest", "ComplianceSeriesRequest",
+  "MetricEvidence", "MetricEvidenceRequest",
+  "_WarehouseCupedFitEvidence", "warehouse_cuped_fit_evidence",
 ]
 
 [[interfaces]]

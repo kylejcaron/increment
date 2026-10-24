@@ -153,14 +153,17 @@ class _DaySource:
             operations=self.operations,
             unit_rows=False,
             raw_outcomes=False,
-            method_fit="warehouse",
-            compliance_axis="none",
-            count_grains=frozenset(),
-            populations=(
-                frozenset({"assigned", "triggered"})
-                if self._experiment.trigger is not None
-                else frozenset({"assigned"})
+            method_fit="none",
+            compliance_axis=(
+                "asof"
+                if self._population == "assigned"
+                and isinstance(self._context.design, Encouragement)
+                and self._compliance_provider is not None
+                and self._compliance_dates_provider is not None
+                else "none"
             ),
+            count_grains=frozenset(),
+            populations=frozenset({self._population}),
             sequential_capture="none",
             scalar=None,
             available_covariates=None,
@@ -206,11 +209,13 @@ class _DaySource:
         preflight_day_request: Callable[..., None],
         note_reduction: Callable[[], None],
         horizon_metrics: tuple[Metric, ...],
+        population: Literal["assigned", "triggered"],
         legacy_facade: bool = False,
         compliance_provider: Callable[..., ComplianceSummary] | None = None,
         compliance_dates_provider: Callable[[], Sequence[object]] | None = None,
         validated_assignments: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
+        self._population = population
         self._experiment = experiment
         self._context = context
         self._get_exposures = get_exposures

@@ -311,6 +311,35 @@ def test_moments_only_surfaces_refuse_a_quantile_metric(tmp_path, method_name):
 
 
 @pytest.mark.integration
+def test_unit_day_artifact_daily_quantile_refuses_before_estimation(tmp_path):
+    """The artifact readout gate wins before a day-axis quantile reaches variance fitting."""
+    import ibis
+
+    from increment.errors import CapabilityError
+    from increment.query.session import WarehouseArtifactStore
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", _events_table(n_per_arm=50))
+    defs_path = tmp_path / "defs.yml"
+    defs_path.write_text(_defs_yaml())
+    native = inc.Analysis.from_definitions("exp", defs_path, con)
+    artifact = None
+    store = WarehouseArtifactStore(con, schema_name="quantile_daily_refusal")
+    try:
+        context = native.artifact_context
+        reference = native.publish_unit_day_artifact(store)
+        artifact = inc.Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        with pytest.raises(CapabilityError) as raised:
+            artifact.run_daily()
+        assert raised.value.code == "readout.metric.quantile_grain"
+    finally:
+        if artifact is not None:
+            artifact.close()
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
 def test_run_breakout_refuses_a_quantile_metric(tmp_path):
     """A quantile does not decompose over segment moments - run_breakout()
     must refuse rather than silently sum the per-unit column into a

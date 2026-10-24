@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
+from increment._evidence_types import ComplianceRequest
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
@@ -27,6 +28,7 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
+from increment.readouts._evidence import load_compliance
 from increment.readouts._passes import _append_lift_cell_failure
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
@@ -427,10 +429,7 @@ def encouragement_rows(
 
 
 def _validated_compliance_summary(src: MomentSource, design: Encouragement) -> ComplianceSummary:
-    from increment._source_types import validate_compliance_source_match
-
-    summary = src.compliance_summary(design)
-    validate_compliance_source_match(summary, src.context)
+    summary = load_compliance(src, ComplianceRequest(design=design))
     _refuse_if_no_treatment_arm(
         {str(arm.group_id) for arm in summary.arms},
         design.control_group,
