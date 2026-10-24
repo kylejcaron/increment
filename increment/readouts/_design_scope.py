@@ -42,7 +42,7 @@ from increment.readouts._source_digest import component, composite_source
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from increment.readouts._metric_rows import MetricRows
+    from increment._evidence_types import MetricEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,7 +656,7 @@ def scope_design_results(  # noqa: PLR0913, PLR0915
     request_extra: Mapping[str, Any] | None = None,
     component_source: str | None = None,
     dimension: str | None = None,
-    method_evidence: Mapping[str, MetricRows] | None = None,
+    method_evidence: Mapping[str, MetricEvidence] | None = None,
 ) -> LiftEstimates:
     """Attach source identity and every expected cell, preserving provider failures."""
     roster = resolve_roster(

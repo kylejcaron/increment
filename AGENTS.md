@@ -43,7 +43,7 @@ parity matrix and a guide — not every loader.
 | `increment/semantics/` | Pydantic declarations of experiments, metrics, designs, plans | import Ibis or SQLGlot (`loader.py` may import SQLGlot lazily to validate SQL) |
 | `increment/query/` | Warehouse relations, SQL builders, Ibis sessions, artifacts | hold statistical logic |
 | `increment/frame.py`, `increment/_frame_*.py` | Narwhals dataframe loaders and reducers | import Ibis or `increment.query` |
-| Evidence layer: `increment/_source_types.py` (loader contract) and `increment/readouts/_metric_rows.py` (acquisition) | Typed evidence requests, loader capability declarations, refusals, digests | compute estimates |
+| Evidence layer: `increment/_evidence_types.py` (types), `increment/_source_types.py` (loader contract) and `increment/readouts/_metric_rows.py` (acquisition) | Typed evidence requests, loader capability declarations, refusals, digests | compute estimates |
 | `increment/estimation/` | Estimators and inference on data values | call a source, construct a query, or branch on loader kind |
 | `increment/readouts/`, `increment/breakout/`, `increment/_day_axis.py` | Assemble results from evidence | call source methods or probe a source with `isinstance`/`getattr`/`hasattr` |
 | `increment/power/` | Sample size, power and MDE solvers | access a warehouse |

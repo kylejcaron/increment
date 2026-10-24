@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
+from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
 from increment._policy_alpha import resolve_cell_alpha
 from increment.estimation.conversion_route import fcr_route_tail
 from increment.estimation.engine import Method, reintervalize_cuped_decision
@@ -21,7 +22,7 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
-from increment.readouts._metric_rows import MetricRows, _load_metric_rows
+from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._passes import _estimate_pass
 from increment.sources import MomentSource
 
@@ -120,13 +121,15 @@ def _load_family_rows(
     for metric, config, test, is_quantile, metric_methods in secondary_entries:
         if is_quantile:
             _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
-        loaded[metric.name] = _load_metric_rows(
+        loaded[metric.name] = load_metric_evidence(
             src,
-            metric,
-            by=by,
-            control_group=design.control_group,
-            methods=metric_methods,
-            covariates=config.covariates,
+            MetricEvidenceRequest(
+                metric=metric,
+                control_group=design.control_group,
+                by=tuple(by),
+                methods=tuple(metric_methods),
+                covariates=tuple(config.covariates),
+            ),
         )
     return loaded
 
@@ -299,7 +302,7 @@ def _estimate_randomized_secondary_family(
     observed_arms: set[str],
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
-    evidence_by_metric: dict[str, MetricRows],
+    evidence_by_metric: dict[str, MetricEvidence],
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]]]:
     """Run nominal, selection, and FCR passes for randomized secondaries."""
     if not secondary_entries:
@@ -398,7 +401,7 @@ def _estimate_randomized_secondary_family(
                     str(row["group_id"]) == design.control_group or str(row["group_id"]) in groups
                 )
 
-            if isinstance(selected_evidence, MetricRows):
+            if isinstance(selected_evidence, MetricEvidence):
                 selected_evidence = replace(
                     selected_evidence,
                     rows=tuple(row for row in selected_evidence.rows if keep(row, selected_groups)),
@@ -411,7 +414,7 @@ def _estimate_randomized_secondary_family(
                     ),
                 )
             else:
-                raise AssertionError("Scalar secondary evidence lost its MetricRows contract.")
+                raise AssertionError("Scalar secondary evidence lost its MetricEvidence contract.")
         selected_alternative = (
             "two-sided"
             if _joint_relative_rows(nominal_by_metric[metric.name])
@@ -484,7 +487,7 @@ def _estimate_randomized_non_secondary(
     observed_arms: set[str],
     computations: list[Any],
     observed_by_metric: dict[str, set[str]],
-    evidence_by_metric: dict[str, MetricRows],
+    evidence_by_metric: dict[str, MetricEvidence],
 ) -> tuple[
     list[LiftEstimate],
     list[tuple[str, str, str, str]],
@@ -507,13 +510,15 @@ def _estimate_randomized_non_secondary(
         if test.role == "secondary":
             secondary_entries.append((metric, config, test, is_quantile, metric_methods))
             continue
-        metric_rows = _load_metric_rows(
+        metric_rows = load_metric_evidence(
             src,
-            metric,
-            by=by,
-            control_group=design.control_group,
-            methods=metric_methods,
-            covariates=config.covariates,
+            MetricEvidenceRequest(
+                metric=metric,
+                control_group=design.control_group,
+                by=tuple(by),
+                methods=tuple(metric_methods),
+                covariates=tuple(config.covariates),
+            ),
         )
         evidence_by_metric[metric.name] = metric_rows
         if is_quantile:

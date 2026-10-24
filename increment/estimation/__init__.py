@@ -1,6 +1,7 @@
 import importlib
 from typing import TYPE_CHECKING
 
+from increment._evidence_types import MetricEvidence as _MetricEvidence  # noqa: F401
 from increment.estimation._score_design import PsiFn, ScoreDesign
 from increment.estimation.absorption import AbsorptionResult, absorb_one_way
 from increment.estimation.armstats import (

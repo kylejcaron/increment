@@ -35,11 +35,11 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._evidence_types import MetricEvidence
     from increment._literals import ValueScale
     from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.inference import Prior
-    from increment.readouts._metric_rows import MetricRows
     from increment.semantics.models import Metric
 
 
@@ -153,7 +153,7 @@ def _encouragement_cell_groups(
 
 def _group_method_evidence(
     group: _EncouragementCellGroup,
-    evidence_by_metric: Mapping[str, MetricRows],
+    evidence_by_metric: Mapping[str, MetricEvidence],
     *,
     control_group: str,
     estimands: Sequence[str],
@@ -256,7 +256,7 @@ def encouragement_rows(
     src: MomentSource,
     metrics: Sequence[Metric],
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
-    evidence_by_metric: Mapping[str, MetricRows],
+    evidence_by_metric: Mapping[str, MetricEvidence],
     configs: Sequence[ResolvedMetricConfig],
     design: Encouragement,
     plan: CompiledDecisionPlan,
@@ -469,7 +469,7 @@ def _select_encouragement_family(
     plan: CompiledDecisionPlan,
     design: Encouragement,
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
-    evidence_by_metric: Mapping[str, MetricRows],
+    evidence_by_metric: Mapping[str, MetricEvidence],
     estimands: Sequence[str] | None,
     cluster: str | None,
     computations: list[DecisionComputation[LiftEstimate]],

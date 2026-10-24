@@ -41,9 +41,9 @@ from increment.sources import MomentSource
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from increment._evidence_types import MetricEvidence
     from increment._literals import ValueScale
     from increment.estimation.inference import Prior
-    from increment.readouts._metric_rows import MetricRows
     from increment.semantics.design import Encouragement
     from increment.semantics.models import Metric
 
@@ -107,7 +107,7 @@ def _encouragement_breakout_rows(
     roles_by_metric: Mapping[str, Any],
     estimands: Sequence[str],
     alpha: float,
-    method_evidence: Mapping[str, MetricRows],
+    method_evidence: Mapping[str, MetricEvidence],
 ) -> list[BreakoutEstimate]:
     for metric_methods in methods_by_metric.values():
         _validate_methods(metric_methods)
