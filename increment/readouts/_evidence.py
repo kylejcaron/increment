@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, overload
 
 from increment._evidence_refusals import require_evidence
 from increment._evidence_types import (
+    BreakoutSlice,
+    BreakoutSlices,
+    BreakoutSlicesRequest,
+    BreakoutUnitRows,
+    BreakoutUnitRowsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
     DayAxisRequest,
@@ -18,7 +23,7 @@ from increment._source_types import (
     validate_compliance_source_match,
 )
 from increment.semantics.models import RetentionMetric
-from increment.sources import MomentSource, require_operation
+from increment.sources import MomentSource, SourceContext, require_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +38,114 @@ class DayAxisSlice:
 def _route(src: MomentSource) -> Literal["artifact", "moments", "native"]:
     route = classify_source(src)
     return "moments" if route == "panel" else route
+
+
+def breakout_route(src: MomentSource) -> Literal["artifact", "native", "panel", "unsupported"]:
+    route = classify_source(src)
+    return "unsupported" if route == "moments" else route
+
+
+@overload
+def load_breakout_evidence(src: MomentSource, request: BreakoutSlicesRequest) -> BreakoutSlices: ...
+
+
+@overload
+def load_breakout_evidence(
+    src: MomentSource, request: BreakoutUnitRowsRequest
+) -> BreakoutUnitRows: ...
+
+
+def load_breakout_evidence(
+    src: MomentSource, request: BreakoutSlicesRequest | BreakoutUnitRowsRequest
+) -> BreakoutSlices | BreakoutUnitRows:
+    """Acquire one typed breakout evidence request."""
+    if isinstance(request, BreakoutUnitRowsRequest):
+        from increment.sources import BreakoutMomentsSource
+
+        if isinstance(src, BreakoutMomentsSource):
+            frame = src.unit_frame(request.metric, covariates=request.covariates)
+            dimension_in_frame = False
+        else:
+            covariates = tuple(dict.fromkeys((request.breakout.property, *request.covariates)))
+            frame = src.unit_frame(request.metric, covariates=covariates)
+            dimension_in_frame = True
+        return BreakoutUnitRows(request.breakout, breakout_route(src), frame, dimension_in_frame)
+
+    route = breakout_route(src)
+    if route == "artifact":
+        definitions = request.breakout_definitions
+        if not definitions:
+            from increment.semantics.models import Breakout
+
+            definitions = tuple(
+                Breakout(property=item.property, source=item.source) for item in request.breakouts
+            )
+        source = cast(Any, src)
+        sources = source.breakout_sources(
+            definitions,
+            metrics=list(request.metrics),
+            population=request.population,
+            configs=request.configs,
+        )
+        slices = tuple(
+            BreakoutSlice(identity, scoped, None, scoped.source_name)
+            for identity, scoped in zip(request.breakouts, sources, strict=True)
+        )
+    elif route == "panel":
+        slices = tuple(BreakoutSlice(identity, src, None, None) for identity in request.breakouts)
+    elif route == "native":
+        if "breakout_sources" not in src.operations:
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                src,
+                tuple(item.property for item in request.breakouts),
+                tuple(src.breakouts),
+                route=(
+                    "run_breakout() needs a native Analysis.from_definitions or "
+                    "Analysis.from_unit_panel instance with declared breakouts"
+                ),
+            )
+        from increment._source_operations import BreakoutSourcesOperation
+
+        route_message = (
+            "run_breakout() needs a native Analysis.from_definitions or "
+            "Analysis.from_unit_panel instance with declared breakouts"
+        )
+        if not isinstance(getattr(src, "context", None), SourceContext):
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(
+                src, "breakout_sources", tuple(sorted(src.operations)), route=route_message
+            )
+        native = require_operation(src, "breakout_sources", BreakoutSourcesOperation)
+        definitions = request.breakout_definitions
+        if not definitions:
+            from increment.semantics.models import Breakout
+
+            definitions = tuple(
+                Breakout(property=item.property, source=item.source) for item in request.breakouts
+            )
+        sources = native.breakout_sources(
+            definitions,
+            metrics=list(request.metrics),
+            population=request.population,
+            configs=request.configs,
+        )
+        slices = tuple(
+            BreakoutSlice(
+                identity,
+                scoped,
+                scoped.source_name
+                if sum(item.property == identity.property for item in request.breakouts) > 1
+                else None,
+                scoped.source_name,
+            )
+            for identity, scoped in zip(request.breakouts, sources, strict=True)
+        )
+    else:
+        slices = ()
+    return BreakoutSlices(route, slices)
 
 
 def _groups(req: DayAxisRequest) -> list[tuple[Any, tuple[Any, ...]]]:

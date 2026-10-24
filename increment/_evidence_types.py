@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment.semantics.models import Metric
+from increment.semantics.models import Breakout, Metric
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -25,6 +25,56 @@ def warehouse_cuped_fit_evidence(
 ) -> _WarehouseCupedFitEvidence:
     """Build the single warehouse-fit envelope used by live and fitted sources."""
     return _WarehouseCupedFitEvidence(fit, tuple(arm_order), tuple(withheld))
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutIdentity:
+    """The declared identity of a breakout dimension and its source."""
+
+    property: str
+    source: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutSlicesRequest:
+    """Acquire source views for a batch of declared breakout identities."""
+
+    breakouts: tuple[BreakoutIdentity, ...]
+    breakout_definitions: tuple[Breakout, ...] = ()
+    metrics: tuple[Metric, ...] = ()
+    population: Literal["assigned", "triggered"] = "assigned"
+    configs: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutSlice:
+    identity: BreakoutIdentity
+    source: Any
+    source_name: str | None
+    stamp_source: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutSlices:
+    route: Literal["artifact", "native", "panel", "unsupported"]
+    slices: tuple[BreakoutSlice, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutUnitRowsRequest:
+    """Acquire unit-frame evidence for one breakout/metric pair."""
+
+    metric: Metric
+    breakout: BreakoutIdentity
+    covariates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BreakoutUnitRows:
+    identity: BreakoutIdentity
+    route: Literal["artifact", "native", "panel", "unsupported"]
+    frame: Any
+    unit_frame_has_dimension: bool
 
 
 @dataclass(frozen=True, slots=True)

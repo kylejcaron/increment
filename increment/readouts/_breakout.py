@@ -9,10 +9,10 @@ from increment._analysis_config import (
     overlay_configs,
     select_metrics,
 )
+from increment._evidence_types import BreakoutIdentity, BreakoutUnitRowsRequest
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import Correction
 from increment._readout_request import ReadoutRequest, validate_request
-from increment._source_types import classify_source
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     BreakoutEstimate,
@@ -34,6 +34,7 @@ from increment.readouts._common import (
     _warn,
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
+from increment.readouts._evidence import _route, load_breakout_evidence
 from increment.readouts._metric_rows import _load_breakout_metric_rows
 from increment.readouts._passes import _append_lift_cell_failure
 from increment.sources import MomentSource
@@ -277,9 +278,7 @@ def _scoped_breakout_results(
     sequential_snapshot: Any = None,
     source_components: Sequence[Mapping[str, Any]] = (),
 ) -> BreakoutEstimates:
-    route = classify_source(src)
-    if route == "panel":
-        route = "moments"
+    route = _route(src)
     from increment.readouts._multiplicity_scope import scoped_collection
 
     population_rows = [
@@ -329,7 +328,7 @@ def _load_cuped_breakout_frames(
     methods_by_metric: Mapping[str, list[Method]],
     dimension: str,
     *,
-    population: str,
+    population: Literal["assigned", "triggered"],
     source_name: str | None,
 ) -> tuple[
     dict[str, Mapping[str, Any]],
@@ -356,7 +355,6 @@ def _load_cuped_breakout_frames(
 
     from increment._source_types import breakout_dimension_column, unit_frame_covariate_columns
     from increment.readouts._metric_rows import _frame_digest_and_arms
-    from increment.sources import BreakoutMomentsSource
 
     fit_source = getattr(src, "_source", src)
 
@@ -370,15 +368,19 @@ def _load_cuped_breakout_frames(
                 continue
             names = tuple(item.name for item in config.covariates)
             column = breakout_dimension_column(names)
-            if isinstance(src, BreakoutMomentsSource):
-                frame = src.unit_frame(config.metric, covariates=names)
-            else:
+            loaded = load_breakout_evidence(
+                src,
+                BreakoutUnitRowsRequest(
+                    metric=config.metric,
+                    breakout=BreakoutIdentity(dimension, source_name),
+                    covariates=names,
+                ),
+            )
+            frame = loaded.frame
+            if loaded.unit_frame_has_dimension:
                 requested = tuple(dict.fromkeys((dimension, *names)))
                 frame = (
-                    nw.from_native(
-                        src.unit_frame(config.metric, covariates=requested),
-                        eager_only=True,
-                    )
+                    nw.from_native(frame, eager_only=True)
                     .with_columns(
                         nw.col(unit_frame_covariate_columns(requested)[dimension]).alias(column)
                     )

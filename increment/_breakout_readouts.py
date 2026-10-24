@@ -9,11 +9,15 @@ from typing import TYPE_CHECKING, Literal, cast
 from increment import readouts
 from increment._analysis_config import _Unset, overlay_configs
 from increment._day_axis import _TRIGGER_UNSUPPORTED
+from increment._evidence_types import (
+    BreakoutIdentity,
+    BreakoutSlice,
+    BreakoutSlicesRequest,
+)
 from increment._literals import Correction
-from increment._source_operations import BreakoutSourcesOperation, ReadoutSnapshotOperation
-from increment._source_types import classify_source
-from increment._whole_window import _require_analysis_operation
+from increment._source_operations import ReadoutSnapshotOperation
 from increment.errors import refuse as _refuse
+from increment.readouts._evidence import breakout_route, load_breakout_evidence
 from increment.readouts._requests import _validate_breakout_request
 
 if TYPE_CHECKING:
@@ -28,10 +32,7 @@ BreakoutRoute = Literal["artifact", "panel", "native", "unsupported"]
 
 
 def _breakout_route(src: MomentSource) -> BreakoutRoute:
-    route = classify_source(src)
-    if route in ("moments",):
-        return "unsupported"
-    return route
+    return breakout_route(src)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,14 +44,6 @@ class BreakoutRequest:
     correction: Correction | None
     q: float | None
     population: Literal["assigned", "triggered"]
-
-
-@dataclass(frozen=True, slots=True)
-class _BreakoutSlice:
-    dimension: str
-    source: MomentSource
-    source_name: str | None
-    stamp_source: str | None
 
 
 class BreakoutReadouts:
@@ -71,70 +64,29 @@ class BreakoutReadouts:
             )
         )
 
-    def _slices(
-        self,
-        req: BreakoutRequest,
-        route: BreakoutRoute,
-    ) -> Iterator[_BreakoutSlice]:
-        configs = self._configs(req)
-        if route == "artifact":
-            assert self._experiment is not None
-            breakouts = self._experiment.breakouts
-            artifact = cast("BreakoutSourcesOperation", self._src)
-            scoped_sources = artifact.breakout_sources(
-                breakouts, metrics=list(req.metrics), population=req.population, configs=configs
-            )
-            for breakout, scoped in zip(breakouts, scoped_sources, strict=True):
-                yield _BreakoutSlice(
-                    dimension=breakout.property,
-                    source=scoped,
-                    source_name=None,
-                    stamp_source=scoped.source_name,
-                )
-            return
-        if route == "panel":
-            for dimension in self._src.breakouts:
-                yield _BreakoutSlice(
-                    dimension=dimension,
-                    source=self._src,
-                    source_name=None,
-                    stamp_source=None,
-                )
-            return
-        assert self._experiment is not None
-        breakouts = self._experiment.breakouts
-        if "breakout_sources" not in self._src.operations:
-            from increment._evidence_refusals import refuse_breakout
+    def _route_evidence(self) -> BreakoutRoute:
+        return _breakout_route(self._src)
 
-            refuse_breakout(
-                self._src,
-                tuple(breakout.property for breakout in breakouts),
-                tuple(self._src.breakouts),
-                route=(
-                    "run_breakout() needs a native Analysis.from_definitions or "
-                    "Analysis.from_unit_panel instance with declared breakouts"
-                ),
-            )
-        native_src = _require_analysis_operation(
+    def _slices(self, req: BreakoutRequest) -> Iterator[BreakoutSlice]:
+        breakouts = self._experiment.breakouts if self._experiment is not None else ()
+        identities = (
+            tuple(BreakoutIdentity(item.property, item.source) for item in breakouts)
+            if breakouts
+            else tuple(BreakoutIdentity(dimension, None) for dimension in self._src.breakouts)
+        )
+        if not identities:
+            return iter(())
+        evidence = load_breakout_evidence(
             self._src,
-            "breakout_sources",
-            BreakoutSourcesOperation,
-            message=(
-                "run_breakout() needs a native Analysis.from_definitions or "
-                "Analysis.from_unit_panel instance with declared breakouts"
+            BreakoutSlicesRequest(
+                breakouts=identities,
+                breakout_definitions=tuple(breakouts),
+                metrics=req.metrics,
+                population=req.population,
+                configs=self._configs(req),
             ),
         )
-        scoped_sources = native_src.breakout_sources(
-            breakouts, metrics=list(req.metrics), population=req.population, configs=configs
-        )
-        for breakout, scoped in zip(breakouts, scoped_sources, strict=True):
-            multi = sum(item.property == breakout.property for item in breakouts) > 1
-            yield _BreakoutSlice(
-                dimension=breakout.property,
-                source=scoped,
-                source_name=scoped.source_name if multi else None,
-                stamp_source=scoped.source_name,
-            )
+        return iter(evidence.slices)
 
     def validate_populations(
         self,
@@ -150,7 +102,7 @@ class BreakoutReadouts:
                 "route.unsupported",
                 "registered sequential inference has no triggered breakout construction",
             )
-        route = _breakout_route(self._src)
+        route = self._route_evidence()
         if (
             route not in ("artifact", "native")
             or self._experiment is None
@@ -170,7 +122,7 @@ class BreakoutReadouts:
         native_src.validate_populations(populations, operation="run_breakout")
 
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
-        route = _breakout_route(self._src)
+        route = self._route_evidence()
         if route == "artifact" and any(
             metric.type == "quantile" and metric.window_days is not None for metric in req.metrics
         ):
@@ -243,7 +195,7 @@ class BreakoutReadouts:
                 q=req.q,
                 analysis_population=req.population,
             )
-        route = _breakout_route(self._src)
+        route = self._route_evidence()
         if route == "unsupported":
             from increment._evidence_refusals import refuse_breakout
             from increment._source_types import declared_evidence
@@ -281,10 +233,10 @@ class BreakoutReadouts:
         from increment.breakout.estimates import BreakoutEstimates
 
         results: BreakoutEstimates | None = None
-        for breakout_slice in self._slices(req, route):
+        for breakout_slice in self._slices(req):
             segment_results = readouts.breakout(
                 breakout_slice.source,
-                breakout_slice.dimension,
+                breakout_slice.identity.property,
                 source_name=(
                     breakout_slice.stamp_source
                     if breakout_slice.stamp_source is not None
