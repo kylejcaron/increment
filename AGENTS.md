@@ -49,13 +49,7 @@ parity matrix and a guide — not every loader.
 | `increment/power/` | Sample size, power and MDE solvers | access a warehouse |
 | `calibration/` | Certification campaigns | be collected by a bare `pytest` |
 
-- Statistics code receives data (rows, moments, fitted evidence), never a source
-  object. Only the evidence layer's acquisition functions and the public facades
-  (`increment/cate.py::estimate_cate`; in `increment/estimation/`: `adjust.py::estimate_ate`
-  and `observational_evidence`, `quantile.py::estimate_quantile_lift`,
-  `winsor.py::raw_state_from_source`) call a source; a facade loads and
-  delegates. Some statistics code still calls a source directly; do not add
-  another.
+- Statistics code receives data (rows, moments, fitted evidence), never a source object. Only the evidence layer's acquisition functions and the public facades (`increment/cate.py::estimate_cate`; in `increment/estimation/`: `adjust.py::estimate_ate` and `observational_evidence`, `quantile.py::estimate_quantile_lift`, `winsor.py::raw_state_from_source`) call a source; a facade loads and delegates. Some statistics code still calls a source directly; do not add another. The boundary is enforced by `tests/test_evidence_boundary.py`.
 - What a loader can answer is declared once on the loader and checked before any
   data is read. Do not probe a source for capabilities.
 - One hazard, one refusal code, on every constructor. Raise the registered

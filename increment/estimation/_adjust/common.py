@@ -90,7 +90,6 @@ if TYPE_CHECKING:
     )
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
 
 
 _WARNINGS: dict[str, WarningSpec] = {}
@@ -316,32 +315,38 @@ class NuisanceFoldSpec:
     deferred_roles: tuple[OutcomeRole, ...]
 
 
-def _prepare_adjustment_requests(
-    src: MomentSource,
+@dataclass(frozen=True, slots=True)
+class AdjustmentPreflight:
+    """Resolved metric groups and nuisance factories for one adjustment."""
+
+    learners: dict[str, Callable[[], Learner] | None]
+    rows: list[dict[str, Any]]
+    group_native: dict[str, Any]
+    control_group: str
+    treatment_groups: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AdjustmentInputs:
+    """Materialized rows for one adjusted metric, including its cluster identity."""
+
+    frame: Any
+    moment_rows: Sequence[Mapping[str, Any]]
+    cluster: str | None
+
+
+def adjustment_preflight(
     metric: Metric,
     design: Observational,
     *,
     method: str,
-    covariates: list[str],
+    moment_rows: Sequence[Mapping[str, Any]],
+    cluster: str | None,
     learner_roles: tuple[str, ...],
     method_fields: Mapping[str, str] | None = None,
-    moment_rows: Sequence[Mapping[str, Any]] | None = None,
     **contrast_kwargs: Any,
-) -> tuple[list[AdjustedContrastRequest], dict[str, Callable[[], Learner] | None]]:
-    """Shared ratio/missing-allow/moments/frame preamble for `aipw_estimate`,
-    `dml_estimate`, `iptw_estimate`. `contrast_kwargs` carries each
-    `learner_roles` name (its factory or `None`) plus `AdjustedContrastRequest`'s
-    remaining fields (`prior`, `alpha`, `alternative`, `null_lift`, `null_abs`,
-    `value_scale`, `preferred_direction`); the learner entries are popped out
-    and returned separately so the caller applies its own per-role default.
-    `method_fields` maps each `learner_roles` name to the `Method(...)`
-    constructor field a caller would actually set in the `missing='allow'`
-    refusal -- identity for AIPW/DML (whose kwarg names already match
-    `Method.propensity_learner`/`outcome_learner`), but
-    `{"learner": "propensity_learner"}` for IPTW, whose own kwarg is named
-    `learner` while `Method` has no such field. `moment_rows` is the metric's
-    moments a caller already reduced (and sized its family from); absent, they
-    are read from `src`."""
+) -> AdjustmentPreflight:
+    """Run all source-independent adjustment refusals before unit rows are read."""
     if metric.type == "ratio":
         _raise(
             "estimation.adjust_common.supported_ratio_metric",
@@ -359,31 +364,63 @@ def _prepare_adjustment_requests(
             raise _allow_requires_learner_refusal(
                 method=method, metric_name=metric.name, defaulted=defaulted
             )
-    if src.context.cluster is not None and contrast_kwargs.get("prior") is not None:
+    if cluster is not None and contrast_kwargs.get("prior") is not None:
         from increment.estimation.inference import _raise as inference_refuse
 
         inference_refuse("estimation.inference.prior_excludes_cluster_robust_t")
-    control_group = design.control_group
-    rows = _moment_dicts(
-        cast("list[Mapping[str, Any]]", src.moments(metric) if moment_rows is None else moment_rows)
-    )
-    group_native: dict[str, object] = {}
-    group_n: dict[str, int] = {}
-    for row in rows:
-        key = str(row["group_id"])
-        group_native[key] = row["group_id"]
-        group_n[key] = int(row["n"])
-    if control_group not in group_native:
-        available = sorted(group_native)
+    rows = _moment_dicts(cast("list[Mapping[str, Any]]", moment_rows))
+    group_native = {str(row["group_id"]): row["group_id"] for row in rows}
+    if design.control_group not in group_native:
         _raise(
             "estimation.adjust_common.control_group_found",
-            available=available,
-            control_group=control_group,
+            available=sorted(group_native),
+            control_group=design.control_group,
             metric=metric.name,
         )
-    treatment_groups = sorted(g for g in group_native if g != control_group)
-    cluster = src.context.cluster
-    frame = nw.from_native(src.unit_frame(metric, covariates=covariates), eager_only=True)
+    treatment_groups = tuple(
+        sorted(group for group in group_native if group != design.control_group)
+    )
+    return AdjustmentPreflight(
+        learners=learners,
+        rows=rows,
+        group_native=group_native,
+        control_group=design.control_group,
+        treatment_groups=treatment_groups,
+    )
+
+
+def adjustment_requests(
+    frame: Any,
+    metric: Metric,
+    design: Observational,
+    *,
+    method: str,
+    covariates: list[str],
+    learner_roles: tuple[str, ...],
+    method_fields: Mapping[str, str] | None = None,
+    moment_rows: Sequence[Mapping[str, Any]],
+    cluster: str | None,
+    preflight: AdjustmentPreflight | None = None,
+    **contrast_kwargs: Any,
+) -> tuple[list[AdjustedContrastRequest], dict[str, Callable[[], Learner] | None]]:
+    if preflight is None:
+        preflight = adjustment_preflight(
+            metric,
+            design,
+            method=method,
+            moment_rows=moment_rows,
+            cluster=cluster,
+            learner_roles=learner_roles,
+            method_fields=method_fields,
+            **contrast_kwargs,
+        )
+    learners = preflight.learners
+    for name in learner_roles:
+        contrast_kwargs.pop(name, None)
+    group_native = preflight.group_native
+    control_group = preflight.control_group
+    frame = nw.from_native(frame, eager_only=True)
+    group_n = {str(row["group_id"]): int(row["n"]) for row in preflight.rows}
     requests = [
         AdjustedContrastRequest(
             frame=frame,
@@ -398,7 +435,7 @@ def _prepare_adjustment_requests(
             method=method,
             **contrast_kwargs,
         )
-        for treatment_group in treatment_groups
+        for treatment_group in preflight.treatment_groups
         if group_n[treatment_group] != 0
     ]
     return requests, learners

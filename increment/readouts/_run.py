@@ -10,7 +10,7 @@ from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
 from increment._source_operations import ReadoutExecutionOperation, ReadoutSnapshotOperation
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
-from increment.estimation.adjust import observational_evidence
+from increment.estimation.adjust import bind_unit_frame_memo, observational_evidence
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
@@ -189,7 +189,7 @@ def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
     return rows if isinstance(rows, LiftEstimates) else LiftEstimates(rows)
 
 
-def _observational_adjustment_identity(src, selected, configs, design, rows):
+def _observational_adjustment_identity(src, selected, configs, design, rows, unit_frame_memo):
     from increment._analysis_config import effective_methods
 
     adjusted_methods = {
@@ -216,7 +216,7 @@ def _observational_adjustment_identity(src, selected, configs, design, rows):
         if metric.name not in adjusted:
             continue
         frame = nw.from_native(
-            src.unit_frame(metric, covariates=design.adjustment.covariates),
+            unit_frame_memo(metric, design.adjustment.covariates),
             eager_only=True,
         )
         digest = StreamingDigest()
@@ -307,7 +307,7 @@ def _load_encouragement_evidence(src, selected, configs, design, by):
     }
 
 
-def _run_prepared(
+def _run_prepared(  # noqa: PLR0915
     src: MomentSource,
     selected: Sequence[Metric],
     configs: Sequence[ResolvedMetricConfig],
@@ -456,6 +456,7 @@ def _run_prepared(
         # The one moments reduction per metric: it gates on a treatment arm, and sizes every
         # family and routing level, and every estimate and FCR re-estimate reads it.
         evidence = observational_evidence(src, selected)
+        unit_frame_memo = bind_unit_frame_memo(src)
         if selected:
             _refuse_if_no_treatment_arm(
                 set().union(*(evidence.arms(metric) for metric in selected)),
@@ -471,6 +472,7 @@ def _run_prepared(
             value_scale=value_scale,
             call_prior=call_prior,
             evidence=evidence,
+            unit_frame_memo=unit_frame_memo,
             computations=obs_computations,
         )
         return scope_design_results(
@@ -497,7 +499,7 @@ def _run_prepared(
                 ],
                 "value_scale": value_scale,
                 "adjustment_input_identity": _observational_adjustment_identity(
-                    src, selected, configs, design, rows
+                    src, selected, configs, design, rows, unit_frame_memo
                 ),
             },
         )

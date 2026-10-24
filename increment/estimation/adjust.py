@@ -315,16 +315,6 @@ def _adjust_kwargs(method: Method) -> dict[str, Any]:
     return {}
 
 
-def _evidence_kwargs(
-    method: Method, evidence: ObservationalEvidence, metric: Metric
-) -> dict[str, Any]:
-    """The evidence a built-in estimator reads in place of ``src.moments``; a registered
-    adjustment keeps the ``(src, metric, design, ...)`` contract and reads ``src``."""
-    if method.name in _BUILTIN_ADJUSTMENTS:
-        return {"moment_rows": evidence.metric_rows(metric)}
-    return {}
-
-
 def _no_decision_method(
     design: Observational, selected: Sequence[Metric], evidence: ObservationalEvidence
 ) -> DecisionComputation[LiftEstimate]:
@@ -606,14 +596,14 @@ def judge_shared_prior_scales(
 
 
 def _refuse_observational_quantiles(
-    metrics: Sequence[Metric], *, source: object | None = None
+    metrics: Sequence[Metric],
+    *,
+    authenticate: Callable[[Metric], Any] | None = None,
 ) -> None:
     """An observational design has no quantile estimator: refuse before any source read."""
     for metric in metrics:
         if getattr(metric, "type", None) == "quantile":
-            refuse_observational_quantile(
-                metric, authenticate=getattr(source, "validated_metric", None)
-            )
+            refuse_observational_quantile(metric, authenticate=authenticate)
 
 
 def validate_readout_adjustment(request: ReadoutRequest) -> None:
@@ -702,6 +692,7 @@ class ObservationalEvidence:
     """
 
     rows: Mapping[str, tuple[Mapping[str, Any], ...]]
+    cluster: str | None = None
 
     def metric_rows(self, metric: Metric) -> tuple[Mapping[str, Any], ...]:
         return self.rows[metric.name]
@@ -713,7 +704,23 @@ class ObservationalEvidence:
 
 def observational_evidence(src: MomentSource, metrics: Sequence[Metric]) -> ObservationalEvidence:
     """Reduce each of ``metrics`` once; the one place an observational readout reads moments."""
-    return ObservationalEvidence({metric.name: tuple(src.moments(metric)) for metric in metrics})
+    return ObservationalEvidence(
+        {metric.name: tuple(src.moments(metric)) for metric in metrics},
+        cluster=src.context.cluster,
+    )
+
+
+def bind_unit_frame_memo(src: MomentSource) -> Callable[[Metric, Sequence[str]], Any]:
+    """Bind a per-readout unit-frame cache to its source."""
+    frames: dict[tuple[str, tuple[str, ...]], Any] = {}
+
+    def read(metric: Metric, covariates: Sequence[str]) -> Any:
+        key = (metric.name, tuple(covariates))
+        if key not in frames:
+            frames[key] = src.unit_frame(metric, covariates=list(covariates))
+        return frames[key]
+
+    return read
 
 
 def _winsorization_diagnostics(
@@ -817,6 +824,8 @@ def estimate_ate(  # noqa: PLR0913
         _raise_if_empty=_raise_if_empty,
         _prior_scale_judged=_prior_scale_judged,
         method_roles=method_roles,
+        unit_frame_memo=bind_unit_frame_memo(src),
+        authenticate=getattr(src, "validated_metric", None),
     )
 
 
@@ -853,6 +862,8 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     evidence: ObservationalEvidence | None = None,
     family_member: bool = False,
     route_tail: float | None = None,
+    unit_frame_memo: Callable[[Metric, Sequence[str]], Any] | None = None,
+    authenticate: Callable[[Metric], Any] | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """``estimate_ate`` with the moment evidence and family membership its callers pass.
 
@@ -876,7 +887,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         )
     selected = list(src.context.metrics) if metrics is None else list(metrics)
     if methods == []:
-        _refuse_observational_quantiles(selected, source=src)
+        _refuse_observational_quantiles(selected, authenticate=authenticate)
         _reject_unsupported_prior_type(prior)
         return _no_decision_method(
             design, selected, evidence or observational_evidence(src, selected)
@@ -896,7 +907,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         null_abs=null_abs,
         alternatives=alternatives,
     )
-    _refuse_observational_quantiles(selected, source=src)
+    _refuse_observational_quantiles(selected, authenticate=authenticate)
     _reject_unsupported_prior_type(prior)
     _validate_prior_method_scales(methods, prior)
     _reject_percentile_winsorization(selected)
@@ -921,6 +932,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                 metric for metric in selected if getattr(metric, "winsorization", None) is not None
             ]
         evidence = observational_evidence(src, moment_metrics)
+    cluster = evidence.cluster
     winsor_diagnostics: dict[str, dict[str, _WinsorizationFields]] = {}
     for raw_metric in selected:
         declared_metric = raw_metric
@@ -935,21 +947,32 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     results: list[LiftEstimate] = []
     refused_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
+    unit_frame_memo = unit_frame_memo or bind_unit_frame_memo(src)
     for method in methods:
         if _is_unadjusted_method(method):
             any_attempted = True
             for metric in selected:
                 if cluster is not None:
+                    from increment.estimation._adjust.clustered_unadjusted import (
+                        clustered_unadjusted_preflight,
+                    )
+
+                    parameters = {
+                        "cluster": cluster,
+                        "alpha": alpha,
+                        "alternative": (alternatives or {}).get(metric.name, alternative),
+                        "null_lift": (null_lifts or {}).get(metric.name, 0.0),
+                        "null_abs": (null_abs or {}).get(metric.name),
+                    }
+                    preflight = clustered_unadjusted_preflight(metric, method, **parameters)
+                    unit_rows = unit_frame_memo(metric, ())
                     unadj = estimate_clustered_unadjusted(
-                        src,
+                        unit_rows,
                         metric,
                         design.control_group,
                         method,
-                        cluster=cluster,
-                        alpha=alpha,
-                        alternative=(alternatives or {}).get(metric.name, alternative),
-                        null_lift=(null_lifts or {}).get(metric.name, 0.0),
-                        null_abs=(null_abs or {}).get(metric.name),
+                        preflight=preflight,
+                        **parameters,
                     )
                 else:
                     unadj = _estimate_lift(
@@ -993,12 +1016,42 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
             adjust_fn = ADJUSTMENTS.get(method.name)
             adjust_kwargs = _adjust_kwargs(method)
             for metric in selected:
-                row_kwargs = _evidence_kwargs(method, evidence, metric)
+                dispatch_kwargs = adjust_kwargs
                 try:
+                    moment_rows = evidence.metric_rows(metric)
+                    if method.name in _BUILTIN_ADJUSTMENTS:
+                        from increment.estimation._adjust.common import (
+                            AdjustmentInputs,
+                            adjustment_preflight,
+                        )
+
+                        roles = {
+                            "iptw": ("learner",),
+                            "dml": ("propensity_learner", "outcome_learner"),
+                            "aipw": ("propensity_learner", "outcome_learner"),
+                        }[method.name]
+                        preflight = adjustment_preflight(
+                            metric,
+                            design,
+                            method=method.name.upper(),
+                            moment_rows=moment_rows,
+                            cluster=cluster,
+                            learner_roles=roles,
+                            method_fields={"learner": "propensity_learner"}
+                            if method.name == "iptw"
+                            else None,
+                            **adjust_kwargs,
+                            prior=prior,
+                        )
+                        dispatch_kwargs = {**adjust_kwargs, "preflight": preflight}
+                    frame = unit_frame_memo(metric, design.adjustment.covariates)
+                    adjustment_args = (
+                        (AdjustmentInputs(frame, moment_rows, cluster), metric, design)
+                        if method.name in _BUILTIN_ADJUSTMENTS
+                        else (frame, moment_rows, cluster, metric, design)
+                    )
                     adjusted = adjust_fn(
-                        src,
-                        metric,
-                        design,
+                        *adjustment_args,
                         prior=prior,
                         alpha=alpha,
                         alternative=(alternatives or {}).get(metric.name, alternative),
@@ -1006,8 +1059,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         null_lift=(null_lifts or {}).get(metric.name, 0.0),
                         null_abs=(null_abs or {}).get(metric.name),
                         preferred_direction=metric.declared_preferred_direction,
-                        **adjust_kwargs,
-                        **row_kwargs,
+                        **dispatch_kwargs,
                     )
                     diagnostics_by_group = winsor_diagnostics.get(metric.name, {})
                     results.extend(

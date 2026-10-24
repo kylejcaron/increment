@@ -25,8 +25,8 @@ import pytest
 from scipy.special import expit
 
 from increment.errors import CodedError, IncrementWarning, InvalidRequestError
-from increment.estimation._adjust.aipw import aipw_estimate
-from increment.estimation._adjust.iptw import iptw_estimate
+from increment.estimation._adjust.aipw import aipw_estimate as _aipw_kernel
+from increment.estimation._adjust.iptw import iptw_estimate as _iptw_kernel
 from increment.estimation.adjust import estimate_ate
 from increment.estimation.armstats import ScoreStats
 from increment.estimation.engine import Method
@@ -48,6 +48,30 @@ _COVERAGE_BAND = (0.92, 0.98)
 _METHODS = ("iptw", "dml", "aipw")
 
 _DESIGN = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",)))
+
+
+def _kernel_call(kernel, source, metric, design, **kwargs):
+    import sys
+
+    input_type = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs
+    return kernel(
+        input_type(
+            source.unit_frame(metric, covariates=design.adjustment.covariates),
+            source.moments(metric),
+            source.context.cluster,
+        ),
+        metric,
+        design,
+        **kwargs,
+    )
+
+
+def aipw_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_aipw_kernel, source, metric, design, **kwargs)
+
+
+def iptw_estimate(source, metric, design, **kwargs):
+    return _kernel_call(_iptw_kernel, source, metric, design, **kwargs)
 
 
 def _oracle_table(

@@ -982,8 +982,8 @@ def test_estimate_ate_returns_keyed_failures_when_every_metric_is_refused():
     assert failure.code == "estimation.adjust_common.supported_ratio_metric"
 
 
-def test_prepare_adjustment_requests_shares_the_ratio_and_missing_refusals():
-    from increment.estimation._adjust.common import _prepare_adjustment_requests
+def test_adjustment_preflight_refuses_ratio_before_source_rows():
+    from increment.estimation._adjust.common import adjustment_preflight
     from increment.estimation._adjust.learners import LogisticPropensity
 
     tbl = pa.table(
@@ -1004,12 +1004,12 @@ def test_prepare_adjustment_requests_shares_the_ratio_and_missing_refusals():
     )
     metric = _metric(src, "rpo")
     with pytest.raises(UnsupportedRequestError) as exc_info:
-        _prepare_adjustment_requests(
-            src,
+        adjustment_preflight(
             metric,
             _DESIGN,
             method="AIPW",
-            covariates=list(_DESIGN.adjustment.covariates),
+            moment_rows=(),
+            cluster=None,
             learner_roles=("propensity_learner", "outcome_learner"),
             propensity_learner=LogisticPropensity,
             outcome_learner=LogisticPropensity,
@@ -1024,13 +1024,34 @@ def test_prepare_adjustment_requests_shares_the_ratio_and_missing_refusals():
     assert exc_info.value.code == "estimation.adjust_common.supported_ratio_metric"
 
 
-def test_prepare_adjustment_requests_excludes_zero_unit_arms():
-    """A MomentSource's moments() and unit_frame() are two independent
-    queries (e.g. a warehouse cube vs. a raw unit pull); when moments()
-    reports a treatment arm with n == 0, `_prepare_adjustment_requests`
-    must exclude it rather than build a request for an arm with zero
-    units to fit on."""
-    from increment.estimation._adjust.common import _prepare_adjustment_requests
+def test_estimate_ate_does_not_repeat_adjustment_preflight(monkeypatch):
+    import sys
+
+    module = sys.modules["increment.estimation._adjust.common"]
+    original = module.adjustment_preflight
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "adjustment_preflight", counted)
+    design = Observational(
+        control_group="C",
+        adjustment=AdjustmentSet(covariates=("x1", "x2")),
+        gate=IdentificationGate(overlap="trim"),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", IncrementWarning)
+        estimate_ate(_clean_confounded_src(), design, methods=[Method(name="iptw")])
+    assert len(calls) == 1
+
+
+def test_adjustment_requests_excludes_zero_unit_arms():
+    """A MomentSource's moments() and unit_frame() are independent queries
+    (e.g. a warehouse cube vs. a raw unit pull); exclude treatment arms whose
+    moment rows declare n == 0 rather than building a request for no units."""
+    from increment.estimation._adjust.common import adjustment_requests
 
     inner = _clean_confounded_src()
 
@@ -1082,13 +1103,15 @@ def test_prepare_adjustment_requests_excludes_zero_unit_arms():
     src = _ZeroArmSource(inner)
     metric = _metric(src, "revenue")
     design = _obs("refuse")
-    requests, learners = _prepare_adjustment_requests(
-        src,
+    requests, learners = adjustment_requests(
+        src.unit_frame(metric, covariates=design.adjustment.covariates),
         metric,
         design,
         method="DML",
         covariates=list(design.adjustment.covariates),
         learner_roles=("propensity_learner", "outcome_learner"),
+        moment_rows=src.moments(metric),
+        cluster=src.context.cluster,
         propensity_learner=None,
         outcome_learner=None,
         prior=None,
@@ -2803,6 +2826,29 @@ def test_unadjusted_never_takes_the_decision_role_under_an_observational_design(
     assert roles["unadjusted"] == "sensitivity"
     assert roles["aipw"] == "decision"
     assert [e.method for e in out.evidence.values()] == ["aipw"]
+
+
+def test_public_estimate_ate_forwards_method_roles():
+    src = _src()
+    design = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("z",)))
+    methods = [
+        Method(name="iptw", propensity_learner=_HalfPropensityStub),
+        Method(
+            name="aipw",
+            propensity_learner=_HalfPropensityStub,
+            outcome_learner=_ZeroOutcomeStub,
+            folds=2,
+        ),
+    ]
+    roles: dict[str, Literal["decision", "sensitivity"]] = {
+        "iptw": "sensitivity",
+        "aipw": "decision",
+    }
+
+    result = estimate_ate(src, design, methods=methods, method_roles=roles)
+
+    assert {row.method: row.method_role for row in result.results} == roles
+    assert [entry.method for entry in result.evidence.values()] == ["aipw"]
 
 
 # Categorical adjustment columns: the raw string column must reproduce the
