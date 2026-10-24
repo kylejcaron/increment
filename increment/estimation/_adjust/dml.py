@@ -302,15 +302,13 @@ def dml_estimate(  # noqa: PLR0913
     fold since a `Learner` is stateful. Default to `LogisticPropensity`
     and `RidgeOutcome` respectively.
 
-    A cluster carried in materialized `inputs` switches the sandwich
-    numerator to cluster totals of the score with an asymptotic Normal
-    reference, using the same seam and small-K policy as `iptw_estimate`.
-    The slope's score vanishes outside its comparison, so it is reduced over
-    the comparison's own clusters (the absolute row and the additive
-    sidecar); the control mean's influence reduces over every cohort cluster,
-    and each keeps its own K/(K-1) inside the joint covariance. The required
-    input object carries `cluster=None` only when the source declared no
-    cluster.
+    `inputs.cluster` is explicit materialized evidence. When it is `None`,
+    inference is iid; direct kernel calls do not infer clustering from other
+    materialized fields. The slope's score vanishes outside its comparison,
+    so it is reduced over the comparison's own clusters (the absolute row
+    and the additive sidecar); the control mean's influence reduces over
+    every cohort cluster, and each keeps its own K/(K-1) inside the joint
+    covariance.
     """
     requests, learners = adjustment_requests(
         inputs.frame,

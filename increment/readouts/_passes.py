@@ -553,7 +553,6 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
             metric,
             design.control_group,
             design=design,
-            authenticate=getattr(src, "validated_metric", None),
             methods=methods,
             prior=config.prior,
             alpha=alpha_for,

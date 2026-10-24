@@ -234,11 +234,9 @@ def aipw_estimate(  # noqa: PLR0913
     fold per model, matching `dml_estimate`. Default to
     `LogisticPropensity` and `RidgeOutcome` respectively.
 
-    A cluster carried in materialized `inputs` switches the SE to cluster
-    totals of the influence function with an asymptotic Normal reference,
-    using the same seam and small-K policy as `iptw_estimate`. The required
-    input object carries `cluster=None` only when the source declared no
-    cluster.
+    `inputs.cluster` is explicit materialized evidence. When it is `None`,
+    inference is iid; direct kernel calls do not infer clustering from other
+    materialized fields.
     """
     requests, learners = adjustment_requests(
         inputs.frame,
