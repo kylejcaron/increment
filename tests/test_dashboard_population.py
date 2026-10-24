@@ -339,7 +339,7 @@ def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_pa
             dataclasses.replace(
                 snapshot,
                 triggered_allocation_history_refusal=(
-                    "source.native.operation",
+                    "evidence.operation_unavailable",
                     "unsupported",
                 ),
             )

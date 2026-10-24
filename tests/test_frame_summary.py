@@ -1961,3 +1961,47 @@ class TestDegenerateRatioIsRefusedWhereColumnsAreRead:
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize("entrypoint", ["moments", "breakout_moments_for_method"])
+def test_registered_segment_without_summary_reducer_refuses_breakout(entrypoint: str) -> None:
+    from increment.semantics.models import AnalysisPlan, InferenceSpec
+
+    table = pa.table(
+        {
+            "unit": ["c0", "c1", "t0", "t1"],
+            "group": ["control", "control", "treatment", "treatment"],
+            "outcome": [0, 1, 1, 0],
+            "segment": ["a", "b", "a", "b"],
+            "exposure": [0, 1, 0, 1],
+        }
+    )
+    source = from_unit_summary(
+        table,
+        unit="unit",
+        group="group",
+        exposure_date="exposure",
+        control="control",
+        metrics=[MetricSpec(name="outcome", type="conversion")],
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+        ),
+        plan=AnalysisPlan(
+            primary="outcome",
+            inference=InferenceSpec(
+                kind="always_valid",
+                segments={"segment": ("a", "b")},
+            ),
+        ),
+    )
+    metric = source.context.metrics[0]
+    assert source.breakouts == ("segment",)
+
+    with pytest.raises(CapabilityError) as raised:
+        if entrypoint == "moments":
+            source.moments(metric, by=("segment",))
+        else:
+            source.breakout_moments_for_method(metric, Method.unadjusted(), by=("segment",))
+
+    assert raised.value.code == "evidence.breakout_unavailable"

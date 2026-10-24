@@ -42,6 +42,7 @@ from pydantic import (
     model_validator,
 )
 
+from increment._evidence_refusals import OPERATION_UNAVAILABLE
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import (
     Alternative,
@@ -70,6 +71,7 @@ from increment.errors import (
     refusals,
     warn,
 )
+from increment.errors import refuse as _raise_refusal
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
 from increment.estimation.conversion_route import fcr_route_tail
@@ -144,14 +146,6 @@ _REFUSALS = refusals(
             "breakout.quantile",
             CapabilityError,
             template="quantile metric(s) {names!r} have no moments representation, so {method} cannot serve them -- {reason}. {remedy}",
-        ),
-        "breakout.metric.daily_winsorization": RefusalSpec(
-            "breakout.metric.daily_winsorization",
-            CapabilityError,
-            lambda *, method, names: (
-                f"{method} does not support winsorized metrics ({', '.join(names)}); "
-                "use total-grain run() or run_breakout()"
-            ),
         ),
         "breakout.retention.encouragement": RefusalSpec(
             "breakout.retention.encouragement",
@@ -337,7 +331,13 @@ def reject_retention_metrics(
 def reject_winsorized_day_axis(metrics: Sequence[Metric], method: str) -> None:
     names = [metric.name for metric in metrics if getattr(metric, "winsorization", None)]
     if names:
-        _refuse("breakout.metric.daily_winsorization", method=method, names=names)
+        _raise_refusal(
+            OPERATION_UNAVAILABLE,
+            constructor=method,
+            requested=tuple(names),
+            offered=(),
+            route="use total-grain run() or run_breakout()",
+        )
 
 
 def reject_quantile_metrics(

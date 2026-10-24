@@ -987,10 +987,10 @@ def test_unsupported_grain_and_raw_sql_stay_capability_refusals() -> None:
     source.capabilities = frozenset({"total"})
     with pytest.raises(CapabilityError) as raised:
         source.moments(metric, grain="daily")
-    assert raised.value.code == "artifact.operation.unsupported"
+    assert raised.value.code == "evidence.grain_unavailable"
     with pytest.raises(CapabilityError) as raised:
         source.sql()
-    assert raised.value.code == "artifact.operation.unsupported"
+    assert raised.value.code == "evidence.operation_unavailable"
     source.close()
 
 

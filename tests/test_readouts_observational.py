@@ -357,7 +357,7 @@ def test_srm_not_applicable_under_observational():
 def test_run_breakout_refused_under_observational():
     with pytest.raises(CapabilityError) as exc:
         _obs_analysis().run_breakout()
-    assert exc.value.code == "facade.analysis.operation"
+    assert exc.value.code == "evidence.breakout_unavailable"
 
 
 def test_run_by_segment_refused_under_observational():

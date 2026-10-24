@@ -31,7 +31,6 @@ from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synt
 from increment.errors import (
     CapabilityError,
     RefusalSpec,
-    _safe_error_value,
     refuse,
 )
 from increment.estimation._readout_refusals import refuse_observational_quantile
@@ -49,7 +48,6 @@ from increment.query.artifact_extensions import (
     verify_extension_relation,
 )
 from increment.query.artifact_reader import (
-    _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
     _restore_raw_dimension_values,
     _TriggeredReductionInputs,
@@ -100,40 +98,11 @@ from increment.sources import (
     SourceOperation,
 )
 
-_SQL_GRAIN = RefusalSpec(
-    "source.sql.grain",
-    CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
 _SQL_UNIT_GRAIN = RefusalSpec(
     "source.sql.unit_grain",
     CapabilityError,
     template="'unit_frame' needs unit-grain rows, which this source does not retain -- only aggregated moments are available here. unit_frame() unavailable; use a frame-backed source (from_unit_summary / from_unit_panel) for unit-grain estimators.",
     keys=frozenset({"method"}),
-)
-_SQL_SQL_GRAIN = RefusalSpec(
-    "source.sql.sql_grain",
-    CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-_SQL_OPERATION = RefusalSpec(
-    "source.sql.operation",
-    CapabilityError,
-    template="{operation} cannot serve {requested!r}: {reason}. {route}",
 )
 _SQL_CLUSTER = RefusalSpec(
     "source.sql.cluster_grain",
@@ -263,6 +232,7 @@ class SqlPanelSource:
             sequential_capture="none",
             scalar=None,
             available_covariates=None,
+            sql_grains=frozenset({"total"}),
         )
 
     def __init__(
@@ -438,15 +408,13 @@ class SqlPanelSource:
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
         if grain != "total":
-            refuse(_SQL_GRAIN, grain=grain, offered=self.capabilities)
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain)
         if by:
-            refuse(
-                _SQL_OPERATION,
-                operation="moments",
-                requested={"metric": metric.name, "by": tuple(by)},
-                reason="breakout dimensions are not retained by SqlPanelSource",
-                route="request whole-window totals or use a frame-backed source with breakouts",
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, by=tuple(by))
         rows = self._summary.filter(self._summary.metric == metric.name)
         return self._con.to_pyarrow(rows).to_pylist()
 
@@ -491,11 +459,12 @@ class SqlPanelSource:
         )
 
     def compliance_dates(self) -> Sequence[object]:
-        refuse(
-            _SQL_OPERATION,
-            operation="compliance_dates",
-            requested=(),
-            reason="enrollment day state is absent from this SQL summary",
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            self,
+            "compliance_dates",
+            tuple(sorted(self.operations)),
             route="use a panel source for as-of compliance",
         )
 
@@ -515,7 +484,9 @@ class SqlPanelSource:
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         if grain != "total":
-            refuse(_SQL_SQL_GRAIN, grain=grain, offered=self.capabilities)
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain, operation="sql")
         return {
             m.name: ibis.to_sql(self._summary.filter(self._summary.metric == m.name))
             for m in self._context.metrics
@@ -532,11 +503,12 @@ class SqlPanelSource:
     def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]:
         """Return the adopted panel's group-summary SQL."""
         if breakouts:
-            refuse(
-                _SQL_OPERATION,
-                operation="summary_sql",
-                requested={"breakouts": tuple(_safe_error_value(item) for item in breakouts)},
-                reason="adopted panels retain only whole-population group summaries",
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(item.property for item in breakouts),
+                tuple(self.breakouts),
                 route="request summary SQL without breakouts",
             )
         return self._summary_sql_for_metrics(breakouts=list(breakouts))
@@ -1372,13 +1344,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         relation = self._verified_extension_relation(cuped, request=_artifact_request(cuped))
         return relation.select("experiment_id", "unit_id", sum_value=relation.x)
 
-    def _preflight_cluster_grain(self, grain: Grain, *, operation: str) -> None:
+    def _preflight_cluster_grain(self, grain: Grain) -> None:
         if self.context.cluster is not None and grain != "total":
-            refuse(
-                _ARTIFACT_GRAIN,
-                operation=operation,
-                request={"grain": grain, "cluster": self.context.cluster},
-                offered=("total",),
+            from increment._evidence_refusals import refuse_grain
+
+            refuse_grain(
+                self,
+                grain,
+                ("total",),
                 route="request grain='total' for cluster-robust inference",
             )
 
@@ -1393,7 +1366,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         include_covariate: bool = False,
         kind: str = "breakout_dimension",
     ) -> list[dict[str, Any]]:
-        self._preflight_cluster_grain(grain, operation="moments")
+        self._preflight_cluster_grain(grain)
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(
+            self,
+            grain=grain,
+            by=(dimension,) if kind == "breakout_dimension" else (),
+        )
         # Dimensioned callers can be the first read on a fresh artifact source.
         metric = self.validated_metric(metric)
         extension = self._extension(
@@ -1805,15 +1785,11 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
-        self._preflight_cluster_grain(grain, operation="moments")
-        if grain not in self.capabilities:
-            refuse(
-                _ARTIFACT_GRAIN,
-                operation="moments",
-                request={"grain": grain},
-                offered=tuple(sorted(self.capabilities)),
-                route="request one of the source's supported grains",
-            )
+        self._preflight_cluster_grain(grain)
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain, by=tuple(by))
+
         metric = self.validated_metric(metric)
         self._refuse_observational_quantile(metric)
         if not include_covariate:
@@ -1911,7 +1887,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> Any:
-        self._preflight_cluster_grain(grain, operation="breakout_moments")
+        self._preflight_cluster_grain(grain)
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain, by=(breakout.property,))
         extension = self._extension(
             {
                 "kind": "breakout_dimension",

@@ -184,7 +184,7 @@ def test_clustered_non_total_refuses_before_extension_resolution(published_units
                 by=["missing"] if operation in {"dimension", "dimensioned"} else [],
                 include_covariate=operation in {"cuped", "dimensioned"},
             )
-    assert caught.value.code == "artifact.operation.unsupported"
+    assert caught.value.code == "evidence.grain_unavailable"
 
 
 def _published_plain_reader(root, *, n_units: int, n_days: int, aggregation: str = "sum"):

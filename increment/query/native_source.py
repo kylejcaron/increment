@@ -65,7 +65,6 @@ from increment.query._native_refusals import (
     _NATIVE_COVARIATE_DTYPE,
     _NATIVE_COVARIATE_KIND,
     _NATIVE_COVARIATE_UNRESOLVED,
-    _NATIVE_SQL_GRAIN,
     _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
     _NATIVE_WAREHOUSE_CLUSTER,
     _percentile_winsorization,
@@ -264,6 +263,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 covariate_grains=None,
             ),
             available_covariates=None,
+            sql_grains=frozenset({"total"}),
         )
 
     def __init__(
@@ -2234,14 +2234,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         requested_source = getattr(breakout, "source", None)
         declared = tuple(b for b in self._experiment.breakouts if b.property == property_name)
         if not declared:
-            _refuse_operation(
-                operation=operation,
-                request={
-                    "experiment": self._experiment.name,
-                    "dimension": property_name,
-                    "source": requested_source,
-                },
-                offered=tuple(sorted({b.property for b in self._experiment.breakouts})),
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                () if property_name is None else (property_name,),
+                tuple(sorted({b.property for b in self._experiment.breakouts})),
                 route="declare the breakout on the experiment or request a declared property",
             )
 
@@ -2253,27 +2251,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             resolved = _resolve_breakout_fact_source(self._defs, self._experiment, breakout)
         except ValueError:
             if requested_source is not None:
-                _refuse_operation(
-                    operation=operation,
-                    request={
-                        "experiment": self._experiment.name,
-                        "dimension": property_name,
-                        "source": requested_source,
-                    },
-                    offered=tuple(sorted(declared_sources)),
+                from increment._evidence_refusals import refuse_breakout
+
+                refuse_breakout(
+                    self,
+                    () if property_name is None else (property_name,),
+                    tuple(sorted(declared_sources)),
                     route="request the breakout with one of its declared sources",
                 )
             raise
         if resolved.name not in declared_sources:
-            _refuse_operation(
-                operation=operation,
-                request={
-                    "experiment": self._experiment.name,
-                    "dimension": property_name,
-                    "source": requested_source,
-                    "resolved_source": resolved.name,
-                },
-                offered=tuple(sorted(declared_sources)),
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                () if property_name is None else (property_name,),
+                tuple(sorted(declared_sources)),
                 route="request the breakout with one of its declared sources",
             )
         return resolved
@@ -2291,10 +2284,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if dimension is not None:
             declared = sorted({b.property for b in self._experiment.breakouts})
             if dimension not in declared:
-                _refuse_operation(
-                    operation=operation,
-                    request={"experiment": self._experiment.name, "dimension": dimension},
-                    offered=tuple(declared),
+                from increment._evidence_refusals import refuse_breakout
+
+                refuse_breakout(
+                    self,
+                    (dimension,),
+                    tuple(declared),
                     route="declare the breakout on the experiment or request a declared property",
                 )
         if include_covariate:
@@ -3895,10 +3890,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> list[dict[str, Any]]:
         if grain != "total" and population != "assigned":
-            _refuse_operation(
-                operation="moments",
-                request={"metric": metric.name, "grain": grain, "population": population},
-                offered=("total",),
+            from increment._evidence_refusals import refuse_grain
+
+            refuse_grain(
+                self,
+                grain,
+                ("total",),
                 route="request grain='total' for the triggered population",
             )
         if grain != "total":
@@ -3911,10 +3908,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 include_covariate=include_covariate,
             )
         if by:
-            _refuse_operation(
-                operation="moments",
-                request={"metric": metric.name, "grain": grain, "by": tuple(by)},
-                offered=tuple(sorted(self.capabilities)),
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                self.breakouts,
                 route="use breakout_moments() for a dimensioned totals view",
             )
         combined = self._moments_for_metrics(selected=[metric], population=population)
@@ -3930,10 +3929,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
     ) -> list[dict[str, Any]]:
         """Materialize the scalar family for exactly one method request."""
         if by:
-            _refuse_operation(
-                operation="moments",
-                request={"metric": metric.name, "by": tuple(by)},
-                offered=tuple(sorted(self.capabilities)),
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                self.breakouts,
                 route="use breakout_moments() for dimensioned totals",
             )
         combined = self._moments_for_metrics(
@@ -4471,11 +4472,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         if grain != "total":
-            _refuse(
-                _NATIVE_SQL_GRAIN,
-                grain=grain,
-                offered=self.capabilities,
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain, operation="sql")
         return self._summary_sql_for_metrics()
 
     def unit_counts(self) -> dict[str, int]:

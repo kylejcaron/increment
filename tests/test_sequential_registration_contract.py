@@ -1185,7 +1185,7 @@ def test_automatic_segments_match_the_manual_breakout_and_retain_absent_levels(t
     assert replay.sequential_snapshot() == snapshot
     with pytest.raises(CapabilityError) as no_catalog:
         replay.run_breakout()
-    assert no_catalog.value.code == "readout.source.dimension"
+    assert no_catalog.value.code == "evidence.breakout_unavailable"
 
     # An undeclared level in the data joins no cell; a redeclared family refuses.
     extra = _arm_rows(("control", "treatment"), levels=("x", "y", "z"), offset=60)

@@ -79,6 +79,23 @@ def test_adjusted_frame_rechecks_every_override_column(panel, role, monkeypatch)
     assert raised.value.code == "source.frame.metric_missing"
 
 
+@pytest.mark.parametrize("panel", [False, True])
+def test_method_specific_breakout_request_refuses_instead_of_returning_totals(panel):
+    source = _source(
+        pa.Table.from_pylist(_records()),
+        [MetricSpec(name="outcome")],
+        panel=panel,
+        breakouts=("segment",),
+    )
+    with pytest.raises(CodedError) as raised:
+        source.moments_for_method(
+            source.context.metrics[0],
+            _scalar("custom"),
+            by=("segment",),
+        )
+    assert raised.value.code == "evidence.breakout_unavailable"
+
+
 @pytest.mark.parametrize("by", [(), ("segment",)])
 def test_panel_covariate_missing_policy_is_per_metric(by, tmp_path):
     specs = [

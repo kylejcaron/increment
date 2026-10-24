@@ -232,7 +232,7 @@ CUPED_LINEAR_INTERACTIONS = (
                 "from_unit_summary",
                 InteractionDisposition(
                     "source_limited",
-                    "facade.analysis.operation",
+                    "evidence.breakout_unavailable",
                     "A unit-summary frame has no breakout dimension.",
                     "read",
                     "tests/test_cuped_linear_acceptance.py::test_cuped_linear_interactions_preserve_ingress_specific_refusals",
@@ -249,7 +249,7 @@ CUPED_LINEAR_INTERACTIONS = (
                 "from_moments",
                 InteractionDisposition(
                     "source_limited",
-                    "facade.analysis.operation",
+                    "evidence.breakout_unavailable",
                     "Portable moments retain no per-unit breakout dimension.",
                     "read",
                     f"{_JOURNEY}::test_definitions_artifact_moments_journey_replays_companions_without_unit_transfer",

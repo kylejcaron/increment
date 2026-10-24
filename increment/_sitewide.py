@@ -7,11 +7,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from increment._source_operations import SitewideEvidenceOperation, TriggeredCountsOperation
 from increment._source_types import classify_source
-from increment._whole_window import (
-    _ANALYSIS_OPERATION,
-    _UNKNOWN_METRIC,
-    _require_analysis_operation,
-)
+from increment._whole_window import _UNKNOWN_METRIC, _require_analysis_operation
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.estimation.sitewide import (
@@ -245,10 +241,13 @@ class SitewideReadouts:
         source = self._src
         if classify_source(source) == "artifact":
             if "sitewide_evidence" not in source.operations:
-                _refuse(
-                    _ANALYSIS_OPERATION,
-                    message="sitewide() requires a published site-volume evidence extension",
-                    operation="sitewide_evidence",
+                from increment._evidence_refusals import refuse_operation
+
+                refuse_operation(
+                    source,
+                    "sitewide_evidence",
+                    tuple(sorted(source.operations)),
+                    route="sitewide() requires a published site-volume evidence extension",
                 )
             src = cast("SitewideEvidenceOperation", source)
         else:

@@ -768,6 +768,7 @@ class EvidenceCapabilities:
     sequential_capture: Literal["construction", "asof", "replay", "none"]
     scalar: ScalarEvidenceDeclaration | None
     available_covariates: frozenset[str] | None
+    sql_grains: frozenset[Grain] = frozenset()
 
 
 def _source_kind(
@@ -864,13 +865,17 @@ def _legacy_evidence_from_source(source: object) -> EvidenceCapabilities:
     )
 
 
+def evidence_is_declared(source: object) -> bool:
+    """Whether a source supplies its own evidence declaration."""
+    declaration = getattr_static(source, "evidence", None)
+    return declaration is not None and isinstance(source.evidence, EvidenceCapabilities)
+
+
 def declared_evidence(source: object) -> EvidenceCapabilities:
     """Return declared evidence, deriving it for legacy custom moment sources."""
-    declaration = getattr_static(source, "evidence", None)
-    if declaration is not None:
-        declaration = source.evidence
-        if isinstance(declaration, EvidenceCapabilities):
-            return declaration
+    if evidence_is_declared(source):
+        declaration = cast("EvidenceCapabilities", getattr(source, "evidence", None))
+        return declaration
     return _legacy_evidence_from_source(source)
 
 

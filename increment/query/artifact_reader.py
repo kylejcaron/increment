@@ -1286,13 +1286,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
     ) -> ir.Table:
         """Reduce every artifact source through the same observation spine."""
         if cluster is not None and grain not in ("total", "unit"):
-            refuse(
-                _ARTIFACT_GRAIN,
-                operation="moments",
-                request={"grain": grain, "cluster": cluster},
-                offered=tuple(sorted(self.capabilities)),
-                route="request total- or unit-grain moments",
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain)
         metric = self._normalize_metric(metric)
         properties_table = _restore_raw_dimension_values(properties_table, by)
         uptake_events, uptake_window_days, has_uptake, uptake_certified_edge = self._uptake_inputs()
@@ -1635,18 +1631,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
         if grain not in self.capabilities:
-            refuse(
-                _ARTIFACT_GRAIN,
-                operation="moments",
-                request={"grain": grain},
-                offered=tuple(sorted(self.capabilities)),
-                route="request one of the offered grains",
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain)
         metric = self.validated_metric(metric)
         if by:
-            _relation_refuse(
-                "artifact.extension.missing", "artifact base has no breakout evidence extension"
-            )
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, by=tuple(by))
         if include_covariate:
             _relation_refuse(
                 "artifact.extension.missing", "artifact base has no CUPED evidence extension"
@@ -2633,11 +2625,12 @@ class ArtifactMomentSource(SequentialSourceMixin):
         write_moments_table(path, rows, CUPED_EVIDENCE_FORMAT)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
-        refuse(
-            _ARTIFACT_GRAIN,
-            operation="sql",
-            request={"grain": grain},
-            offered=tuple(sorted(self.capabilities)),
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            self,
+            "sql",
+            tuple(sorted(self.operations)),
             route="use moments() for artifact-backed reductions",
         )
 

@@ -100,6 +100,11 @@ path = "increment._source_types"
 depends_on = ["increment._moment_plan", "increment.errors"]
 
 [[modules]]
+path = "increment._evidence_refusals"
+depends_on = ["increment._source_types", "increment.errors"]
+
+
+[[modules]]
 path = "increment.estimation.advisory"
 depends_on = ["increment._canonical", "increment._immutable"]
 
@@ -232,6 +237,7 @@ depends_on = [
 path = "increment.sources"
 depends_on = [
   "increment._canonical", "increment._cuped_evidence", "increment._immutable", "increment._source_identity",
+  "increment._evidence_refusals",
   "increment.winsor",
   "increment.estimation.decision_types",
   "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",
@@ -280,6 +286,7 @@ depends_on = [
   "increment._display", "increment._canonical", "increment._immutable",
   "increment._moment_plan", "increment._bernoulli_moments",
   "increment._source_types", "increment._winsor_rank", "increment.winsor", "increment._labels", "increment._window", "increment.compatibility",
+  "increment._evidence_refusals",
   "increment.errors", "increment.estimation._certified", "increment.estimation.advisory", "increment.estimation.decision_types",
   "increment._evidence_types",
   "increment.estimation._sequential_likelihood",
@@ -321,6 +328,7 @@ depends_on = [
 path = "increment.frame"
 depends_on = [
   "increment._source_types",
+  "increment._evidence_refusals",
   "increment._identity",
   "increment.winsor",
   "increment._analysis_config", "increment._frame_moments", "increment._frame_panel",
@@ -351,6 +359,7 @@ depends_on = [
 path = "increment.query"
 depends_on = [
   "increment._analysis_config", "increment._canonical", "increment._cuped_evidence", "increment._immutable", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
+  "increment._evidence_refusals",
   "increment._source_operations", "increment._source_types",
   "increment.winsor",
   "increment.breakout.estimates",
@@ -437,6 +446,7 @@ depends_on = [
   "increment._source_types",
   "increment._frame_validation",
   "increment.winsor", "increment._policy_alpha", "increment.compatibility", "increment.decision", "increment.errors",
+  "increment._evidence_refusals",
   "increment.estimation", "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_source", "increment.sequential_state",
   "increment.breakout.projection", "increment._interpretation",
@@ -457,6 +467,7 @@ depends_on = [
   "increment._analysis_config", "increment._day_axis", "increment._readout_request",
   "increment.breakout.estimates",
   "increment.errors", "increment.readouts", "increment.sources",
+  "increment._evidence_refusals",
 ]
 
 [[modules]]
@@ -467,6 +478,7 @@ depends_on = [
   "increment._whole_window", "increment._day_axis",
   "increment.breakout.estimates", "increment.errors", "increment.readouts",
   "increment.query", "increment._metric_specs",
+  "increment._evidence_refusals",
   "increment.sequential_state",
 ]
 
@@ -474,6 +486,7 @@ depends_on = [
 path = "increment._sitewide"
 depends_on = [
   "increment._source_operations", "increment._source_types", "increment._whole_window", "increment.errors",
+  "increment._evidence_refusals",
   "increment.estimation", "increment.query", "increment.semantics",
 ]
 
@@ -494,6 +507,7 @@ depends_on = [
   "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
   "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
   "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
+  "increment._evidence_refusals",
   "increment.frame", "increment.plan",
   "increment.query", "increment.readouts", "increment.semantics",
   "increment.sources", "increment.switchback",
@@ -512,6 +526,7 @@ depends_on = [
   "increment._frame_panel",
   "increment._frame_validation",
   "increment._source_types", "increment._labels", "increment._canonical",
+  "increment._evidence_refusals",
   "increment._source_operations",
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
@@ -530,6 +545,7 @@ depends_on = [
   "increment._source_operations", "increment.plan",
   "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.query",
   "increment._source_identity",
+  "increment._evidence_refusals",
   "increment.readouts", "increment.semantics", "increment.sources",
   "increment.sequential_state",
 ]

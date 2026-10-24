@@ -195,7 +195,7 @@ def test_day_axis_source_capability_refuses_before_scalar_admission(monkeypatch,
         with pytest.raises(CodedError) as raised:
             getattr(analysis, operation)()
         assert raised.value.code == (
-            "estimation.cuped.arm_no_covariate" if panel else "facade.analysis.no_definitions"
+            "estimation.cuped.arm_no_covariate" if panel else "evidence.grain_unavailable"
         )
         assert reads == []
     finally:

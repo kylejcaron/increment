@@ -77,7 +77,6 @@ from increment._source_operations import (
 from increment._source_types import classify_source
 from increment._study import ParallelStudyEnvelope
 from increment._whole_window import (
-    _ANALYSIS_OPERATION,
     WholeWindowReadouts,
     WholeWindowRequest,
     _require_analysis_operation,
@@ -833,10 +832,13 @@ class Analysis:
 
         state = self._require_arm_state("publish_unit_day_artifact")
         if not isinstance(state, DefinitionsArmAnalysisState):
-            _refuse(
-                _ANALYSIS_OPERATION,
-                message="publish_unit_day_artifact() requires Analysis.from_definitions",
-                operation="materialize",
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(
+                self._src,
+                "materialize",
+                tuple(sorted(self._src.operations)),
+                route="publish_unit_day_artifact() requires Analysis.from_definitions",
             )
         native = _require_analysis_operation(
             self._src,
@@ -1473,7 +1475,7 @@ class Analysis:
         *breakout*; families are computed per breakout, so their rows equal this breakout's
         rows from the dimension-wide reads. Only native ``Analysis.from_definitions``
         instances support it: other arm-family sources refuse with
-        ``facade.analysis.operation`` and switchback evidence with
+        ``evidence.breakout_unavailable`` and switchback evidence with
         ``facade.analysis.contrast_unavailable``. An undeclared *breakout* is refused
         with ``facade.analysis.undeclared_breakout``.
 
@@ -1489,12 +1491,13 @@ class Analysis:
         """
         state = self._require_arm_state("dashboard_breakout_reads")
         if not isinstance(state, DefinitionsArmAnalysisState):
-            _refuse(
-                _ANALYSIS_OPERATION,
-                message=(
-                    "dashboard_breakout_reads() needs a native Analysis.from_definitions instance."
-                ),
-                operation="dashboard_breakout_reads",
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self._src,
+                (breakout.property,),
+                tuple(self._src.breakouts),
+                route="dashboard_breakout_reads() requires a definitions-backed breakout source",
             )
         declared = state.experiment.breakouts
         if breakout not in declared:
@@ -1841,10 +1844,12 @@ class Analysis:
                         analysis_population="triggered",
                         metric=metric.name,
                         availability="unavailable",
-                        code="facade.analysis.operation",
+                        code="evidence.operation_unavailable",
                         context={
-                            "operation": "triggered_observation_edges",
-                            "reason": "This source does not retain trigger maturity evidence.",
+                            "constructor": type(self._src).__name__,
+                            "requested": "triggered_observation_edges",
+                            "offered": tuple(sorted(getattr(self._src, "operations", ()))),
+                            "route": "This source does not retain trigger maturity evidence.",
                         },
                     )
                 )
@@ -2130,10 +2135,13 @@ class Analysis:
         source = self._src
         if classify_source(source) == "artifact":
             if "triggered_counts" not in source.operations:
-                _refuse(
-                    _ANALYSIS_OPERATION,
-                    message="trigger_rates() requires complete trigger evidence",
-                    operation="triggered_counts",
+                from increment._evidence_refusals import refuse_operation
+
+                refuse_operation(
+                    source,
+                    "triggered_counts",
+                    tuple(sorted(source.operations)),
+                    route="trigger_rates() requires complete trigger evidence",
                 )
             return source.trigger_rates()
         src = _require_analysis_operation(
@@ -2314,10 +2322,13 @@ class Analysis:
         """
         state = self._require_arm_state("artifact_context")
         if not isinstance(state, DefinitionsArmAnalysisState):
-            _refuse(
-                _ANALYSIS_OPERATION,
-                message="artifact_context requires Analysis.from_definitions",
-                operation="materialize",
+            from increment._evidence_refusals import refuse_operation
+
+            refuse_operation(
+                self._src,
+                "materialize",
+                tuple(sorted(self._src.operations)),
+                route="artifact_context requires Analysis.from_definitions",
             )
         return self._artifact_context(
             state.definitions,
@@ -3042,6 +3053,26 @@ class Analysis:
         from increment.query.native_contract import NativeViewSource
 
         self._require_arm_state("breakout_summaries")
+        if not isinstance(self._src, NativeViewSource):
+            from increment._evidence_refusals import refuse_breakout
+            from increment._source_types import declared_evidence
+
+            offered = tuple(sorted(declared_evidence(self._src).breakouts))
+            experiment = getattr(self._state, "experiment", None)
+            requested = (
+                tuple(breakout.property for breakout in experiment.breakouts)
+                if experiment is not None
+                else ()
+            )
+            refuse_breakout(
+                self._src,
+                requested,
+                offered,
+                route=(
+                    "breakout_summaries() needs a native Analysis.from_definitions or "
+                    "Analysis.from_unit_day_artifact instance with breakout evidence"
+                ),
+            )
         native = _require_analysis_operation(
             self._src,
             "breakout_summaries",

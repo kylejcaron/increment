@@ -159,7 +159,7 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
             "source_limited",
             ("facade.analysis_config.cuped_linear_moments",),
         ),
-        "breakouts": ("source_limited", ("facade.analysis.operation",)),
+        "breakouts": ("source_limited", ("evidence.breakout_unavailable",)),
         "multiplicity_roles": ("supported", ()),
         "triggered_population": (
             "source_limited",
@@ -172,7 +172,7 @@ def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
     )[0][1]
     assert (summary_breakout.status, summary_breakout.codes) == (
         "source_limited",
-        ("facade.analysis.operation",),
+        ("evidence.breakout_unavailable",),
     )
     for ingress in ("from_unit_summary", "from_unit_panel"):
         triggered = resolve_cell(

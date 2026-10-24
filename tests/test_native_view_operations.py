@@ -132,7 +132,7 @@ def test_sitewide_evidence_refuses_ratio_before_raw_work(pricing_analysis):
     source = _native_source(pricing_analysis)
     with pytest.raises(CapabilityError) as raised:
         source.sitewide_evidence(metric)
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_sitewide_evidence_refuses_winsorization_before_raw_work(pricing_analysis, monkeypatch):
@@ -146,7 +146,7 @@ def test_sitewide_evidence_refuses_winsorization_before_raw_work(pricing_analysi
     )
     with pytest.raises(CapabilityError) as raised:
         source.sitewide_evidence(winsorized)
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 @pytest.mark.parametrize(
@@ -178,7 +178,7 @@ def test_breakout_summaries_refuses_winsorization_before_warehouse_work(
     with pytest.raises(CapabilityError) as raised:
         source.breakout_summaries(metrics=(metric,))
 
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_breakout_summaries_preserves_fixed_value_winsorization(pricing_con):
@@ -320,7 +320,7 @@ def test_day_source_validates_missing_breakout_before_reduction_or_properties(
     )
     with pytest.raises(CapabilityError) as raised:
         day.breakout_moments(metric, Breakout(property="missing_dimension"))
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.breakout_unavailable"
 
 
 def test_day_source_validates_breakout_source_before_reduction(pricing_con, monkeypatch):
@@ -340,7 +340,7 @@ def test_day_source_validates_breakout_source_before_reduction(pricing_con, monk
             metric,
             breakout.model_copy(update={"source": "not_declared"}),
         )
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.breakout_unavailable"
 
 
 def test_day_source_rejects_existing_undeclared_source_before_warehouse_work(con, monkeypatch):
@@ -375,7 +375,7 @@ def test_day_source_rejects_existing_undeclared_source_before_warehouse_work(con
             Breakout(property="country", source="src_b"),
         )
 
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.breakout_unavailable"
 
 
 def test_breakout_source_rejects_existing_undeclared_source_before_warehouse_work(con, monkeypatch):
@@ -409,17 +409,10 @@ def test_breakout_source_rejects_existing_undeclared_source_before_warehouse_wor
             metrics=(metric,),
         )
 
-    _assert_operation_refusal(
-        raised.value,
-        operation="breakout_source",
-        request={
-            "experiment": "collision_exp",
-            "dimension": "country",
-            "source": "src_b",
-            "resolved_source": "src_b",
-        },
-        offered=("src_a",),
-    )
+    assert raised.value.code == "evidence.breakout_unavailable"
+    assert raised.value.context["requested"] == ("country",)
+    assert raised.value.context["offered"] == ("src_a",)
+    assert raised.value.context["route"]
 
 
 def _with_breakout_source(analysis: Analysis, source: str | None) -> Analysis:
@@ -547,13 +540,13 @@ def test_native_view_operations_refuse_missing_extension_evidence(pricing_analys
     source = _native_source(analysis)
     with pytest.raises(CapabilityError) as raised:
         source.breakout_summaries(metrics=(quantile,))
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         source.breakout_source(analysis.experiment.breakouts[0], metrics=(quantile,))
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         source.day_source(metrics=(quantile,))
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_day_source_refuses_winsorized_metrics_before_warehouse_work(pricing_analysis, monkeypatch):
@@ -569,7 +562,7 @@ def test_day_source_refuses_winsorized_metrics_before_warehouse_work(pricing_ana
 
     with pytest.raises(CapabilityError) as raised:
         source.day_source(metrics=(metric,))
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_day_source_validates_metrics_passed_directly(pricing_analysis):
@@ -582,16 +575,16 @@ def test_day_source_validates_metrics_passed_directly(pricing_analysis):
 
     with pytest.raises(CapabilityError) as raised:
         day.moments(quantile)
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         day.moments(winsorized)
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         day.breakout_moments(quantile, breakout)
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         day.breakout_moments(winsorized, breakout)
-    assert raised.value.code == "source.native.operation"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_direct_native_sitewide_uses_assigned_evidence_with_declared_trigger(tmp_path, monkeypatch):

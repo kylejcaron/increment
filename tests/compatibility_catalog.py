@@ -398,9 +398,9 @@ PAIRS: dict[tuple[str, str], Cell] = {
         code="arm.adjustment.cluster_prior",
     ),
     ("cluster", "breakout"): R(
-        "does not support breakout dimension 'seg'; declared breakouts: []",
+        "BreakoutMomentsSource cannot supply requested breakout ('seg',); offered: (). use a source with the requested breakout dimensions",
         CapabilityError,
-        code="readout.source.dimension",
+        code="evidence.breakout_unavailable",
     ),
     ("cluster", "daily_asof"): R(
         "from_unit_panel(cluster=...) is unavailable on a per-day panel",

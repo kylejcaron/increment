@@ -1056,8 +1056,8 @@ bound is not supplied by this construction.
   `readout.metric.quantile_alternative` first; a relative margin raises
   `plan.observational.relative_margin` at construction), whereas
   `run_breakout()` raises
-  `facade.analysis.operation` and the day-axis methods
-  `facade.analysis.no_definitions` (source limits). See
+  `evidence.breakout_unavailable` and the day-axis methods
+  `evidence.grain_unavailable` (source limits). See
   [Quantiles and portable moments](quantile-metrics.md#quantiles-and-portable-moments).
   `Analysis.planning_baseline` of a quantile metric still reads the control
   arm's per-unit values, since a planning baseline estimates no effect.

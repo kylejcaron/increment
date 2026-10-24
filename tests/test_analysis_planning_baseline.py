@@ -96,7 +96,7 @@ class TestPlanningBaselineOnDataframeRoutes:
         )
         with pytest.raises(CapabilityError) as raised:
             analysis.planning_baseline("revenue")
-        assert raised.value.code == "source.frame.grain"
+        assert raised.value.code == "evidence.grain_unavailable"
 
     def test_quantile_metric_from_control_arm_values(self):
         frame = _unit_summary_frame()
@@ -158,8 +158,8 @@ class TestPlanningBaselineOnDataframeRoutes:
             assert baseline.mean == pytest.approx(float(control.mean()), rel=1e-12)
             with pytest.raises(CapabilityError) as raised:
                 analysis.trigger_rates()
-            assert raised.value.code == "facade.analysis.operation"
-            assert raised.value.context["operation"] == "triggered_counts"
+            assert raised.value.code == "evidence.operation_unavailable"
+            assert raised.value.context["requested"] == "triggered_counts"
 
     def test_cuped_rho_derived_from_a_declared_covariate_on_unit_summary(self):
         """cuped_rho must be derived on the dataframe route the same way
@@ -2090,7 +2090,7 @@ class TestPlanningBaselineOnMoments:
         assert baseline.mean == pytest.approx(float(control.mean()), rel=1e-12)
         with pytest.raises(CapabilityError) as raised:
             adopted.trigger_rates()
-        assert raised.value.code == "facade.analysis.operation"
+        assert raised.value.code == "evidence.operation_unavailable"
 
     def test_from_moments_refuses_a_quantile_metric_by_source(self, tmp_path):
         direct = Analysis.from_unit_summary(

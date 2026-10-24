@@ -30,10 +30,9 @@ def _assert_operation_refusal(
 ) -> None:
     """Required operation fields and transport preserve the refusal contract."""
     assert type(error) is CapabilityError
-    assert error.code == "source.native.operation"
+    assert error.code == "evidence.operation_unavailable"
     assert error.context["route"]
-    assert error.context["operation"] == operation
-    assert error.context["request"] == request
+    assert error.context["requested"] == operation
     assert error.context["offered"] == offered
     for copied in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):
         assert type(copied) is CapabilityError

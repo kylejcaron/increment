@@ -79,7 +79,7 @@ _TRIGGER_AUXILIARY_OUTCOMES: list[ConsumerExpectation] = []
 for _key, _operation, _evidence in _TRIGGER_READS:
     if _key in {"breakout", "factor", "cate"}:
         _artifact_code = (
-            "facade.analysis.operation" if _key == "factor" else "artifact.extension.missing"
+            "evidence.operation_unavailable" if _key == "factor" else "artifact.extension.missing"
         )
         _artifact_condition = (
             "randomized estimate_cate(interact=[]) with explicit trigger extensions"
@@ -154,7 +154,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "dashboard group operation is not implemented by the artifact facade",
                     "refused",
                     _evidence,
-                    codes=("facade.analysis.operation",),
+                    codes=("evidence.operation_unavailable",),
                     reason="Artifact-backed facade does not expose dashboard grouping.",
                 ),
             )
@@ -177,7 +177,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "artifact-backed facade has no raw allocation event stream",
                     "refused",
                     "tests.test_analysis_trigger::test_triggered_factor_group_and_allocation_preserve_population",
-                    codes=("facade.analysis.operation",),
+                    codes=("evidence.operation_unavailable",),
                     reason="Artifact-backed facade does not retain raw allocation events.",
                 ),
                 _expectation(
@@ -187,7 +187,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "moments source contains no raw allocation event stream",
                     "refused",
                     "tests.test_allocation_history::test_allocation_history_refuses_a_seam_family_instance",
-                    codes=("facade.analysis.operation",),
+                    codes=("evidence.operation_unavailable",),
                     reason="Moments-backed facade does not retain raw allocation events.",
                 ),
                 *(
@@ -198,7 +198,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                         "source has no retained raw exposure-event stream for daily allocation history",
                         "refused",
                         "tests.test_allocation_history::test_allocation_history_refuses_non_native_ingresses",
-                        codes=("facade.analysis.operation",),
+                        codes=("evidence.operation_unavailable",),
                         reason="This source retains no raw allocation events.",
                     )
                     for ingress in ("from_unit_summary", "from_unit_panel", "from_switchback_panel")
@@ -321,7 +321,7 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                         codes=(
                             ("facade.analysis.contrast_unavailable",)
                             if ingress == "from_switchback_panel"
-                            else ("facade.analysis.operation",)
+                            else ("evidence.operation_unavailable",)
                         ),
                         reason="This source cannot provide triggered sitewide evidence.",
                     )
@@ -407,7 +407,9 @@ for _key, _operation, _evidence in _TRIGGER_READS:
         _code = (
             "facade.analysis.contrast_unavailable"
             if _suffix == "switchback"
-            else "facade.analysis.operation"
+            else "evidence.breakout_unavailable"
+            if _key == "breakout"
+            else "evidence.operation_unavailable"
         )
         _TRIGGER_AUXILIARY_OUTCOMES.append(
             _expectation(
@@ -603,7 +605,7 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
                 "a moments-replayed source receives an export request for a sequential checkpoint",
                 "refused",
                 "tests.test_analysis_facade::test_moments_checkpoint_reexport_refused",
-                codes=("facade.analysis.operation",),
+                codes=("evidence.operation_unavailable",),
                 reason="A moments replay cannot be re-exported as a checkpoint.",
                 stage="read",
             ),

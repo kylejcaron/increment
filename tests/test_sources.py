@@ -56,9 +56,9 @@ def test_capability_error_names_the_fix():
     with pytest.raises(CapabilityError) as raised:
         source.moments(metric, grain="daily")
 
-    assert raised.value.code == "source.moments.grain"
-    assert raised.value.context["grain"] == "daily"
-    assert raised.value.context["offered"] == frozenset({"total"})
+    assert raised.value.code == "evidence.grain_unavailable"
+    assert raised.value.context["requested"] == "daily"
+    assert raised.value.context["offered"] == ("total",)
 
 
 def test_arm_source_context_construction_does_not_import_upward(monkeypatch):
@@ -113,8 +113,8 @@ def test_moments_source_names_covariate_refusal_distinctly():
     [
         (
             lambda source, metric: source.moments(metric, grain="daily"),
-            "source.moments.grain",
-            {"grain": "daily", "offered": frozenset({"total"})},
+            "evidence.grain_unavailable",
+            {"requested": "daily", "offered": ("total",)},
         ),
         (
             lambda source, metric: source.unit_frame(metric),
@@ -123,8 +123,8 @@ def test_moments_source_names_covariate_refusal_distinctly():
         ),
         (
             lambda source, metric: source.sql(),
-            "source.moments.sql",
-            {},
+            "evidence.operation_unavailable",
+            {"requested": "sql"},
         ),
     ],
 )

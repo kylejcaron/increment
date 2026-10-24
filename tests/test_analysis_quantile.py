@@ -304,7 +304,9 @@ def test_moments_only_surfaces_refuse_a_quantile_metric(tmp_path, method_name):
     an = _analysis(tmp_path, _events_table(n_per_arm=50))
     with pytest.raises(CapabilityError) as raised:
         getattr(an, method_name)()
-    expected = "source.native.operation" if method_name in sql_methods else "breakout.quantile"
+    expected = (
+        "evidence.operation_unavailable" if method_name in sql_methods else "breakout.quantile"
+    )
     assert raised.value.code == expected
 
 

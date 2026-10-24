@@ -139,12 +139,6 @@ SourceOperation = Literal[
     "artifact_experiment",
 ]
 
-SOURCE_OPERATION_UNSUPPORTED = _RefusalSpec(
-    "source.operation.unsupported",
-    _CapabilityError,
-    template="source {source!r} does not support operation {operation!r}; the requested operation is unavailable for this source.",
-)
-
 
 def require_operation[T](
     source: MomentSource,
@@ -155,10 +149,13 @@ def require_operation[T](
     if operation not in getattr(source, "operations", frozenset()) or not isinstance(
         source, protocol
     ):
-        _refuse(
-            SOURCE_OPERATION_UNSUPPORTED,
-            operation=operation,
-            source=type(source).__name__,
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            source,
+            operation,
+            tuple(sorted(getattr(source, "operations", ()))),
+            route="use a source that implements the requested operation",
         )
     return cast("T", source)
 
@@ -170,23 +167,6 @@ if TYPE_CHECKING:
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import AnalysisPlan, ExperimentMetric, Metric
 
-_MOMENTS_GRAIN = _RefusalSpec(
-    "source.moments.grain",
-    _CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-_MOMENTS_BREAKOUT = _RefusalSpec(
-    "source.moments.breakout",
-    _CapabilityError,
-    template="MomentsSource does not support breakout dimensions -- rows are precomputed at construction, over (experiment_id, metric, group_id) only.",
-)
 _MOMENTS_UNIT_GRAIN = _RefusalSpec(
     "source.moments.unit_grain",
     _CapabilityError,
@@ -287,32 +267,6 @@ def refuse_quantile_moments_export(
     )
 
 
-_MOMENTS_SQL = _RefusalSpec(
-    "source.moments.sql",
-    _CapabilityError,
-    template="sql() is not supported on a moments-backed source -- there is no query behind these rows, only precomputed arithmetic.",
-)
-_BREAKOUT_GRAIN = _RefusalSpec(
-    "source.breakout.grain",
-    _CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-_BREAKOUT_DIMENSION = _RefusalSpec(
-    "source.breakout.dimension",
-    _CapabilityError,
-    lambda *, dimension, requested: (
-        f"BreakoutMomentsSource is scoped to by=[{dimension!r}] only -- got "
-        f"by={list(requested)!r}. Construct a source scoped to the requested "
-        "dimension instead."
-    ),
-)
 _BREAKOUT_UNIT_GRAIN = _RefusalSpec(
     "source.breakout.unit_grain",
     _CapabilityError,
@@ -327,11 +281,6 @@ _BREAKOUT_CLUSTER_GRAIN = _RefusalSpec(
     "source.breakout.cluster_grain",
     _CapabilityError,
     template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
-)
-_BREAKOUT_SQL = _RefusalSpec(
-    "source.breakout.sql",
-    _CapabilityError,
-    template="sql() is not supported on BreakoutMomentsSource -- there is no query behind these rows, only precomputed arithmetic.",
 )
 _BREAKOUT_COMPLIANCE = _RefusalSpec(
     "source.breakout.compliance_summary",
@@ -425,26 +374,6 @@ _MOMENTS_COUNT_OUT_OF_RANGE = _RefusalSpec(
     "moments.count_out_of_range",
     _WireFormatError,
     template="moments field {field!r} has invalid count {value!r} for n={n}; require n >= 1 and 0 <= successes <= n when successes is present",
-)
-_READOUT_SOURCE_GRAIN = _RefusalSpec(
-    "readout.source.grain",
-    _CapabilityError,
-    lambda *, grain, offered: (
-        f"this source cannot produce grain {grain!r}; it offers {set(offered)!r}."
-        + (
-            " Rebuild with Analysis.from_unit_panel(..., date=...) for a day axis."
-            if grain in ("daily", "asof")
-            else ""
-        )
-    ),
-)
-_READOUT_SOURCE_DIMENSION = _RefusalSpec(
-    "readout.source.dimension",
-    _CapabilityError,
-    lambda *, dimension, declared, source: (
-        f"{source} does not support breakout dimension {dimension!r}; declared "
-        f"breakouts: {list(declared)!r}"
-    ),
 )
 _READOUT_METRIC_QUANTILE_GRAIN = _RefusalSpec(
     "readout.metric.quantile_grain",
@@ -1251,18 +1180,31 @@ def validate_readout_source(request: ReadoutRequest) -> None:
         request.view == "asof" and getattr(request.plan.inference, "registration", None) is not None
     )
     if grain not in capabilities and not checkpoint_asof:
-        _refuse(_READOUT_SOURCE_GRAIN, grain=grain, offered=capabilities)
+        from increment._evidence_refusals import GRAIN_UNAVAILABLE
+        from increment._evidence_refusals import refuse as _refuse_evidence
+
+        _refuse_evidence(
+            GRAIN_UNAVAILABLE,
+            constructor=request.source_name,
+            requested=grain,
+            offered=tuple(sorted(capabilities)),
+            route="use a source that retains the requested grain",
+        )
     by = request.by
     source_breakouts = tuple(getattr(request, "source_breakouts", ()))
 
     if by:
         missing = [name for name in by if name not in source_breakouts]
         if missing:
-            _refuse(
-                _READOUT_SOURCE_DIMENSION,
-                dimension=missing[0],
-                declared=source_breakouts,
-                source=getattr(request, "source_name", "source"),
+            from increment._evidence_refusals import BREAKOUT_UNAVAILABLE
+            from increment._evidence_refusals import refuse as _refuse_evidence
+
+            _refuse_evidence(
+                BREAKOUT_UNAVAILABLE,
+                constructor=request.source_name,
+                requested=tuple(by),
+                offered=source_breakouts,
+                route="use a source with the requested breakout dimensions",
             )
 
     declared_metrics = tuple(getattr(request, "metrics", ()))
@@ -1897,10 +1839,9 @@ class MomentsSource(SequentialSourceMixin):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, object]]:
-        if grain != "total":
-            _refuse(_MOMENTS_GRAIN, grain=grain, offered=self.capabilities)
-        if by:
-            _refuse(_MOMENTS_BREAKOUT)
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain, by=by)
         return [dict(r) for r in self._rows if r["metric"] == metric.name]
 
     @property
@@ -1935,7 +1876,9 @@ class MomentsSource(SequentialSourceMixin):
         """Select a scalar family by its method evidence, or a named legacy x family."""
         if method.variance_reduction == "cuped" and metric.name in self._scalar_evidence_metrics:
             if by:
-                _refuse(_MOMENTS_BREAKOUT)
+                from increment._evidence_refusals import require_evidence
+
+                require_evidence(self, by=tuple(by))
             evidence = self._evidence.get((metric.name, method_key(method)))
             if evidence is None:
                 from increment._analysis_config import refuse_missing_scalar_evidence
@@ -2009,7 +1952,11 @@ class MomentsSource(SequentialSourceMixin):
         )
 
     def compliance_dates(self) -> Sequence[object]:
-        _refuse(_MOMENTS_GRAIN, grain="asof", offered=self.capabilities)
+        from increment._evidence_refusals import refuse_grain
+
+        refuse_grain(
+            self, "asof", self.capabilities, route="use a source with as-of compliance dates"
+        )
 
     def compliance_summary(
         self,
@@ -2027,7 +1974,9 @@ class MomentsSource(SequentialSourceMixin):
 
             validate_compliance_completion(design, as_of=as_of)
         if as_of is not None:
-            _refuse(_MOMENTS_GRAIN, grain="asof", offered=self.capabilities)
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain="asof")
         if self._compliance is None:
             from increment._source_types import raise_legacy_compliance_state
 
@@ -2041,7 +1990,14 @@ class MomentsSource(SequentialSourceMixin):
         return self._compliance
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
-        _refuse(_MOMENTS_SQL)
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            self,
+            "sql",
+            tuple(sorted(self.operations)),
+            route="moments sources carry precomputed rows, not a query",
+        )
 
     def close(self) -> None:
         pass
@@ -2423,12 +2379,17 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         include_covariate: bool = False,
     ) -> list[dict[str, object]]:
         if grain != "total":
-            _refuse(_BREAKOUT_GRAIN, grain=grain, offered=self.capabilities)
-        if list(by) != [self._dimension]:
-            _refuse(
-                _BREAKOUT_DIMENSION,
-                dimension=self._dimension,
-                requested=by,
+            from increment._evidence_refusals import require_evidence
+
+            require_evidence(self, grain=grain)
+        if tuple(by) != (self._dimension,):
+            from increment._evidence_refusals import refuse_breakout
+
+            refuse_breakout(
+                self,
+                tuple(by),
+                self.breakouts,
+                route="request exactly the breakout dimension this source retains",
             )
         return [dict(r) for r in self._rows if r["metric"] == metric.name]
 
@@ -2504,7 +2465,14 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         _refuse(_BREAKOUT_COMPLIANCE)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
-        _refuse(_BREAKOUT_SQL)
+        from increment._evidence_refusals import refuse_operation
+
+        refuse_operation(
+            self,
+            "sql",
+            tuple(sorted(self.operations)),
+            route="breakout moments sources carry precomputed rows, not a query",
+        )
 
     def close(self) -> None:
         pass

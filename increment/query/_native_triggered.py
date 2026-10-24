@@ -28,7 +28,9 @@ class TriggeredPopulationSource:
 
     @property
     def evidence(self) -> EvidenceCapabilities:
-        evidence = self._source.evidence
+        from increment._source_types import declared_evidence
+
+        evidence = declared_evidence(self._source)
         scalar = evidence.scalar
         return replace(
             evidence,
@@ -42,6 +44,7 @@ class TriggeredPopulationSource:
             ),
             populations=frozenset({"triggered"}),
             sequential_capture="none",
+            sql_grains=frozenset(),
             scalar=replace(scalar, breakout_evidence=False) if scalar is not None else None,
         )
 
@@ -79,6 +82,9 @@ class TriggeredPopulationSource:
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, grain=grain, by=by)
         return self._source.moments(
             metric,
             grain=grain,
@@ -95,6 +101,9 @@ class TriggeredPopulationSource:
         *,
         by: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, by=by)
         return self._source.moments_for_method(metric, method, by=by, population="triggered")
 
     def fit_cuped_multicovariate(
@@ -157,6 +166,9 @@ class TriggeredPopulationSource:
         )
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
+        from increment._evidence_refusals import require_evidence
+
+        require_evidence(self, operation="sql")
         _refuse_operation(
             operation="sql",
             request={"grain": grain, "population": self._population},

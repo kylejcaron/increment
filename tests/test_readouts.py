@@ -1333,7 +1333,7 @@ def test_daily_refuses_fixed_winsorized_panel_values():
 
     with pytest.raises(CapabilityError) as raised:
         readouts.daily(source)
-    assert raised.value.code == "readout.metric.daily_winsorization"
+    assert raised.value.code == "evidence.operation_unavailable"
 
 
 def test_winsorization_refuses_direct_daily_readout():
@@ -1342,7 +1342,7 @@ def test_winsorization_refuses_direct_daily_readout():
     source = _winsorized_totals_source({"upper_value": 100.0})
     with pytest.raises(CapabilityError) as exc_info:
         readouts.daily(source)
-    assert exc_info.value.code == "readout.metric.daily_winsorization"
+    assert exc_info.value.code == "evidence.operation_unavailable"
 
 
 def test_daily_skips_inferential_plan_validation():
@@ -1387,7 +1387,7 @@ def test_daily_refuses_on_a_totals_source(unit_summary_frame):
     )
     with pytest.raises(CapabilityError) as exc_info:
         readouts.daily(src)
-    assert exc_info.value.code == "readout.source.grain"
+    assert exc_info.value.code == "evidence.grain_unavailable"
 
 
 def test_srm_not_applicable_on_a_non_randomized_design(unit_summary_frame):

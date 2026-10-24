@@ -219,7 +219,7 @@ def test_allocation_history_refuses_a_declared_cluster(tmp_path):
     analysis = _analysis(tmp_path, rows, cluster=True, suffix="_cluster")
     with pytest.raises(CapabilityError) as caught:
         analysis.allocation_history()
-    assert caught.value.code == "source.native.operation"
+    assert caught.value.code == "evidence.operation_unavailable"
 
 
 def test_allocation_history_refuses_a_seam_family_instance():
@@ -230,7 +230,7 @@ def test_allocation_history_refuses_a_seam_family_instance():
     analysis = make_analysis()
     with pytest.raises(CapabilityError) as caught:
         analysis.allocation_history()
-    assert caught.value.code == "facade.analysis.operation"
+    assert caught.value.code == "evidence.operation_unavailable"
     assert_refusal(
         "triggered_auxiliary_reads", "allocation_moments_refused", caught.value, stage="read"
     )
@@ -325,7 +325,7 @@ def test_allocation_history_refuses_non_native_ingresses(ingress):
     try:
         with pytest.raises(CapabilityError) as refused:
             source.allocation_history()
-        assert refused.value.code == "facade.analysis.operation"
+        assert refused.value.code == "evidence.operation_unavailable"
         assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
         source.close()

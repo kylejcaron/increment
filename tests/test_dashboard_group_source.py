@@ -473,7 +473,7 @@ def test_group_capture_rejects_unbound_checkpoints_before_data_access(kind, monk
         }
         if kind == "swapped_metric":
             checkpoints = {"mean": checkpoints["conversion"], "conversion": checkpoints["mean"]}
-            code = "source.native.operation"
+            code = "evidence.operation_unavailable"
         else:
             with _native_groups(sequential=True, extra_exclusions=True) as (_, other):
                 other.capture_sequential(finalized=True, as_of=date(2025, 1, 16))

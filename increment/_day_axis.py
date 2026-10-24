@@ -75,11 +75,6 @@ if TYPE_CHECKING:
 
 DayAxisGrain = Literal["daily", "asof"]
 
-_NO_DEFINITIONS = RefusalSpec(
-    "facade.analysis.no_definitions",
-    CapabilityError,
-    template="{method}() needs a native Analysis.from_definitions or Analysis.from_unit_panel instance -- this source has no panel day axis.",
-)
 _CLUSTERED_DAY_AXIS = RefusalSpec(
     "facade.analysis.clustered_day_axis",
     CapabilityError,
@@ -301,11 +296,25 @@ def validate_day_axis(
     if compliance_only:
         return
     if route in ("moments", "artifact") and src.shape != "unit_panel" and not checkpoint_asof:
-        refuse(_NO_DEFINITIONS, method=req.caller)
+        from increment._evidence_refusals import refuse_grain
+
+        refuse_grain(
+            src,
+            req.grain,
+            tuple(sorted(src.capabilities)),
+            route="use a source with the requested day axis",
+        )
     if route == "native" and (
         "day_source" not in src.operations or not isinstance(src, NativeViewSource)
     ):
-        refuse(_NO_DEFINITIONS, method=req.caller)
+        from increment._evidence_refusals import refuse_grain
+
+        refuse_grain(
+            src,
+            req.grain,
+            tuple(sorted(src.capabilities)),
+            route="use a source with the requested day axis",
+        )
     reject_winsorized_day_axis(list(req.metrics), req.caller)
     if route == "native":
         # Native routes reject quantiles; moments/artifacts retain the broader metric set.

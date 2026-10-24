@@ -162,7 +162,7 @@ order statistic needs, and two different requests reach it:
   export and replay on definitions, reopened artifacts, unit summaries and
   unit panels, including equivalent modeled results and retained state.
   `from_moments` preserves the checkpoint and catalog but cannot re-export
-  (`facade.analysis.operation`); switchback cannot declare this quantile catalog.
+  (`evidence.operation_unavailable`); switchback cannot declare this quantile catalog.
 - **Declaring a quantile over a cube that already exists** (for example a
   `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
   refuses when read, and the code depends on the request, measured on a real
@@ -176,9 +176,9 @@ order statistic needs, and two different requests reach it:
   | `Observational`, one-sided `alternative`, marginless guardrail, or absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
   | `Observational`, relative margin | `plan.observational.relative_margin`, at construction, before any read |
 
-  `run_breakout()` raises `facade.analysis.operation`, the day-axis methods
+  `run_breakout()` raises `evidence.breakout_unavailable`, the day-axis methods
   (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`) raise
-  `facade.analysis.no_definitions`, and `planning_baseline` raises
+  `evidence.grain_unavailable`, and `planning_baseline` raises
   `analysis.planning_baseline.quantile_source_unavailable`; these source limits
   fire before any estimator reads the cube, under either design. A clustered
   cube cannot be exported for a quantile in the first place
