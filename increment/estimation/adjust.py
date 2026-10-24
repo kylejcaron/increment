@@ -611,7 +611,9 @@ def _refuse_observational_quantiles(
     """An observational design has no quantile estimator: refuse before any source read."""
     for metric in metrics:
         if getattr(metric, "type", None) == "quantile":
-            refuse_observational_quantile(metric, source=source)
+            refuse_observational_quantile(
+                metric, authenticate=getattr(source, "validated_metric", None)
+            )
 
 
 def validate_readout_adjustment(request: ReadoutRequest) -> None:

@@ -403,13 +403,22 @@ def _winsorized_totals_source(winsorization: dict[str, object], *, design=None, 
 
 
 def _capture_winsor_state(native: IntoDataFrame):
-    from increment.estimation.winsor import _raw_state_from_source
+    from increment.estimation.winsor import raw_state_from_frame
+    from increment.readouts._metric_rows import winsor_identity
 
     source = _winsorized_totals_source(
         {"upper_percentile": 0.75},
         design=Randomized(control_group="control"),
     )
-    return _raw_state_from_source(source, source.context.metrics[0], native=native)
+    metric = source.context.metrics[0]
+    population, missingness = winsor_identity(source, metric)
+    return raw_state_from_frame(
+        native,
+        metric,
+        context=source.context,
+        population=population,
+        missingness=missingness,
+    )
 
 
 def test_winsor_raw_capture_canonicalizes_numeric_ids_and_preserves_arm_values():

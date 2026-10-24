@@ -1,9 +1,9 @@
 """Distribution-free quantile point + SE for the log-RR transport.
 
-Quantiles are not additive across units, so this module consumes raw per-unit
-values through ``MomentSource.unit_frame`` rather than moments. The SE uses the
-Woodruff (1952) inversion of a deterministic, distribution-free binomial
-order-statistic interval; its recovery simulation is documented in the tests.
+Quantiles are not additive across units, so the facade loads raw per-unit
+values and delegates to a plain-frame kernel. The SE uses the Woodruff
+(1952) inversion of a deterministic, distribution-free binomial order-statistic interval, whose
+recovery simulation is documented in the tests.
 
 Tied order statistics. The bracket ``[Y_(a), Y_(b)]`` itself covers the
 population quantile with probability at least ``1 - alpha`` for every
@@ -66,6 +66,7 @@ resolved exactly; an undecided large count rounds outward.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, Context, Decimal
 from fractions import Fraction
@@ -609,51 +610,17 @@ def _inverted_p_value(control: _SortedArm, treatment: _SortedArm, null: float) -
     return hi
 
 
-@overload
-def estimate_quantile_lift(
-    *args: Any,
-    _return_computation: Literal[False] = False,
-    **kwargs: Any,
-) -> list[LiftEstimate]: ...
-
-
-@overload
-def estimate_quantile_lift(
-    *args: Any,
-    _return_computation: Literal[True],
-    **kwargs: Any,
-) -> DecisionComputation[LiftEstimate]: ...
-def estimate_quantile_lift(
-    src: Any,
+def quantile_preflight(
     metric: Any,
-    control_group: str,
+    design: Any,
     *,
-    methods: list[Any] | None = None,
-    prior: Any = None,
-    alpha: float = 0.05,
-    inference: Any = None,
-    method_roles: Any = None,
-    unit_rows: Any = None,
-    _return_computation: bool = False,
-) -> list[LiftEstimate] | DecisionComputation[LiftEstimate]:
-    """Relative lift of metric.quantile, one estimate per (method x arm).
-
-    Consumes ``src.unit_frame(metric)`` (unit_id, group_id, y rows) -- or
-    ``unit_rows``, the same native frame when the caller already loaded it -- and
-    feeds the arms' joint ``log(Q̂_t / Q̂_c)`` (formed from the raw
-    quantiles) with each arm's Woodruff se into ``infer_lift``, so priors
-    and the closed-form interval behave identically to every other metric
-    type. Arms are independent under randomization, matching infer_lift's
-    ``sqrt(se_t^2 + se_c^2)`` combination.
-
-    Sequential quantiles require a quantile-specific process. The registered
-    mean and ratio likelihoods cannot use an order-statistic standard error.
-    An observational source refuses: the Woodruff interval assumes independent
-    randomized arms, so it would report a confounded contrast as a causal lift.
-    """
-    design = getattr(getattr(src, "context", None), "design", None)
+    methods: Sequence[Any] | None,
+    inference: Any,
+    authenticate: Any,
+) -> None:
+    """Refuse unsupported quantile requests without acquiring unit rows."""
     if getattr(design, "mechanism", None) == "observational":
-        refuse_observational_quantile(metric, source=src)
+        refuse_observational_quantile(metric, authenticate=authenticate)
     if inference is not None:
         from increment.sequential_state import sequential_refuse
 
@@ -662,18 +629,55 @@ def estimate_quantile_lift(
             "mean/ratio likelihoods do not certify quantiles; use fixed-horizon quantile "
             "inference (valid for one planned analysis, not repeated looks)",
         )
+    if methods:
+        from increment.compatibility import Unsupported, refuse_unsupported
+        from increment.estimation.engine import _validate_methods
+
+        _validate_methods(methods)
+        for method in methods:
+            if method.variance_reduction != "none":
+                refuse_unsupported(Unsupported("arm.metric.quantile_cuped"), metric=metric.name)
+
+
+@overload
+def quantile_lift_from_rows(
+    *args: Any, _return_computation: Literal[False] = False, **kwargs: Any
+) -> list[LiftEstimate]: ...
+
+
+@overload
+def quantile_lift_from_rows(
+    *args: Any, _return_computation: Literal[True], **kwargs: Any
+) -> DecisionComputation[LiftEstimate]: ...
+
+
+def quantile_lift_from_rows(
+    unit_rows: Any,
+    metric: Any,
+    control_group: str,
+    *,
+    design: Any,
+    authenticate: Any = None,
+    methods: list[Any] | None = None,
+    prior: Any = None,
+    alpha: float = 0.05,
+    inference: Any = None,
+    method_roles: Any = None,
+    _return_computation: bool = False,
+) -> list[LiftEstimate] | DecisionComputation[LiftEstimate]:
+    """Compute quantile lift rows from already materialized unit data."""
     import narwhals as nw
 
-    from increment.estimation.engine import Method, _validate_methods
+    from increment.estimation.engine import Method
     from increment.estimation.inference import infer_lift
 
     methods = [Method(name="unadjusted")] if methods is None else methods
+    quantile_preflight(
+        metric, design, methods=methods, inference=inference, authenticate=authenticate
+    )
 
     def _frame() -> Any:
-        # Read (or adopt) the unit rows only after every request-shape refusal.
-        return nw.from_native(
-            src.unit_frame(metric) if unit_rows is None else unit_rows, eager_only=True
-        )
+        return nw.from_native(unit_rows, eager_only=True)
 
     if not methods:
         if not _return_computation:
@@ -696,17 +700,11 @@ def estimate_quantile_lift(
                 {"metric": metric.name, "group_id": group_id},
             )
         return DecisionComputation(results=(), evidence={}, failures=failures)
-    _validate_methods(methods)
     resolved_method_roles: dict[str, Literal["decision", "sensitivity"]] = dict(method_roles or {})
     if method_roles is None:
         from increment.estimation.engine import resolve_method_roles
 
         resolved_method_roles = resolve_method_roles(methods)
-    for m in methods:
-        if m.variance_reduction != "none":
-            from increment.compatibility import Unsupported, refuse_unsupported
-
-            refuse_unsupported(Unsupported("arm.metric.quantile_cuped"), metric=metric.name)
 
     frame = _frame()
     # Normalize group_id to str, matching the moments path's convention:
@@ -781,6 +779,69 @@ def estimate_quantile_lift(
             inference=inference,
         )
     return out
+
+
+@overload
+def estimate_quantile_lift(
+    *args: Any,
+    _return_computation: Literal[False] = False,
+    **kwargs: Any,
+) -> list[LiftEstimate]: ...
+
+
+@overload
+def estimate_quantile_lift(
+    *args: Any,
+    _return_computation: Literal[True],
+    **kwargs: Any,
+) -> DecisionComputation[LiftEstimate]: ...
+def estimate_quantile_lift(
+    src: Any,
+    metric: Any,
+    control_group: str,
+    *,
+    methods: list[Any] | None = None,
+    prior: Any = None,
+    alpha: float = 0.05,
+    inference: Any = None,
+    method_roles: Any = None,
+    unit_rows: Any = None,
+    _return_computation: bool = False,
+) -> list[LiftEstimate] | DecisionComputation[LiftEstimate]:
+    """Load unit rows after read-free checks, then estimate quantile lift."""
+    from increment.estimation.engine import Method
+
+    resolved_methods = [Method(name="unadjusted")] if methods is None else methods
+    design = getattr(getattr(src, "context", None), "design", None)
+    authenticate = getattr(src, "validated_metric", None)
+    quantile_preflight(
+        metric,
+        design,
+        methods=resolved_methods,
+        inference=inference,
+        authenticate=authenticate,
+    )
+    resolved_method_roles = method_roles
+    if resolved_methods and resolved_method_roles is None:
+        from increment.estimation.engine import resolve_method_roles
+
+        resolved_method_roles = resolve_method_roles(resolved_methods)
+    if not resolved_methods and not _return_computation:
+        return []
+    native = src.unit_frame(metric) if unit_rows is None else unit_rows
+    return quantile_lift_from_rows(
+        native,
+        metric,
+        control_group,
+        design=design,
+        authenticate=authenticate,
+        methods=resolved_methods,
+        prior=prior,
+        alpha=alpha,
+        inference=inference,
+        method_roles=resolved_method_roles,
+        _return_computation=_return_computation,
+    )
 
 
 def estimate_quantile_lift_computation(

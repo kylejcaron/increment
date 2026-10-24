@@ -13,7 +13,7 @@ from increment.estimation.engine import (
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.inference import LiftGuardError
-from increment.estimation.quantile import estimate_quantile_lift_computation
+from increment.estimation.quantile import quantile_lift_from_rows
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.readouts._common import _raise, _runtime_method_roles, _warn
@@ -548,16 +548,18 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
     if getattr(metric, "type", None) == "quantile":
         if methods == [] and retry != "family":
             return [], [], _merge_decision_computations([])
-        computation = estimate_quantile_lift_computation(
-            src,
+        computation = quantile_lift_from_rows(
+            evidence.unit_frame if isinstance(evidence, MetricEvidence) else evidence,
             metric,
             design.control_group,
+            design=design,
+            authenticate=getattr(src, "validated_metric", None),
             methods=methods,
             prior=config.prior,
             alpha=alpha_for,
             method_roles=method_roles,
             inference=inference,
-            unit_rows=evidence.unit_frame if isinstance(evidence, MetricEvidence) else evidence,
+            _return_computation=True,
         )
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
