@@ -12,10 +12,14 @@ magnitude n*|ref| instead of their own near-zero value.
 
 from __future__ import annotations
 
+import math
+
 import ibis
 import numpy as np
 import pyarrow as pa
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from increment import Method
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW, SLOTS
@@ -78,6 +82,132 @@ def _totals(con, units: dict[str, list], *, metric: str = "rps") -> ibis.Table:
         }
     )
     return con.create_table(f"totals_{metric}", table)
+
+
+def _property_units(
+    seed: int, n_units: int, partitions: int, offset: float, near_constant_den: bool, uptake: bool
+) -> dict[str, list]:
+    rng = np.random.default_rng(seed)
+    row = np.arange(n_units)
+    x_resid = rng.normal(size=n_units) * 3.0
+    y_resid = 0.4 * x_resid + rng.normal(size=n_units)
+    den_resid = (row % 5 - 2) * 1e-3 if near_constant_den else rng.uniform(-2.0, 2.0, n_units)
+    order = np.lexsort((rng.permutation(n_units), row % partitions))
+    treatment = row >= n_units // 2
+    return {
+        "unit_id": [f"u{i:04d}" for i in row[order]],
+        "group_id": ["treatment" if treatment[i] else "control" for i in row[order]],
+        "store": ["unused"] * n_units,
+        "y": (offset + y_resid)[order].tolist(),
+        "x": (offset + x_resid)[order].tolist(),
+        "y_den": (offset + 8.0 + den_resid)[order].tolist(),
+        "d": ((row % 3 == 0) & uptake)[order].astype(float).tolist(),
+    }
+
+
+def _property_totals(con, units: dict[str, list]) -> ibis.Table:
+    return con.create_table(
+        "property_totals",
+        pa.table(
+            {
+                "unit_id": units["unit_id"],
+                "experiment_id": ["exp"] * len(units["unit_id"]),
+                "group_id": units["group_id"],
+                "metric": ["rps"] * len(units["unit_id"]),
+                "y": units["y"],
+                "x": units["x"],
+                "y_den": units["y_den"],
+                "d": units["d"],
+            }
+        ),
+    )
+
+
+def _assert_emitted_slots_agree(frame_rows, sql_rows, units: dict[str, list]) -> None:
+    frame_by = {row["group_id"]: row for row in frame_rows}
+    sql_by = {row["group_id"]: row for row in sql_rows}
+    assert frame_by.keys() == sql_by.keys()
+    slot_values = {"y": "y", "x": "x", "den": "y_den"}
+    for group, frame_row in frame_by.items():
+        sql_row = sql_by[group]
+        assert frame_row["n"] == sql_row["n"], (group, "n")
+        for count in ("sum_d", "successes"):
+            if count in frame_row or count in sql_row:
+                assert frame_row.get(count) == sql_row.get(count), (group, count)
+        for slot, spec in SLOTS.items():
+            frame_value, sql_value = frame_row.get(slot), sql_row.get(slot)
+            assert (frame_value is None) == (sql_value is None), (group, slot)
+            if frame_value is None:
+                continue
+            if spec.kind == "ref":
+                assert math.isclose(frame_value, sql_value, rel_tol=1e-9, abs_tol=0.0), (
+                    group,
+                    slot,
+                    frame_value,
+                    sql_value,
+                )
+            elif spec.kind == "count":
+                assert frame_value == sql_value, (group, slot, frame_value, sql_value)
+            else:
+                scales = []
+                for reference_row in (frame_row, sql_row):
+                    scale = 0.0
+                    for index, row_group in enumerate(units["group_id"]):
+                        if row_group != group or (spec.mask == "d" and not units["d"][index]):
+                            continue
+                        term = 1.0
+                        for variable in spec.variables:
+                            value = units[slot_values[variable]][index]
+                            reference = reference_row[f"ref_{variable}"]
+                            term *= value - reference
+                        scale += abs(term)
+                    scales.append(scale)
+                scale = max(scales)
+                assert abs(frame_value - sql_value) <= 1e-9 * scale, (
+                    group,
+                    slot,
+                    frame_value,
+                    sql_value,
+                    scale,
+                )
+
+
+@example(seed=1, n_units=12, partitions=3, offset=1e9, near_constant_den=True, uptake=True)
+@pytest.mark.slow
+@settings(deadline=None)
+@given(
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+    n_units=st.integers(min_value=2, max_value=200),
+    partitions=st.integers(min_value=1, max_value=7),
+    offset=st.sampled_from((0.0, 1e9)),
+    near_constant_den=st.booleans(),
+    uptake=st.booleans(),
+)
+def test_frame_and_duckdb_emitters_agree(
+    seed, n_units, partitions, offset, near_constant_den, uptake
+):
+    units = _property_units(seed, n_units, partitions, offset, near_constant_den, uptake)
+    source = from_unit_summary(
+        _frame(units),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="rps",
+                type="ratio",
+                numerator="rev",
+                denominator="sessions",
+                decision_method=Method.cuped(
+                    covariates=CupedCovariate(name="pre_rev", kind="continuous")
+                ),
+            )
+        ],
+        uptake="took",
+    )
+    con = ibis.duckdb.connect()
+    sql_rows = con.to_pyarrow(group_summary(_property_totals(con, units))).to_pylist()
+    _assert_emitted_slots_agree(source.raw_moments, sql_rows, units)
 
 
 def _assert_rows_agree(
