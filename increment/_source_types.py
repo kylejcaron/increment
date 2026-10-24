@@ -879,19 +879,6 @@ def declared_evidence(source: object) -> EvidenceCapabilities:
     return _legacy_evidence_from_source(source)
 
 
-SourceRoute = Literal["artifact", "native", "moments", "panel"]
-
-
-def classify_source(src: MomentSource) -> SourceRoute:
-    """Route a source by its declared operations and shape."""
-    evidence = declared_evidence(src)
-    if "artifact_experiment" in evidence.operations:
-        return "artifact"
-    if "moments_source" not in evidence.operations:
-        return "panel" if evidence.shape == "unit_panel" else "moments"
-    return "native"
-
-
 def compliance_summary_series(
     src: MomentSource,
     design: Encouragement,

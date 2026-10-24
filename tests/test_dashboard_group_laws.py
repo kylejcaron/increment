@@ -45,6 +45,24 @@ def _cuped_native(tmp_path, *, sequential=False, predeclared=False):
         connection.disconnect()
 
 
+@pytest.mark.filterwarnings(
+    "ignore:fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.:DeprecationWarning"
+)
+def test_preparation_preserves_cuped_configs_on_unpinned_definitions(tmp_path):
+    from increment.dashboard import DashboardConfig, prepare_dashboard
+    from increment.errors import IncrementWarning
+
+    with _cuped_native(tmp_path) as (analysis, _):
+        with pytest.warns(IncrementWarning):
+            snapshot = prepare_dashboard(
+                analysis,
+                config=DashboardConfig(expected_allocation={"control": 1, "treatment": 1}),
+            )
+        assert len(snapshot.estimates) == 1
+        assert snapshot.estimates[0].metric == "revenue"
+        assert snapshot.estimates[0].method == "cuped"
+
+
 def test_fixed_snapshot_keeps_old_rows_headline_and_csv_after_live_correction():
     import pyarrow as pa
 

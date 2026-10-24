@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, cast, overload
 
 from increment._evidence_refusals import require_evidence
 from increment._evidence_types import (
+    BreakoutRoute,
     BreakoutSlice,
     BreakoutSlices,
     BreakoutSlicesRequest,
@@ -14,12 +16,14 @@ from increment._evidence_types import (
     ComplianceRequest,
     ComplianceSeriesRequest,
     DayAxisRequest,
+    DayAxisRoute,
     DayAxisRows,
+    EvidenceScope,
 )
 from increment._source_types import (
     ComplianceSummary,
-    classify_source,
     compliance_summary_series,
+    declared_evidence,
     validate_compliance_source_match,
 )
 from increment.semantics.models import RetentionMetric
@@ -35,14 +39,57 @@ class DayAxisSlice:
     source_name: str | None
 
 
-def _route(src: MomentSource) -> Literal["artifact", "moments", "native"]:
-    route = classify_source(src)
-    return "moments" if route == "panel" else route
+ARTIFACT_ROUTE = "artifact"
+NATIVE_ROUTE = "native"
+MOMENTS_ROUTE = "moments"
+PANEL_ROUTE = "panel"
+UNSUPPORTED_ROUTE = "unsupported"
+SourceRoute = Literal["artifact", "native", "moments", "panel"]
 
 
-def breakout_route(src: MomentSource) -> Literal["artifact", "native", "panel", "unsupported"]:
-    route = classify_source(src)
-    return "unsupported" if route == "moments" else route
+def source_route(src: MomentSource) -> SourceRoute:
+    evidence = declared_evidence(src)
+    if "artifact_experiment" in evidence.operations:
+        return ARTIFACT_ROUTE
+    if "moments_source" not in evidence.operations:
+        return PANEL_ROUTE if evidence.shape == "unit_panel" else MOMENTS_ROUTE
+    return NATIVE_ROUTE
+
+
+def day_axis_route(src: MomentSource) -> DayAxisRoute:
+    route = source_route(src)
+    return MOMENTS_ROUTE if route == PANEL_ROUTE else route
+
+
+def is_artifact_route(src: MomentSource) -> bool:
+    return source_route(src) == ARTIFACT_ROUTE
+
+
+def breakout_route(src: MomentSource) -> BreakoutRoute:
+    route = source_route(src)
+    return UNSUPPORTED_ROUTE if route == MOMENTS_ROUTE else route
+
+
+@contextmanager
+def evidence_scope(src: MomentSource, scope: EvidenceScope) -> Iterator[MomentSource]:
+    """Pin the requested source view and reduction lifetime for one readout."""
+    from increment._source_operations import ReadoutExecutionOperation, ReadoutSnapshotOperation
+
+    with ExitStack() as stack:
+        scoped = src
+        if scope.snapshot and isinstance(scoped, ReadoutSnapshotOperation):
+            scoped = stack.enter_context(
+                scoped.readout_snapshot(
+                    metrics=scope.metrics,
+                    population=scope.population,
+                    include_breakouts=scope.include_breakouts or bool(scope.breakouts),
+                    configs=scope.configs,
+                    uptake_facts=scope.uptake_facts,
+                )
+            )
+        if scope.execution and isinstance(scoped, ReadoutExecutionOperation):
+            stack.enter_context(scoped.readout_execution())
+        yield scoped
 
 
 @overload
@@ -72,7 +119,7 @@ def load_breakout_evidence(
         return BreakoutUnitRows(request.breakout, breakout_route(src), frame, dimension_in_frame)
 
     route = breakout_route(src)
-    if route == "artifact":
+    if route == ARTIFACT_ROUTE:
         definitions = request.breakout_definitions
         if not definitions:
             from increment.semantics.models import Breakout
@@ -91,9 +138,9 @@ def load_breakout_evidence(
             BreakoutSlice(identity, scoped, None, scoped.source_name)
             for identity, scoped in zip(request.breakouts, sources, strict=True)
         )
-    elif route == "panel":
+    elif route == PANEL_ROUTE:
         slices = tuple(BreakoutSlice(identity, src, None, None) for identity in request.breakouts)
-    elif route == "native":
+    elif route == NATIVE_ROUTE:
         if "breakout_sources" not in src.operations:
             from increment._evidence_refusals import refuse_breakout
 
@@ -305,8 +352,8 @@ def load_day_axis_rows(src: MomentSource, request: DayAxisRequest) -> DayAxisRow
         grain=request.grain,
         by=request.by or ((request.dimension,) if request.dimension is not None else ()),
     )
-    route = _route(src)
-    if route == "native" and (
+    route = day_axis_route(src)
+    if route == NATIVE_ROUTE and (
         request.experiment is not None
         or request.caller in ("run_daily_lift", "run_asof_lift")
         or request.dimension is not None
@@ -319,7 +366,7 @@ def load_day_axis_rows(src: MomentSource, request: DayAxisRequest) -> DayAxisRow
             metrics=list(request.metrics), population=request.population
         )
         evidence = _NativeDayAxis(day_source, request.experiment)
-    elif route == "artifact":
+    elif route == ARTIFACT_ROUTE:
         source: Any = src
         if request.population == "triggered":
             from increment._source_operations import TriggeredPopulationOperation
@@ -333,7 +380,7 @@ def load_day_axis_rows(src: MomentSource, request: DayAxisRequest) -> DayAxisRow
             from increment._source_operations import TriggeredPopulationOperation
 
             require_operation(src, "triggered_source", TriggeredPopulationOperation)
-        evidence = _MomentsDayAxis(src, validate_daily_readout=route != "native")
+        evidence = _MomentsDayAxis(src, validate_daily_readout=route != NATIVE_ROUTE)
     return DayAxisRows(evidence, route, evidence.slices(request))
 
 

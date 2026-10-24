@@ -18,11 +18,16 @@ from typing import TYPE_CHECKING, Literal
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset
-from increment._day_axis import _TRIGGER_UNSUPPORTED, _day_axis_source_route
+from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
+from increment.readouts._evidence import (
+    ARTIFACT_ROUTE,
+    NATIVE_ROUTE,
+    day_axis_route,
+)
 from increment.readouts._requests import _design_compliance_only, _validate_run_request
 from increment.sources import SourceContext, require_operation
 
@@ -36,7 +41,11 @@ if TYPE_CHECKING:
     from increment.semantics.models import Experiment, Metric
     from increment.sources import MomentSource, SourceOperation
 
-RouteName = Literal["artifact", "moments", "native"]
+RouteName = DayAxisRoute
+
+
+def _is_artifact_source(src: MomentSource) -> bool:
+    return day_axis_route(src) == ARTIFACT_ROUTE
 
 
 def _as_lift_estimates(rows: Sequence[LiftEstimate]) -> LiftEstimates:
@@ -124,7 +133,7 @@ def validate_whole_window(
     route: RouteName,
 ) -> None:
     """Validate native and empty seam requests before any moments are read."""
-    if route == "artifact" and req.metrics:
+    if route == ARTIFACT_ROUTE and req.metrics:
         _validate_run_request(
             src,
             decision_method=req.decision_method,
@@ -142,7 +151,9 @@ def validate_whole_window(
         src.context.trigger_name is None
         if registered
         else (
-            route not in ("native", "artifact") or experiment is None or experiment.trigger is None
+            route not in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+            or experiment is None
+            or experiment.trigger is None
         )
     )
     if req.population == "triggered" and triggered_unsupported:
@@ -154,9 +165,9 @@ def validate_whole_window(
             route=route,
             supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
-    if route != "native" and req.metrics:
+    if route != NATIVE_ROUTE and req.metrics:
         return
-    if route == "native" and req.value_scale:
+    if route == NATIVE_ROUTE and req.value_scale:
         _raise_readout("readout.randomized.value_scale")
     _validate_run_request(
         src,
@@ -165,7 +176,7 @@ def validate_whole_window(
         prior=req.prior,
         metrics=[m.name for m in req.metrics],
         estimands=req.estimands,
-        value_scale=req.value_scale if route != "native" else None,
+        value_scale=req.value_scale if route != NATIVE_ROUTE else None,
     )
 
 
@@ -192,7 +203,7 @@ class WholeWindowReadouts:
         self._arm_moments = arm_moments
 
     def run(self, req: WholeWindowRequest) -> LiftEstimates:
-        route = _day_axis_source_route(self._src)
+        route = day_axis_route(self._src)
         validate_whole_window(
             req,
             src=self._src,
@@ -216,7 +227,7 @@ class WholeWindowReadouts:
             )
             return _select_population(result, req.population)
         if (
-            route in ("native", "artifact")
+            route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
             and self._experiment is not None
             and self._experiment.trigger is not None
             and req.population in (None, "triggered")
@@ -241,7 +252,7 @@ class WholeWindowReadouts:
 
             return LiftEstimates()
         if (
-            route in ("native", "artifact")
+            route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
             and self._experiment is not None
             and self._experiment.trigger is not None
             and req.population in (None, "triggered")
@@ -261,7 +272,7 @@ class WholeWindowReadouts:
                         method="run",
                         experiment="<unknown>",
                         trigger=None,
-                        route=_day_axis_source_route(self._src),
+                        route=day_axis_route(self._src),
                         supported_sources=("from_definitions", "from_unit_day_artifact"),
                     )
                 source = self._readout_source(population="triggered")

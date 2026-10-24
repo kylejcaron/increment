@@ -52,10 +52,9 @@ from increment._day_axis import (
     _CLUSTERED_DAY_AXIS,
     _TRIGGER_UNSUPPORTED,
     DayAxisReadouts,
-    _day_axis_source_route,
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
-from increment._evidence_types import DayAxisRequest
+from increment._evidence_types import DayAxisRequest, EvidenceScope
 from increment._literals import Backend, Correction, ValueScale
 from increment._source_operations import (
     AllocationHistoryOperation,
@@ -74,7 +73,6 @@ from increment._source_operations import (
     TriggeredPopulationOperation,
     UnitCountsOperation,
 )
-from increment._source_types import classify_source
 from increment._study import ParallelStudyEnvelope
 from increment._whole_window import (
     WholeWindowReadouts,
@@ -110,6 +108,13 @@ from increment.plan import (
     bind_automatic_sequential_plan,
     compile_decision_plan,
     with_unassigned_procedures,
+)
+from increment.readouts._evidence import (
+    NATIVE_ROUTE,
+    day_axis_route,
+    evidence_scope,
+    is_artifact_route,
+    source_route,
 )
 from increment.semantics.models import Breakout, Definitions, Experiment
 from increment.semantics.unit_cycle import UnitCycleReference
@@ -663,7 +668,7 @@ class Analysis:
                     route=(
                         "switchback"
                         if self._state.family == "contrast"
-                        else classify_source(self._src)
+                        else source_route(self._src)
                     ),
                     supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
@@ -1439,7 +1444,7 @@ class Analysis:
         an added metric outside the pin is refused rather than read from a later state.
         """
         self._require_arm_state("dashboard_snapshot")
-        src = _require_analysis_operation(
+        _require_analysis_operation(
             self._src,
             "readout_snapshot",
             ReadoutSnapshotOperation,
@@ -1448,8 +1453,13 @@ class Analysis:
                 "with a warehouse-backed source."
             ),
         )
-        with src.readout_snapshot(
-            metrics=metrics, population="assigned", include_breakouts=True
+        with evidence_scope(
+            self._src,
+            EvidenceScope(
+                metrics=tuple(metrics),
+                snapshot=True,
+                include_breakouts=True,
+            ),
         ) as pinned:
             return self._with_pinned_source(pinned, operation)
 
@@ -2133,7 +2143,7 @@ class Analysis:
         from increment.query.native_contract import NativeCoreSource
 
         source = self._src
-        if classify_source(source) == "artifact":
+        if is_artifact_route(source):
             if "triggered_counts" not in source.operations:
                 from increment._evidence_refusals import refuse_operation
 
@@ -2165,7 +2175,7 @@ class Analysis:
         experiment = getattr(self, "_experiment", None)
         if experiment is None or experiment.trigger is None:
             return cast("MomentSource", self._src)
-        if classify_source(self._src) == "artifact":
+        if is_artifact_route(self._src):
             return self._readout_source(population="triggered")
         triggered = _require_analysis_operation(
             self._src,
@@ -3567,7 +3577,7 @@ class Analysis:
         added: Sequence[Metric] = (),
     ) -> list[Metric]:
         # Only the native route accepts undeclared call-time Metric objects.
-        native = _day_axis_source_route(self._src) == "native"
+        native = day_axis_route(self._src) == NATIVE_ROUTE
         selected = select_metrics(
             self._metrics, metrics, caller=caller, allow_undeclared_objects=native
         )

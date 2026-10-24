@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from increment.semantics.models import Breakout, Metric
 
+BreakoutRoute = Literal["artifact", "native", "panel", "unsupported"]
+DayAxisRoute = Literal["artifact", "moments", "native"]
+
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -56,7 +60,7 @@ class BreakoutSlice:
 
 @dataclass(frozen=True, slots=True)
 class BreakoutSlices:
-    route: Literal["artifact", "native", "panel", "unsupported"]
+    route: BreakoutRoute
     slices: tuple[BreakoutSlice, ...]
 
 
@@ -72,7 +76,7 @@ class BreakoutUnitRowsRequest:
 @dataclass(frozen=True, slots=True)
 class BreakoutUnitRows:
     identity: BreakoutIdentity
-    route: Literal["artifact", "native", "panel", "unsupported"]
+    route: BreakoutRoute
     frame: Any
     unit_frame_has_dimension: bool
 
@@ -96,8 +100,23 @@ class DayAxisRows:
     """Acquired daily/as-of row slices and the source view used to read them."""
 
     source: Any
-    route: Literal["artifact", "moments", "native"]
+    route: DayAxisRoute
     slices: Iterator[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScope:
+    """The source views and readout lifetime required by one evidence consumer."""
+
+    metrics: tuple[Metric, ...] = ()
+    population: Literal["assigned", "triggered"] = "assigned"
+    grain: Literal["total", "daily", "asof"] | None = None
+    breakouts: tuple[BreakoutIdentity, ...] = ()
+    configs: tuple[Any, ...] | None = None
+    uptake_facts: tuple[str, ...] = ()
+    snapshot: bool = False
+    execution: bool = False
+    include_breakouts: bool = False
 
 
 @dataclass(frozen=True, slots=True)

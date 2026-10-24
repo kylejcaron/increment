@@ -301,6 +301,53 @@ def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=Non
     return analysis, _CountingSource(source), source.context.metrics[0]
 
 
+@pytest.mark.integration
+def test_analysis_run_shares_one_snapshot_and_execution_for_multiple_metrics(
+    seeded_pre_period_con, seeded_defs, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from increment import Method
+    from tests.analysis_factory import held_source
+
+    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
+    source = held_source(analysis)
+    source_type = type(source)
+    snapshot_method = "readout_snapshot"
+    execution_method = "readout_execution"
+    original_snapshot = getattr(source_type, snapshot_method)
+    original_execution = getattr(source_type, execution_method)
+    snapshots = 0
+    executions = 0
+
+    @contextmanager
+    def counted_snapshot(self, **kwargs):
+        nonlocal snapshots
+        snapshots += 1
+        with original_snapshot(self, **kwargs) as pinned:
+            yield pinned
+
+    @contextmanager
+    def counted_execution(self):
+        nonlocal executions
+        executions += 1
+        with original_execution(self):
+            yield
+
+    monkeypatch.setattr(source_type, "readout_snapshot", counted_snapshot)
+    monkeypatch.setattr(source_type, "readout_execution", counted_execution)
+    try:
+        rows = analysis.run(
+            metrics=["avg_session_duration", "purchase_rate"],
+            decision_method=Method(name="cuped", variance_reduction="cuped"),
+        )
+        assert {row.metric for row in rows} == {"avg_session_duration", "purchase_rate"}
+        assert snapshots == 1
+        assert executions == 1
+    finally:
+        analysis.close()
+
+
 def test_observational_readout_shares_frames_with_identity_digest():
     from collections import Counter
 

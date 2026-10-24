@@ -34,7 +34,7 @@ from increment.readouts._common import (
     _warn,
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
-from increment.readouts._evidence import _route, load_breakout_evidence
+from increment.readouts._evidence import day_axis_route, load_breakout_evidence
 from increment.readouts._metric_rows import _load_breakout_metric_rows
 from increment.readouts._passes import _append_lift_cell_failure
 from increment.sources import MomentSource
@@ -278,7 +278,7 @@ def _scoped_breakout_results(
     sequential_snapshot: Any = None,
     source_components: Sequence[Mapping[str, Any]] = (),
 ) -> BreakoutEstimates:
-    route = _route(src)
+    route = day_axis_route(src)
     from increment.readouts._multiplicity_scope import scoped_collection
 
     population_rows = [
