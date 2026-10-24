@@ -75,6 +75,7 @@ from increment.errors import refuse as _raise_refusal
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
 from increment.estimation.conversion_route import fcr_route_tail
+from increment.estimation.cuped import BreakoutCell, BreakoutIdentity
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
@@ -2327,7 +2328,8 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     unit_frame: Any | None = None,
     covariates: Sequence[Any] = (),
-    warehouse_fits: Mapping[str, Any] | None = None,
+    method_fit_answers: Sequence[Any] = (),
+    breakout_cell: Any | None = None,
     family_member: bool = False,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
@@ -2337,10 +2339,9 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
         method for method in methods or () if method.variance_reduction == "cuped_multicovariate"
     ]
     if linear_methods:
-        from increment.estimation.engine import estimate_cuped_linear_fit
+        from increment.estimation.cuped import prepare_multicovariate_fit
+        from increment.estimation.engine import estimate_cuped_linear, estimate_cuped_linear_fit
 
-        if warehouse_fits is None and unit_frame is None:
-            return None, "per-unit evidence is unavailable for this breakout cell"
         if unit_frame is not None:
             admitted = [
                 str(row["group_id"]) for row in summary if str(row["metric"]) == metric.name
@@ -2390,12 +2391,14 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                         advisories=bundle.advisories,
                     )
                 else:
-                    warehouse_fit = (
-                        None if warehouse_fits is None else warehouse_fits.get(method.name)
+                    prepared = prepare_multicovariate_fit(
+                        method, method_fit_answers, cell=breakout_cell
                     )
-                    if isinstance(warehouse_fit, CodedError):
-                        raise warehouse_fit
-                    if warehouse_fit is not None:
+                    if prepared.failure is not None:
+                        raise prepared.failure
+                    if prepared.origin in {"warehouse", "retained_fitted"}:
+                        warehouse_fit = prepared.envelope
+                        assert warehouse_fit is not None
                         bundle = estimate_cuped_linear_fit(
                             metric,
                             warehouse_fit,
@@ -2407,9 +2410,22 @@ def _estimate_lift_computation_or_reason(  # noqa: PLR0913, PLR0915
                             alternative=alternative,
                             prior=prior,
                         )
-                    else:
-                        from increment.estimation.engine import estimate_cuped_linear
+                    elif prepared.origin == "retained_categorical":
+                        from increment.estimation.engine import estimate_cuped_linear_cells
 
+                        bundle = estimate_cuped_linear_cells(
+                            metric,
+                            prepared.cells,
+                            control_group=control_group,
+                            method=method,
+                            method_role=role,
+                            alpha=alpha,
+                            alternative=alternative,
+                            prior=prior,
+                        )
+                    else:
+                        if unit_frame is None:
+                            return None, "per-unit evidence is unavailable for this breakout cell"
                         bundle = estimate_cuped_linear(
                             metric,
                             unit_frame,
@@ -3495,18 +3511,17 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         else None
                     ),
                     covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
-                    warehouse_fits=(
-                        {
-                            method.name: cast(Any, metric_evidence).warehouse_breakout_fit_for(
-                                method,
-                                dimension=context.dimension,
-                                dimension_value=context.segment_value,
-                            )
-                            for method in method_group
-                        }
+                    method_fit_answers=(
+                        cast(Any, metric_evidence).method_fit_answers
                         if metric_evidence is not None
-                        and hasattr(metric_evidence, "warehouse_breakout_fit_for")
-                        else None
+                        else ()
+                    ),
+                    breakout_cell=BreakoutCell(
+                        breakout=BreakoutIdentity(context.dimension, context.source),
+                        value=None
+                        if context.segment_value == "__null__"
+                        else context.segment_value,
+                        is_null=context.segment_value == "__null__",
                     ),
                     family_member=context.family_member,
                 )

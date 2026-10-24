@@ -570,6 +570,7 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
     if isinstance(evidence, MetricEvidence) and any(
         method.variance_reduction == "cuped_multicovariate" for method in methods
     ):
+        from increment.estimation.cuped import prepare_multicovariate_fit
         from increment.estimation.engine import (
             _cuped_linear_unavailable_row,
             estimate_cuped_linear,
@@ -642,57 +643,61 @@ def _estimate_available_pass(  # noqa: PLR0913, PLR0915
                         else {},
                         advisories=cached_bundle.advisories,
                     )
-                elif (warehouse_fit := evidence.warehouse_fit_for(method)) is not None:
-                    linear = estimate_cuped_linear_fit(
-                        metric,
-                        warehouse_fit,
-                        arm_order=(
-                            design.control_group,
-                            *sorted(evidence.observed_arms - {design.control_group}),
-                        ),
-                        control_group=design.control_group,
-                        method=method,
-                        method_role=method_roles[method.name],
-                        alpha=alpha_for,
-                        alternative=test.alternative,
-                        null_abs=getattr(test, "null_abs", None),
-                        null_lift=getattr(test, "null_lift", 0.0),
-                        prior=config.prior,
-                    )
-                    linear_cache[cache_key] = (linear, None)
-                elif (retained := evidence.categorical_for(method)) is not None:
-                    linear = estimate_cuped_linear_cells(
-                        metric,
-                        retained.cells,
-                        control_group=design.control_group,
-                        method=method,
-                        method_role=method_roles[method.name],
-                        alpha=alpha_for,
-                        alternative=test.alternative,
-                        null_abs=getattr(test, "null_abs", None),
-                        null_lift=getattr(test, "null_lift", 0.0),
-                        prior=config.prior,
-                    )
-                    linear_cache[cache_key] = (linear, None)
                 else:
-                    method_frame, method_columns = _method_unit_frame(
-                        evidence, method, config.covariates
-                    )
-                    linear = estimate_cuped_linear(
-                        metric,
-                        method_frame,
-                        control_group=design.control_group,
-                        method=method,
-                        method_role=method_roles[method.name],
-                        covariate_columns=method_columns,
-                        covariates=method.covariates or config.covariates,
-                        alpha=alpha_for,
-                        alternative=test.alternative,
-                        null_abs=getattr(test, "null_abs", None),
-                        null_lift=getattr(test, "null_lift", 0.0),
-                        prior=config.prior,
-                    )
-                    linear_cache[cache_key] = (linear, None)
+                    prepared = prepare_multicovariate_fit(method, evidence.method_fit_answers)
+                    if prepared.failure is not None:
+                        raise prepared.failure
+                    if prepared.origin in {"warehouse", "retained_fitted"}:
+                        linear = estimate_cuped_linear_fit(
+                            metric,
+                            prepared.envelope,
+                            arm_order=(
+                                design.control_group,
+                                *sorted(evidence.observed_arms - {design.control_group}),
+                            ),
+                            control_group=design.control_group,
+                            method=method,
+                            method_role=method_roles[method.name],
+                            alpha=alpha_for,
+                            alternative=test.alternative,
+                            null_abs=getattr(test, "null_abs", None),
+                            null_lift=getattr(test, "null_lift", 0.0),
+                            prior=config.prior,
+                        )
+                        linear_cache[cache_key] = (linear, None)
+                    elif prepared.origin == "retained_categorical":
+                        linear = estimate_cuped_linear_cells(
+                            metric,
+                            prepared.cells,
+                            control_group=design.control_group,
+                            method=method,
+                            method_role=method_roles[method.name],
+                            alpha=alpha_for,
+                            alternative=test.alternative,
+                            null_abs=getattr(test, "null_abs", None),
+                            null_lift=getattr(test, "null_lift", 0.0),
+                            prior=config.prior,
+                        )
+                        linear_cache[cache_key] = (linear, None)
+                    else:
+                        method_frame, method_columns = _method_unit_frame(
+                            evidence, method, config.covariates
+                        )
+                        linear = estimate_cuped_linear(
+                            metric,
+                            method_frame,
+                            control_group=design.control_group,
+                            method=method,
+                            method_role=method_roles[method.name],
+                            covariate_columns=method_columns,
+                            covariates=method.covariates or config.covariates,
+                            alpha=alpha_for,
+                            alternative=test.alternative,
+                            null_abs=getattr(test, "null_abs", None),
+                            null_lift=getattr(test, "null_lift", 0.0),
+                            prior=config.prior,
+                        )
+                        linear_cache[cache_key] = (linear, None)
             except CodedError as exc:
                 if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
                     raise

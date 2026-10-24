@@ -40,6 +40,50 @@ class BreakoutIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class BreakoutCell:
+    """One requested cell within a declared breakout identity."""
+
+    breakout: BreakoutIdentity
+    value: object
+    is_null: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MethodFitRequest:
+    """Request method-specific CUPED evidence for a metric or breakout cell."""
+
+    metric: Metric
+    method: Any
+    control: str
+    arm_order: tuple[str, ...]
+    population: Literal["assigned", "triggered"]
+    cell: BreakoutCell | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MethodFitAnswer:
+    """Retained or warehouse method-fit evidence, or its coded acquisition failure."""
+
+    origin: Literal["warehouse", "retained_fitted", "retained_categorical", "unavailable"]
+    envelope: Any | None = None
+    cells: Any | None = None
+    failure: CodedError | None = None
+    fit_identity: tuple[object, ...] = ()
+    evidence_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMulticovariateFit:
+    """Selected retained, warehouse, or local input for a mixed-CUPED fit."""
+
+    origin: Literal["warehouse", "retained_fitted", "retained_categorical", "local"]
+    envelope: Any | None = None
+    cells: Any | None = None
+    failure: CodedError | None = None
+    fit_identity: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class BreakoutSlicesRequest:
     """Acquire source views for a batch of declared breakout identities."""
 
@@ -161,35 +205,7 @@ class MetricEvidence:
     method_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
     method_refusals: tuple[tuple[str, RefusalSpec, Mapping[str, object]], ...] = ()
     method_cell_refusals: tuple[tuple[str, str, str, RefusalSpec, Mapping[str, object]], ...] = ()
-    categorical_evidence: tuple[tuple[str, Any], ...] = ()
-    warehouse_cuped_fits: tuple[tuple[str, Any], ...] = ()
-    warehouse_cuped_breakout_fits: tuple[tuple[str, str, str, Any, tuple[object, ...]], ...] = ()
-
-    def categorical_for(self, method: Any) -> Any | None:
-        """Retained joint categorical evidence for one multicovariate method."""
-        return next(
-            (evidence for name, evidence in self.categorical_evidence if name == method.name),
-            None,
-        )
-
-    def warehouse_fit_for(self, method: Any) -> Any | None:
-        """Return this request's finalized warehouse fit, if it was acquired."""
-        return next(
-            (fit for name, fit in self.warehouse_cuped_fits if name == method.name),
-            None,
-        )
-
-    def warehouse_breakout_fit_for(
-        self, method: Any, *, dimension: str, dimension_value: str
-    ) -> Any | None:
-        return next(
-            (
-                fit
-                for name, fit_dimension, value, fit, _identity in self.warehouse_cuped_breakout_fits
-                if name == method.name and fit_dimension == dimension and value == dimension_value
-            ),
-            None,
-        )
+    method_fit_answers: tuple[tuple[MethodFitRequest, MethodFitAnswer], ...] = ()
 
     def rows_for_method(
         self,
