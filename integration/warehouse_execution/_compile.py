@@ -459,6 +459,7 @@ def _captured_compile_cache_key(dialect):
         }
     return f"{dialect}-{fixture_cache_key(root, *source_paths, package_modules=package_modules)}"
 
+
 @cache
 def _captured_compile_data(dialect):
     from pathlib import Path

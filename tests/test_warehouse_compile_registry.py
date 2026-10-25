@@ -340,11 +340,7 @@ def test_cache_key_changes_when_a_registered_adjustment_changes(tmp_path):
     adjustment = tmp_path / "increment" / "estimation" / "_adjust" / "iptw.py"
     adjustment.parent.mkdir(parents=True)
     source = (
-        Path(__file__).resolve().parents[1]
-        / "increment"
-        / "estimation"
-        / "_adjust"
-        / "iptw.py"
+        Path(__file__).resolve().parents[1] / "increment" / "estimation" / "_adjust" / "iptw.py"
     )
     shutil.copy2(source, adjustment)
     (tmp_path / "uv.lock").write_text("")

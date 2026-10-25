@@ -10,7 +10,7 @@ from pathlib import Path
 
 DEPENDENCIES_PATH = Path("integration/warehouse_execution/_compile_dependencies.txt")
 
-_TRACE_CAPTURE = r'''
+_TRACE_CAPTURE = r"""
 import importlib.abc
 import json
 import sys
@@ -27,7 +27,7 @@ sys.meta_path.insert(0, IncrementImportRecorder())
 from integration.warehouse_execution._compile import _build_cached_captured_compile_data
 _build_cached_captured_compile_data(sys.argv[1])
 print(json.dumps(sorted(modules)))
-'''
+"""
 
 
 def trace(root: Path, dialect: str = "snowflake") -> list[str]:
@@ -42,11 +42,7 @@ def trace(root: Path, dialect: str = "snowflake") -> list[str]:
 
 
 def _read_modules(path: Path) -> list[str]:
-    return [
-        line
-        for line in path.read_text().splitlines()
-        if line and not line.startswith("#")
-    ]
+    return [line for line in path.read_text().splitlines() if line and not line.startswith("#")]
 
 
 def check(root: Path, dialect: str = "snowflake") -> list[str]:

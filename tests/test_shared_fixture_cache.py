@@ -44,6 +44,8 @@ def test_fixture_cache_key_changes_when_installed_distribution_version_changes(
     second = fixture_cache_key(tmp_path)
 
     assert first != second
+
+
 @pytest.mark.integration
 def test_key_ignores_a_package_file_outside_the_module_list(tmp_path):
     package = tmp_path / "increment"
@@ -88,8 +90,6 @@ def test_key_excludes_increment_but_tracks_third_party_versions(tmp_path, monkey
 
     assert first == increment_bumped
     assert third_party_bumped != increment_bumped
-
-
 
 
 def test_get_or_build_reloads_cached_fixture_without_rebuilding(tmp_path):
