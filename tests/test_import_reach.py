@@ -20,4 +20,16 @@ def test_absent_entry_point_is_reported_not_raised():
     assert row.modules is None and row.loaded == ()
 
 
+def test_missing_dependency_is_not_reported_as_an_absent_entry_point(tmp_path, monkeypatch):
+    package = tmp_path / "reach_broken_probe"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "import missing_reach_probe_dependency\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="missing_reach_probe_dependency"):
+        measure(["reach_broken_probe"])
+
+
 pytestmark = pytest.mark.integration

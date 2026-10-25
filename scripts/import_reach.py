@@ -42,7 +42,9 @@ name = sys.argv[1]
 started = time.perf_counter()
 try:
     importlib.import_module(name)
-except ModuleNotFoundError:
+except ModuleNotFoundError as exc:
+    if exc.name != name and not name.startswith(f"{exc.name}."):
+        raise
     print(json.dumps({"modules": None, "milliseconds": None, "loaded": []}))
 else:
     elapsed = (time.perf_counter() - started) * 1000
