@@ -42,6 +42,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Measure fast-test selection
+        if: matrix.python-version == '3.12'
+        run: uv run --no-sync python scripts/selection_probe.py --summary --no-timing
       - name: Retain full-suite JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
