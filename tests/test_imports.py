@@ -336,4 +336,34 @@ def test_resolving_analysis_leaves_warehouse_and_scipy_stats_unloaded():
     assert result.returncode == 0, result.stderr
 
 
+def test_root_import_loads_one_module():
+    code = (
+        "import increment\n"
+        "import sys\n"
+        "assert len([m for m in sys.modules if m.startswith('increment')]) == 1\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_evidence_types_import_is_light():
+    code = (
+        "import increment._evidence_types\n"
+        "import sys\n"
+        "assert len([m for m in sys.modules if m.startswith('increment')]) <= 16\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 pytestmark = pytest.mark.integration
