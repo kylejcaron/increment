@@ -19,7 +19,7 @@ modules = set()
 
 class IncrementImportRecorder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith("increment."):
+        if fullname == "increment" or fullname.startswith("increment."):
             modules.add(fullname)
         return None
 
