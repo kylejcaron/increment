@@ -5,10 +5,11 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from increment._evidence_types import ComplianceSummary, SourceContext
 from increment.query._native_refusals import _refuse_operation
 from increment.semantics.design import Encouragement
 from increment.semantics.models import Metric
-from increment.sources import ComplianceSummary, MomentSource, SourceContext, SourceOperation
+from increment.sources import EvidenceSource, SourceOperation
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -38,7 +39,11 @@ class TriggeredPopulationSource:
             grains=self.capabilities,
             breakouts=tuple(self.breakouts),
             shape=self.shape,
-            operations=self.operations,
+            operations=frozenset(
+                operation
+                for operation in evidence.operations
+                if operation in {"readout_snapshot", "readout_execution"}
+            ),
             count_grains=frozenset(
                 {"unit"} | ({"cluster"} if "cluster" in evidence.count_grains else set())
             ),
@@ -194,7 +199,7 @@ class TriggeredPopulationSource:
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
         configs: Sequence[ResolvedMetricConfig] | None = None,
-    ) -> Iterator[MomentSource]:
+    ) -> Iterator[EvidenceSource]:
         with self._source.readout_snapshot(
             metrics=metrics,
             population="assigned",

@@ -8,7 +8,7 @@ from increment._readout_request import ReadoutRequest, validate_request
 from increment.breakout.estimates import _refuse
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.readouts._evidence import load_day_axis_rows
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -36,7 +36,7 @@ def _validate_daily_inference(
 
 
 def daily(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     metrics: Sequence[str] | None = None,
     by: Sequence[str] = (),

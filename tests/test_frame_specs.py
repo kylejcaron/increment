@@ -42,6 +42,7 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
+from tests._frame_evidence_requests import _moments, _unit_rows
 from tests.capability_consumers_scalar import (
     IMPUTE_POOLED_MEAN,
     UNBOUNDED_RETENTION_SEQUENTIAL,
@@ -302,7 +303,7 @@ def test_unit_frame_exposes_winsorized_outcomes() -> None:
         metrics=[MetricSpec(name="revenue", winsorization={"upper_value": 10.0})],
     )
     metric = cast(MeanMetric, source.context.metrics[0])
-    units = nw.from_native(source.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(source, metric), eager_only=True)
     values = sorted(float(value) for value in units["y"].to_list())
     assert values == [1.0, 2.0, 10.0, 10.0]
 
@@ -347,7 +348,7 @@ def test_panel_total_winsorization_runs_after_unit_collapse() -> None:
         metrics=[MetricSpec(name="revenue", winsorization={"upper_value": 10.0})],
     )
     metric = cast(MeanMetric, source.context.metrics[0])
-    rows = {row["group_id"]: row for row in source.moments(metric)}
+    rows = {row["group_id"]: row for row in _moments(source, metric)}
     assert rows["control"]["ref_y"] == pytest.approx(10.0)
     assert rows["treatment"]["ref_y"] == pytest.approx(6.0)
     assert rows["control"]["winsor_n_upper"] == 1
@@ -784,7 +785,7 @@ def test_frame_source_moments_refuses_unsupported_grain_before_quantile() -> Non
     )
     metric = _metric(src, "revenue")
     with pytest.raises(CapabilityError) as raised:
-        src.moments(metric, grain="daily")
+        _moments(src, metric, grain="daily")
     assert raised.value.code == "evidence.grain_unavailable"
 
 
@@ -799,7 +800,7 @@ def test_frame_source_moments_refuses_unsupported_grain(grain: str) -> None:
     )
     metric = _metric(src, "revenue")
     with pytest.raises(CapabilityError) as exc_info:
-        src.moments(metric, grain=cast(Any, grain))
+        _moments(src, metric, grain=cast(Any, grain))
 
     assert exc_info.value.code == "evidence.grain_unavailable"
     assert exc_info.value.context["requested"] == grain
@@ -815,7 +816,7 @@ def test_frame_source_moments_refuses_quantile_metric() -> None:
     )
     metric = _metric(src, "revenue")
     with pytest.raises(CapabilityError) as raised:
-        src.moments(metric)
+        _moments(src, metric)
     assert raised.value.code == "source.frame.quantile_no_moments"
 
 
@@ -863,7 +864,7 @@ def test_panel_quantile_metric_refuses_asof_moments(panel_frame: pa.Table) -> No
     )
 
     with pytest.raises(CapabilityError) as exc:
-        src.moments(_metric(src, "revenue"), grain="asof")
+        _moments(src, _metric(src, "revenue"), grain="asof")
     assert exc.value.code == "frame.asof.quantile_unsupported"
     assert exc.value.context["metric"] == "revenue"
 
@@ -896,7 +897,7 @@ def test_panel_quantile_metric_resolves_total_moments_under_encouragement_design
         exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
-    rows_out = src.moments(metric, grain="total")
+    rows_out = _moments(src, metric, grain="total")
     assert rows_out
 
 
@@ -949,10 +950,10 @@ def test_panel_asof_winsorization_matches_total_grain() -> None:
     )
     metric = source.context.metrics[0]
 
-    total = {row["group_id"]: row for row in source.moments(metric, grain="total")}
+    total = {row["group_id"]: row for row in _moments(source, metric, grain="total")}
     asof = {
         row["group_id"]: row
-        for row in source.moments(metric, grain="asof")
+        for row in _moments(source, metric, grain="asof")
         if row["ds"] == date(2026, 1, 2)
     }
 
@@ -991,7 +992,7 @@ def test_panel_percentile_winsorization_is_date_local(grain) -> None:
     def at(src, day):
         return {
             row["group_id"]: row
-            for row in src.moments(src.context.metrics[0], grain=grain)
+            for row in _moments(src, src.context.metrics[0], grain=grain)
             if row["ds"] == day
         }
 
@@ -1004,7 +1005,7 @@ def test_panel_percentile_winsorization_is_date_local(grain) -> None:
             {k: before[group][k] for k in fields}
         )
     if grain == "asof":
-        total = {r["group_id"]: r for r in full.moments(full.context.metrics[0], grain="total")}
+        total = {r["group_id"]: r for r in _moments(full, full.context.metrics[0], grain="total")}
         final = at(full, days[1])
         assert final["treatment"]["winsor_upper_bound"] == pytest.approx(104.0)
         for group in ("control", "treatment"):
@@ -1046,7 +1047,7 @@ def test_panel_percentile_winsorization_constant_day_reports_no_cap(grain) -> No
     capped, uncapped = source(True), source(False)
 
     def rows_on(src, day):
-        return [r for r in src.moments(src.context.metrics[0], grain=grain) if r["ds"] == day]
+        return [r for r in _moments(src, src.context.metrics[0], grain=grain) if r["ds"] == day]
 
     constant_rows = rows_on(capped, days[0])
     varied_rows = rows_on(capped, days[1])
@@ -1095,7 +1096,7 @@ def test_panel_percentile_winsorization_refuses_collapsed_bound_that_clips(grain
     )
     metric = source.context.metrics[0]
     with pytest.raises(CapabilityError) as exc_info:
-        source.moments(metric, grain=grain)
+        _moments(source, metric, grain=grain)
     assert exc_info.value.code == "frame.winsorization.collapsed_bound"
     assert exc_info.value.context["metric"] == "revenue"
     assert exc_info.value.context["date"] == day
@@ -1136,18 +1137,18 @@ def test_panel_percentile_winsorization_collapsed_bound_isolated_to_its_metric(g
     )
     bad, good = _metric(source, "revenue"), _metric(source, "orders")
 
-    good_rows = source.moments(good, grain=grain)
+    good_rows = _moments(source, good, grain=grain)
     assert good_rows
 
     with pytest.raises(CapabilityError) as exc_info:
-        source.moments(bad, grain=grain)
+        _moments(source, bad, grain=grain)
     assert exc_info.value.code == "frame.winsorization.collapsed_bound"
 
     # The good metric's own cached batch survives the sibling's refusal ...
-    assert source.moments(good, grain=grain) == good_rows
+    assert _moments(source, good, grain=grain) == good_rows
     # ... and the bad metric's refusal is cached too, not dropped.
     with pytest.raises(CapabilityError) as exc_info_again:
-        source.moments(bad, grain=grain)
+        _moments(source, bad, grain=grain)
     assert exc_info_again.value.code == "frame.winsorization.collapsed_bound"
 
 
@@ -1164,12 +1165,12 @@ def _totals_source(metrics, **kwargs):
 
 def _frame_quantile_no_moments():
     src = _totals_source([MetricSpec(name="revenue", type="quantile", quantile=0.9)])
-    src.moments(_metric(src, "revenue"))
+    _moments(src, _metric(src, "revenue"))
 
 
 def _frame_breakouts_unsupported():
     src = _totals_source({"revenue": "mean"})
-    src.moments(_metric(src, "revenue"), by=["country"])
+    _moments(src, _metric(src, "revenue"), by=["country"])
 
 
 def _frame_sql_unsupported():
@@ -1199,7 +1200,7 @@ def _frame_multi_dimension():
         metrics={"revenue": "mean"},
         breakouts=["country", "plan"],
     )
-    src.moments(_metric(src, "revenue"), by=["country", "plan"])
+    _moments(src, _metric(src, "revenue"), by=["country", "plan"])
 
 
 def _frame_undeclared_breakout():
@@ -1212,7 +1213,7 @@ def _frame_undeclared_breakout():
         metrics={"revenue": "mean"},
         breakouts=["country"],
     )
-    src.moments(_metric(src, "revenue"), by=["plan"])
+    _moments(src, _metric(src, "revenue"), by=["plan"])
 
 
 def _frame_windowed_encouragement_total():
@@ -1236,7 +1237,7 @@ def _frame_windowed_encouragement_total():
         design=_encouragement_design(window_days=2),
         exposure_date="exposed_on",
     )
-    src.moments(_metric(src, "revenue"))
+    _moments(src, _metric(src, "revenue"))
 
 
 def _frame_retention_daily():
@@ -1257,7 +1258,7 @@ def _frame_retention_daily():
         metrics=[MetricSpec(name="d7", type="retention", value_column="m", threshold_days=1)],
         exposure_date="exposed_on",
     )
-    src.moments(_metric(src, "d7"), grain="daily")
+    _moments(src, _metric(src, "d7"), grain="daily")
 
 
 def _frame_quantile_daily():
@@ -1269,7 +1270,7 @@ def _frame_quantile_daily():
         control="control",
         metrics=[MetricSpec(name="revenue", type="quantile", quantile=0.9)],
     )
-    src.moments(_metric(src, "revenue"), grain="daily")
+    _moments(src, _metric(src, "revenue"), grain="daily")
 
 
 def _frame_unit_frame_panel():
@@ -1296,7 +1297,7 @@ def _frame_unit_frame_panel():
         metrics=[MetricSpec(name="d7", type="retention", value_column="m", threshold_days=1)],
         exposure_date="exposed_on",
     )
-    src.unit_frame(_metric(src, "d7"))
+    _unit_rows(src, _metric(src, "d7"))
 
 
 def _frame_panel_cluster_arg():
@@ -1641,7 +1642,7 @@ def _frame_asof_completed_windows_contradictory():
         metrics=[MetricSpec(name="d7", type="retention", value_column="m", threshold_days=1)],
         exposure_date="exposed_on",
     )
-    src.moments(_metric(src, "d7"), grain="asof", completed_windows_only=True)
+    _moments(src, _metric(src, "d7"), grain="asof", completed_windows_only=True)
 
 
 _FRAME_SPEC_REFUSAL_CASES = [
@@ -1804,7 +1805,7 @@ def test_summary_unit_frame_preserves_mixed_covariate_values_and_nulls():
     )
 
     table = nw.from_native(
-        source.unit_frame(_metric(source, "outcome"), covariates=["pre", "country"]),
+        _unit_rows(source, _metric(source, "outcome"), covariates=["pre", "country"]),
         eager_only=True,
     ).to_arrow()
     rows = {row["unit_id"]: row for row in table.to_pylist()}

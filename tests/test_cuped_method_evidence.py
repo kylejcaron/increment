@@ -84,6 +84,17 @@ def test_source_without_method_evidence_refuses_before_reading():
     )
 
     class AggregateOnlySource:
+        @property
+        def evidence(self):
+            from dataclasses import replace
+
+            declaration = source.evidence
+            assert declaration.scalar is not None
+            return replace(
+                declaration,
+                scalar=replace(declaration.scalar, method_evidence=False),
+            )
+
         def __getattr__(self, name):
             if name == "moments_for_method":
                 raise AttributeError(name)

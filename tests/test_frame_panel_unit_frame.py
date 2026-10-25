@@ -4,6 +4,7 @@ import pytest
 
 from increment import AdjustmentSet, Analysis, MetricSpec, Observational, Winsorization
 from increment.errors import CodedError
+from tests._frame_evidence_requests import _unit_rows
 from tests.analysis_factory import _native_source, lift_rows
 
 
@@ -40,8 +41,8 @@ def test_unit_panel_unit_frame_serves_constant_within_unit_covariate():
             control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
         ),
     )
-    table = _native_source(analysis).unit_frame(
-        _native_source(analysis).context.metrics[0], covariates=["tenure"]
+    table = _unit_rows(
+        _native_source(analysis), _native_source(analysis).context.metrics[0], covariates=["tenure"]
     )
     rows = (
         {r["unit_id"]: r["tenure"] for r in table.to_pylist()}
@@ -64,8 +65,10 @@ def test_unit_panel_unit_frame_refuses_covariate_varying_within_unit():
         ),
     )
     with pytest.raises(CodedError) as raised:
-        _native_source(analysis).unit_frame(
-            _native_source(analysis).context.metrics[0], covariates=["tenure"]
+        _unit_rows(
+            _native_source(analysis),
+            _native_source(analysis).context.metrics[0],
+            covariates=["tenure"],
         )
     assert raised.value.code == "frame.frame_panel.unit_covariate_varies"
 
@@ -146,7 +149,7 @@ def test_unit_panel_unit_frame_serves_all_null_covariates_as_missing_on_pandas()
         ),
     )
     source = _native_source(analysis)
-    table = source.unit_frame(source.context.metrics[0], covariates=["tenure", "region"])
+    table = _unit_rows(source, source.context.metrics[0], covariates=["tenure", "region"])
     served = {r["unit_id"]: r for r in _frame_records(table)}
     assert set(served) == {f"u{i}" for i in range(12)}
     assert _is_missing(served["u3"]["region"]) and served["u3"]["tenure"] == pytest.approx(103.0)
@@ -166,7 +169,7 @@ def test_unit_panel_unit_frame_still_refuses_windowed_metric():
         control="control",
     )
     with pytest.raises(CodedError) as raised:
-        _native_source(analysis).unit_frame(_native_source(analysis).context.metrics[0])
+        _unit_rows(_native_source(analysis), _native_source(analysis).context.metrics[0])
     assert raised.value.code == "source.frame.unit_frame_panel"
 
 
@@ -187,13 +190,13 @@ def test_unit_panel_unit_frame_serves_unwindowed_quantile_metric_matching_unit_s
     panel_rows = {
         r["unit_id"]: r["y"]
         for r in _frame_records(
-            _native_source(panel).unit_frame(_native_source(panel).context.metrics[0])
+            _unit_rows(_native_source(panel), _native_source(panel).context.metrics[0])
         )
     }
     summary_rows = {
         r["unit_id"]: r["y"]
         for r in _frame_records(
-            _native_source(summary).unit_frame(_native_source(summary).context.metrics[0])
+            _unit_rows(_native_source(summary), _native_source(summary).context.metrics[0])
         )
     }
     assert panel_rows == pytest.approx(summary_rows)
@@ -280,10 +283,10 @@ def test_unit_panel_unit_frame_applies_winsorization_matching_unit_summary():
 
     metric = _native_source(panel).context.metrics[0]
     panel_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_native_source(panel).unit_frame(metric))
+        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(panel), metric))
     }
     summary_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_native_source(summary).unit_frame(metric))
+        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(summary), metric))
     }
     assert panel_rows == pytest.approx(summary_rows)
     # The outlier must actually be clipped, not silently passed through raw.
@@ -319,10 +322,10 @@ def test_unit_panel_unit_frame_applies_missing_zero_matching_unit_summary():
 
     metric = _native_source(panel).context.metrics[0]
     panel_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_native_source(panel).unit_frame(metric))
+        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(panel), metric))
     }
     summary_rows = {
-        r["unit_id"]: r["y"] for r in _frame_records(_native_source(summary).unit_frame(metric))
+        r["unit_id"]: r["y"] for r in _frame_records(_unit_rows(_native_source(summary), metric))
     }
     assert panel_rows["u1"] == pytest.approx(0.0)
     assert panel_rows["u5"] == pytest.approx(0.0)
@@ -373,8 +376,10 @@ def test_unit_panel_unit_frame_refuses_covariate_null_on_some_rows_only():
         ),
     )
     with pytest.raises(CodedError) as raised:
-        _native_source(analysis).unit_frame(
-            _native_source(analysis).context.metrics[0], covariates=["tenure"]
+        _unit_rows(
+            _native_source(analysis),
+            _native_source(analysis).context.metrics[0],
+            covariates=["tenure"],
         )
     assert raised.value.code == "frame.frame_panel.unit_covariate_varies"
     units_ctx = raised.value.context["units"]

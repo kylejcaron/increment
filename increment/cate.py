@@ -25,12 +25,11 @@ import narwhals as nw
 import numpy as np
 
 from increment._evidence_refusals import require_evidence
-from increment._evidence_types import UnitRowsRequest
+from increment._evidence_types import UnitRowsRequest, unit_frame_covariate_columns
 from increment._identity import canonical_id_strings
 from increment._source_types import (
     declared_evidence,
     evidence_is_declared,
-    unit_frame_covariate_columns,
 )
 from increment.errors import (
     InvalidRequestError,
@@ -62,7 +61,7 @@ from increment.estimation.targeting import (
     validate_cate_arrays,
 )
 from increment.readouts._evidence import load_unit_rows
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from increment.semantics.design import Design, Observational
@@ -123,7 +122,7 @@ def _requested_columns(*groups: Sequence[Covariate]) -> list[str]:
     return list(seen)
 
 
-def _resolve_metric(source: MomentSource, metric: str) -> Metric:
+def _resolve_metric(source: EvidenceSource, metric: str) -> Metric:
     """The declared metric named *metric*, or a ValueError naming it."""
     declared = source.context.metrics
     for candidate in declared:
@@ -176,7 +175,7 @@ def _refuse_impure_clusters(cluster_ids: np.ndarray, d: np.ndarray, *, caller: s
 
 
 def _unit_design(
-    source: MomentSource,
+    source: EvidenceSource,
     metric: str,
     *,
     control: str,
@@ -348,7 +347,7 @@ def _score_plan(
 
 
 def estimate_cate(
-    source: MomentSource,
+    source: EvidenceSource,
     metric: str,
     *,
     control: str,
@@ -417,7 +416,7 @@ def estimate_cate(
 
 
 def validate_cate(
-    source: MomentSource,
+    source: EvidenceSource,
     metric: str,
     *,
     control: str,
@@ -513,7 +512,7 @@ def validate_cate(
 
 
 def targeting_rule(
-    source: MomentSource,
+    source: EvidenceSource,
     metric: str,
     *,
     control: str,
@@ -610,7 +609,7 @@ def targeting_rule(
 
 # Identification, selection and deployment controls remain explicit at the public boundary.
 def select_targeting_rule(  # noqa: PLR0913
-    source: MomentSource,
+    source: EvidenceSource,
     metric: str,
     *,
     control: str,

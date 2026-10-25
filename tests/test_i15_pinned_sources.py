@@ -1,8 +1,33 @@
 """Observable snapshot and persisted-row regressions, using in-memory DuckDB."""
 
+from typing import cast
+
 import pytest
 
+from increment.evidence import (
+    MomentRows,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
+
 pytestmark = pytest.mark.slow
+
+
+def _moments(source, metric, **kwargs):
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
+
+
+def _unit_rows(source, metric, **kwargs):
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
 
 
 def test_pinned_streams_preserve_calendar_numeric_structured_and_empty_values():
@@ -320,9 +345,9 @@ experiments:
             ),
         )
         metric = definitions.metrics[0]
-        live = native.moments(metric, include_covariate=True)
+        live = _moments(native, metric, include_covariate=True)
         with native.readout_snapshot(metrics=[metric], population="assigned") as pinned:
-            snapshot = pinned.moments(metric, include_covariate=True)
+            snapshot = _moments(pinned, metric, include_covariate=True)
         assert live, "the freshness-tail row must make the enrolled unit observable"
         assert snapshot == live
         assert [row["ref_x"] for row in snapshot] == [1.0]
@@ -435,9 +460,9 @@ experiments:
             ),
         )
         metric = definitions.metrics[0]
-        live = native.moments(metric)
+        live = _moments(native, metric)
         with native.readout_snapshot(metrics=[metric], population="assigned") as pinned:
-            snapshot = pinned.moments(metric)
+            snapshot = _moments(pinned, metric)
         assert [row["ref_y"] for row in live] == [1.0]
         assert snapshot == live, (
             "the freshness-tail event, dated well past observation_horizon, "
@@ -813,9 +838,9 @@ experiments:
                 design=experiment.resolved_design(),
             ),
         )
-        unpinned = nw.from_native(native.unit_frame(metric, covariates=["tenure_days"]))
+        unpinned = nw.from_native(_unit_rows(native, metric, covariates=("tenure_days",)))
         with native.readout_snapshot(metrics=[metric], population="assigned") as pinned:
-            pinned_frame = nw.from_native(pinned.unit_frame(metric, covariates=["tenure_days"]))
+            pinned_frame = nw.from_native(_unit_rows(pinned, metric, covariates=("tenure_days",)))
         assert pinned_frame.columns == unpinned.columns
         assert set(pinned_frame.get_column("unit_id").to_list()) == set(
             unpinned.get_column("unit_id").to_list()
@@ -964,11 +989,11 @@ def test_pinned_freshness_keeps_non_enrolled_joined_dimension_rows(filtered):
 
                 for metric in definitions.metrics:
                     ordinary = sorted(
-                        native.moments(metric),
+                        _moments(native, metric),
                         key=lambda row: (row["metric"], row["group_id"]),
                     )
                     snapshot = sorted(
-                        pinned.moments(metric),
+                        _moments(pinned, metric),
                         key=lambda row: (row["metric"], row["group_id"]),
                     )
                     assert ordinary

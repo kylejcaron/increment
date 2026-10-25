@@ -209,6 +209,7 @@ def test_triggered_fit_export_uses_source_warehouse_operation(monkeypatch):
     import increment._cuped_evidence as evidence_module
     from increment._cuped_evidence import portable_cuped_rows
     from increment.estimation.engine import Method
+    from increment.evidence import EvidenceCapabilities
     from increment.query._native_triggered import TriggeredPopulationSource
     from increment.semantics.models import CupedCovariate
 
@@ -217,6 +218,22 @@ def test_triggered_fit_export_uses_source_warehouse_operation(monkeypatch):
     class Source:
         breakouts = ()
         shape = None
+        evidence = EvidenceCapabilities(
+            kind="definitions",
+            grains=frozenset({"total"}),
+            breakouts=(),
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="warehouse",
+            compliance_axis="none",
+            count_grains=frozenset({"unit"}),
+            populations=frozenset({"assigned", "triggered"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
         context = SimpleNamespace(
             design=SimpleNamespace(control_group="control"),
             trigger_name="trigger",

@@ -10,9 +10,10 @@ import pytest
 from increment._source_operations import PanelSQLOperation, SummarySqlOperation
 from increment.analysis import Analysis
 from increment.errors import CapabilityError
+from increment.evidence import EvidenceCapabilities
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.sources import (
-    MomentSource,
+    EvidenceSource,
     SourceOperation,
     require_operation,
 )
@@ -27,10 +28,27 @@ if TYPE_CHECKING:
 
 
 def test_triggered_population_source_limits_grains_and_uses_triggered_counts() -> None:
+    evidence = EvidenceCapabilities(
+        kind="definitions",
+        grains=frozenset({"total", "daily", "asof"}),
+        breakouts=(),
+        shape=None,
+        operations=frozenset(),
+        unit_rows=False,
+        raw_outcomes=False,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset({"unit", "cluster", "triggered"}),
+        populations=frozenset({"assigned", "triggered"}),
+        sequential_capture="none",
+        scalar=None,
+        available_covariates=None,
+    )
     source = SimpleNamespace(
         capabilities=frozenset({"total", "daily", "asof"}),
         breakouts=(),
         shape=None,
+        evidence=evidence,
         _validate_trigger_capability=lambda *, operation: None,
         triggered_counts=lambda: (
             "cluster",
@@ -59,6 +77,22 @@ def test_triggered_population_source_uses_primary_counts_for_unclustered_units()
         capabilities=frozenset({"total", "daily", "asof"}),
         breakouts=(),
         shape=None,
+        evidence=EvidenceCapabilities(
+            kind="definitions",
+            grains=frozenset({"total", "daily", "asof"}),
+            breakouts=(),
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset({"unit", "triggered"}),
+            populations=frozenset({"assigned", "triggered"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        ),
         _validate_trigger_capability=lambda *, operation: None,
         triggered_counts=lambda: ("unit", {"control": 7, "treatment": 11}, {}),
     )
@@ -82,9 +116,8 @@ class _OperationsDescriptorSource:
 
 
 def test_from_source_does_not_invoke_operations_descriptor() -> None:
-    source = cast(MomentSource, _OperationsDescriptorSource())
-
-    Analysis._from_source(source)
+    source = _OperationsDescriptorSource()
+    Analysis._from_source(cast(EvidenceSource, source))
 
     assert _OperationsDescriptorSource.descriptor_reads == 0
     # The descriptor is genuinely armed: touching it raises and counts.
@@ -96,7 +129,7 @@ def test_from_source_does_not_invoke_operations_descriptor() -> None:
 def test_require_operation_rejects_declaration_drift() -> None:
     from tests.source_conformance import sql_totals_source
 
-    source: MomentSource = sql_totals_source()
+    source: EvidenceSource = sql_totals_source()
     assert require_operation(source, "summary_sql", SummarySqlOperation) is source
     with pytest.raises(CapabilityError) as raised:
         require_operation(source, "panel_sql", PanelSQLOperation)

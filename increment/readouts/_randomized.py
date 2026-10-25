@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._evidence_types import MetricEvidence, MetricEvidenceRequest
 from increment._policy_alpha import resolve_cell_alpha
@@ -24,7 +24,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._passes import _estimate_pass
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -108,12 +108,13 @@ def _partition_secondary_family(
 
 
 def _load_family_rows(
-    src: MomentSource,
+    src: EvidenceSource,
     secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
     design: Randomized,
     plan: CompiledDecisionPlan,
     *,
     by: Sequence[str],
+    population: Literal["assigned", "triggered"],
     scope_active: bool = False,
 ) -> dict[str, Any]:
     """Each secondary's rows, read once for the nominal pass and reused by the FCR pass. A
@@ -130,6 +131,7 @@ def _load_family_rows(
                 by=tuple(by),
                 methods=tuple(metric_methods),
                 covariates=tuple(config.covariates),
+                population=population,
             ),
             scope_active=scope_active,
         )
@@ -292,13 +294,14 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     ] + ordinary_rows, refused
 
 
-def _estimate_randomized_secondary_family(
-    src: MomentSource,
+def _estimate_randomized_secondary_family(  # noqa: PLR0913
+    src: EvidenceSource,
     secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
     design: Randomized,
     plan: CompiledDecisionPlan,
     *,
     by: Sequence[str],
+    population: Literal["assigned", "triggered"],
     effective_inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     advisory_seen: set[tuple[object, ...]],
     observed_arms: set[str],
@@ -317,7 +320,13 @@ def _estimate_randomized_secondary_family(
     # frame), reused by the FCR pass instead of re-querying the source.
     refused_cells: list[tuple[str, str, str, str]] = []
     loaded = _load_family_rows(
-        src, secondary_entries, design, plan, by=by, scope_active=scope_active
+        src,
+        secondary_entries,
+        design,
+        plan,
+        by=by,
+        population=population,
+        scope_active=scope_active,
     )
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
         metric_rows = loaded[metric.name]
@@ -480,13 +489,14 @@ def _estimate_randomized_secondary_family(
 
 
 def _estimate_randomized_non_secondary(  # noqa: PLR0913
-    src: MomentSource,
+    src: EvidenceSource,
     selected: Sequence[Metric],
     configs: Sequence[ResolvedMetricConfig],
     design: Randomized,
     plan: CompiledDecisionPlan,
     *,
     by: Sequence[str],
+    population: Literal["assigned", "triggered"],
     effective_inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     advisory_seen: set[tuple[object, ...]],
     observed_arms: set[str],
@@ -524,6 +534,7 @@ def _estimate_randomized_non_secondary(  # noqa: PLR0913
                 by=tuple(by),
                 methods=tuple(metric_methods),
                 covariates=tuple(config.covariates),
+                population=population,
             ),
             scope_active=scope_active,
         )

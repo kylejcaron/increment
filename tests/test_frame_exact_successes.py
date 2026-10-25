@@ -28,6 +28,7 @@ from increment.frame import (
     from_unit_summary,
 )
 from increment.semantics.design import Randomized
+from tests._frame_evidence_requests import _moments
 
 _DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
 _BASE = date(2025, 1, 1)
@@ -102,7 +103,7 @@ def test_total_grain_counts_declared_binary_outcomes_exactly(backend: str) -> No
         ("conv_w", {"control": 2, "treatment": 3}),
         ("ret", {"control": 3, "treatment": 3}),
     ):
-        rows = _by_arm(src.moments(_metric(src, name), grain="total"))
+        rows = _by_arm(_moments(src, _metric(src, name), grain="total"))
         assert {arm: row["successes"] for arm, row in rows.items()} == expected, name
         assert all(type(row["successes"]) is int for row in rows.values()), name
         assert all(type(row["n"]) is int and row["n"] == 4 for row in rows.values()), name
@@ -112,7 +113,7 @@ def test_total_grain_counts_declared_binary_outcomes_exactly(backend: str) -> No
 def test_undeclared_zero_one_mean_data_carries_no_count(backend: str) -> None:
     src = _panel_source(backend)
     for grain in ("total", "daily", "asof"):
-        rows = src.moments(_metric(src, "flag_mean"), grain=grain)
+        rows = _moments(src, _metric(src, "flag_mean"), grain=grain)
         assert rows
         assert all(row["successes"] is None for row in rows), grain
 
@@ -125,7 +126,7 @@ def test_daily_and_asof_counts_are_per_day_unit_totals(backend: str) -> None:
     def series(grain: str) -> dict[tuple[str, str], int | None]:
         return {
             (str(row["ds"]), row["group_id"]): row["successes"]
-            for row in src.moments(metric, grain=grain)
+            for row in _moments(src, metric, grain=grain)
         }
 
     days = [str(_BASE + timedelta(days=d)) for d in range(3)]
@@ -139,7 +140,7 @@ def test_daily_and_asof_counts_are_per_day_unit_totals(backend: str) -> None:
 
 def test_asof_retention_counts_the_ratcheted_binary_state() -> None:
     src = _panel_source("pyarrow")
-    rows = src.moments(_metric(src, "ret"), grain="asof")
+    rows = _moments(src, _metric(src, "ret"), grain="asof")
     counts = {(str(row["ds"]), row["group_id"]): row["successes"] for row in rows}
     days = [str(_BASE + timedelta(days=d)) for d in range(3)]
     assert [counts[(d, "control")] for d in days] == [1, 2, 3]
@@ -172,13 +173,13 @@ def _summary(backend: str, **overrides: Any) -> Any:
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_unit_summary_counts_conversions_and_not_zero_one_means(backend: str) -> None:
     src = _summary(backend)
-    bought = _by_arm(src.moments(_metric(src, "bought"), grain="total"))
+    bought = _by_arm(_moments(src, _metric(src, "bought"), grain="total"))
     assert {arm: row["successes"] for arm, row in bought.items()} == {
         "control": 2,
         "treatment": 3,
     }
     assert all(type(row["successes"]) is int for row in bought.values())
-    spend = src.moments(_metric(src, "spend"), grain="total")
+    spend = _moments(src, _metric(src, "spend"), grain="total")
     assert all(row["successes"] is None for row in spend)
 
 
@@ -199,7 +200,7 @@ def test_dropped_missing_rows_leave_the_count_in_the_population_of_n() -> None:
             metrics=[MetricSpec(name="bought", type="conversion", missing="drop")],
             design=_DESIGN,
         )
-    rows = _by_arm(src.moments(_metric(src, "bought"), grain="total"))
+    rows = _by_arm(_moments(src, _metric(src, "bought"), grain="total"))
     assert (rows["control"]["n"], rows["control"]["successes"]) == (2, 1)
     assert (rows["treatment"]["n"], rows["treatment"]["successes"]) == (2, 2)
 
@@ -222,7 +223,7 @@ def test_cluster_grain_never_reports_cluster_sums_as_unit_successes() -> None:
         metrics=[MetricSpec(name="bought", type="conversion")],
         design=_DESIGN,
     )
-    rows = src.moments(_metric(src, "bought"), grain="total")
+    rows = _moments(src, _metric(src, "bought"), grain="total")
     assert rows
     assert all(row["successes"] is None for row in rows)
 

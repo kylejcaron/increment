@@ -77,6 +77,7 @@ from increment.semantics.models import (
     RetentionMetric,
     Winsorization,
 )
+from tests._evidence_requests import _moments, _unit_counts, _unit_rows
 from tests._unit_boundary import backend_fixture
 from tests.semantics.test_unit_day_artifact import _manifest
 
@@ -220,7 +221,7 @@ def test_legacy_exclusion_context_refuses_before_unit_counts_backend_access(
     monkeypatch.setattr(snapshot, "read_manifest", lambda *args, **kwargs: legacy_manifest)
 
     with pytest.raises(ArtifactContractError) as refused:
-        ArtifactMomentSource.open(store, legacy_ref, expected_context=context).unit_counts()
+        _unit_counts(ArtifactMomentSource.open(store, legacy_ref, expected_context=context))
 
     assert refused.value.code == "artifact.context.legacy_exclusion_acknowledged"
     assert snapshot.calls == {"exposures": 0, "measure_stats": 0}
@@ -244,12 +245,12 @@ def test_artifact_reducer_uses_one_snapshot_handle_and_caches_relations(
         metrics=(MetricSpec(name="conversion", type="mean", value_column="orders"),),
     )
     metric = source.context.metrics[0]
-    total = source.moments(metric)
-    source.moments(metric, grain="daily")
-    source.moments(metric, grain="asof")
-    _artifact_rows_equal(source.moments(metric), total)
+    total = _moments(source, metric)
+    _moments(source, metric, grain="daily")
+    _moments(source, metric, grain="asof")
+    _artifact_rows_equal(_moments(source, metric), total)
     assert {row["group_id"]: row["n"] for row in total} == {"control": 1, "treatment": 1}
-    assert source.unit_counts() == {"control": 1, "treatment": 1}
+    assert _unit_counts(source) == {"control": 1, "treatment": 1}
     source.close()
     bad = ArtifactMomentSource.open(
         store,
@@ -287,7 +288,7 @@ def test_artifact_reader_rejects_inconsistent_base_row_count(
         metric = source.context.metrics[0]
         for _ in range(2):
             with pytest.raises(ArtifactContractError) as raised:
-                source.moments(metric)
+                _moments(source, metric)
             assert raised.value.code == "artifact.relation.digest_mismatch"
     finally:
         source.close()
@@ -840,7 +841,7 @@ def test_adopted_source_matches_builder_reduction_matrix(shape: str) -> None:
     metric = source.context.metrics[0]
     for grain in ("total", "daily", "asof"):
         _artifact_rows_equal(
-            source.moments(metric, grain=grain),
+            _moments(source, metric, grain=grain),
             fixture["expected"][grain],
         )
     source.close()
@@ -889,7 +890,7 @@ def test_adopted_avg_event_covariate_requires_cuped_extension() -> None:
     fixture = _adopted_artifact_fixture("avg_event")
     metric = fixture["source"].context.metrics[0]
     with pytest.raises(ArtifactContractError) as raised:
-        fixture["source"].moments(metric, include_covariate=True)
+        _moments(fixture["source"], metric, include_covariate=True)
     assert raised.value.code == "artifact.extension.missing"
     fixture["source"].close()
 
@@ -898,9 +899,9 @@ def test_adopted_avg_event_covariate_requires_cuped_extension() -> None:
 def test_completed_windows_gates_bounded_mean_and_retention_but_is_noop_for_unbounded() -> None:
     mean_fixture = _adopted_artifact_fixture("windowed_mean")
     mean_metric = mean_fixture["source"].context.metrics[0]
-    baseline = mean_fixture["source"].moments(mean_metric, grain="asof")
-    completed = mean_fixture["source"].moments(
-        mean_metric, grain="asof", completed_windows_only=True
+    baseline = _moments(mean_fixture["source"], mean_metric, grain="asof")
+    completed = _moments(
+        mean_fixture["source"], mean_metric, grain="asof", completed_windows_only=True
     )
     # A bounded no-uptake window completes after first_exposure_date +
     # window_days, as in builders.py's _completed_asof_rows. Days before a
@@ -923,18 +924,21 @@ def test_completed_windows_gates_bounded_mean_and_retention_but_is_noop_for_unbo
 
     unbounded_mean_fixture = _adopted_artifact_fixture("avg_event")
     unbounded_mean_metric = unbounded_mean_fixture["source"].context.metrics[0]
-    unbounded_baseline = unbounded_mean_fixture["source"].moments(
-        unbounded_mean_metric, grain="asof"
+    unbounded_baseline = _moments(
+        unbounded_mean_fixture["source"], unbounded_mean_metric, grain="asof"
     )
-    unbounded_completed = unbounded_mean_fixture["source"].moments(
-        unbounded_mean_metric, grain="asof", completed_windows_only=True
+    unbounded_completed = _moments(
+        unbounded_mean_fixture["source"],
+        unbounded_mean_metric,
+        grain="asof",
+        completed_windows_only=True,
     )
     _artifact_rows_equal(unbounded_completed, unbounded_baseline)
     unbounded_mean_fixture["source"].close()
     retention_fixture = _adopted_artifact_fixture("retention")
     retention_metric = retention_fixture["source"].context.metrics[0]
-    bounded = retention_fixture["source"].moments(
-        retention_metric, grain="asof", completed_windows_only=True
+    bounded = _moments(
+        retention_fixture["source"], retention_metric, grain="asof", completed_windows_only=True
     )
     expected = [
         ("2025-01-04", "control", 1, 1.0),
@@ -950,7 +954,8 @@ def test_completed_windows_gates_bounded_mean_and_retention_but_is_noop_for_unbo
     )
     mutated = retention_metric.model_copy(update={"threshold_days": 3})
     with pytest.raises(ArtifactContractError) as raised:
-        retention_fixture["source"].moments(
+        _moments(
+            retention_fixture["source"],
             mutated,
             grain="asof",
             completed_windows_only=True,
@@ -961,17 +966,20 @@ def test_completed_windows_gates_bounded_mean_and_retention_but_is_noop_for_unbo
     unbounded_fixture = _adopted_artifact_fixture("retention_unbounded")
     unbounded = unbounded_fixture["source"].context.metrics[0]
     _artifact_rows_equal(
-        unbounded_fixture["source"].moments(unbounded, grain="total"),
-        unbounded_fixture["source"].moments(unbounded, grain="total", completed_windows_only=True),
+        _moments(unbounded_fixture["source"], unbounded, grain="total"),
+        _moments(
+            unbounded_fixture["source"], unbounded, grain="total", completed_windows_only=True
+        ),
     )
     with pytest.raises(ArtifactContractError) as raised:
-        unbounded_fixture["source"].moments(unbounded, grain="daily")
+        _moments(unbounded_fixture["source"], unbounded, grain="daily")
     assert raised.value.code == "artifact.evidence.unavailable"
     with pytest.raises(ArtifactContractError) as raised:
-        unbounded_fixture["source"].moments(unbounded, grain="daily", completed_windows_only=True)
+        _moments(unbounded_fixture["source"], unbounded, grain="daily", completed_windows_only=True)
     assert raised.value.code == "artifact.evidence.unavailable"
     with pytest.raises(ArtifactContractError) as raised:
-        unbounded_fixture["source"].moments(
+        _moments(
+            unbounded_fixture["source"],
             unbounded,
             grain="asof",
             completed_windows_only=True,
@@ -986,7 +994,7 @@ def test_unsupported_grain_and_raw_sql_stay_capability_refusals() -> None:
     metric = source.context.metrics[0]
     source.capabilities = frozenset({"total"})
     with pytest.raises(CapabilityError) as raised:
-        source.moments(metric, grain="daily")
+        _moments(source, metric, grain="daily")
     assert raised.value.code == "evidence.grain_unavailable"
     with pytest.raises(CapabilityError) as raised:
         source.sql()
@@ -1020,9 +1028,11 @@ def test_simple_aggregation_mutation_refuses_before_data_read(shape, adapter, mo
                 patch.setattr(snapshot, "verify_relation", unexpected_read)
                 patch.setattr(snapshot, "execute", unexpected_read)
                 with pytest.raises(ArtifactContractError) as raised:
-                    source.moments(metric.model_copy(update={"aggregation": "sum"}), grain="daily")
+                    _moments(
+                        source, metric.model_copy(update={"aggregation": "sum"}), grain="daily"
+                    )
                 assert raised.value.code == "artifact.metric.binding_mismatch"
-        _artifact_rows_equal(source.moments(metric, grain="daily"), fixture["expected"]["daily"])
+        _artifact_rows_equal(_moments(source, metric, grain="daily"), fixture["expected"]["daily"])
     finally:
         source.close()
         fixture["source"].close()
@@ -1044,7 +1054,7 @@ def test_ratio_nested_window_mutation_refuses_before_reduction() -> None:
     for field, part in mutations:
         mutated = metric.model_copy(update={field: part})
         with pytest.raises(ArtifactContractError) as raised:
-            fixture["source"].moments(mutated)
+            _moments(fixture["source"], mutated)
         assert raised.value.code == "artifact.metric.binding_mismatch"
     fixture["source"].close()
 
@@ -1057,27 +1067,24 @@ def test_panel_materialization_keeps_trusted_ratio_context() -> None:
     # refusal, not crash, and must keep the manifest-derived context rather than
     # panel-synthesized metric semantics.
     with pytest.raises(CapabilityError) as raised:
-        source.unit_frame(ratio)
+        _unit_rows(source, ratio)
     assert raised.value.code == "source.frame.unit_frame_panel"
     assert source.context.metrics[0] is ratio
-    rows = source.moments(ratio)
+    rows = _moments(source, ratio)
     assert rows
     source.close()
 
 
 def test_unit_counts_answers_every_enrolled_unit_via_a_bounded_aggregate() -> None:
-    """`unit_counts()` is a per-group `group_by` count straight off
-    `exposures` -- every enrolled unit counts, regardless of whether that
-    unit's outcome window is itself observable yet. `cluster_counts()`
-    refuses on this no-extension reader: no cluster concept exists at
-    this layer (only the cluster_identity-extension-backed facade answers
-    a cluster-grain count)."""
+    """Unit counts cover enrollment; unclustered sources refuse cluster requests."""
+    from increment.evidence import CountsRequest, evidence_provider, request_evidence
+
     fixture = _adopted_artifact_fixture("windowed_mean")
     source = fixture["source"]
-    assert source.unit_counts() == {"control": 2, "treatment": 2}
+    assert _unit_counts(source) == {"control": 2, "treatment": 2}
     with pytest.raises(CapabilityError) as raised:
-        source.cluster_counts()
-    assert raised.value.code == "artifact.operation.unsupported"
+        request_evidence(evidence_provider(source), CountsRequest(kind="cluster"))
+    assert raised.value.code == "evidence.cluster_unavailable"
     source.close()
 
 
@@ -1162,7 +1169,7 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     assert experiment is not None
     context = artifact_context(loaded, experiment, "error")
     adopted = open_artifact(store, ref, expected_context=context)
-    baseline_max_ds = max(row["ds"] for row in adopted.moments(metric, grain="asof"))
+    baseline_max_ds = max(row["ds"] for row in _moments(adopted, metric, grain="asof"))
 
     # avg_session_duration reads session_end.duration_s, filtered to
     # platform=web; a NULL-valued late row is dropped by metric_events()
@@ -1188,7 +1195,7 @@ def test_published_event_horizon_matches_native_and_older_artifacts_still_read(
     # independently derived context still binds the late artifact.
     assert late_manifest.context.sha256 == context.sha256
     late_adopted = open_artifact(late_store, late_ref, expected_context=context)
-    late_max_ds = max(row["ds"] for row in late_adopted.moments(metric, grain="asof"))
+    late_max_ds = max(row["ds"] for row in _moments(late_adopted, metric, grain="asof"))
     native_asof = late_analysis.run_asof(metrics=[metric.name])
     assert late_max_ds == max(row.ds for row in native_asof)
     # The freshness-only change never moved the adopted spine: it stayed
@@ -1406,7 +1413,7 @@ def test_validate_stats_primary_key_is_coded(reader_snapshot, monkeypatch) -> No
     try:
         metric = source.context.metrics[0]
         with pytest.raises(CapabilityError) as raised:
-            source.moments(metric)
+            _moments(source, metric)
         assert raised.value.code == "artifact.relation.invalid"
         assert raised.value.context["check"] == "primary_key"
     finally:
@@ -1435,7 +1442,7 @@ def test_validate_stats_impossible_sum_is_coded(reader_snapshot, monkeypatch) ->
     )
     try:
         with pytest.raises(CapabilityError) as raised:
-            source.moments(source.context.metrics[0])
+            _moments(source, source.context.metrics[0])
         assert raised.value.code == "artifact.relation.invalid"
         assert raised.value.context["check"] == "sum_extrema"
     finally:
@@ -1797,7 +1804,7 @@ def test_artifact_adoption_preserves_rounded_decimal_event_averages() -> None:
     fixture = _adopted_artifact_fixture("avg_event", event_rows=events)
     source = fixture["source"]
     try:
-        rows = source.moments(source.context.metrics[0])
+        rows = _moments(source, source.context.metrics[0])
         _artifact_rows_equal(rows, fixture["expected"]["total"])
         assert {row["group_id"] for row in rows} == {"control", "treatment"}
         assert all(row["ref_y"] + row["cy1"] / row["n"] == pytest.approx(0.1) for row in rows)

@@ -6,12 +6,12 @@ import pyarrow as pa
 import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec
-from increment._source_types import MomentSource
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import IncrementWarning
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
+from increment.evidence import EvidenceSource
 from increment.frame import CupedCovariate
 from increment.semantics.models import ExperimentMetric
 
@@ -192,9 +192,9 @@ def test_unavailable_linear_override_refuses_before_evidence_acquisition(overrid
     )
     with pytest.raises(CodedError) as raised:
         if override == "decision":
-            run(cast(MomentSource, source), decision_method=linear)
+            run(cast(EvidenceSource, source), decision_method=linear)
         else:
-            run(cast(MomentSource, source), sensitivity_methods=[linear])
+            run(cast(EvidenceSource, source), sensitivity_methods=[linear])
     assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
     assert source.read_calls == 0
 

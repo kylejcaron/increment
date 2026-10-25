@@ -1005,12 +1005,40 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
     from scipy.stats import t
 
     from increment import Analysis, readouts
+    from increment.evidence import (
+        ComplianceRequest,
+        CountEvidence,
+        CountsRequest,
+        MomentRows,
+        MomentsRequest,
+        evidence_provider,
+        request_evidence,
+    )
     from increment.sources import ComplianceSummary, MomentsSource
+
+    def request_compliance(source, design):
+        return cast(
+            ComplianceSummary,
+            request_evidence(evidence_provider(source), ComplianceRequest(design)),
+        )
+
+    def counts(source, kind):
+        answer = cast(
+            CountEvidence,
+            request_evidence(evidence_provider(source), CountsRequest(kind)),
+        )
+        return answer.unit_counts or answer.counts
+
+    def moments(source, metric):
+        return cast(
+            MomentRows,
+            request_evidence(evidence_provider(source), MomentsRequest(metric)),
+        )
 
     sources = [_compliance_source(order) for order in (("full", "drop"), ("drop", "full"))]
     reference = None
     for i, (source, design, pairs) in enumerate(sources):
-        summary = source.compliance_summary(design)
+        summary = request_compliance(source, design)
         m, u = np.array(pairs, dtype=float).T
         rate = u.sum() / m.sum()
         variance = np.sum((u - rate * m) ** 2) / ((len(m) - 1) * len(m) * m.mean() ** 2)
@@ -1035,11 +1063,15 @@ def test_unequal_size_design_uptake_metric_order_and_complete_wire_parity(tmp_pa
         cube = MomentsSource(
             rows, metrics=source.context.metrics, study_id=source.context.study_id, design=design
         )
-        assert cube.compliance_summary(design).to_wire() == wire
-        assert cube.unit_counts() == source.unit_counts() == {"control": 250, "treatment": 250}
-        assert cube.cluster_counts() == source.cluster_counts() == {"control": 40, "treatment": 40}
+        assert request_compliance(cube, design).to_wire() == wire
+        assert counts(cube, "unit") == counts(source, "unit") == {"control": 250, "treatment": 250}
+        cube_counts = request_evidence(evidence_provider(cube), CountsRequest(kind="cluster"))
+        source_counts = request_evidence(evidence_provider(source), CountsRequest(kind="cluster"))
+        assert isinstance(cube_counts, CountEvidence)
+        assert isinstance(source_counts, CountEvidence)
+        assert cube_counts.counts == source_counts.counts == {"control": 40, "treatment": 40}
         for metric in source.context.metrics:
-            assert list(cube.moments(metric)) == list(source.moments(metric))
+            assert list(moments(cube, metric)) == list(moments(source, metric))
         live = readouts.run(source, estimands=["compliance", "late"])
         replay = readouts.run(cube, estimands=["compliance", "late"])
 

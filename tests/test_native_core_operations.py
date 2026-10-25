@@ -15,6 +15,12 @@ import pytest
 from increment import Analysis
 from increment.errors import CapabilityError
 from increment.estimation.engine import Method
+from increment.evidence import (
+    ComplianceRequest,
+    MomentsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.sources import MomentsSource
 from tests.analysis_factory import _native_source
 
@@ -78,7 +84,7 @@ def test_moments_source_preserves_catalog(con):
             metric.name for metric in source.context.metrics
         )
         for metric in selected:
-            assert moments.moments(metric)
+            assert request_evidence(evidence_provider(moments), MomentsRequest(metric))
 
     finally:
         analysis.close()
@@ -554,7 +560,7 @@ def test_compliance_design_mismatch_refusal_survives_transport(con):
     )
     try:
         with pytest.raises(InvalidRequestError) as caught:
-            source.compliance_summary(received)
+            request_evidence(evidence_provider(source), ComplianceRequest(received))
     finally:
         analysis.close()
 

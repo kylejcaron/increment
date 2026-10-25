@@ -19,6 +19,13 @@ from increment.query.session import WarehouseArtifactStore
 from increment.query.source import open_artifact
 from increment.semantics.models import Definitions
 from increment.sources import MomentsSource
+from tests._evidence_requests import (
+    _cluster_counts,
+    _compliance,
+    _compliance_dates,
+    _moments,
+    _unit_counts,
+)
 from tests.analysis_factory import _native_source, lift_rows, make_analysis
 from tests.test_compliance_summary import design
 from tests.warning_codes import warning_codes
@@ -245,7 +252,7 @@ def test_native_artifact_original_witness_and_matching_late(order):
                 assert comp.require_lift().value == pytest.approx(0.5)
                 assert comp.require_lift().lb is not None
                 for metric in source.context.metrics:
-                    rows = {row["group_id"]: row for row in source.moments(metric)}
+                    rows = {row["group_id"]: row for row in _moments(source, metric)}
                     t, c = rows["treatment"], rows["control"]
                     stage = t["sum_d"] / t["n"] - c["sum_d"] / c["n"]
                     assert stage == pytest.approx(0.9 if metric.name == "drop" else 0.5)
@@ -332,7 +339,7 @@ def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
             for day, expected in [(0, 0.25), (5, 0.25), (6, 0.5), (7, 0.5), (9, 0.5)]:
                 as_of = date(2025, 1, 1) + timedelta(days=day)
                 summaries = [
-                    source.compliance_summary(design(7), as_of=as_of)
+                    _compliance(source, design(7), as_of=as_of)
                     for source in (frame, _native_source(analysis), native_day, artifact)
                 ]
                 assert all(summary == summaries[0] for summary in summaries)
@@ -340,9 +347,9 @@ def test_declared_seven_day_window_and_asof_match_frame_native_and_artifact():
                     arm = summary.arm("treatment")
                     assert arm is not None
                     assert arm.uptake_total / arm.n_units == expected
-            assert frame.compliance_summary(design(7)) == artifact.compliance_summary(design(7))
+            assert _compliance(frame, design(7)) == _compliance(artifact, design(7))
             with pytest.raises(CodedError) as mismatch:
-                artifact.compliance_summary(design(6))
+                _compliance(artifact, design(6))
             assert mismatch.value.code == "source.compliance_summary.design_mismatch"
     finally:
         analysis.close()
@@ -383,12 +390,12 @@ def test_uptake_after_outcome_day_extends_native_and_artifact_spine(legacy_cover
             for source in (_native_source(analysis), artifact):
                 metric = source.context.metrics[0]
                 total = next(
-                    row for row in source.moments(metric) if row["group_id"] == "treatment"
+                    row for row in _moments(source, metric) if row["group_id"] == "treatment"
                 )
                 assert total["sum_d"] == pytest.approx(10.0)
                 asof = {
                     row["ds"]: row
-                    for row in source.moments(metric, grain="asof")
+                    for row in _moments(source, metric, grain="asof")
                     if row["group_id"] == "treatment"
                 }
                 assert asof[date(2025, 1, 2)]["sum_d"] == pytest.approx(10.0)
@@ -421,7 +428,7 @@ def test_pinned_uptake_after_outcome_day_keeps_native_and_artifact_asof_aligned(
                 asof_rows.append(
                     {
                         row["ds"]: row
-                        for row in source.moments(metric, grain="asof")
+                        for row in _moments(source, metric, grain="asof")
                         if row["group_id"] == "treatment"
                     }
                 )
@@ -462,24 +469,24 @@ def test_published_uptake_respects_certified_local_day_edge():
             for source in sources:
                 metric = source.context.metrics[0]
                 total = next(
-                    row for row in source.moments(metric) if row["group_id"] == "treatment"
+                    row for row in _moments(source, metric) if row["group_id"] == "treatment"
                 )
                 assert total["sum_d"] == pytest.approx(9.0)
-                summary = source.compliance_summary(design(5))
+                summary = _compliance(source, design(5))
                 arm = summary.arm("treatment")
                 assert arm is not None and arm.uptake_total == pytest.approx(9.0)
-            assert native.compliance_summary(design(5)) == artifact.compliance_summary(design(5))
+            assert _compliance(native, design(5)) == _compliance(artifact, design(5))
             expected_compliance_dates = [
                 date(2025, 1, 1),
                 date(2025, 1, 2),
                 date(2025, 1, 3),
             ]
-            assert list(native.compliance_dates()) == expected_compliance_dates
-            assert list(artifact.compliance_dates()) == expected_compliance_dates
+            assert list(_compliance_dates(native)) == expected_compliance_dates
+            assert list(_compliance_dates(artifact)) == expected_compliance_dates
             for source in sources:
                 asof = {
                     row["ds"]: row
-                    for row in source.moments(source.context.metrics[0], grain="asof")
+                    for row in _moments(source, source.context.metrics[0], grain="asof")
                     if row["group_id"] == "treatment"
                 }
                 assert asof[date(2025, 1, 3)]["sum_d"] == pytest.approx(9.0)
@@ -541,8 +548,8 @@ def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_pa
             assert extension.certified_edge == date(2025, 1, 3)
             native = _native_source(analysis)
             metric = native.context.metrics[0]
-            native_rows = native.moments(metric, grain="asof")
-            artifact_rows = artifact.moments(metric, grain="asof")
+            native_rows = _moments(native, metric, grain="asof")
+            artifact_rows = _moments(artifact, metric, grain="asof")
             native_by_day = {
                 row["ds"]: row for row in native_rows if row["group_id"] == "treatment"
             }
@@ -554,9 +561,11 @@ def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_pa
                 artifact_by_day[date(2025, 1, 8)]["sum_d"]
             )
             assert native_by_day[date(2025, 1, 8)]["sum_d"] == pytest.approx(4.0)
-            native_completed = native.moments(metric, grain="asof", completed_windows_only=True)
-            artifact_completed = artifact.moments(metric, grain="asof", completed_windows_only=True)
-            assert native_completed == artifact_completed == []
+            native_completed = _moments(native, metric, grain="asof", completed_windows_only=True)
+            artifact_completed = _moments(
+                artifact, metric, grain="asof", completed_windows_only=True
+            )
+            assert native_completed == artifact_completed == ()
         with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
             native_late = analysis.run_asof_lift(estimands=["late"], completed_windows_only=True)
             artifact_late = adopted.run_asof_lift(estimands=["late"], completed_windows_only=True)
@@ -603,15 +612,17 @@ def test_completed_asof_uptake_certification_uses_elapsed_timestamp_boundary(
         with open_artifact(store, ref, expected_context=context) as artifact:
             native = _native_source(analysis)
             metric = native.context.metrics[0]
-            native_completed = native.moments(metric, grain="asof", completed_windows_only=True)
-            artifact_completed = artifact.moments(metric, grain="asof", completed_windows_only=True)
+            native_completed = _moments(native, metric, grain="asof", completed_windows_only=True)
+            artifact_completed = _moments(
+                artifact, metric, grain="asof", completed_windows_only=True
+            )
             assert native_completed == artifact_completed
             asof_date = date(2025, 1, 8)
-            native_compliance = native.compliance_summary(
-                design(7), as_of=asof_date, completed_windows_only=True
+            native_compliance = _compliance(
+                native, design(7), as_of=asof_date, completed_windows_only=True
             )
-            artifact_compliance = artifact.compliance_summary(
-                design(7), as_of=asof_date, completed_windows_only=True
+            artifact_compliance = _compliance(
+                artifact, design(7), as_of=asof_date, completed_windows_only=True
             )
             assert native_compliance == artifact_compliance
             assert sum(arm.n_units for arm in native_compliance.arms) == (40 if is_completed else 0)
@@ -670,15 +681,15 @@ def test_submicrosecond_exposure_preserves_completed_uptake_cohorts(
             native = _native_source(analysis)
             metric = native.context.metrics[0]
             for source in (native, artifact):
-                summary = source.compliance_summary(
-                    design(7), as_of=date(2025, 1, 9), completed_windows_only=True
+                summary = _compliance(
+                    source, design(7), as_of=date(2025, 1, 9), completed_windows_only=True
                 )
                 assert sum(arm.n_units for arm in summary.arms) == (40 if completed else 0)
-                rows = source.moments(metric, grain="asof", completed_windows_only=True)
+                rows = _moments(source, metric, grain="asof", completed_windows_only=True)
                 assert bool(rows) is completed
-            assert native.moments(
-                metric, grain="asof", completed_windows_only=True
-            ) == artifact.moments(metric, grain="asof", completed_windows_only=True)
+            assert _moments(native, metric, grain="asof", completed_windows_only=True) == _moments(
+                artifact, metric, grain="asof", completed_windows_only=True
+            )
         with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
             expected = analysis.run_asof_lift(estimands=["late"], completed_windows_only=True)
             actual = adopted.run_asof_lift(estimands=["late"], completed_windows_only=True)
@@ -734,8 +745,8 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                 (date(2025, 1, 14), 15),
                 (date(2025, 1, 15), 15),
             ):
-                native_summary = native.compliance_summary(design(14), as_of=as_of)
-                artifact_summary = artifact.compliance_summary(design(14), as_of=as_of)
+                native_summary = _compliance(native, design(14), as_of=as_of)
+                artifact_summary = _compliance(artifact, design(14), as_of=as_of)
                 assert native_summary == artifact_summary, as_of
                 treatment = native_summary.arm("treatment")
                 assert treatment is not None
@@ -800,18 +811,18 @@ def test_midnight_window_uptake_floor_preserves_daily_and_asof_compliance(
                     (date(2025, 1, 14), 14),
                     (date(2025, 1, 15), 15),
                 ):
-                    summary = edge_artifact.compliance_summary(design(14), as_of=as_of)
+                    summary = _compliance(edge_artifact, design(14), as_of=as_of)
                     treatment = summary.arm("treatment")
                     assert treatment is not None
                     assert treatment.uptake_total == expected_uptake
                 metric = edge_artifact.context.metrics[0]
                 treatment_total = next(
-                    row for row in edge_artifact.moments(metric) if row["group_id"] == "treatment"
+                    row for row in _moments(edge_artifact, metric) if row["group_id"] == "treatment"
                 )
                 assert treatment_total["sum_d"] == pytest.approx(15.0)
                 boundary_asof = next(
                     row
-                    for row in edge_artifact.moments(metric, grain="asof")
+                    for row in _moments(edge_artifact, metric, grain="asof")
                     if row["group_id"] == "treatment" and row["ds"] == date(2025, 1, 15)
                 )
                 assert boundary_asof["sum_d"] == pytest.approx(15.0)
@@ -883,11 +894,15 @@ def test_triggered_asof_uptake_accumulates_from_assignment_before_trigger():
         with open_artifact(store, ref, expected_context=context) as artifact:
             native = _native_source(analysis)
             metric = native.context.metrics[0]
-            native_rows = native.day_source(metrics=(metric,), population="triggered").moments(
-                metric, grain="asof"
+            native_rows = _moments(
+                native.day_source(metrics=(metric,), population="triggered"),
+                metric,
+                grain="asof",
             )
-            artifact_rows = artifact.day_source(metrics=(metric,), population="triggered").moments(
-                metric, grain="asof"
+            artifact_rows = _moments(
+                artifact.day_source(metrics=(metric,), population="triggered"),
+                metric,
+                grain="asof",
             )
             native_treatment = {
                 row["ds"]: row for row in native_rows if row["group_id"] == "treatment"
@@ -968,11 +983,17 @@ def test_triggered_completed_asof_uses_assignment_timestamp_for_uptake_certifica
         with open_artifact(store, ref, expected_context=context) as artifact:
             native = _native_source(analysis)
             metric = native.context.metrics[0]
-            native_rows = native.day_source(metrics=(metric,), population="triggered").moments(
-                metric, grain="asof", completed_windows_only=True
+            native_rows = _moments(
+                native.day_source(metrics=(metric,), population="triggered"),
+                metric,
+                grain="asof",
+                completed_windows_only=True,
             )
-            artifact_rows = artifact.day_source(metrics=(metric,), population="triggered").moments(
-                metric, grain="asof", completed_windows_only=True
+            artifact_rows = _moments(
+                artifact.day_source(metrics=(metric,), population="triggered"),
+                metric,
+                grain="asof",
+                completed_windows_only=True,
             )
             assert native_rows == artifact_rows
             treatment_at_completion = [
@@ -997,7 +1018,7 @@ def test_late_uptake_preserves_calendar_average_total_scope():
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             for source in (_native_source(analysis), artifact):
-                rows = {row["group_id"]: row for row in source.moments(source.context.metrics[0])}
+                rows = {row["group_id"]: row for row in _moments(source, source.context.metrics[0])}
                 for arm, total in (("control", 25.0), ("treatment", 35.0)):
                     row = rows[arm]
                     assert row["n"] == 20
@@ -1028,7 +1049,7 @@ def check_uptake_outcome_coverage(outcome_day, *, warehouse_connection=None):
         with open_artifact(store, ref, expected_context=context) as artifact:
             for source in (_native_source(analysis), artifact):
                 metric = source.context.metrics[0]
-                rows = source.moments(metric, grain="asof")
+                rows = _moments(source, metric, grain="asof")
                 last = max(row["ds"] for row in rows)
                 assert last == date(2025, 1, 8)
                 final = {row["group_id"]: row for row in rows if row["ds"] == last}
@@ -1042,9 +1063,9 @@ def check_uptake_outcome_coverage(outcome_day, *, warehouse_connection=None):
                     row = final[arm]
                     assert row["n"] == expected_n
                     assert row["n"] * row["ref_y"] + row["cy1"] == pytest.approx(expected_sum)
-                completed = source.moments(metric, grain="asof", completed_windows_only=True)
+                completed = _moments(source, metric, grain="asof", completed_windows_only=True)
                 if outcome_day == 1:
-                    assert completed == []
+                    assert completed == ()
                 else:
                     final = {row["group_id"]: row for row in completed if row["ds"] == last}
                     assert set(final) == {"control", "treatment"}
@@ -1071,14 +1092,14 @@ def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries():
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             for source in (_native_source(analysis), artifact):
-                summary = source.compliance_summary(design(1))
+                summary = _compliance(source, design(1))
                 treatment = summary.arm("treatment")
                 assert treatment is not None
                 assert treatment.n_units == 20
                 assert treatment.uptake_total == pytest.approx(5.0)
                 rows = {
                     row["ds"]: row
-                    for row in source.moments(source.context.metrics[0], grain="asof")
+                    for row in _moments(source, source.context.metrics[0], grain="asof")
                     if row["group_id"] == "treatment"
                 }
                 assert rows[date(2025, 1, 1)]["sum_d"] / rows[date(2025, 1, 1)][
@@ -1106,7 +1127,7 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
     try:
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            native_summary = _native_source(analysis).compliance_summary(design(7))
+            native_summary = _compliance(_native_source(analysis), design(7))
             with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext() as rec:
                 expected = estimate_compliance(native_summary, design(7)).results[0]
             if clustered:
@@ -1139,7 +1160,7 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
                 )
                 with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext() as rec:
                     actual = estimate_compliance(
-                        reloaded.compliance_summary(design(7)), design(7)
+                        _compliance(reloaded, design(7)), design(7)
                     ).results[0]
                 assert actual.require_lift().value == pytest.approx(expected.require_lift().value)
                 assert actual.require_lift().lb is not None and actual.require_lift().ub is not None
@@ -1163,13 +1184,13 @@ def test_new_native_artifact_export_reload_preserves_available_uncertainty(
                 if clustered:
                     assert rec is not None
                     assert "estimation.engine.small_total_clusters" in warning_codes(rec)
-                    assert reloaded.cluster_counts() == {"control": 12, "treatment": 12}
+                    assert _cluster_counts(reloaded) == {"control": 12, "treatment": 12}
             in_process = _native_source(analysis).moments_source(
                 metrics=_native_source(analysis).context.metrics
             )
-            assert in_process.compliance_summary(design(7)) == _native_source(
-                analysis
-            ).compliance_summary(design(7))
+            assert _compliance(in_process, design(7)) == _compliance(
+                _native_source(analysis), design(7)
+            )
     finally:
         analysis.close()
         con.disconnect()
@@ -1198,7 +1219,7 @@ def test_legacy_artifact_is_identified_before_any_relation_execution(monkeypatch
                         lambda *_: pytest.fail("legacy refusal must precede execution"),
                     )
                     with pytest.raises(CapabilityError) as error:
-                        artifact.compliance_summary(design(7))
+                        _compliance(artifact, design(7))
                     assert error.value.code == "source.compliance_summary.legacy_uptake_state"
     finally:
         analysis.close()
@@ -1210,8 +1231,8 @@ def test_base_artifact_reader_implements_compliance_protocol():
     try:
         ref = analysis.publish_unit_day_artifact(store)
         with ArtifactMomentSource.open(store, ref, expected_context=context) as source:
-            expected = _native_source(analysis).compliance_summary(design(7))
-            assert source.compliance_summary(design(7)) == expected
+            expected = _compliance(_native_source(analysis), design(7))
+            assert _compliance(source, design(7)) == expected
     finally:
         analysis.close()
         con.disconnect()
@@ -1274,7 +1295,7 @@ def test_current_artifact_rejects_contradictory_uptake_state(monkeypatch):
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as source:
             with pytest.raises(CodedError) as error:
-                source.compliance_summary(design(7))
+                _compliance(source, design(7))
             assert error.value.code == "source.compliance_summary.invalid_state"
     finally:
         analysis.close()
@@ -1297,7 +1318,7 @@ def test_uptake_publication_does_not_collect_the_relation_in_python(monkeypatch)
     try:
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as source:
-            arm = source.compliance_summary(design(7)).arm("treatment")
+            arm = _compliance(source, design(7)).arm("treatment")
             assert arm is not None and arm.uptake_total == 10
     finally:
         analysis.close()
@@ -1325,18 +1346,18 @@ def test_publication_pins_uptake_before_metric_validation(monkeypatch, separate_
         return last_day
 
     try:
-        expected = _native_source(analysis).compliance_summary(design(7))
-        expected_dates = _native_source(analysis).compliance_dates()
+        expected = _compliance(_native_source(analysis), design(7))
+        expected_dates = _compliance_dates(_native_source(analysis))
         monkeypatch.setattr(ArtifactPublisher, "_validate_stats_relation", mutate_after_validation)
         ref = analysis.publish_unit_day_artifact(store)
         assert mutated
         with open_artifact(store, ref, expected_context=context) as artifact:
-            actual = artifact.compliance_summary(design(7))
+            actual = _compliance(artifact, design(7))
             assert actual == expected
-            assert artifact.compliance_dates() == expected_dates
+            assert _compliance_dates(artifact) == expected_dates
             arm = actual.arm("treatment")
             assert arm is not None and arm.uptake_total == 10
-        live = _native_source(analysis).compliance_summary(design(7)).arm("treatment")
+        live = _compliance(_native_source(analysis), design(7)).arm("treatment")
         assert live is not None and live.uptake_total == 0
     finally:
         analysis.close()
@@ -1360,17 +1381,17 @@ def test_publication_pins_outcome_and_uptake_before_inter_stream_mutation(monkey
     try:
         source = _native_source(analysis)
         metric = source.context.metrics[0]
-        expected_moments = source.moments(metric)
-        expected_compliance = source.compliance_summary(design(7))
+        expected_moments = _moments(source, metric)
+        expected_compliance = _compliance(source, design(7))
         monkeypatch.setattr(con, "create_table", capture_then_mutate)
         ref = analysis.publish_unit_day_artifact(store)
         assert captures, "mutation hook never ran"
         with open_artifact(store, ref, expected_context=context) as artifact:
-            assert artifact.compliance_summary(design(7)) == expected_compliance
-            assert {row["group_id"]: row for row in artifact.moments(metric)} == {
+            assert _compliance(artifact, design(7)) == expected_compliance
+            assert {row["group_id"]: row for row in _moments(artifact, metric)} == {
                 row["group_id"]: row for row in expected_moments
             }
-        live = source.compliance_summary(design(7)).arm("treatment")
+        live = _compliance(source, design(7)).arm("treatment")
         assert live is not None and live.uptake_total == 0
     finally:
         analysis.close()
@@ -1420,15 +1441,17 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
                 native.moments_source(metrics=native.context.metrics, population="triggered"),
                 cast(Any, artifact).triggered_source(),
             ]
-            summaries = [source.compliance_summary(design(7)) for source in sources]
+            summaries = [
+                _compliance(source, design(7), population="triggered") for source in sources
+            ]
             assert all(summary == summaries[0] for summary in summaries)
-            assert summaries[0] != native.compliance_summary(design(7))
+            assert summaries[0] != _compliance(native, design(7))
             for source, summary in zip(sources, summaries, strict=True):
                 arm = summary.arm("treatment")
                 assert arm is not None
                 assert arm.n_units == expected_units
                 assert arm.uptake_total == expected_uptake
-                assert source.unit_counts() == {
+                assert _unit_counts(source) == {
                     "control": expected_units,
                     "treatment": expected_units,
                 }
@@ -1440,7 +1463,7 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
                 study_id="uptake_test",
                 design=design(7),
             )
-            assert cube.compliance_summary(design(7)) == summaries[0]
+            assert _compliance(cube, design(7)) == summaries[0]
             with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext() as rec:
                 results = analysis.run(estimands=["compliance"])
             if clustered:
@@ -2032,8 +2055,12 @@ def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
         ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
         with open_artifact(store, ref, expected_context=context) as artifact:
             assert any(ext.kind == "encouragement_uptake" for ext in artifact.manifest.extensions)
-            native_uptake = native.triggered_source().compliance_summary(design(7))
-            artifact_uptake = cast(Any, artifact).triggered_source().compliance_summary(design(7))
+            native_uptake = _compliance(
+                native.triggered_source(), design(7), population="triggered"
+            )
+            artifact_uptake = _compliance(
+                cast(Any, artifact).triggered_source(), design(7), population="triggered"
+            )
             assert artifact_uptake == native_uptake
         with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
             native_rows = analysis.run(estimands=["itt", "late"])
@@ -2127,7 +2154,7 @@ def test_open_ended_compliance_uses_persisted_enrollment_uptake_coverage(
             date(2025, 1, 1) + timedelta(days=day): 0.25 if day < 6 else 0.5 for day in range(11)
         }
         native = _native_source(analysis)
-        assert list(native.compliance_dates()) == list(expected)
+        assert list(_compliance_dates(native)) == list(expected)
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as artifact:
             adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
@@ -2148,8 +2175,8 @@ def test_open_ended_compliance_uses_persisted_enrollment_uptake_coverage(
             finally:
                 adopted.close()
             con.raw_sql(f"DELETE FROM {uptake_table} WHERE event = 'clicked'")
-            assert list(artifact.compliance_dates()) == list(expected)
-            assert list(native.compliance_dates()) == [date(2025, 1, 1)]
+            assert list(_compliance_dates(artifact)) == list(expected)
+            assert list(_compliance_dates(native)) == [date(2025, 1, 1)]
             results = readouts.asof_lift(artifact, estimands=["compliance"])
             assert {row.ds: row.require_lift().value for row in results} == pytest.approx(expected)
     finally:
@@ -2180,10 +2207,10 @@ def test_older_timestamp_artifact_keeps_digest_and_uses_known_compliance_coverag
                     )
                 }
             )
-            assert list(artifact.compliance_dates()) == [
+            assert list(_compliance_dates(artifact)) == [
                 date(2025, 1, 1) + timedelta(days=day) for day in range(7)
             ]
-            assert artifact.moments(artifact.context.metrics[0], grain="asof") == []
+            assert _moments(artifact, artifact.context.metrics[0], grain="asof") == ()
     finally:
         analysis.close()
         con.disconnect()
@@ -2205,7 +2232,7 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
             "revenue, event, ts + INTERVAL 1 DAY FROM events WHERE event = 'full_event' LIMIT 1"
         )
         metric = _native_source(analysis).context.metrics[0]
-        expected = _native_source(analysis).moments(metric)
+        expected = _moments(_native_source(analysis), metric)
         validate = ArtifactPublisher._validate_stats_relation
 
         def mutate_after_validation(self, stats):
@@ -2219,9 +2246,9 @@ def test_publication_preserves_relevant_event_rows_and_watermarks(monkeypatch, m
             )
         ref = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, ref, expected_context=context) as artifact:
-            arm = artifact.compliance_summary(design(7)).arm("treatment")
+            arm = _compliance(artifact, design(7)).arm("treatment")
             assert arm is not None and arm.uptake_total == 10
-            assert {row["group_id"]: row for row in artifact.moments(metric)} == {
+            assert {row["group_id"]: row for row in _moments(artifact, metric)} == {
                 row["group_id"]: row for row in expected
             }
         with store.open_snapshot(ref) as snapshot:
@@ -2243,7 +2270,7 @@ def test_publication_keeps_canonical_clusters_when_live_exposures_are_corrected(
     con, analysis, context, store, _panel = native_fixture(("full",), clustered=True)
     source = _native_source(analysis)
     try:
-        expected = source.compliance_summary(design(7))
+        expected = _compliance(source, design(7))
         source_type = type(source)
         validate = source_type._validate_mixed_assignments
 
@@ -2265,10 +2292,10 @@ def test_publication_keeps_canonical_clusters_when_live_exposures_are_corrected(
             )
             reference = analysis.publish_unit_day_artifact(store)
         with open_artifact(store, reference, expected_context=context) as adopted:
-            assert adopted.compliance_summary(design(7)) == expected
-            assert adopted.cluster_counts() == {"control": 12, "treatment": 12}
+            assert _compliance(adopted, design(7)) == expected
+            assert _cluster_counts(adopted) == {"control": 12, "treatment": 12}
         with pytest.raises(CodedError) as raised:
-            source.compliance_summary(design(7))
+            _compliance(source, design(7))
         assert raised.value.code == "query.integrity.cluster_conflict"
     finally:
         analysis.close()

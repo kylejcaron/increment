@@ -10,6 +10,11 @@ import pytest
 from increment.analysis import Analysis
 from increment.estimation.quantile import estimate_quantile_lift
 from increment.semantics.models import AnalysisPlan, MultiplicitySpec
+from tests._evidence_requests import (
+    _cluster_counts,
+    _unit_counts,
+    _unit_rows,
+)
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import (
     _make_event_log_table,
@@ -50,18 +55,18 @@ def test_unit_counts_and_cluster_counts_match_srm(pricing_analysis):
     srm_result = pricing_analysis.srm(expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(srm_result, SRMResult)
     assert srm_result.observed
-    assert src.unit_counts() == srm_result.observed
+    assert _unit_counts(src) == srm_result.observed
 
     from increment.errors import CapabilityError
 
     with pytest.raises(CapabilityError):
-        src.cluster_counts()
+        _cluster_counts(src)
 
 
 @pytest.mark.integration
 def test_public_unit_counts_match_definition_source(pricing_analysis):
     source = _native_source(pricing_analysis)
-    assert pricing_analysis.unit_counts() == source.unit_counts()
+    assert pricing_analysis.unit_counts() == _unit_counts(source)
 
 
 def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
@@ -69,7 +74,7 @@ def test_day_axis_source_refuses_total_unit_counts(pricing_analysis):
 
     day_source = _native_source(pricing_analysis).day_source(metrics=pricing_analysis.metrics)
     with pytest.raises(CapabilityError) as raised:
-        day_source.unit_counts()
+        _unit_counts(day_source)
     assert raised.value.code == "evidence.operation_unavailable"
 
 
@@ -214,7 +219,7 @@ def test_quantile_parity(tmp_path):
 
     src = _native_source(analysis)
     metric = analysis.metrics[0]
-    unit_rows = src.unit_frame(metric)
+    unit_rows = _unit_rows(src, metric)
     (candidate,) = estimate_quantile_lift(
         type("_Src", (), {"unit_frame": staticmethod(lambda *a, **k: unit_rows)})(),
         metric,
@@ -381,7 +386,7 @@ def test_definitions_unit_frame_serves_declared_covariate(tmp_path):
 
     defs_path, con, tenure, _group, _revenue = covariate_defs_and_con(tmp_path)
     source = _native_source(Analysis.from_definitions("cov_test", defs_path, con))
-    table = source.unit_frame(source.context.metrics[0], covariates=["tenure"])
+    table = _unit_rows(source, source.context.metrics[0], covariates=["tenure"])
     rows = {r["unit_id"]: r["tenure"] for r in table.to_pylist()}
     assert rows == pytest.approx(tenure)
 
@@ -394,7 +399,7 @@ def test_definitions_unit_frame_keeps_a_missing_covariate_null(tmp_path):
     defs_path, con, tenure, _group, _revenue = covariate_defs_and_con(tmp_path)
     con.raw_sql("UPDATE cov_events SET tenure = NULL WHERE user_id = 'u3'")
     source = _native_source(Analysis.from_definitions("cov_test", defs_path, con))
-    table = source.unit_frame(source.context.metrics[0], covariates=["tenure"])
+    table = _unit_rows(source, source.context.metrics[0], covariates=["tenure"])
     rows = {r["unit_id"]: r["tenure"] for r in table.to_pylist()}
     assert rows["u3"] is None
     assert rows["u4"] == pytest.approx(tenure["u4"])
@@ -408,7 +413,7 @@ def test_definitions_unit_frame_refuses_unresolvable_covariate(tmp_path):
     defs_path, con, _tenure, _group, _revenue = covariate_defs_and_con(tmp_path)
     source = _native_source(Analysis.from_definitions("cov_test", defs_path, con))
     with pytest.raises(CodedError) as raised:
-        source.unit_frame(source.context.metrics[0], covariates=["nonexistent_property"])
+        _unit_rows(source, source.context.metrics[0], covariates=["nonexistent_property"])
     assert raised.value.code == "source.native.covariate_unresolved"
     assert raised.value.context["covariate"] == "nonexistent_property"
 
@@ -510,7 +515,7 @@ def test_definitions_unit_frame_refuses_unusable_ad_hoc_covariate(tmp_path, cova
 
     source = _ambiguous_covariate_source(tmp_path)
     with pytest.raises(CodedError) as raised:
-        source.unit_frame(source.context.metrics[0], covariates=[covariate])
+        _unit_rows(source, source.context.metrics[0], covariates=[covariate])
     assert raised.value.code == code
 
 
@@ -520,6 +525,6 @@ def test_definitions_unit_frame_serves_a_string_property_as_a_categorical_column
     import pyarrow as pa
 
     source = _ambiguous_covariate_source(tmp_path)
-    table = source.unit_frame(source.context.metrics[0], covariates=["country"])
+    table = _unit_rows(source, source.context.metrics[0], covariates=["country"])
     assert table.schema.field("country").type == pa.string()
     assert table.to_pylist()[0]["country"] == "US"

@@ -34,9 +34,9 @@ if TYPE_CHECKING:
     from increment._readout_request import ReadoutRequest
     from increment.decision import DecisionComputation
     from increment.estimation.results import LiftEstimate
+from increment._evidence_types import ComplianceArm, ComplianceSummary
 from increment._literals import ALTERNATIVE_VALUES
 from increment._moment_plan import UPTAKE_MASK
-from increment._source_types import ComplianceArm, ComplianceSummary
 from increment._window import resolve_window_days
 from increment.errors import (
     CapabilityError,
@@ -307,7 +307,7 @@ def estimate_compliance(
     compliance_requested: bool = True,
 ) -> DecisionComputation[LiftEstimate]:
     """Design-level compliance rows built directly from a ``MomentSource``'s
-    :class:`~increment._source_types.ComplianceSummary` -- independent of
+    :class:`~increment._evidence_types.ComplianceSummary` -- independent of
     any outcome metric's declaration, order, count, or missingness. Reuses
     the exact same first-stage/compliance-row machinery
     (:func:`_first_stage_context`/:func:`_estimate_compliance_row`) as
@@ -320,7 +320,7 @@ def estimate_compliance(
     LATE suppression is determined from each outcome's cohort by
     ``estimate_encouragement``; this design-wide row never diagnoses it.
     """
-    from increment._source_types import validate_compliance_design_match
+    from increment._evidence_types import validate_compliance_design_match
     from increment.estimation.engine import (
         _lift_decision_bundle,
         _small_total_clusters_advisory,

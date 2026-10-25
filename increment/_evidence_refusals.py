@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, NoReturn
 
+from increment._source_types import PROVIDER_UNAVAILABLE
 from increment.errors import CapabilityError, RefusalSpec, refuse
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ EVIDENCE_REFUSALS = {
         CLUSTER_UNAVAILABLE,
         COVARIATE_UNAVAILABLE,
         OPERATION_UNAVAILABLE,
+        PROVIDER_UNAVAILABLE,
         UNSUPPORTED_REQUEST,
     )
 }
@@ -112,11 +114,10 @@ def _require_population(src: object, population: str, offered: Iterable[str]) ->
 
 
 def require_population(src: object, population: str) -> None:
-    """Validate a population only when the source declares its supported populations."""
-    from increment._source_types import declared_evidence, evidence_is_declared
+    """Validate a request against the source's declared populations."""
+    from increment._source_types import declared_evidence
 
-    if evidence_is_declared(src):
-        _require_population(src, population, declared_evidence(src).populations)
+    _require_population(src, population, declared_evidence(src).populations)
 
 
 def refuse_unit_rows(src: object, *, offered: object, route: str) -> NoReturn:
@@ -150,24 +151,12 @@ def refuse_raw_outcomes(src: object, *, offered: object, route: str) -> NoReturn
 
 
 def _has_count_method(source: object, kind: str) -> bool:
-    declaration = getattr(source, "evidence", None)
-    if declaration is not None and kind in declaration.count_grains:
-        return True
-    count_source = getattr(source, "source", source)
-    count_method = {
-        "unit": "unit_counts",
-        "cluster": "cluster_counts",
-        "assignment": "assignment_counts",
-        "triggered": "triggered_counts",
-    }[kind]
-    if callable(getattr(count_source, count_method, None)):
-        return True
-    return kind == "assignment" and any(
-        callable(getattr(count_source, name, None)) for name in ("unit_counts", "cluster_counts")
-    )
+    from increment._source_types import declared_evidence
+
+    return kind in declared_evidence(source).count_grains
 
 
-def _request_requirements(
+def _request_requirements(  # noqa: PLR0915
     src: object, request: object
 ) -> tuple[Grain | None, Sequence[str], bool, bool, Sequence[str], str | None]:
     from increment._evidence_types import (
@@ -183,9 +172,10 @@ def _request_requirements(
         MetricEvidenceRequest,
         MomentsRequest,
         SequentialCaptureRequest,
+        SequentialSnapshotRequest,
         UnitRowsRequest,
     )
-    from increment._source_types import declared_evidence
+    from increment._source_types import declared_evidence, is_builtin_source
 
     declaration = declared_evidence(src)
     grain = None
@@ -195,6 +185,17 @@ def _request_requirements(
     population = None
     if isinstance(request, MomentsRequest):
         population, grain, by = request.population, request.grain, request.by
+        if (
+            request.grain != "total"
+            and declaration.kind == "artifact"
+            and "cluster" in declaration.count_grains
+        ):
+            refuse_grain(
+                src,
+                request.grain,
+                ("total",),
+                route="use a source that retains the requested evidence",
+            )
     elif isinstance(request, BreakoutMethodMomentsRequest):
         population = request.population
         by = (request.breakout.property,)
@@ -214,6 +215,7 @@ def _request_requirements(
         population = request.population
         by = tuple(item.property for item in request.breakouts)
     elif isinstance(request, BreakoutUnitRowsRequest):
+        population = request.population
         by = (request.breakout.property,)
         unit_rows = True
         covariates = request.covariates
@@ -224,6 +226,7 @@ def _request_requirements(
     elif isinstance(request, MetricEvidenceRequest):
         by = request.by
         grain = "total"
+        population = request.population
     elif isinstance(request, MethodFitRequest):
         if declaration.method_fit == "none":
             refuse_operation(
@@ -236,6 +239,7 @@ def _request_requirements(
         population = request.population
         by = () if request.cell is None else (request.cell.breakout.property,)
     elif isinstance(request, ComplianceRequest):
+        population = request.population
         if declaration.compliance_axis == "none":
             refuse_operation(
                 src,
@@ -254,7 +258,40 @@ def _request_requirements(
             )
     elif isinstance(request, CountsRequest):
         population = "triggered" if request.kind == "triggered" else request.population
-        if not _has_count_method(src, request.kind):
+        if request.kind == "cluster" and "cluster" not in declaration.count_grains:
+            refuse_cluster(
+                src,
+                offered=declaration.count_grains,
+                route="use a source that retains cluster identities or cluster counts",
+            )
+        if not is_builtin_source(src) and request.kind not in declaration.count_grains:
+            refuse_operation(
+                src,
+                "counts",
+                tuple(sorted(declaration.count_grains)),
+                route="use a source that declares the requested count grain",
+            )
+        assignment_count_delegates = (
+            is_builtin_source(src)
+            and request.kind == "assignment"
+            and (
+                "cluster" in declaration.count_grains
+                or (
+                    declaration.kind == "artifact"
+                    and "artifact_experiment" in declaration.operations
+                )
+            )
+        )
+        builtin_moments_count_refusal = (
+            is_builtin_source(src)
+            and declaration.kind == "moments"
+            and request.kind in ("unit", "assignment")
+        )
+        if (
+            not _has_count_method(src, request.kind)
+            and not assignment_count_delegates
+            and not builtin_moments_count_refusal
+        ):
             refuse_operation(
                 src,
                 "counts",
@@ -269,6 +306,9 @@ def _request_requirements(
                 ("construction", "asof", "replay"),
                 route="use a source with sequential history",
             )
+    elif isinstance(request, SequentialSnapshotRequest):
+        # The owning loader or provider refuses with its own continuation code.
+        pass
     elif isinstance(request, EvidenceScope):
         grain = request.grain
         by = tuple(item.property for item in request.breakouts)
@@ -292,11 +332,30 @@ def _request_requirements(
                     MetricEvidenceRequest,
                     MomentsRequest,
                     SequentialCaptureRequest,
+                    SequentialSnapshotRequest,
                     UnitRowsRequest,
                 )
             ),
         )
     return grain, by, unit_rows, raw_outcomes, covariates, population
+
+
+def check_method_covariates(src: object, metric: str, methods: Sequence[object]) -> None:
+    """Validate method covariates before the corresponding evidence read."""
+    covariates = tuple(
+        dict.fromkeys(
+            covariate.name
+            for method in methods
+            for covariate in (getattr(method, "covariates", None) or ())
+        )
+    )
+    if covariates:
+        from increment._source_types import is_builtin_source
+
+        if is_builtin_source(src):
+            checker = getattr(src, "_check_method_covariates", None)
+            if callable(checker):
+                checker(metric, methods)
 
 
 def require_evidence(
@@ -321,11 +380,10 @@ def require_evidence(
             covariates,
             population,
         ) = _request_requirements(src, request)
-    from increment._source_types import declared_evidence, evidence_is_declared
+    from increment._source_types import declared_evidence, is_builtin_source
 
     evidence = declared_evidence(src)
-    declared = evidence_is_declared(src)
-    if declared and covariates and not evidence.unit_rows:
+    if covariates and not evidence.unit_rows:
         refuse(
             COVARIATE_UNAVAILABLE,
             constructor=type(src).__name__,
@@ -333,17 +391,28 @@ def require_evidence(
             offered=tuple(sorted(evidence.available_covariates or ())),
             route="use a source that retains the requested covariates",
         )
-    if declared and raw_outcomes and not evidence.raw_outcomes:
+    if not is_builtin_source(src) and covariates and evidence.available_covariates is not None:
+        offered_covariates = set(evidence.available_covariates) | set(evidence.breakouts)
+        missing = tuple(name for name in covariates if name not in offered_covariates)
+        if missing:
+            refuse(
+                COVARIATE_UNAVAILABLE,
+                constructor=type(src).__name__,
+                requested=missing,
+                offered=tuple(sorted(offered_covariates)),
+                route="use a source that retains the requested covariates",
+            )
+    if raw_outcomes and not evidence.raw_outcomes:
         refuse_raw_outcomes(
             src,
             offered=evidence.raw_outcomes,
             route="use a source that retains pre-transform unit outcomes",
         )
-    if declared and unit_rows and not evidence.unit_rows:
+    if unit_rows and not evidence.unit_rows:
         refuse_unit_rows(
             src, offered=evidence.unit_rows, route="use a source that retains unit-level rows"
         )
-    if declared and cluster and "cluster" not in evidence.count_grains:
+    if cluster and "cluster" not in evidence.count_grains:
         refuse_cluster(
             src,
             offered=sorted(evidence.count_grains),
@@ -359,6 +428,13 @@ def require_evidence(
     if grain is not None:
         requested = grain
         offered = evidence.sql_grains if operation == "sql" else evidence.grains
+        if operation != "sql" and "day_source" in evidence.operations:
+            from increment._source_types import is_builtin_source
+
+            if not is_builtin_source(src):
+                # A provider forwarding to a loader with a day source answers daily and
+                # as-of requests through it; built-in loaders keep their own refusals.
+                offered = offered | {"daily", "asof"}
         if grain not in offered:
             refuse_grain(
                 src,
@@ -380,5 +456,14 @@ def require_evidence(
             sorted(evidence.operations),
             route="use a source that supports this operation",
         )
-    if request is not None and population is not None:
+    if (
+        request is not None
+        and population is not None
+        and not (
+            is_builtin_source(src)
+            and getattr(request, "kind", None) == "assignment"
+            and population == "triggered"
+            and evidence.kind == "artifact"
+        )
+    ):
         _require_population(src, population, evidence.populations)

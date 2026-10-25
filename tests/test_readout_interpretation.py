@@ -421,8 +421,8 @@ def test_compliance_date_missing_control_does_not_blame_the_treatment_arm():
     import datetime as dt
 
     from increment._day_axis import _missing_compliance_rows
+    from increment._evidence_types import ComplianceArm, ComplianceSummary
     from increment._interpretation import interpret_readout
-    from increment._source_types import ComplianceArm, ComplianceSummary
 
     summary = ComplianceSummary(
         "s", "clicked", 7, True, None, None, (ComplianceArm("treatment", 20, 10),)

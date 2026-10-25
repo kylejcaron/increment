@@ -179,7 +179,7 @@ class ResolvedMetricConfig:
     sensitivity_methods: tuple[Method, ...]
     prior: Prior | None
     prior_is_global: bool
-    covariates: tuple[object, ...] = ()
+    covariates: tuple[CupedCovariate | AdjustmentCovariate, ...] = ()
     # An explicit ``methods=[]`` declaration emits no estimator rows.
     methods_explicitly_empty: bool = False
     # Provenance flag: the winning declaration omitted its decision method.

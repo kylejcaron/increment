@@ -1497,6 +1497,21 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 )
             from typing import Any, cast
 
+            from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
+
+            def unit_rows(source, metric, outcome_stage):
+                return cast(
+                    Any,
+                    request_evidence(
+                        evidence_provider(source),
+                        UnitRowsRequest(
+                            metric,
+                            outcome_stage=outcome_stage,
+                            population="triggered",
+                        ),
+                    ),
+                )
+
             from tests.analysis_factory import _native_source
 
             expected_percentile_cutoff = float(
@@ -1506,12 +1521,8 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 triggered_source = cast(Any, _native_source(source).triggered_source())
                 metrics_by_name = {metric.name: metric for metric in source.metrics}
                 fixed_metric = metrics_by_name["fixed_revenue"]
-                raw_fixed = triggered_source.unit_frame(
-                    fixed_metric, outcome_stage="raw"
-                ).to_pylist()
-                clipped_fixed = triggered_source.unit_frame(
-                    fixed_metric, outcome_stage="transformed"
-                ).to_pylist()
+                raw_fixed = unit_rows(triggered_source, fixed_metric, "raw").to_pylist()
+                clipped_fixed = unit_rows(triggered_source, fixed_metric, "transformed").to_pylist()
                 raw_fixed_by_unit = {row["unit_id"]: row["y"] for row in raw_fixed}
                 clipped_fixed_by_unit = {row["unit_id"]: row["y"] for row in clipped_fixed}
                 assert len(raw_fixed_by_unit) == len(clipped_fixed_by_unit) == 40
@@ -1526,11 +1537,9 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 assert percentile_raw.population == "triggered"
                 assert sorted(percentile_raw.arm("control").values) == sorted(triggered)
                 assert sorted(percentile_raw.arm("treatment").values) == sorted(triggered + 2.0)
-                raw_percentile = triggered_source.unit_frame(
-                    percentile_metric, outcome_stage="raw"
-                ).to_pylist()
-                clipped_percentile = triggered_source.unit_frame(
-                    percentile_metric, outcome_stage="transformed"
+                raw_percentile = unit_rows(triggered_source, percentile_metric, "raw").to_pylist()
+                clipped_percentile = unit_rows(
+                    triggered_source, percentile_metric, "transformed"
                 ).to_pylist()
                 raw_percentile_by_unit = {row["unit_id"]: row["y"] for row in raw_percentile}
                 clipped_percentile_by_unit = {
@@ -2166,38 +2175,32 @@ class TestPlanningBaselineOnMoments:
 
 
 class TestLegacyPlanningSources:
-    def test_method_only_encouragement_source_keeps_compliance(self, monkeypatch):
-        from tests.analysis_factory import held_source
+    def test_method_only_encouragement_source_keeps_compliance(self):
         from tests.parity_harness.cases import PARITY_CASES
 
         case = next(c for c in PARITY_CASES if c.id == "encouragement_declared_definitions")
         analysis = case.build["from_unit_summary"]()
         expected = analysis.planning_baseline("revenue")
-        source = held_source(analysis)
-        monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
         assert analysis.planning_baseline("revenue") == expected
 
     @pytest.mark.integration
-    def test_method_only_clustered_source_keeps_cluster_counts(self, tmp_path, monkeypatch):
-        from tests.analysis_factory import held_source
+    def test_method_only_clustered_source_keeps_cluster_counts(self, tmp_path):
 
         con, _path, analysis = _triggered_analysis(tmp_path, clustered=True)
         try:
             expected = analysis.planning_baseline("revenue")
-            source = held_source(analysis)
-            monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
             assert analysis.planning_baseline("revenue") == expected
         finally:
             con.disconnect()
 
     @pytest.mark.integration
     def test_legacy_triggered_wrapper_refuses_assigned_population(self, tmp_path, monkeypatch):
-        from increment.sources import MomentSource
+        from increment.sources import EvidenceSource
         from tests.analysis_factory import held_source
 
         con, _path, analysis = _triggered_analysis(tmp_path)
         try:
-            source = cast("MomentSource", held_source(analysis))
+            source = cast("EvidenceSource", held_source(analysis))
             monkeypatch.setattr(type(source), "evidence", property(lambda _source: None))
             triggered = cast("Any", source).triggered_source()
             replayed = Analysis._from_source(
@@ -2205,7 +2208,173 @@ class TestLegacyPlanningSources:
             )
             with pytest.raises(CapabilityError) as raised:
                 replayed.planning_baseline("revenue")
-            assert raised.value.code == "evidence.operation_unavailable"
-            assert raised.value.context["requested"] == {"population": "assigned"}
+            assert raised.value.code == "evidence.provider_unavailable"
+            assert raised.value.context == {"constructor": "DefinitionsMomentSource"}
         finally:
             con.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("clustered", "missing_treatment"), [(False, False), (True, False), (False, True)]
+)
+def test_triggered_planning_baseline_matches_for_forwarding_provider(
+    tmp_path, clustered, missing_treatment
+):
+    from contextlib import contextmanager
+
+    from increment.errors import CodedError
+    from increment.evidence import EvidenceScopeResult, evidence_provider, request_evidence
+    from tests.analysis_factory import held_source
+
+    con, _path, native = _triggered_analysis(
+        tmp_path,
+        clustered=clustered,
+        assigned_sizes=[2, 8] if clustered else None,
+        analyzed_sizes=[2, 2] if clustered else None,
+    )
+    if missing_treatment:
+        con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'treatment'")
+    adapter = evidence_provider(held_source(native))
+    scope_requests = []
+    count_requests = []
+    moment_requests = []
+
+    class Provider:
+        context = adapter.context
+        evidence = adapter.evidence
+
+        def moments(self, request):
+            moment_requests.append(request)
+            return request_evidence(adapter, request)
+
+        def breakout_method_moments(self, request):
+            return request_evidence(adapter, request)
+
+        def unit_rows(self, request):
+            return request_evidence(adapter, request)
+
+        def method_fit(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance_series(self, request):
+            return request_evidence(adapter, request)
+
+        def counts(self, request):
+            count_requests.append(request)
+            return request_evidence(adapter, request)
+
+        def capture_sequential(self, request):
+            return request_evidence(adapter, request)
+
+        def scope(self, request):
+            scope_requests.append(request)
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    forwarded = Analysis._from_source(Provider())
+    try:
+        if missing_treatment:
+            with pytest.raises(CodedError) as raised:
+                forwarded.planning_baseline("revenue")
+            assert raised.value.code == "query.integrity.trigger_arm_missing"
+        else:
+            expected = native.planning_baseline("revenue")
+            actual = forwarded.planning_baseline("revenue")
+            assert actual == expected
+            if clustered:
+                assert cast(Any, actual).trigger_rate == pytest.approx(0.4)
+        assert {request.kind for request in count_requests} == {
+            "unit",
+            "triggered",
+            *({"cluster"} if clustered and not missing_treatment else set()),
+        }
+        if missing_treatment:
+            assert not moment_requests
+        elif not clustered:
+            assert moment_requests
+            assert all(request.population == "triggered" for request in moment_requests)
+        assert [request.population for request in scope_requests] == (
+            [] if missing_treatment else ["triggered"]
+        )
+        if moment_requests:
+            assert all(request.population == "triggered" for request in moment_requests)
+    finally:
+        native.close()
+        con.disconnect()
+
+
+@pytest.mark.integration
+def test_forwarded_planning_baseline_ignores_mixed_assigned_unit_audit_bucket(tmp_path):
+    from contextlib import contextmanager
+
+    from increment.evidence import (
+        CountEvidence,
+        EvidenceScopeResult,
+        evidence_provider,
+        request_evidence,
+    )
+    from tests.analysis_factory import held_source
+
+    con, _path, native = _triggered_analysis(tmp_path)
+    adapter = evidence_provider(held_source(native))
+
+    class Provider:
+        context = adapter.context
+        evidence = adapter.evidence
+
+        def moments(self, request):
+            return request_evidence(adapter, request)
+
+        def breakout_method_moments(self, request):
+            return request_evidence(adapter, request)
+
+        def unit_rows(self, request):
+            return request_evidence(adapter, request)
+
+        def method_fit(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance_series(self, request):
+            return request_evidence(adapter, request)
+
+        def counts(self, request):
+            answer = cast(Any, request_evidence(adapter, request))
+            if request.kind == "unit" and request.population == "assigned":
+                return CountEvidence(
+                    answer.population,
+                    answer.grain,
+                    {**answer.counts, "(mixed assignment)": 1},
+                    answer.unit_counts,
+                )
+            return answer
+
+        def capture_sequential(self, request):
+            return request_evidence(adapter, request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    forwarded = Analysis._from_source(Provider())
+    try:
+        assert forwarded.planning_baseline("revenue") == native.planning_baseline("revenue")
+    finally:
+        native.close()
+        con.disconnect()

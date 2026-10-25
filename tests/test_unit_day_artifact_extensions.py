@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 
 from increment import SourceSnapshotEvidence
+from increment.evidence import EvidenceCapabilities
 from increment.query._native_triggered import TriggeredPopulationSource
 from increment.query.artifact_contract import (
     ArtifactContractError,
@@ -47,6 +48,25 @@ from increment.semantics.artifact import (
     TriggerPopulationExtension,
 )
 from increment.sources import BreakoutMomentsSource
+
+
+def _artifact_evidence(operations):
+    return EvidenceCapabilities(
+        kind="artifact",
+        grains=frozenset(),
+        breakouts=(),
+        shape=None,
+        operations=operations,
+        unit_rows=True,
+        raw_outcomes=True,
+        method_fit="none",
+        compliance_axis="none",
+        count_grains=frozenset({"unit", "assignment"}),
+        populations=frozenset({"assigned"}),
+        sequential_capture="asof",
+        scalar=None,
+        available_covariates=None,
+    )
 
 
 def _expect_code(code, operation):
@@ -97,6 +117,7 @@ def _context_catalog(entries):
 
 class _SiteSource:
     operations = frozenset({"sitewide_evidence"})
+    evidence = _artifact_evidence(operations)
 
     def sitewide_evidence(self, metric, *, include_ratio=False):
         raise AssertionError("rows are supplied directly")
@@ -142,6 +163,7 @@ class _AllSource:
             "sitewide_evidence",
         }
     )
+    evidence = _artifact_evidence(operations)
 
     def breakout_source(self, breakout, *, metrics=()):
         return self
@@ -611,7 +633,7 @@ def test_missing_extension_and_observational_or_contrast_are_coded_refusals():
             cast(ArtifactSnapshot, SimpleNamespace()), None, request=_valid_request()
         ),
     )
-    source = SimpleNamespace(operations=frozenset())
+    source = SimpleNamespace(operations=frozenset(), evidence=_artifact_evidence(frozenset()))
     _expect_code(
         "artifact.evidence.unavailable",
         lambda: encode_extension(source, _valid_request(), _Publication(), rows=[], context=None),
@@ -621,7 +643,7 @@ def test_missing_extension_and_observational_or_contrast_are_coded_refusals():
 def test_evidence_gap_raises_artifact_contract_error_with_evidence_code():
     """A source that cannot supply an extension's requested evidence refuses
     with artifact.evidence.unavailable, never the capability-gap code."""
-    source = SimpleNamespace(operations=frozenset())
+    source = SimpleNamespace(operations=frozenset(), evidence=_artifact_evidence(frozenset()))
     with pytest.raises(ArtifactContractError) as caught:
         encode_extension(source, _valid_request(), _Publication(), rows=[], context=None)
     assert isinstance(caught.value, ArtifactContractError)
@@ -922,7 +944,11 @@ def test_every_extension_rejects_missing_operation_and_extension(req, definition
         from tests.capability_consumers_auxiliary import assert_refusal
     with pytest.raises(ArtifactContractError) as raised1:
         encode_extension(
-            SimpleNamespace(operations=frozenset()), req, _Publication(), context=None, rows=rows
+            SimpleNamespace(operations=frozenset(), evidence=_artifact_evidence(frozenset())),
+            req,
+            _Publication(),
+            context=None,
+            rows=rows,
         )
     assert raised1.value.code == "artifact.evidence.unavailable"
     if operation is not None:

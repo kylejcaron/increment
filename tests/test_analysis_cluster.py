@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from typing import Any
+from typing import Any, cast
 
 import ibis
 import numpy as np
@@ -20,9 +20,18 @@ from increment.analysis import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
 from increment.estimation.sitewide import SitewideImpact
+from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows, make_analysis_like
 from tests.sequential_cases import registration
+
+
+def _unit_rows(source, metric) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric)),
+    )
+
 
 N_STORES = 20  # per arm -> 40 total clusters, above the small-K warning
 UNITS_PER_STORE = 2
@@ -130,7 +139,7 @@ def test_direct_unit_frame_validates_raw_cluster_labels(tmp_path, invalid, code)
     with _analysis(tmp_path, rows=rows) as analysis:
         source = _native_source(analysis)
         with pytest.raises(InvalidRequestError) as error:
-            source.unit_frame(source.context.metrics[0])
+            _unit_rows(source, source.context.metrics[0])
         assert error.value.code == code
 
 
@@ -145,7 +154,7 @@ def test_direct_unit_frame_accepts_observational_cluster_spanning_arms(tmp_path)
             ),
         )
         source = _native_source(observational)
-        rows = source.unit_frame(source.context.metrics[0]).to_pylist()
+        rows = _unit_rows(source, source.context.metrics[0]).to_pylist()
 
     assert len(rows) == 2 * N_STORES * UNITS_PER_STORE
     shared = {row["unit_id"]: row for row in rows if row["cluster_id"] == "cs0"}

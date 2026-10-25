@@ -77,7 +77,7 @@ from increment._plan_compatibility import (
     PlanFamilyCompatibilityRequest,
     plan_family_compatibility,
 )
-from increment._source_types import MomentSource
+from increment._source_types import _BuiltinMomentSource
 from increment._study import ParallelStudyEnvelope, SwitchbackStudyEnvelope
 from increment.compatibility import _conservative_divide
 from increment.errors import (
@@ -464,7 +464,7 @@ class ContrastSource(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SeamArmAnalysisState:
-    source: MomentSource
+    source: _BuiltinMomentSource
     study: ParallelStudyEnvelope | None
     experiment_name: str
     family: ClassVar[Literal["arm_moments"]] = "arm_moments"
@@ -483,7 +483,7 @@ class SeamArmAnalysisState:
 
 @dataclass(frozen=True, slots=True)
 class DefinitionsArmAnalysisState:
-    source: MomentSource
+    source: _BuiltinMomentSource
     study: ParallelStudyEnvelope
     definitions: Definitions
     experiment: Experiment

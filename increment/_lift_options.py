@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
+    from increment.sources import EvidenceSource
 
 
 def _call_method_roles(
@@ -43,7 +43,7 @@ def _call_method_roles(
 
 
 def _effective_role_maps(
-    src: MomentSource,
+    src: EvidenceSource,
     selected_metrics: Sequence[Metric],
     *,
     decision_method: Method | _Unset,
@@ -121,7 +121,7 @@ class LiftOptions:
     @classmethod
     def resolve(
         cls,
-        src: MomentSource,
+        src: EvidenceSource,
         selected: Sequence[Metric],
         *,
         decision_method: Method | _Unset,

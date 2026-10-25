@@ -27,6 +27,12 @@ from typing import Any, Literal, cast
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
 
+from increment._evidence_types import (
+    ComplianceArm,
+    ComplianceSummary,
+    SourceContext,
+    unit_frame_covariate_columns,
+)
 from increment._frame_moments import (
     _ASOF_QUANTILE_UNSUPPORTED,
     _apply_spec_missing,
@@ -99,7 +105,6 @@ from increment._source_types import (
     EvidenceCapabilities,
     ScalarBreakoutRows,
     ScalarEvidenceDeclaration,
-    unit_frame_covariate_columns,
 )
 from increment._window import (
     maturity_days as _maturity_days,  # noqa: F401 - retained as the private parity alias
@@ -125,15 +130,7 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from increment.sequential_source import SequentialSourceMixin
-from increment.sources import (
-    SOURCE_QUANTILE_NO_MOMENTS,
-    UNASSIGNED_LABEL,
-    ComplianceArm,
-    ComplianceSummary,
-    Grain,
-    SourceContext,
-    SourceOperation,
-)
+from increment.sources import SOURCE_QUANTILE_NO_MOMENTS, UNASSIGNED_LABEL, Grain, SourceOperation
 
 __all__ = [
     "FramePanelSource",
@@ -409,6 +406,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             ),
             cluster=cluster,
             intervention_grain=intervention_grain,
+            metric_missingness={name: spec.missing for name, spec in self._specs_by_name.items()},
         )
         # Snapshot exact values so later caller mutation cannot change the
         # inferred population while leaving the constructed moments fixed.
@@ -505,7 +503,7 @@ class FrameTotalsSource(SequentialSourceMixin):
     def available_covariates(self) -> frozenset[str]:
         return frozenset(self._frame.columns)
 
-    def check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
+    def _check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
         check_covariate_columns(self._frame, metric, methods)
 
     def breakout_moments_for_method(
@@ -769,7 +767,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         count, or missingness policy.
         """
         if completed_windows_only:
-            from increment._source_types import validate_compliance_completion
+            from increment._evidence_types import validate_compliance_completion
 
             validate_compliance_completion(design, as_of=as_of)
         if as_of is not None:
@@ -1277,8 +1275,8 @@ class _RestrictedSummaryBreakoutSource:
             metric, _remap_method_covariates(method, self._covariate_columns), by=by
         )
 
-    def check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
-        self._source.check_method_covariates(
+    def _check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
+        self._source._check_method_covariates(
             metric,
             [_remap_method_covariates(method, self._covariate_columns) for method in methods],
         )
@@ -1489,6 +1487,7 @@ class FramePanelSource(SequentialSourceMixin):
                 prior=None,
             ),
             cluster=None,
+            metric_missingness={spec.name: spec.missing for spec in metrics},
         )
 
     def _day_identity(self) -> nw.DataFrame[Any]:
@@ -1771,7 +1770,7 @@ class FramePanelSource(SequentialSourceMixin):
         frame = self._source_frame if self._source_frame is not None else self._sparse_panel
         return frozenset(frame.columns)
 
-    def check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
+    def _check_method_covariates(self, metric: str, methods: Sequence[Any]) -> None:
         frame = self._source_frame if self._source_frame is not None else self._sparse_panel
         check_covariate_columns(frame, metric, methods)
 
@@ -2137,7 +2136,7 @@ class FramePanelSource(SequentialSourceMixin):
                 route="rebuild the source for the requested design",
             )
         if completed_windows_only:
-            from increment._source_types import validate_compliance_completion
+            from increment._evidence_types import validate_compliance_completion
 
             validate_compliance_completion(design, as_of=as_of)
         rows = _compliance_arm_rows_panel(

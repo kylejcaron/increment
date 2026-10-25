@@ -1250,14 +1250,21 @@ def test_from_definitions_auto_binding_preserves_omitted_q(tmp_path):
 @pytest.mark.slow
 def test_omitted_plan_q_survives_native_and_artifact_replay():
     import json
+    from contextlib import nullcontext
     from datetime import date
-    from typing import cast
+    from typing import Any, cast
 
+    from increment.evidence import (
+        EvidenceCapabilities,
+        EvidenceProvider,
+        EvidenceScopeResult,
+        MomentsRequest,
+    )
     from increment.query.artifact_digest import canonical_json
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from increment.query.source import _artifact_source_context
     from increment.semantics.artifact import ArtifactContext, _artifact_context_digest
-    from increment.sources import MomentSource
 
     connection, defs, native = _native_fixture("bernoulli", registration_q=0.20)
     try:
@@ -1276,7 +1283,6 @@ def test_omitted_plan_q_survives_native_and_artifact_replay():
             canonical_json=legacy_canonical,
             sha256=_artifact_context_digest(legacy_canonical),
         )
-        from increment.query.source import _artifact_source_context
 
         _restored_experiment, legacy_source_context = _artifact_source_context(legacy_context)
         assert legacy_source_context.plan.q_explicit is False
@@ -1296,7 +1302,7 @@ def test_omitted_plan_q_survives_native_and_artifact_replay():
 
         from increment import readouts
 
-        class UnreadSource:
+        class UnreadSource(EvidenceProvider):
             capabilities = frozenset({"total"})
             breakouts = ()
             shape = None
@@ -1304,16 +1310,59 @@ def test_omitted_plan_q_survives_native_and_artifact_replay():
             def __init__(self):
                 self.context = explicit_source_context
                 self.moment_calls = 0
+                self.scope_calls = 0
+                self.evidence = EvidenceCapabilities(
+                    kind="moments",
+                    grains=frozenset({"total"}),
+                    breakouts=(),
+                    shape=None,
+                    operations=frozenset(),
+                    unit_rows=False,
+                    raw_outcomes=False,
+                    method_fit="none",
+                    compliance_axis="none",
+                    count_grains=frozenset(),
+                    populations=frozenset({"assigned"}),
+                    sequential_capture="none",
+                    scalar=None,
+                    available_covariates=frozenset(),
+                )
 
-            def moments(self, *args, **kwargs):
+            def moments(self, request: MomentsRequest):
                 self.moment_calls += 1
                 raise AssertionError("mismatched explicit artifact q must refuse before reads")
 
+            def breakout_method_moments(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def unit_rows(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def method_fit(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def compliance(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def compliance_series(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def counts(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def capture_sequential(self, request):
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+            def scope(self, request):
+                self.scope_calls += 1
+                return EvidenceScopeResult(nullcontext(self), request)
+
         unread = UnreadSource()
         with pytest.raises(CapabilityError) as mismatched:
-            readouts.run(cast(MomentSource, unread))
+            readouts.run(cast(Any, unread))
         assert mismatched.value.code == "sequential.source.invalid"
         assert unread.moment_calls == 0
+        assert unread.scope_calls == 0
 
         store = WarehouseArtifactStore(connection, schema_name="artifacts")
         reference = native.publish_unit_day_artifact(store)

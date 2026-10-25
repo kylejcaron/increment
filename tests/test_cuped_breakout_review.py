@@ -7,6 +7,7 @@ import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
 from increment.estimation.results import LiftEstimate
+from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.frame import CupedCovariate
 
 
@@ -534,7 +535,13 @@ def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path
             next(c.covariates for c in source.context.configs if c.metric.name == "revenue"),
         )
         frame = nw.from_native(
-            source.unit_frame(metric, covariates=("region",), population="triggered"),
+            cast(
+                UnitRows,
+                request_evidence(
+                    evidence_provider(source),
+                    UnitRowsRequest(metric, covariates=("region",), population="triggered"),
+                ),
+            ),
             eager_only=True,
         )
         actual = analysis.run_breakout(metrics=["revenue"], population="triggered")

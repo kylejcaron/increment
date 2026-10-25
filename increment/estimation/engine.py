@@ -22,13 +22,13 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from increment._evidence_types import unit_frame_covariate_columns
 from increment._finite_sample_refusals import (
     refuse_finite_sample_cuped,
     refuse_finite_sample_metric_type,
 )
 from increment._literals import Alternative, ConversionInference, PreferredDirection
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
-from increment._source_types import unit_frame_covariate_columns
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,

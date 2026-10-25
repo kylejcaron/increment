@@ -74,7 +74,7 @@ def test_covariate_named_like_a_unit_frame_column_keeps_its_own_values(name, pan
 
 
 def test_non_colliding_covariate_columns_are_served_under_their_own_names():
-    from increment._source_types import unit_frame_covariate_columns
+    from increment._evidence_types import unit_frame_covariate_columns
 
     assert unit_frame_covariate_columns(("pre", "region")) == {"pre": "pre", "region": "region"}
     mapped = unit_frame_covariate_columns(("y", "pre"))

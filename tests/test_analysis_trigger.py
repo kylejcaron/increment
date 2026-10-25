@@ -26,12 +26,20 @@ from increment.errors import (
 )
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sitewide import SitewideImpact
+from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.semantics import load
 from tests.warning_codes import warning_codes
 
 
 def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
+
+
+def _unit_rows(source, metric, **kwargs) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
 
 
 def _defs_yaml(
@@ -517,16 +525,16 @@ def test_trigger_after_enrollment_end_remains_eligible_at_snapshot_cutoff(tmp_pa
         assert randomization_counts == {"C": 1, "T": 1}
         assert unit_counts == {}
         with pytest.warns(IncrementWarning):
-            extended_rows = source.unit_frame(
-                analysis.metrics[0], population="triggered"
+            extended_rows = _unit_rows(
+                source, analysis.metrics[0], population="triggered"
             ).to_pylist()
         assert extended_rows == []
         with pytest.warns(IncrementWarning):
-            default_rows = (
-                _native_source(default_analysis)
-                .unit_frame(default_analysis.metrics[0], population="triggered")
-                .to_pylist()
-            )
+            default_rows = _unit_rows(
+                _native_source(default_analysis),
+                default_analysis.metrics[0],
+                population="triggered",
+            ).to_pylist()
         assert default_rows == []
     finally:
         analysis.close()
@@ -1722,6 +1730,89 @@ def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evide
             _close_parity_analysis(adopted)
 
 
+def _observational_triggered_analysis(tmp_path):
+    # Only triggered treatment units are affected and half the units trigger, so the
+    # triggered-population lift is about twice the assigned-population lift.
+    table = _with_preassignment_region(_events(n_per_arm=300, trigger_rate=0.5, effect=0.6))
+    path = _write_defs(tmp_path)
+    path.write_text(
+        path.read_text()
+        .replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+        )
+        .replace(
+            "    plan:\n",
+            "    design:\n"
+            "      mechanism: observational\n"
+            "      covariates:\n"
+            "        - {property: region, source: events}\n"
+            "    plan:\n",
+        )
+    )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=table)
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    return analysis, con
+
+
+def _lifts(rows):
+    return {(row.method, row.group_id): row.lift.value for row in cast(Any, rows)}
+
+
+def test_triggered_observational_run_estimates_the_undiluted_triggered_lift(tmp_path):
+    analysis, con = _observational_triggered_analysis(tmp_path)
+    try:
+        triggered = analysis.run(metrics=["revenue"], population="triggered")
+        assigned = _lifts(analysis.run(metrics=["revenue"], population="assigned"))
+        assert {row.analysis_population for row in triggered} == {"triggered"}
+        assert set(assigned) == set(_lifts(triggered))
+        for key, value in _lifts(triggered).items():
+            assert value > 1.4 * assigned[key] > 0
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+def test_triggered_observational_artifact_matches_the_definitions_readout(tmp_path):
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    analysis, con = _observational_triggered_analysis(tmp_path)
+    adopted = None
+    try:
+        expected = _lifts(analysis.run(metrics=["revenue"], population="triggered"))
+        adopted = _publish_and_adopt(
+            con,
+            analysis,
+            kinds=(
+                "trigger_population",
+                "assignment_counts",
+                "trigger_measure_stats",
+                "unit_covariate_level",
+            ),
+        )
+        actual = _lifts(adopted.run(metrics=["revenue"], population="triggered"))
+        assert actual.keys() == expected.keys()
+        for key, value in expected.items():
+            assert actual[key] == pytest.approx(value)
+    finally:
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
 @pytest.mark.slow
 def test_triggered_cate_randomized_artifact_without_covariates_preserves_population(tmp_path):
     from collections import Counter
@@ -2626,11 +2717,9 @@ def test_staggered_cluster_trigger_windows_censor_by_each_member_anchor(tmp_path
         from tests.analysis_factory import _native_source
 
         with pytest.warns(IncrementWarning):
-            frame = (
-                _native_source(analysis)
-                .unit_frame(analysis.metrics[0], population="triggered")
-                .to_pylist()
-            )
+            frame = _unit_rows(
+                _native_source(analysis), analysis.metrics[0], population="triggered"
+            ).to_pylist()
         assert {row["unit_id"] for row in frame} == {"C-early", "T-early"}
         assert {row["cluster_id"] for row in frame} == {"C-store", "T-store"}
     finally:
@@ -3858,9 +3947,12 @@ def test_triggered_moments_source_unit_evidence_uses_triggered_units(tmp_path):
         source = _native_source(analysis)
         metric = source.context.metrics[0]
         covariates = cast(Any, source.context.configs[0].covariates)
-        triggered_frame = source.moments_source(
-            metrics=[metric], population="triggered"
-        ).unit_frame(metric, covariates=tuple(item.name for item in covariates))
+        triggered_frame = _unit_rows(
+            source.moments_source(metrics=[metric], population="triggered"),
+            metric,
+            covariates=tuple(item.name for item in covariates),
+            population="triggered",
+        )
         assert nw.from_native(triggered_frame, eager_only=True).shape[0] == pytest.approx(
             100, abs=25
         )

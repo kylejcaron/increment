@@ -22,12 +22,11 @@ from increment.query.session import SourceSnapshotEvidence, WarehouseSession
 
 if TYPE_CHECKING:
     from increment.semantics.models import Definitions, Experiment, Metric
-    from increment.sources import MomentSource
 
 
-def _moment_source(analysis: Analysis) -> MomentSource:
+def _moment_source(analysis: Analysis) -> Any:
     """Access an arm-analysis source for numeric moment probes."""
-    return cast("MomentSource", analysis._src)
+    return analysis._src
 
 
 def held_source(analysis: Analysis) -> object:

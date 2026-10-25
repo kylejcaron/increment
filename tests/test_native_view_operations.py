@@ -19,6 +19,7 @@ from increment.semantics.models import (
     QuantileMetric,
     Winsorization,
 )
+from tests._evidence_requests import _breakout_moments, _moments
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, make_analysis_like
 from tests.query.test_builders import _analysis_with_cross_source_breakouts
@@ -231,8 +232,8 @@ def test_day_source_matches_daily_and_asof_views(pricing_analysis):
     source = _native_source(pricing_analysis)
     day = source.day_source(metrics=(metric,))
 
-    daily_rows = day.moments(metric, grain="daily")
-    asof_rows = day.moments(metric, grain="asof")
+    daily_rows = _moments(day, metric, grain="daily")
+    asof_rows = _moments(day, metric, grain="asof")
     direct_daily = DailyMetricValues(_run_daily_values(daily_rows, metrics=[metric], view="daily"))
     direct_asof = DailyMetricValues(_run_daily_values(asof_rows, metrics=[metric], view="asof"))
     facade_daily = pricing_analysis.run_daily(metrics=(metric,))
@@ -319,7 +320,7 @@ def test_day_source_validates_missing_breakout_before_reduction_or_properties(
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("properties built")),
     )
     with pytest.raises(CapabilityError) as raised:
-        day.breakout_moments(metric, Breakout(property="missing_dimension"))
+        _breakout_moments(day, metric, Breakout(property="missing_dimension"))
     assert raised.value.code == "evidence.breakout_unavailable"
 
 
@@ -466,7 +467,7 @@ def test_day_source_treats_inferred_and_explicit_breakout_sources_as_equivalent(
 def test_day_source_preserves_retention_cohort_path(pricing_analysis):
     metric = next(m for m in pricing_analysis.metrics if m.name == "d7_retention")
     source = _native_source(pricing_analysis)
-    rows = source.day_source(metrics=(metric,)).moments(metric, grain="daily")
+    rows = _moments(source.day_source(metrics=(metric,)), metric, grain="daily")
     assert rows
     assert {row["metric"] for row in rows} == {metric.name}
     assert {row["ds"] for row in rows} == {rows[0]["ds"]}
@@ -488,7 +489,7 @@ def test_day_preflight_uptake_cluster_refusal_is_coded_before_builder(con, monke
     monkeypatch.setattr(source, "_note_reduction", fail)
 
     with pytest.raises(CapabilityError) as raised:
-        source.day_source(metrics=(metric,)).moments(metric, grain="asof", include_covariate=True)
+        _moments(source.day_source(metrics=(metric,)), metric, grain="asof", include_covariate=True)
     _assert_operation_refusal(
         raised.value,
         operation="moments",
@@ -520,7 +521,7 @@ def test_day_source_clustered_encouragement_refuses_before_uptake_warehouse_work
     monkeypatch.setattr(source, "_note_reduction", fail)
 
     with pytest.raises(CapabilityError) as raised:
-        source.day_source(metrics=(metric,)).moments(metric, grain="asof")
+        _moments(source.day_source(metrics=(metric,)), metric, grain="asof")
     _assert_operation_refusal(
         raised.value,
         operation="moments",
@@ -574,10 +575,10 @@ def test_day_source_validates_metrics_passed_directly(pricing_analysis):
     breakout = cast("Breakout", None)
 
     with pytest.raises(CapabilityError) as raised:
-        day.moments(quantile)
+        _moments(day, quantile)
     assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
-        day.moments(winsorized)
+        _moments(day, winsorized)
     assert raised.value.code == "evidence.operation_unavailable"
     with pytest.raises(CapabilityError) as raised:
         day.breakout_moments(quantile, breakout)

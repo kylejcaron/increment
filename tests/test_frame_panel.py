@@ -21,6 +21,14 @@ from increment import Method, readouts
 from increment._frame_panel import _day_axis_label_order
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.diagnostics import NotApplicable, SRMResult
+from increment.evidence import (
+    ComplianceRequest,
+    CountsRequest,
+    MomentsRequest,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import (
     CupedCovariate,
     FramePanelSource,
@@ -33,6 +41,32 @@ from increment.frame import (
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
 from tests.warning_codes import warning_codes
+
+
+def _moments(source: Any, metric: Metric, **options: Any) -> list[dict[str, Any]]:
+    if "by" in options:
+        options["by"] = tuple(options["by"])
+    rows = cast(
+        Sequence[Mapping[str, Any]],
+        request_evidence(evidence_provider(source), MomentsRequest(metric=metric, **options)),
+    )
+    return cast(list[dict[str, Any]], list(rows))
+
+
+def _unit_rows(source: Any, metric: Metric, **options: Any) -> Any:
+    if "covariates" in options:
+        options["covariates"] = tuple(options["covariates"])
+    return cast(
+        Any, request_evidence(evidence_provider(source), UnitRowsRequest(metric=metric, **options))
+    )
+
+
+def _counts(source: Any) -> Any:
+    return cast(Any, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))).counts
+
+
+def _compliance(source: Any, **options: Any) -> Any:
+    return cast(Any, request_evidence(evidence_provider(source), ComplianceRequest(**options)))
 
 
 def test_frame_input_type_refusals_name_the_route(monkeypatch):
@@ -204,7 +238,7 @@ def test_parallel_panel_path_remains_independent_of_switchback_validation(
         control="control",
         metrics={"revenue": "mean"},
     )
-    assert source.unit_counts() == {"control": 4, "treatment": 4}
+    assert _counts(source) == {"control": 4, "treatment": 4}
 
 
 @pytest.mark.integration
@@ -333,7 +367,7 @@ def test_asof_moments_gate_units_until_declared_exposure_date() -> None:
         breakouts=["country"],
     )
 
-    moments = src.moments(_metric(src, "revenue"), grain="asof", by=["country"])
+    moments = _moments(src, _metric(src, "revenue"), grain="asof", by=["country"])
     day1 = [row for row in moments if row["ds"] == base]
     assert {(row["group_id"], row["n"]) for row in day1} == {("control", 1)}
 
@@ -364,7 +398,7 @@ def test_asof_moments_without_exposure_uses_fixed_global_cohort() -> None:
         metrics={"revenue": "mean"},
     )
 
-    moments = src.moments(_metric(src, "revenue"), grain="asof")
+    moments = _moments(src, _metric(src, "revenue"), grain="asof")
     day1 = [row for row in moments if row["ds"] == base]
     assert {(row["group_id"], row["n"]) for row in day1} == {
         ("control", 1),
@@ -393,7 +427,7 @@ def test_asof_cumulative_moments_order_string_day_labels_naturally() -> None:
         control="control",
         metrics={"revenue": "mean"},
     )
-    moments = src.moments(_metric(src, "revenue"), grain="asof")
+    moments = _moments(src, _metric(src, "revenue"), grain="asof")
     cumulative = {row["ds"]: _sum_y(row) for row in moments}
     assert cumulative == {"d1": 1.0, "d2": 3.0, "d10": 13.0}
 
@@ -421,7 +455,7 @@ def test_asof_cumulative_moments_refuses_ambiguous_string_day_labels() -> None:
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        src.moments(_metric(src, "revenue"), grain="asof")
+        _moments(src, _metric(src, "revenue"), grain="asof")
     assert raised.value.code == "frame.asof.day_axis_unorderable"
 
 
@@ -525,7 +559,7 @@ def test_asof_encouragement_uptake_moments_match_group_summary() -> None:
     )
     actual = {
         (row["ds"], row["group_id"]): row
-        for row in src.moments(_metric(src, "revenue"), grain="asof")
+        for row in _moments(src, _metric(src, "revenue"), grain="asof")
     }
 
     assert actual.keys() == expected.keys()
@@ -582,7 +616,7 @@ def test_asof_uptake_window_without_exposure_uses_first_observed_numeric_day() -
         ),
     )
 
-    moments = src.moments(_metric(src, "revenue"), grain="asof")
+    moments = _moments(src, _metric(src, "revenue"), grain="asof")
     by_day_group = {(row["ds"], row["group_id"]): row for row in moments}
     assert by_day_group[(0, "treatment")]["n"] == 2
     final_treatment = by_day_group[(5, "treatment")]
@@ -621,7 +655,7 @@ def test_windowed_metric_numeric_day_axis_respects_window_edge() -> None:
         metrics=[MetricSpec(name="revenue", window_days=1)],
         exposure_date="exposed_on",
     )
-    moments = {r["group_id"]: r for r in src.moments(_metric(src, "revenue"), grain="total")}
+    moments = {r["group_id"]: r for r in _moments(src, _metric(src, "revenue"), grain="total")}
     assert _sum_y(moments["control"]) == pytest.approx(1.0)
     assert _sum_y(moments["treatment"]) == pytest.approx(3.0)
 
@@ -680,7 +714,7 @@ def test_asof_cumulative_moments_refuses_ambiguous_date_like_labels() -> None:
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        src.moments(_metric(src, "revenue"), grain="asof")
+        _moments(src, _metric(src, "revenue"), grain="asof")
     assert raised.value.code == "frame.asof.day_axis_unorderable"
 
 
@@ -703,7 +737,7 @@ def test_asof_cumulative_moments_orders_negative_prefixed_integer_labels() -> No
         control="control",
         metrics={"revenue": "mean"},
     )
-    moments = src.moments(_metric(src, "revenue"), grain="asof")
+    moments = _moments(src, _metric(src, "revenue"), grain="asof")
     cumulative = {row["ds"]: _sum_y(row) for row in moments}
     assert cumulative == {"d-1": 2.0, "d0": 3.0}
 
@@ -729,7 +763,7 @@ def test_asof_cumulative_moments_refuses_colliding_prefixed_integer_labels() -> 
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        src.moments(_metric(src, "revenue"), grain="asof")
+        _moments(src, _metric(src, "revenue"), grain="asof")
     assert raised.value.code == "frame.asof.day_axis_unorderable"
 
 
@@ -767,7 +801,7 @@ def test_daily_reduction_refuses_colliding_prefixed_labels_across_days(
         exposure_date="exposed_on",
     )
     with pytest.raises(CapabilityError) as raised:
-        src.moments(_metric(src, "revenue"), grain="daily")
+        _moments(src, _metric(src, "revenue"), grain="daily")
     assert raised.value.code == "frame.asof.day_axis_unorderable"
 
 
@@ -805,7 +839,7 @@ def test_asof_cumulative_moments_invariant_to_input_row_order() -> None:
             control="control",
             metrics={"revenue": "mean"},
         )
-        return src.moments(_metric(src, "revenue"), grain="asof")
+        return _moments(src, _metric(src, "revenue"), grain="asof")
 
     def normalize(moments: list[dict[str, Any]]) -> set[tuple[Any, ...]]:
         return {(row["ds"], row["group_id"], _sum_y(row), row["n"]) for row in moments}
@@ -845,7 +879,7 @@ def test_observable_end_kind_mismatch_refuses() -> None:
         observation_end=date(2026, 1, 1),
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        src.moments(_metric(src, "revenue"), grain="total")
+        _moments(src, _metric(src, "revenue"), grain="total")
     assert exc_info.value.code == "frame.panel.observable_end_dtype"
     assert exc_info.value.context["axis_kind"] == "numeric"
     assert exc_info.value.context["end_kind"] == "calendar"
@@ -1104,7 +1138,8 @@ def test_sparse_panel_oracle_matches_dense_across_execution_kernels(
         result: dict[tuple[Any, ...], dict[str, Any]] = {}
         for grain in grains:
             for completed in (False, True):
-                actual = source.moments(
+                actual = _moments(
+                    source,
                     metric,
                     grain=grain,
                     by=breakouts,
@@ -1182,8 +1217,8 @@ def test_sparse_daily_and_asof_match_explicit_zero_panel_in_any_input_order() ->
     metric = _metric(sparse_source, "value")
     dense_metric = _metric(dense_source, "value")
     for grain in ("daily", "asof"):
-        actual = sparse_source.moments(metric, grain=grain)
-        expected = dense_source.moments(dense_metric, grain=grain)
+        actual = _moments(sparse_source, metric, grain=grain)
+        expected = _moments(dense_source, dense_metric, grain=grain)
         assert {(r["ds"], r["group_id"]) for r in actual} == {
             (r["ds"], r["group_id"]) for r in expected
         }
@@ -1229,12 +1264,12 @@ def test_panel_breakout_declarations_preserve_unsegmented_moments() -> None:
         breakouts=["country", "plan"],
     )
 
-    assert unsegmented.moments(_metric(unsegmented, "revenue")) == declared_breakouts.moments(
-        _metric(declared_breakouts, "revenue")
+    assert _moments(unsegmented, _metric(unsegmented, "revenue")) == _moments(
+        declared_breakouts, _metric(declared_breakouts, "revenue")
     )
-    assert unsegmented.moments(
-        _metric(unsegmented, "revenue"), grain="daily"
-    ) == declared_breakouts.moments(_metric(declared_breakouts, "revenue"), grain="daily")
+    assert _moments(unsegmented, _metric(unsegmented, "revenue"), grain="daily") == _moments(
+        declared_breakouts, _metric(declared_breakouts, "revenue"), grain="daily"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1329,7 +1364,7 @@ def test_panel_breakout_normalizes_all_null_identity_to_sentinel() -> None:
         metrics={"revenue": "mean"},
         breakouts=["country"],
     )
-    assert {row["country"] for row in src.moments(_metric(src, "revenue"), by=["country"])} == {
+    assert {row["country"] for row in _moments(src, _metric(src, "revenue"), by=["country"])} == {
         "__null__"
     }
 
@@ -1355,7 +1390,7 @@ def test_panel_boolean_breakout_moments_match_the_canonical_string_frame(kind: s
         )
         metric = _metric(src, "revenue")
         return {
-            grain: sorted(src.moments(metric, grain=cast("Any", grain), by=["country"]), key=repr)
+            grain: sorted(_moments(src, metric, grain=cast("Any", grain), by=["country"]), key=repr)
             for grain in ("total", "daily")
         }
 
@@ -1383,7 +1418,7 @@ def test_panel_daily_moments_preserve_breakout_through_sparse_densification() ->
     )
     day2 = {
         (row["country"], row["group_id"]): row
-        for row in src.moments(_metric(src, "revenue"), grain="daily", by=["country"])
+        for row in _moments(src, _metric(src, "revenue"), grain="daily", by=["country"])
         if row["ds"] == "d2"
     }
 
@@ -1409,7 +1444,7 @@ def test_panel_total_moments_group_by_declared_breakout() -> None:
         breakouts=["country"],
     )
 
-    rows = src.moments(_metric(src, "revenue"), by=["country"])
+    rows = _moments(src, _metric(src, "revenue"), by=["country"])
     assert {(row["country"], row["group_id"]) for row in rows} == {
         ("US", "control"),
         ("US", "treatment"),
@@ -1430,7 +1465,7 @@ def test_panel_breakout_all_null_is_visible_segment() -> None:
         breakouts=["country"],
     )
 
-    rows = src.moments(_metric(src, "revenue"), grain="daily", by=["country"])
+    rows = _moments(src, _metric(src, "revenue"), grain="daily", by=["country"])
     assert {row["country"] for row in rows} == {"__null__"}
 
 
@@ -1447,7 +1482,7 @@ def test_panel_moments_reject_invalid_breakout_requests(by: list[str]) -> None:
     )
 
     with pytest.raises(CapabilityError):
-        src.moments(_metric(src, "revenue"), grain="daily", by=by)
+        _moments(src, _metric(src, "revenue"), grain="daily", by=by)
 
 
 def test_panel_exposure_excludes_pre_exposure_rows_from_total_and_daily() -> None:
@@ -1471,9 +1506,9 @@ def test_panel_exposure_excludes_pre_exposure_rows_from_total_and_daily() -> Non
     )
     metric = _metric(src, "revenue")
 
-    total = {row["group_id"]: row for row in src.moments(metric)}
+    total = {row["group_id"]: row for row in _moments(src, metric)}
     assert total["treatment"]["ref_y"] == 2.0
-    first_day = [row for row in src.moments(metric, grain="daily") if row["ds"] == base]
+    first_day = [row for row in _moments(src, metric, grain="daily") if row["ds"] == base]
     assert {(row["group_id"], row["n"]) for row in first_day} == {("control", 1)}
 
 
@@ -1496,12 +1531,12 @@ def test_sparse_totals_preserve_observable_units_without_post_exposure_rows() ->
         metrics={"revenue": "mean"},
     )
     metric = _metric(source, "revenue")
-    totals = {row["group_id"]: row for row in source.moments(metric)}
+    totals = {row["group_id"]: row for row in _moments(source, metric)}
     assert {(arm, row["n"], _sum_y(row)) for arm, row in totals.items()} == {
         ("control", 2, 4.0),
         ("treatment", 1, 6.0),
     }
-    units = nw.from_native(source.unit_frame(metric), eager_only=True).iter_rows(named=True)
+    units = nw.from_native(_unit_rows(source, metric), eager_only=True).iter_rows(named=True)
     assert {row["unit_id"]: row["y"] for row in units} == {"c0": 0.0, "c1": 4.0, "t1": 6.0}
 
 
@@ -1535,12 +1570,12 @@ def test_sparse_compliance_snapshot_keeps_enrolled_units_with_only_future_rows()
         uptake="clicked",
         design=design,
     )
-    provisional = source.compliance_summary(design=design, as_of=1)
+    provisional = _compliance(source, design=design, as_of=1)
     assert {(arm.group_id, arm.n_units, arm.uptake_total) for arm in provisional.arms} == {
         ("control", 2, 1.0),
         ("treatment", 2, 1.0),
     }
-    completed = source.compliance_summary(design=design, as_of=3, completed_windows_only=True)
+    completed = _compliance(source, design=design, as_of=3, completed_windows_only=True)
     assert {(arm.group_id, arm.n_units, arm.uptake_total) for arm in completed.arms} == {
         ("control", 2, 2.0),
         ("treatment", 2, 1.0),
@@ -1621,8 +1656,8 @@ def test_panel_quantile_ignores_pre_exposure_decoys(backend: str, value_column: 
 
     actual, expected = source(rows), source(admitted)
     for metric in actual.context.metrics:
-        observed = nw.from_native(actual.unit_frame(metric), eager_only=True).sort("unit_id")
-        oracle = nw.from_native(expected.unit_frame(metric), eager_only=True).sort("unit_id")
+        observed = nw.from_native(_unit_rows(actual, metric), eager_only=True).sort("unit_id")
+        oracle = nw.from_native(_unit_rows(expected, metric), eager_only=True).sort("unit_id")
         assert observed.to_dict(as_series=False) == oracle.to_dict(as_series=False)
         assert observed["y"].to_list() == expected_values
         assert observed.filter(nw.col("unit_id") == "control0")["y"].item() == 0.0
@@ -1658,7 +1693,7 @@ def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
     metric = _metric(src, "revenue")
     day2_by_country = {
         (row["country"], row["group_id"]): row
-        for row in src.moments(metric, grain="daily", by=["country"])
+        for row in _moments(src, metric, grain="daily", by=["country"])
         if row["ds"] == "d2"
     }
     assert set(day2_by_country) == {("US", "control"), ("CA", "treatment")}
@@ -1668,7 +1703,7 @@ def test_panel_breakout_identity_survives_sparse_zero_fill() -> None:
     assert _sum_y(day2_by_country[("CA", "treatment")]) == 0.0
     day2_by_plan = {
         (row["plan"], row["group_id"]): row
-        for row in src.moments(metric, grain="daily", by=["plan"])
+        for row in _moments(src, metric, grain="daily", by=["plan"])
         if row["ds"] == "d2"
     }
     assert set(day2_by_plan) == {("free", "control"), ("paid", "treatment")}
@@ -1724,15 +1759,15 @@ def test_frame_panel_source_moments_are_scoped_to_the_requested_breakout() -> No
 
     by_country = {
         (row["country"], row["group_id"]): (row["n"], _sum_y(row))
-        for row in src.moments(metric, by=["country"])
+        for row in _moments(src, metric, by=["country"])
     }
     by_plan = {
         (row["plan"], row["group_id"]): (row["n"], _sum_y(row))
-        for row in src.moments(metric, by=["plan"])
+        for row in _moments(src, metric, by=["plan"])
     }
     expected_plan = {
         (row["plan"], row["group_id"]): (row["n"], _sum_y(row))
-        for row in by_plan_reference.moments(_metric(by_plan_reference, "revenue"), by=["plan"])
+        for row in _moments(by_plan_reference, _metric(by_plan_reference, "revenue"), by=["plan"])
     }
 
     assert set(by_country) == {
@@ -1746,7 +1781,7 @@ def test_frame_panel_source_moments_are_scoped_to_the_requested_breakout() -> No
     # second's rows either.
     assert {
         (row["country"], row["group_id"]): (row["n"], _sum_y(row))
-        for row in src.moments(metric, by=["country"])
+        for row in _moments(src, metric, by=["country"])
     } == by_country
 
 
@@ -1785,13 +1820,13 @@ def test_frame_panel_source_asof_moments_are_scoped_to_completed_windows_only() 
     )
     metric = _metric(src, "revenue")
 
-    provisional = src.moments(metric, grain="asof")
-    decision = src.moments(metric, grain="asof", completed_windows_only=True)
+    provisional = _moments(src, metric, grain="asof")
+    decision = _moments(src, metric, grain="asof", completed_windows_only=True)
 
     assert {row["ds"] for row in provisional} == set(days)
     assert {row["ds"] for row in decision} == {date(2026, 1, 4)}
     assert sorted(row["n"] for row in decision) == [1, 1]
-    assert {row["ds"] for row in src.moments(metric, grain="asof")} == set(days)
+    assert {row["ds"] for row in _moments(src, metric, grain="asof")} == set(days)
 
 
 def test_frame_panel_source_moments_returns_defensive_copies(panel_frame: pa.Table) -> None:
@@ -1807,13 +1842,13 @@ def test_frame_panel_source_moments_returns_defensive_copies(panel_frame: pa.Tab
         metrics=[MetricSpec(name="revenue", type="mean")],
     )
     metric = src.context.metrics[0]
-    first = src.moments(metric, grain="total")
+    first = _moments(src, metric, grain="total")
     first[0]["ref_y"] = -999.0
-    second = src.moments(metric, grain="total")
+    second = _moments(src, metric, grain="total")
     assert second[0]["ref_y"] != -999.0
-    asof_first = src.moments(metric, grain="asof")
+    asof_first = _moments(src, metric, grain="asof")
     asof_first[0]["ref_y"] = -999.0
-    asof_second = src.moments(metric, grain="asof")
+    asof_second = _moments(src, metric, grain="asof")
     assert asof_second[0]["ref_y"] != -999.0
 
 
@@ -2016,7 +2051,7 @@ def test_daily_accepts_free_form_day_labels_for_every_kernel(
         control="control",
         metrics={"value": "mean"},
     )
-    rows = source.moments(_metric(source, "value"), grain="daily")
+    rows = _moments(source, _metric(source, "value"), grain="daily")
     assert {row["ds"] for row in rows} == {"2025-9", "2025-10"}
 
 
@@ -2055,11 +2090,11 @@ def test_streamed_day_reductions_preserve_multiple_metrics_and_breakout_identity
             breakouts=["country"],
         )
         daily = {
-            metric: source.moments(_metric(source, metric), grain="daily", by=["country"])
+            metric: _moments(source, _metric(source, metric), grain="daily", by=["country"])
             for metric in ("revenue", "orders")
         }
         asof = {
-            metric: source.moments(_metric(source, metric), grain="asof", by=["country"])
+            metric: _moments(source, _metric(source, metric), grain="asof", by=["country"])
             for metric in ("revenue", "orders")
         }
         return daily, asof
@@ -2108,11 +2143,11 @@ def test_panel_unit_identity_does_not_sort_mixed_public_ids(
         control="control",
         metrics={"value": "mean"},
     )
-    rows = source.moments(_metric(source, "value"), grain="daily")
+    rows = _moments(source, _metric(source, "value"), grain="daily")
     assert {row["ds"] for row in rows} == {0, 1}
     assert all(row["n"] == 2 for row in rows)
 
-    asof_rows = source.moments(_metric(source, "value"), grain="asof")
+    asof_rows = _moments(source, _metric(source, "value"), grain="asof")
     assert {row["ds"] for row in asof_rows} == {0, 1}
     assert all(row["n"] == 2 for row in asof_rows)
 
@@ -2185,7 +2220,7 @@ def test_completed_ratio_asof_mixed_unit_ids_use_dense_and_streamed_kernels(
         return joined
 
     monkeypatch.setattr(nw.DataFrame, "join", reorder_join)
-    rows = source.moments(_metric(source, "ratio"), grain="asof", completed_windows_only=True)
+    rows = _moments(source, _metric(source, "ratio"), grain="asof", completed_windows_only=True)
     assert join_count > 0
     assert {row["ds"] for row in rows} == {2}
     assert {row["group_id"] for row in rows} == {"control", "treatment"}
@@ -2264,7 +2299,7 @@ def test_streamed_asof_restores_identity_after_reordered_exposure_joins(
         return {
             (completed, row["ds"], row["group_id"]): row
             for completed in ((False, True) if exposure_mode == "explicit" else (False,))
-            for row in source.moments(metric, grain="asof", completed_windows_only=completed)
+            for row in _moments(source, metric, grain="asof", completed_windows_only=completed)
         }
 
     expected = read(build(dense_rows))
@@ -2342,7 +2377,7 @@ def test_streamed_asof_allows_outcome_and_uptake_to_share_a_column(
         design=design,
     )
     metric = _metric(source, "clicked_conversion")
-    rows = source.moments(metric, grain="asof")
+    rows = _moments(source, metric, grain="asof")
     assert rows and any(row["sum_d"] > 0.0 for row in rows)
 
 
@@ -2468,7 +2503,7 @@ def test_panel_allows_roles_named_as_their_canonical_columns(backend: str) -> No
         control="control",
         metrics=[MetricSpec(name="revenue")],
     )
-    rows = source.moments(_metric(source, "revenue"))
+    rows = _moments(source, _metric(source, "revenue"))
     assert {row["group_id"]: _sum_y(row) for row in rows} == pytest.approx(
         {"control": 3.0, "treatment": 7.0}
     )
@@ -2508,7 +2543,7 @@ def test_panel_allows_cuped_covariates_named_as_canonical_columns(
             design=_DESIGN,
         )
         metric = _metric(source, "revenue")
-        rows = source.moments(metric, include_covariate=True)
+        rows = _moments(source, metric, include_covariate=True)
         moments.append({row["group_id"]: row for row in rows})
         result = estimate_lift(
             metrics=[metric],
@@ -2591,7 +2626,7 @@ def test_panel_conversion_accepts_bool_and_declared_zero_nulls() -> None:
         control="control",
         metrics=[MetricSpec(name="converted", type="conversion", missing="zero")],
     )
-    out = {r["group_id"]: r for r in src.moments(_metric(src, "converted"), grain="total")}
+    out = {r["group_id"]: r for r in _moments(src, _metric(src, "converted"), grain="total")}
     assert out["control"]["n"] == 2
     assert out["treatment"]["n"] == 2
     assert _sum_y(out["control"]) == pytest.approx(1.0)
@@ -2618,7 +2653,7 @@ def test_panel_conversion_total_grain_refuses_multi_day_collapse() -> None:
         metrics=[MetricSpec(name="converted", type="conversion")],
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        src.moments(_metric(src, "converted"), grain="total")
+        _moments(src, _metric(src, "converted"), grain="total")
     assert exc_info.value.code == "frame.moments.metric_type_conversion"
     assert exc_info.value.context["metric"] == "converted"
     assert exc_info.value.context["value"] == pytest.approx(2.0)
@@ -2655,11 +2690,11 @@ def test_panel_invalid_conversion_sibling_is_deferred_until_selected() -> None:
     )
     revenue = _metric(revenue_only, "revenue")
     revenue_with_sibling = _metric(with_sibling, "revenue")
-    assert with_sibling.moments(revenue_with_sibling, grain="total") == revenue_only.moments(
-        revenue, grain="total"
+    assert _moments(with_sibling, revenue_with_sibling, grain="total") == _moments(
+        revenue_only, revenue, grain="total"
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        with_sibling.moments(_metric(with_sibling, "converted"), grain="total")
+        _moments(with_sibling, _metric(with_sibling, "converted"), grain="total")
     assert exc_info.value.code == "frame.moments.metric_type_conversion"
     assert exc_info.value.context["metric"] == "converted"
     assert exc_info.value.context["value"] == pytest.approx(2.0)
@@ -2692,7 +2727,7 @@ def test_panel_unknown_metric_uses_totals_refusal_code(panel_frame: pa.Table) ->
         name = "not_declared"
 
     with pytest.raises(InvalidRequestError) as exc_info:
-        src.unit_frame(_Fake())  # ty: ignore[invalid-argument-type]
+        _unit_rows(src, _Fake())  # ty: ignore[invalid-argument-type]
     assert exc_info.value.code == "frame.frame_totals.metric_was_declared"
 
 
@@ -2757,7 +2792,7 @@ def test_panel_covariate_varying_within_unit_refuses(panel_frame: pa.Table) -> N
         ],
     )
     with pytest.raises(InvalidRequestError) as exc:
-        src.moments(_metric(src, "revenue"), grain="total")
+        _moments(src, _metric(src, "revenue"), grain="total")
     assert exc.value.code == "frame.frame_panel.unit_covariate_varies"
 
 
@@ -2790,7 +2825,7 @@ def test_panel_covariate_varies_with_mixed_public_unit_ids() -> None:
     )
 
     with pytest.raises(InvalidRequestError) as exc:
-        source.moments(_metric(source, "revenue"), grain="total")
+        _moments(source, _metric(source, "revenue"), grain="total")
 
     assert exc.value.code == "frame.frame_panel.unit_covariate_varies"
     assert exc.value.context["units"] == ("two", 1)
@@ -2852,11 +2887,11 @@ def test_panel_cuped_moments_and_interval_match_unit_summary() -> None:
         design=_DESIGN,
     )
     panel_moments = {
-        r["group_id"]: r for r in panel_src.moments(_metric(panel_src, "revenue"), grain="total")
+        r["group_id"]: r for r in _moments(panel_src, _metric(panel_src, "revenue"), grain="total")
     }
     summary_moments = {
         r["group_id"]: r
-        for r in summary_src.moments(_metric(summary_src, "revenue"), grain="total")
+        for r in _moments(summary_src, _metric(summary_src, "revenue"), grain="total")
     }
     assert set(panel_moments) == set(summary_moments) == {"control", "treatment"}
     for group_id, got in panel_moments.items():
@@ -2912,10 +2947,10 @@ def test_panel_covariate_varying_within_unit_does_not_block_sibling_metrics(
             MetricSpec(name="clicks", value_column="revenue"),
         ],
     )
-    rows = src.moments(_metric(src, "clicks"), grain="total")
+    rows = _moments(src, _metric(src, "clicks"), grain="total")
     assert {r["group_id"] for r in rows} == {"control", "treatment"}
     with pytest.raises(InvalidRequestError) as exc:
-        src.moments(_metric(src, "revenue"), grain="total")
+        _moments(src, _metric(src, "revenue"), grain="total")
     assert exc.value.code == "frame.frame_panel.unit_covariate_varies"
 
 
@@ -2977,11 +3012,11 @@ def test_panel_cuped_covariate_name_colliding_with_a_metric_column() -> None:
         design=_DESIGN,
     )
     panel_moments = {
-        r["group_id"]: r for r in panel_src.moments(_metric(panel_src, "revenue"), grain="total")
+        r["group_id"]: r for r in _moments(panel_src, _metric(panel_src, "revenue"), grain="total")
     }
     summary_moments = {
         r["group_id"]: r
-        for r in summary_src.moments(_metric(summary_src, "revenue"), grain="total")
+        for r in _moments(summary_src, _metric(summary_src, "revenue"), grain="total")
     }
     for group_id, got in panel_moments.items():
         _assert_moments_agree(
@@ -3070,8 +3105,8 @@ def test_panel_cuped_scratch_alias_collision_matches_ordinary_and_summary(backen
         moments = [
             {
                 row["group_id"]: row
-                for row in source.moments(
-                    _metric(source, metric_name), grain="total", include_covariate=True
+                for row in _moments(
+                    source, _metric(source, metric_name), grain="total", include_covariate=True
                 )
             }
             for source in all_sources
@@ -3182,11 +3217,11 @@ def test_panel_covariate_all_nan_for_a_unit_matches_summary_mean_imputation() ->
         )
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(rec_summary)
     panel_moments = {
-        r["group_id"]: r for r in panel_src.moments(_metric(panel_src, "revenue"), grain="total")
+        r["group_id"]: r for r in _moments(panel_src, _metric(panel_src, "revenue"), grain="total")
     }
     summary_moments = {
         r["group_id"]: r
-        for r in summary_src.moments(_metric(summary_src, "revenue"), grain="total")
+        for r in _moments(summary_src, _metric(summary_src, "revenue"), grain="total")
     }
     for group_id, got in panel_moments.items():
         _assert_moments_agree(
@@ -3247,7 +3282,7 @@ def test_panel_retention_computes_real_semantics_given_exposure_date() -> None:
         exposure_date="exposed_on",
     )
     metric = _metric(src, "d7")
-    by_group = {r["group_id"]: r for r in src.moments(metric, grain="total")}
+    by_group = {r["group_id"]: r for r in _moments(src, metric, grain="total")}
     assert by_group["treatment"]["n"] == 2
     assert _sum_y(by_group["treatment"]) == pytest.approx(1.0)  # only u1 returned on/after day 7
     assert by_group["control"]["n"] == 1
@@ -3299,7 +3334,8 @@ def test_asof_completed_bounded_retention_before_band_close_returns_no_rows() ->
         )
 
         assert (
-            src.moments(
+            _moments(
+                src,
                 _metric(src, "d7_to_d14"),
                 grain="asof",
                 completed_windows_only=True,
@@ -3345,7 +3381,7 @@ def test_asof_completed_bounded_retention_with_uptake_requires_uptake_window() -
         design=_DESIGN,
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        src.moments(_metric(src, "d0_to_d2"), grain="asof", completed_windows_only=True)
+        _moments(src, _metric(src, "d0_to_d2"), grain="asof", completed_windows_only=True)
     assert exc_info.value.code == "frame.moments.asof_completed_requires_uptake_window"
 
 
@@ -3396,10 +3432,10 @@ def test_asof_completed_retention_skips_co_registered_unbounded_metric() -> None
     bounded = _metric(src, "d0_to_d2")
     unbounded = _metric(src, "d0_plus")
 
-    assert src.moments(mean, grain="asof", completed_windows_only=True)
-    assert src.moments(bounded, grain="asof", completed_windows_only=True)
+    assert _moments(src, mean, grain="asof", completed_windows_only=True)
+    assert _moments(src, bounded, grain="asof", completed_windows_only=True)
     with pytest.raises(InvalidRequestError) as exc:
-        src.moments(unbounded, grain="asof", completed_windows_only=True)
+        _moments(src, unbounded, grain="asof", completed_windows_only=True)
     assert exc.value.code == "frame.frame_panel.asof_moments_completed"
 
 
@@ -3458,11 +3494,10 @@ def test_censoring_warns_past_threshold() -> None:
         control="control",
         metrics=[MetricSpec(name="revenue", window_days=3)],
         exposure_date="exposed_on",
-        observation_end=base + timedelta(days=3),
     )
     metric = _metric(src, "revenue")
     with pytest.warns(IncrementWarning) as rec:
-        src.moments(metric, grain="total")
+        _moments(src, metric, grain="total")
     assert "frame.censoring.dropped_units" in warning_codes(rec)
 
 
@@ -3488,18 +3523,15 @@ def test_retention_daily_grain_refused() -> None:
     )
     metric = _metric(src, "d7")
     with pytest.raises(CapabilityError):
-        src.moments(metric, grain="daily")
+        _moments(src, metric, grain="daily")
 
 
 def test_retention_daily_grain_does_not_block_other_metrics_on_the_same_source() -> None:
     """A co-registered retention metric must not block ``grain="daily"``
     reads for every OTHER metric on the same source.
-    ``FramePanelSource.moments()`` used to batch ``_daily_moment_rows``
-    across ALL of ``self._specs`` the first time ANY metric asked for
-    ``grain="daily"``, raising ``CapabilityError`` if the batch
-    contained one retention spec - even when the requested metric
-    (``revenue``) never asked about retention. The rejection must be
-    scoped to the metric the caller actually requested.
+    The source memoizes daily moment rows across its registered metrics; a
+    retention sibling used to make that batch refuse even when only the
+    ordinary metric was requested. The rejection must remain metric-scoped.
     """
     base = date(2025, 1, 1)
     rows = [
@@ -3528,7 +3560,7 @@ def test_retention_daily_grain_does_not_block_other_metrics_on_the_same_source()
 
     # The metric actually requested (mean, not retention) reads fine;
     # the co-registered retention spec never blocks it.
-    daily_rows = src.moments(mean_metric, grain="daily")
+    daily_rows = _moments(src, mean_metric, grain="daily")
     assert daily_rows
     assert all(r["metric"] == "revenue" for r in daily_rows)
     by_ds = {r["ds"]: r for r in daily_rows if r["group_id"] == "control"}
@@ -3538,7 +3570,7 @@ def test_retention_daily_grain_does_not_block_other_metrics_on_the_same_source()
     # The retention metric itself still correctly refuses grain="daily",
     # whether asked before or after the mean metric populates the cache.
     with pytest.raises(CapabilityError):
-        src.moments(retention_metric, grain="daily")
+        _moments(src, retention_metric, grain="daily")
 
 
 def test_bounded_retention_denominator_includes_a_mature_unit_with_no_in_band_rows() -> None:
@@ -3596,7 +3628,7 @@ def test_bounded_retention_denominator_includes_a_mature_unit_with_no_in_band_ro
         exposure_date="exposed_on",
     )
     metric = _metric(src, "d3b")
-    moments = src.moments(metric, grain="total")
+    moments = _moments(src, metric, grain="total")
     assert len(moments) == 1
     assert moments[0]["n"] == 2, "u2 must count in the denominator despite having no in-band rows"
 
@@ -3640,7 +3672,7 @@ def test_bounded_conversion_denominator_includes_a_mature_unit_with_no_in_window
         exposure_date="exposed_on",
     )
     metric = _metric(src, "conv")
-    moments = src.moments(metric, grain="total")
+    moments = _moments(src, metric, grain="total")
     assert len(moments) == 1
     assert moments[0]["n"] == 2, "u2 must count in the denominator despite having no in-window rows"
     assert _sum_y(moments[0]) == pytest.approx(1.0), "only u1 converted; u2 reads y=0, not absent"
@@ -3679,7 +3711,7 @@ def test_bounded_mean_denominator_includes_a_mature_unit_with_no_in_window_rows(
         exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
-    moments = src.moments(metric, grain="total")
+    moments = _moments(src, metric, grain="total")
     assert len(moments) == 1
     assert moments[0]["n"] == 2, "u2 must count in the denominator despite having no in-window rows"
     assert _sum_y(moments[0]) == pytest.approx(30.0), "u1's 3 in-window days sum; u2 contributes 0"
@@ -3717,7 +3749,9 @@ def test_windowed_breakout_moments_recover_sparse_censored_zeroes() -> None:
         breakouts=["country"],
     )
 
-    moments = {row["country"]: row for row in src.moments(_metric(src, "revenue"), by=["country"])}
+    moments = {
+        row["country"]: row for row in _moments(src, _metric(src, "revenue"), by=["country"])
+    }
 
     assert set(moments) == {"US", "CA"}
     assert {country: row["n"] for country, row in moments.items()} == {"US": 2, "CA": 2}
@@ -3789,7 +3823,7 @@ def test_bounded_ratio_denominator_includes_a_mature_unit_with_no_in_window_rows
         exposure_date="exposed_on",
     )
     metric = _metric(src, "rev_ratio")
-    moments = src.moments(metric, grain="total")
+    moments = _moments(src, metric, grain="total")
     assert len(moments) == 1
     assert moments[0]["n"] == 2, "u2 must count in the denominator despite having no in-window rows"
     assert _sum_y(moments[0]) == pytest.approx(30.0), "u1's 3 in-window days sum; u2 contributes 0"
@@ -3860,7 +3894,7 @@ def test_daily_grain_windowed_metric_bounds_only_at_the_right_edge() -> None:
         exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
-    daily_rows = src.moments(metric, grain="daily")
+    daily_rows = _moments(src, metric, grain="daily")
     by_ds = {r["ds"]: r for r in daily_rows}
 
     in_window = [base + timedelta(days=d) for d in range(3)]
@@ -3907,7 +3941,7 @@ def test_daily_grain_windowed_metric_excludes_pre_exposure_days() -> None:
         exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
-    daily_rows = src.moments(metric, grain="daily")
+    daily_rows = _moments(src, metric, grain="daily")
     by_ds = {r["ds"]: r for r in daily_rows}
 
     pre_exposure_days = [base + timedelta(days=d) for d in range(3)]
@@ -3986,13 +4020,13 @@ def test_windowed_censoring_fallback_is_scoped_to_that_metrics_own_fact_stream()
     # 'rare''s own fact stream stops at day 2, short of its 10-day maturity
     # bound, so every enrolled unit is censored and a UserWarning fires naming the running-experiment cause; before the fix panel["ds"].max() borrowed 'm''s day-20 rows and 'rare' silently read every unit as mature.
     with pytest.warns(IncrementWarning) as rec:
-        rare_rows = src.moments(rare_metric, grain="total")
+        rare_rows = _moments(src, rare_metric, grain="total")
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     assert sum(r["n"] for r in rare_rows) == 0
 
     # 'm''s own fact stream reaches day 20, well past its 10-day maturity
     # bound, so it is untouched by 'rare''s censoring even in the same batched pass (FramePanelSource.moments' per-grain memoization).
-    m_rows = src.moments(m_metric, grain="total")
+    m_rows = _moments(src, m_metric, grain="total")
     assert sum(r["n"] for r in m_rows) == 10
 
 
@@ -4020,7 +4054,7 @@ class TestDayAxisNonStringLabels:
             metrics={"revenue": "mean"},
         )
         with pytest.raises(CapabilityError) as raised:
-            src.moments(_metric(src, "revenue"), grain="asof")
+            _moments(src, _metric(src, "revenue"), grain="asof")
         assert raised.value.code == "frame.asof.day_axis_unorderable"
 
     def test_date_labels_are_still_ordered_by_identity(self) -> None:
@@ -4043,7 +4077,7 @@ class TestDayAxisNonStringLabels:
             control="control",
             metrics={"revenue": "mean"},
         )
-        moments = src.moments(_metric(src, "revenue"), grain="asof")
+        moments = _moments(src, _metric(src, "revenue"), grain="asof")
 
         assert [row["ds"] for row in moments] == [date(2025, 12, 31), date(2026, 1, 1)]
         assert [_sum_y(row) for row in moments] == [pytest.approx(2.0), pytest.approx(3.0)]
@@ -4065,15 +4099,17 @@ class TestNonFiniteExposureAnchor:
         )
 
     def _call(self, exposure: float) -> dict[str, int]:
-        return from_unit_panel(
-            self._frame(exposure),
-            unit="user_id",
-            group="variant",
-            date="day",
-            control="control",
-            metrics={"revenue": "mean"},
-            exposure_date="exposure_date",
-        ).unit_counts()
+        return _counts(
+            from_unit_panel(
+                self._frame(exposure),
+                unit="user_id",
+                group="variant",
+                date="day",
+                control="control",
+                metrics={"revenue": "mean"},
+                exposure_date="exposure_date",
+            )
+        )
 
     def test_infinite_exposure_anchor_refuses_at_construction(self) -> None:
         # Previously accepted: the unit kept counting while its day indexes were
@@ -4140,8 +4176,8 @@ def test_asof_completed_windows_only_gates_a_windowed_mean() -> None:
     )
     metric = source.context.metrics[0]
 
-    provisional = source.moments(metric, grain="asof")
-    decision = source.moments(metric, grain="asof", completed_windows_only=True)
+    provisional = _moments(source, metric, grain="asof")
+    decision = _moments(source, metric, grain="asof", completed_windows_only=True)
 
     assert {row["ds"] for row in provisional} == set(days)
     assert {row["ds"] for row in decision} == {date(2026, 1, 4)}
@@ -4159,7 +4195,7 @@ def test_frame_panel_source_snapshots_metrics_list_at_construction(panel_frame: 
         metrics={"revenue": "mean"},
     )
     owned_metrics = [MetricSpec(name="revenue")]
-    owned_counts = base.unit_counts()
+    owned_counts = _counts(base)
     source = FramePanelSource(
         panel=cast(Any, base._sparse_panel),
         metrics=owned_metrics,
@@ -4172,15 +4208,15 @@ def test_frame_panel_source_snapshots_metrics_list_at_construction(panel_frame: 
         synthesised_metrics=base.context.metrics,
     )
     metric = next(m for m in base.context.metrics if m.name == "revenue")
-    before = base.moments(metric, grain="total")
+    before = _moments(base, metric, grain="total")
     owned_metrics.append(MetricSpec(name="orders"))
     owned_metrics.clear()
     owned_counts.clear()
-    after = source.moments(metric, grain="total")
+    after = _moments(source, metric, grain="total")
     assert after == before
-    assert source.unit_counts() == base.unit_counts()
-    source.unit_counts().clear()
-    assert source.unit_counts() == base.unit_counts()
+    assert _counts(source) == _counts(base)
+    _counts(source).clear()
+    assert _counts(source) == _counts(base)
 
 
 def test_frame_panel_source_snapshots_fact_dates_before_first_reduction() -> None:
@@ -4216,7 +4252,7 @@ def test_frame_panel_source_snapshots_fact_dates_before_first_reduction() -> Non
         experiment_id=base.context.study_id,
         design=base.design,
         plan=base.plan,
-        group_counts=base.unit_counts(),
+        group_counts=_counts(base),
         n_filled=base.densified_cells,
         first_exposure=base._first_exposure,
         exposure=base._exposure,
@@ -4224,7 +4260,7 @@ def test_frame_panel_source_snapshots_fact_dates_before_first_reduction() -> Non
         synthesised_metrics=base.context.metrics,
     )
     owned_dates["revenue"] = start
-    rows = source.moments(_metric(source, "revenue"), grain="total")
+    rows = _moments(source, _metric(source, "revenue"), grain="total")
     assert sum(row["n"] for row in rows) == 4
 
 
@@ -4308,14 +4344,14 @@ def test_panel_alias_scratch_columns_match_ordinary_columns_across_grains(
 
     for grain in ("daily", "asof", "total"):
         for name in ("mean", "ratio"):
-            left = ordinary.moments(_metric(ordinary, name), grain=grain)
-            right = aliased.moments(_metric(aliased, name), grain=grain)
+            left = _moments(ordinary, _metric(ordinary, name), grain=grain)
+            right = _moments(aliased, _metric(aliased, name), grain=grain)
             assert sorted(right, key=moment_key) == sorted(left, key=moment_key)
     for name in ("plain_mean", "plain_ratio"):
-        left = nw.from_native(ordinary.unit_frame(_metric(ordinary, name)), eager_only=True).sort(
+        left = nw.from_native(_unit_rows(ordinary, _metric(ordinary, name)), eager_only=True).sort(
             "unit_id"
         )
-        right = nw.from_native(aliased.unit_frame(_metric(aliased, name)), eager_only=True).sort(
+        right = nw.from_native(_unit_rows(aliased, _metric(aliased, name)), eager_only=True).sort(
             "unit_id"
         )
         assert right.to_dict(as_series=False) == left.to_dict(as_series=False)
@@ -4359,7 +4395,7 @@ def test_ratio_maturity_requires_both_component_horizons() -> None:
         metrics=[spec],
     )
     with pytest.warns(IncrementWarning) as caught:
-        assert source.moments(_metric(source, "ratio"), grain="total") == []
+        assert _moments(source, _metric(source, "ratio"), grain="total") == []
     assert "frame.censoring.dropped_units" in warning_codes(caught)
 
     completed = [(u, g, d, e, n, 1.0) for u, g, d, e, n, _ in rows]
@@ -4381,7 +4417,7 @@ def test_ratio_maturity_requires_both_component_horizons() -> None:
         control="control",
         metrics=[spec],
     )
-    moments = source.moments(_metric(source, "ratio"), grain="total")
+    moments = _moments(source, _metric(source, "ratio"), grain="total")
     assert {r["group_id"] for r in moments} == {"control", "treatment"}
     assert {r["n"] for r in moments} == {1}
     assert sorted(_sum_y(r) for r in moments) == [1.0, 2.0]
@@ -4438,30 +4474,30 @@ def test_asof_completed_ratio_uses_shared_component_horizon() -> None:
         )
 
     lagging = build(2)
-    lagging_rows = lagging.moments(
-        _metric(lagging, "ratio"), grain="asof", completed_windows_only=True
+    lagging_rows = _moments(
+        lagging, _metric(lagging, "ratio"), grain="asof", completed_windows_only=True
     )
     assert {row["ds"] for row in lagging_rows} == {"d3", "d4", "d5"}
     assert {row["n"] for row in lagging_rows} == {1}
     assert {_sum_y(row) for row in lagging_rows} == {3.0}
     assert {_sum_den(row) for row in lagging_rows} == {3.0}
-    partial = lagging.moments(_metric(lagging, "ratio"), grain="asof")
+    partial = _moments(lagging, _metric(lagging, "ratio"), grain="asof")
     latest_partial = [row for row in partial if row["ds"] == "d5"]
     assert {row["n"] for row in latest_partial} == {2}
     assert {_sum_y(row) for row in latest_partial} == {6.0}
     assert {_sum_den(row) for row in latest_partial} == {4.0}
 
     caught_up = build(4)
-    caught_up_rows = caught_up.moments(
-        _metric(caught_up, "ratio"), grain="asof", completed_windows_only=True
+    caught_up_rows = _moments(
+        caught_up, _metric(caught_up, "ratio"), grain="asof", completed_windows_only=True
     )
     latest = [row for row in caught_up_rows if row["ds"] == "d5"]
     assert {row["n"] for row in latest} == {2}
     assert {_sum_y(row) for row in latest} == {6.0}
     assert {_sum_den(row) for row in latest} == {6.0}
     declared = build(2, observation_end="d5")
-    declared_rows = declared.moments(
-        _metric(declared, "ratio"), grain="asof", completed_windows_only=True
+    declared_rows = _moments(
+        declared, _metric(declared, "ratio"), grain="asof", completed_windows_only=True
     )
     latest_declared = [row for row in declared_rows if row["ds"] == "d5"]
     assert {row["n"] for row in latest_declared} == {2}
@@ -4505,8 +4541,8 @@ def test_ratio_all_null_component_keeps_zero_filled_units(absent: str) -> None:
     )
     metric = _metric(source, "ratio")
     for moments in (
-        source.moments(metric),
-        source.moments(metric, grain="asof", completed_windows_only=True),
+        _moments(source, metric),
+        _moments(source, metric, grain="asof", completed_windows_only=True),
     ):
         assert {row["group_id"] for row in moments} == {"control", "treatment"}
         assert {row["n"] for row in moments} == {1}
@@ -4592,7 +4628,7 @@ def test_panel_unit_frame_preserves_declared_categorical_covariate_and_null() ->
     )
 
     rows = nw.from_native(
-        source.unit_frame(_metric(source, "revenue"), covariates=["region", "prior"]),
+        _unit_rows(source, _metric(source, "revenue"), covariates=["region", "prior"]),
     ).to_dict(as_series=False)
 
     assert dict(zip(rows["unit_id"], rows["region"], strict=True)) == {

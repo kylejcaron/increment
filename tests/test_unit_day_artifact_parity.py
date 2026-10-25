@@ -27,6 +27,11 @@ from increment.query.schemas import (
 )
 from increment.query.source import open_artifact
 from increment.semantics.models import Breakout
+from tests._evidence_requests import (
+    _assignment_counts,
+    _moments,
+    _unit_counts,
+)
 from tests.analysis_factory import _native_source, lift_rows
 from tests.test_unit_day_artifact_facade import (
     _definitions,
@@ -426,8 +431,8 @@ def test_definitions_and_adopted_reducers_match_staggered_denominators(
         else:
             native_moments = native_source.day_source(metrics=(native_metric,))
             adopted_moments = adopted_source.day_source(metrics=(adopted_metric,))
-        native_rows = cast(Any, native_moments.moments(native_metric, grain=cast(Any, grain)))
-        adopted_rows = adopted_moments.moments(adopted_metric, grain=cast(Any, grain))
+        native_rows = _moments(native_moments, native_metric, grain=cast(Any, grain))
+        adopted_rows = _moments(adopted_moments, adopted_metric, grain=cast(Any, grain))
     finally:
         adopted_source.close()
     _assert_rows_equal(native_rows, adopted_rows)
@@ -454,11 +459,11 @@ def test_calendar_day_boundary_is_preserved_across_adoption(tmp_path: Path) -> N
         native_source = _native_source(native)
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
-        native_rows = native_source.day_source(metrics=(native_metric,)).moments(
-            native_metric, grain="daily"
+        native_rows = _moments(
+            native_source.day_source(metrics=(native_metric,)), native_metric, grain="daily"
         )
-        adopted_rows = adopted_source.day_source(metrics=(adopted_metric,)).moments(
-            adopted_metric, grain="daily"
+        adopted_rows = _moments(
+            adopted_source.day_source(metrics=(adopted_metric,)), adopted_metric, grain="daily"
         )
         _assert_rows_equal(native_rows, adopted_rows)
     finally:
@@ -549,31 +554,31 @@ def test_task5_approved_operations_have_values_or_coded_refusals(tmp_path: Path)
         native_moments = native_source.moments_source(metrics=(native_metric,))
         adopted_moments = adopted_source.moments_source(metrics=(adopted_metric,))
         _assert_rows_equal(
-            cast(Any, native_moments.moments(native_metric)),
-            adopted_moments.moments(adopted_metric),
+            _moments(native_moments, native_metric),
+            _moments(adopted_moments, adopted_metric),
         )
 
         native_days = native_source.day_source(metrics=(native_metric,))
         adopted_days = adopted_source.day_source(metrics=(adopted_metric,))
         _assert_rows_equal(
-            native_days.moments(native_metric, grain="daily"),
-            adopted_days.moments(adopted_metric, grain="daily"),
+            _moments(native_days, native_metric, grain="daily"),
+            _moments(adopted_days, adopted_metric, grain="daily"),
             ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
         )
 
         native_breakout = native_source.breakout_source(breakout, metrics=(native_metric,))
         adopted_breakout = adopted_source.breakout_source(breakout, metrics=(adopted_metric,))
         _assert_rows_equal(
-            native_breakout.moments(native_metric, by=["country"]),
-            adopted_breakout.moments(adopted_metric, by=["country"]),
+            _moments(native_breakout, native_metric, by=["country"]),
+            _moments(adopted_breakout, adopted_metric, by=["country"]),
             extra_keys=("country",),
         )
         native_sources = native_source.breakout_sources((breakout,), metrics=(native_metric,))
         adopted_sources = adopted_source.breakout_sources((breakout,), metrics=(adopted_metric,))
         assert len(native_sources) == len(adopted_sources) == 1
         _assert_rows_equal(
-            native_sources[0].moments(native_metric, by=["country"]),
-            adopted_sources[0].moments(adopted_metric, by=["country"]),
+            _moments(native_sources[0], native_metric, by=["country"]),
+            _moments(adopted_sources[0], adopted_metric, by=["country"]),
             extra_keys=("country",),
         )
 
@@ -807,9 +812,11 @@ def test_cluster_extension_spine_parity_matches_native_for_late_enrolled_treatme
     try:
         native_metric = _metric(native, "conv")
         adopted_metric = _metric(adopted, "conv")
-        native_rows = {row["group_id"]: row for row in native.moments(native_metric, grain="total")}
+        native_rows = {
+            row["group_id"]: row for row in _moments(native, native_metric, grain="total")
+        }
         adopted_rows = {
-            row["group_id"]: row for row in adopted.moments(adopted_metric, grain="total")
+            row["group_id"]: row for row in _moments(adopted, adopted_metric, grain="total")
         }
         assert set(native_rows) == set(adopted_rows) == {"control", "treatment"}
         assert native_rows["control"]["n"] == 60, "native control count regressed"
@@ -847,8 +854,8 @@ def test_breakout_factor_and_sitewide_operations_match_adopted_values(tmp_path: 
         native_breakout = native_source.breakout_source(breakout, metrics=(native_metric,))
         adopted_breakout = adopted_source.breakout_source(breakout, metrics=(adopted_metric,))
         _assert_rows_equal(
-            native_breakout.moments(native_metric, by=["country"]),
-            adopted_breakout.moments(adopted_metric, by=["country"]),
+            _moments(native_breakout, native_metric, by=["country"]),
+            _moments(adopted_breakout, adopted_metric, by=["country"]),
             extra_keys=("country",),
         )
         native_factor = native_source.factor_summaries(metrics=(native_metric,))
@@ -998,14 +1005,14 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
         assert "triggered_counts" in adopted_source.operations
         assert "triggered_source" in adopted_source.operations
         assert adopted_source.triggered_counts() == native_source.triggered_counts()
-        assert adopted_source.assignment_counts(population="triggered") == (
-            native_source.assignment_counts(population="triggered")
+        assert _assignment_counts(adopted_source, population="triggered") == (
+            _assignment_counts(native_source, population="triggered")
         )
         assert adopted_source.trigger_rates() == pytest.approx(native_source.trigger_rates())
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
-        native_rows = cast(Any, native_source.triggered_source().moments(native_metric))
-        adopted_rows = adopted_source.triggered_source().moments(adopted_metric)
+        native_rows = _moments(native_source.triggered_source(), native_metric)
+        adopted_rows = _moments(adopted_source.triggered_source(), adopted_metric)
         _assert_rows_equal(
             native_rows,
             adopted_rows,
@@ -1038,9 +1045,9 @@ def test_triggered_window_past_observation_end_matches_after_publish_reopen(
         adopted_triggered = adopted_source.triggered_source()
         metric = _metric(native_source)
         with pytest.warns(IncrementWarning):
-            native_rows = cast(Any, native_triggered.moments(metric))
-        adopted_rows = adopted_triggered.moments(_metric(adopted_source))
-        triggered_count = sum(native_triggered.unit_counts().values())
+            native_rows = _moments(native_triggered, metric)
+        adopted_rows = _moments(adopted_triggered, _metric(adopted_source))
+        triggered_count = sum(_unit_counts(native_triggered).values())
         eligible_count = sum(int(row["n"]) for row in native_rows)
         assert 0 < eligible_count < triggered_count
         _assert_rows_equal(
@@ -1100,8 +1107,8 @@ def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: P
             row["unit_id"] == user_id and row["ds"] == date(2025, 1, 16) for row in stats_rows
         )
         with pytest.warns(IncrementWarning):
-            native_rows = cast(Any, native_source.triggered_source().moments(native_metric))
-        adopted_rows = adopted_source.triggered_source().moments(adopted_metric)
+            native_rows = _moments(native_source.triggered_source(), native_metric)
+        adopted_rows = _moments(adopted_source.triggered_source(), adopted_metric)
         _assert_rows_equal(
             native_rows,
             adopted_rows,
@@ -1266,11 +1273,8 @@ def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> Non
         assert cutoff_day_rows[0]["n_events"] == 1
         native_source = _native_source(native)
         with pytest.warns(IncrementWarning):
-            native_rows = cast(
-                Any,
-                native_source.triggered_source().moments(_metric(native_source)),
-            )
-        adopted_rows = triggered.moments(metric)
+            native_rows = _moments(native_source.triggered_source(), _metric(native_source))
+        adopted_rows = _moments(triggered, metric)
         _assert_rows_equal(
             native_rows,
             adopted_rows,
@@ -1360,8 +1364,8 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
         assert artifact_measure.certified_edge == date(2025, 2, 14)
         assert artifact_measure.event_horizon <= artifact_measure.certified_edge
         _assert_rows_equal(
-            native_source.moments(native_metric, grain="total"),
-            artifact_source.moments(artifact_metric, grain="total"),
+            _moments(native_source, native_metric, grain="total"),
+            _moments(artifact_source, artifact_metric, grain="total"),
             ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
         )
         exposures = native_source._get_exposures()
@@ -1397,7 +1401,7 @@ def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
             ("asof", asof_group_summary(native_panel, native_metric, den_panel=den_panel)),
         ):
             native_rows = connection.to_pyarrow(native_query).to_pylist()
-            artifact_rows = artifact_source.moments(artifact_metric, grain=grain)
+            artifact_rows = _moments(artifact_source, artifact_metric, grain=grain)
             _assert_rows_equal(
                 native_rows,
                 artifact_rows,
@@ -1474,8 +1478,8 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
         }
         assert actual_mature == expected_mature
         _assert_rows_equal(
-            native_source.moments(native_metric, grain="total"),
-            artifact_source.moments(artifact_metric, grain="total"),
+            _moments(native_source, native_metric, grain="total"),
+            _moments(artifact_source, artifact_metric, grain="total"),
             ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
         )
         from increment.query.builders import (
@@ -1511,7 +1515,7 @@ def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
         )
         for grain, native_query in zip(("daily", "asof"), native_queries, strict=True):
             native_rows = connection.to_pyarrow(native_query).to_pylist()
-            artifact_rows = artifact_source.moments(artifact_metric, grain=grain)
+            artifact_rows = _moments(artifact_source, artifact_metric, grain=grain)
             _assert_rows_equal(
                 native_rows,
                 artifact_rows,
@@ -1653,8 +1657,8 @@ def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -
         assert artifact_day.triggered_observation_edges(ratio) == (date(2025, 1, 15), None)
         native_day_summary = native_root.day_source(metrics=(ratio,))
         _assert_rows_equal(
-            native_day_summary.moments(ratio, grain="daily"),
-            source.moments(ratio, grain="daily"),
+            _moments(native_day_summary, ratio, grain="daily"),
+            _moments(source, ratio, grain="daily"),
             ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
         )
         with pytest.warns(IncrementWarning):
@@ -1888,8 +1892,8 @@ def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
         assert artifact_source._manifest.measures[0].observed_edge == date(2025, 2, 15)
         for grain in ("total", "daily", "asof"):
             _assert_rows_equal(
-                native_source.moments(native_metric, grain=grain),
-                artifact_source.moments(artifact_metric, grain=grain),
+                _moments(native_source, native_metric, grain=grain),
+                _moments(artifact_source, artifact_metric, grain=grain),
                 ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
             )
     finally:
@@ -1919,8 +1923,8 @@ def test_unpinned_avg_calendar_day_asof_uses_declared_horizon(tmp_path: Path) ->
         native_source = _native_source(native)
         native_metric = _metric(native_source)
         artifact_metric = _metric(artifact_source)
-        native_rows = native_source.moments(native_metric, grain="asof")
-        artifact_rows = artifact_source.moments(artifact_metric, grain="asof")
+        native_rows = _moments(native_source, native_metric, grain="asof")
+        artifact_rows = _moments(artifact_source, artifact_metric, grain="asof")
         _assert_rows_equal(
             native_rows,
             artifact_rows,
@@ -1956,7 +1960,7 @@ def test_absent_extension_is_identical_coded_refusal(published_pair: tuple[Any, 
     try:
         metric = _metric(adopted_source)
         with pytest.raises(ArtifactContractError) as raised:
-            adopted_source.moments(metric, by=["country"])
+            _moments(adopted_source, metric, by=["country"])
         assert raised.value.code == "artifact.extension.missing"
     finally:
         adopted_source.close()
@@ -1999,7 +2003,7 @@ def test_manifest_base_relation_mutations_refuse_exactly(
     )
     try:
         with pytest.raises(ArtifactContractError) as raised:
-            source.moments(_metric(source))
+            _moments(source, _metric(source))
         assert raised.value.code == "artifact.snapshot.mixed"
     finally:
         source.close()
@@ -2212,7 +2216,7 @@ def test_base_relation_generation_binding_is_coded(published_pair: tuple[Any, ..
     )
     try:
         with pytest.raises(ArtifactContractError) as raised:
-            source.moments(_metric(source))
+            _moments(source, _metric(source))
         assert raised.value.code == "artifact.snapshot.mixed"
     finally:
         source.close()
@@ -2259,7 +2263,7 @@ def test_adopted_row_mutations_refuse_with_exact_codes(mutation: str, expected_c
             rows[0]["sum_value"] = float("nan")
         _replace_artifact_relation(connection, relation, role, [dict(row) for row in rows])
         with pytest.raises(Exception) as raised:
-            source.moments(_metric(source))
+            _moments(source, _metric(source))
         assert raised.value.code == expected_code  # ty: ignore[unresolved-attribute]
     finally:
         source.close()
@@ -2885,11 +2889,11 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
 
         unadjusted = Method(name="unadjusted")
         return {
-            "native_rows": native_source.day_source(metrics=(native_metric,)).moments(
-                native_metric, grain="daily"
+            "native_rows": _moments(
+                native_source.day_source(metrics=(native_metric,)), native_metric, grain="daily"
             ),
-            "adopted_rows": adopted_source.day_source(metrics=(adopted_metric,)).moments(
-                adopted_metric, grain="daily"
+            "adopted_rows": _moments(
+                adopted_source.day_source(metrics=(adopted_metric,)), adopted_metric, grain="daily"
             ),
             "native_lift": lift_rows(
                 native.run(metrics=["purchase_rate"], decision_method=unadjusted)

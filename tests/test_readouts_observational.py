@@ -12,7 +12,7 @@ constructor.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import pyarrow as pa
@@ -30,9 +30,6 @@ from increment.estimation.diagnostics import SRMResult
 from increment.results import NotApplicable
 from tests.analysis_factory import _moment_source, lift_rows, make_analysis_like
 from tests.warning_codes import warning_codes, warning_context
-
-if TYPE_CHECKING:
-    from increment.sources import MomentSource
 
 
 def _moment_fields() -> dict[str, object]:
@@ -2349,7 +2346,7 @@ class _DriftingMoments:
 def _drifting_analysis(early, late):
     source = _DriftingMoments(_moment_source(early), _moment_source(late))
     # Capture both original reductions before substituting the drifting read behavior.
-    cast("Any", _moment_source(late)).moments = source.moments
+    _moment_source(late).moments = source.moments
     return late, source
 
 
@@ -2523,6 +2520,89 @@ def _mean_family_analysis(arms):
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
+def test_readouts_run_uses_only_request_based_provider_evidence():
+    from increment.evidence import (
+        BreakoutMethodMomentsRequest,
+        ComplianceRequest,
+        ComplianceSeriesRequest,
+        CountsRequest,
+        EvidenceProvider,
+        EvidenceScope,
+        MethodFitRequest,
+        MomentsRequest,
+        SequentialCaptureRequest,
+        UnitRowsRequest,
+        evidence_provider,
+        request_evidence,
+    )
+    from increment.readouts import run
+    from tests.analysis_factory import held_source
+
+    analysis = _mean_family_analysis(["control", "T1"])
+    source = cast(Any, held_source(analysis))
+    built_in = evidence_provider(source)
+
+    class PureProvider(EvidenceProvider):
+        context = source.context
+        evidence = source.evidence
+
+        def moments(self, request):
+            assert isinstance(request, MomentsRequest)
+            return request_evidence(built_in, request)
+
+        def breakout_method_moments(self, request: BreakoutMethodMomentsRequest):
+            return request_evidence(built_in, request)
+
+        def unit_rows(self, request):
+            assert isinstance(request, UnitRowsRequest)
+            return request_evidence(built_in, request)
+
+        def method_fit(self, request: MethodFitRequest):
+            return request_evidence(built_in, request)
+
+        def compliance(self, request: ComplianceRequest):
+            return request_evidence(built_in, request)
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            return request_evidence(built_in, request)
+
+        def counts(self, request: CountsRequest):
+            return request_evidence(built_in, request)
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            return request_evidence(built_in, request)
+
+        def scope(self, request: EvidenceScope):
+            return request_evidence(built_in, request)
+
+    try:
+        expected = analysis.run()
+        actual = run(PureProvider())
+        expected_rows = list(lift_rows(expected))
+        actual_rows = list(actual)
+
+        def estimate_signature(rows):
+            signature = []
+            for row in rows:
+                assert row.lift is not None
+                signature.append(
+                    (
+                        row.metric,
+                        row.group_id,
+                        row.method,
+                        row.lift.value,
+                        row.lift.lb,
+                        row.lift.ub,
+                    )
+                )
+            return signature
+
+        assert estimate_signature(actual_rows) == estimate_signature(expected_rows)
+    finally:
+        analysis.close()
+
+
+@pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
 @pytest.mark.parametrize("method", ["unadjusted", "iptw", "aipw", "dml"])
 def test_observational_adjusted_family_estimates_only_the_inventory_it_selected_from(method):
     early = _mean_family_analysis(["control", "T1"])
@@ -2550,7 +2630,7 @@ def test_estimate_ate_reads_each_metrics_moments_once_across_methods():
     try:
         context = _moment_source(late).context
         computation = estimate_ate(
-            cast("MomentSource", source),
+            cast(Any, source),
             cast("Observational", context.design),
             methods=[Method(name="unadjusted"), Method(name="iptw")],
             metrics=list(context.metrics),

@@ -9,6 +9,15 @@ from typing import cast
 
 import pytest
 
+from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
+
+
+def _unit_rows(source, metric, **kwargs) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
+
 
 def _raw(
     control=(1, 2, 3, 9),
@@ -349,7 +358,7 @@ def test_raw_frame_snapshot_support_and_wire():
     frame.loc[3, "revenue"] = 999
     frame.loc[0, "revenue"] = 999
     assert raw_state_from_source(source, metric) == raw
-    transformed = nw.from_native(source.unit_frame(metric), eager_only=True)
+    transformed = nw.from_native(_unit_rows(source, metric), eager_only=True)
     assert transformed["y"].to_list() == [1, 2, 3, 3.5, 1, 2, 3, 3.5]
     assert WinsorRawState.model_validate_json(raw.model_dump_json()) == raw
 
@@ -360,18 +369,27 @@ def test_raw_frame_snapshot_support_and_wire():
     from contextlib import contextmanager
 
     from increment.readouts import run
-    from increment.sources import MomentSource
+    from increment.sources import EvidenceSource
 
     captures = 0
     active = False
 
     class SnapshotWrapper:
+        @property
+        def evidence(self):
+            from dataclasses import replace
+
+            return replace(
+                source.evidence,
+                operations=source.evidence.operations | {"readout_snapshot"},
+            )
+
         def __getattr__(self, name):
             return getattr(source, name)
 
         def unit_frame(self, *args, **kwargs):
             assert active, "raw outcomes loaded outside the snapshot lifetime"
-            return source.unit_frame(*args, **kwargs)
+            return _unit_rows(source, *args, **kwargs)
 
         @contextmanager
         def readout_snapshot(self, **kwargs):
@@ -384,7 +402,7 @@ def test_raw_frame_snapshot_support_and_wire():
             finally:
                 active = False
 
-    (readout,) = run(cast(MomentSource, SnapshotWrapper()))
+    (readout,) = run(cast(EvidenceSource, SnapshotWrapper()))
     assert readout.require_lift().value == pytest.approx(0.0, abs=1e-14)
 
     # Deliberately pass an immutable value to the runtime mutation operation.
@@ -770,7 +788,7 @@ def test_moments_source_raw_refusal():
     metric = MeanMetric(name="revenue", entity="unit", fact="revenue")
     source = MomentsSource([], metrics=[metric], study_id="e", plan=AnalysisPlan())
     with pytest.raises(CodedError) as error:
-        source.unit_frame(metric, outcome_stage="raw")
+        _unit_rows(source, metric, outcome_stage="raw")
     assert error.value.code == "evidence.raw_outcomes_unavailable"
 
 
@@ -1024,7 +1042,7 @@ experiments:
             assert restored.support == raw.support
             assert restored.allocation == raw.allocation
             assert restored.missingness == raw.missingness
-            transformed = nw.from_native(adopted.unit_frame(trusted), eager_only=True)
+            transformed = nw.from_native(_unit_rows(adopted, trusted), eager_only=True)
             assert max(transformed["y"].to_list()) == revision * 3.5
             expected_day = datetime(2024, 1, 1 + revision).date()
             assert adopted.manifest.last_ds == expected_day
@@ -1050,7 +1068,7 @@ experiments:
             assert adopted.triggered_counts()[1] == {"C": 2, "T": 2}
         with ArtifactMomentSource.open(store, reference, expected_context=context) as reader:
             trusted = reader.context.metrics[0]
-            native = reader.unit_frame(trusted, outcome_stage="raw")
+            native = _unit_rows(reader, trusted, outcome_stage="raw")
             assert isinstance(native, pa.Table)
             frame = nw.from_native(native, eager_only=True)
             assert sorted(frame["y"].to_list()) == sorted(
@@ -1363,3 +1381,76 @@ def test_raw_state_from_frame_refuses_unsupported_context(context_kind):
             missingness="error",
         )
     assert raised.value.code == "estimation.winsor.design_unsupported"
+
+
+def test_raw_state_from_source_uses_typed_raw_unit_rows():
+    import pandas as pd
+
+    from increment.estimation.winsor import raw_state_from_source
+    from increment.evidence import evidence_provider, request_evidence
+    from increment.frame import from_unit_summary
+
+    source = from_unit_summary(
+        pd.DataFrame(
+            {
+                "unit": list(range(8)),
+                "group": ["C"] * 4 + ["T"] * 4,
+                "revenue": [1.0, 2.0, 3.0, 9.0, 1.0, 2.0, 3.0, 5.0],
+            }
+        ),
+        unit="unit",
+        group="group",
+        control="C",
+        metrics=[
+            {
+                "name": "revenue",
+                "winsorization": {
+                    "upper_percentile": 0.75,
+                    "support": {"lower": 0, "provenance": "External fixture support"},
+                },
+            }
+        ],
+    )
+    adapter = evidence_provider(source)
+    requests = []
+
+    class Provider:
+        context = adapter.context
+        evidence = adapter.evidence
+
+        def moments(self, request):
+            return request_evidence(adapter, request)
+
+        def breakout_method_moments(self, request):
+            return request_evidence(adapter, request)
+
+        def unit_rows(self, request):
+            requests.append(request)
+            return request_evidence(adapter, request)
+
+        def method_fit(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance(self, request):
+            return request_evidence(adapter, request)
+
+        def compliance_series(self, request):
+            return request_evidence(adapter, request)
+
+        def counts(self, request):
+            return request_evidence(adapter, request)
+
+        def capture_sequential(self, request):
+            return request_evidence(adapter, request)
+
+        def scope(self, request):
+            return adapter.scope(request)
+
+    metric = source.context.metrics[0]
+    raw = raw_state_from_source(Provider(), metric)
+    assert raw.missingness == source.context.metric_missingness[metric.name]
+    assert requests[0].population == "assigned"
+    assert raw.arm("C").values == (1, 2, 3, 9)
+    assert raw.arm("T").values == (1, 2, 3, 5)
+    assert len(requests) == 1
+    assert requests[0].outcome_stage == "raw"

@@ -18,6 +18,7 @@ import pytest
 from examples._seed import seed_event_log
 from increment import Analysis, Method, readouts
 from increment.breakout.estimates import run_daily as _day_axis_values
+from increment.evidence import MomentRows, MomentsRequest, evidence_provider, request_evidence
 from increment.query.native_source import DefinitionsMomentSource
 from increment.semantics.models import (
     AnalysisPlan,
@@ -33,6 +34,13 @@ from tests.query.test_builders import _analysis_with_cross_source_breakouts
 # Metric/guardrail set for new_onboarding_v2: d7_retention carries a
 # declared prior binding and a bounded threshold_days band, mixed with calendar-axis metrics.
 _ALL_METRICS = ["purchase_rate", "avg_session_duration", "d7_retention"]
+
+
+def _moments(source, metric, **kwargs) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
 
 
 def _stable_aliases(sql: Any) -> str:
@@ -388,12 +396,12 @@ def test_panel_cache_distinguishes_same_name_metric_variant(seeded_analysis):
     def totals(rows):
         return {row["group_id"]: row["n"] * row["ref_y"] + row["cy1"] for row in rows}
 
-    before = totals(native.moments(declared))
-    actual = totals(native.moments(variant))
+    before = totals(_moments(native, declared))
+    actual = totals(_moments(native, variant))
     with make_analysis_like(
         seeded_analysis, metrics=[variant, *native.context.metrics[1:]]
     ) as fresh:
-        expected = totals(_native_source(fresh).moments(variant))
+        expected = totals(_moments(_native_source(fresh), variant))
     assert actual == pytest.approx(expected)
     assert any(actual[group] != before[group] for group in actual)
 
@@ -625,8 +633,8 @@ def test_breakout_moments_source_survives_mixed_winsorization_metrics(seeded_ana
     breakout = a.experiment.breakouts[0]
     src = _native_source(a)._breakout_moments_source(breakout, metrics=[winsorized, purchase_rate])
 
-    winsorized_rows = cast(list[dict[str, Any]], src.moments(winsorized, by=[breakout.property]))
-    plain_rows = cast(list[dict[str, Any]], src.moments(purchase_rate, by=[breakout.property]))
+    winsorized_rows = cast(list[dict[str, Any]], _moments(src, winsorized, by=(breakout.property,)))
+    plain_rows = cast(list[dict[str, Any]], _moments(src, purchase_rate, by=(breakout.property,)))
     assert winsorized_rows, "expected at least one avg_session_duration segment row"
     assert plain_rows, "expected at least one purchase_rate segment row"
     for row in winsorized_rows:

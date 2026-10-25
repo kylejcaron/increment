@@ -21,13 +21,7 @@ from typing import Any, cast
 import ibis
 import narwhals as nw
 
-from increment._source_operations import (
-    BreakoutSourceOperation,
-    DaySourceOperation,
-    SitewideEvidenceOperation,
-    TriggeredCountsOperation,
-    TriggeredPopulationOperation,
-)
+from increment._source_types import declared_evidence
 from increment.errors import refuse
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
@@ -111,8 +105,9 @@ def _rows(value: Any) -> list[Mapping[str, Any]]:
 
 def _require_operation(source: Any, kind: str) -> None:
     handler = _handler(kind)
-    if handler.operation not in getattr(source, "operations", frozenset()) or not isinstance(
-        source, handler.protocol
+    evidence = declared_evidence(source)
+    if handler.operation not in evidence.operations or not callable(
+        getattr(source, handler.operation, None)
     ):
         _reject(
             "artifact.evidence.unavailable",
@@ -140,7 +135,6 @@ class _EvidenceRows(list[Mapping[str, Any]]):
 class _ExtensionHandler:
     role: str
     operation: str
-    protocol: type[Any]
     source_rows: Callable[..., Any]
     model: Callable[..., ArtifactExtensionRef]
     identity_matches: Callable[..., bool]
@@ -215,7 +209,6 @@ class ExtensionKindSpec:
     kind: str
     role: str
     operation: str
-    protocol: type[Any]
     model_cls: type[Any]
     # (extension model attribute, request/definition attribute) pairs echoed
     # across identity/request/model/validate_definition; breakout/factor rename the field.
@@ -302,7 +295,6 @@ def _build_handler(spec: ExtensionKindSpec) -> _ExtensionHandler:
     return _ExtensionHandler(
         role=spec.role,
         operation=spec.operation,
-        protocol=spec.protocol,
         source_rows=spec.source_rows,
         model=spec.model or (lambda **kw: _generic_model(spec, **kw)),
         identity_matches=spec.identity_matches or (lambda *a: _generic_identity_matches(spec, *a)),
@@ -1438,7 +1430,7 @@ def validate_extension(
     assert extension is not None
     ext: Any = extension
     if ext.kind == "encouragement_uptake" and ext.extension_version == 1:
-        from increment._source_types import raise_legacy_compliance_state
+        from increment._evidence_types import raise_legacy_compliance_state
 
         raise_legacy_compliance_state(
             study_id=experiment_id or "artifact",
@@ -1646,7 +1638,6 @@ _HANDLERS = {
             kind="breakout_dimension",
             role="breakout_dimension",
             operation="breakout_source",
-            protocol=BreakoutSourceOperation,
             model_cls=BreakoutDimensionExtension,
             fields=(("dimension_name", "property_name"), ("source_name", "source_name")),
             row_validator=partial(_validate_dimension_row, value_field="dimension_value"),
@@ -1660,7 +1651,6 @@ _HANDLERS = {
             kind="factor_dimension",
             role="factor_dimension",
             operation="breakout_source",
-            protocol=BreakoutSourceOperation,
             model_cls=FactorDimensionExtension,
             fields=(("factor_name", "property_name"), ("source_name", "source_name")),
             row_validator=partial(_validate_dimension_row, value_field="factor_value"),
@@ -1674,7 +1664,6 @@ _HANDLERS = {
             kind="cluster_identity",
             role="cluster_identity",
             operation="day_source",
-            protocol=DaySourceOperation,
             model_cls=ClusterIdentityExtension,
             fields=(("cluster_name", "cluster_name"),),
             row_validator=_validate_cluster_row,
@@ -1686,7 +1675,6 @@ _HANDLERS = {
             kind="cuped_preperiod",
             role="cuped_preperiod",
             operation="day_source",
-            protocol=DaySourceOperation,
             model_cls=CupedPreperiodExtension,
             fields=(("metric_name", "metric_name"),),
             row_validator=_validate_cuped_row,
@@ -1702,7 +1690,6 @@ _HANDLERS = {
             kind="cuped_measure_covariate",
             role="cuped_measure_covariate",
             operation="day_source",
-            protocol=DaySourceOperation,
             model_cls=CupedMeasureCovariateExtension,
             fields=(("metric_name", "metric_name"), ("covariate_name", "covariate_name")),
             row_validator=_validate_measure_covariate_row,
@@ -1719,7 +1706,6 @@ _HANDLERS = {
     "assignment_counts": _ExtensionHandler(
         role="assignment_counts",
         operation="triggered_counts",
-        protocol=TriggeredCountsOperation,
         source_rows=_source_assignment_count_rows,
         model=_model_assignment,
         identity_matches=_identity_assignment,
@@ -1739,7 +1725,6 @@ _HANDLERS = {
             kind="trigger_population",
             role="trigger_population",
             operation="triggered_source",
-            protocol=TriggeredPopulationOperation,
             model_cls=TriggerPopulationExtension,
             fields=(("trigger_name", "trigger_name"),),
             row_validator=_validate_trigger_row,
@@ -1754,7 +1739,6 @@ _HANDLERS = {
             kind="trigger_measure_stats",
             role="trigger_measure_stats",
             operation="triggered_source",
-            protocol=TriggeredPopulationOperation,
             model_cls=TriggerMeasureStatsExtension,
             fields=(("trigger_name", "trigger_name"), ("metric_names", "metric_names")),
             row_validator=_validate_trigger_measure_stats_row,
@@ -1770,7 +1754,6 @@ _HANDLERS = {
             kind="encouragement_uptake",
             role="encouragement_uptake",
             operation="day_source",
-            protocol=DaySourceOperation,
             model_cls=EncouragementUptakeExtension,
             fields=(("uptake_name", "uptake_name"),),
             row_validator=_validate_encouragement_row,
@@ -1783,7 +1766,6 @@ _HANDLERS = {
     "site_volume": _ExtensionHandler(
         role="site_volume",
         operation="sitewide_evidence",
-        protocol=SitewideEvidenceOperation,
         source_rows=_source_site_volume_extension_rows,
         model=_model_site_volume,
         identity_matches=_identity_site_volume,
@@ -1803,7 +1785,6 @@ _HANDLERS = {
             kind="unit_covariate",
             role="unit_covariate",
             operation="day_source",
-            protocol=DaySourceOperation,
             model_cls=UnitCovariateExtension,
             fields=(("covariate_name", "property_name"), ("source_name", "source_name")),
             row_validator=lambda _row: None,
@@ -1818,7 +1799,6 @@ _HANDLERS = {
             kind="unit_covariate_level",
             role="unit_covariate_level",
             operation="day_source",
-            protocol=DaySourceOperation,
             model_cls=UnitCovariateLevelExtension,
             fields=(("covariate_name", "property_name"), ("source_name", "source_name")),
             row_validator=lambda _row: None,

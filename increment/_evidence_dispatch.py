@@ -21,7 +21,7 @@ from increment.estimation.engine import Method
 from increment.estimation.inference import Prior
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Metric
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     pass
@@ -92,7 +92,7 @@ class ArmMomentHandler:
     estimands: tuple[str, ...] | None = None
     value_scale: Mapping[str, ValueScale] | None = None
 
-    def run(self, source: MomentSource, request: ReadoutRequest) -> list[LiftEstimate]:
+    def run(self, source: EvidenceSource, request: ReadoutRequest) -> list[LiftEstimate]:
         return readouts.arm_moments(
             source,
             decision_method=self.decision_method,

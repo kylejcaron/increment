@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from increment.estimation.targeting import CateValidation, TargetingRule
     from increment.power import PowerResult
     from increment.simulate.runner import _KeyOutcome, _KeyStats
-    from increment.sources import MomentSource
+    from increment.sources import EvidenceSource
 
 Role = Literal["training", "holdout", "oracle"]
 Weight = Literal["member_count", "equal"]
@@ -2243,7 +2243,7 @@ def _validation_observations(
 
 
 def _fit_observation(
-    source: MomentSource, target: float, options: dict[str, Any]
+    source: EvidenceSource, target: float, options: dict[str, Any]
 ) -> tuple[ClusteredObservation, str | None]:
     from increment.cate import estimate_cate
 

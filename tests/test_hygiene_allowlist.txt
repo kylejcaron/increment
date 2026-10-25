@@ -199,7 +199,6 @@ tests/test_cuped_covariates.py 2
 tests/test_cuped_evidence.py 19
 tests/test_cuped_portable_journey.py 1
 tests/test_cuped_review_followups.py 1
-tests/test_cuped_review_regressions.py 1
 tests/test_cuped_route_admission.py 4
 tests/test_cuped_warehouse_cells.py 15
 tests/test_dashboard.py 23
@@ -230,7 +229,7 @@ tests/test_readout_interpretation.py 11
 tests/test_readout_metadata.py 4
 tests/test_readout_public_scope.py 8
 tests/test_readout_request.py 5
-tests/test_readouts.py 10
+tests/test_readouts.py 9
 tests/test_readouts_encouragement.py 4
 tests/test_readouts_plan.py 2
 tests/test_readouts_switchback.py 2

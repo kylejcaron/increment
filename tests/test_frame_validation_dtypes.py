@@ -17,6 +17,14 @@ import pytest
 
 from increment import Analysis, readouts
 from increment.errors import InvalidRequestError
+from increment.evidence import (
+    CountEvidence,
+    CountsRequest,
+    MomentRows,
+    MomentsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.models import MeanMetric
 
@@ -55,7 +63,8 @@ def _moments_by_group(frame):
         frame, unit="unit_id", group="variant", control="control", metrics={"rev": "mean"}
     )
     metric = cast(MeanMetric, src.context.metrics[0])
-    return {row["group_id"]: row for row in src.moments(metric)}
+    rows = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))
+    return {row["group_id"]: row for row in rows}
 
 
 def test_object_dtype_float_column_matches_float64_twin_bitwise() -> None:
@@ -89,7 +98,12 @@ def test_polars_boolean_metric_casts_to_float_and_matches_its_exact_mean() -> No
         frame, unit="unit_id", group="variant", control="control", metrics={"converted": "mean"}
     )
     metric = cast(MeanMetric, src.context.metrics[0])
-    rows = {row["group_id"]: row for row in src.moments(metric)}
+    rows = {
+        row["group_id"]: row
+        for row in cast(
+            MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric))
+        )
+    }
     assert rows["control"]["ref_y"] == 0.6
     assert rows["treatment"]["ref_y"] == 0.8
 
@@ -114,7 +128,8 @@ def test_object_dtype_nan_is_null_like_its_float64_twin_under_missing_zero() -> 
             frame, unit="unit_id", group="variant", control="control", metrics=spec
         )
         metric = cast(MeanMetric, src.context.metrics[0])
-        return {row["group_id"]: row for row in src.moments(metric)}
+        rows = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))
+        return {row["group_id"]: row for row in rows}
 
     native_rows = _moments(native)
     object_rows = _moments(objectified)
@@ -148,7 +163,8 @@ def test_pandas_nullable_string_na_is_null_like_its_float64_twin_under_missing_z
             frame, unit="unit_id", group="variant", control="control", metrics=spec
         )
         metric = cast(MeanMetric, src.context.metrics[0])
-        return {row["group_id"]: row for row in src.moments(metric)}
+        rows = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))
+        return {row["group_id"]: row for row in rows}
 
     native_rows = _moments(native)
     nullable_rows = _moments(nullable)
@@ -183,7 +199,8 @@ def test_object_dtype_numpy_float32_nan_is_null_like_its_float64_twin_under_miss
             frame, unit="unit_id", group="variant", control="control", metrics=spec
         )
         metric = cast(MeanMetric, src.context.metrics[0])
-        return {row["group_id"]: row for row in src.moments(metric)}
+        rows = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))
+        return {row["group_id"]: row for row in rows}
 
     native_rows = _moments(native)
     object_rows = _moments(objectified)
@@ -280,7 +297,13 @@ def test_string_group_labels_retain_separate_quantile_contrasts():
     assert set(results) == {"1", "2"}
     for label, median in [("1", 20.495), ("2", 30.495)]:
         assert results[label].require_lift().value == pytest.approx(median / 10.495 - 1)
-    assert source.unit_counts() == {"control": 100, "1": 100, "2": 100}
+    assert cast(
+        CountEvidence, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
+    ).counts == {
+        "control": 100,
+        "1": 100,
+        "2": 100,
+    }
 
 
 @pytest.mark.parametrize("panel", [False, True])
@@ -297,7 +320,13 @@ def test_missing_group_is_not_the_literal_nan_arm(panel):
         on_unassigned="exclude",
         **({"date": "day"} if panel else {}),
     )
-    assert source.unit_counts() == {"control": 100, "nan": 100, "(unassigned)": 1}
+    assert cast(
+        CountEvidence, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
+    ).counts == {
+        "control": 100,
+        "nan": 100,
+        "(unassigned)": 1,
+    }
     result = readouts.run(source)[0]
     assert result.group_id == "nan"
     assert result.lift is not None
@@ -320,7 +349,13 @@ def test_float_nan_group_stays_unassigned_after_native_cast(backend):
         metrics={"latency": "mean"},
         on_unassigned="exclude",
     )
-    assert source.unit_counts() == {control: 100, treatment: 100, "(unassigned)": 1}
+    assert cast(
+        CountEvidence, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
+    ).counts == {
+        control: 100,
+        treatment: 100,
+        "(unassigned)": 1,
+    }
     result = readouts.run(source)[0]
     assert result.group_id == treatment
     assert result.lift is not None
@@ -338,7 +373,12 @@ def test_numeric_group_column_accepts_canonical_string_control(panel):
         metrics={"latency": "mean"},
         **({"date": "day"} if panel else {}),
     )
-    assert source.unit_counts() == {"0": 100, "1": 100}
+    assert cast(
+        CountEvidence, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
+    ).counts == {
+        "0": 100,
+        "1": 100,
+    }
     result = readouts.run(source)[0]
     assert result.group_id == "1"
     assert result.lift is not None

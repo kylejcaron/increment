@@ -320,7 +320,11 @@ def scope_sequential_results(
         rows = [
             *rows,
             *sequential_readout(
-                src, population="triggered", _include_unrequested=True, configs=configs
+                src,
+                population="triggered",
+                snapshot=snapshot,
+                _include_unrequested=True,
+                configs=configs,
             ),
         ]
     snapshot_id, source = _snapshot_identity(

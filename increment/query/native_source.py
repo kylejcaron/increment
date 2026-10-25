@@ -158,10 +158,9 @@ from increment.sources import (
     BreakoutMomentsSource,
     ComplianceArm,
     ComplianceSummary,
-    CUPEDEvidenceExportSource,
-    MomentSource,
     SourceContext,
     SourceOperation,
+    _BuiltinMomentSource,
 )
 
 if TYPE_CHECKING:
@@ -173,7 +172,7 @@ if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Observational, Randomized
     from increment.sequential_state import SequentialCheckpoint
-    from increment.sources import Grain, MomentSource
+    from increment.sources import Grain, _BuiltinMomentSource
 
 
 _SNAPSHOT_HORIZON_RELATION_KEY = "__increment_readout_snapshot_horizon__"
@@ -210,6 +209,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         {
             "allocation_history",
             "readout_snapshot",
+            "readout_execution",
             "dashboard_group_data",
             "materialize",
             "triggered_counts",
@@ -815,7 +815,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_facts: Sequence[str] = (),
         include_breakouts: bool = False,
         configs: Sequence[ResolvedMetricConfig] | None = None,
-    ) -> Iterator[MomentSource]:
+    ) -> Iterator[_BuiltinMomentSource]:
         """Pin selected metrics, requested uptake streams, and optionally breakout properties.
 
         ``include_breakouts`` also captures each declared breakout's property stream, so a
@@ -2120,7 +2120,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         compliance-relevant ``x`` family already goes through.
         """
         if completed_windows_only:
-            from increment._source_types import validate_compliance_completion
+            from increment._evidence_types import validate_compliance_completion
 
             validate_compliance_completion(design, as_of=as_of)
         if design != self._context.design:
@@ -3444,7 +3444,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             uptake_certified_edge,
         )
 
-    def triggered_source(self) -> MomentSource:
+    def triggered_source(self) -> _BuiltinMomentSource:
         """Return a source-owned view of the triggered population."""
         return TriggeredPopulationSource(self)
 
@@ -3473,7 +3473,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         prior: Any | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
-    ) -> MomentSource:
+    ) -> _BuiltinMomentSource:
         """Build an in-process moments source for *metrics*.
 
         This is the source-owned counterpart to the export/from-moments wire
@@ -3516,7 +3516,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
             view = self if population == "assigned" else self.triggered_source()
             portable = portable_cuped_rows(
-                cast(CUPEDEvidenceExportSource, view),
+                cast(_BuiltinMomentSource, view),
                 requests,
                 categorical_cells=None,
                 identity=identity_record,
@@ -3593,7 +3593,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def _rehydrated_moments(
         self, rows: list[dict[str, Any]], identity_record: dict[str, Any], source: Any
-    ) -> MomentSource:
+    ) -> _BuiltinMomentSource:
         from increment.sources import MomentsSource
 
         return MomentsSource(
@@ -3720,7 +3720,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     pinned_identity, sort_keys=True, separators=(",", ":")
                 )
                 portable = portable_cuped_rows(
-                    cast(CUPEDEvidenceExportSource, pinned),
+                    pinned,
                     requests,
                     categorical_cells=lambda metric, method: categorical_request_cells(
                         pinned, metric, method, population="assigned"

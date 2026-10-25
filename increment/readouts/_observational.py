@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from increment._literals import ValueScale
 from increment._policy_alpha import resolve_cell_alpha
+from increment._source_types import _BuiltinMomentSource
 from increment.estimation.adjust import (
     ObservationalEvidence,
     _estimate_ate,
@@ -26,7 +27,6 @@ from increment.readouts._common import (
     _runtime_methods,
     _sequential_inference,
 )
-from increment.sources import MomentSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 
 def _estimate_observational(
-    src: MomentSource,
+    src: _BuiltinMomentSource,
     selected: Sequence[Metric],
     configs: Sequence[ResolvedMetricConfig],
     design: Observational,
@@ -156,7 +156,7 @@ def _estimate_observational(
 
 
 def _estimate_observational_secondary_family(
-    src: MomentSource,
+    src: _BuiltinMomentSource,
     secondary: Sequence[Metric],
     config_by_name: Mapping[str, ResolvedMetricConfig],
     design: Observational,

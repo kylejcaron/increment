@@ -7,6 +7,7 @@ from increment._analysis_config import UNSET, _Unset, effective_methods
 from increment._evidence_types import EvidenceScope, MetricEvidence, MetricEvidenceRequest
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
+from increment._source_types import is_custom_source
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.estimation.adjust import bind_unit_frame_memo, observational_evidence
 from increment.estimation.engine import Method
@@ -26,7 +27,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._design_scope import _config_snapshot
 from increment.readouts._encouragement import encouragement_rows
-from increment.readouts._evidence import evidence_scope
+from increment.readouts._evidence import _builtin_source, evidence_scope, prior_exclusions
 from increment.readouts._metric_rows import load_metric_evidence
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
@@ -36,19 +37,20 @@ from increment.readouts._randomized import (
 )
 from increment.readouts._randomized_scope import _scoped_randomized_results
 from increment.readouts._requests import _design_compliance_only, _prepare_run_request
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
+    from increment._source_types import _BuiltinMomentSource
     from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
 
 
 # Scheduled decomposition target; public parameter count is the API.
 def run(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     decision_method: Method | _Unset = UNSET,
     sensitivity_methods: Sequence[Method] | _Unset = UNSET,
@@ -170,7 +172,7 @@ def run(
     ) as scoped:
         return _as_collection(
             _run_prepared(
-                scoped,
+                _builtin_source(scoped),
                 selected,
                 configs,
                 prior=prior,
@@ -178,7 +180,7 @@ def run(
                 estimands=estimands,
                 value_scale=value_scale,
                 population=_population,
-                scope_active=needs_snapshot,
+                scope_active=needs_snapshot or is_custom_source(src),
             )
         )
 
@@ -265,7 +267,7 @@ def _restore_legacy_prior_exclusion(src, configs, plan):
         procedure = procedures.get(config.metric.name)
         base = base_configs.get(config.metric.name)
         if (
-            config.metric.name not in getattr(src, "_legacy_prior_exclusions", ())
+            config.metric.name not in prior_exclusions(src)
             or procedure is None
             or base is None
             or base.prior is None
@@ -289,7 +291,7 @@ def _run_plan_and_roster(src, design, configs, population):
     return plan, _preflight_roster(src, design, population)
 
 
-def _load_encouragement_evidence(src, selected, configs, design, by, *, scope_active):
+def _load_encouragement_evidence(src, selected, configs, design, by, *, population, scope_active):
     config_by_metric = {config.metric.name: config for config in configs}
     return {
         metric.name: load_metric_evidence(
@@ -299,6 +301,7 @@ def _load_encouragement_evidence(src, selected, configs, design, by, *, scope_ac
                 control_group=design.control_group,
                 by=tuple(by),
                 methods=tuple(effective_methods(config_by_metric[metric.name], design=design)),
+                population=population,
             ),
             scope_active=scope_active,
         )
@@ -307,7 +310,7 @@ def _load_encouragement_evidence(src, selected, configs, design, by, *, scope_ac
 
 
 def _run_prepared(  # noqa: PLR0915
-    src: MomentSource,
+    src: _BuiltinMomentSource,
     selected: Sequence[Metric],
     configs: Sequence[ResolvedMetricConfig],
     *,
@@ -324,17 +327,23 @@ def _run_prepared(  # noqa: PLR0915
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
+        from increment.readouts._evidence import current_source_snapshot
         from increment.readouts._sequential_scope import scope_sequential_results
-        from increment.sequential_source import source_snapshot
 
         _refuse_segmented_registration(plan.inference)
+        snapshot = current_source_snapshot(src)
         rows = sequential_readout(
-            src, metrics=selected, estimands=estimands, _include_unrequested=True, configs=configs
+            src,
+            metrics=selected,
+            estimands=estimands,
+            snapshot=snapshot,
+            _include_unrequested=True,
+            configs=configs,
         )
         return scope_sequential_results(
             src,
             rows,
-            source_snapshot(src),
+            snapshot,
             base_roster=preflight_roster,
             metrics=[metric.name for metric in selected],
             estimands=estimands,
@@ -361,7 +370,13 @@ def _run_prepared(  # noqa: PLR0915
                 remedy="Drop the encouragement design or the quantile metric.",
             )
             evidence_by_metric = _load_encouragement_evidence(
-                src, selected, configs, design, by, scope_active=scope_active
+                src,
+                selected,
+                configs,
+                design,
+                by,
+                population=population,
+                scope_active=scope_active,
             )
             rows_by_metric = {
                 name: list(evidence.rows) for name, evidence in evidence_by_metric.items()
@@ -405,6 +420,7 @@ def _run_prepared(  # noqa: PLR0915
             design=design,
             plan=plan,
             estimands=estimands,
+            population=population,
             cluster=cluster,
             caller="run() under an encouragement design",
             capture=capture,
@@ -457,8 +473,8 @@ def _run_prepared(  # noqa: PLR0915
 
         # The one moments reduction per metric: it gates on a treatment arm, and sizes every
         # family and routing level, and every estimate and FCR re-estimate reads it.
-        evidence = observational_evidence(src, selected)
-        unit_frame_memo = bind_unit_frame_memo(src)
+        evidence = observational_evidence(src, selected, population=population)
+        unit_frame_memo = bind_unit_frame_memo(src, population=population)
         if selected:
             _refuse_if_no_treatment_arm(
                 set().union(*(evidence.arms(metric) for metric in selected)),
@@ -522,6 +538,7 @@ def _run_prepared(  # noqa: PLR0915
         design,
         plan,
         by=by,
+        population=population,
         effective_inference=effective_inference,
         advisory_seen=advisory_seen,
         observed_arms=observed_arms,
@@ -536,6 +553,7 @@ def _run_prepared(  # noqa: PLR0915
         design,
         plan,
         by=by,
+        population=population,
         effective_inference=effective_inference,
         advisory_seen=advisory_seen,
         observed_arms=observed_arms,
@@ -568,7 +586,7 @@ def _run_prepared(  # noqa: PLR0915
 
 
 def arm_moments(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     decision_method: Method | _Unset = UNSET,
     sensitivity_methods: Sequence[Method] | _Unset = UNSET,

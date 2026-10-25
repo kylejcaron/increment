@@ -8,9 +8,19 @@ import pytest
 from increment.analysis import Analysis
 from increment.errors import IncrementWarning
 from increment.estimation.results import LiftEstimate
+from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.semantics import load
 from tests.analysis_factory import _moment_source
 from tests.covariate_cases import categorical_defs_and_con
+
+
+def _unit_rows(source, metric, **kwargs) -> UnitRows:
+    if "covariates" in kwargs:
+        kwargs["covariates"] = tuple(kwargs["covariates"])
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
 
 
 def _with_metric_covariates(path, binding: str, *, n_pre_periods: int = 0):
@@ -56,7 +66,7 @@ def test_native_definition_covariate_property_acquisition_preserves_category_and
     source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
     metric = source.context.metrics[0]
     table = nw.from_native(
-        source.unit_frame(metric, covariates=["pre_region"]), eager_only=True
+        _unit_rows(source, metric, covariates=("pre_region",)), eager_only=True
     ).to_arrow()
     rows = {row["unit_id"]: row["pre_region"] for row in table.to_pylist()}
 
@@ -80,7 +90,7 @@ def test_native_measure_covariate_is_scoped_before_assignment(tmp_path):
     source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
     metric = source.context.metrics[0]
     table = nw.from_native(
-        cast(Any, source).unit_frame(metric, covariates=["pre_revenue"], outcome_stage="raw"),
+        _unit_rows(source, metric, covariates=("pre_revenue",), outcome_stage="raw"),
     ).to_arrow()
     rows = {row["unit_id"]: row["pre_revenue"] for row in table.to_pylist()}
 
@@ -133,7 +143,7 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
     metric = source.context.metrics[0]
     rows = (
         nw.from_native(
-            cast(Any, source).unit_frame(metric, covariates=["pre_value"], outcome_stage="raw"),
+            _unit_rows(source, metric, covariates=("pre_value",), outcome_stage="raw"),
             eager_only=True,
         )
         .to_arrow()
@@ -155,7 +165,7 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
     artifact_values = {
         row["unit_id"]: row["pre_value"]
         for row in nw.from_native(
-            artifact.unit_frame(metric, covariates=["pre_value"]), eager_only=True
+            _unit_rows(artifact, metric, covariates=("pre_value",)), eager_only=True
         )
         .to_arrow()
         .to_pylist()
@@ -184,7 +194,7 @@ def test_occurrence_only_count_measure_acquires_native_and_artifact(tmp_path):
     native_values = {
         row["unit_id"]: row["pre_visits"]
         for row in nw.from_native(
-            cast(Any, native).unit_frame(metric, covariates=["pre_visits"], outcome_stage="raw"),
+            _unit_rows(native, metric, covariates=("pre_visits",), outcome_stage="raw"),
             eager_only=True,
         )
         .to_arrow()
@@ -197,7 +207,7 @@ def test_occurrence_only_count_measure_acquires_native_and_artifact(tmp_path):
     artifact_values = {
         row["unit_id"]: row["pre_visits"]
         for row in nw.from_native(
-            artifact.unit_frame(metric, covariates=["pre_visits"]), eager_only=True
+            _unit_rows(artifact, metric, covariates=("pre_visits",)), eager_only=True
         )
         .to_arrow()
         .to_pylist()
@@ -229,7 +239,7 @@ def test_raw_unit_frame_pins_separate_property_source(tmp_path):
     metric = source.context.metrics[0]
     rows = (
         nw.from_native(
-            cast(Any, source).unit_frame(metric, covariates=["pre_region"], outcome_stage="raw"),
+            _unit_rows(source, metric, covariates=("pre_region",), outcome_stage="raw"),
             eager_only=True,
         )
         .to_arrow()
@@ -410,7 +420,10 @@ def test_method_covariate_alias_conflicts_with_observational_binding(tmp_path):
     source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
 
     with pytest.raises(InvalidRequestError) as raised:
-        source.unit_frame(source.context.metrics[0], covariates=["tenure"])
+        request_evidence(
+            evidence_provider(source),
+            UnitRowsRequest(source.context.metrics[0], covariates=("tenure",)),
+        )
     assert raised.value.code == "facade.analysis_config.covariate_binding_conflict"
 
 
@@ -530,7 +543,7 @@ def test_multiple_primary_artifact_binding_resolves_property_alias(tmp_path):
 
     rows = (
         nw.from_native(
-            source.unit_frame(source.context.metrics[0], covariates=["pre_region"]),
+            _unit_rows(source, source.context.metrics[0], covariates=("pre_region",)),
             eager_only=True,
         )
         .to_arrow()
@@ -566,7 +579,7 @@ def test_artifact_deduplicates_omitted_and_explicit_resolved_source(tmp_path):
     source = _moment_source(restored)
     rows = (
         nw.from_native(
-            source.unit_frame(source.context.metrics[0], covariates=["pre_tenure"]),
+            _unit_rows(source, source.context.metrics[0], covariates=("pre_tenure",)),
             eager_only=True,
         )
         .to_arrow()
@@ -599,12 +612,12 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     metric = native.context.metrics[0]
 
     native_rows = (
-        nw.from_native(native.unit_frame(metric, covariates=["pre_region"]), eager_only=True)
+        nw.from_native(_unit_rows(native, metric, covariates=("pre_region",)), eager_only=True)
         .to_arrow()
         .to_pylist()
     )
     artifact_rows = (
-        nw.from_native(artifact.unit_frame(metric, covariates=["pre_region"]), eager_only=True)
+        nw.from_native(_unit_rows(artifact, metric, covariates=("pre_region",)), eager_only=True)
         .to_arrow()
         .to_pylist()
     )
@@ -652,7 +665,7 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     reference = analysis.publish_unit_day_artifact(store)
     artifact_analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    artifact = cast(Any, _moment_source(artifact_analysis))
+    artifact = _moment_source(artifact_analysis)
     source_names = {
         extension.source_name
         for extension in artifact._manifest.extensions
@@ -662,7 +675,7 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
     assert source_names == {"events", "events_b"}
     rows = (
         nw.from_native(
-            artifact.unit_frame(artifact.context.metrics[0], covariates=["tenure", "pre_tenure"]),
+            _unit_rows(artifact, artifact.context.metrics[0], covariates=("tenure", "pre_tenure")),
             eager_only=True,
         )
         .to_arrow()
@@ -717,11 +730,11 @@ def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     reference = analysis.publish_unit_day_artifact(store)
     restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-    source = cast(Any, _moment_source(restored))
+    source = _moment_source(restored)
 
     measured = (
         nw.from_native(
-            source.unit_frame(source.context.metrics[0], covariates=["prior"]),
+            _unit_rows(source, source.context.metrics[0], covariates=("prior",)),
             eager_only=True,
         )
         .to_arrow()
@@ -729,7 +742,7 @@ def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
     )
     property_bound = (
         nw.from_native(
-            source.unit_frame(source.context.metrics[1], covariates=["prior"]),
+            _unit_rows(source, source.context.metrics[1], covariates=("prior",)),
             eager_only=True,
         )
         .to_arrow()
@@ -936,7 +949,7 @@ def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
         rows_by_unit = {
             row["unit_id"]: row["region"]
             for row in nw.from_native(
-                cast(Any, source).unit_frame(metric, covariates=["region"], population="triggered"),
+                _unit_rows(source, metric, covariates=("region",), population="triggered"),
                 eager_only=True,
             )
             .to_arrow()

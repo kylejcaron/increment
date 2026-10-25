@@ -20,6 +20,14 @@ from increment.analysis import Analysis
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.armstats import ArmStats
 from increment.estimation.diagnostics import SRMResult
+from increment.evidence import (
+    CountEvidence,
+    CountsRequest,
+    MomentRows,
+    MomentsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.query import session as session_module
 from increment.query.artifact_contract import (
     ArtifactContractError,
@@ -59,6 +67,21 @@ def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> 
     if os.environ.get("INCREMENT_DISABLE_FIXTURE_CACHE") == "1":
         return build()
     return get_or_build(root / ".cache" / "increment-fixtures", key, build)
+
+
+def _moments(source, metric, **kwargs) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
+
+
+def _counts(source, kind, *, population="assigned"):
+    evidence = cast(
+        CountEvidence,
+        request_evidence(evidence_provider(source), CountsRequest(kind, population=population)),
+    )
+    return evidence.counts if kind == "assignment" else evidence.unit_counts or evidence.counts
 
 
 _PUBLICATION_GOLDEN = (
@@ -1177,16 +1200,13 @@ def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
     metric = adopted.metrics[0]
     breakout = adopted.experiment.breakouts[0]
     with open_artifact(store, ref, expected_context=context) as source:
-        breakout_rows: Any = source.breakout_moments(
-            metric,
-            breakout,
-            grain="total",
-            include_covariate=True,
-        ).rows
-    native_rows: Any = (
-        _native_source(native)
-        .breakout_source(breakout, metrics=[metric])
-        .moments(metric, by=["country"])
+        breakout_rows = _moments(
+            source, metric, grain="total", by=("country",), include_covariate=True
+        )
+    native_rows = _moments(
+        _native_source(native).breakout_source(breakout, metrics=[metric]),
+        metric,
+        by=("country",),
     )
     assert breakout_rows and native_rows
     assert any(abs(float(row["ref_x"])) > 0 for row in breakout_rows)
@@ -1232,12 +1252,13 @@ def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     )
     retention = next(metric for metric in adopted.metrics if metric.name == "d7_retention")
     with open_artifact(store, ref, expected_context=context) as source:
-        daily_rows = source.moments(retention, grain="daily", include_covariate=True)
+        daily_rows = _moments(source, retention, grain="daily", include_covariate=True)
     native_retention = next(metric for metric in native.metrics if metric.name == "d7_retention")
-    native_rows = (
-        _native_source(native)
-        .day_source(metrics=[native_retention])
-        .moments(native_retention, grain="daily", include_covariate=True)
+    native_rows = _moments(
+        _native_source(native).day_source(metrics=[native_retention]),
+        native_retention,
+        grain="daily",
+        include_covariate=True,
     )
     assert daily_rows and native_rows
     assert any(abs(float(row["ref_x"])) > 0 for row in daily_rows)
@@ -1460,12 +1481,21 @@ def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) ->
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     assert lift_rows(adopted.run(metrics=["purchase_rate"]))
     metric = adopted.metrics[0]
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+
     with open_artifact(store, ref, expected_context=context) as source:
-        triggered_rows = source.triggered_source().moments(
-            metric,
-            grain="total",
-            by=["country"],
-            include_covariate=True,
+        triggered_rows = cast(
+            MomentRows,
+            request_evidence(
+                evidence_provider(source),
+                MomentsRequest(
+                    metric=metric,
+                    grain="total",
+                    by=("country",),
+                    include_covariate=True,
+                    population="triggered",
+                ),
+            ),
         )
     assert triggered_rows
     assert all(row["country"] is not None for row in triggered_rows)
@@ -1503,7 +1533,7 @@ def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_pat
     results = adopted.run()
 
     with open_artifact(store, ref, expected_context=context) as source:
-        assert source.assignment_counts() == {"C": 25, "T": 25}
+        assert _counts(source, "assignment") == {"C": 25, "T": 25}
 
     metadata = results.metadata
     assert metadata is not None
@@ -1561,8 +1591,8 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
     }
     try:
         with open_artifact(store, reference, expected_context=context) as source:
-            assert source.unit_counts() == expected
-            assert source.assignment_counts() == expected
+            assert _counts(source, "unit") == expected
+            assert _counts(source, "assignment") == expected
 
         native_srm = native.srm(expected={"control": 0.5, "treatment": 0.5})
         artifact_srm = adopted.srm(expected={"control": 0.5, "treatment": 0.5})
@@ -1573,8 +1603,13 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
         assert artifact_srm.unassigned_units == native_srm.unassigned_units
 
         with ArtifactMomentSource.open(store, reference, expected_context=context) as raw_source:
+            from increment.evidence import CountsRequest, evidence_provider, request_evidence
+
             with pytest.raises(ArtifactContractError) as raised:
-                raw_source.assignment_counts(population="triggered")
+                request_evidence(
+                    evidence_provider(raw_source),
+                    CountsRequest(kind="assignment", population="triggered"),
+                )
         assert raised.value.code == "artifact.evidence.unavailable"
     finally:
         adopted.close()
@@ -1753,35 +1788,83 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     try:
         native_source = _native_source(native)
-        native_triggered = native_source.triggered_source()
-        # Confirm the fixture is genuinely a proper subset, not 100% coverage
-        # (the bug this test guards is invisible at 100% triggered).
-        triggered_count = sum(native_triggered.unit_counts().values())
-        enrolled_count = sum(native_source.unit_counts().values())
+        from increment.evidence import (
+            CountsRequest,
+            MomentsRequest,
+            UnitRowsRequest,
+            evidence_provider,
+            request_evidence,
+        )
+
+        native_provider = evidence_provider(native_source)
+        # Confirm the fixture is genuinely a proper subset, not 100% coverage.
+        triggered_count = sum(
+            cast(
+                CountEvidence,
+                request_evidence(
+                    native_provider, CountsRequest(kind="unit", population="triggered")
+                ),
+            ).counts.values()
+        )
+        enrolled_count = sum(
+            cast(
+                CountEvidence,
+                request_evidence(
+                    native_provider, CountsRequest(kind="unit", population="assigned")
+                ),
+            ).counts.values()
+        )
         assert 0 < triggered_count < enrolled_count
 
         native_metric = native.metrics[0]
         adopted_metric = adopted.metrics[0]
-        # Native lacks a triggered, breakout-dimensioned "total" summary (see
-        # below), so the reference is the triggered population's undimensioned
-        # CUPED moments; dimensioned artifact rows must sum to its per-arm totals.
         native_rows = cast(
             "list[dict[str, Any]]",
-            native_triggered.moments(native_metric, grain="total", include_covariate=True),
+            request_evidence(
+                native_provider,
+                MomentsRequest(
+                    metric=native_metric,
+                    grain="total",
+                    include_covariate=True,
+                    population="triggered",
+                ),
+            ),
         )
 
         with open_artifact(store, ref, expected_context=context) as source:
-            triggered = source.triggered_source()
+            provider = evidence_provider(source)
             adopted_rows = cast(
                 "list[dict[str, Any]]",
-                triggered.moments(adopted_metric, grain="total", include_covariate=True),
+                request_evidence(
+                    provider,
+                    MomentsRequest(
+                        metric=adopted_metric,
+                        grain="total",
+                        include_covariate=True,
+                        population="triggered",
+                    ),
+                ),
             )
-
             adopted_breakout_rows = cast(
                 "list[dict[str, Any]]",
-                triggered.moments(
-                    adopted_metric, grain="total", by=["country"], include_covariate=True
+                request_evidence(
+                    provider,
+                    MomentsRequest(
+                        metric=adopted_metric,
+                        grain="total",
+                        by=("country",),
+                        include_covariate=True,
+                        population="triggered",
+                    ),
                 ),
+            )
+            native_frame = request_evidence(
+                native_provider,
+                UnitRowsRequest(metric=native_metric, population="triggered"),
+            )
+            adopted_frame = request_evidence(
+                provider,
+                UnitRowsRequest(metric=adopted_metric, population="triggered"),
             )
             assert (
                 native_rows
@@ -1789,11 +1872,11 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
                 and adopted_breakout_rows
                 and {
                     row["unit_id"]: (row["group_id"], row["y"])
-                    for row in cast(Any, native_triggered.unit_frame(native_metric)).to_pylist()
+                    for row in cast(Any, native_frame).to_pylist()
                 }
                 == {
                     row["unit_id"]: (row["group_id"], row["y"])
-                    for row in cast(Any, triggered.unit_frame(adopted_metric)).to_pylist()
+                    for row in cast(Any, adopted_frame).to_pylist()
                 }
             )
         native_by_group = {row["group_id"]: row for row in native_rows}

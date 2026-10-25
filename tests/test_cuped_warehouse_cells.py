@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from typing import cast
 
 import ibis
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 from increment.errors import CapabilityError
 from increment.estimation.cuped import fit_cuped_multicovariate
 from increment.estimation.cuped.cells import fit_categorical_cells
+from increment.evidence import UnitRows, UnitRowsRequest, evidence_provider, request_evidence
 from increment.semantics.models import CupedCovariate, MeanMetric, Measure, RatioMetric
 from tests._unit_boundary import backend_fixture
 
@@ -769,7 +771,13 @@ def test_integer_fact_domain_routes_through_qr_without_unit_keyed_transfer(
     native, artifact, request = categorical_sources
     source = native if ingress == "native" else artifact
     metric = source.context.metrics[0]
-    unit_rows = source.unit_frame(metric, covariates=("segment", "device")).to_pylist()
+    unit_rows = cast(
+        UnitRows,
+        request_evidence(
+            evidence_provider(source),
+            UnitRowsRequest(metric, covariates=("segment", "device")),
+        ),
+    ).to_pylist()
     expected = fit_cuped_multicovariate(
         np.asarray([row["y"] for row in unit_rows]),
         np.asarray([row["group_id"] for row in unit_rows]),

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from increment._evidence_types import CountsRequest
 from increment._source_operations import SitewideEvidenceOperation
+from increment._source_types import declared_evidence
 from increment._whole_window import (
     _UNKNOWN_METRIC,
     _is_artifact_source,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
     from increment.query.native_contract import SitewideEvidence
     from increment.semantics.models import Experiment
-    from increment.sources import MomentSource
+    from increment.sources import _BuiltinMomentSource
 
 _SITEWIDE_WINSORIZED_METRIC = RefusalSpec(
     "facade.analysis.sitewide_winsorized_metric",
@@ -127,7 +128,7 @@ class SitewideRequest:
 
 
 class SitewideReadouts:
-    def __init__(self, *, src: MomentSource, experiment: Experiment | None) -> None:
+    def __init__(self, *, src: _BuiltinMomentSource, experiment: Experiment | None) -> None:
         self._src = src
         self._experiment = experiment
 
@@ -248,13 +249,13 @@ class SitewideReadouts:
             _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         source = self._src
         if _is_artifact_source(source):
-            if "sitewide_evidence" not in source.operations:
+            if "sitewide_evidence" not in declared_evidence(source).operations:
                 from increment._evidence_refusals import refuse_operation
 
                 refuse_operation(
                     source,
                     "sitewide_evidence",
-                    tuple(sorted(source.operations)),
+                    tuple(sorted(declared_evidence(source).operations)),
                     route="sitewide() requires a published site-volume evidence extension",
                 )
             src = cast("SitewideEvidenceOperation", source)

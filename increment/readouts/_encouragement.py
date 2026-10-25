@@ -31,15 +31,14 @@ from increment.readouts._common import (
 from increment.readouts._evidence import load_compliance
 from increment.readouts._passes import _append_lift_cell_failure
 from increment.semantics.design import Encouragement
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
-    from increment._evidence_types import MetricEvidence
+    from increment._evidence_types import ComplianceSummary, MetricEvidence
     from increment._literals import ValueScale
-    from increment._source_types import ComplianceSummary
     from increment.decision import CompiledDecisionPlan, DecisionComputation
     from increment.estimation.inference import Prior
     from increment.semantics.models import Metric
@@ -199,10 +198,10 @@ def _group_method_evidence(
     return group._replace(metrics=available), summary, failed_rows, failures
 
 
-def _compliance_only_rows(src, design, wanted, plan, capture):
+def _compliance_only_rows(src, design, wanted, plan, capture, population):
     if set(wanted) != {"compliance"}:
         return None
-    summary = _validated_compliance_summary(src, design)
+    summary = _validated_compliance_summary(src, design, population=population)
     computation = _design_compliance_computation(
         summary, design, wanted, alpha=plan.alpha, deferred=False
     )
@@ -255,7 +254,7 @@ def _prepare_encouragement_groups(metrics, rows_by_metric, configs, design, plan
 
 def encouragement_rows(
     *,
-    src: MomentSource,
+    src: EvidenceSource,
     metrics: Sequence[Metric],
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
     evidence_by_metric: Mapping[str, MetricEvidence],
@@ -263,6 +262,7 @@ def encouragement_rows(
     design: Encouragement,
     plan: CompiledDecisionPlan,
     estimands: Sequence[str] | None,
+    population: Literal["assigned", "triggered"] = "assigned",
     cluster: str | None,
     caller: str,
     capture: dict[str, Any] | None = None,
@@ -283,7 +283,7 @@ def encouragement_rows(
     compliance carry no shifted null.
     """
     wanted = estimands if estimands is not None else ESTIMANDS
-    compliance_rows = _compliance_only_rows(src, design, wanted, plan, capture)
+    compliance_rows = _compliance_only_rows(src, design, wanted, plan, capture, population)
     if compliance_rows is not None:
         return compliance_rows
     if not metrics:
@@ -300,7 +300,9 @@ def encouragement_rows(
     )
 
     compliance_summary = (
-        _validated_compliance_summary(src, design) if "compliance" in wanted else None
+        _validated_compliance_summary(src, design, population=population)
+        if "compliance" in wanted
+        else None
     )
     results: list[LiftEstimate] = []
     outcome_compliance: dict[tuple[str, str], LiftEstimate] = {}
@@ -428,8 +430,10 @@ def encouragement_rows(
     return results
 
 
-def _validated_compliance_summary(src: MomentSource, design: Encouragement) -> ComplianceSummary:
-    summary = load_compliance(src, ComplianceRequest(design=design))
+def _validated_compliance_summary(
+    src: EvidenceSource, design: Encouragement, *, population: Literal["assigned", "triggered"]
+) -> ComplianceSummary:
+    summary = load_compliance(src, ComplianceRequest(design=design, population=population))
     _refuse_if_no_treatment_arm(
         {str(arm.group_id) for arm in summary.arms},
         design.control_group,

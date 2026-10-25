@@ -718,10 +718,14 @@ every estimate and FCR re-estimate, so every one of them sees the same arms. A w
 source also pins its inputs for the readout (`readout_snapshot`), so the unit
 frames IPTW, AIPW, DML and clustered unadjusted estimates read are the same
 execution as those moments, and data that lands during the readout joins
-none of it. A dataframe source is immutable; a custom source that
-owns no snapshot is trusted not to change during the call. The lower-level
-`estimate_ate()` likewise reduces each metric's moments once but reads unit
-frames from the source it is given, so pin a changing source first.
+none of it. A dataframe source is immutable; a custom provider with no snapshot
+scope is trusted not to change during the call. The lower-level
+`estimate_ate()` likewise reduces each metric's evidence through the declared
+provider acquisition boundary, which validates the request before reading.
+Custom sources backing either `Analysis` or the lower-level estimator facade
+must declare `EvidenceCapabilities` or implement the typed provider requests;
+see the [custom-provider example](https://github.com/kylejcaron/increment/blob/main/examples/custom_evidence_provider.py)
+and the [migration map](../development/adding-an-estimator.md#custom-evidence-providers).
 
 
 ## Clustered rollouts

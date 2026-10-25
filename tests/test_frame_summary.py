@@ -35,6 +35,7 @@ from increment.frame import (
 )
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
+from tests._frame_evidence_requests import _breakout_moments, _counts, _moments, _unit_rows
 
 
 @settings(max_examples=8, deadline=None)
@@ -1558,7 +1559,7 @@ def test_frame_totals_source_retains_unit_rows(arrow_frame: pa.Table) -> None:
         metrics=[_revenue_spec()],
     )
     metric = _metric(src, "revenue")
-    units = nw.from_native(src.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric), eager_only=True)
     assert units.shape[0] == arrow_frame.shape[0], "one row per unit must survive"
     assert {"unit_id", "group_id", "y"} <= set(units.columns)
     assert sorted(units["y"].to_list()) == sorted(r[2] for r in _ROWS)
@@ -1573,7 +1574,7 @@ def test_unit_frame_includes_requested_covariates(arrow_frame: pa.Table) -> None
         metrics=[_revenue_spec()],
     )
     metric = _metric(src, "revenue")
-    units = nw.from_native(src.unit_frame(metric, covariates=["pre_revenue"]), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric, covariates=["pre_revenue"]), eager_only=True)
     assert "pre_revenue" in units.columns
     assert sorted(units["pre_revenue"].to_list()) == sorted(r[4] for r in _ROWS)
 
@@ -1610,7 +1611,7 @@ def test_summary_public_unit_frame_preserves_mixed_declared_covariates():
             metrics=[metric, MetricSpec(name="sibling", missing="drop")],
         )
     units = nw.from_native(
-        source.unit_frame(_metric(source, "revenue"), covariates=["prior", "region"]),
+        _unit_rows(source, _metric(source, "revenue"), covariates=["prior", "region"]),
         eager_only=True,
     )
     assert units["unit_id"].to_list() == ["c1", "c2", "t1", "t2"]
@@ -1639,10 +1640,10 @@ def test_unit_frame_checks_identity_after_metric_missingness():
                 MetricSpec(name="filled", value_column="value", missing="zero"),
             ],
         )
-    selected = nw.from_native(source.unit_frame(_metric(source, "dropped")))
+    selected = nw.from_native(_unit_rows(source, _metric(source, "dropped")))
     assert selected["unit_id"].to_list() == ["1", "2", "other"]
     with pytest.raises(InvalidRequestError) as caught:
-        source.unit_frame(_metric(source, "filled"))
+        _unit_rows(source, _metric(source, "filled"))
     assert caught.value.code == "estimation.crossfit.identity_collision"
     assert caught.value.context["canonical"] == "1"
 
@@ -1663,7 +1664,7 @@ def test_unit_frame_keeps_noncolliding_mixed_identities_distinct():
     source = from_unit_summary(
         frame, unit="unit", group="arm", control="control", metrics=[MetricSpec(name="value")]
     )
-    units = nw.from_native(source.unit_frame(_metric(source, "value")))
+    units = nw.from_native(_unit_rows(source, _metric(source, "value")))
     ids = units["unit_id"].to_numpy()
     expected = np.array(["1", "two", "3", "four", "5", "six"])
     assert ids.tolist() == expected.tolist()
@@ -1683,7 +1684,7 @@ def test_unit_frame_unknown_covariate_raises_naming_it(arrow_frame: pa.Table) ->
     )
     metric = _metric(src, "revenue")
     with pytest.raises(InvalidRequestError) as exc_info:
-        src.unit_frame(metric, covariates=["nope_col"])
+        _unit_rows(src, metric, covariates=["nope_col"])
     assert exc_info.value.code == "frame.frame_totals.unit_covariate_column"
     assert exc_info.value.context["missing"] == ("nope_col",)
 
@@ -1701,7 +1702,7 @@ def test_unit_frame_unknown_metric_raises() -> None:
         name = "not_declared"
 
     with pytest.raises(InvalidRequestError) as exc_info:
-        src.unit_frame(_Fake())  # ty: ignore[invalid-argument-type]
+        _unit_rows(src, _Fake())
     assert exc_info.value.code == "frame.frame_totals.metric_was_declared"
     assert exc_info.value.context["name"] == "not_declared"
 
@@ -1791,7 +1792,7 @@ def test_unit_frame_ratio_metric_reads_numerator_as_y(arrow_frame: pa.Table) -> 
         metrics=[MetricSpec(name="aov", type="ratio", numerator="revenue", denominator="orders")],
     )
     metric = _metric(src, "aov")
-    units = nw.from_native(src.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric), eager_only=True)
     assert sorted(units["y"].to_list()) == sorted(r[2] for r in _ROWS), "y must read the numerator"
 
 
@@ -1806,7 +1807,7 @@ def test_unit_frame_ratio_metric_also_serves_y_den(arrow_frame: pa.Table) -> Non
         metrics=[MetricSpec(name="aov", type="ratio", numerator="revenue", denominator="orders")],
     )
     metric = _metric(src, "aov")
-    units = nw.from_native(src.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric), eager_only=True)
     assert "y_den" in units.columns
     assert sorted(units["y_den"].to_list()) == sorted(r[5] for r in _ROWS)
 
@@ -1822,7 +1823,7 @@ def test_unit_frame_mean_metric_has_no_y_den(arrow_frame: pa.Table) -> None:
         metrics=[_revenue_spec()],
     )
     metric = _metric(src, "revenue")
-    units = nw.from_native(src.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric), eager_only=True)
     assert "y_den" not in units.columns
 
 
@@ -1836,7 +1837,7 @@ def test_unit_frame_conversion_metric_reads_the_01_column_as_y(arrow_frame: pa.T
         metrics=[MetricSpec(name="converted", type="conversion")],
     )
     metric = _metric(src, "converted")
-    units = nw.from_native(src.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric), eager_only=True)
     assert sorted(units["y"].to_list()) == sorted(r[3] for r in _ROWS)
 
 
@@ -1859,7 +1860,7 @@ def test_unit_frame_group_id_matches_moments_dtype() -> None:
         metrics=[_revenue_spec()],
     )
     metric = _metric(src, "revenue")
-    units = nw.from_native(src.unit_frame(metric), eager_only=True)
+    units = nw.from_native(_unit_rows(src, metric), eager_only=True)
     moment_group_ids = {r["group_id"] for r in src.raw_moments}
     unit_frame_group_ids = set(units["group_id"].to_list())
     assert unit_frame_group_ids == moment_group_ids == {"0", "1"}
@@ -1952,7 +1953,7 @@ class TestDegenerateRatioIsRefusedWhereColumnsAreRead:
             control="control",
             metrics=[MetricSpec(name="r", type="ratio", numerator="amount", denominator="orders")],
         )
-        assert source.unit_counts() == {"control": 2, "treatment": 2}
+        assert _counts(source, "unit") == {"control": 2, "treatment": 2}
 
     def test_the_spec_itself_still_accepts_coinciding_names(self):
         # from_moments carries these as labels, not columns.
@@ -2000,8 +2001,8 @@ def test_registered_segment_without_summary_reducer_refuses_breakout(entrypoint:
 
     with pytest.raises(CapabilityError) as raised:
         if entrypoint == "moments":
-            source.moments(metric, by=("segment",))
+            _moments(source, metric, by=("segment",))
         else:
-            source.breakout_moments_for_method(metric, Method.unadjusted(), by=("segment",))
+            _breakout_moments(source, metric, Method.unadjusted(), by=("segment",))
 
     assert raised.value.code == "evidence.breakout_unavailable"

@@ -18,7 +18,6 @@ import pyarrow as pa
 import pytest
 from narwhals.typing import IntoDataFrame
 
-from increment._source_types import MomentSource
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import (
     CapabilityError,
@@ -32,6 +31,16 @@ from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
+from increment.evidence import (
+    CountEvidence,
+    CountsRequest,
+    MomentRows,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import CupedCovariate, MetricSpec
 from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import AnalysisPlan, MeanMetric
@@ -58,6 +67,28 @@ def _lift_rows(results: LiftEstimates) -> list[LiftEstimate]:
         assert isinstance(row, LiftEstimate)
         rows.append(row)
     return rows
+
+
+def _moments(source, metric, **kwargs) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
+
+
+def _unit_counts(source):
+    answer = cast(
+        CountEvidence,
+        request_evidence(evidence_provider(source), CountsRequest("unit")),
+    )
+    return answer.unit_counts or answer.counts
+
+
+def _unit_rows(source, metric, **kwargs) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
 
 
 # 6 units, two arms, deliberately unbalanced revenue so a transposed group
@@ -150,7 +181,10 @@ def test_sql_moments_source_names_covariate_before_unit_rows_refusal(con):
     )
 
     with pytest.raises(CapabilityError) as raised:
-        source.unit_frame(source.context.metrics[0], covariates=("x",))
+        request_evidence(
+            evidence_provider(source),
+            UnitRowsRequest(source.context.metrics[0], covariates=("x",)),
+        )
 
     assert raised.value.code == "evidence.covariate_unavailable"
     assert raised.value.context["requested"] == ("x",)
@@ -181,10 +215,10 @@ def test_memtable_missingness_keeps_enrollment_and_absent_denominator(con):
             sql = SqlPanelSource.from_frame_via_memtable(
                 con, frame, unit="unit", group="arm", metrics=declared
             )
-        assert sql.unit_counts() == native.unit_counts() == {"control": 4, "treatment": 4}
+        assert _unit_counts(sql) == _unit_counts(native) == {"control": 4, "treatment": 4}
         for metric in native.context.metrics:
-            oracle = {row["group_id"]: row for row in native.moments(metric)}
-            for row in sql.moments(metric):
+            oracle = {row["group_id"]: row for row in _moments(native, metric)}
+            for row in _moments(sql, metric):
                 expected = oracle[row["group_id"]]
                 for field in ("n", "ref_y", "cy1", "cy2"):
                     assert row[field] == pytest.approx(expected[field])
@@ -269,7 +303,7 @@ def test_memtable_source_on_unassigned_exclude_surfaces_the_same_unit_counts_as_
         design=design,
         on_unassigned="exclude",
     )
-    assert sql_src.unit_counts() == frame_src.unit_counts()
+    assert _unit_counts(sql_src) == _unit_counts(frame_src)
 
 
 @pytest.mark.integration
@@ -409,7 +443,7 @@ def test_sql_source_applies_pooled_winsorization(con):
     )
 
     metric = cast(MeanMetric, source.context.metrics[0])
-    rows = {row["group_id"]: row for row in source.moments(metric)}
+    rows = {row["group_id"]: row for row in _moments(source, metric)}
     assert rows["control"]["ref_y"] == pytest.approx(1.5)
     assert rows["treatment"]["ref_y"] == pytest.approx(112.5)
     assert rows["treatment"]["winsor_upper_bound"] == pytest.approx(125.0)
@@ -801,17 +835,26 @@ def test_moment_count_changes_snapshot_identity():
     assert first[0].source_snapshot_id != changed[0].source_snapshot_id
 
 
-def test_assignment_count_digest_preserves_full_width_integer_identity(monkeypatch):
+def test_assignment_count_digest_preserves_full_width_integer_identity():
+    from dataclasses import replace
+
     from increment import readouts
     from increment.sources import MomentsSource
 
     rows, _metric_a, metric_b = _two_metric_rows(second_metric_has_treatment=True)
-    source = MomentsSource(
-        rows, metrics=[metric_b], study_id="e", design=Randomized(control_group="control")
-    )
     counts = {"control": 2**54, "treatment": 2**54 + 1}
 
-    monkeypatch.setattr(source, "unit_counts", lambda: dict(counts))
+    class CountSource(MomentsSource):
+        @property
+        def evidence(self):
+            return replace(super().evidence, count_grains=frozenset({"unit"}))
+
+        def unit_counts(self):
+            return dict(counts)
+
+    source = CountSource(
+        rows, metrics=[metric_b], study_id="e", design=Randomized(control_group="control")
+    )
     first = _lift_results(readouts.run(source))
     first_id = first[0].source_snapshot_id
     assert first_id is not None
@@ -958,24 +1001,28 @@ def test_readout_distinguishes_declared_missing_arm_from_metric_missing_observat
     assert cells[("a", "treatment")].lift is None
 
 
-def test_count_roster_marks_known_but_unobserved_metric_arm_as_missing_observations(
-    monkeypatch,
-):
+def test_count_roster_marks_known_but_unobserved_metric_arm_as_missing_observations():
+    from dataclasses import replace
+
     from increment import readouts
     from increment.sources import MomentsSource
 
     rows, metric_a, metric_b = _two_metric_rows(second_metric_has_treatment=True)
-    base = MomentsSource(
+
+    class CountSource(MomentsSource):
+        @property
+        def evidence(self):
+            return replace(super().evidence, count_grains=frozenset({"unit"}))
+
+        def unit_counts(self):
+            return {"control": 10, "treatment": 10, "enrolled_only": 4}
+
+    base = CountSource(
         rows,
         metrics=[metric_a, metric_b],
         study_id="e",
         design=Randomized(control_group="control"),
     )
-
-    def enrolled_counts(_source: MomentSource) -> dict[str, int]:
-        return {"control": 10, "treatment": 10, "enrolled_only": 4}
-
-    monkeypatch.setattr(type(base), "unit_counts", enrolled_counts)
     results = _lift_results(readouts.run(base))
     missing = {(row.metric, row.group_id): row for row in _lift_rows(results)}
     assert missing[("a", "treatment")].failure_code == ("readout.cell.missing_metric_observations")
@@ -1518,11 +1565,10 @@ def test_srm_fixed_inference_remains_available_for_blocked_assignment(unit_summa
 
 
 def test_cluster_counts_refuses_on_a_moments_source():
-    """The wire format carries no cluster marker (which is why export()
-    refuses a clustered experiment), so this source must refuse by name
-    rather than hand back unit counts under a cluster-grain name."""
+    """Moment wires without a cluster marker refuse cluster-grain requests."""
     import json
 
+    from increment import evidence
     from increment.semantics.models import MeanMetric
     from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource
 
@@ -1545,14 +1591,21 @@ def test_cluster_counts_refuses_on_a_moments_source():
         for raw_row in _rows_for("revenue")
     ]
     src = MomentsSource(rows, metrics=[metric], study_id="e")
-    assert src.unit_counts() == {"control": 100, "treatment": 100}
+    unit_answer = evidence.request_evidence(
+        evidence.evidence_provider(src), evidence.CountsRequest(kind="unit")
+    )
+    assert isinstance(unit_answer, evidence.CountEvidence)
+    assert unit_answer.counts == {"control": 100, "treatment": 100}
     with pytest.raises(CapabilityError) as exc_info:
-        src.cluster_counts()
+        evidence.request_evidence(
+            evidence.evidence_provider(src), evidence.CountsRequest(kind="cluster")
+        )
     assert exc_info.value.code == "evidence.cluster_unavailable"
 
 
 @pytest.mark.integration
 def test_cluster_counts_refuses_on_a_sql_summary_source(con, unit_summary_frame):
+    from increment import evidence
     from increment.query.source import SqlPanelSource
 
     src = SqlPanelSource.from_frame_via_memtable(
@@ -1563,7 +1616,9 @@ def test_cluster_counts_refuses_on_a_sql_summary_source(con, unit_summary_frame)
         metrics=[_revenue_spec()],
     )
     with pytest.raises(CapabilityError) as exc_info:
-        src.cluster_counts()
+        evidence.request_evidence(
+            evidence.evidence_provider(src), evidence.CountsRequest(kind="cluster")
+        )
     assert exc_info.value.code == "evidence.cluster_unavailable"
 
 
@@ -2745,7 +2800,7 @@ def test_mixed_native_readout_pins_selected_metrics_before_source_mutation(popul
         )
         source = _native_source(analysis)
         view = source.triggered_source() if population == "triggered" else source
-        raw = source.unit_frame(metrics[0], population=population, outcome_stage="raw")
+        raw = _unit_rows(source, metrics[0], population=population, outcome_stage="raw")
         assert raw.num_rows == (96 if population == "triggered" else 192)
         selected = ("winsor", "plain")
         expected = {
@@ -2847,7 +2902,9 @@ def test_asof_surfaces_keyed_source_advisories_per_date_on_each_call():
 
     class AdvisingMomentSource(FakeMomentSource):
         def moments(self, metric, **kwargs):
-            result = super().moments(metric, **kwargs)
+            if isinstance(metric, MomentsRequest):
+                metric = metric.metric
+            result = [dict(row) for row in self._rows if row["metric"] == metric.name]
             for _day in {row["ds"] for row in result}:
                 warn(spec, context={"metric_name": metric.name})
             return result

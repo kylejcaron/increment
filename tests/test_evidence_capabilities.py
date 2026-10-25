@@ -2,11 +2,25 @@ from __future__ import annotations
 
 import copy
 import pickle
+from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
 
 from increment import Analysis
+from increment.evidence import (
+    ComplianceRequest,
+    ComplianceSummary,
+    CountEvidence,
+    CountsRequest,
+    EvidenceScopeResult,
+    MomentRows,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from tests.analysis_factory import held_source
 from tests.source_conformance import (
     switchback_analysis,
@@ -14,6 +28,61 @@ from tests.source_conformance import (
     unit_panel_table,
     unit_summary_table,
 )
+
+
+class _ForwardingProvider:
+    def __init__(self, source):
+        self.source = source
+        self.scope_calls = 0
+
+    @property
+    def evidence(self):
+        return self.source.evidence
+
+    @property
+    def context(self):
+        return self.source.context
+
+    def moments(self, request):
+        return evidence_provider(self.source).moments(request)
+
+    def unit_rows(self, request):
+        return evidence_provider(self.source).unit_rows(request)
+
+    def method_fit(self, request):
+        return evidence_provider(self.source).method_fit(request)
+
+    def breakout_method_moments(self, request):
+        return evidence_provider(self.source).breakout_method_moments(request)
+
+    def compliance(self, request):
+        return evidence_provider(self.source).compliance(request)
+
+    def compliance_series(self, request):
+        return evidence_provider(self.source).compliance_series(request)
+
+    def counts(self, request):
+        return evidence_provider(self.source).counts(request)
+
+    def capture_sequential(self, request):
+        return evidence_provider(self.source).capture_sequential(request)
+
+    @contextmanager
+    def _scoped_source(self, request):
+        with evidence_provider(self.source).scope(request).source as scoped:
+            yield _ForwardingProvider(scoped)
+
+    def scope(self, request):
+        self.scope_calls += 1
+        return EvidenceScopeResult(self._scoped_source(request), request)
+
+    @contextmanager
+    def readout_execution(self):
+        yield
+
+    @contextmanager
+    def readout_snapshot(self, **_kwargs):
+        yield self.source
 
 
 @pytest.mark.parametrize(
@@ -181,7 +250,10 @@ def test_declared_panel_grains_match_moment_behavior() -> None:
     metric = source.context.metrics[0]
 
     for grain in source.evidence.grains:
-        assert isinstance(source.moments(metric, grain=grain, by=("segment",)), list)
+        rows = request_evidence(
+            evidence_provider(source), MomentsRequest(metric, grain=grain, by=("segment",))
+        )
+        assert isinstance(cast(MomentRows, rows), tuple)
     analysis.close()
 
 
@@ -251,6 +323,7 @@ def test_definitions_and_pinned_sources_match_baseline(seeded_con, seeded_defs) 
             "materialize",
             "moments_source",
             "panel_sql",
+            "readout_execution",
             "readout_snapshot",
             "sitewide_evidence",
             "summary_sql",
@@ -296,11 +369,14 @@ def test_artifact_facade_evidence_matches_retained_methods(tmp_path) -> None:
     assert evidence.raw_outcomes is True
     assert evidence.method_fit == "warehouse"
     assert evidence.count_grains == frozenset({"unit", "assignment", "triggered"})
-    assert source.unit_frame(metric) is not None
-    assert source.unit_frame(metric, outcome_stage="raw") is not None
-    assert source.unit_counts()
-    assert source.assignment_counts()
-    assert source.triggered_counts()
+    assert request_evidence(evidence_provider(source), UnitRowsRequest(metric)) is not None
+    assert (
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, outcome_stage="raw"))
+        is not None
+    )
+    assert request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
+    assert request_evidence(evidence_provider(source), CountsRequest(kind="assignment"))
+    assert request_evidence(evidence_provider(source), CountsRequest(kind="triggered"))
     triggered = source.triggered_source()
     assert triggered.evidence.populations == frozenset({"triggered"})
     analysis.close()
@@ -337,15 +413,31 @@ def test_triggered_wrapper_capabilities_match_its_methods(tmp_path) -> None:
     assert evidence.count_grains == frozenset({"unit"})
     assert evidence.populations == frozenset({"triggered"})
     assert evidence.sequential_capture == "none"
-    assert evidence.operations == frozenset()
+    assert evidence.operations == frozenset({"readout_execution", "readout_snapshot"})
     assert evidence.scalar is not None
     assert evidence.scalar.method_evidence is True
     assert evidence.scalar.breakout_evidence is False
-    assert triggered.unit_frame(metric) is not None
-    assert triggered.unit_frame(metric, outcome_stage="raw") is not None
-    assert triggered.unit_counts()
+    assert (
+        request_evidence(
+            evidence_provider(triggered),
+            UnitRowsRequest(metric, population="triggered"),
+        )
+        is not None
+    )
+    assert (
+        request_evidence(
+            evidence_provider(triggered),
+            UnitRowsRequest(metric, outcome_stage="raw", population="triggered"),
+        )
+        is not None
+    )
+    assert request_evidence(
+        evidence_provider(triggered), CountsRequest(kind="unit", population="triggered")
+    )
     with pytest.raises(CapabilityError):
-        triggered.cluster_counts()
+        request_evidence(
+            evidence_provider(triggered), CountsRequest(kind="cluster", population="triggered")
+        )
     source.close()
 
 
@@ -357,6 +449,9 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
     source, _ = definitions_source(tmp_path, trigger=True)
     triggered = source.triggered_source()
     metric = triggered.context.metrics[0]
+    baseline_rows = cast(
+        MomentRows, request_evidence(evidence_provider(source), MomentsRequest(metric))
+    )
     original_moments = type(source).moments
     reads = 0
 
@@ -369,17 +464,25 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
     try:
         for grain in ("daily", "asof"):
             with pytest.raises(CapabilityError) as raised:
-                triggered.moments(metric, grain=grain)
+                request_evidence(evidence_provider(triggered), MomentsRequest(metric, grain=grain))
             assert raised.value.code == "evidence.grain_unavailable"
             assert reads == 0
 
         with pytest.raises(CapabilityError) as raised:
-            triggered.moments_for_method(metric, object(), by=("not_declared",))
+            request_evidence(
+                evidence_provider(triggered),
+                MomentsRequest(metric, method=object(), by=("not_declared",)),
+            )
         assert raised.value.code == "evidence.breakout_unavailable"
         assert reads == 0
 
-        total_rows = triggered.moments(metric, grain="total")
-        assert total_rows == original_moments(source, metric)
+        total_rows = cast(
+            MomentRows,
+            request_evidence(
+                evidence_provider(triggered), MomentsRequest(metric, population="triggered")
+            ),
+        )
+        assert total_rows == baseline_rows
         assert reads == 1
         assert triggered.evidence.sql_grains == frozenset()
         with pytest.raises(CapabilityError) as raised:
@@ -399,9 +502,15 @@ def test_wrappers_refuse_undeclared_grains_before_delegating(tmp_path, monkeypat
     breakout = cast("Any", held_source(summary)).summary_breakout_source
     assert breakout is not None
     with pytest.raises(CapabilityError) as raised:
-        breakout.moments(breakout.context.metrics[0], grain="daily", by=("segment",))
+        request_evidence(
+            evidence_provider(breakout),
+            MomentsRequest(breakout.context.metrics[0], grain="daily", by=("segment",)),
+        )
     assert raised.value.code == "evidence.grain_unavailable"
-    assert breakout.moments(breakout.context.metrics[0], grain="total", by=("segment",))
+    assert request_evidence(
+        evidence_provider(breakout),
+        MomentsRequest(breakout.context.metrics[0], grain="total", by=("segment",)),
+    )
     summary.close()
 
 
@@ -411,7 +520,10 @@ def test_breakout_moment_source_requires_exactly_its_dimension() -> None:
 
     source = breakout_moments_source()
     with pytest.raises(CapabilityError) as raised:
-        source.moments(source.context.metrics[0])
+        request_evidence(
+            evidence_provider(source),
+            MomentsRequest(source.context.metrics[0]),
+        )
     assert raised.value.code == "evidence.breakout_unavailable"
     assert raised.value.context["requested"] == ()
     source.close()
@@ -424,7 +536,12 @@ def test_triggered_cluster_declaration_matches_cluster_counts(tmp_path) -> None:
     triggered = source.triggered_source()
 
     assert triggered.evidence.count_grains == frozenset({"unit", "cluster"})
-    assert triggered.cluster_counts() == {"control": 1, "treatment": 1}
+    assert cast(
+        CountEvidence,
+        request_evidence(
+            evidence_provider(triggered), CountsRequest(kind="cluster", population="triggered")
+        ),
+    ).counts == {"control": 1, "treatment": 1}
     analysis.close()
     from tests.source_conformance import definitions_source
 
@@ -438,13 +555,26 @@ def test_triggered_cluster_declaration_matches_cluster_counts(tmp_path) -> None:
     assert evidence.method_fit == "warehouse"
     assert evidence.count_grains == frozenset({"unit"})
     assert evidence.sequential_capture == "none"
-    assert evidence.operations == frozenset()
+    assert evidence.operations == frozenset({"readout_execution", "readout_snapshot"})
     assert evidence.scalar is not None
     assert evidence.scalar.method_evidence is True
     assert evidence.scalar.breakout_evidence is False
-    assert triggered.unit_frame(metric) is not None
-    assert triggered.unit_frame(metric, outcome_stage="raw") is not None
-    assert triggered.unit_counts()
+    assert (
+        request_evidence(
+            evidence_provider(triggered), UnitRowsRequest(metric, population="triggered")
+        )
+        is not None
+    )
+    assert (
+        request_evidence(
+            evidence_provider(triggered),
+            UnitRowsRequest(metric, outcome_stage="raw", population="triggered"),
+        )
+        is not None
+    )
+    assert request_evidence(
+        evidence_provider(triggered), CountsRequest(kind="unit", population="triggered")
+    )
     source.close()
 
 
@@ -503,15 +633,10 @@ def test_undeclared_custom_source_refuses_with_the_shared_code() -> None:
     )
     source = cast("Any", held_source(analysis))
 
-    class LegacySource:
-        def __getattr__(self, name):
-            if name == "evidence":
-                raise AttributeError(name)
-            return getattr(source, name)
-
-    legacy = cast("Any", LegacySource())
+    legacy = cast("Any", _ForwardingProvider(source))
     try:
         assert run(legacy) == analysis.run()
+        assert legacy.scope_calls == 1
         with pytest.raises(CapabilityError) as raised:
             daily(legacy)
         assert raised.value.code == "evidence.grain_unavailable"
@@ -532,13 +657,7 @@ def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
     )
     source = cast("Any", held_source(analysis))
 
-    class LegacySource:
-        def __getattr__(self, name):
-            if name == "evidence":
-                raise AttributeError(name)
-            return getattr(source, name)
-
-    legacy = cast("Any", LegacySource())
+    legacy = cast("Any", _ForwardingProvider(source))
     try:
         baseline = analysis.run()
         estimate = next(iter(baseline)).model_dump()
@@ -547,8 +666,18 @@ def test_undeclared_custom_source_keeps_raw_outcomes_and_unit_rows() -> None:
         assert estimate["abs_ub"] == pytest.approx(4.726397841615909)
         assert estimate["winsor_upper_bound"] == pytest.approx(5.25)
         assert run(legacy) == baseline
+        assert legacy.scope_calls == 1
         metric = analysis.metrics[0]
-        assert legacy.unit_frame(metric).to_pylist() == source.unit_frame(metric).to_pylist()
+        assert (
+            cast(
+                UnitRows,
+                request_evidence(evidence_provider(legacy), UnitRowsRequest(metric)),
+            ).to_pylist()
+            == cast(
+                UnitRows,
+                request_evidence(evidence_provider(source), UnitRowsRequest(metric)),
+            ).to_pylist()
+        )
     finally:
         analysis.close()
 
@@ -625,7 +754,7 @@ def test_moments_loader_declaration_matches_baseline(tmp_path) -> None:
     assert evidence.scalar.covariate_grains is None
     assert evidence.available_covariates is None
     with pytest.raises(CapabilityError) as raised:
-        source.unit_frame(source.context.metrics[0])
+        request_evidence(evidence_provider(source), UnitRowsRequest(source.context.metrics[0]))
     assert getattr(raised.value, "code", None) == "evidence.unit_rows_unavailable"
     analysis.close()
 
@@ -661,15 +790,21 @@ def test_frame_row_and_raw_outcome_capabilities_match_methods(constructor) -> No
     source = cast("Any", held_source(analysis))
     metric = source.context.metrics[0]
     evidence = source.evidence
-
     assert evidence.unit_rows is True
-    assert source.unit_frame(metric) is not None
+    assert request_evidence(evidence_provider(source), UnitRowsRequest(metric)) is not None
     assert evidence.raw_outcomes is raw_supported
     if raw_supported:
-        assert source.unit_frame(metric, outcome_stage="raw") is not None
+        assert (
+            request_evidence(
+                evidence_provider(source), UnitRowsRequest(metric, outcome_stage="raw")
+            )
+            is not None
+        )
     else:
         with pytest.raises(CapabilityError) as raised:
-            source.unit_frame(metric, outcome_stage="raw")
+            request_evidence(
+                evidence_provider(source), UnitRowsRequest(metric, outcome_stage="raw")
+            )
         assert raised.value.code == "evidence.raw_outcomes_unavailable"
     analysis.close()
 
@@ -686,7 +821,7 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     )
     summary_source = cast("Any", held_source(summary))
     assert summary_source.evidence.count_grains == frozenset({"unit"})
-    assert summary_source.unit_counts()
+    assert request_evidence(evidence_provider(summary_source), CountsRequest(kind="unit"))
     with pytest.raises(CapabilityError) as summary_cluster:
         summary_source.cluster_counts()
     assert summary_cluster.value.code == "evidence.cluster_unavailable"
@@ -705,7 +840,7 @@ def test_frame_counts_and_compliance_axes_match_methods() -> None:
     )
     panel_source = cast("Any", held_source(panel))
     assert panel_source.evidence.count_grains == frozenset({"unit"})
-    assert panel_source.unit_counts()
+    assert request_evidence(evidence_provider(panel_source), CountsRequest(kind="unit"))
     with pytest.raises(CapabilityError) as panel_cluster:
         panel_source.cluster_counts()
     assert panel_cluster.value.code == "evidence.cluster_unavailable"
@@ -761,14 +896,13 @@ def test_sql_source_declares_only_methods_it_serves() -> None:
     metric = source.context.metrics[0]
     assert evidence.unit_rows is False
     assert evidence.raw_outcomes is False
-    assert evidence.method_fit == "none"
+    assert request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
     assert evidence.count_grains == frozenset({"unit"})
-    assert source.unit_counts()
     with pytest.raises(CapabilityError) as rows:
-        source.unit_frame(metric)
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric))
     assert rows.value.code == "evidence.unit_rows_unavailable"
     with pytest.raises(CapabilityError) as raw:
-        source.unit_frame(metric, outcome_stage="raw")
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, outcome_stage="raw"))
     assert raw.value.code == "evidence.raw_outcomes_unavailable"
     assert set(raw.value.context) == {"constructor", "requested", "offered", "route"}
     source.close()
@@ -785,7 +919,7 @@ def test_breakout_moments_declares_no_unit_or_count_rows() -> None:
     assert evidence.raw_outcomes is False
     assert evidence.count_grains == frozenset()
     with pytest.raises(CapabilityError) as rows:
-        source.unit_frame(metric)
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric))
     assert rows.value.code == "evidence.unit_rows_unavailable"
     with pytest.raises(CapabilityError) as counts:
         source.unit_counts()
@@ -825,15 +959,7 @@ def test_declared_capabilities_match_public_method_behavior(
         )
         source = cast("Any", held_source(analysis))
     elif constructor == "panel":
-        analysis = Analysis.from_unit_panel(
-            unit_panel_table(),
-            unit="user_id",
-            group="variant",
-            date="ds",
-            control="control",
-            metrics={"revenue": "mean"},
-            breakouts=("segment",),
-        )
+        analysis = _encouragement_panel_analysis()
         source = cast("Any", held_source(analysis))
     elif constructor == "restricted_breakout":
         analysis = Analysis.from_unit_summary(
@@ -911,28 +1037,42 @@ def _assert_capability_methods_match_behavior(source, analysis, error_type) -> N
     evidence = source.evidence
     metric = source.context.metrics[0]
     by = tuple(evidence.breakouts) if evidence.kind == "breakout" else ()
+    population = "triggered" if "triggered" in evidence.populations else "assigned"
 
     for grain in ("total", "daily", "asof"):
+        request = MomentsRequest(metric, grain=grain, by=by, population=population)
         if grain in evidence.grains:
-            assert source.moments(metric, grain=grain, by=by) is not None
+            assert request_evidence(evidence_provider(source), request) is not None
         else:
             with pytest.raises(error_type):
-                source.moments(metric, grain=grain, by=by)
+                request_evidence(evidence_provider(source), request)
 
-    if callable(getattr(source, "unit_frame", None)):
-        if evidence.unit_rows:
-            assert source.unit_frame(metric) is not None
-        else:
-            with pytest.raises(error_type):
-                source.unit_frame(metric)
-        if evidence.raw_outcomes:
-            assert source.unit_frame(metric, outcome_stage="raw") is not None
-        else:
-            with pytest.raises(error_type):
-                source.unit_frame(metric, outcome_stage="raw")
+    if evidence.unit_rows:
+        assert (
+            request_evidence(
+                evidence_provider(source), UnitRowsRequest(metric, population=population)
+            )
+            is not None
+        )
     else:
-        assert evidence.unit_rows is False
-        assert evidence.raw_outcomes is False
+        with pytest.raises(error_type):
+            request_evidence(
+                evidence_provider(source), UnitRowsRequest(metric, population=population)
+            )
+    if evidence.raw_outcomes:
+        assert (
+            request_evidence(
+                evidence_provider(source),
+                UnitRowsRequest(metric, outcome_stage="raw", population=population),
+            )
+            is not None
+        )
+    else:
+        with pytest.raises(error_type):
+            request_evidence(
+                evidence_provider(source),
+                UnitRowsRequest(metric, outcome_stage="raw", population=population),
+            )
 
     count_methods = {
         "unit": "unit_counts",
@@ -945,10 +1085,14 @@ def _assert_capability_methods_match_behavior(source, analysis, error_type) -> N
         if not callable(method):
             assert grain not in evidence.count_grains
         elif grain in evidence.count_grains:
-            assert method() is not None
+            request = CountsRequest(kind=cast("Any", grain), population=population)
+            assert request_evidence(evidence_provider(source), request) is not None
         else:
             with pytest.raises(error_type):
-                method()
+                request_evidence(
+                    evidence_provider(source),
+                    CountsRequest(kind=cast("Any", grain), population=population),
+                )
 
     compliance_dates = getattr(source, "compliance_dates", None)
     if evidence.compliance_axis == "asof":
@@ -1175,12 +1319,43 @@ def _encouragement_summary_analysis():
     return analysis, design
 
 
+def _encouragement_panel_analysis():
+    import pyarrow as pa
+
+    from increment import Encouragement, ExclusionRestriction, UptakeSpec
+
+    rows = unit_panel_table().to_pylist()
+    frame = pa.Table.from_pylist(
+        [{**row, "clicked": int(row["variant"] == "treatment")} for row in rows]
+    )
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked"),
+        exclusion_restriction=ExclusionRestriction(
+            justification="assignment changes revenue through uptake"
+        ),
+    )
+    return Analysis.from_unit_panel(
+        frame,
+        unit="user_id",
+        group="variant",
+        date="ds",
+        metrics={"revenue": "mean"},
+        uptake="clicked",
+        design=design,
+        breakouts=("segment",),
+    )
+
+
 def test_summary_and_moments_declare_retained_total_compliance(tmp_path) -> None:
     import pyarrow.parquet as pq
 
     analysis, design = _encouragement_summary_analysis()
     source = cast("Any", held_source(analysis))
-    summary = source.compliance_summary(design)
+    summary = cast(
+        ComplianceSummary,
+        request_evidence(evidence_provider(source), ComplianceRequest(design)),
+    )
     assert summary.as_of is None
     assert source.evidence.compliance_axis == "total"
 
@@ -1192,7 +1367,13 @@ def test_summary_and_moments_declare_retained_total_compliance(tmp_path) -> None
     replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, design=design)
     replay_source = cast("Any", held_source(replay))
     assert replay_source.evidence.compliance_axis == "total"
-    assert replay_source.compliance_summary(design) == summary
+    assert (
+        cast(
+            ComplianceSummary,
+            request_evidence(evidence_provider(replay_source), ComplianceRequest(design)),
+        )
+        == summary
+    )
     replay.close()
 
 
@@ -1211,9 +1392,9 @@ def test_definitions_day_source_declares_only_its_day_axis(seeded_con, seeded_de
     assert day.evidence.count_grains == frozenset()
     assert day.evidence.populations == frozenset({"assigned"})
     with pytest.raises(CapabilityError):
-        day.unit_frame(source.context.metrics[0])
+        request_evidence(evidence_provider(day), UnitRowsRequest(source.context.metrics[0]))
     with pytest.raises(CapabilityError):
-        day.unit_counts()
+        request_evidence(evidence_provider(day), CountsRequest(kind="unit"))
     if source.context.trigger_name is not None:
         triggered = source.day_source(metrics=(source.context.metrics[0],), population="triggered")
         assert triggered.evidence.populations == frozenset({"triggered"})
@@ -1293,9 +1474,9 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
 
     assert "assignment" not in source.evidence.count_grains
     assert "cluster" not in source.evidence.count_grains
-    assert source.unit_counts()
+    assert request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
     with pytest.raises(InvalidRequestError) as missing_assignment_counts:
-        source.assignment_counts()
+        request_evidence(evidence_provider(source), CountsRequest(kind="assignment"))
     assert missing_assignment_counts.value.code == "artifact.evidence.unavailable"
     analysis.close()
     native.close()
@@ -1305,7 +1486,15 @@ def test_artifact_count_declarations_follow_retained_extensions(tmp_path) -> Non
     analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
     source = cast("Any", held_source(analysis))
     assert source.evidence.count_grains == frozenset({"unit", "assignment"})
-    assert source.assignment_counts() == source.unit_counts()
+    assert (
+        cast(
+            CountEvidence,
+            request_evidence(evidence_provider(source), CountsRequest(kind="assignment")),
+        ).counts
+        == cast(
+            CountEvidence, request_evidence(evidence_provider(source), CountsRequest(kind="unit"))
+        ).counts
+    )
     analysis.close()
     native.close()
     connection.disconnect()

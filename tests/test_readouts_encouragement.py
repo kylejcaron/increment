@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any, Literal, cast
 
@@ -32,12 +33,29 @@ from increment.estimation import Normal
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
+from increment.evidence import (
+    BreakoutMethodMomentsRequest,
+    ComplianceRequest,
+    ComplianceSeriesRequest,
+    CountEvidence,
+    CountsRequest,
+    EvidenceCapabilities,
+    EvidenceScope,
+    EvidenceScopeResult,
+    MethodFitRequest,
+    MomentRows,
+    MomentsRequest,
+    SequentialCaptureRequest,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import MetricSpec, from_unit_summary
 from increment.readouts._common import _validate_encouragement_asof_inference
 from increment.readouts._encouragement import encouragement_rows
 from increment.semantics.design import Encouragement, ExclusionRestriction, Randomized, UptakeSpec
 from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec, MeanMetric
-from increment.sources import MomentSource, SourceContext, SourceOperation
+from increment.sources import EvidenceSource, SourceContext, SourceOperation
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows, make_analysis, make_analysis_like
 from tests.sequential_cases import registration
@@ -131,6 +149,32 @@ class FakeMomentSource:
             configs=reference.context.configs,
             cluster=None,
         )
+        self._evidence = None
+
+    @property
+    def evidence(self):
+        if self._evidence is not None:
+            return self._evidence
+        return EvidenceCapabilities(
+            kind="moments",
+            grains=self.capabilities,
+            breakouts=self.breakouts,
+            shape=self.shape,
+            operations=self.operations,
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="asof",
+            count_grains=frozenset({"unit"}),
+            populations=frozenset({"assigned"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
+
+    @evidence.setter
+    def evidence(self, value):
+        self._evidence = value
 
     @property
     def context(self):
@@ -145,7 +189,44 @@ class FakeMomentSource:
         completed_windows_only=False,
         include_covariate: bool = False,
     ):
-        return [dict(r) for r in self._rows if r["metric"] == metric.name]
+        if isinstance(metric, MomentsRequest):
+            metric = metric.metric
+        return tuple(dict(r) for r in self._rows if r["metric"] == metric.name)
+
+    def unit_rows(self, request: UnitRowsRequest):
+        raise AssertionError("undeclared unit rows passed evidence validation")
+
+    def method_fit(self, request: MethodFitRequest):
+        raise AssertionError("undeclared method fit passed evidence validation")
+
+    def breakout_method_moments(self, request: BreakoutMethodMomentsRequest):
+        raise AssertionError("undeclared method breakout passed evidence validation")
+
+    def compliance(self, request: ComplianceRequest):
+        return self.compliance_summary(
+            request.design,
+            as_of=request.as_of,
+            completed_windows_only=request.completed_windows_only,
+        )
+
+    def compliance_series(self, request: ComplianceSeriesRequest):
+        return tuple(
+            (day, self.compliance_summary(request.design, as_of=day))
+            for day in self.compliance_dates()
+        )
+
+    def counts(self, request: CountsRequest):
+        return CountEvidence(request.population, request.kind, self.unit_counts())
+
+    def capture_sequential(self, request: SequentialCaptureRequest):
+        raise AssertionError("undeclared sequential capture passed evidence validation")
+
+    @contextmanager
+    def _scoped_source(self, request: EvidenceScope):
+        yield self
+
+    def scope(self, request: EvidenceScope):
+        return EvidenceScopeResult(self._scoped_source(request), request)
 
     def unit_frame(self, metric, *, covariates=()):
         raise NotImplementedError
@@ -305,8 +386,7 @@ def test_run_rejects_estimands_on_randomized_design():
 
 
 @pytest.mark.parametrize("path", ["readouts", "analysis", "native_analysis"])
-@pytest.mark.parametrize("axis_state", ["missing", "noncallable"])
-def test_missing_compliance_axis_refuses_before_reading_outcomes(monkeypatch, path, axis_state):
+def test_missing_compliance_axis_refuses_before_reading_outcomes(path):
     def unavailable_outcomes(*args, **kwargs):
         pytest.fail("missing compliance axis must refuse before outcome reads")
 
@@ -340,25 +420,18 @@ def test_missing_compliance_axis_refuses_before_reading_outcomes(monkeypatch, pa
     source_cls = NativeSource if path == "native_analysis" else FakeMomentSource
     src = source_cls(rows, metrics=[METRIC], capabilities={"asof"}, design=design)
     src.shape = "unit_panel"
-    monkeypatch.setattr(src, "moments", unavailable_outcomes)
-    with monkeypatch.context() as axis_patch:
-        if axis_state == "missing":
-            axis_patch.delattr(FakeMomentSource, "compliance_dates")
+    from dataclasses import replace
+
+    # The public declaration, rather than a missing legacy method, determines
+    # whether compliance-series reads are available.
+    src.evidence = replace(src.evidence, compliance_axis="none")
+
+    with pytest.raises(CapabilityError) as error:
+        if path == "readouts":
+            readouts.asof_lift(src)
         else:
-            axis_patch.setattr(src, "compliance_dates", None)
-
-        with pytest.raises(CapabilityError) as error:
-            if path == "readouts":
-                readouts.asof_lift(src)
-            else:
-                Analysis._from_source(src, design).run_asof_lift()
-    assert error.value.code == "source.compliance_summary.legacy_uptake_state"
-
-    if path == "native_analysis":
-        # A valid compliance axis must reach the guarded native outcome read.
-        with pytest.raises(AssertionError):
             Analysis._from_source(src, design).run_asof_lift()
-        assert reached_day_source == ["day_source"]
+    assert error.value.code == "evidence.operation_unavailable"
 
 
 @pytest.mark.parametrize("path", ["readouts", "analysis"])
@@ -812,27 +885,52 @@ def test_asof_lift_refused_for_observational_design():
     assert exc_info.value.code == "readout.view.observational"
 
 
-class _LegacySignatureMomentSource:
-    """Proxy predating operation declarations and CUPED moment keywords."""
+class _DeclaredMomentProvider:
+    """Provider proxy exposing the public request-based evidence contract."""
 
     def __init__(self, source: FakeMomentSource):
         self._source = source
 
-    def moments(self, metric, *, grain="total", by=(), completed_windows_only=False):
-        return self._source.moments(
-            metric,
-            grain=grain,
-            by=by,
-            completed_windows_only=completed_windows_only,
-        )
+    @property
+    def evidence(self):
+        return self._source.evidence
+
+    @property
+    def context(self):
+        return self._source.context
+
+    def moments(self, request: MomentsRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def unit_rows(self, request: UnitRowsRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def method_fit(self, request: MethodFitRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def breakout_method_moments(self, request: BreakoutMethodMomentsRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def compliance(self, request: ComplianceRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def compliance_series(self, request: ComplianceSeriesRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def counts(self, request: CountsRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def capture_sequential(self, request: SequentialCaptureRequest):
+        return request_evidence(evidence_provider(self._source), request)
+
+    def scope(self, request: EvidenceScope):
+        return evidence_provider(self._source).scope(request)
 
     def __getattr__(self, name):
-        if name == "operations":
-            raise AttributeError(name)
         return getattr(self._source, name)
 
 
-def test_unadjusted_daily_and_asof_lift_support_legacy_moment_source():
+def test_unadjusted_daily_and_asof_lift_support_declared_moment_provider():
     design = Randomized(control_group="control")
     rows = [dict(r, ds=date(2025, 1, 1)) for r in _rows(n=100, seed=32)]
     source = FakeMomentSource(
@@ -842,9 +940,7 @@ def test_unadjusted_daily_and_asof_lift_support_legacy_moment_source():
         design=design,
     )
     source.shape = "unit_panel"
-    src = cast("MomentSource", _LegacySignatureMomentSource(source))
-    with pytest.raises(AttributeError):
-        _ = src.operations
+    src = cast("EvidenceSource", _DeclaredMomentProvider(source))
 
     assert readouts.daily(src)
     assert readouts.asof_lift(src)
@@ -1785,7 +1881,13 @@ def test_encouragement_missing_control_defers_to_family_gate(con):
     src = _native_source(bound)
     metrics = tuple(src.context.metrics)
     rows_by_metric: dict[str, list[Mapping[str, Any]]] = {
-        metric.name: list(src.moments(metric, grain="total")) for metric in metrics
+        metric.name: list(
+            cast(
+                MomentRows,
+                request_evidence(evidence_provider(src), MomentsRequest(metric, grain="total")),
+            )
+        )
+        for metric in metrics
     }
     rows_by_metric["revenue"] = [
         row for row in rows_by_metric["revenue"] if str(row["group_id"]) != "control"
@@ -2775,7 +2877,7 @@ def test_run_encouragement_margin_without_itt_refuses_before_reading_moments():
 
         def moments(self, metric, **kwargs):
             type(self).moment_calls += 1
-            return super().moments(metric, **kwargs)
+            raise AssertionError("unexpected moments request before encouragement refusal")
 
     guardrail = MeanMetric(
         name="rev",
@@ -3108,14 +3210,13 @@ def test_frame_encouragement_compliance_ignores_outcome_config_and_order():
 def test_asof_encouragement_reports_one_compliance_row_at_plan_alpha():
     """Uptake is design-level: one row per (date, arm) at the plan's own alpha,
     role=None -- never one copy per outcome metric at that metric's split alpha."""
-    from types import SimpleNamespace
     from typing import cast
 
     from increment import readouts
     from increment.plan import compile_decision_plan
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
     from increment.semantics.models import AnalysisPlan, MeanMetric
-    from increment.sources import ComplianceArm, ComplianceSummary, MomentSource, MomentsSource
+    from increment.sources import ComplianceArm, ComplianceSummary, EvidenceSource
 
     def _asof_row(metric, group_id, mean, uptake_rate):
         n, var = 2000, 0.25
@@ -3169,18 +3270,23 @@ def test_asof_encouragement_reports_one_compliance_row_at_plan_alpha():
             ),
         )
 
+    class ComplianceSource(FakeMomentSource):
+        def compliance_summary(self, design, *, as_of=None, completed_windows_only=False):
+            return _compliance_summary(
+                design,
+                as_of=as_of,
+                completed_windows_only=completed_windows_only,
+            )
+
     source = cast(
-        MomentSource,
-        SimpleNamespace(
-            capabilities=frozenset({"total", "asof"}),
-            operations=frozenset(),
-            breakouts=(),
-            context=MomentsSource(
-                [], metrics=tuple(metrics), study_id="t", design=design, plan=plan
-            ).context,
-            moments=lambda metric, **_kwargs: rows[metric.name],
-            compliance_dates=lambda: ("2026-01-01",),
-            compliance_summary=_compliance_summary,
+        EvidenceSource,
+        ComplianceSource(
+            [row for metric_rows in rows.values() for row in metric_rows],
+            metrics=metrics,
+            capabilities={"total", "asof"},
+            study_id="t",
+            design=design,
+            plan=AnalysisPlan(primary=("rev", "orders")),
         ),
     )
     out = readouts.asof_lift(source)
@@ -3197,14 +3303,12 @@ def test_asof_compliance_ignores_per_metric_cohort_disagreement():
     -- the exact scenario the deleted cross-metric-disagreement guard used
     to refuse -- must not affect the reported compliance row at all, and
     the result must be identical regardless of metric declaration order."""
-    from types import SimpleNamespace
     from typing import cast
 
     from increment import readouts
-    from increment.plan import compile_decision_plan
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
     from increment.semantics.models import AnalysisPlan, MeanMetric
-    from increment.sources import ComplianceArm, ComplianceSummary, MomentSource, MomentsSource
+    from increment.sources import ComplianceArm, ComplianceSummary, EvidenceSource
 
     def _asof_row(ds, metric, group_id, mean, n, sum_d):
         var = 0.25
@@ -3233,9 +3337,6 @@ def test_asof_compliance_ignores_per_metric_cohort_disagreement():
 
     def _make_source(metric_order):
         metrics = [MeanMetric(name=n, entity="u", fact=n) for n in metric_order]
-        plan = compile_decision_plan(
-            AnalysisPlan(primary=tuple(metric_order)), metrics, design=design
-        )
         # "rev" and "orders" disagree on sum_d (100 vs 50) for the same date;
         # compliance comes only from compliance_summary(), never these rows.
         rows_by_metric = {
@@ -3263,18 +3364,23 @@ def test_asof_compliance_ignores_per_metric_cohort_disagreement():
                 ),
             )
 
+        class ComplianceSource(FakeMomentSource):
+            def compliance_summary(self, design, *, as_of=None, completed_windows_only=False):
+                return _compliance_summary(
+                    design,
+                    as_of=as_of,
+                    completed_windows_only=completed_windows_only,
+                )
+
         return cast(
-            MomentSource,
-            SimpleNamespace(
-                capabilities=frozenset({"total", "asof"}),
-                operations=frozenset(),
-                breakouts=(),
-                context=MomentsSource(
-                    [], metrics=tuple(metrics), study_id="t", design=design, plan=plan
-                ).context,
-                moments=lambda metric, **_kwargs: rows_by_metric[metric.name],
-                compliance_dates=lambda: ("2026-01-01",),
-                compliance_summary=_compliance_summary,
+            EvidenceSource,
+            ComplianceSource(
+                [row for metric_rows in rows_by_metric.values() for row in metric_rows],
+                metrics=metrics,
+                capabilities={"total", "asof"},
+                study_id="t",
+                design=design,
+                plan=AnalysisPlan(primary=tuple(metric_order)),
             ),
         )
 

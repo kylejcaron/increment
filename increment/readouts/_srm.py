@@ -12,11 +12,11 @@ from increment.estimation.diagnostics import (
 )
 from increment.readouts._common import _raise
 from increment.readouts._evidence import load_counts
-from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL, MomentSource
+from increment.sources import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL, EvidenceSource
 
 
 def srm(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     expected: dict[str, float] | None = None,
     alpha: float = 0.001,

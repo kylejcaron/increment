@@ -22,7 +22,7 @@ denominator total - all centered on their own group's reference):
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -33,6 +33,14 @@ from increment.errors import (
     InvalidRequestError,
 )
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
+from increment.evidence import (
+    CountEvidence,
+    CountsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import CupedCovariate, MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.design import (
     AdjustmentSet,
@@ -42,6 +50,22 @@ from increment.semantics.design import (
     UptakeSpec,
 )
 from tests.warning_codes import warning_codes
+
+
+def _counts(source, kind):
+    answer = cast(
+        CountEvidence,
+        request_evidence(evidence_provider(source), CountsRequest(kind)),
+    )
+    return answer.unit_counts or answer.counts
+
+
+def _unit_rows(source, metric, **kwargs) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
+
 
 UNITS = [
     ("u1", "control", "s1", 10.0),
@@ -662,17 +686,18 @@ def test_clustered_srm_keeps_the_unassigned_units_as_accounting():
 
 
 def test_unit_counts_report_units_not_clusters_under_a_declared_cluster():
-    """The moments carry n = K on this shape, so unit_counts() must read the
-    retained frame instead of the moments to keep its own name honest."""
+    """Typed counts distinguish member units from randomized clusters."""
     src = _source()
     assert {r["group_id"]: r["n"] for r in src.raw_moments} == {"control": 2, "treatment": 2}
-    assert src.unit_counts() == {"control": 3, "treatment": 3}
-    assert src.cluster_counts() == {"control": 2, "treatment": 2}
+    assert _counts(src, "unit") == {"control": 3, "treatment": 3}
+    answer = request_evidence(evidence_provider(src), CountsRequest(kind="cluster"))
+    assert isinstance(answer, CountEvidence)
+    assert answer.counts == {"control": 2, "treatment": 2}
 
 
 def test_cluster_counts_refuses_without_a_declared_cluster():
     with pytest.raises(CapabilityError) as raised:
-        _source(cluster=None).cluster_counts()
+        request_evidence(evidence_provider(_source(cluster=None)), CountsRequest(kind="cluster"))
     assert raised.value.code == "evidence.cluster_unavailable"
 
 
@@ -696,7 +721,7 @@ def test_cluster_counts_refuses_on_the_panel_shape():
         metrics={"revenue": "mean"},
     )
     with pytest.raises(CapabilityError) as raised:
-        src.cluster_counts()
+        request_evidence(evidence_provider(src), CountsRequest(kind="cluster"))
     assert raised.value.code == "evidence.cluster_unavailable"
 
 
@@ -708,7 +733,7 @@ def test_unit_frame_deduplicates_requested_cluster_metadata(backend, cluster):
     rows = [{**row, "cluster_id": row["store_id"]} for row in _rows()]
     source = _source(rows=rows, backend=backend, cluster=cluster)
     result = nw.from_native(
-        source.unit_frame(source.context.metrics[0], covariates=[cluster, cluster]),
+        _unit_rows(source, source.context.metrics[0], covariates=(cluster, cluster)),
         eager_only=True,
     )
     assert len(result.columns) == len(set(result.columns))
@@ -722,7 +747,7 @@ def test_unit_frame_refuses_reserved_cluster_covariate(cluster):
     rows = [{**row, "cluster_id": 123} for row in _rows()]
     source = _source(rows=rows, cluster=cluster)
     with pytest.raises(InvalidRequestError) as caught:
-        source.unit_frame(source.context.metrics[0], covariates=["cluster_id"])
+        _unit_rows(source, source.context.metrics[0], covariates=("cluster_id",))
     assert caught.value.code == "frame.frame_totals.unit_covariate_reserved"
     assert caught.value.context["column"] == "cluster_id"
     assert caught.value.context["cluster"] == cluster

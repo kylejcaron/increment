@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import _Unset, normalize_display_correction
+from increment._evidence_refusals import check_method_covariates
 from increment._evidence_types import (
     ComplianceSeriesRequest,
+    ComplianceSummary,
     CountsRequest,
     DayAxisRequest,
     DayAxisRoute,
@@ -24,7 +26,7 @@ from increment._frame_panel import _day_axis_label_order
 from increment._lift_options import LiftOptions
 from increment._readout_request import ReadoutRequest
 from increment._readout_request import _raise as _raise_readout
-from increment._source_types import ComplianceSummary, CovariateColumnCheck
+from increment._source_types import declared_evidence
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     DailyLiftEstimate,
@@ -65,12 +67,14 @@ from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     MOMENTS_ROUTE,
     NATIVE_ROUTE,
+    assigned_breakout_values,
     day_axis_route,
+    design_allocation,
     load_compliance_series,
     load_day_axis_rows,
 )
 from increment.semantics.design import Encouragement, Observational, Randomized
-from increment.sources import MomentSource
+from increment.sources import _BuiltinMomentSource
 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
@@ -168,7 +172,7 @@ def _resolve_lift_estimands(
 def _validate_lift_request(
     req: DayAxisRequest,
     *,
-    src: MomentSource,
+    src: _BuiltinMomentSource,
     design: Randomized | Encouragement | Observational | None,
     plan: CompiledDecisionPlan,
     route: DayAxisRoute,
@@ -190,7 +194,7 @@ def _compliance_readouts(
     design: Any,
     estimands: Sequence[str],
     extra: dict[str, Any],
-    source: MomentSource,
+    source: _BuiltinMomentSource,
 ) -> tuple[bool, dict[Any, ComplianceSummary]]:
     if design is None or req.dimension is not None:
         return False, {}
@@ -214,7 +218,7 @@ def _compliance_readouts(
 def validate_day_axis(
     req: DayAxisRequest,
     *,
-    src: MomentSource,
+    src: _BuiltinMomentSource,
     design: Randomized | Encouragement | Observational | None,
     plan: CompiledDecisionPlan,
     route: DayAxisRoute,
@@ -263,7 +267,7 @@ def validate_day_axis(
         return
     if (
         route in (MOMENTS_ROUTE, ARTIFACT_ROUTE)
-        and src.shape != "unit_panel"
+        and declared_evidence(src).shape != "unit_panel"
         and not checkpoint_asof
     ):
         from increment._evidence_refusals import refuse_grain
@@ -271,16 +275,16 @@ def validate_day_axis(
         refuse_grain(
             src,
             req.grain,
-            tuple(sorted(src.capabilities)),
+            tuple(sorted(declared_evidence(src).grains)),
             route="use a source with the requested day axis",
         )
-    if route == NATIVE_ROUTE and "day_source" not in src.operations:
+    if route == NATIVE_ROUTE and "day_source" not in declared_evidence(src).operations:
         from increment._evidence_refusals import refuse_grain
 
         refuse_grain(
             src,
             req.grain,
-            tuple(sorted(src.capabilities)),
+            tuple(sorted(declared_evidence(src).grains)),
             route="use a source with the requested day axis",
         )
     reject_winsorized_day_axis(list(req.metrics), req.caller)
@@ -341,12 +345,13 @@ def validate_day_axis(
     if req.dimension is None:
         return
     if route == MOMENTS_ROUTE:
-        if req.dimension not in src.breakouts:
+        declared_breakouts = declared_evidence(src).breakouts
+        if req.dimension not in declared_breakouts:
             refuse(
                 _UNKNOWN_DIMENSION,
                 method=req.caller,
                 dimension=req.dimension,
-                declared=list(src.breakouts),
+                declared=list(declared_breakouts),
             )
         return
     declared_breakouts = list(experiment.breakouts) if experiment is not None else []
@@ -989,7 +994,7 @@ def _estimate_day_axis_lift_slice(
     return results
 
 
-def _triggered_group_roster(source: MomentSource, experiment: Experiment) -> list[str]:
+def _triggered_group_roster(source: _BuiltinMomentSource, experiment: Experiment) -> list[str]:
     provider = evidence_provider(source)
     if "assignment" in provider.evidence.count_grains:
         counts = cast(
@@ -1011,9 +1016,7 @@ def _triggered_group_roster(source: MomentSource, experiment: Experiment) -> lis
         groups = set(counts)
     else:
         return []
-    allocation = getattr(
-        getattr(getattr(source, "context", None), "design", None), "allocation", None
-    )
+    allocation = design_allocation(source)
     if allocation is not None:
         groups.update(allocation)
     groups.add(experiment.control_group)
@@ -1023,13 +1026,13 @@ def _triggered_group_roster(source: MomentSource, experiment: Experiment) -> lis
 
 
 def _assigned_segment_roster(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     dimension: str,
     experiment: Experiment,
     source_name: str | None,
 ) -> list[str]:
-    assigned_values = getattr(source, "assigned_breakout_values", None)
-    if not callable(assigned_values):
+    assigned_values = assigned_breakout_values(source)
+    if assigned_values is None:
         return []
     values: set[str] = set()
     for breakout in experiment.breakouts:
@@ -1046,7 +1049,7 @@ def _fill_triggered_early_look_rows(
     req: DayAxisRequest,
     metrics: Sequence[Metric],
     experiment: Experiment | None,
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     edge_source: Any,
     source_name: str | None,
 ) -> list[dict[str, Any]]:
@@ -1221,7 +1224,7 @@ class DayAxisReadouts:
     def __init__(
         self,
         *,
-        src: MomentSource,
+        src: _BuiltinMomentSource,
         plan: CompiledDecisionPlan,
         design: Randomized | Encouragement | Observational | None,
         experiment: Experiment | None,
@@ -1254,9 +1257,9 @@ class DayAxisReadouts:
                 evidence_slice.rows,
                 req=req,
                 metrics=evidence_slice.metrics,
-                experiment=self._experiment,
+                experiment=self._experiment or evidence_slice.experiment,
                 source=self._src,
-                edge_source=evidence.source.src,
+                edge_source=evidence_slice.edge_source or evidence.source.src,
                 source_name=evidence_slice.source_name,
             )
             day_values = _run_daily_values(
@@ -1356,9 +1359,8 @@ class DayAxisReadouts:
         )
         for roles in opts.by_metric.values():
             _validate_methods(list(roles.methods))
-        if isinstance(self._src, CovariateColumnCheck):
-            for name, roles in opts.by_metric.items():
-                self._src.check_method_covariates(name, roles.methods)
+        for name, roles in opts.by_metric.items():
+            check_method_covariates(self._src, name, roles.methods)
         if req.caller == "run_asof_lift":
             validate_readout_inference(
                 ReadoutRequest.from_source(
@@ -1456,9 +1458,13 @@ class DayAxisReadouts:
                 evidence_slice.rows,
                 req=req,
                 metrics=evidence_slice.metrics,
-                experiment=self._experiment,
+                experiment=self._experiment or evidence_slice.experiment,
                 source=self._src,
-                edge_source=self._src if evidence is None else evidence.source.src,
+                edge_source=(
+                    self._src
+                    if evidence is None
+                    else evidence_slice.edge_source or evidence.source.src
+                ),
                 source_name=evidence_slice.source_name,
             )
             names = {m.name for m in evidence_slice.metrics}

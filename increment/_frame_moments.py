@@ -1712,7 +1712,7 @@ def _compliance_arm_rows_totals(
     per-unit frame -- independent of any metric: ``n_units``,
     ``uptake_total``, and (when *cluster* is declared) the bivariate
     centered moments of cluster uptake totals and cluster sizes, keyed by
-    the field names :class:`~increment._source_types.ComplianceArm` takes
+    the field names :class:`~increment._evidence_types.ComplianceArm` takes
     directly as constructor kwargs.
     """
     unit_rows = frame.select(

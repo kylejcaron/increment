@@ -17,7 +17,6 @@ import types
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
     NoReturn,
@@ -27,9 +26,6 @@ from typing import (
     get_origin,
     get_type_hints,
 )
-
-if TYPE_CHECKING:
-    from increment._source_types import CUPEDEvidenceExportSource
 
 from increment._canonical import CanonicalJSONError, canonical_json_bytes
 from increment.errors import CodedError, RefusalSpec, WireFormatError, refuse
@@ -906,7 +902,7 @@ def local_categorical_cells(source: Any, metric: Any, method: Any) -> Categorica
     import narwhals as nw
     import numpy as np
 
-    from increment._source_types import unit_frame_covariate_columns
+    from increment._evidence_types import unit_frame_covariate_columns
     from increment.estimation.cuped.cells import categorical_cells
 
     declarations = tuple(method.covariates or ())
@@ -946,7 +942,7 @@ def local_categorical_cells(source: Any, metric: Any, method: Any) -> Categorica
     )
 
 
-def _source_coordinates(source: CUPEDEvidenceExportSource) -> tuple[str, str | None]:
+def _source_coordinates(source: Any) -> tuple[str, str | None]:
     population = source.population
     trigger_name = source.trigger_name
     if population not in _POPULATIONS:
@@ -1007,8 +1003,8 @@ def _local_multicovariate_evidence(
     import narwhals as nw
     import numpy as np
 
+    from increment._evidence_types import unit_frame_covariate_columns
     from increment._source_identity import source_identity
-    from increment._source_types import unit_frame_covariate_columns
     from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
 
     declarations = tuple(method.covariates or ())
@@ -1110,7 +1106,7 @@ def _local_multicovariate_evidence(
 
 
 def portable_cuped_rows(
-    source: CUPEDEvidenceExportSource,
+    source: Any,
     requests: Sequence[PortableRequest],
     *,
     categorical_cells: Callable[[Any, Any], CategoricalCells] | None,
@@ -1185,7 +1181,7 @@ def portable_cuped_rows(
             arms = tuple(
                 str(row["group_id"]) for row in ordinary_rows if row.get("group_id") is not None
             )
-            fit_source = cast(Any, source)
+            fit_source = source
             control = str(fit_source.context.design.control_group)
             arm_order = (control, *sorted(set(arms) - {control}))
             fit_evidence = getattr(fit_source, "fit_cuped_multicovariate_evidence", None)

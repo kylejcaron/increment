@@ -8,6 +8,16 @@ import ibis
 import pytest
 
 from increment import Analysis, SourceSnapshotEvidence
+from increment.evidence import (
+    ComplianceRequest,
+    ComplianceSeriesRequest,
+    ComplianceSummary,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.semantics.models import AnalysisPlan, Definitions
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, lift_rows
@@ -239,9 +249,22 @@ def test_native_encouragement_day_source_declares_working_compliance_axis(con, t
         assert day.evidence.method_fit == "none"
         assert day.evidence.compliance_axis == "asof"
         assert day.evidence.populations == frozenset({"assigned"})
-        dates = day.compliance_dates()
+        dates = tuple(
+            date
+            for date, _summary in cast(
+                tuple[tuple[object, ComplianceSummary], ...],
+                request_evidence(
+                    evidence_provider(day), ComplianceSeriesRequest(source.context.design)
+                ),
+            )
+        )
         assert dates
-        summary = day.compliance_summary(source.context.design, as_of=dates[0])
+        summary = cast(
+            ComplianceSummary,
+            request_evidence(
+                evidence_provider(day), ComplianceRequest(source.context.design, as_of=dates[0])
+            ),
+        )
         assert summary.as_of == dates[0]
         triggered_day = source.day_source(
             metrics=(source.context.metrics[0],), population="triggered"
@@ -315,7 +338,13 @@ def test_observational_design_declares_and_reads_the_covariate(con, tmp_path):
     defs_path = _write_defs_yaml(defs_dict, tmp_path)
     native = Analysis.from_definitions("native_observational_exp", defs_path, con, store="none")
     source = _native_source(native)
-    table = source.unit_frame(source.context.metrics[0], covariates=["tenure"])
+    table = cast(
+        UnitRows,
+        request_evidence(
+            evidence_provider(source),
+            UnitRowsRequest(source.context.metrics[0], covariates=("tenure",)),
+        ),
+    )
     rows = table.to_pylist()
     assert rows
     assert all(row["tenure"] == pytest.approx(30.0) for row in rows)
@@ -734,7 +763,7 @@ def test_reopened_observational_artifact_validates_a_mutated_quantile_before_ref
     quantile = next(metric for metric in source.context.metrics if metric.name == "revenue")
     mutated = quantile.model_copy(update={"quantile": 0.9})
     calls = {
-        "moments": lambda: source.moments(mutated),
+        "moments": lambda: request_evidence(evidence_provider(source), MomentsRequest(mutated)),
         "estimate_quantile_lift": lambda: estimate_quantile_lift(source, mutated, "control"),
         "estimate_ate": lambda: estimate_ate(source, design, metrics=[mutated]),
     }

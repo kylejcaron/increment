@@ -12,9 +12,20 @@ import pickle
 import subprocess
 import sys
 from collections.abc import Mapping
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
+
+from increment.evidence import (
+    CountEvidence,
+    CountsRequest,
+    MomentRows,
+    MomentsRequest,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 
 
 @pytest.mark.integration
@@ -54,7 +65,7 @@ def test_capability_error_names_the_fix():
 
     source, metric = _source_for_refusal()
     with pytest.raises(CapabilityError) as raised:
-        source.moments(metric, grain="daily")
+        request_evidence(evidence_provider(source), MomentsRequest(metric, grain="daily"))
 
     assert raised.value.code == "evidence.grain_unavailable"
     assert raised.value.context["requested"] == "daily"
@@ -92,7 +103,7 @@ def test_source_refusal_context_and_message_are_local():
 
     source, metric = _source_for_refusal()
     with pytest.raises(CapabilityError) as raised:
-        source.unit_frame(metric)
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric))
 
     assert raised.value.code == "evidence.unit_rows_unavailable"
     assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
@@ -103,7 +114,7 @@ def test_moments_source_names_covariate_refusal_distinctly():
 
     source, metric = _source_for_refusal()
     with pytest.raises(CapabilityError) as raised:
-        source.unit_frame(metric, covariates=["tenure"])
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, covariates=("tenure",)))
     assert raised.value.code == "evidence.covariate_unavailable"
     assert set(raised.value.context) == {"constructor", "requested", "offered", "route"}
 
@@ -112,12 +123,16 @@ def test_moments_source_names_covariate_refusal_distinctly():
     ("operation", "expected_code", "expected_context"),
     [
         (
-            lambda source, metric: source.moments(metric, grain="daily"),
+            lambda source, metric: request_evidence(
+                evidence_provider(source), MomentsRequest(metric, grain="daily")
+            ),
             "evidence.grain_unavailable",
             {"requested": "daily", "offered": ("total",)},
         ),
         (
-            lambda source, metric: source.unit_frame(metric),
+            lambda source, metric: request_evidence(
+                evidence_provider(source), UnitRowsRequest(metric)
+            ),
             "evidence.unit_rows_unavailable",
             {"requested": True, "offered": False},
         ),
@@ -239,7 +254,9 @@ def test_moments_source_preserves_format3_winsorization_metadata():
         study_id="exp",
     )
 
-    loaded = source.moments(metric)[0]
+    loaded = cast(MomentRows, request_evidence(evidence_provider(source), MomentsRequest(metric)))[
+        0
+    ]
     assert loaded["winsor_upper_bound"] == 100.0
     assert loaded["winsor_n_upper"] == 1
     assert "moments_format" not in loaded
@@ -297,7 +314,9 @@ def test_moments_source_accepts_resolved_percentile_winsorization_metadata():
     )
     source = MomentsSource([_format3_row()], metrics=[metric], study_id="exp")
 
-    loaded = source.moments(metric)[0]
+    loaded = cast(MomentRows, request_evidence(evidence_provider(source), MomentsRequest(metric)))[
+        0
+    ]
     assert loaded["winsor_upper_percentile"] == 0.99
     assert loaded["winsor_upper_bound"] == 100.0
 
@@ -756,7 +775,13 @@ def test_assignment_counts_stable_under_row_order():
     ]
     first = MomentsSource(rows, metrics=[metric], study_id="exp")
     second = MomentsSource(list(reversed(rows)), metrics=[metric], study_id="exp")
-    assert first.unit_counts() == second.unit_counts() == {"control": 10, "treatment": 12}
+    first_counts = cast(
+        CountEvidence, request_evidence(evidence_provider(first), CountsRequest(kind="unit"))
+    ).counts
+    second_counts = cast(
+        CountEvidence, request_evidence(evidence_provider(second), CountsRequest(kind="unit"))
+    ).counts
+    assert first_counts == second_counts == {"control": 10, "treatment": 12}
 
 
 def test_assignment_counts_rejects_forged_duplicate_keys():

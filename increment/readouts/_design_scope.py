@@ -14,6 +14,7 @@ from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment._evidence_types import CountsRequest
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._source_identity import source_identity
+from increment._source_types import declared_evidence
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
@@ -206,39 +207,26 @@ def resolve_roster(
     if base_roster is None:
         counts = None
         if use_counts:
-            assignment_counts = getattr(src, "assignment_counts", None)
-            if callable(assignment_counts):
+            count_grains = declared_evidence(src).count_grains
+            # Assignment counts first; cluster counts only for an assigned clustered readout;
+            # unit counts only when units are the assignment grain. Triggered counts never
+            # establish the assignment law.
+            for kind, applies in (
+                ("assignment", True),
+                ("cluster", is_clustered and population == "assigned"),
+                ("unit", not is_clustered),
+            ):
+                if counts is not None or not applies or kind not in count_grains:
+                    continue
                 try:
                     counts = {
                         arm: count
                         for arm, count in load_counts(
-                            src, CountsRequest(kind="assignment", population=population)
-                        ).counts.items()
-                        if arm is not None
-                    }
-                except CapabilityError:
-                    pass
-        if use_counts and counts is None and is_clustered and population == "assigned":
-            cluster_counts = getattr(src, "cluster_counts", None)
-            if callable(cluster_counts):
-                try:
-                    counts = {
-                        arm: count
-                        for arm, count in load_counts(
-                            src, CountsRequest(kind="cluster")
-                        ).counts.items()
-                        if arm is not None
-                    }
-                except CapabilityError:
-                    pass
-        if use_counts and counts is None and not is_clustered:
-            count_method = getattr(src, "unit_counts", None)
-            if callable(count_method):
-                try:
-                    counts = {
-                        arm: count
-                        for arm, count in load_counts(
-                            src, CountsRequest(kind="unit", population=population)
+                            src,
+                            CountsRequest(
+                                kind=kind,
+                                population="assigned" if kind == "cluster" else population,
+                            ),
                         ).counts.items()
                         if arm is not None
                     }

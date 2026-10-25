@@ -24,6 +24,7 @@ from increment.frame import (
     from_unit_summary,
 )
 from increment.semantics.models import Metric
+from tests._frame_evidence_requests import _compliance, _moments
 from tests.analysis_factory import lift_rows
 
 
@@ -345,7 +346,7 @@ def test_from_unit_panel_collapses_uptake_ever() -> None:
         uptake="clicked",
     )
     metric = _metric(src, "revenue")
-    by_group = {r["group_id"]: r for r in src.moments(metric, grain="total")}
+    by_group = {r["group_id"]: r for r in _moments(src, metric, grain="total")}
     assert by_group["treatment"]["sum_d"] == pytest.approx(1.0)
     assert by_group["control"]["sum_d"] == pytest.approx(0.0)
 
@@ -391,8 +392,8 @@ def test_from_unit_panel_derives_uptake_column_alongside_the_window() -> None:
     derived = from_unit_panel(table, **common)
     explicit = from_unit_panel(table, **common, uptake="clicked")
 
-    derived_rows = derived.moments(_metric(derived, "revenue"), grain="total")
-    explicit_rows = explicit.moments(_metric(explicit, "revenue"), grain="total")
+    derived_rows = _moments(derived, _metric(derived, "revenue"), grain="total")
+    explicit_rows = _moments(explicit, _metric(explicit, "revenue"), grain="total")
     assert derived_rows == explicit_rows
     # The window still bites: only u2's in-window click counts for treatment.
     by_group = {r["group_id"]: r for r in derived_rows}
@@ -441,7 +442,7 @@ def test_from_unit_panel_uptake_window() -> None:
         design=design,
     )
     metric = _metric(windowed, "revenue")
-    windowed_treatment = {r["group_id"]: r for r in windowed.moments(metric, grain="total")}[
+    windowed_treatment = {r["group_id"]: r for r in _moments(windowed, metric, grain="total")}[
         "treatment"
     ]
     assert windowed_treatment["sum_d"] == pytest.approx(1.0)  # only u2's day-2 click counts
@@ -456,9 +457,9 @@ def test_from_unit_panel_uptake_window() -> None:
         uptake="clicked",
     )
     metric_uw = _metric(unwindowed, "revenue")
-    unwindowed_treatment = {r["group_id"]: r for r in unwindowed.moments(metric_uw, grain="total")}[
-        "treatment"
-    ]
+    unwindowed_treatment = {
+        r["group_id"]: r for r in _moments(unwindowed, metric_uw, grain="total")
+    }["treatment"]
     assert unwindowed_treatment["sum_d"] == pytest.approx(2.0)  # both u1 and u2 count
 
 
@@ -512,7 +513,7 @@ def test_from_unit_panel_uptake_window_anchors_to_each_units_own_entry() -> None
         design=design,
     )
     metric = _metric(src, "revenue")
-    treatment = {r["group_id"]: r for r in src.moments(metric, grain="total")}["treatment"]
+    treatment = {r["group_id"]: r for r in _moments(src, metric, grain="total")}["treatment"]
     assert treatment["sum_d"] == pytest.approx(2.0), (
         "both u1's day-1 click and u2's day-4 click must count under "
         "per-unit anchoring; a global-anchor bug would drop u2's"
@@ -561,7 +562,7 @@ def test_from_unit_panel_uptake_window_with_real_dates() -> None:
         design=design,
     )
     metric = _metric(src, "revenue")
-    treatment = {r["group_id"]: r for r in src.moments(metric, grain="total")}["treatment"]
+    treatment = {r["group_id"]: r for r in _moments(src, metric, grain="total")}["treatment"]
     assert treatment["sum_d"] == pytest.approx(1.0)  # only u2's day-2 (offset) click counts
 
 
@@ -632,7 +633,7 @@ def test_metric_free_fixed_horizon_compliance_matches_populated_oracle() -> None
         design=design,
     )
     for group in ("control", "treatment"):
-        arm = summary_source.compliance_summary(design).arm(group)
+        arm = _compliance(summary_source, design).arm(group)
         assert arm is not None
         assert arm.n_units == 2
 
@@ -683,7 +684,7 @@ def test_metric_free_fixed_horizon_compliance_matches_populated_oracle() -> None
         metrics=[],
         design=design,
     )
-    panel_summary = panel_source.compliance_summary(design)
+    panel_summary = _compliance(panel_source, design)
     for group in ("control", "treatment"):
         arm = panel_summary.arm(group)
         assert arm is not None
@@ -736,7 +737,7 @@ def test_uptake_band_excludes_pre_exposure_clicks(window_days: int | None) -> No
         exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
-    treatment = {r["group_id"]: r for r in src.moments(metric, grain="total")}["treatment"]
+    treatment = {r["group_id"]: r for r in _moments(src, metric, grain="total")}["treatment"]
     assert treatment["sum_d"] == pytest.approx(0.0)
 
 
@@ -772,7 +773,7 @@ def test_uptake_window_pandas_object_dates_does_not_crash() -> None:
         exposure_date="exposed_on",
     )
     metric = _metric(src, "revenue")
-    treatment = {r["group_id"]: r for r in src.moments(metric, grain="total")}["treatment"]
+    treatment = {r["group_id"]: r for r in _moments(src, metric, grain="total")}["treatment"]
     assert treatment["sum_d"] == pytest.approx(1.0)  # u3 only; u1's click is pre-exposure
 
 
@@ -807,7 +808,7 @@ def test_plain_conversion_refuses_day_count_collapse() -> None:
     )
     metric = _metric(src, "converted")
     with pytest.raises(InvalidRequestError) as exc:
-        src.moments(metric, grain="total")
+        _moments(src, metric, grain="total")
     assert exc.value.code == "frame.moments.metric_type_conversion"
 
 
@@ -838,7 +839,7 @@ def test_plain_conversion_single_converting_day_is_served() -> None:
         metrics=[MetricSpec(name="converted", type="conversion")],
     )
     metric = _metric(src, "converted")
-    out = {r["group_id"]: r for r in src.moments(metric, grain="total")}
+    out = {r["group_id"]: r for r in _moments(src, metric, grain="total")}
     assert _sum_y(out["treatment"]) == pytest.approx(1.0)
     assert _sum_y(out["control"]) == pytest.approx(0.0)
 

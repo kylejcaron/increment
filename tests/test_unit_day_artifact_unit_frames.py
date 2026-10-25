@@ -19,6 +19,7 @@ from increment.query.source import open_artifact
 from increment.semantics.artifact import ClusterIdentityRequest
 from increment.semantics.loader import load
 from increment.semantics.models import Breakout
+from tests._evidence_requests import _moments, _unit_rows
 from tests._unit_boundary import backend_fixture
 from tests.analysis_factory import _native_source, native_connection
 
@@ -140,7 +141,7 @@ def test_published_unit_frames_keep_outcomes_and_censor_through_snapshot(
         monkeypatch.setattr(ir.Expr, "execute", direct_execution_forbidden)
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always", UserWarning)
-        actual = nw.from_native(source.unit_frame(metric), eager_only=True).sort("unit_id")
+        actual = nw.from_native(_unit_rows(source, metric), eager_only=True).sort("unit_id")
     assert any(issubclass(item.category, UserWarning) for item in recorded)
     assert actual["unit_id"].to_list() == ["u1", "u2"]
     assert actual["group_id"].to_list() == ["control", "treatment"]
@@ -158,7 +159,7 @@ def test_missing_cuped_covariate_extension_refuses_with_republish_route(publishe
     _native, artifact = published_units
     metric = artifact.context.metrics[0]
     with pytest.raises(CodedError) as raised:
-        artifact.unit_frame(metric, covariates=["pre_revenue"])
+        _unit_rows(artifact, metric, covariates=["pre_revenue"])
 
     assert raised.value.code == "artifact.extension.missing"
     assert raised.value.context["route"] == (
@@ -169,20 +170,25 @@ def test_missing_cuped_covariate_extension_refuses_with_republish_route(publishe
 @pytest.mark.parametrize("grain", ["daily", "asof"])
 @pytest.mark.parametrize("operation", ["plain", "dimension", "cuped", "dimensioned", "breakout"])
 def test_clustered_non_total_refuses_before_extension_resolution(published_units, grain, operation):
+    from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+
     _, adopted = published_units
     metric = adopted.context.metrics[0]
 
-    # The grain refusal precedes extension resolution: the dimensioned and
+    # The grain refusal precedes extension resolution: dimension and
     # covariate cases name a missing extension, yet report the grain code.
     with pytest.raises(CapabilityError) as caught:
         if operation == "breakout":
             adopted.breakout_moments(metric, Breakout(property="missing"), grain=grain)
         else:
-            adopted.moments(
-                metric,
-                grain=grain,
-                by=["missing"] if operation in {"dimension", "dimensioned"} else [],
-                include_covariate=operation in {"cuped", "dimensioned"},
+            request_evidence(
+                evidence_provider(adopted),
+                MomentsRequest(
+                    metric=metric,
+                    grain=grain,
+                    by=("missing",) if operation in {"dimension", "dimensioned"} else (),
+                    include_covariate=operation in {"cuped", "dimensioned"},
+                ),
             )
     assert caught.value.code == "evidence.grain_unavailable"
 
@@ -272,8 +278,8 @@ def test_plain_reader_unit_frame_agrees_with_its_own_total_moments(tmp_path):
     )
     try:
         metric = reader.context.metrics[0]
-        frame = nw.from_native(reader.unit_frame(metric), eager_only=True)
-        for row in reader.moments(metric):
+        frame = nw.from_native(_unit_rows(reader, metric), eager_only=True)
+        for row in _moments(reader, metric):
             values = frame.filter(nw.col("group_id") == row["group_id"])["y"].to_list()
             assert len(values) == row["n"]
             mean = row["ref_y"] + row["cy1"] / row["n"]
@@ -285,11 +291,11 @@ def test_plain_reader_unit_frame_agrees_with_its_own_total_moments(tmp_path):
 
 
 def _unit_frame_peak_bytes(reader, metric) -> int:
-    reader.moments(metric)  # warm caches (metric specs, verified relations)
+    _moments(reader, metric)  # warm caches (metric specs, verified relations)
     gc.collect()
     tracemalloc.start()
     try:
-        reader.unit_frame(metric)
+        _unit_rows(reader, metric)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -361,7 +367,7 @@ def test_measure_covariate_extension_matches_native_preperiod_unit_frame(tmp_pat
     try:
         native_rows = (
             nw.from_native(
-                native.unit_frame(metric, covariates=covariate_names),
+                _unit_rows(native, metric, covariates=covariate_names),
                 eager_only=True,
             )
             .to_arrow()
@@ -369,7 +375,7 @@ def test_measure_covariate_extension_matches_native_preperiod_unit_frame(tmp_pat
         )
         artifact_rows = (
             nw.from_native(
-                artifact.unit_frame(metric, covariates=covariate_names),
+                _unit_rows(artifact, metric, covariates=covariate_names),
                 eager_only=True,
             )
             .to_arrow()
