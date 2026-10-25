@@ -1,6 +1,13 @@
 name: ci
 
 on:
+  workflow_dispatch:
+    inputs:
+      coverage:
+        description: "Collect coverage for the Python 3.12 fast-test shards"
+        type: boolean
+        default: true
+        required: true
   push: {branches: [main]}
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
@@ -51,8 +58,9 @@ jobs:
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
       - id: fast-tests
         run: |
-          coverage_args=""
-          if [ "${{ matrix.python-version }}" = "3.12" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.coverage }}" = "false" ]; then
+            coverage_args=""
+          elif [ "${{ matrix.python-version }}" = "3.12" ]; then
             export COVERAGE_CORE=sysmon
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
