@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
+from increment._evidence_types import SourceContext
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
@@ -27,9 +28,12 @@ from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     NATIVE_ROUTE,
     day_axis_route,
+    is_custom_source,
+    validate_populations,
+    validates_populations,
 )
 from increment.readouts._requests import _design_compliance_only, _validate_run_request
-from increment.sources import SourceContext, require_operation
+from increment.sources import require_operation
 
 if TYPE_CHECKING:
     from increment.breakout.estimates import LiftEstimates
@@ -39,12 +43,12 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Experiment, Metric
-    from increment.sources import MomentSource, SourceOperation
+    from increment.sources import SourceOperation, _BuiltinMomentSource
 
 RouteName = DayAxisRoute
 
 
-def _is_artifact_source(src: MomentSource) -> bool:
+def _is_artifact_source(src: _BuiltinMomentSource) -> bool:
     return day_axis_route(src) == ARTIFACT_ROUTE
 
 
@@ -72,13 +76,13 @@ _UNKNOWN_METRIC = RefusalSpec(
 
 
 def _require_analysis_operation[T](
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     operation: SourceOperation,
-    protocol: type[T],
+    protocol: type[T] | None = None,
     *,
     message: str,
 ) -> T:
-    offered = tuple(sorted(getattr(source, "operations", ())))
+    offered = tuple(sorted(cast(Any, source).evidence.operations))
     if not isinstance(getattr(source, "context", None), SourceContext):
         from increment._evidence_refusals import refuse_operation
 
@@ -126,7 +130,7 @@ class WholeWindowRequest:
 def validate_whole_window(
     req: WholeWindowRequest,
     *,
-    src: MomentSource,
+    src: _BuiltinMomentSource,
     plan: CompiledDecisionPlan,
     design: Randomized | Encouragement | Observational | None,
     experiment: Experiment | None,
@@ -186,11 +190,11 @@ class WholeWindowReadouts:
     def __init__(
         self,
         *,
-        src: MomentSource,
+        src: _BuiltinMomentSource,
         plan: CompiledDecisionPlan,
         design: Randomized | Encouragement | Observational | None,
         experiment: Experiment | None,
-        readout_source: Callable[..., MomentSource],
+        readout_source: Callable[..., _BuiltinMomentSource],
         validate_trigger: Callable[[], None],
         arm_moments: Callable[..., list[LiftEstimate]],
     ) -> None:
@@ -232,8 +236,7 @@ class WholeWindowReadouts:
             and self._experiment.trigger is not None
             and req.population in (None, "triggered")
         ):
-            validate_populations = getattr(self._src, "validate_populations", None)
-            if validate_populations is None:
+            if not is_custom_source(self._src) and not validates_populations(self._src):
                 _refuse(
                     _TRIGGER_UNSUPPORTED,
                     method="run",
@@ -245,14 +248,15 @@ class WholeWindowReadouts:
             populations = (
                 ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
             )
-            validate_populations(populations, operation="run")
+            validate_populations(self._src, populations, operation="run")
         design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:
             from increment.breakout.estimates import LiftEstimates
 
             return LiftEstimates()
         if (
-            route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+            not is_custom_source(self._src)
+            and route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
             and self._experiment is not None
             and self._experiment.trigger is not None
             and req.population in (None, "triggered")

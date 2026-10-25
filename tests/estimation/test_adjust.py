@@ -26,6 +26,20 @@ from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutco
 from increment.estimation.adjust import estimate_ate
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
+from increment.evidence import (
+    ComplianceRequest,
+    ComplianceSeriesRequest,
+    ComplianceSummary,
+    CountEvidence,
+    CountsRequest,
+    EvidenceProvider,
+    MomentRows,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import MetricSpec, from_unit_summary
 from increment.semantics.design import AdjustmentSet, IdentificationGate, Observational
 from tests.analysis_factory import lift_rows
@@ -38,6 +52,30 @@ from tests.categorical_cases import (
     with_nulls,
 )
 from tests.warning_codes import warning_codes
+
+
+def _moments(source, metric, **kwargs) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
+
+
+def _counts(source, kind: Literal["unit", "cluster", "assignment", "triggered"]):
+    answer = cast(
+        CountEvidence,
+        request_evidence(evidence_provider(source), CountsRequest(kind)),
+    )
+    return answer.unit_counts or answer.counts
+
+
+def _unit_rows(source, metric, *, covariates=()) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(
+            evidence_provider(source), UnitRowsRequest(metric, covariates=tuple(covariates))
+        ),
+    )
 
 
 class StubLearner:
@@ -1048,50 +1086,66 @@ def test_estimate_ate_does_not_repeat_adjustment_preflight(monkeypatch):
 
 
 def test_adjustment_requests_excludes_zero_unit_arms():
-    """A MomentSource's moments() and unit_frame() are independent queries
-    (e.g. a warehouse cube vs. a raw unit pull); exclude treatment arms whose
-    moment rows declare n == 0 rather than building a request for no units."""
+    """An arm with no unit rows is omitted from the public estimator's results."""
     from increment.estimation._adjust.common import adjustment_requests
 
     inner = _clean_confounded_src()
+    design = _obs("refuse")
 
-    class _ZeroArmSource:
-        """Wraps a real source but injects a zero-`n` "T2" moment row not
-        backed by any unit in unit_frame() -- the disagreement this guard
-        exists for. Delegates every other MomentSource member so this
-        remains a real MomentSource, not a partial stub."""
+    class _ZeroArmSource(EvidenceProvider):
+        """Add an empty treatment arm to aggregate evidence, but no unit evidence."""
 
         def __init__(self, source):
             self._source = source
             self.context = source.context
+            self.evidence = source.evidence
             self.capabilities = source.capabilities
             self.operations = source.operations
             self.shape = source.shape
             self.breakouts = source.breakouts
 
-        def moments(self, metric, **kwargs):
-            rows = [dict(r) for r in self._source.moments(metric, **kwargs)]
+        def moments(self, request):
+            assert isinstance(request, MomentsRequest)
+            rows = [
+                dict(row)
+                for row in _moments(
+                    self._source, request.metric, grain=request.grain, by=request.by
+                )
+            ]
             zero_row = dict(rows[0])
             zero_row["group_id"] = "T2"
             zero_row["n"] = 0
             rows.append(zero_row)
             return rows
 
-        def unit_frame(self, metric, *, covariates=()):
-            return self._source.unit_frame(metric, covariates=covariates)
+        def unit_rows(self, request):
+            assert isinstance(request, UnitRowsRequest)
+            return _unit_rows(self._source, request.metric, covariates=request.covariates)
 
         def unit_counts(self):
-            return self._source.unit_counts()
+            return _counts(self._source, "unit")
 
         def cluster_counts(self):
-            return self._source.cluster_counts()
+            return _counts(self._source, "cluster")
 
         def compliance_dates(self):
-            return self._source.compliance_dates()
+            series = cast(
+                tuple[tuple[object, ComplianceSummary], ...],
+                request_evidence(
+                    evidence_provider(self._source),
+                    ComplianceSeriesRequest(cast(Any, self.context.design)),
+                ),
+            )
+            return tuple(day for day, _summary in series)
 
         def compliance_summary(self, design, *, as_of=None, completed_windows_only=False):
-            return self._source.compliance_summary(
-                design, as_of=as_of, completed_windows_only=completed_windows_only
+            return request_evidence(
+                evidence_provider(self._source),
+                ComplianceRequest(
+                    cast(Any, design),
+                    as_of=as_of,
+                    completed_windows_only=completed_windows_only,
+                ),
             )
 
         def sql(self, *, grain="total"):
@@ -1102,15 +1156,14 @@ def test_adjustment_requests_excludes_zero_unit_arms():
 
     src = _ZeroArmSource(inner)
     metric = _metric(src, "revenue")
-    design = _obs("refuse")
     requests, learners = adjustment_requests(
-        src.unit_frame(metric, covariates=design.adjustment.covariates),
+        _unit_rows(src, metric, covariates=design.adjustment.covariates),
         metric,
         design,
         method="DML",
         covariates=list(design.adjustment.covariates),
         learner_roles=("propensity_learner", "outcome_learner"),
-        moment_rows=src.moments(metric),
+        moment_rows=_moments(src, metric),
         cluster=src.context.cluster,
         propensity_learner=None,
         outcome_learner=None,
@@ -1122,9 +1175,26 @@ def test_adjustment_requests_excludes_zero_unit_arms():
         value_scale="relative",
         preferred_direction=None,
     )
-    # "T2" (n == 0) is excluded; only "T" (real units) gets a request.
-    assert [r.treatment_group for r in requests] == ["T"]
-    assert learners == {"propensity_learner": None, "outcome_learner": None}
+    with pytest.warns(IncrementWarning):
+        results = estimate_ate(
+            cast(Any, src),
+            design,
+            methods=[
+                Method(
+                    name="dml",
+                    propensity_learner=_HalfPropensityStub,
+                    outcome_learner=RidgeOutcome,
+                    folds=2,
+                )
+            ],
+        ).results
+    # The public estimator emits only the populated treatment arm.
+    assert (
+        [request.treatment_group for request in requests],
+        learners,
+        [result.group_id for result in results],
+    ) == (["T"], {"propensity_learner": None, "outcome_learner": None}, ["T"])
+    assert [result.method for result in results] == ["dml"]
 
 
 def test_multi_arm_produces_one_estimate_per_non_control_arm():

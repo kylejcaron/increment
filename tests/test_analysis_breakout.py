@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import warnings
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -189,6 +189,89 @@ def test_run_breakout_snapshot_identity_includes_pinned_source_evidence(con):
     finally:
         first.close()
         changed.close()
+
+
+def test_custom_breakout_uses_one_outer_snapshot_scope(con):
+    from contextlib import contextmanager
+    from typing import Any, cast
+
+    from increment import (
+        BreakoutMethodMomentsRequest,
+        ComplianceRequest,
+        ComplianceSeriesRequest,
+        CountsRequest,
+        EvidenceScope,
+        EvidenceScopeResult,
+        MethodFitRequest,
+        MomentsRequest,
+        SequentialCaptureRequest,
+        UnitRowsRequest,
+    )
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import held_source
+
+    analysis = _analysis_with_country_breakout(con)
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    requests: list[tuple[EvidenceScope, bool]] = []
+    active = 0
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+        artifact_experiment = analysis.experiment
+
+        def moments(self, request: MomentsRequest):
+            return builtin.moments(request)
+
+        def unit_rows(self, request: UnitRowsRequest):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request: MethodFitRequest):
+            return builtin.method_fit(request)
+
+        def breakout_method_moments(self, request: BreakoutMethodMomentsRequest):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request: ComplianceRequest):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            return builtin.compliance_series(request)
+
+        def counts(self, request: CountsRequest):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request: EvidenceScope):
+            @contextmanager
+            def scoped():
+                nonlocal active
+                requests.append((request, active > 0))
+                active += 1
+                try:
+                    yield self if not request.breakouts else source
+                finally:
+                    active -= 1
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    custom = Analysis._from_source(cast(Any, Provider()))
+    try:
+        custom.run_breakout()
+    finally:
+        custom.close()
+        analysis.close()
+
+    snapshots = [(request, nested) for request, nested in requests if request.snapshot]
+    assert len(snapshots) == 1
+    assert snapshots[0][1] is False
+    assert all(nested for _, nested in requests if not _.snapshot)
 
 
 def test_run_breakout_returns_per_segment_estimates(country_breakout_estimates):
@@ -1005,6 +1088,69 @@ def test_run_breakout_refuses_a_declared_margin_metric(con):
     )
     with pytest.raises(UnsupportedRequestError) as raised:
         analysis.run_breakout()
+    from contextlib import contextmanager
+    from typing import Any, cast
+
+    from increment import EvidenceScope, EvidenceScopeResult
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import held_source
+
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    scope_entries = 0
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+        artifact_experiment = analysis.experiment
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def close(self):
+            source.close()
+
+        def scope(self, request: EvidenceScope):
+            @contextmanager
+            def scoped():
+                nonlocal scope_entries
+                scope_entries += 1
+                yield source
+
+            return EvidenceScopeResult(scoped(), request)
+
+    assert analysis.experiment is not None
+    custom = Analysis._from_source(cast(Any, Provider()), experiment=analysis.experiment)
+    assert custom.experiment is not None
+    try:
+        with pytest.raises(UnsupportedRequestError) as custom_raised:
+            custom.run_breakout()
+        assert custom_raised.value.code == "readout.margin.breakout"
+        assert scope_entries == 0
+    finally:
+        custom.close()
+        analysis.close()
     assert raised.value.code == "readout.margin.breakout"
 
 
@@ -1384,6 +1530,291 @@ def test_retention_breakout_reports_censoring_once():
         analysis.close()
         for connection in getattr(analysis, "_parity_connections", ()):
             connection.disconnect()
+
+
+def _triggered_region_breakout(tmp_path):
+    import datetime as dt
+
+    import ibis
+
+    from increment import Analysis, SourceSnapshotEvidence
+    from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
+
+    events = _with_preassignment_region(_events(n_per_arm=10, trigger_rate=1.0))
+    definitions = (
+        _defs_yaml()
+        .replace(
+            "    facts:\n",
+            "    properties:\n      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+            1,
+        )
+        .replace(
+            "    plan:\n",
+            "    breakouts: [{property: region, source: events}]\n    plan:\n",
+            1,
+        )
+        .replace(
+            "    plan:\n      secondaries: [revenue]\n",
+            "    plan:\n      primary: revenue\n",
+            1,
+        )
+    )
+    definitions_path = tmp_path / "triggered-breakout.yml"
+    definitions_path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=events)
+    native = Analysis.from_definitions(
+        "exp",
+        definitions_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    return native, con
+
+
+def _comparable(rows):
+    return [
+        row.model_dump(exclude={"source_snapshot_id", "family_id", "analysis_population"})
+        for row in rows
+    ]
+
+
+@pytest.mark.integration
+def test_custom_provider_runs_triggered_breakout_through_declared_population(tmp_path):
+    import warnings
+
+    from increment import Analysis, EvidenceScope, EvidenceScopeResult, IncrementWarning
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import held_source
+
+    native, con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(native))
+    assert native.experiment.breakouts
+    assert "triggered" in source.evidence.populations
+    builtin = evidence_provider(source)
+    scope_requests: list[EvidenceScope] = []
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+        artifact_experiment = native.experiment
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            scope_requests.append(request)
+            from contextlib import contextmanager
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    provider_analysis = None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            expected = native.run_breakout(metrics=["revenue"], population="assigned")
+            provider_analysis = Analysis._from_source(Provider())
+            actual = provider_analysis.run_breakout(metrics=["revenue"], population="triggered")
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        native.close()
+        con.disconnect()
+
+    assert _comparable(actual) == _comparable(expected)
+    assert actual
+    assert {row.analysis_population for row in actual} == {"triggered"}
+    # Custom providers retain the requested population on the snapshot scope.
+    assert [request.population for request in scope_requests if request.snapshot] == ["triggered"]
+    slice_populations = {request.population for request in scope_requests if not request.snapshot}
+    assert slice_populations == {"triggered"}
+    nested_identity_scopes = [
+        request for request in scope_requests if request.breakouts and not request.snapshot
+    ]
+    assert nested_identity_scopes
+    assert all(
+        tuple(metric.name for metric in request.metrics) == ("revenue",)
+        for request in nested_identity_scopes
+    )
+    assert all(request.population == "triggered" for request in nested_identity_scopes)
+    assert all(request.grain is None for request in nested_identity_scopes)
+
+
+@pytest.mark.integration
+def test_provider_delegating_scope_to_native_keeps_triggered_breakouts(tmp_path):
+    import warnings
+
+    from increment import Analysis, IncrementWarning
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import held_source
+
+    native, con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(native))
+    builtin = evidence_provider(source)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            return builtin.scope(request)
+
+        def close(self):
+            return None
+
+    provider_analysis = None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            expected = native.run_breakout(metrics=["revenue"], population="triggered")
+            provider_analysis = Analysis._from_source(Provider())
+            actual = provider_analysis.run_breakout(metrics=["revenue"], population="triggered")
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        native.close()
+        con.disconnect()
+
+    assert expected
+    assert {row.analysis_population for row in actual} == {"triggered"}
+    assert _comparable(actual) == _comparable(expected)
+
+
+def test_custom_breakout_slice_refuses_conflicting_explicit_identity(tmp_path):
+    from contextlib import contextmanager
+
+    from increment import BreakoutIdentity, EvidenceScope, EvidenceScopeResult
+    from increment.errors import CodedError
+    from increment.evidence import BreakoutSlicesRequest, evidence_provider, request_evidence
+    from tests.analysis_factory import held_source
+
+    native, con = _triggered_region_breakout(tmp_path)
+    source = cast(Any, held_source(native))
+    builtin = evidence_provider(source)
+    scope_entries = 0
+    reads = 0
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+        def moments(self, request):
+            nonlocal reads
+            reads += 1
+            return builtin.moments(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def unit_rows(self, request):
+            nonlocal reads
+            reads += 1
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            nonlocal scope_entries
+            scope_entries += 1
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    try:
+        slices = cast(
+            Any,
+            request_evidence(
+                Provider(),
+                BreakoutSlicesRequest(breakouts=(BreakoutIdentity("region", "source_a"),)),
+            ),
+        )
+        breakout_slice = slices.slices[0]
+        before = scope_entries
+        with pytest.raises(CodedError) as raised:
+            breakout_slice.source.scope(
+                EvidenceScope(breakouts=(BreakoutIdentity("region", "source_b"),))
+            )
+        assert raised.value.code == "evidence.breakout_unavailable"
+        assert scope_entries == before
+        assert reads == 0
+    finally:
+        native.close()
+        con.disconnect()
 
 
 pytestmark = pytest.mark.integration

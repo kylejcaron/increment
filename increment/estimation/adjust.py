@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from increment._evidence_loaders import load_moments, load_unit_rows, view_population
+from increment._evidence_types import MomentsRequest, UnitRowsRequest
 from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
@@ -47,13 +49,13 @@ from increment.estimation.variance import Registry
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from increment._evidence_types import EvidenceSource
     from increment._readout_request import ReadoutRequest
     from increment.decision import DecisionComputation, DecisionFailure
     from increment.estimation.engine import _WinsorizationFields
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
 
     AdjustmentFn = Callable[..., list[LiftEstimate]]
 
@@ -450,7 +452,7 @@ def _reject_unusable_value_scales(
 
 
 def _validate_request_mappings(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     value_scale: Mapping[str, ValueScale] | None,
     null_lifts: Mapping[str, float] | None,
@@ -475,7 +477,7 @@ def _validate_request_mappings(
 
 
 def _resolve_value_scales(
-    src: MomentSource,
+    src: EvidenceSource,
     methods: list[Method],
     *,
     selected: Sequence[Metric],
@@ -702,22 +704,42 @@ class ObservationalEvidence:
         return frozenset(str(row["group_id"]) for row in self.rows[metric.name])
 
 
-def observational_evidence(src: MomentSource, metrics: Sequence[Metric]) -> ObservationalEvidence:
-    """Reduce each of ``metrics`` once; the one place an observational readout reads moments."""
+def observational_evidence(
+    src: EvidenceSource,
+    metrics: Sequence[Metric],
+    *,
+    population: Literal["assigned", "triggered"] | None = None,
+) -> ObservationalEvidence:
+    """Reduce each of ``metrics`` once; the one place an observational readout reads moments.
+
+    ``population`` defaults to the population the source view answers.
+    """
+    population = population or view_population(src)
     return ObservationalEvidence(
-        {metric.name: tuple(src.moments(metric)) for metric in metrics},
+        {
+            metric.name: tuple(
+                load_moments(src, MomentsRequest(metric=metric, population=population))
+            )
+            for metric in metrics
+        },
         cluster=src.context.cluster,
     )
 
 
-def bind_unit_frame_memo(src: MomentSource) -> Callable[[Metric, Sequence[str]], Any]:
-    """Bind a per-readout unit-frame cache to its source."""
+def bind_unit_frame_memo(
+    src: EvidenceSource, *, population: Literal["assigned", "triggered"] | None = None
+) -> Callable[[Metric, Sequence[str]], Any]:
+    """Bind a per-readout unit-frame cache to its source and population."""
     frames: dict[tuple[str, tuple[str, ...]], Any] = {}
+    population = population or view_population(src)
 
     def read(metric: Metric, covariates: Sequence[str]) -> Any:
         key = (metric.name, tuple(covariates))
         if key not in frames:
-            frames[key] = src.unit_frame(metric, covariates=list(covariates))
+            frames[key] = load_unit_rows(
+                src,
+                UnitRowsRequest(metric=metric, covariates=tuple(covariates), population=population),
+            )
         return frames[key]
 
     return read
@@ -743,7 +765,7 @@ def _winsorization_diagnostics(
 
 # Public estimator signature is the API for adjustment results.
 def estimate_ate(  # noqa: PLR0913
-    src: MomentSource,
+    src: EvidenceSource,
     design: Observational,
     *,
     methods: list[Method] | None = None,
@@ -843,7 +865,7 @@ def _validate_adjustment_methods(methods: Sequence[Method]) -> None:
 
 
 def _estimate_ate(  # noqa: PLR0913, PLR0915
-    src: MomentSource,
+    src: EvidenceSource,
     design: Observational,
     *,
     methods: list[Method] | None = None,

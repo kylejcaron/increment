@@ -2,6 +2,8 @@
 handling and coded refusals through the public entry points.
 """
 
+from typing import Any, cast
+
 import pytest
 
 from increment import Analysis
@@ -173,3 +175,78 @@ def test_native_observational_lift_uses_the_day_axis_refusal(
                     call()
     assert raised.value.code == "facade.analysis.observational_day_axis"
     assert raised.value.context["method"] == readout
+
+
+def test_custom_provider_day_axis_uses_declared_breakouts() -> None:
+    from dataclasses import replace
+
+    from increment.evidence import evidence_provider
+    from tests.analysis_factory import held_source
+
+    original = _panel(breakouts=("country",))
+    source = cast(Any, held_source(original))
+
+    class Provider:
+        def __init__(self) -> None:
+            self.context = source.context
+            self.evidence = replace(source.evidence)
+            self.shape = source.shape
+            self.operations = source.operations
+            self.capabilities = source.capabilities
+
+        @property
+        def breakouts(self):
+            raise AttributeError("custom providers declare breakouts in evidence")
+
+        def __getattr__(self, name):
+            if name == "breakouts":
+                raise AttributeError(name)
+            return getattr(source, name)
+
+        def moments(self, request):
+            return evidence_provider(source).moments(request)
+
+        def unit_rows(self, request):
+            return evidence_provider(source).unit_rows(request)
+
+        def method_fit(self, request):
+            return evidence_provider(source).method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return evidence_provider(source).breakout_method_moments(request)
+
+        def compliance(self, request):
+            return evidence_provider(source).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(source).compliance_series(request)
+
+        def counts(self, request):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request):
+            return evidence_provider(source).capture_sequential(request)
+
+        def scope(self, request):
+            from contextlib import contextmanager
+
+            from increment.evidence import EvidenceScopeResult
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    provider = Provider()
+    analysis = Analysis._from_source(cast(Any, provider))
+    try:
+        results = analysis.run_daily(dimension="country")
+        assert results
+        assert {row.dimension_value for row in results} == {"uk", "us"}
+    finally:
+        analysis.close()
+        original.close()

@@ -17,11 +17,42 @@ from increment.estimation.encouragement import (
     _arm_stats_from_compliance,
     estimate_compliance,
 )
+from increment.evidence import (
+    ComplianceRequest,
+    CountEvidence,
+    CountsRequest,
+    MomentRows,
+    MomentsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
 from increment.sources import ComplianceArm, ComplianceSummary, MomentsSource
 from tests.analysis_factory import _moment_source
 from tests.warning_codes import warning_codes
+
+
+def _compliance(source, design, **kwargs):
+    return cast(
+        ComplianceSummary,
+        request_evidence(evidence_provider(source), ComplianceRequest(design=design, **kwargs)),
+    )
+
+
+def _moments(source, metric) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric)),
+    )
+
+
+def _unit_counts(source):
+    evidence = cast(
+        CountEvidence,
+        request_evidence(evidence_provider(source), CountsRequest("unit")),
+    )
+    return evidence.unit_counts or evidence.counts
 
 
 def design(window=None):
@@ -330,7 +361,7 @@ def test_original_order_missingness_and_metric_count_witness(order):
     assert compliance[0].require_lift().value == pytest.approx(0.50)
     assert compliance[0].require_lift().lb is not None
     for metric in source.context.metrics:
-        arms = {row["group_id"]: row for row in source.moments(metric)}
+        arms = {row["group_id"]: row for row in _moments(source, metric)}
         t, c = arms["treatment"], arms["control"]
         first_stage = t["sum_d"] / t["n"] - c["sum_d"] / c["n"]
         assert first_stage == pytest.approx(0.9 if metric.name == "drop" else 0.5)
@@ -376,7 +407,7 @@ def clustered_source():
 
 def test_unequal_correlated_cluster_sizes_have_member_weighted_variance():
     source, pairs = clustered_source()
-    summary = source.compliance_summary(design())
+    summary = _compliance(source, design())
     t = summary.arm("treatment")
     assert t is not None
     k = len(pairs)
@@ -475,7 +506,7 @@ def test_malformed_arm_state_is_coded(change):
     ],
 )
 def test_inconsistent_centered_families_refuse(field, value):
-    arm = clustered_source()[0].compliance_summary(design()).arm("treatment")
+    arm = _compliance(clustered_source()[0], design()).arm("treatment")
     assert arm is not None
     with pytest.raises(CodedError):
         replace(arm, **{field: value})
@@ -502,7 +533,7 @@ def test_duplicate_arms_and_design_window_mismatch_refuse():
     assert error.value.code == "source.compliance_summary.duplicate_arms"
     with pytest.raises(TypeError):
         cast(Any, error.value.context)["duplicates"] = ()
-    summary = witness().compliance_summary(design())
+    summary = _compliance(witness(), design())
     with pytest.raises(CodedError) as mismatch:
         estimate_compliance(summary, design(7))
     assert mismatch.value.code == "source.compliance_summary.design_mismatch"
@@ -606,9 +637,7 @@ def test_panel_asof_excludes_future_enrollment_and_out_of_window_uptake():
         metrics={"y": "mean"},
     )
     for day, expected in [(0, 0.25), (5, 0.25), (6, 0.5), (7, 0.5)]:
-        arm = source.compliance_summary(design(7), as_of=start + timedelta(days=day)).arm(
-            "treatment"
-        )
+        arm = _compliance(source, design(7), as_of=start + timedelta(days=day)).arm("treatment")
         assert arm is not None
         assert arm.n_units == 4
         assert arm.uptake_total / arm.n_units == expected
@@ -625,10 +654,10 @@ def test_cube_snapshots_caller_owned_nested_compliance_payload(tmp_path):
     for row in rows:
         row["compliance_summary"] = payload
     cube = MomentsSource(rows, metrics=source.context.metrics, study_id="witness", design=design())
-    expected = cube.compliance_summary(design())
+    expected = _compliance(cube, design())
     payload["arms"][1]["uptake_total"] = 90
     payload["arms"].clear()
-    assert cube.compliance_summary(design()) == expected
+    assert _compliance(cube, design()) == expected
     assert estimate_compliance(expected, design()).results[0].require_lift().value == pytest.approx(
         0.5
     )
@@ -638,7 +667,7 @@ def test_cube_snapshots_caller_owned_nested_compliance_payload(tmp_path):
     "as_of", [date(2025, 1, 7), datetime(2025, 1, 7), 7, 7.5, "day_7", "2025-01-07"]
 )
 def test_asof_identity_survives_standalone_wire(as_of):
-    summary = replace(witness().compliance_summary(design()), as_of=as_of)
+    summary = replace(_compliance(witness(), design()), as_of=as_of)
     assert ComplianceSummary.from_wire(summary.to_wire(), study_id="witness") == summary
 
 
@@ -711,7 +740,7 @@ def test_panel_asof_compliance_preserves_day_axis_identity_and_order(
         )
         assert list(dict.fromkeys(exported)) == list(labels)
     for day in labels:
-        summary = source.compliance_summary(design(), as_of=day)
+        summary = _compliance(source, design(), as_of=day)
         assert summary.as_of == day
         assert type(summary.as_of) is type(day)
         arm = summary.arm("treatment")
@@ -754,8 +783,8 @@ def test_cube_allows_special_assignment_counts_outside_compliance(tmp_path):
     for row in rows:
         row["assignment_counts"] = payload
     cube = MomentsSource(rows, metrics=source.context.metrics, study_id="witness", design=design())
-    assert cube.compliance_summary(design()) == source.compliance_summary(design())
-    assert cube.unit_counts() == payload
+    assert _compliance(cube, design()) == _compliance(source, design())
+    assert _unit_counts(cube) == payload
 
 
 @pytest.mark.parametrize("labels", [(2, 10, 12), ("day_2", "day_10", "day_12")])
@@ -785,7 +814,7 @@ def test_panel_compliance_day_axis_respects_staggered_enrollment_and_window(labe
         metrics={"y": "mean"},
     )
     for day, count, uptake in zip(labels, (2, 4, 4), (1, 3, 3), strict=True):
-        arm = source.compliance_summary(design(9), as_of=day).arm("treatment")
+        arm = _compliance(source, design(9), as_of=day).arm("treatment")
         assert arm is not None
         assert (arm.n_units, arm.uptake_total) == (count, uptake)
 
@@ -862,9 +891,7 @@ def test_completed_compliance_excludes_open_staggered_cohorts(axis, path, outcom
     for day, expected in ((3, 0.5), (4, 0.5), (5, 0.75), (6, 0.75)):
         assert compliance[label(day)].require_lift().value == pytest.approx(expected)
         assert compliance[label(day)].inference == "fixed"
-        summary = source.compliance_summary(
-            design(3), as_of=label(day), completed_windows_only=True
-        )
+        summary = _compliance(source, design(3), as_of=label(day), completed_windows_only=True)
         arm = summary.arm("treatment")
         assert arm is not None and arm.n_units == (20 if day < 5 else 40)
 
@@ -886,7 +913,7 @@ def test_completed_compliance_requires_bounded_window_and_asof(window, as_of):
         metrics={"y": "mean"},
     )
     with pytest.raises(CodedError) as error:
-        source.compliance_summary(design(window), as_of=as_of, completed_windows_only=True)
+        _compliance(source, design(window), as_of=as_of, completed_windows_only=True)
     assert error.value.code == "source.compliance_summary.completed_window_required"
 
 

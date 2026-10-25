@@ -36,6 +36,7 @@ from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid
+from increment.evidence import MomentRows, MomentsRequest, evidence_provider, request_evidence
 from increment.frame import CupedCovariate, FrameTotalsSource, MetricSpec
 from increment.readouts import _passes
 from increment.semantics.design import (
@@ -1235,7 +1236,10 @@ def test_no_plan_matches_legacy_run():
     assert row.discovery is None
 
     metric_obj = next(m for m in src.context.metrics if m.name == "revenue")
-    rows = src.moments(metric_obj, grain="total")
+    rows = cast(
+        MomentRows,
+        request_evidence(evidence_provider(src), MomentsRequest(metric_obj, grain="total")),
+    )
     (expected,) = estimate_lift(
         [metric_obj],
         rows,

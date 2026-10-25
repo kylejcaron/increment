@@ -1,12 +1,13 @@
-"""Typed requests for the statistical evidence available from data sources.
+"""Typed requests and answers for evidence supplied by data sources.
 
-Custom sources can implement :class:`EvidenceProvider`; built-in sources can be
-adapted with :func:`evidence_provider` while their existing methods remain available.
+Custom providers implement :class:`EvidenceProvider` and declare what they can
+serve with ``EvidenceCapabilities``. Call :func:`request_evidence` to validate
+each request against that declaration before dispatch.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, cast
 
 from increment._evidence_refusals import refuse_unsupported_request, require_evidence
 from increment._evidence_types import (
@@ -21,6 +22,7 @@ from increment._evidence_types import (
     BreakoutUnitRowsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
+    ComplianceSummary,
     CountEvidence,
     CountsRequest,
     DayAxisRequest,
@@ -28,6 +30,7 @@ from increment._evidence_types import (
     DayAxisRows,
     EvidenceScope,
     EvidenceScopeResult,
+    EvidenceSource,
     MethodFitAnswer,
     MethodFitRequest,
     MetricEvidence,
@@ -38,54 +41,19 @@ from increment._evidence_types import (
     ScalarBreakoutRows,
     SequentialCapture,
     SequentialCaptureRequest,
+    SequentialSnapshotRequest,
+    SourceContext,
     UnitRows,
     UnitRowsRequest,
     warehouse_cuped_fit_evidence,
 )
 from increment._source_types import (
-    ComplianceSummary,
     EvidenceCapabilities,
+    EvidenceProvider,
     ScalarEvidenceDeclaration,
-    SourceContext,
     declared_evidence,
+    is_builtin_source,
 )
-
-
-@runtime_checkable
-class EvidenceProvider(Protocol):
-    """A source of declared statistical evidence for an analysis."""
-
-    evidence: EvidenceCapabilities
-    context: SourceContext
-
-    def breakout_evidence(
-        self, request: BreakoutSlicesRequest | BreakoutUnitRowsRequest
-    ) -> BreakoutSlices | BreakoutUnitRows: ...
-
-    def day_axis(self, request: DayAxisRequest) -> DayAxisRows: ...
-
-    def metric_evidence(self, request: MetricEvidenceRequest) -> MetricEvidence: ...
-
-    def moments(self, request: MomentsRequest) -> MomentRows: ...
-    def breakout_method_moments(
-        self, request: BreakoutMethodMomentsRequest
-    ) -> ScalarBreakoutRows: ...
-
-    def unit_rows(self, request: UnitRowsRequest) -> UnitRows: ...
-
-    def method_fit(self, request: MethodFitRequest) -> MethodFitAnswer: ...
-
-    def compliance(self, request: ComplianceRequest) -> ComplianceSummary: ...
-
-    def compliance_series(
-        self, request: ComplianceSeriesRequest
-    ) -> tuple[tuple[object, ComplianceSummary], ...]: ...
-
-    def counts(self, request: CountsRequest) -> CountEvidence: ...
-
-    def capture_sequential(self, request: SequentialCaptureRequest) -> SequentialCapture: ...
-
-    def scope(self, request: EvidenceScope) -> EvidenceScopeResult: ...
 
 
 def _validate(provider: Any, request: object) -> None:
@@ -104,9 +72,24 @@ class _BuiltInEvidenceProvider:
         self.context = source.context
 
     def moments(self, request: MomentsRequest) -> MomentRows:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_moments
+        from increment.readouts._evidence import (
+            NATIVE_ROUTE,
+            day_axis_route,
+            load_builtin_day_moments,
+            load_moments,
+        )
 
+        if (
+            request.grain != "total"
+            and request.method is None
+            and (
+                request.grain not in self.evidence.grains
+                or day_axis_route(self.source) == NATIVE_ROUTE
+            )
+        ):
+            # Native loaders answer daily and as-of grains only through their day source.
+            return load_builtin_day_moments(self.source, request)
+        _validate(self.source, request)
         return load_moments(self.source, request)
 
     def unit_rows(self, request: UnitRowsRequest) -> UnitRows:
@@ -153,47 +136,67 @@ class _BuiltInEvidenceProvider:
 
         return load_sequential_capture(self.source, request)
 
+    def sequential_snapshot(self, request: SequentialSnapshotRequest) -> SequentialCapture:
+        _validate(self.source, request)
+        from increment.readouts._evidence import loader_snapshot
+
+        return loader_snapshot(self.source, previous=request.previous)
+
     def scope(self, request: EvidenceScope) -> EvidenceScopeResult:
         _validate(self.source, request)
         from increment.readouts._evidence import load_evidence_scope
 
         return load_evidence_scope(self.source, request)
 
-    def breakout_evidence(
-        self, request: BreakoutSlicesRequest | BreakoutUnitRowsRequest
-    ) -> BreakoutSlices | BreakoutUnitRows:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_breakout_evidence
-
-        return load_breakout_evidence(self.source, request)
-
-    def day_axis(self, request: DayAxisRequest) -> DayAxisRows:
-        _validate(self.source, request)
-        from increment.readouts._evidence import load_day_axis_rows
-
-        return load_day_axis_rows(self.source, request)
-
-    def metric_evidence(self, request: MetricEvidenceRequest) -> MetricEvidence:
-        _validate(self.source, request)
-        from increment.readouts._metric_rows import load_metric_evidence
-
-        return load_metric_evidence(self.source, request)
-
 
 def evidence_provider(source: Any) -> EvidenceProvider:
-    """Adapt a built-in data source to typed evidence requests."""
+    """Return the built-in adapter or structural custom provider."""
+    if is_builtin_source(source):
+        return _BuiltInEvidenceProvider(source)
     if isinstance(source, EvidenceProvider):
         return source
-    return _BuiltInEvidenceProvider(source)
+    from increment._source_types import refuse_provider_unavailable
+
+    refuse_provider_unavailable(source)
+
+
+def _provider_source(provider: EvidenceProvider) -> Any:
+    return provider.source if isinstance(provider, _BuiltInEvidenceProvider) else provider
 
 
 def request_evidence(provider: EvidenceProvider, request: object) -> object:
-    """Validate and answer one typed evidence request before data is read."""
+    """Validate and answer primitive requests, delegating compound reads."""
+    source = _provider_source(provider)
+    is_custom = not isinstance(provider, _BuiltInEvidenceProvider) and isinstance(
+        provider, EvidenceProvider
+    )
+    if isinstance(request, MetricEvidenceRequest):
+        from increment.readouts._metric_rows import load_metric_evidence, metric_evidence_scope
+
+        if is_custom:
+            require_evidence(provider, request=request)
+            scoped = cast(
+                EvidenceScopeResult,
+                request_evidence(provider, metric_evidence_scope(cast(Any, provider), request)),
+            )
+            with scoped.source as pinned:
+                return load_metric_evidence(pinned, request, scope_active=True)
+        return load_metric_evidence(source, request)
+    if isinstance(request, (DayAxisRequest, BreakoutSlicesRequest, BreakoutUnitRowsRequest)):
+        from increment.readouts._evidence import load_breakout_evidence, load_day_axis_rows
+
+        if isinstance(request, DayAxisRequest):
+            return load_day_axis_rows(source, request)
+        return load_breakout_evidence(source, request)
+    if isinstance(request, SequentialSnapshotRequest):
+        from increment.readouts._evidence import current_source_snapshot, loader_snapshot
+
+        require_evidence(source, request=request)
+        if not is_custom:
+            # The built-in adapter answers from its loader's own retained checkpoint.
+            return loader_snapshot(source, previous=request.previous)
+        return current_source_snapshot(provider, previous=request.previous)
     names = {
-        BreakoutSlicesRequest: "breakout_evidence",
-        BreakoutUnitRowsRequest: "breakout_evidence",
-        DayAxisRequest: "day_axis",
-        MetricEvidenceRequest: "metric_evidence",
         BreakoutMethodMomentsRequest: "breakout_method_moments",
         MomentsRequest: "moments",
         UnitRowsRequest: "unit_rows",
@@ -211,7 +214,7 @@ def request_evidence(provider: EvidenceProvider, request: object) -> object:
             request,
             tuple(request_type.__name__ for request_type in names),
         )
-    require_evidence(provider, request=request)
+    require_evidence(source, request=request)
     return getattr(provider, method)(request)
 
 
@@ -233,6 +236,7 @@ __all__ = [
     "DayAxisRoute",
     "DayAxisRows",
     "ScalarEvidenceDeclaration",
+    "EvidenceSource",
     "EvidenceCapabilities",
     "EvidenceProvider",
     "EvidenceScope",
@@ -247,6 +251,7 @@ __all__ = [
     "MomentsRequest",
     "PreparedMulticovariateFit",
     "SequentialCapture",
+    "SequentialSnapshotRequest",
     "SequentialCaptureRequest",
     "SourceContext",
     "UnitRows",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import warnings
+from contextlib import contextmanager
 from datetime import date
 from numbers import Real
 from pathlib import Path
@@ -14,9 +15,9 @@ import pytest
 
 from increment import Analysis, MetricSpec
 from increment.errors import IncrementWarning
+from increment.evidence import EvidenceProvider
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan
-from increment.sources import MomentSource
 from scripts.capture_evidence_identity import (
     _frame_rows,
     _rows,
@@ -298,19 +299,72 @@ def test_identity_fixtures_unchanged(tmp_path):  # noqa: PLR0915
         baseline.close()
 
 
-class _CountingSource:
-    def __init__(self, source: MomentSource):
+class _CountingSource(EvidenceProvider):
+    def __init__(self, source: Any):
+        from increment.evidence import evidence_provider
+
         self.source = source
+        self.provider = evidence_provider(source)
+        self.context = source.context
+        self.evidence = source.evidence
         self.unit_frame_reads = 0
         self.unit_frame_metrics = []
 
     def __getattr__(self, name):
         return getattr(self.source, name)
 
+    @contextmanager
+    def readout_snapshot(self, **kwargs):
+        with self.source.readout_snapshot(**kwargs) as snapshot:
+            previous = self.source, self.provider, self.context, self.evidence
+            self.source = snapshot
+            from increment.evidence import evidence_provider
+
+            self.provider = evidence_provider(snapshot)
+            self.context = snapshot.context
+            self.evidence = snapshot.evidence
+            try:
+                yield self
+            finally:
+                self.source, self.provider, self.context, self.evidence = previous
+
     def unit_frame(self, metric, *args, **kwargs):
         self.unit_frame_reads += 1
         self.unit_frame_metrics.append(metric.name)
         return self.source.unit_frame(metric, *args, **kwargs)
+
+    def moments(self, request):
+        from increment.evidence import MomentsRequest
+
+        if isinstance(request, MomentsRequest):
+            return self.provider.moments(request)
+        return self.source.moments(request)
+
+    def unit_rows(self, request):
+        self.unit_frame_reads += 1
+        self.unit_frame_metrics.append(request.metric.name)
+        return self.provider.unit_rows(request)
+
+    def breakout_method_moments(self, request):
+        return self.provider.breakout_method_moments(request)
+
+    def method_fit(self, request):
+        return self.provider.method_fit(request)
+
+    def compliance(self, request):
+        return self.provider.compliance(request)
+
+    def compliance_series(self, request):
+        return self.provider.compliance_series(request)
+
+    def counts(self, request):
+        return self.provider.counts(request)
+
+    def capture_sequential(self, request):
+        return self.provider.capture_sequential(request)
+
+    def scope(self, request):
+        return self.provider.scope(request)
 
 
 def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=None):
@@ -341,7 +395,7 @@ def _counted_analysis(*, quantile=False, winsor=False, cluster=False, design=Non
         cluster="store" if cluster else None,
         design=design,
     )
-    source = cast(MomentSource, held_source(analysis))
+    source = cast(Any, held_source(analysis))
     return analysis, _CountingSource(source), source.context.metrics[0]
 
 
@@ -392,7 +446,7 @@ def test_analysis_run_shares_one_snapshot_and_execution_for_multiple_metrics(
         analysis.close()
 
 
-def test_observational_readout_shares_frames_with_identity_digest():
+def test_observational_readout_shares_frames_with_identity_digest(monkeypatch):
     from collections import Counter
 
     from increment import AdjustmentSet
@@ -418,13 +472,22 @@ def test_observational_readout_shares_frames_with_identity_digest():
         metrics={"y": "mean", "z": "mean"},
         design=design,
     )
-    source = _CountingSource(cast(MomentSource, held_source(analysis)))
+    source = cast(Any, held_source(analysis))
+    read_metrics: list[str] = []
+    original_unit_frame = source.unit_frame
+
+    def counting_unit_frame(metric, *args, **kwargs):
+        read_metrics.append(metric.name)
+        return original_unit_frame(metric, *args, **kwargs)
+
+    monkeypatch.setattr(source, "unit_frame", counting_unit_frame)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            rows = run(cast(MomentSource, source), decision_method=Method(name="iptw"))
+            rows = run(source, decision_method=Method(name="iptw"))
         assert {row.metric for row in rows} == {"y", "z"}
-        assert Counter(source.unit_frame_metrics) == Counter({"y": 1, "z": 1})
+        # Each metric's unit rows are read once and shared by every estimate that needs them.
+        assert Counter(read_metrics) == Counter({"y": 1, "z": 1})
     finally:
         analysis.close()
 
@@ -457,9 +520,9 @@ def test_call_time_unadjusted_override_reads_no_moments_cube_unit_frames(tmp_pat
     original.export(path)
     original.close()
     cube = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=[spec], design=design)
-    source = _CountingSource(cast(MomentSource, held_source(cube)))
+    source = _CountingSource(cast(Any, held_source(cube)))
     try:
-        rows = run(cast(MomentSource, source), decision_method=Method(name="unadjusted"))
+        rows = run(cast(Any, source), decision_method=Method(name="unadjusted"))
         assert [row.method for row in rows] == ["unadjusted"]
         assert source.unit_frame_reads == 0
         assert source.unit_frame_metrics == []
@@ -586,7 +649,7 @@ def test_read_free_refusals_precede_unit_frame_reads(monkeypatch):
         assert raised.value.code == "estimation.winsor.design_unsupported"
         assert source.unit_frame_reads == 0
 
-        backing = cast(MomentSource, held_source(analysis))
+        backing = cast(Any, held_source(analysis))
         source_type = type(backing)
         original_unit_frame = source_type.unit_frame
         reads = 0
@@ -729,7 +792,7 @@ def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_pa
     cube = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=specs, design=design)
     from tests.analysis_factory import held_source
 
-    cube_source = cast(MomentSource, held_source(cube))
+    cube_source = cast(Any, held_source(cube))
     source = _CountingSource(cube_source)
     try:
         with pytest.warns(IncrementWarning) as caught:
@@ -739,6 +802,7 @@ def test_ratio_then_mean_moments_cube_warns_before_one_unit_frame_refusal(tmp_pa
             getattr(warning.message, "code", None) for warning in caught
         }
         assert raised.value.code == "evidence.unit_rows_unavailable"
-        assert source.unit_frame_reads == 1
+        # The request is refused by the declared evidence before the provider is called.
+        assert source.unit_frame_reads == 0
     finally:
         cube.close()

@@ -66,10 +66,9 @@ ComputedWinsorReference = BootstrapReference | InfluenceReference
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
-    from increment._source_types import MomentSource, RawOutcomeSource
+    from increment._evidence_types import EvidenceSource, SourceContext
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Metric, Winsorization
-    from increment.sources import SourceContext
 
 
 def _pandas_identity_has_missing_sentinel(native_frame: Any) -> bool:
@@ -96,18 +95,21 @@ def winsor_preflight(metric: Metric, context: SourceContext) -> Winsorization:
     return config
 
 
-def raw_state_from_source(source: MomentSource, metric: Metric) -> WinsorRawState:
+def raw_state_from_source(source: EvidenceSource, metric: Metric) -> WinsorRawState:
     """Load raw outcomes after validating the winsor request."""
+    from increment._evidence_loaders import load_unit_rows, view_population
+    from increment._evidence_types import UnitRowsRequest
+
     context = source.context
     winsor_preflight(metric, context)
-    spec = getattr(source, "_specs_by_name", {}).get(metric.name)
-    missingness = (
-        spec.missing
-        if spec is not None
-        else f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows"
+    population = view_population(source)
+    missingness = context.metric_missingness.get(
+        metric.name,
+        f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows",
     )
-    population = getattr(source, "population", getattr(source, "_population", "assigned"))
-    native = cast("RawOutcomeSource", source).unit_frame(metric, outcome_stage="raw")
+    native = load_unit_rows(
+        source, UnitRowsRequest(metric=metric, population=population, outcome_stage="raw")
+    )
     return raw_state_from_frame(
         native, metric, context=context, population=population, missingness=missingness
     )

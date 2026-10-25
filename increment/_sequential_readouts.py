@@ -13,10 +13,11 @@ def sequential_readout(
     metrics=None,
     estimands=None,
     previous=None,
+    snapshot=None,
     _include_unrequested=False,
     population="assigned",
     configs=None,
-):
+) -> list:
     """Run the registered decision and selection path on a source checkpoint."""
     from increment.estimation.sequential_runtime import selected_snapshot_results
 
@@ -35,7 +36,9 @@ def sequential_readout(
     by_metric = {config.metric.name: config for config in source.context.configs}
     by_metric.update({config.metric.name: config for config in configs})
     require_public_laws(registration.models, "sequential readout")
-    snapshot = source_snapshot(source, previous=previous).chain(population)
+    snapshot = (source_snapshot(source, previous=previous) if snapshot is None else snapshot).chain(
+        population
+    )
     rows = selected_snapshot_results(
         snapshot,
         inference,

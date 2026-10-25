@@ -14,14 +14,15 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from increment._analysis_config import effective_methods
+from increment._evidence_types import SourceContext
 from increment._literals import Correction, ValueScale
-from increment._source_types import CovariateColumnCheck, declared_evidence
+from increment._source_types import declared_evidence
 from increment.errors import (
     RefusalSpec,
     refuse,
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
-from increment.sources import Grain, MomentSource, SourceContext
+from increment.sources import EvidenceSource, Grain
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
@@ -286,7 +287,7 @@ class ReadoutRequest:
     # Public request factory signature is the API for readout construction.
     def from_source(  # noqa: PLR0913
         cls,
-        source: MomentSource,
+        source: EvidenceSource,
         *,
         metrics: Sequence[Metric],
         configs: Sequence[ResolvedMetricConfig],
@@ -340,9 +341,10 @@ class ReadoutRequest:
             value_scale=MappingProxyType(dict(value_scale or {})),
             completion_policy=completion_policy,
         )
-        if isinstance(source, CovariateColumnCheck):
-            for config, methods in zip(request.configs, request.estimation_methods, strict=True):
-                source.check_method_covariates(config.metric.name, methods)
+        from increment._evidence_refusals import check_method_covariates
+
+        for config, methods in zip(request.configs, request.estimation_methods, strict=True):
+            check_method_covariates(source, config.metric.name, methods)
         return request
 
     @property

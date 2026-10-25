@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -9,9 +9,24 @@ import pytest
 from increment import Analysis, Method, MetricSpec
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.results import LiftEstimate
+from increment.evidence import (
+    EvidenceProvider,
+    MomentRows,
+    MomentsRequest,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import CupedCovariate, from_unit_panel, from_unit_summary
 from increment.readouts import breakout, run
 from tests._override_warnings import allow_declared_overrides
+
+
+def _moments(source, metric, **kwargs) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
 
 
 def _records() -> list[dict[str, Any]]:
@@ -118,8 +133,8 @@ def test_panel_covariate_missing_policy_is_per_metric(by, tmp_path):
             alone = _source(table, [spec], panel=True, breakouts=("segment",))
         joint_metric = next(metric for metric in joint.context.metrics if metric.name == spec.name)
         alone_metric = alone.context.metrics[0]
-        observed = {row["group_id"]: row for row in joint.moments(joint_metric, by=by)}
-        expected = {row["group_id"]: row for row in alone.moments(alone_metric, by=by)}
+        observed = {row["group_id"]: row for row in _moments(joint, joint_metric, by=by)}
+        expected = {row["group_id"]: row for row in _moments(alone, alone_metric, by=by)}
         assert observed.keys() == expected.keys()
         for arm, row in expected.items():
             for key in ("n", "ref_x", "cx1", "cx2", "cxy"):
@@ -164,8 +179,8 @@ def test_summary_breakout_imputes_before_outcome_deletion():
             breakouts=("segment",),
         )
     metric = source.context.metrics[0]
-    headline = {row["group_id"]: row for row in source.moments(metric)}
-    breakout = {row["group_id"]: row for row in source.moments(metric, by=("segment",))}
+    headline = {row["group_id"]: row for row in _moments(source, metric)}
+    breakout = {row["group_id"]: row for row in _moments(source, metric, by=("segment",))}
     expected_mean = ((0.0 + 100.0 + 10.0) / 3.0 + 10.0) / 2.0
     for observed in (headline, breakout):
         row = observed["treatment"]
@@ -185,11 +200,10 @@ def test_panel_scalar_fixed_caps_are_applied_once():
     panel = _source(table, [spec], panel=True)
     summary = _source(table, [spec], panel=False)
     panel_rows = {
-        row["group_id"]: row for row in panel.moments_for_method(panel.context.metrics[0], method)
+        row["group_id"]: row for row in _moments(panel, panel.context.metrics[0], method=method)
     }
     summary_rows = {
-        row["group_id"]: row
-        for row in summary.moments_for_method(summary.context.metrics[0], method)
+        row["group_id"]: row for row in _moments(summary, summary.context.metrics[0], method=method)
     }
     assert sum(row["winsor_n_lower"] + row["winsor_n_upper"] for row in summary_rows.values()) > 0
     for arm, expected in summary_rows.items():
@@ -225,7 +239,7 @@ def test_panel_scalar_override_preserves_unit_reduction_refusal(metric_type):
         metrics=[spec],
     )
     with pytest.raises(CodedError) as ordinary:
-        source.unit_frame(source.context.metrics[0])
+        request_evidence(evidence_provider(source), UnitRowsRequest(source.context.metrics[0]))
     with pytest.raises(CodedError) as adjusted:
         run(source, decision_method=_scalar("scalar"))
     assert adjusted.value.code == ordinary.value.code == "source.frame.unit_frame_panel"
@@ -491,7 +505,8 @@ def test_override_preflight_uses_public_covariate_inventory():
             panel=False,
         )
 
-    class PublicSource:
+    class PublicSource(EvidenceProvider):
+        evidence = source.evidence
         context = source.context
         capabilities = source.capabilities
         shape = source.shape

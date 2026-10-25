@@ -65,6 +65,7 @@ def test_estimation_reads_sources_only_through_facades():
 
 def test_loader_routes_stay_inside_acquisition_and_facades():  # noqa: C901
     root = Path(__file__).parents[1] / "increment"
+    # The evidence layer plus the analysis facade and its four readout facades.
     allowed = {
         Path("readouts/_evidence.py"),
         Path("analysis.py"),
@@ -72,7 +73,6 @@ def test_loader_routes_stay_inside_acquisition_and_facades():  # noqa: C901
         Path("_whole_window.py"),
         Path("_breakout_readouts.py"),
         Path("_sitewide.py"),
-        Path("readouts/_breakout.py"),
     }
     route_aliases = {"BreakoutRoute", "DayAxisRoute"}
     evidence_types = ast.parse((root / "_evidence_types.py").read_text())
@@ -196,4 +196,84 @@ def test_loader_routes_stay_inside_acquisition_and_facades():  # noqa: C901
                     violations.append(
                         f"{rel}:{node.lineno}: classify_source outside acquisition/facade"
                     )
+    assert not violations, "\n".join(violations)
+
+
+_LEGACY_EVIDENCE_METHODS = frozenset(
+    {
+        "assignment_counts",
+        "breakout_moments",
+        "breakout_moments_for_method",
+        "breakout_source",
+        "breakout_sources",
+        "categorical_evidence",
+        "cluster_counts",
+        "compliance_dates",
+        "compliance_summary",
+        "day_source",
+        "fit_cuped_multicovariate",
+        "moments",
+        "moments_for_method",
+        "readout_execution",
+        "readout_snapshot",
+        "triggered_counts",
+        "triggered_source",
+        "unit_counts",
+        "unit_frame",
+        "validate_populations",
+    }
+)
+
+
+def _is_source_expr(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in _SOURCE_NAMES
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and node.attr in {"_src", "_source"}
+    )
+
+
+def test_consumers_read_sources_only_through_evidence_requests():
+    """Readouts, breakouts and planning ask the evidence layer; they never probe a source."""
+    root = Path(__file__).parents[1] / "increment"
+    consumers = [
+        path
+        for path in sorted(root.rglob("*.py"))
+        if (path.parent == root / "readouts" and path.name != "_evidence.py")
+        or path.is_relative_to(root / "breakout")
+        or path.is_relative_to(root / "dashboard")
+        or path.relative_to(root)
+        in {
+            Path("_day_axis.py"),
+            Path("_readout_request.py"),
+            Path("_planning_baseline.py"),
+            Path("cate.py"),
+        }
+    ]
+    violations: list[str] = []
+    for path in consumers:
+        rel = path.relative_to(root)
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in _LEGACY_EVIDENCE_METHODS
+                and _is_source_expr(func.value)
+            ):
+                violations.append(f"{rel}:{node.lineno}: source.{func.attr}() outside acquisition")
+            if (
+                isinstance(func, ast.Name)
+                and func.id in {"getattr", "hasattr"}
+                and len(node.args) >= 2
+                and _is_source_expr(node.args[0])
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                violations.append(
+                    f"{rel}:{node.lineno}: {func.id}() on a source outside acquisition"
+                )
     assert not violations, "\n".join(violations)

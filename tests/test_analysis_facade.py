@@ -7,7 +7,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime
 from importlib import import_module
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 import ibis
@@ -2950,3 +2950,136 @@ def test_compliance_only_run_does_not_warn_about_unused_outcome_overrides():
         for warning in caught
         if getattr(warning.message, "code", None) == "analysis.run.override_replaces_declared"
     ]
+
+
+@pytest.mark.integration
+def test_custom_provider_owns_sequential_capture_request(con):
+    from dataclasses import replace
+    from datetime import date
+
+    from increment.evidence import (
+        SequentialCaptureRequest,
+        SequentialSnapshotRequest,
+        evidence_provider,
+    )
+    from increment.sequential_source import link_snapshot
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    original = registered_native(_analysis_with_asof_events(con, sequential=True))
+    source = cast(Any, held_source(original))
+    delegate = evidence_provider(source)
+    captured = object()
+    requests = []
+    snapshot_requests = []
+    current = [None]
+
+    class Provider:
+        __slots__ = ()
+        context = source.context
+        evidence = replace(source.evidence, sequential_capture="asof")
+
+        def __eq__(self, other):
+            return self is other
+
+        def moments(self, request):
+            return delegate.moments(request)
+
+        def unit_rows(self, request):
+            return delegate.unit_rows(request)
+
+        def method_fit(self, request):
+            return delegate.method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return delegate.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return delegate.compliance(request)
+
+        def compliance_series(self, request):
+            return delegate.compliance_series(request)
+
+        def counts(self, request):
+            return delegate.counts(request)
+
+        def scope(self, request):
+            return delegate.scope(request)
+
+        def capture_sequential(self, request):
+            requests.append(request)
+            if request.as_of is not None:
+                current[0] = delegate.capture_sequential(request)
+                return current[0]
+            return captured
+
+        def sequential_snapshot(self, request: SequentialSnapshotRequest):
+            snapshot_requests.append(request)
+            if request.previous is not None:
+                current[0] = link_snapshot(current[0], request.previous)
+            return current[0]
+
+    analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        # A construction-time provider needs no as_of, and applies its own freezes.
+        assert analysis.capture_sequential(finalized=True, freeze=("revenue",)) is captured
+        assert requests == [
+            SequentialCaptureRequest(finalized=True, previous=None, as_of=None, freeze=("revenue",))
+        ]
+        checkpoint = analysis.capture_sequential(
+            finalized=True, as_of=date(2025, 7, 1), freeze=("revenue",)
+        )
+        assert checkpoint.frozen
+        linked = analysis.sequential_snapshot(previous=checkpoint)
+        assert snapshot_requests == [SequentialSnapshotRequest(previous=checkpoint)]
+        assert linked.frozen == checkpoint.frozen
+        rows = analysis.run()
+        assert rows
+        assert rows.sequential_snapshot == linked
+        assert analysis.sequential_snapshot() == linked
+    finally:
+        original.close()
+
+
+@pytest.mark.integration
+def test_custom_provider_without_sequential_snapshot_refuses_before_moments(con):
+    from dataclasses import replace
+    from datetime import date
+
+    from increment.errors import CapabilityError
+    from increment.evidence import SequentialCaptureRequest, evidence_provider
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    original = registered_native(_analysis_with_asof_events(con, sequential=True))
+    source = cast(Any, held_source(original))
+    delegate = evidence_provider(source)
+    checkpoint = delegate.capture_sequential(
+        SequentialCaptureRequest(finalized=True, as_of=date(2025, 7, 1))
+    )
+    moments_reads = []
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, sequential_capture="asof")
+
+        def moments(self, request):
+            moments_reads.append(request)
+            return delegate.moments(request)
+
+        def capture_sequential(self, request):
+            return checkpoint
+
+        def __getattr__(self, name):
+            if name == "sequential_snapshot":
+                raise AttributeError(name)
+            return getattr(delegate, name)
+
+    analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            analysis.run()
+        assert raised.value.code == "sequential.continuation.legacy"
+        assert moments_reads == []
+    finally:
+        original.close()

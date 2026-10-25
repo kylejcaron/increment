@@ -27,6 +27,7 @@ from increment import Analysis, SourceSnapshotEvidence
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.readout_types import ReadoutResults
+from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
 from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 from increment.query.artifact_publish import artifact_context
 from increment.query.session import WarehouseArtifactStore
@@ -970,10 +971,12 @@ def test_final_look_triggered_states_match_the_fixed_horizon_triggered_frame(tmp
     try:
         snapshot = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 20))
         assert snapshot.triggered is not None
-        frame = (
-            _native_source(analysis)
-            .triggered_source()
-            .unit_frame(next(metric for metric in analysis.metrics if metric.name == "revenue"))
+        frame = request_evidence(
+            evidence_provider(_native_source(analysis).triggered_source()),
+            UnitRowsRequest(
+                next(metric for metric in analysis.metrics if metric.name == "revenue"),
+                population="triggered",
+            ),
         )
         rows = cast("pa.Table", frame).to_pylist()
         by_arm: dict[str, list[Fraction]] = {}

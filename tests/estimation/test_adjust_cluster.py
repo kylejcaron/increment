@@ -34,6 +34,18 @@ from increment.estimation.armstats import ScoreStats
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
 from increment.estimation.readout_types import ReadoutResults
+from increment.evidence import (
+    ComplianceRequest,
+    CountEvidence,
+    CountsRequest,
+    EvidenceProvider,
+    MomentRows,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import MetricSpec, from_unit_summary
 from increment.semantics.design import (
     AdjustmentSet,
@@ -52,12 +64,36 @@ if TYPE_CHECKING:
 DESIGN = Observational(control_group="C", adjustment=AdjustmentSet(covariates=("z",)))
 
 
+def _moments(source, metric, **kwargs) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric, **kwargs)),
+    )
+
+
+def _unit_rows(source, metric, **kwargs) -> UnitRows:
+    if "covariates" in kwargs:
+        kwargs["covariates"] = tuple(kwargs["covariates"])
+    return cast(
+        UnitRows,
+        request_evidence(evidence_provider(source), UnitRowsRequest(metric, **kwargs)),
+    )
+
+
+def _counts(source, kind):
+    answer = cast(
+        CountEvidence,
+        request_evidence(evidence_provider(source), CountsRequest(kind)),
+    )
+    return answer.unit_counts or answer.counts
+
+
 def _kernel_call(kernel, source, metric, design, **kwargs):
     import sys
 
     input_type = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs
-    rows = source.moments(metric)
-    frame = source.unit_frame(metric, covariates=design.adjustment.covariates)
+    rows = _moments(source, metric)
+    frame = _unit_rows(source, metric, covariates=design.adjustment.covariates)
     return kernel(input_type(frame, rows, source.context.cluster), metric, design, **kwargs)
 
 
@@ -193,7 +229,7 @@ def test_adjusted_estimators_never_request_the_declared_cluster_source_column(na
         def unit_frame(self, metric, *, covariates=(), **kwargs):
             requested.append(tuple(covariates))
             assert "store" not in tuple(covariates)
-            return backing.unit_frame(metric, covariates=covariates, **kwargs)
+            return _unit_rows(backing, metric, covariates=covariates, **kwargs)
 
     src = cast(Any, StrictSource())
     metric = _metric(backing)
@@ -205,7 +241,7 @@ def test_adjusted_estimators_never_request_the_declared_cluster_source_column(na
     (est,) = estimate_ate(src, DESIGN, methods=[method]).results
     assert any("z" in covariates for covariates in requested)
     assert all("store" not in covariates for covariates in requested)
-    assert "cluster_id" in backing.unit_frame(metric).column_names
+    assert "cluster_id" in _unit_rows(backing, metric).column_names
     assert math.isfinite(est.require_lift().value)
 
 
@@ -1105,7 +1141,7 @@ def test_unadjusted_joint_route_preserves_pure_arm_welch_comparison():
 
     (separate,) = estimate_lift(
         [_metric(src)],
-        src.moments(_metric(src)),
+        _moments(src, _metric(src)),
         "C",
         cluster="store",
     ).results
@@ -1148,8 +1184,8 @@ def test_readouts_run_clusters_the_observational_path_end_to_end():
     assert clustered_lift.ub - clustered_lift.lb > 1.5 * (flat_lift.ub - flat_lift.lb)
 
 
-class _StrictAdjustedUnitSource:
-    """Custom source that serves declared covariates and canonical clusters only."""
+class _StrictAdjustedUnitSource(EvidenceProvider):
+    """Custom provider that serves declared covariates and canonical clusters only."""
 
     def __init__(self, table):
         from dataclasses import replace
@@ -1158,11 +1194,12 @@ class _StrictAdjustedUnitSource:
         self._cluster_by_unit = dict(
             zip(table["u"].to_pylist(), table["store"].to_pylist(), strict=True)
         )
-
         self.source = _source(table, None, design=DESIGN)
+        self.provider = evidence_provider(self.source)
         self.context = replace(self.source.context, cluster="store")
-        self.capabilities: frozenset[Grain] = self.source.capabilities
-        self.operations: frozenset[SourceOperation] = self.source.operations
+        self.evidence = self.source.evidence
+        self.capabilities = self.source.capabilities
+        self.operations = self.source.operations
 
     @property
     def breakouts(self):
@@ -1172,43 +1209,41 @@ class _StrictAdjustedUnitSource:
     def shape(self):
         return self.source.shape
 
-    def unit_frame(self, metric, *, covariates=()):
-        requested = tuple(covariates)
-        if requested != ("z",):
-            raise ValueError(f"undeclared covariates requested: {requested!r}")
-        frame = self.source.unit_frame(metric, covariates=requested)
+    def moments(self, request: MomentsRequest) -> MomentRows:
+        return self.provider.moments(request)
+
+    def unit_rows(self, request: UnitRowsRequest) -> UnitRows:
+        if request.covariates != ("z",):
+            raise ValueError(f"undeclared covariates requested: {request.covariates!r}")
+        frame = self.provider.unit_rows(request)
         return frame.append_column(
             "cluster_id",
             pa.array([self._cluster_by_unit[u] for u in frame["unit_id"].to_pylist()]),
         )
 
-    def cluster_counts(self):
-        clusters: dict[str, set[str]] = {}
-        for group, cluster in zip(
-            self.table["g"].to_pylist(), self.table["store"].to_pylist(), strict=True
-        ):
-            clusters.setdefault(group, set()).add(cluster)
-        return {group: len(values) for group, values in clusters.items()}
+    def breakout_method_moments(self, request):
+        return self.provider.breakout_method_moments(request)
+
+    def method_fit(self, request):
+        return self.provider.method_fit(request)
+
+    def compliance(self, request):
+        return self.provider.compliance(request)
+
+    def compliance_series(self, request):
+        return self.provider.compliance_series(request)
+
+    def counts(self, request: CountsRequest) -> CountEvidence:
+        return self.provider.counts(request)
+
+    def capture_sequential(self, request):
+        return self.provider.capture_sequential(request)
+
+    def scope(self, request):
+        return self.provider.scope(request)
 
     def close(self) -> None:
         self.source.close()
-
-    def moments(self, metric, **kwargs):
-        return self.source.moments(metric, **kwargs)
-
-    def unit_counts(self):
-        return self.source.unit_counts()
-
-    def compliance_dates(self):
-        return self.source.compliance_dates()
-
-    def compliance_summary(self, design, *, as_of=None, completed_windows_only=False):
-        return self.source.compliance_summary(
-            design, as_of=as_of, completed_windows_only=completed_windows_only
-        )
-
-    def sql(self, *, grain="total"):
-        return self.source.sql(grain=grain)
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -1233,7 +1268,7 @@ def test_adjusted_cluster_source_uses_declared_covariates_and_canonical_ids(name
     assert estimate.n_clusters == 20
 
 
-class _JointUnitSource:
+class _JointUnitSource(EvidenceProvider):
     """Unit-frame source for dependence clusters spanning observed arms.
 
     The public dataframe constructor still enforces randomization-cluster
@@ -1260,6 +1295,8 @@ class _JointUnitSource:
             design=DESIGN,
         )
         self.context = replace(self.source.context, cluster="store")
+        self.evidence = self.source.evidence
+
         self.capabilities: frozenset[Grain] = self.source.capabilities
         self.operations: frozenset[SourceOperation] = self.source.operations
         self.requests = []
@@ -1272,33 +1309,39 @@ class _JointUnitSource:
     def shape(self):
         return self.source.shape
 
+    def unit_rows(self, request):
+        return self.unit_frame(request.metric, covariates=request.covariates)
+
     def unit_frame(self, metric, *, covariates=()):
         self.requests.append(tuple(covariates))
         assert not covariates, "cluster metadata must not be requested as a covariate"
-        frame = self.source.unit_frame(metric)
+        frame = _unit_rows(self.source, metric)
         assert isinstance(frame, pa.Table)
         return frame.append_column(
             "cluster_id", pa.array([self.cluster_by_unit[u] for u in frame["unit_id"].to_pylist()])
         )
 
-    def moments(self, metric, **kwargs):
+    def moments(self, request: MomentsRequest):
         raise AssertionError("joint unadjusted inference must consume unit_frame")
 
     def close(self) -> None:
         self.source.close()
 
     def unit_counts(self):
-        return self.source.unit_counts()
+        return _counts(self.source, "unit")
 
     def cluster_counts(self):
-        return self.source.cluster_counts()
+        return _counts(self.source, "cluster")
 
     def compliance_dates(self):
         return self.source.compliance_dates()
 
     def compliance_summary(self, design, *, as_of=None, completed_windows_only=False):
-        return self.source.compliance_summary(
-            design, as_of=as_of, completed_windows_only=completed_windows_only
+        return request_evidence(
+            evidence_provider(self.source),
+            ComplianceRequest(
+                design=design, as_of=as_of, completed_windows_only=completed_windows_only
+            ),
         )
 
     def sql(self, *, grain="total"):
@@ -1416,7 +1459,9 @@ def _joint_estimate(table, *, missing="error", ratio=False, raw=False, **kwargs)
     source = (
         _RawJointUnitSource(table) if raw else _JointUnitSource(table, missing=missing, ratio=ratio)
     )
-    (row,) = estimate_ate(source, DESIGN, methods=[Method(name="unadjusted")], **kwargs).results
+    (row,) = estimate_ate(
+        cast(Any, source), DESIGN, methods=[Method(name="unadjusted")], **kwargs
+    ).results
     return row
 
 
@@ -1513,7 +1558,7 @@ def test_unadjusted_joint_metric_missingness_retains_only_contributing_clusters(
         for i in range(10)
     ]
     source = _JointUnitSource(pa.Table.from_pylist(records + extra), missing=missing, ratio=ratio)
-    results = estimate_ate(source, DESIGN, methods=[Method(name="unadjusted")]).results
+    results = estimate_ate(cast(Any, source), DESIGN, methods=[Method(name="unadjusted")]).results
     row = next(r for r in results if r.group_id == "T")
     kept = []
     for record in records:
@@ -1580,7 +1625,10 @@ def test_unadjusted_joint_keeps_absolute_native_refusal_before_loading():
     source = _JointUnitSource(_joint_table())
     with pytest.raises(InvalidRequestError) as error:
         estimate_ate(
-            source, DESIGN, methods=[Method(name="unadjusted")], value_scale={"y": "absolute"}
+            cast(Any, source),
+            DESIGN,
+            methods=[Method(name="unadjusted")],
+            value_scale={"y": "absolute"},
         )
     assert error.value.code == "estimation.adjust.method_name_unadjusted"
     assert source.requests == []
@@ -1720,7 +1768,7 @@ def test_unadjusted_joint_pure_unequal_members_match_separate_arm_reference(rati
     (joint,) = estimate_ate(source, DESIGN, methods=[Method(name="unadjusted")]).results
     (separate,) = estimate_lift(
         source.context.metrics,
-        source.moments(_metric(source)),
+        _moments(source, _metric(source)),
         "C",
         cluster="store",
     ).results
@@ -1740,7 +1788,9 @@ def test_unadjusted_joint_admits_small_but_structurally_valid_cluster_count():
     records = [r for r in _joint_table().to_pylist() if r["store"] != "s9"]
     source = _JointUnitSource(pa.Table.from_pylist(records))
     with pytest.warns(IncrementRuntimeWarning) as rec:
-        (row,) = estimate_ate(source, DESIGN, methods=[Method(name="unadjusted")]).results
+        (row,) = estimate_ate(
+            cast(Any, source), DESIGN, methods=[Method(name="unadjusted")]
+        ).results
     assert "estimation.engine.small_total_clusters" in warning_codes(rec)
     assert row.n_clusters == 9
     assert row.reference_kind == "normal"
@@ -1751,10 +1801,10 @@ def test_unadjusted_joint_admits_small_but_structurally_valid_cluster_count():
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_unadjusted_source_consumes_only_canonical_cluster_metadata():
     source = _JointUnitSource(_joint_table())
-    frame = source.unit_frame(_metric(source))
+    frame = _unit_rows(source, _metric(source))
     assert "cluster_id" in frame.column_names and "store" not in frame.column_names
     source.requests.clear()
-    (row,) = estimate_ate(source, DESIGN, methods=[Method(name="unadjusted")]).results
+    (row,) = estimate_ate(cast(Any, source), DESIGN, methods=[Method(name="unadjusted")]).results
     assert all(extra == () for extra in source.requests)
     assert row.n_clusters == 10 and row.abs_se is not None
     assert row.relative_confidence_set is not None
@@ -1772,7 +1822,7 @@ def test_unadjusted_definitions_source_uses_cluster_metadata_without_covariates(
     )
     with _analysis(tmp_path, rows=_event_rows(spanning_store=spanning)) as analysis:
         source = _native_source(make_analysis_like(analysis, design=design))
-        frame = source.unit_frame(source.context.metrics[0])
+        frame = _unit_rows(source, source.context.metrics[0])
         assert "cluster_id" in frame.column_names and "store_id" not in frame.column_names
         (row,) = estimate_ate(source, design, methods=[Method(name="unadjusted")]).results
     assert row.abs_diff == pytest.approx(0.5)

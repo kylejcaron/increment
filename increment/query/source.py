@@ -88,8 +88,8 @@ from increment.semantics.models import (
 )
 from increment.sources import (
     BreakoutMomentsSource,
+    EvidenceSource,
     Grain,
-    MomentSource,
     SourceContext,
     SourceOperation,
 )
@@ -101,7 +101,8 @@ if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
     from increment._analysis_config import ResolvedMetricConfig
-    from increment._source_types import ComplianceSummary, EvidenceCapabilities
+    from increment._evidence_types import ComplianceSummary
+    from increment._source_types import EvidenceCapabilities
     from increment.decision import CompiledDecisionPlan
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Breakout, Metric
@@ -463,7 +464,7 @@ class SqlPanelSource:
         as_of: object | None = None,
         completed_windows_only: bool = False,
     ) -> ComplianceSummary:
-        from increment._source_types import raise_legacy_compliance_state
+        from increment._evidence_types import raise_legacy_compliance_state
 
         raise_legacy_compliance_state(
             study_id=self.context.study_id,
@@ -2313,7 +2314,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             if count and group not in audit_labels
         }
 
-    def triggered_source(self) -> MomentSource:
+    def triggered_source(self) -> EvidenceSource:
         membership = self._verify_trigger_population(operation="triggered_source")
         return _ArtifactFacadeSource(
             self._store,

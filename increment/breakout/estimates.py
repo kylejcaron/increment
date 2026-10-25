@@ -43,6 +43,7 @@ from pydantic import (
 )
 
 from increment._evidence_refusals import OPERATION_UNAVAILABLE
+from increment._evidence_types import unit_frame_covariate_columns
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import (
     Alternative,
@@ -56,7 +57,6 @@ from increment._literals import (
 )
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
-from increment._source_types import MethodMomentEvidence, unit_frame_covariate_columns
 from increment.compatibility import _conservative_divide
 from increment.errors import (
     CapabilityError,
@@ -2940,7 +2940,7 @@ class _BreakoutContext(NamedTuple):
     # Whether the cells form a ``correction="bh"`` family, whose decision rows are read below
     # their own level and so report the composite conversion p-value.
     family_member: bool
-    method_evidence: Mapping[str, MethodMomentEvidence] | None = None
+    method_evidence: Mapping[str, Any] | None = None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -3331,7 +3331,7 @@ def _method_input_groups(
 
 
 def _scalar_breakout_input(
-    evidence: MethodMomentEvidence,
+    evidence: Any,
     method: Method,
     rows: Sequence[Mapping[str, Any]],
     context: _BreakoutContext,
@@ -3815,7 +3815,7 @@ class _BreakoutFamilyContext(NamedTuple):
     alternative: str
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
-    method_evidence: Mapping[str, MethodMomentEvidence] | None = None
+    method_evidence: Mapping[str, Any] | None = None
 
 
 def _breakout_family_cells(
@@ -4166,7 +4166,7 @@ def run_breakout(  # noqa: PLR0913
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
     _prior_by_metric: Mapping[str, Prior | None] | None = None,
-    _method_evidence_by_metric: Mapping[str, MethodMomentEvidence] | None = None,
+    _method_evidence_by_metric: Mapping[str, Any] | None = None,
     unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None = None,
     covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
@@ -4214,7 +4214,7 @@ def run_breakout(  # noqa: PLR0913
         covariates alongside the unit outcome columns.
     covariates_by_metric : Mapping[str, Sequence[Any]] | None
         Declared covariates corresponding to ``unit_frames_by_metric``.
-    _method_evidence_by_metric : Mapping[str, MethodMomentEvidence] | None
+    _method_evidence_by_metric : Mapping[str, Any] | None
         Method-scoped moments and cell refusals. Each scalar fit, including selected
         interval reinversion, selects its own input through ``rows_for_method``.
 

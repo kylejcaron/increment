@@ -38,6 +38,7 @@ from increment.frame import (
 )
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
+from tests._frame_evidence_requests import _counts, _moments, _unit_rows
 from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, refused
 from tests.warning_codes import warning_codes
 
@@ -201,7 +202,7 @@ def test_censoring_fence_keeps_fully_observed_unit() -> None:
     every day, forever."""
     src = _fence_panel(date(2025, 1, 14))
     metric = _metric(src, "revenue")
-    out = {r["group_id"]: r for r in src.moments(metric, grain="total")}
+    out = {r["group_id"]: r for r in _moments(src, metric, grain="total")}
     assert out["treatment"]["n"] == 1
     assert _sum_y(out["treatment"]) == pytest.approx(14.0)  # 7 days x 2.0
     assert out["control"]["n"] == 1
@@ -214,7 +215,7 @@ def test_censoring_fence_still_drops_genuinely_immature_unit() -> None:
     src = _fence_panel(date(2025, 1, 13))
     metric = _metric(src, "revenue")
     with pytest.warns(IncrementWarning) as rec:
-        out = {r["group_id"]: r for r in src.moments(metric, grain="total")}
+        out = {r["group_id"]: r for r in _moments(src, metric, grain="total")}
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     assert "treatment" not in out or out["treatment"]["n"] == 0
     assert out["control"]["n"] == 1
@@ -233,8 +234,9 @@ def _null_group_table() -> pa.Table:
 
 
 def test_unit_counts_on_a_plain_summary_source() -> None:
-    """The unclustered baseline: one key per arm, no accounting keys, and
-    cluster_counts() refuses because no randomization grain was declared."""
+    """Unit and cluster requests retain the assigned count and refusal contract."""
+    from increment.evidence import CountsRequest, evidence_provider, request_evidence
+
     labels = ["control"] * 198 + ["treatment"] * 182
     src = from_unit_summary(
         pa.table(
@@ -249,9 +251,14 @@ def test_unit_counts_on_a_plain_summary_source() -> None:
         control="control",
         metrics={"revenue": "mean"},
     )
-    assert src.unit_counts() == {"control": 198, "treatment": 182}
+    provider = evidence_provider(src)
+    answer = request_evidence(provider, CountsRequest(kind="unit"))
+    from increment.evidence import CountEvidence
+
+    assert isinstance(answer, CountEvidence)
+    assert answer.counts == {"control": 198, "treatment": 182}
     with pytest.raises(CapabilityError) as raised:
-        src.cluster_counts()
+        request_evidence(provider, CountsRequest(kind="cluster"))
     assert raised.value.code == "evidence.cluster_unavailable"
 
 
@@ -279,11 +286,11 @@ def test_unit_counts_ignore_first_metric_drop_and_declaration_order() -> None:
     assert "frame.validation.metric_missing_drop" in warning_codes(rec_last)
 
     enrolled = {"control": 100, "treatment": 100}
-    assert src_drop_first.unit_counts() == enrolled
-    assert src_drop_last.unit_counts() == enrolled
+    assert _counts(src_drop_first, "unit") == enrolled
+    assert _counts(src_drop_last, "unit") == enrolled
     # The dropped metric's own moments still shrink; only unit_counts is enrolled.
     revenue = _metric(src_drop_first, "revenue")
-    moments = {r["group_id"]: r["n"] for r in src_drop_first.moments(revenue)}
+    moments = {r["group_id"]: r["n"] for r in _moments(src_drop_first, revenue)}
     assert moments == {"control": 100, "treatment": 50}
 
 
@@ -318,7 +325,7 @@ def test_null_group_label_excluded_with_accounting() -> None:
             allocation_scheme="independent",
         ),
     )
-    assert src.unit_counts() == {"control": 198, "treatment": 182, "(unassigned)": 20}
+    assert _counts(src, "unit") == {"control": 198, "treatment": 182, "(unassigned)": 20}
 
     estimates = readouts.run(src)
     assert [e.group_id for e in estimates] == ["treatment"]
@@ -357,7 +364,7 @@ def test_null_group_label_panel_refuses_and_excludes() -> None:
         from_unit_panel(table, **kwargs)
     assert error.value.code == "source.frame.unassigned"
     src = from_unit_panel(table, **kwargs, on_unassigned="exclude")
-    assert src.unit_counts() == {"control": 5, "treatment": 6, "(unassigned)": 1}
+    assert _counts(src, "unit") == {"control": 5, "treatment": 6, "(unassigned)": 1}
 
 
 def test_null_group_label_partial_row_excludes_whole_unit_with_accounting() -> None:
@@ -385,8 +392,8 @@ def test_null_group_label_partial_row_excludes_whole_unit_with_accounting() -> N
         metrics={"revenue": "mean"},
         on_unassigned="exclude",
     )
-    assert src.unit_counts() == {"control": 1, "treatment": 1, "(unassigned)": 1}
-    moments = {r["group_id"]: r for r in src.moments(_metric(src, "revenue"))}
+    assert _counts(src, "unit") == {"control": 1, "treatment": 1, "(unassigned)": 1}
+    moments = {r["group_id"]: r for r in _moments(src, _metric(src, "revenue"))}
     assert moments["control"]["n"] == 1
     assert _sum_y(moments["control"]) == pytest.approx(4.0)  # u3 only; u1's 5.0 excluded whole
 
@@ -460,7 +467,7 @@ def test_missing_zero_reproduces_null_as_zero_on_purpose() -> None:
     assert "frame.validation.metric_missing_drop" in warning_codes(rec)
     (est_drop,) = readouts.run(src_drop)
     assert est_drop.require_lift().value == pytest.approx(cc_pred, rel=_PLUGIN_TOL)
-    moments = {r["group_id"]: r for r in src_drop.moments(_metric(src_drop, "revenue"))}
+    moments = {r["group_id"]: r for r in _moments(src_drop, _metric(src_drop, "revenue"))}
     assert moments["treatment"]["n"] == 50  # complete-case n, visibly reduced
 
 
@@ -481,8 +488,8 @@ def test_missing_policy_is_per_spec_not_per_column() -> None:
             ],
         )
     assert "frame.validation.metric_missing_drop" in warning_codes(rec)
-    zero = {r["group_id"]: r for r in src.moments(_metric(src, "rev_zero"))}
-    drop = {r["group_id"]: r for r in src.moments(_metric(src, "rev_drop"))}
+    zero = {r["group_id"]: r for r in _moments(src, _metric(src, "rev_zero"))}
+    drop = {r["group_id"]: r for r in _moments(src, _metric(src, "rev_drop"))}
     assert zero["treatment"]["n"] == 100 and drop["treatment"]["n"] == 50
     assert _sum_y(zero["treatment"]) == pytest.approx(_sum_y(drop["treatment"]))
     zero_c = {k: v for k, v in zero["control"].items() if k != "metric"}
@@ -555,7 +562,7 @@ def test_inferred_all_null_metric_obeys_missing_policy() -> None:
         observed.append(
             sorted(
                 (str(row["group_id"]), row["n"], _sum_y(row))
-                for row in src.moments(_metric(src, "y"))
+                for row in _moments(src, _metric(src, "y"))
             )
         )
     assert all(rows == observed[0] for rows in observed)
@@ -573,8 +580,8 @@ def test_inferred_all_null_metric_obeys_missing_policy() -> None:
                 MetricSpec(name="y_drop", value_column="y", missing="drop"),
             ],
         )
-    zero = {row["group_id"]: row for row in src.moments(_metric(src, "y_zero"))}
-    drop = list(src.moments(_metric(src, "y_drop")))
+    zero = {row["group_id"]: row for row in _moments(src, _metric(src, "y_zero"))}
+    drop = list(_moments(src, _metric(src, "y_drop")))
     assert zero["treatment"]["n"] == 2
     assert drop == []
     assert _sum_y(zero["treatment"]) == pytest.approx(0.0)
@@ -687,10 +694,10 @@ def test_inferred_null_panel_preserves_fact_freshness(backend) -> None:
             ],
         )
         with pytest.warns(IncrementWarning) as warnings:
-            missing_rows = source.moments(_metric(source, "missing"))
+            missing_rows = _moments(source, _metric(source, "missing"))
         populations.append(sum(row["n"] for row in missing_rows))
         assert "frame.censoring.dropped_units" in warning_codes(warnings)
-        assert sum(row["n"] for row in source.moments(_metric(source, "observed"))) == 0
+        assert sum(row["n"] for row in _moments(source, _metric(source, "observed"))) == 0
     assert populations == [4, 4, 4]
 
 
@@ -771,7 +778,9 @@ def test_nan_and_null_agree_across_backends() -> None:
             metrics=[MetricSpec(name="y", missing="zero")],
         )
         moment_sets.append(
-            sorted((str(r["group_id"]), r["n"], _sum_y(r)) for r in src.moments(_metric(src, "y")))
+            sorted(
+                (str(r["group_id"]), r["n"], _sum_y(r)) for r in _moments(src, _metric(src, "y"))
+            )
         )
     assert codes == {"frame.validation.metric_value_missing"}  # identical refusal on every backend
     assert all(m == moment_sets[0] for m in moment_sets)
@@ -984,7 +993,7 @@ def test_covariate_imputation_computed_before_outcome_drop() -> None:
                 )
             ],
         )
-    moments = {row["group_id"]: row for row in src.moments(_metric(src, "y"))}
+    moments = {row["group_id"]: row for row in _moments(src, _metric(src, "y"))}
     observed_x_mean = (0.0 + 100.0 + 10.0) / 3
     assert moments["control"]["n"] == 1  # the y=None unit is dropped
     assert moments["treatment"]["n"] == 2
@@ -1105,7 +1114,7 @@ def test_cuped_covariate_missing_zero_uses_dense_zero_convention() -> None:
             ],
         )
     assert "frame.validation.metric_covariate_missing_imputed" in warning_codes(rec)
-    moments = {r["group_id"]: r for r in src.moments(_metric(src, "y"))}
+    moments = {r["group_id"]: r for r in _moments(src, _metric(src, "y"))}
     observed_sum = sum(v for v in table["x"].to_pylist()[:500] if v is not None)
     assert moments["control"]["n"] == 500
     assert _sum_x(moments["control"]) == pytest.approx(observed_sum)
@@ -1137,7 +1146,7 @@ def test_panel_null_metric_value_refuses_and_zero_fills() -> None:
     assert exc_info.value.context["column"] == "revenue"
     assert exc_info.value.context["n_missing"] == 1
     src = from_unit_panel(table, metrics=[MetricSpec(name="revenue", missing="zero")], **kwargs)
-    out = {r["group_id"]: r for r in src.moments(_metric(src, "revenue"), grain="total")}
+    out = {r["group_id"]: r for r in _moments(src, _metric(src, "revenue"), grain="total")}
     assert _sum_y(out["control"]) == pytest.approx(7.0)  # 1+2 + (0+4)
     assert out["control"]["n"] == 2
 
@@ -1177,7 +1186,7 @@ def test_unit_frame_honours_declared_missing_policy() -> None:
         control="control",
         metrics=[MetricSpec(name="revenue", missing="zero")],
     )
-    uf = nw.from_native(src_zero.unit_frame(_metric(src_zero, "revenue")), eager_only=True)
+    uf = nw.from_native(_unit_rows(src_zero, _metric(src_zero, "revenue")), eager_only=True)
     assert uf.shape[0] == 200
     assert float(uf["y"].sum()) == pytest.approx(
         sum(v or 0.0 for v in table["revenue"].to_pylist())
@@ -1191,7 +1200,7 @@ def test_unit_frame_honours_declared_missing_policy() -> None:
             metrics=[MetricSpec(name="revenue", missing="drop")],
         )
     assert "frame.validation.metric_missing_drop" in warning_codes(rec)
-    uf_drop = nw.from_native(src_drop.unit_frame(_metric(src_drop, "revenue")), eager_only=True)
+    uf_drop = nw.from_native(_unit_rows(src_drop, _metric(src_drop, "revenue")), eager_only=True)
     assert uf_drop.shape[0] == 150
 
 
@@ -1222,7 +1231,7 @@ def test_unit_frame_ratio_missing_policy_covers_the_denominator_too() -> None:
             )
         ],
     )
-    uf_zero = nw.from_native(src_zero.unit_frame(_metric(src_zero, "aov")), eager_only=True)
+    uf_zero = nw.from_native(_unit_rows(src_zero, _metric(src_zero, "aov")), eager_only=True)
     assert uf_zero.shape[0] == 6
     assert uf_zero["y"].is_null().sum() == 0
     assert float(uf_zero["y"].sum()) == 190.0
@@ -1246,7 +1255,7 @@ def test_unit_frame_ratio_missing_policy_covers_the_denominator_too() -> None:
             ],
         )
     assert "frame.validation.metric_missing_drop" in warning_codes(rec)
-    uf_drop = nw.from_native(src_drop.unit_frame(_metric(src_drop, "aov")), eager_only=True)
+    uf_drop = nw.from_native(_unit_rows(src_drop, _metric(src_drop, "aov")), eager_only=True)
     # 2 of 6 rows drop: one null revenue, one null orders (distinct rows).
     assert uf_drop.shape[0] == 4
 
@@ -1318,7 +1327,7 @@ def test_summary_conversion_accepts_bool_and_declared_zero_nulls() -> None:
         control="control",
         metrics=[MetricSpec(name="converted", type="conversion", missing="zero")],
     )
-    out = {r["group_id"]: r for r in src.moments(_metric(src, "converted"), grain="total")}
+    out = {r["group_id"]: r for r in _moments(src, _metric(src, "converted"), grain="total")}
     assert _sum_y(out["treatment"]) == pytest.approx(1.0)
 
 
@@ -1529,8 +1538,8 @@ def test_null_exposure_date_excluded_with_accounting() -> None:
     unusable-unit concept, consistent between moments and the SRM check."""
     table, kwargs = _null_exposure_panel()
     src = from_unit_panel(table, **kwargs, on_unassigned="exclude")
-    assert src.unit_counts() == {"control": 2, "treatment": 2, "(unassigned)": 1}
-    out = {r["group_id"]: r for r in src.moments(_metric(src, "revenue"), grain="total")}
+    assert _counts(src, "unit") == {"control": 2, "treatment": 2, "(unassigned)": 1}
+    out = {r["group_id"]: r for r in _moments(src, _metric(src, "revenue"), grain="total")}
     assert out["treatment"]["n"] == 2
     assert out["control"]["n"] == 2
     # window [0, 2) keeps days 1 and 2 of each unit: 1.0 + 2.0 per unit
@@ -1556,7 +1565,7 @@ def test_summary_null_exposure_excluded_with_accounting() -> None:
         exposure_date="exposed_on",
         on_unassigned="exclude",
     )
-    assert src.unit_counts() == {"control": 2, "treatment": 2, "(unassigned)": 1}
+    assert _counts(src, "unit") == {"control": 2, "treatment": 2, "(unassigned)": 1}
 
 
 def test_densified_cells_counts_declared_zero_null_fills() -> None:
@@ -1639,9 +1648,9 @@ def test_windowed_encouragement_panel_offers_asof_but_refuses_total() -> None:
     )
     metric = src.context.metrics[0]
 
-    assert src.moments(metric, grain="asof")
+    assert _moments(src, metric, grain="asof")
     with pytest.raises(CapabilityError) as exc_grain:
-        src.moments(metric, grain="total")
+        _moments(src, metric, grain="total")
     assert exc_grain.value.code == "source.frame.windowed_encouragement_total"
 
 
@@ -1759,7 +1768,7 @@ def test_asof_encouragement_completed_windows_gate_later_edge() -> None:
         periods=5,
     )
 
-    rows = src.moments(metric, grain="asof", completed_windows_only=True)
+    rows = _moments(src, metric, grain="asof", completed_windows_only=True)
 
     assert min(row["ds"] for row in rows) == base + timedelta(days=3)
     treatment = [row for row in rows if row["group_id"] == "treatment"]
@@ -1774,7 +1783,10 @@ def test_censoring_warning_attributed_to_caller_not_engine_internals() -> None:
     src = _fence_panel(date(2025, 1, 13))
     metric = _metric(src, "revenue")
     with pytest.warns(IncrementWarning) as record:
-        src.moments(metric, grain="total")
+        from increment.evidence import MomentsRequest, evidence_provider, request_evidence
+
+        request = MomentsRequest(metric, grain="total")
+        request_evidence(evidence_provider(src), request)
     (warning,) = [
         r
         for r in record

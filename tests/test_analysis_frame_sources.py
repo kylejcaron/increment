@@ -27,7 +27,7 @@ from increment.frame import MetricSpec
 from increment.plan import compile_decision_plan
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.models import AnalysisPlan, CupedCovariate, MeanMetric
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 from tests.analysis_factory import lift_rows
 from tests.sequential_cases import registered_spec
 from tests.warning_codes import warning_codes
@@ -1820,8 +1820,12 @@ def test_from_unit_panel_encouragement_breakout_skips_missing_control_segment():
 
 def test_encouragement_breakout_all_control_free_segments_warn_and_skip():
     """Control-free encouragement segments warn/skip after dispatch validation."""
-    from types import SimpleNamespace
-
+    from increment.evidence import (
+        CountEvidence,
+        EvidenceCapabilities,
+        EvidenceScopeResult,
+        MomentsRequest,
+    )
     from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
     from increment.sources import SourceContext
 
@@ -1850,15 +1854,58 @@ def test_encouragement_breakout_all_control_free_segments_warn_and_skip():
         ),
         cluster=None,
     )
-    src = cast(
-        "MomentSource",
-        SimpleNamespace(
-            operations=frozenset(),
-            context=context,
+
+    from contextlib import nullcontext
+
+    class Source:
+        context: SourceContext
+        evidence = EvidenceCapabilities(
+            kind="moments",
+            grains=frozenset({"total"}),
             breakouts=("country",),
-            moments=lambda *_args, **_kwargs: rows,
-        ),
-    )
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset({"unit"}),
+            populations=frozenset({"assigned"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
+
+        def moments(self, request: MomentsRequest):
+            return tuple(rows)
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("undeclared method breakout passed validation")
+
+        def unit_rows(self, request):
+            raise AssertionError("undeclared unit rows passed validation")
+
+        def method_fit(self, request):
+            raise AssertionError("undeclared method fit passed validation")
+
+        def compliance(self, request):
+            raise AssertionError("undeclared compliance passed validation")
+
+        def compliance_series(self, request):
+            raise AssertionError("undeclared compliance series passed validation")
+
+        def counts(self, request):
+            return CountEvidence(request.population, request.kind, {})
+
+        def capture_sequential(self, request):
+            raise AssertionError("undeclared sequential capture passed validation")
+
+        def scope(self, request):
+            return EvidenceScopeResult(nullcontext(self), request)
+
+    src = Source()
+    src.context = context
+    src = cast("EvidenceSource", src)
 
     with pytest.warns(IncrementWarning) as rec:
         assert readout_functions.breakout(src, "country", correction="none") == []

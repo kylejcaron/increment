@@ -31,6 +31,14 @@ from increment._cuped_evidence import (
     portable_requests,
     source_sha256,
 )
+from increment._evidence_types import (
+    ComplianceArm,
+    ComplianceSummary,
+    EvidenceSource,
+    SourceContext,
+    invalid_compliance_state,
+    validate_compliance_design_match,
+)
 from increment._immutable import _FrozenMapping
 from increment._labels import (
     MIXED_ASSIGNMENT_LABEL,
@@ -44,15 +52,10 @@ from increment._source_identity import (
     source_identity_is_canonical,
 )
 from increment._source_types import (
-    ComplianceArm,
-    ComplianceSummary,
-    CUPEDEvidenceExportSource,
     EvidenceCapabilities,
     Grain,
-    MomentSource,
     ScalarEvidenceDeclaration,
-    SourceContext,
-    invalid_compliance_state,
+    _BuiltinMomentSource,
 )
 from increment.errors import (
     CapabilityError as _CapabilityError,
@@ -118,6 +121,7 @@ _WINSOR_METADATA_SHAPE = _RefusalSpec(
 )
 
 SourceOperation = Literal[
+    "readout_execution",
     "allocation_history",
     "readout_snapshot",
     "dashboard_group_data",
@@ -141,20 +145,21 @@ SourceOperation = Literal[
 
 
 def require_operation[T](
-    source: MomentSource,
+    source: EvidenceSource,
     operation: SourceOperation,
-    protocol: type[T],
+    protocol: type[T] | None = None,
 ) -> T:
-    """Return *source* after checking a declared operation is callable."""
-    if operation not in getattr(source, "operations", frozenset()) or not isinstance(
-        source, protocol
-    ):
+    """Return a source after validating its declared operation."""
+    from increment._source_types import declared_evidence
+
+    operations = declared_evidence(source).operations
+    if operation not in operations or (protocol is not None and not isinstance(source, protocol)):
         from increment._evidence_refusals import refuse_operation
 
         refuse_operation(
             source,
             operation,
-            tuple(sorted(getattr(source, "operations", ()))),
+            tuple(sorted(operations)),
             route="use a source that implements the requested operation",
         )
     return cast("T", source)
@@ -1233,7 +1238,6 @@ def _validated_compliance_payload(
 ) -> ComplianceSummary | None:
     if payload is None:
         return None
-    from increment._source_types import validate_compliance_design_match
     from increment.semantics.design import Encouragement
 
     compliance = ComplianceSummary.from_wire(payload, study_id=study_id)
@@ -1295,9 +1299,7 @@ def _aggregate_configs(
     return resolved
 
 
-def _portable_population_and_trigger(
-    evidence, source: CUPEDEvidenceExportSource | None, trusted_trigger_name
-):
+def _portable_population_and_trigger(evidence, source: Any | None, trusted_trigger_name):
     populations = {item.population for item in evidence}
     triggers = {item.trigger_name for item in evidence}
     if len(populations) > 1 or len(triggers) > 1:
@@ -1472,7 +1474,7 @@ class MomentsSource(SequentialSourceMixin):
         )
         self._population, self._trigger_name = _portable_population_and_trigger(
             evidence,
-            None if _source is None else cast(CUPEDEvidenceExportSource, _source),
+            None if _source is None else cast(_BuiltinMomentSource, _source),
             _trusted_trigger_name,
         )
         evidence_trigger_name = self._trigger_name
@@ -1918,7 +1920,7 @@ class MomentsSource(SequentialSourceMixin):
         ``moments_source()`` alongside ``assignment_counts``/
         ``decision_plan``) -- never any one metric's moments."""
         if completed_windows_only:
-            from increment._source_types import validate_compliance_completion
+            from increment._evidence_types import validate_compliance_completion
 
             validate_compliance_completion(design, as_of=as_of)
         if as_of is not None:
@@ -1926,13 +1928,12 @@ class MomentsSource(SequentialSourceMixin):
 
             require_evidence(self, grain="asof")
         if self._compliance is None:
-            from increment._source_types import raise_legacy_compliance_state
+            from increment._evidence_types import raise_legacy_compliance_state
 
             raise_legacy_compliance_state(
                 study_id=self._context.study_id,
                 reason="this cube predates the compliance_summary payload",
             )
-        from increment._source_types import validate_compliance_design_match
 
         validate_compliance_design_match(self._compliance, design)
         return self._compliance
@@ -1979,7 +1980,7 @@ def _design_summary_row(
 
 
 def export_source_moments(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     path: str | Path,
     *,
     observational_refusal: Callable[[Any], object],
@@ -2066,7 +2067,7 @@ def export_source_moments(
         None
         if requests is None
         else portable_cuped_rows(
-            cast(CUPEDEvidenceExportSource, source),
+            source,
             requests,
             categorical_cells=_categorical_cells_for(source),
         )
@@ -2440,7 +2441,6 @@ __all__ = [
     "Grain",
     "MIXED_ASSIGNMENT_LABEL",
     "MOMENTS_FORMAT",
-    "MomentSource",
     "MomentsSource",
     "SOURCE_QUANTILE_NO_MOMENTS",
     "SourceContext",

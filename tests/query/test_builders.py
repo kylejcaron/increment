@@ -68,6 +68,7 @@ from increment.semantics.models import (
     RetentionMetric,
     Winsorization,
 )
+from tests._evidence_requests import _moments
 from tests.analysis_factory import make_analysis
 from tests.warning_codes import warning_codes, warning_context
 
@@ -7589,12 +7590,12 @@ def test_artifact_round_trip_never_dates_a_late_enrollee_by_its_own_enrollment()
     )
     metric = source.context.metrics[0]
 
-    totals = source.moments(metric)
+    totals = _moments(source, metric)
     assert {row["group_id"]: row["n"] for row in totals} == {"control": 1}, (
         "u_late (treatment) must not surface as a matured row"
     )
 
-    daily = source.moments(metric, grain="daily")
+    daily = _moments(source, metric, grain="daily")
     daily_dates = {row["ds"].date() if hasattr(row["ds"], "date") else row["ds"] for row in daily}
     assert all(d <= dt.date(2025, 1, 2) for d in daily_dates), (
         "the day axis must never extend past the last real outcome date"
@@ -7633,11 +7634,11 @@ def test_artifact_round_trip_with_a_stale_freshness_watermark_censors_everyone()
     )
     metric = source.context.metrics[0]
 
-    totals = source.moments(metric)
-    assert totals == []
+    totals = _moments(source, metric)
+    assert totals == ()
 
-    daily = source.moments(metric, grain="daily")
-    assert daily == []
+    daily = _moments(source, metric, grain="daily")
+    assert daily == ()
     source.close()
 
 
@@ -7841,7 +7842,7 @@ def test_artifact_reader_retention_cohort_gates_on_its_own_watermark_not_a_decla
     # matures with y=0 (no return observed); u2's band [Jan20, Jan25) is
     # entirely beyond the watermark and must not appear at all.
     with pytest.warns(IncrementWarning) as rec:
-        cohorts = source.moments(metric, grain="daily")
+        cohorts = _moments(source, metric, grain="daily")
     assert "frame.censoring.dropped_units" in warning_codes(rec)
     cohort_dates = {
         row["ds"].date() if hasattr(row["ds"], "date") else row["ds"] for row in cohorts
@@ -7918,7 +7919,7 @@ def test_artifact_total_grain_avg_calendar_day_uses_the_freshest_sibling_measure
     )
     metric = next(m for m in source.context.metrics if m.name == "A")
 
-    totals = source.moments(metric)
+    totals = _moments(source, metric)
     row = next(r for r in totals if r["group_id"] == "control")
     # Spine day-axis is Jan1..Jan10 (10 days, sized off b_orders' fresher
     # watermark, not a_orders' own Jan5), with one event (10.0) on Jan2.
@@ -7978,7 +7979,7 @@ def test_artifact_reader_honours_fact_freshness_beyond_the_enrollment_edge():
     # freshness watermark: an observed zero. u2 enrolls Jan 25, past the
     # watermark, and never surfaces. `_builder_total` uses
     # warn_on_censoring=False like every total-grain artifact reduction.
-    totals = source.moments(metric)
+    totals = _moments(source, metric)
     assert {row["group_id"]: row["ref_y"] for row in totals} == {"control": 0.0}
     source.close()
 
@@ -8020,11 +8021,11 @@ def test_artifact_reader_sentinel_freshness_falls_back_instead_of_exploding_the_
     )
     metric = source.context.metrics[0]
 
-    totals = source.moments(metric)
-    assert totals == []
+    totals = _moments(source, metric)
+    assert totals == ()
 
-    daily = source.moments(metric, grain="daily")
-    assert daily == []
+    daily = _moments(source, metric, grain="daily")
+    assert daily == ()
     source.close()
 
 
@@ -8100,7 +8101,7 @@ def test_artifact_reader_ratio_spine_uses_the_denominator_watermark_when_freshes
     )
     metric = source.context.metrics[0]
 
-    daily = source.moments(metric, grain="daily")
+    daily = _moments(source, metric, grain="daily")
     dates = {row["ds"].date() if hasattr(row["ds"], "date") else row["ds"] for row in daily}
     # The spine reaches Jan 10 (the denominator's fresher watermark), not
     # Jan 5 (the numerator's own).
@@ -8237,7 +8238,7 @@ def test_artifact_reader_daily_ratio_denominator_respects_the_numerator_window_b
     )
     metric = source.context.metrics[0]
 
-    daily = source.moments(metric, grain="daily")
+    daily = _moments(source, metric, grain="daily")
     by_date = {row["ds"].date() if hasattr(row["ds"], "date") else row["ds"]: row for row in daily}
     assert set(by_date) == {dt.date(2025, 1, day) for day in (1, 2, 4, 5)}
     assert by_date[dt.date(2025, 1, 1)]["ref_den"] == pytest.approx(2.0)

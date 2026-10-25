@@ -17,7 +17,7 @@ from increment.errors import (
 from increment.estimation.engine import Method
 from increment.frame import CupedCovariate, MetricSpec, from_unit_panel, from_unit_summary
 from increment.semantics.design import Randomized
-from increment.sources import Grain, MomentSource, SourceOperation
+from increment.sources import EvidenceSource, Grain, SourceOperation
 from tests.sequential_cases import registration
 
 
@@ -131,6 +131,10 @@ class _CountingSource:
         return self._source.context
 
     @property
+    def evidence(self):
+        return self._source.evidence
+
+    @property
     def capabilities(self) -> frozenset[Grain]:
         return self._source.capabilities
 
@@ -145,6 +149,46 @@ class _CountingSource:
     def moments(self, *args, **kwargs):
         self.moment_calls += 1
         raise AssertionError("readout queried moments before validating the request")
+
+    def unit_rows(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).unit_rows(request)
+
+    def method_fit(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).method_fit(request)
+
+    def breakout_method_moments(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).breakout_method_moments(request)
+
+    def compliance(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).compliance(request)
+
+    def compliance_series(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).compliance_series(request)
+
+    def counts(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).counts(request)
+
+    def capture_sequential(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).capture_sequential(request)
+
+    def scope(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self._source).scope(request)
 
 
 def _panel_source(*, breakouts=("segment",), design=None):
@@ -173,7 +217,7 @@ def test_readout_request_validates_source_dimension_before_query():
     source = _CountingSource(_panel_source())
 
     with pytest.raises(CapabilityError) as raised:
-        readouts.run(cast(MomentSource, source), by=["not_declared"])
+        readouts.run(cast(EvidenceSource, source), by=["not_declared"])
 
     assert getattr(raised.value, "code", None) == "evidence.breakout_unavailable"
     assert source.moment_calls == 0
@@ -183,7 +227,7 @@ def test_readout_request_rejects_dimensions_when_source_declares_none():
     source = _CountingSource(_panel_source(breakouts=()))
 
     with pytest.raises(CapabilityError) as raised:
-        readouts.run(cast(MomentSource, source), by=["segment"])
+        readouts.run(cast(EvidenceSource, source), by=["segment"])
 
     assert getattr(raised.value, "code", None) == "evidence.breakout_unavailable"
     assert source.moment_calls == 0
@@ -197,7 +241,7 @@ def test_run_refuses_nonempty_by_instead_of_dropping_segments():
     source = _panel_source(breakouts=("segment",))
 
     with pytest.raises(UnsupportedRequestError) as raised:
-        readouts.run(cast(MomentSource, source), by=["segment"])
+        readouts.run(cast(EvidenceSource, source), by=["segment"])
 
     assert getattr(raised.value, "code", None) == "readout.run.segment_unsupported"
 
@@ -243,22 +287,67 @@ def test_sequential_run_refuses_plan_q_mismatch_before_read_and_preserves_refusa
         cluster=None,
     )
 
+    from contextlib import contextmanager
+
+    from increment.evidence import EvidenceCapabilities, EvidenceScopeResult
+
     class UnreadSource:
-        capabilities = frozenset({"total"})
-        breakouts = ()
-        shape = None
+        evidence = EvidenceCapabilities(
+            kind="moments",
+            grains=frozenset({"total"}),
+            breakouts=(),
+            shape=None,
+            operations=frozenset(),
+            unit_rows=False,
+            raw_outcomes=False,
+            method_fit="none",
+            compliance_axis="none",
+            count_grains=frozenset(),
+            populations=frozenset({"assigned"}),
+            sequential_capture="none",
+            scalar=None,
+            available_covariates=None,
+        )
 
         def __init__(self):
             self.context = context
             self.moment_calls = 0
 
-        def moments(self, *args, **kwargs):
+        def moments(self, request):
             self.moment_calls += 1
             raise AssertionError("sequential q refusal must precede source reads")
 
+        def unit_rows(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        def method_fit(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        def compliance(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        def compliance_series(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        def counts(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        def capture_sequential(self, request):
+            raise AssertionError("sequential q refusal must precede source reads")
+
+        @contextmanager
+        def _scope(self, request):
+            yield self
+
+        def scope(self, request):
+            return EvidenceScopeResult(self._scope(request), request)
+
     source = UnreadSource()
     with pytest.raises(CapabilityError) as raised:
-        readouts.run(cast(MomentSource, source))
+        readouts.run(cast(EvidenceSource, source))
     refusal = raised.value
     assert refusal.code == "sequential.source.invalid"
     assert set(refusal.context) == {"reason"}
@@ -410,7 +499,7 @@ def test_breakout_request_rejects_an_unserved_dimension_before_query():
     )
 
     with pytest.raises(CapabilityError) as raised:
-        readouts.breakout(cast(MomentSource, source), "segment", metrics=["metric"])
+        readouts.breakout(cast(EvidenceSource, source), "segment", metrics=["metric"])
 
     assert getattr(raised.value, "code", None) == "evidence.breakout_unavailable"
     assert source.moment_calls == 0
@@ -426,7 +515,7 @@ def test_breakout_request_validates_correction_before_query():
 
     with pytest.raises(InvalidRequestError) as raised:
         readouts.breakout(
-            cast(MomentSource, source),
+            cast(EvidenceSource, source),
             "segment",
             metrics=["metric"],
             correction="invalid",  # ty: ignore[invalid-argument-type]
@@ -446,7 +535,7 @@ def test_breakout_request_accepts_a_served_dimension():
     with warnings.catch_warnings():
         # Arms with identical outcomes are reported as excluded rows.
         warnings.simplefilter("ignore")
-        estimates = readouts.breakout(cast(MomentSource, source), "segment", metrics=["metric"])
+        estimates = readouts.breakout(cast(EvidenceSource, source), "segment", metrics=["metric"])
 
     assert {row.dimension_value for row in estimates} == {"a", "b"}
     assert {row.metric for row in estimates} == {"metric"}
@@ -467,7 +556,7 @@ def test_observational_segmented_run_uses_stable_refusal_before_source_dimension
         )
 
         with pytest.raises(NotImplementedError) as raised:
-            readouts.run(cast(MomentSource, source), by=["segment"])
+            readouts.run(cast(EvidenceSource, source), by=["segment"])
 
         assert getattr(raised.value, "code", None) == "readout.view.observational"
         assert source.moment_calls == 0

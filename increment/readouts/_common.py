@@ -35,7 +35,7 @@ from increment.estimation.sequential import (
     MixedFamily,
 )
 from increment.semantics.design import Encouragement
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -205,7 +205,7 @@ def _refuse_segmented_registration(inference: AsymptoticMean | AlwaysValid | Mix
         )
 
 
-def _require_design(src: MomentSource, view: str) -> Randomized | Encouragement | Observational:
+def _require_design(src: EvidenceSource, view: str) -> Randomized | Encouragement | Observational:
     design = src.context.design
     if design is None:
         _raise_readout_request("readout.design.required", view=view)

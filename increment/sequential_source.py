@@ -34,6 +34,7 @@ from increment.sequential_state import (
 )
 
 if TYPE_CHECKING:
+    from increment._evidence_types import SourceContext
     from increment.semantics.models import MultiplicitySpec
     from increment.semantics.sequential import (
         PredeclaredAdjustment,
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
         SequentialCell,
         SequentialCompliancePolicy,
     )
-    from increment.sources import SourceContext
 
 BreakoutCorrection = Literal["bh", "bonferroni", "none"]
 

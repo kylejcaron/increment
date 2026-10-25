@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from increment import readouts
 from increment._analysis_config import _Unset, overlay_configs
@@ -18,14 +18,18 @@ from increment._evidence_types import (
 )
 from increment._literals import Correction
 from increment.errors import refuse as _refuse
+from increment.readouts._breakout import _breakout_impl
 from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     NATIVE_ROUTE,
     PANEL_ROUTE,
     UNSUPPORTED_ROUTE,
     breakout_route,
+    breakout_snapshot_population,
     evidence_scope,
     load_breakout_evidence,
+    serves_custom_breakouts,
+    validate_populations,
 )
 from increment.readouts._requests import _validate_breakout_request
 
@@ -35,7 +39,7 @@ if TYPE_CHECKING:
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
-    from increment.sources import MomentSource
+    from increment.sources import _BuiltinMomentSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +54,7 @@ class BreakoutRequest:
 
 
 class BreakoutReadouts:
-    def __init__(self, *, src: MomentSource, experiment: Experiment | None) -> None:
+    def __init__(self, *, src: _BuiltinMomentSource, experiment: Experiment | None) -> None:
         self._src = src
         self._experiment = experiment
 
@@ -107,7 +111,8 @@ class BreakoutReadouts:
                 "registered sequential inference has no triggered breakout construction",
             )
         route = breakout_route(self._src)
-        if (
+        custom = serves_custom_breakouts(self._src)
+        if not custom and (
             route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
             or self._experiment is None
             or self._experiment.trigger is None
@@ -120,10 +125,7 @@ class BreakoutReadouts:
                 route=route,
                 supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
-        from increment.query.native_contract import NativeViewSource
-
-        native_src = cast(NativeViewSource, self._src)
-        native_src.validate_populations(populations, operation="run_breakout")
+        validate_populations(self._src, populations, operation="run_breakout")
 
     def validate_request(self, req: BreakoutRequest) -> BreakoutRequest:
         route = breakout_route(self._src)
@@ -141,13 +143,17 @@ class BreakoutReadouts:
                         window_days=metric.window_days,
                     )
             return req
-        if (
-            route not in (ARTIFACT_ROUTE, NATIVE_ROUTE)
-            or self._experiment is None
-            or not self._experiment.breakouts
-            or not req.metrics
-        ):
+        if route not in (ARTIFACT_ROUTE, NATIVE_ROUTE, PANEL_ROUTE) or not req.metrics:
             return req
+        if self._experiment is not None and self._experiment.breakouts:
+            dimension = self._experiment.breakouts[0].property
+        else:
+            from increment._source_types import declared_evidence
+
+            dimensions = declared_evidence(self._src).breakouts
+            if not dimensions:
+                return req
+            dimension = dimensions[0]
         validated = _validate_breakout_request(
             self._src,
             metrics=[metric.name for metric in req.metrics],
@@ -156,7 +162,7 @@ class BreakoutReadouts:
             prior=req.prior,
             correction=req.correction,
             q=req.q,
-            dimension=self._experiment.breakouts[0].property,
+            dimension=dimension,
         )
         return BreakoutRequest(
             metrics=tuple(validated),
@@ -208,7 +214,7 @@ class BreakoutReadouts:
             requested = (
                 tuple(breakout.property for breakout in self._experiment.breakouts)
                 if self._experiment is not None
-                else tuple(self._src.breakouts)
+                else tuple(refusal.breakouts)
             )
             refuse_breakout(
                 self._src,
@@ -216,17 +222,24 @@ class BreakoutReadouts:
                 refusal.breakouts,
                 route="use a source with the requested breakout dimensions",
             )
+        custom = serves_custom_breakouts(self._src)
         if route in (ARTIFACT_ROUTE, NATIVE_ROUTE):
             assert self._experiment is not None
             if not self._experiment.breakouts or not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
-        if route == NATIVE_ROUTE:
+        elif custom:
+            # Validate before the provider scope opens so refusals precede any read.
+            if not req.metrics:
+                return BreakoutEstimates([])
+            req = self.validate_request(req)
+        if route == NATIVE_ROUTE or custom:
             with evidence_scope(
                 self._src,
                 EvidenceScope(
                     metrics=tuple(req.metrics),
-                    population="assigned",
+                    # The snapshot pins one data version; each slice selects its population.
+                    population=breakout_snapshot_population(self._src, req.population),
                     configs=self._configs(req),
                     snapshot=True,
                     include_breakouts=True,
@@ -235,14 +248,16 @@ class BreakoutReadouts:
                 return BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
                     req, route
                 )
+
         return self._run_slices(req, route)
 
     def _run_slices(self, req: BreakoutRequest, route: BreakoutRoute) -> BreakoutEstimates:
         from increment.breakout.estimates import BreakoutEstimates
 
         results: BreakoutEstimates | None = None
+        breakout_fn = _breakout_impl if route == PANEL_ROUTE else readouts.breakout
         for breakout_slice in self._slices(req):
-            segment_results = readouts.breakout(
+            segment_results = breakout_fn(
                 breakout_slice.source,
                 breakout_slice.identity.property,
                 source_name=(

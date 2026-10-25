@@ -53,21 +53,18 @@ def test_store_always_sees_an_in_place_metric_correction_on_the_next_run():
 
 @pytest.mark.slow
 @pytest.mark.parametrize("store", ["auto", "always"])
-def test_direct_unit_frame_observes_corrections_after_materialization(store):
+def test_readout_observes_corrections_after_materialization(store):
     con, defs = _union_horizon_defs()
     metric = defs.metrics[0]
     try:
         with _union_horizon_analysis(con, defs, store=store, metrics=[metric]) as analysis:
             analysis.materialize()
-            source = _native_source(analysis)
             con.raw_sql(
                 "UPDATE union_horizon_events SET value = value * 2 "
                 "WHERE event = 'early_event' AND user_id LIKE 't%'"
             )
-            after = source.unit_frame(metric).to_pylist()
-            assert {row["unit_id"]: row["y"] for row in after} == pytest.approx(
-                {"c0": 5.0, "c1": 6.0, "t0": 20.0, "t1": 24.0}
-            )
+            after = lift_rows(analysis.run())[0].require_lift().value
+            assert after == pytest.approx(3.0)
     finally:
         con.disconnect()
 

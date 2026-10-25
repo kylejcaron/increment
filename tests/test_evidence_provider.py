@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Literal, cast
 
@@ -8,10 +9,15 @@ import pytest
 from increment import Analysis, EvidenceCapabilities, Method
 from increment.errors import CapabilityError, CodedError
 from increment.evidence import (
+    BreakoutIdentity,
+    BreakoutSlicesRequest,
+    BreakoutUnitRowsRequest,
     ComplianceRequest,
     ComplianceSeriesRequest,
     CountEvidence,
     CountsRequest,
+    DayAxisRequest,
+    EvidenceProvider,
     EvidenceScope,
     EvidenceScopeResult,
     MethodFitAnswer,
@@ -21,6 +27,7 @@ from increment.evidence import (
     UnitRowsRequest,
     evidence_provider,
     request_evidence,
+    require_evidence,
 )
 from increment.semantics.design import Encouragement
 from tests.analysis_factory import held_source
@@ -456,10 +463,35 @@ def test_triggered_assignment_counts_use_triggered_counts_without_assignment_met
         evidence = source.evidence
         context = source.context
 
-        def __getattr__(self, name):
-            if name == "assignment_counts":
-                raise AttributeError(name)
-            return getattr(source, name)
+        def moments(self, request):
+            return evidence_provider(source).moments(request)
+
+        def unit_rows(self, request):
+            return evidence_provider(source).unit_rows(request)
+
+        def method_fit(self, request):
+            return evidence_provider(source).method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return evidence_provider(source).breakout_method_moments(request)
+
+        def compliance(self, request):
+            return evidence_provider(source).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(source).compliance_series(request)
+
+        def counts(self, request):
+            if request.kind == "assignment" and request.population == "triggered":
+                _grain, counts, _units = source.triggered_counts()
+                return CountEvidence("triggered", "assignment", counts)
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request):
+            return evidence_provider(source).capture_sequential(request)
+
+        def scope(self, request):
+            return evidence_provider(source).scope(request)
 
     actual = evidence_provider(LegacyCountsSource()).counts(
         CountsRequest("assignment", population="triggered")
@@ -694,18 +726,14 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
 
     class Provider:
         def __init__(self) -> None:
-            self.evidence: EvidenceCapabilities = replace(source.evidence, unit_rows=False)
+            self.evidence: EvidenceCapabilities = replace(
+                source.evidence,
+                unit_rows=False,
+                count_grains=frozenset({"assignment"}),
+                populations=frozenset({"assigned"}),
+            )
             self.context = source.context
             self.read = False
-
-        def breakout_evidence(self, request: Any) -> Any:
-            raise NotImplementedError
-
-        def day_axis(self, request: Any) -> Any:
-            raise NotImplementedError
-
-        def metric_evidence(self, request: Any) -> Any:
-            raise NotImplementedError
 
         def moments(self, request):
             return tuple(source.moments(request.metric, grain=request.grain, by=request.by))
@@ -729,6 +757,7 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
             return ()
 
         def counts(self, request: CountsRequest) -> CountEvidence:
+            self.read = True
             if request.kind == "unit":
                 return CountEvidence("assigned", "unit", source.unit_counts())
             return CountEvidence("assigned", request.kind, {})
@@ -746,6 +775,10 @@ def test_undeclared_unit_rows_refuse_before_custom_provider_reads() -> None:
         request_evidence(provider, UnitRowsRequest(metric))
 
     assert exc_info.value.code == "evidence.unit_rows_unavailable"
+    assert provider.read is False
+    with pytest.raises(CapabilityError) as counts_refused:
+        request_evidence(provider, CountsRequest("assignment", population="triggered"))
+    assert counts_refused.value.code == "evidence.operation_unavailable"
     assert provider.read is False
     analysis.close()
 
@@ -817,7 +850,7 @@ def test_cluster_count_cube_returns_exact_cluster_grain_counts(tmp_path) -> None
 def test_unclustered_source_refuses_cluster_counts_before_reading() -> None:
     source = frame_summary_source()
 
-    class CountingSource:
+    class CountingSource(EvidenceProvider):
         def __init__(self) -> None:
             self.context = source.context
             self.evidence = source.evidence
@@ -825,6 +858,10 @@ def test_unclustered_source_refuses_cluster_counts_before_reading() -> None:
 
         def cluster_counts(self):
             self.cluster_count_reads += 1
+            return source.cluster_counts()
+
+        def counts(self, request):
+            require_evidence(self, request=request)
             return source.cluster_counts()
 
     counting_source = CountingSource()
@@ -942,16 +979,13 @@ def test_unit_rows_supports_custom_source_without_outcome_stage_parameter() -> N
     metric = source.context.metrics[0]
     expected = source.unit_frame(metric)
 
-    class CustomSource:
+    class CustomSource(EvidenceProvider):
         def __init__(self) -> None:
             self.context = source.context
             self.evidence = source.evidence
 
-        def __getattr__(self, name):
-            return getattr(source, name)
-
-        def unit_frame(self, metric, *, covariates=()):
-            return source.unit_frame(metric, covariates=covariates)
+        def unit_rows(self, request):
+            return source.unit_frame(request.metric, covariates=request.covariates)
 
     actual = evidence_provider(CustomSource()).unit_rows(UnitRowsRequest(metric))
 
@@ -1016,29 +1050,41 @@ def test_breakout_method_moments_refuse_another_source_before_reading(tmp_path) 
     source = cast(Any, held_source(analysis))
     reads = 0
 
-    class CountingBreakoutSource:
-        def __init__(self, inner):
-            self.inner = inner
-
-        def __getattr__(self, name):
-            return getattr(self.inner, name)
-
-        def breakout_moments_for_method(self, *args, **kwargs):
-            nonlocal reads
-            reads += 1
-            return self.inner.breakout_moments_for_method(*args, **kwargs)
-
     class CountingSource:
         def __init__(self, inner):
             self.inner = inner
             self.context = inner.context
             self.evidence = inner.evidence
 
-        def __getattr__(self, name):
-            return getattr(self.inner, name)
+        def moments(self, request):
+            return evidence_provider(self.inner).moments(request)
 
-        def breakout_source(self, *args, **kwargs):
-            return CountingBreakoutSource(self.inner.breakout_source(*args, **kwargs))
+        def unit_rows(self, request):
+            return evidence_provider(self.inner).unit_rows(request)
+
+        def method_fit(self, request):
+            return evidence_provider(self.inner).method_fit(request)
+
+        def compliance(self, request):
+            return evidence_provider(self.inner).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(self.inner).compliance_series(request)
+
+        def counts(self, request):
+            return evidence_provider(self.inner).counts(request)
+
+        def capture_sequential(self, request):
+            return evidence_provider(self.inner).capture_sequential(request)
+
+        def scope(self, request):
+            return evidence_provider(self.inner).scope(request)
+
+        def breakout_method_moments(self, request):
+            nonlocal reads
+            answer = evidence_provider(self.inner).breakout_method_moments(request)
+            reads += 1
+            return answer
 
     try:
         metric = source.context.metrics[0]
@@ -1133,31 +1179,32 @@ def test_scoped_breakout_unit_rows_reject_another_source(tmp_path) -> None:
         )
 
         with pytest.raises(CapabilityError) as refused:
-            evidence_provider(scoped).breakout_evidence(request)
+            request_evidence(evidence_provider(scoped), request)
         assert refused.value.code == "evidence.breakout_unavailable"
     finally:
         analysis.close()
 
 
-def test_legacy_source_without_evidence_uses_derived_declaration() -> None:
+def test_legacy_source_without_evidence_refuses_before_reading() -> None:
     source = frame_summary_source()
-    metric = source.context.metrics[0]
 
     class LegacySource:
         def __init__(self, inner):
             self._inner = inner
+            self.reads = 0
 
         def __getattr__(self, name):
             if name == "evidence":
                 raise AttributeError(name)
+            if name == "moments":
+                self.reads += 1
             return getattr(self._inner, name)
 
     legacy = LegacySource(source)
-    provider = evidence_provider(legacy)
-
-    assert provider.moments(MomentsRequest(metric)) == tuple(source.moments(metric))
-    assert provider.evidence.kind == "moments"
-    assert provider.evidence.grains == frozenset(source.capabilities)
+    with pytest.raises(CapabilityError) as unavailable:
+        evidence_provider(legacy)
+    assert unavailable.value.code == "evidence.provider_unavailable"
+    assert legacy.reads == 0
 
 
 @pytest.mark.integration
@@ -1236,3 +1283,2009 @@ def test_refusals_precede_population_or_source_reads(
         assert reads == 0
     finally:
         analysis.close()
+
+
+def test_custom_compound_requests_use_primitive_reads_inside_provider_scope() -> None:
+    source = frame_summary_source()
+    metric = source.context.metrics[0]
+    identity = BreakoutIdentity("country", None)
+    events: list[object] = []
+    unit_frame = object()
+    scope_configs: list[object] = []
+
+    class Provider:
+        evidence = replace(
+            source.evidence,
+            grains=frozenset({"total", "daily"}),
+            breakouts=("country",),
+            unit_rows=True,
+            populations=frozenset({"assigned", "triggered"}),
+        )
+        context = source.context
+
+        def moments(self, request: MomentsRequest):
+            events.append(("moments", request.population))
+            return (
+                {
+                    "ds": "d1",
+                    "metric": metric.name,
+                    "group_id": "control",
+                    "n": 1,
+                    "ref_y": 1.0,
+                    "cy1": 0.0,
+                    "cy2": 0.0,
+                },
+            )
+
+        def unit_rows(self, request: UnitRowsRequest):
+            events.append(("unit_rows", request.covariates))
+            return unit_frame
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused primitive")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused primitive")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused primitive")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused primitive")
+
+        def counts(self, request: CountsRequest):
+            raise AssertionError("unused primitive")
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused primitive")
+
+        def scope(self, request: EvidenceScope):
+            @contextmanager
+            def scoped():
+                scope_configs.append(request.configs)
+                events.append(("enter", request.population, request.breakouts))
+                try:
+                    yield self
+                finally:
+                    events.append(("exit", request.population, request.breakouts))
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider = Provider()
+    assert isinstance(provider, EvidenceProvider)
+
+    day_axis = request_evidence(
+        provider,
+        DayAxisRequest(
+            caller="run_daily",
+            grain="daily",
+            metrics=(metric,),
+            dimension=None,
+            population="triggered",
+        ),
+    )
+    assert events == []
+    tuple(cast(Any, day_axis).slices)
+    assert events == [
+        ("enter", "triggered", ()),
+        ("moments", "triggered"),
+        ("exit", "triggered", ()),
+    ]
+
+    events.clear()
+    breakout_rows = request_evidence(
+        provider, BreakoutUnitRowsRequest(metric=metric, breakout=identity)
+    )
+    assert cast(Any, breakout_rows).frame is unit_frame
+    assert events == [
+        ("enter", "assigned", (identity,)),
+        ("unit_rows", ("country",)),
+        ("exit", "assigned", (identity,)),
+    ]
+
+    events.clear()
+    triggered_rows = request_evidence(
+        provider,
+        BreakoutUnitRowsRequest(
+            metric=metric,
+            breakout=identity,
+            population="triggered",
+        ),
+    )
+    assert cast(Any, triggered_rows).frame is unit_frame
+    assert events == [
+        ("enter", "triggered", (identity,)),
+        ("unit_rows", ("country",)),
+        ("exit", "triggered", (identity,)),
+    ]
+
+    events.clear()
+    scope_configs.clear()
+    first_identity = BreakoutIdentity("country", "source_a")
+    second_identity = BreakoutIdentity("country", "source_b")
+    config_override = object()
+    breakout_slices = cast(
+        Any,
+        request_evidence(
+            provider,
+            BreakoutSlicesRequest(
+                breakouts=(first_identity, second_identity),
+                metrics=(metric,),
+                configs=(config_override,),
+            ),
+        ),
+    )
+    assert len(breakout_slices.slices) == 2
+    assert events == []
+    assert scope_configs == []
+
+    request = DayAxisRequest(
+        caller="run_daily",
+        grain="daily",
+        metrics=(metric,),
+        dimension="country",
+    )
+    first_axis = request_evidence(breakout_slices.slices[0].source, request)
+    tuple(cast(Any, first_axis).slices)
+    second_axis = request_evidence(breakout_slices.slices[1].source, request)
+    tuple(cast(Any, second_axis).slices)
+    assert events == [
+        ("enter", "assigned", (first_identity,)),
+        ("moments", "assigned"),
+        ("exit", "assigned", (first_identity,)),
+        ("enter", "assigned", (second_identity,)),
+        ("moments", "assigned"),
+        ("exit", "assigned", (second_identity,)),
+    ]
+    assert scope_configs == [(config_override,), (config_override,)]
+
+
+def test_custom_readouts_scope_day_axis_and_each_breakout_source() -> None:
+    from increment.readouts import daily
+
+    source = frame_summary_source()
+    metric = source.context.metrics[0]
+    first_identity = BreakoutIdentity("country", "source_a")
+    second_identity = BreakoutIdentity("country", "source_b")
+    events: list[object] = []
+
+    class Provider:
+        evidence = replace(
+            source.evidence, grains=frozenset({"total", "daily"}), breakouts=("country",)
+        )
+        context = source.context
+
+        def moments(self, request: MomentsRequest):
+            events.append(("moments", request.by))
+            return ()
+
+        def unit_rows(self, request: UnitRowsRequest):
+            raise AssertionError("unused primitive")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused primitive")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused primitive")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused primitive")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused primitive")
+
+        def counts(self, request: CountsRequest):
+            raise AssertionError("unused primitive")
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused primitive")
+
+        def scope(self, request: EvidenceScope):
+            @contextmanager
+            def scoped():
+                events.append(("enter", request.breakouts))
+                try:
+                    yield self
+                finally:
+                    events.append(("exit", request.breakouts))
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider = Provider()
+    daily(provider, by=("country",))
+    assert events == [
+        ("enter", (BreakoutIdentity("country", None),)),
+        ("moments", ("country",)),
+        ("exit", (BreakoutIdentity("country", None),)),
+    ]
+    events.clear()
+
+    slices = cast(
+        Any,
+        request_evidence(
+            provider,
+            BreakoutSlicesRequest(
+                (first_identity, second_identity), (metric,), configs=(object(),)
+            ),
+        ),
+    )
+    for item in slices.slices:
+        tuple(
+            cast(
+                Any,
+                request_evidence(
+                    item.source,
+                    DayAxisRequest("run_daily", "daily", (metric,), dimension="country"),
+                ),
+            ).slices
+        )
+    assert events == [
+        ("enter", (first_identity,)),
+        ("moments", ("country",)),
+        ("exit", (first_identity,)),
+        ("enter", (second_identity,)),
+        ("moments", ("country",)),
+        ("exit", (second_identity,)),
+    ]
+
+
+@pytest.mark.integration
+def test_triggered_multicovariate_fallback_reads_triggered_unit_rows() -> None:
+    source = frame_summary_source()
+    metric = source.context.metrics[0]
+    populations: list[str] = []
+
+    class Provider:
+        evidence = replace(
+            source.evidence,
+            unit_rows=True,
+            populations=frozenset({"assigned", "triggered"}),
+        )
+        context = source.context
+
+        def moments(self, request):
+            return tuple(
+                source.moments(
+                    request.metric,
+                    grain=request.grain,
+                    by=request.by,
+                    include_covariate=request.include_covariate,
+                    completed_windows_only=request.completed_windows_only,
+                )
+            )
+
+        def unit_rows(self, request):
+            populations.append(request.population)
+            return source.unit_frame(request.metric, covariates=request.covariates)
+
+        def method_fit(self, request):
+            return MethodFitAnswer("unavailable")
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("unused")
+
+        def compliance(self, request):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request):
+            raise AssertionError("unused")
+
+        def counts(self, request):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request):
+            raise AssertionError("unused")
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    from increment import CupedCovariate, Method
+    from increment.evidence import MetricEvidenceRequest
+
+    method = Method.cuped_multicovariate(
+        covariates=(CupedCovariate(name="segment", kind="categorical"),)
+    )
+    request_evidence(
+        Provider(),
+        MetricEvidenceRequest(
+            metric=metric,
+            control_group="control",
+            methods=(method,),
+            covariates=(CupedCovariate(name="segment", kind="categorical"),),
+            population="triggered",
+        ),
+    )
+    assert populations == ["triggered"]
+
+
+@pytest.mark.integration
+def test_builtin_breakout_unit_rows_respect_triggered_population(tmp_path) -> None:
+    from increment import BreakoutIdentity, BreakoutUnitRowsRequest
+
+    source, identity = definitions_source(tmp_path, trigger=True, partial_trigger=True)
+    metric = source.context.metrics[0]
+    request = BreakoutUnitRowsRequest(
+        metric=metric,
+        breakout=BreakoutIdentity(identity.property, identity.source),
+        population="triggered",
+    )
+    expected = source.triggered_source().unit_frame(metric, covariates=(identity.property,))
+
+    actual = request_evidence(evidence_provider(source), request)
+
+    assert _frame_rows(cast(Any, actual).frame) == _frame_rows(expected)
+
+
+def test_custom_unit_counts_are_not_cluster_integrity_counts() -> None:
+    import pandas as pd
+
+    from increment.evidence import evidence_provider
+    from increment.semantics.design import Randomized
+    from tests.analysis_factory import held_source
+
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{arm}-{cluster}-{member}",
+                "cluster_id": f"{arm}-{cluster}",
+                "arm": arm,
+                "revenue": float(member + (arm == "treatment")),
+            }
+            for arm, members in (("control", (10,) * 22), ("treatment", (1,) * 22))
+            for cluster, count in enumerate(members)
+            for member in range(count)
+        ]
+    )
+    original = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        cluster="cluster_id",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics={"revenue": "mean"},
+    )
+    source = cast(Any, held_source(original))
+
+    class Provider:
+        def __init__(self) -> None:
+            self.context = source.context
+            self.evidence = replace(source.evidence, count_grains=frozenset({"unit"}))
+
+        def moments(self, request):
+            return evidence_provider(source).moments(request)
+
+        def unit_rows(self, request):
+            return evidence_provider(source).unit_rows(request)
+
+        def method_fit(self, request):
+            return evidence_provider(source).method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return evidence_provider(source).breakout_method_moments(request)
+
+        def compliance(self, request):
+            return evidence_provider(source).compliance(request)
+
+        def compliance_series(self, request):
+            return evidence_provider(source).compliance_series(request)
+
+        def counts(self, request):
+            return CountEvidence("assigned", "unit", source.unit_counts())
+
+        def capture_sequential(self, request):
+            return evidence_provider(source).capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        results = analysis.run()
+        assert results.metadata is not None
+        (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+        assert integrity.status == "not_checked_missing_counts"
+        assert integrity.observed is None
+    finally:
+        analysis.close()
+        original.close()
+
+
+def test_custom_triggered_counts_are_not_assigned_integrity_counts() -> None:
+    import pandas as pd
+
+    from increment.evidence import evidence_provider
+    from increment.semantics.design import Randomized
+    from tests.analysis_factory import held_source
+
+    frame = pd.DataFrame(
+        {
+            "unit": [f"u{i}" for i in range(40)],
+            "arm": ["control"] * 20 + ["treatment"] * 20,
+            "revenue": [float(i % 7) for i in range(40)],
+        }
+    )
+    original = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        metrics={"revenue": "mean"},
+    )
+    source = cast(Any, held_source(original))
+    provider = evidence_provider(source)
+
+    class Provider:
+        def __init__(self) -> None:
+            self.context = source.context
+            self.evidence = replace(
+                source.evidence,
+                count_grains=frozenset({"triggered"}),
+                populations=frozenset({"assigned", "triggered"}),
+            )
+
+        def moments(self, request):
+            return provider.moments(request)
+
+        def unit_rows(self, request):
+            return provider.unit_rows(request)
+
+        def method_fit(self, request):
+            return provider.method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return provider.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return provider.compliance(request)
+
+        def compliance_series(self, request):
+            return provider.compliance_series(request)
+
+        def counts(self, request):
+            # Balanced triggered counts say nothing about the assigned allocation.
+            return CountEvidence("triggered", "triggered", {"control": 5, "treatment": 5})
+
+        def capture_sequential(self, request):
+            return provider.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+        def close(self):
+            return None
+
+    analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        results = analysis.run()
+        assert results.metadata is not None
+        (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+        assert integrity.status == "not_checked_missing_counts"
+        assert integrity.observed is None
+    finally:
+        analysis.close()
+        original.close()
+
+
+def test_custom_provider_covariates_are_checked_from_declaration_before_reads() -> None:
+    source = frame_summary_source()
+
+    class Provider:
+        evidence = replace(
+            source.evidence,
+            available_covariates=frozenset({"segment"}),
+        )
+
+    with pytest.raises(CapabilityError) as exc_info:
+        require_evidence(Provider(), covariates=("missing",))
+
+    assert exc_info.value.code == "evidence.covariate_unavailable"
+
+
+def test_scoped_breakout_refuses_undeclared_unit_rows_before_reading() -> None:
+    source = frame_summary_source()
+    metric = source.context.metrics[0]
+    identity = BreakoutIdentity("country", None)
+    reads: list[object] = []
+
+    class Scoped:
+        evidence = replace(
+            source.evidence,
+            breakouts=("country",),
+            unit_rows=False,
+            available_covariates=frozenset({"country"}),
+        )
+        context = source.context
+
+        def unit_rows(self, request):
+            reads.append(request)
+            return source.unit_frame(metric)
+
+        def moments(self, request):
+            raise AssertionError("unused")
+
+        def method_fit(self, request):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("unused")
+
+        def compliance(self, request):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request):
+            raise AssertionError("unused")
+
+        def counts(self, request):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request):
+            raise AssertionError("unused")
+
+        def scope(self, request):
+            raise AssertionError("unused")
+
+    scoped = Scoped()
+
+    class Provider:
+        evidence = replace(
+            source.evidence,
+            breakouts=("country",),
+            unit_rows=True,
+            available_covariates=frozenset({"country"}),
+        )
+        context = source.context
+
+        def moments(self, request):
+            raise AssertionError("unused")
+
+        def unit_rows(self, request):
+            raise AssertionError("must use entered scope")
+
+        def method_fit(self, request):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("unused")
+
+        def compliance(self, request):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request):
+            raise AssertionError("unused")
+
+        def counts(self, request):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request):
+            raise AssertionError("unused")
+
+        def scope(self, request):
+            @contextmanager
+            def entered():
+                yield scoped
+
+            return EvidenceScopeResult(entered(), request)
+
+    with pytest.raises(CapabilityError) as caught:
+        request_evidence(Provider(), BreakoutUnitRowsRequest(metric=metric, breakout=identity))
+
+    assert caught.value.code == "evidence.unit_rows_unavailable"
+    assert reads == []
+
+
+def test_triggered_breakout_fallback_requests_triggered_moments() -> None:
+    import pyarrow as pa
+
+    from increment.frame import from_unit_summary
+    from increment.readouts import breakout
+
+    source = from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "t1", "c2", "t2"],
+                "arm": ["control", "treatment", "control", "treatment"],
+                "country": ["US", "US", "US", "US"],
+                "revenue": [1.0, 2.0, 1.5, 3.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"revenue": "mean"},
+        breakouts=("country",),
+    )
+    metric = source.context.metrics[0]
+    seen: list[str] = []
+    triggered_rows = tuple(source.moments(metric, grain="total", by=("country",)))
+
+    class Provider:
+        evidence = replace(
+            source.evidence,
+            grains=frozenset({"total", "daily"}),
+            breakouts=("country",),
+            populations=frozenset({"assigned", "triggered"}),
+            scalar=None,
+        )
+        context = source.context
+
+        def moments(self, request):
+            seen.append(request.population)
+            return triggered_rows
+
+        def unit_rows(self, request):
+            raise AssertionError("unused")
+
+        def method_fit(self, request):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request):
+            raise AssertionError("unused")
+
+        def compliance(self, request):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request):
+            raise AssertionError("unused")
+
+        def counts(self, request):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request):
+            raise AssertionError("unused")
+
+        def scope(self, request):
+            @contextmanager
+            def entered():
+                yield self
+
+            return EvidenceScopeResult(entered(), request)
+
+    result = breakout(
+        Provider(), "country", metrics=(metric.name,), analysis_population="triggered"
+    )
+
+    expected = breakout(source, "country", metrics=(metric.name,))
+    assert seen == ["triggered"]
+    assert [(row.dimension_value, row.require_lift().value) for row in result] == [
+        (row.dimension_value, row.require_lift().value) for row in expected
+    ]
+
+
+@pytest.mark.integration
+def test_warehouse_fit_breakout_uses_per_cell_fit_answers_without_unit_rows(tmp_path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment import AnalysisPlan
+    from increment.frame import MetricSpec
+    from increment.readouts import breakout
+    from increment.semantics.models import CupedCovariate
+
+    method = Method.cuped_multicovariate(
+        name="categorical",
+        covariates=(CupedCovariate(name="segment", kind="categorical"),),
+    )
+    spec = MetricSpec(name="revenue", type="mean", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": [f"u{i}" for i in range(16)],
+                "arm": ["control"] * 8 + ["treatment"] * 8,
+                "revenue": [float(i % 4) for i in range(8)]
+                + [float(i % 4) + 1.0 for i in range(8)],
+                "segment": ["a", "a", "b", "b"] * 4,
+                "country": ["US", "CA"] * 8,
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="revenue"),
+        breakouts=("country",),
+    )
+    cube_path = tmp_path / "categorical.parquet"
+    analysis.export(cube_path)
+    replay = Analysis.from_moments(
+        pq.read_table(cube_path).to_pylist(),
+        metrics=[spec],
+        control="control",
+    )
+    source = cast(Any, held_source(replay))
+    source_provider = evidence_provider(source)
+    metric = source.context.metrics[0]
+    fit_requests: list[MethodFitRequest] = []
+    unit_row_requests: list[UnitRowsRequest] = []
+
+    class Provider:
+        context = source.context
+        evidence = replace(
+            source.evidence,
+            method_fit="warehouse",
+            unit_rows=True,
+            breakouts=("country",),
+        )
+
+        def moments(self, request):
+            return tuple(
+                {
+                    "metric": metric.name,
+                    "group_id": arm,
+                    "country": country,
+                    "n": 4,
+                    "ref_y": value,
+                    "cy1": 0.0,
+                    "cy2": 0.0,
+                }
+                for country in ("CA", "US")
+                for arm, value in (("control", 1.0), ("treatment", 2.0))
+            )
+
+        def unit_rows(self, request):
+            unit_row_requests.append(request)
+            return source_provider.unit_rows(request)
+
+        def method_fit(self, request):
+            fit_requests.append(request)
+            answer = source_provider.method_fit(replace(request, cell=None))
+            return MethodFitAnswer(
+                "retained_categorical",
+                cells=answer.cells,
+                evidence_sha256=answer.evidence_sha256,
+            )
+
+        def breakout_method_moments(self, request):
+            return source_provider.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return source_provider.compliance(request)
+
+        def compliance_series(self, request):
+            return source_provider.compliance_series(request)
+
+        def counts(self, request):
+            return source_provider.counts(request)
+
+        def capture_sequential(self, request):
+            return source_provider.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        breakout(Provider(), "country", metrics=(metric.name,))
+    finally:
+        analysis.close()
+        replay.close()
+
+    assert len(fit_requests) == 2
+    assert all(request.cell is not None for request in fit_requests)
+    assert {request.cell.value for request in fit_requests if request.cell is not None} == {
+        "CA",
+        "US",
+    }
+    assert unit_row_requests == []
+
+
+@pytest.mark.integration
+def test_breakout_retained_cell_digest_changes_identity_not_estimates(tmp_path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment import AnalysisPlan
+    from increment.frame import MetricSpec
+    from increment.readouts import breakout
+    from increment.semantics.models import CupedCovariate
+
+    method = Method.cuped_multicovariate(
+        name="categorical",
+        covariates=(CupedCovariate(name="segment", kind="categorical"),),
+    )
+    spec = MetricSpec(name="revenue", type="mean", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": [f"u{i}" for i in range(16)],
+                "arm": ["control"] * 8 + ["treatment"] * 8,
+                "revenue": [float(i % 4) for i in range(8)]
+                + [float(i % 4) + 1.0 for i in range(8)],
+                "segment": ["a", "a", "b", "b"] * 4,
+                "country": ["US", "CA"] * 8,
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="revenue"),
+        breakouts=("country",),
+    )
+    cube_path = tmp_path / "categorical.parquet"
+    analysis.export(cube_path)
+    replay = Analysis.from_moments(
+        pq.read_table(cube_path).to_pylist(),
+        metrics=[spec],
+        control="control",
+    )
+    source = cast(Any, held_source(replay))
+    source_provider = evidence_provider(source)
+    metric = source.context.metrics[0]
+
+    class Provider:
+        context = source.context
+
+        def __init__(self, digest: str) -> None:
+            self.evidence = replace(
+                source.evidence,
+                method_fit="retained",
+                unit_rows=True,
+                breakouts=("country",),
+            )
+            self.digest = digest
+
+        def moments(self, request):
+            return tuple(
+                {
+                    "metric": metric.name,
+                    "group_id": arm,
+                    "country": country,
+                    "n": 4,
+                    "ref_y": value,
+                    "cy1": 0.0,
+                    "cy2": 0.0,
+                }
+                for country in ("CA", "US")
+                for arm, value in (("control", 1.0), ("treatment", 2.0))
+            )
+
+        def unit_rows(self, request):
+            raise AssertionError("retained categorical evidence should avoid unit rows")
+
+        def method_fit(self, request):
+            answer = source_provider.method_fit(replace(request, cell=None))
+            return MethodFitAnswer(
+                "retained_categorical",
+                cells=answer.cells,
+                evidence_sha256=self.digest,
+            )
+
+        def breakout_method_moments(self, request):
+            return source_provider.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return source_provider.compliance(request)
+
+        def compliance_series(self, request):
+            return source_provider.compliance_series(request)
+
+        def counts(self, request):
+            return source_provider.counts(request)
+
+        def capture_sequential(self, request):
+            return source_provider.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        first = breakout(Provider("a" * 64), "country", metrics=(metric.name,))
+        second = breakout(Provider("b" * 64), "country", metrics=(metric.name,))
+    finally:
+        analysis.close()
+        replay.close()
+
+    assert [row.lift.value if row.lift is not None else None for row in first] == [
+        row.lift.value if row.lift is not None else None for row in second
+    ]
+    assert [row.source_snapshot_id for row in first] != [row.source_snapshot_id for row in second]
+
+
+@pytest.mark.integration
+def test_custom_provider_daily_uses_typed_triggered_moments(tmp_path) -> None:
+    from increment import Analysis
+
+    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+
+    class Provider:
+        evidence = source.evidence
+        context = source.context
+        artifact_experiment = analysis.experiment
+
+        def moments(self, request: MomentsRequest):
+            day_source = source.day_source(metrics=(request.metric,), population=request.population)
+            return evidence_provider(day_source).moments(request)
+
+        def triggered_observation_edges(self, metric: Any):
+            return source.triggered_observation_edges(metric)
+
+        def unit_rows(self, request: UnitRowsRequest):
+            raise AssertionError("unused")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused")
+
+        def counts(self, request: CountsRequest):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused")
+
+        def scope(self, request: EvidenceScope):
+            @contextmanager
+            def scoped():
+                class Scoped(Provider):
+                    triggered_observation_edges = None
+
+                yield Scoped()
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        expected = analysis.run_daily_lift(population="triggered")
+        actual = provider_analysis.run_daily_lift(population="triggered")
+    finally:
+        analysis.close()
+
+    assert [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual] == [
+        row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected
+    ]
+
+
+@pytest.mark.integration
+def test_breakout_cell_without_fit_evidence_is_fitted_locally_from_unit_rows() -> None:
+    import pyarrow as pa
+
+    from increment import AnalysisPlan
+    from increment.frame import MetricSpec
+    from increment.readouts import breakout
+    from increment.semantics.models import CupedCovariate
+
+    method = Method.cuped_multicovariate(
+        name="categorical",
+        covariates=(CupedCovariate(name="segment", kind="categorical"),),
+    )
+    spec = MetricSpec(name="revenue", type="mean", decision_method=method)
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": [f"u{i}" for i in range(32)],
+                "arm": ["control"] * 16 + ["treatment"] * 16,
+                "revenue": [float(i % 5) for i in range(16)]
+                + [float(i % 5) + 1.5 for i in range(16)],
+                "segment": ["a", "b", "b", "a"] * 8,
+                "country": ["US", "CA"] * 16,
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[spec],
+        plan=AnalysisPlan(primary="revenue"),
+        breakouts=("country",),
+    )
+    source = cast(Any, held_source(analysis))
+    local = evidence_provider(source)
+    unit_row_requests: list[object] = []
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+
+        def moments(self, request):
+            return local.moments(request)
+
+        def unit_rows(self, request):
+            unit_row_requests.append(request)
+            return local.unit_rows(request)
+
+        def method_fit(self, request):
+            # Fit evidence covers no breakout cell, so every cell falls back to a local fit.
+            return MethodFitAnswer("unavailable")
+
+        def breakout_method_moments(self, request):
+            return local.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return local.compliance(request)
+
+        def compliance_series(self, request):
+            return local.compliance_series(request)
+
+        def counts(self, request):
+            return local.counts(request)
+
+        def capture_sequential(self, request):
+            return local.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        actual = breakout(Provider(), "country", metrics=("revenue",))
+        expected = breakout(source, "country", metrics=("revenue",))
+    finally:
+        analysis.close()
+
+    assert unit_row_requests
+    lifts = {(row.dimension_value, row.method): row.lift for row in actual}
+    assert lifts.keys() == {(row.dimension_value, row.method) for row in expected}
+    for row in expected:
+        assert row.lift is not None
+        got = lifts[row.dimension_value, row.method]
+        assert got is not None
+        assert got.value == pytest.approx(row.lift.value)
+        assert got.lb == pytest.approx(row.lift.lb)
+
+
+@pytest.mark.integration
+def test_custom_scope_yielding_builtin_loader_keeps_its_triggered_day_axis(tmp_path) -> None:
+    from increment import Analysis
+
+    # One treatment unit never triggers, so triggered and assigned day-axis rows differ.
+    analysis, _ = definitions_source(
+        tmp_path, trigger=True, partial_trigger=True, return_analysis=True
+    )
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+
+    class Provider:
+        evidence = source.evidence
+        context = source.context
+        artifact_experiment = analysis.experiment
+
+        def moments(self, request: MomentsRequest):
+            raise AssertionError("the scoped built-in loader answers day-axis reads")
+
+        def unit_rows(self, request: UnitRowsRequest):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request: MethodFitRequest):
+            return builtin.method_fit(request)
+
+        def breakout_method_moments(self, request: Any):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request: ComplianceRequest):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            return builtin.compliance_series(request)
+
+        def counts(self, request: CountsRequest):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request: EvidenceScope):
+            return builtin.scope(request)
+
+    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        expected = analysis.run_daily_lift(population="triggered")
+        actual = provider_analysis.run_daily_lift(population="triggered")
+    finally:
+        analysis.close()
+
+    assert [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual] == [
+        row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected
+    ]
+
+
+def _forwarding_provider(source: Any, **attributes: Any) -> Any:
+    builtin = evidence_provider(source)
+
+    class Provider:
+        context = source.context
+        evidence = source.evidence
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider = Provider()
+    for name, value in attributes.items():
+        setattr(provider, name, value)
+    return provider
+
+
+def _categorical_cuped_analysis() -> Any:
+    import pyarrow as pa
+
+    from increment import AnalysisPlan
+    from increment.frame import MetricSpec
+    from increment.semantics.models import CupedCovariate
+
+    method = Method.cuped_multicovariate(
+        name="categorical",
+        covariates=(CupedCovariate(name="segment", kind="categorical"),),
+    )
+    return Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": [f"u{i}" for i in range(32)],
+                "arm": ["control"] * 16 + ["treatment"] * 16,
+                "revenue": [float(i % 5) for i in range(16)]
+                + [float(i % 5) + 1.5 for i in range(16)],
+                "segment": ["a", "b", "b", "a"] * 8,
+                "country": ["US", "CA"] * 16,
+            }
+        ),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="revenue", type="mean", decision_method=method)],
+        plan=AnalysisPlan(primary="revenue"),
+        breakouts=("country",),
+    )
+
+
+@pytest.mark.integration
+def test_provider_declaring_breakouts_runs_breakouts_through_analysis() -> None:
+    analysis = _categorical_cuped_analysis()
+    try:
+        expected = analysis.run_breakout()
+        provider_analysis = Analysis._from_source(_forwarding_provider(held_source(analysis)))
+        actual = provider_analysis.run_breakout()
+    finally:
+        analysis.close()
+
+    assert expected
+    assert {(row.dimension_value, row.method): row.lift for row in actual}.keys() == {
+        (row.dimension_value, row.method) for row in expected
+    }
+    for row in expected:
+        match = next(
+            other
+            for other in actual
+            if (other.dimension_value, other.method) == (row.dimension_value, row.method)
+        )
+        assert (match.lift is None) == (row.lift is None)
+        if row.lift is not None and match.lift is not None:
+            assert match.lift.value == pytest.approx(row.lift.value)
+
+
+@pytest.mark.integration
+def test_provider_fit_requests_are_checked_against_its_own_declaration() -> None:
+    import pyarrow as pa
+
+    from increment.readouts import run
+
+    analysis = _categorical_cuped_analysis()
+    try:
+        expected = analysis.run()
+        # A provider may keep its own data under any attribute name, including `_source`.
+        provider = _forwarding_provider(held_source(analysis), _source=pa.table({"revenue": [1.0]}))
+        actual = run(provider)
+    finally:
+        analysis.close()
+
+    assert [(row.method, row.group_id) for row in actual] == [
+        (row.method, row.group_id) for row in expected
+    ]
+    for got, want in zip(actual, expected, strict=True):
+        assert got.lift is not None and want.lift is not None
+        assert got.lift.value == pytest.approx(want.lift.value)
+
+
+@pytest.mark.integration
+def test_custom_provider_sequential_run_uses_its_current_checkpoint(con) -> None:
+    from datetime import date
+
+    from increment import Analysis
+    from increment.sequential_source import adopt_source_snapshot
+    from tests.analysis_factory import held_source
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    provider_analysis = None
+    try:
+        source = cast(Any, held_source(native))
+        snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        adopt_source_snapshot(source, snapshot)
+        expected = list(native.run())
+        provider_analysis = Analysis._from_source(
+            _forwarding_provider(
+                source,
+                sequential_snapshot=lambda request: snapshot,
+                close=lambda: None,
+            )
+        )
+        actual = list(provider_analysis.run())
+        assert actual == expected
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        native.close()
+
+
+@pytest.mark.integration
+def test_custom_provider_triggered_analysis_uses_declared_population(tmp_path) -> None:
+    from increment import Analysis
+    from tests.analysis_factory import held_source
+
+    native, _ = definitions_source(
+        tmp_path, trigger=True, partial_trigger=False, return_analysis=True
+    )
+    populations: list[str] = []
+    provider_analysis = None
+    try:
+        expected = list(native.run(population="triggered"))
+        provider = _forwarding_provider(
+            cast(Any, held_source(native)),
+            artifact_experiment=native.experiment,
+            close=lambda: None,
+        )
+        for operation in ("scope", "moments", "unit_rows"):
+            original = getattr(provider, operation)
+
+            def record_population(request, *, original=original):
+                populations.append(request.population)
+                return original(request)
+
+            setattr(provider, operation, record_population)
+        provider_analysis = Analysis._from_source(provider, experiment=native.experiment)
+        actual = list(provider_analysis.run(population="triggered"))
+        assert [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual] == [
+            row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected
+        ]
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        native.close()
+    assert populations
+    assert set(populations) == {"triggered"}
+
+
+def test_warehouse_fit_keeps_unit_rows_for_uncovered_cuped_method() -> None:
+    from types import SimpleNamespace
+
+    from increment import CupedCovariate, Method
+    from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    covariate = CupedCovariate(name="segment", kind="categorical")
+    fitted_method = Method.cuped_multicovariate(name="warehouse", covariates=(covariate,))
+    uncovered_method = Method.cuped_multicovariate(name="local", covariates=(covariate,))
+    unit_requests: list[object] = []
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, method_fit="warehouse", unit_rows=True)
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def unit_rows(self, request):
+            unit_requests.append(request)
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            if request.method.name == "warehouse":
+                return MethodFitAnswer(
+                    "warehouse",
+                    envelope=SimpleNamespace(
+                        fit=None, arm_order=("control", "treatment"), withheld=()
+                    ),
+                    fit_identity=("warehouse",),
+                )
+            return MethodFitAnswer("unavailable")
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        evidence = cast(
+            Any,
+            request_evidence(
+                Provider(),
+                MetricEvidenceRequest(
+                    metric=source.context.metrics[0],
+                    control_group="control",
+                    methods=(fitted_method, uncovered_method),
+                    covariates=(covariate,),
+                ),
+            ),
+        )
+    finally:
+        analysis.close()
+
+    assert evidence.unit_frame is not None
+    assert unit_requests
+
+
+def test_local_cuped_fallback_preserves_retained_categorical_components() -> None:
+    from types import SimpleNamespace
+
+    from increment import CupedCovariate, Method
+    from increment.evidence import MethodFitAnswer, MetricEvidenceRequest, request_evidence
+
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis))
+    builtin = evidence_provider(source)
+    covariate = CupedCovariate(name="segment", kind="categorical")
+    decision = Method.cuped_multicovariate(name="retained", covariates=(covariate,))
+    fallback = Method.cuped_multicovariate(name="fallback", covariates=(covariate,))
+
+    class Provider:
+        context = source.context
+        evidence = replace(source.evidence, method_fit="retained", unit_rows=True)
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            if request.method.name == "retained":
+                return MethodFitAnswer(
+                    "retained_categorical",
+                    cells=SimpleNamespace(arms=("control", "treatment"), counts=((2, 2), (2, 2))),
+                    evidence_sha256="retained-categorical-evidence",
+                )
+            return MethodFitAnswer("unavailable")
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        evidence = cast(
+            Any,
+            request_evidence(
+                Provider(),
+                MetricEvidenceRequest(
+                    metric=source.context.metrics[0],
+                    control_group="control",
+                    methods=(decision, fallback),
+                    covariates=(covariate,),
+                ),
+            ),
+        )
+    finally:
+        analysis.close()
+
+    component = ("categorical_cells:retained", "retained-categorical-evidence", 1)
+    assert component in evidence.evidence_components
+    assert component in evidence.decision_evidence_components
+
+
+@pytest.mark.integration
+def test_failed_retained_categorical_fit_emits_unavailable_row() -> None:
+    analysis = _categorical_cuped_analysis()
+    source = cast(Any, held_source(analysis))
+    failure = CodedError(
+        "retained categorical fit failed",
+        code="estimation.cuped.covariate_zero_variance",
+        context={"method": "categorical", "weighted_var_x": 0.0},
+    )
+    provider = _forwarding_provider(source)
+    provider.evidence = replace(source.evidence, method_fit="retained", unit_rows=True)
+    provider.method_fit = lambda request: MethodFitAnswer("retained_categorical", failure=failure)
+    provider.close = lambda: None
+    provider_analysis = None
+    try:
+        provider_analysis = Analysis._from_source(provider)
+        rows = list(provider_analysis.run(sensitivity_methods=[Method(name="unadjusted")]))
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        analysis.close()
+
+    unavailable = [row for row in cast(Any, rows) if row.method == "categorical"]
+    assert unavailable
+    assert all(row.failure_code == failure.code for row in unavailable)
+
+
+@pytest.mark.integration
+def test_provider_checkpoint_wins_when_its_scope_yields_a_builtin_loader(con) -> None:
+    from datetime import date
+
+    from increment import Analysis
+    from increment.sequential_source import adopt_source_snapshot
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    provider_analysis = None
+    try:
+        source = cast(Any, held_source(native))
+        builtin = evidence_provider(source)
+        # The provider owns the June 1 checkpoint; the loader it scopes to has moved to June 3.
+        snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 6, 1))
+        later = native.capture_sequential(finalized=True, as_of=date(2025, 6, 3))
+        adopt_source_snapshot(source, later)
+        checkpoint_requests: list[object] = []
+
+        def provider_checkpoint(request):
+            checkpoint_requests.append(request)
+            return snapshot
+
+        provider_analysis = Analysis._from_source(
+            _forwarding_provider(
+                source,
+                scope=builtin.scope,
+                sequential_snapshot=provider_checkpoint,
+                close=lambda: None,
+            )
+        )
+        actual = list(provider_analysis.run())
+        adopt_source_snapshot(source, snapshot)
+        expected = list(native.run())
+        assert checkpoint_requests
+        assert actual == expected
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        native.close()
+
+
+@pytest.mark.integration
+def test_builtin_adapter_keeps_the_loader_checkpoint_for_sequential_readouts(con) -> None:
+    from datetime import date
+
+    from increment.readouts import run
+    from increment.sequential_source import adopt_source_snapshot
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    try:
+        source = cast(Any, held_source(native))
+        adopt_source_snapshot(
+            source, native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        )
+        assert list(run(evidence_provider(source))) == list(native.run())
+    finally:
+        native.close()
+
+
+@pytest.mark.integration
+def test_request_evidence_answers_sequential_snapshot_requests(con) -> None:
+    from datetime import date
+
+    from increment.evidence import SequentialSnapshotRequest, request_evidence
+    from increment.sequential_source import adopt_source_snapshot
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    try:
+        source = cast(Any, held_source(native))
+        checkpoint = native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        adopt_source_snapshot(source, checkpoint)
+        answer = request_evidence(evidence_provider(source), SequentialSnapshotRequest())
+        assert answer == native.sequential_snapshot()
+    finally:
+        native.close()
+
+
+@pytest.mark.integration
+def test_triggered_daily_lift_without_trigger_edges_refuses_before_reading(tmp_path) -> None:
+    from increment import Analysis
+
+    analysis, _ = definitions_source(tmp_path, trigger=True, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    reads: list[object] = []
+
+    class Provider:
+        evidence = source.evidence
+        context = source.context
+        artifact_experiment = analysis.experiment
+
+        def moments(self, request: MomentsRequest):
+            reads.append(request)
+            raise AssertionError("refused requests read nothing")
+
+        def unit_rows(self, request: UnitRowsRequest):
+            reads.append(request)
+            raise AssertionError("refused requests read nothing")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused")
+
+        def counts(self, request: CountsRequest):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused")
+
+        def scope(self, request: EvidenceScope):
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    assert analysis.experiment.trigger is not None
+    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        with pytest.raises(CodedError) as refused:
+            provider_analysis.run_daily_lift(population="triggered")
+    finally:
+        analysis.close()
+
+    assert refused.value.code == "evidence.operation_unavailable"
+    assert reads == []
+
+
+@pytest.mark.integration
+def test_custom_daily_breakout_scopes_each_declared_source_separately(tmp_path) -> None:
+    from dataclasses import replace as replace_dataclass
+
+    from increment import Analysis
+    from increment.semantics.models import Breakout
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    experiment = analysis.experiment.model_copy(
+        update={
+            "breakouts": (
+                Breakout(property="country", source="web"),
+                Breakout(property="country", source="app"),
+            )
+        }
+    )
+    scoped_breakouts: list[tuple[Any, ...]] = []
+
+    class Provider:
+        evidence = replace_dataclass(source.evidence, breakouts=("country",))
+        context = source.context
+        artifact_experiment = experiment
+
+        def moments(self, request: MomentsRequest):
+            return ()
+
+        def unit_rows(self, request: UnitRowsRequest):
+            raise AssertionError("unused")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused")
+
+        def counts(self, request: CountsRequest):
+            return evidence_provider(source).counts(request)
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused")
+
+        def scope(self, request: EvidenceScope):
+            scoped_breakouts.append(request.breakouts)
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    provider_analysis = Analysis._from_source(cast(Any, Provider()))
+    try:
+        provider_analysis.run_daily(dimension="country")
+    finally:
+        analysis.close()
+
+    assert sorted(
+        tuple((item.property, item.source) for item in breakouts) for breakouts in scoped_breakouts
+    ) == [(("country", "app"),), (("country", "web"),)]
+
+
+def test_triggered_day_axis_without_experiment_metadata_refuses_before_reading() -> None:
+    from increment import Analysis
+
+    source = frame_panel_source()
+    context = replace(source.context, trigger_name="trigger")
+    evidence = replace(
+        source.evidence,
+        populations=frozenset({"assigned", "triggered"}),
+    )
+    reads: list[object] = []
+    provider = _forwarding_provider(source, context=context, evidence=evidence)
+    provider.moments = lambda request: reads.append(request)
+    analysis = Analysis._from_source(provider)
+
+    with pytest.raises(CodedError) as refused:
+        analysis.run_daily(population="triggered")
+
+    assert refused.value.code == "evidence.operation_unavailable"
+    assert refused.value.context["requested"] == "artifact_experiment"
+    assert reads == []
+
+
+@pytest.mark.integration
+def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) -> None:
+    import datetime as dt
+
+    import ibis
+    import yaml
+
+    from increment import Analysis
+
+    rows = [
+        {
+            "user_id": "u1",
+            "ts": dt.datetime(2026, 1, 1, 9),
+            "event": "assignment",
+            "group_id": "control",
+            "country_code": "US",
+            "revenue": None,
+        },
+        {
+            "user_id": "u1",
+            "ts": dt.datetime(2026, 1, 1, 12),
+            "event": "purchase",
+            "group_id": None,
+            "country_code": "US",
+            "revenue": 1.0,
+        },
+    ]
+
+    def fact_source(name: str, table: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "sql": f"SELECT * FROM {table}",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": (
+                [
+                    {"name": "app_assignment", "column": None},
+                    {"name": "app_purchase", "column": "revenue"},
+                ]
+                if name == "app"
+                else [
+                    {"name": "assignment", "column": None},
+                    {"name": "purchase", "column": "revenue"},
+                ]
+            ),
+            "properties": [
+                {
+                    "name": "country",
+                    "column": "country_code",
+                    "dtype": "string",
+                    "as_of": "static",
+                }
+            ],
+        }
+
+    definitions = {
+        "dialect": "duckdb",
+        "fact_sources": [
+            fact_source("events", "raw_events"),
+            fact_source("app", "raw_app"),
+        ],
+        "exposures": [{"name": "assignment", "fact": "assignment"}],
+        "metrics": [
+            {
+                "type": "mean",
+                "name": "revenue",
+                "entity": "user_id",
+                "fact": "purchase",
+                "aggregation": "sum",
+                "window_days": 1,
+            }
+        ],
+        "experiments": [
+            {
+                "name": "conformance",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2026-01-01",
+                "end": "2026-01-03",
+                "control_group": "control",
+                "plan": {"primary": "revenue"},
+                "breakouts": [
+                    {"property": "country", "source": "events"},
+                    {"property": "country", "source": "app"},
+                ],
+            }
+        ],
+    }
+    defs_path = tmp_path / "two_sources.yaml"
+    defs_path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+    con = ibis.duckdb.connect()
+    con.create_table("raw_events", obj=rows)
+    con.create_table("raw_app", obj=rows)
+    analysis = Analysis.from_definitions("conformance", defs_path, con)
+    source = cast(Any, held_source(analysis))
+    experiment = analysis.experiment
+    builtin = evidence_provider(source)
+
+    class Provider:
+        evidence = replace(source.evidence, breakouts=("country",))
+        context = source.context
+        artifact_experiment = experiment
+
+        def moments(self, request):
+            return builtin.moments(request)
+
+        def unit_rows(self, request):
+            return builtin.unit_rows(request)
+
+        def method_fit(self, request):
+            return builtin.method_fit(request)
+
+        def breakout_method_moments(self, request):
+            return builtin.breakout_method_moments(request)
+
+        def compliance(self, request):
+            return builtin.compliance(request)
+
+        def compliance_series(self, request):
+            return builtin.compliance_series(request)
+
+        def counts(self, request):
+            return builtin.counts(request)
+
+        def capture_sequential(self, request):
+            return builtin.capture_sequential(request)
+
+        def scope(self, request):
+            return builtin.scope(request)
+
+    forwarded = Analysis._from_source(cast(Any, Provider()))
+    try:
+        actual = forwarded.run_daily(dimension="country")
+    finally:
+        analysis.close()
+
+    keys = [(row.ds, row.group_id, row.source) for row in actual]
+    assert len(keys) == len(set(keys))
+    assert {row.source for row in actual} == {"events", "app"}
+
+
+@pytest.mark.integration
+def test_daily_moments_for_a_method_refuse_on_builtin_loaders(tmp_path) -> None:
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    try:
+        metric = source.context.metrics[0]
+        with pytest.raises(CodedError) as refused:
+            evidence_provider(source).moments(
+                MomentsRequest(metric=metric, grain="daily", method=Method(name="unadjusted"))
+            )
+    finally:
+        analysis.close()
+
+    assert refused.value.code == "evidence.grain_unavailable"
+
+
+@pytest.mark.integration
+def test_provider_forwarding_its_checkpoint_through_request_evidence_runs_sequentially(
+    con,
+) -> None:
+    from datetime import date
+
+    from increment.evidence import SequentialSnapshotRequest
+    from increment.sequential_source import adopt_source_snapshot
+    from tests.sequential_cases import registered_native
+    from tests.test_analysis_asof import _analysis_with_asof_events
+
+    native = registered_native(_analysis_with_asof_events(con, sequential=True))
+    provider_analysis = None
+    try:
+        source = cast(Any, held_source(native))
+        builtin = evidence_provider(source)
+        adopt_source_snapshot(
+            source, native.capture_sequential(finalized=True, as_of=date(2025, 7, 1))
+        )
+        expected = list(native.run())
+
+        def forwarded_checkpoint(request: SequentialSnapshotRequest):
+            return request_evidence(builtin, request)
+
+        provider_analysis = Analysis._from_source(
+            _forwarding_provider(
+                source,
+                scope=builtin.scope,
+                sequential_snapshot=forwarded_checkpoint,
+                close=lambda: None,
+            )
+        )
+        assert list(provider_analysis.run()) == expected
+    finally:
+        if provider_analysis is not None:
+            provider_analysis.close()
+        native.close()
+
+
+@pytest.mark.integration
+def test_day_axis_scopes_keep_requested_dimensions_the_experiment_does_not_declare(
+    tmp_path,
+) -> None:
+    from increment.semantics.models import Breakout
+
+    analysis, _ = definitions_source(tmp_path, return_analysis=True)
+    source = cast(Any, held_source(analysis))
+    scoped_breakouts: list[tuple[Any, ...]] = []
+    experiment = analysis.experiment.model_copy(
+        update={"breakouts": (Breakout(property="country", source="events"),)}
+    )
+
+    class Provider:
+        evidence = replace(source.evidence, breakouts=("country", "device"))
+        context = source.context
+
+        def moments(self, request: MomentsRequest):
+            return ()
+
+        def unit_rows(self, request: UnitRowsRequest):
+            raise AssertionError("unused")
+
+        def method_fit(self, request: MethodFitRequest):
+            raise AssertionError("unused")
+
+        def breakout_method_moments(self, request: Any):
+            raise AssertionError("unused")
+
+        def compliance(self, request: ComplianceRequest):
+            raise AssertionError("unused")
+
+        def compliance_series(self, request: ComplianceSeriesRequest):
+            raise AssertionError("unused")
+
+        def counts(self, request: CountsRequest):
+            raise AssertionError("unused")
+
+        def capture_sequential(self, request: SequentialCaptureRequest):
+            raise AssertionError("unused")
+
+        def scope(self, request: EvidenceScope):
+            scoped_breakouts.append(tuple(item.property for item in request.breakouts))
+
+            @contextmanager
+            def scoped():
+                yield self
+
+            return EvidenceScopeResult(scoped(), request)
+
+    try:
+        rows = cast(
+            Any,
+            request_evidence(
+                cast(Any, Provider()),
+                DayAxisRequest(
+                    caller="run_daily",
+                    grain="daily",
+                    metrics=source.context.metrics,
+                    dimension=None,
+                    by=("country", "device"),
+                    experiment=experiment,
+                ),
+            ),
+        )
+        list(rows.slices)
+    finally:
+        analysis.close()
+
+    assert scoped_breakouts
+    assert all(set(breakouts) == {"country", "device"} for breakouts in scoped_breakouts)

@@ -19,18 +19,18 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, cast
 import ibis
 import ibis.expr.types as ir
 
-from increment._frame_validation import FRAME_UNIT_FRAME_PANEL
-from increment._metric_specs import MetricSpec, coerce_metrics, synthesise_metric
-from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
-from increment._source_types import (
+from increment._evidence_types import (
     ComplianceArm,
     ComplianceSummary,
-    CUPEDEvidenceExportSource,
-    EvidenceCapabilities,
+    SourceContext,
     invalid_compliance_state,
     raise_legacy_compliance_state,
     validate_compliance_design_match,
 )
+from increment._frame_validation import FRAME_UNIT_FRAME_PANEL
+from increment._metric_specs import MetricSpec, coerce_metrics, synthesise_metric
+from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
+from increment._source_types import EvidenceCapabilities, _BuiltinMomentSource
 from increment._window import NO_DATA_SIGNAL
 from increment.errors import (
     CapabilityError,
@@ -93,7 +93,7 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from increment.sequential_source import SequentialSourceMixin
-from increment.sources import Grain, SourceContext, SourceOperation
+from increment.sources import Grain, SourceOperation
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -904,6 +904,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 ),
                 cluster=None,
                 trigger_name=experiment.trigger,
+                metric_missingness={spec.name: spec.missing for spec in specs},
             )
         assert self._source_context is not None
         return self._source_context
@@ -1978,7 +1979,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             validate_scalar_route,
         )
         from increment._cuped_evidence import method_key
-        from increment._source_types import ScalarMethodMomentSource
+        from increment._source_types import declared_evidence
         from increment.estimation.engine import Method
 
         selected = tuple(selected or self.context.metrics)
@@ -1993,8 +1994,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
             # Several scalar families cannot share one cube's x columns: the cube then
             # carries outcome moments only, and each family is acquired by its own request.
             scalar = next(iter(families.values())) if len(families) == 1 else None
-            if isinstance(self, ScalarMethodMomentSource):
-                rows.extend(self.moments_for_method(config.metric, scalar or Method.unadjusted()))
+            scalar_declaration = declared_evidence(self).scalar
+            if scalar_declaration is not None and scalar_declaration.method_evidence:
+                rows.extend(
+                    cast(Any, self).moments_for_method(config.metric, scalar or Method.unadjusted())
+                )
             else:
                 validate_scalar_route(
                     (config,),
@@ -2350,7 +2354,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         completed_windows_only: bool = False,
     ) -> ComplianceSummary:
         if completed_windows_only:
-            from increment._source_types import validate_compliance_completion
+            from increment._evidence_types import validate_compliance_completion
 
             validate_compliance_completion(design, as_of=as_of)
         uptake = self._uptake_relation(design)
@@ -2577,12 +2581,13 @@ class ArtifactMomentSource(SequentialSourceMixin):
         from increment._analysis_config import validate_scalar_route
         from increment._cuped_evidence import CUPED_EVIDENCE_FORMAT, portable_cuped_rows
         from increment._source_identity import source_identity
-        from increment._source_types import ScalarMethodMomentSource
+        from increment._source_types import declared_evidence
         from increment.decision_wire import compiled_plan_to_json
         from increment.query.cuped import categorical_request_cells, portable_qr_requests
         from increment.sources import stamp_fixed_rows, write_moments_table
 
-        if not isinstance(self, ScalarMethodMomentSource):
+        scalar_declaration = declared_evidence(self).scalar
+        if scalar_declaration is None or not scalar_declaration.method_evidence:
             # Without per-method moments, only the implicit scalar family is representable.
             validate_scalar_route(
                 self.context.configs,
@@ -2594,7 +2599,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         requests = portable_qr_requests(self, requests, population=population)
         identity = source_identity(self)
         portable = portable_cuped_rows(
-            cast(CUPEDEvidenceExportSource, self),
+            cast(_BuiltinMomentSource, self),
             requests,
             categorical_cells=lambda metric, method: categorical_request_cells(
                 self, metric, method, population=population

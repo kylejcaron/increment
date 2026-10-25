@@ -19,9 +19,9 @@ from increment.estimation.armstats import ArmStats
 from increment.semantics.models import Breakout, Metric
 from increment.sources import (
     BreakoutMomentsSource,
-    MomentSource,
     SourceContext,
     SourceOperation,
+    _BuiltinMomentSource,
 )
 
 if TYPE_CHECKING:
@@ -72,7 +72,7 @@ class DimensionedDayEvidence:
 
 
 @runtime_checkable
-class DayEvidenceSource(MomentSource, Protocol):
+class DayEvidenceSource(_BuiltinMomentSource, Protocol):
     """Typed day-axis evidence source owned by the native warehouse path."""
 
     capabilities: frozenset[Grain]
@@ -108,7 +108,7 @@ class DayEvidenceSource(MomentSource, Protocol):
 
 
 @runtime_checkable
-class NativeCoreSource(MomentSource, Protocol):
+class NativeCoreSource(_BuiltinMomentSource, Protocol):
     """Source-owned native core workflows."""
 
     operations: frozenset[SourceOperation]
@@ -119,7 +119,7 @@ class NativeCoreSource(MomentSource, Protocol):
         self,
     ) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]: ...
 
-    def triggered_source(self) -> MomentSource: ...
+    def triggered_source(self) -> _BuiltinMomentSource: ...
 
     def trigger_rates(self) -> dict[str, float]: ...
 
@@ -133,7 +133,7 @@ class NativeCoreSource(MomentSource, Protocol):
         prior: Any | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
         narrow_cuped: bool = False,
-    ) -> MomentSource: ...
+    ) -> _BuiltinMomentSource: ...
 
     def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
 

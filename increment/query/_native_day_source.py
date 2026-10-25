@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis.expr.types as ir
 
+from increment._evidence_types import ComplianceSummary, SourceContext
 from increment.query._native_refusals import _refuse_operation, _winsorization_bounds
 from increment.query.builders import (
     _censor_to_observable_window,
@@ -30,12 +31,7 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
 )
-from increment.sources import (
-    ComplianceSummary,
-    EvidenceCapabilities,
-    SourceContext,
-    SourceOperation,
-)
+from increment.sources import EvidenceCapabilities, SourceOperation
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -255,7 +251,7 @@ class _DaySource:
 
     def compliance_dates(self) -> Sequence[object]:
         if self._compliance_dates_provider is None:
-            from increment._source_types import raise_legacy_compliance_state
+            from increment._evidence_types import raise_legacy_compliance_state
 
             raise_legacy_compliance_state(
                 study_id=self.context.study_id, reason="day source has no enrollment day axis"
@@ -270,7 +266,7 @@ class _DaySource:
         completed_windows_only: bool = False,
     ) -> ComplianceSummary:
         if self._compliance_provider is None:
-            from increment._source_types import raise_legacy_compliance_state
+            from increment._evidence_types import raise_legacy_compliance_state
 
             raise_legacy_compliance_state(
                 study_id=self.context.study_id,

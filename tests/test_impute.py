@@ -16,6 +16,7 @@ import pytest
 
 from increment import impute
 from increment.errors import IncrementWarning
+from increment.evidence import UnitRowsRequest, evidence_provider, request_evidence
 from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, assert_code, completed, refused
 
 
@@ -280,7 +281,9 @@ def test_pooled_mean_has_no_per_unit_frame_on_a_moments_cube(tmp_path) -> None:
         ),
     )
     with pytest.raises(CapabilityError) as raised:
-        _native_source(adopted).unit_frame(adopted.metrics[0])
+        request_evidence(
+            evidence_provider(_native_source(adopted)), UnitRowsRequest(adopted.metrics[0])
+        )
     assert raised.value.code == "evidence.unit_rows_unavailable"
 
 

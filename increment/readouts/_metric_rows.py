@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import overlay_configs, validate_scalar_route
+from increment._evidence_loaders import view_population
 from increment._evidence_types import (
     BreakoutCell,
     BreakoutIdentity,
     BreakoutMethodMomentsRequest,
     EvidenceScope,
-    MethodFitAnswer,
     MethodFitRequest,
     MetricEvidence,
     MetricEvidenceRequest,
@@ -16,15 +16,18 @@ from increment._evidence_types import (
     UnitRowsRequest,
 )
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
-from increment._source_types import CategoricalEvidenceSource, declared_evidence
+from increment._source_types import declared_evidence, is_custom_source
 from increment.errors import CodedError
 from increment.readouts._common import _refuse_unsupported_by
 from increment.readouts._evidence import (
     evidence_scope,
+    fits_cuped_in_warehouse,
     load_breakout_method_moments,
     load_method_fit,
     load_moments,
     load_unit_rows,
+    metric_authenticator,
+    retains_cuped_relation,
 )
 from increment.readouts._source_digest import input_evidence
 from increment.semantics.design import Encouragement
@@ -33,24 +36,22 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from increment.semantics.models import Metric
-    from increment.sources import MomentSource
+    from increment.sources import EvidenceSource
 
 
 def winsor_identity(
-    src: MomentSource, metric: Metric
+    src: EvidenceSource,
+    metric: Metric,
+    *,
+    population: Literal["assigned", "triggered"] | None = None,
 ) -> tuple[Literal["assigned", "triggered"], str]:
-    """Return the source-owned population and missingness attached to raw outcomes."""
-    spec = getattr(src, "_specs_by_name", {}).get(metric.name)
-    missingness = (
-        spec.missing
-        if spec is not None
-        else f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows"
+    """Return declared population and metric missingness for raw outcomes."""
+    selected_population: Literal["assigned", "triggered"] = population or view_population(src)
+    missingness = src.context.metric_missingness.get(
+        metric.name,
+        f"measure-unit-inclusion-v1:{getattr(metric, 'aggregation', 'undefined')}:observable-windows",
     )
-    population = cast(
-        Literal["assigned", "triggered"],
-        getattr(src, "population", getattr(src, "_population", "assigned")),
-    )
-    return population, missingness
+    return selected_population, missingness
 
 
 def _frame_digest_and_arms(frame):
@@ -102,7 +103,7 @@ def _rows_digest(rows):
     return digest.hexdigest(), digest.count
 
 
-def _scalar_method_rows(src, metric, methods, decision, *, by):
+def _scalar_method_rows(src, metric, methods, decision, *, by, population):
     scalar = declared_evidence(src).scalar
     if scalar is None or not scalar.method_evidence:
         validate_scalar_route(
@@ -111,13 +112,17 @@ def _scalar_method_rows(src, metric, methods, decision, *, by):
             representation="implicit",
             design=src.context.design,
         )
-        rows = load_moments(src, MomentsRequest(metric=metric, grain="total", by=by))
+        rows = load_moments(
+            src, MomentsRequest(metric=metric, grain="total", by=by, population=population)
+        )
         return list(rows), tuple((method.name, rows) for method in methods), ()
     families = []
     refusals = []
     for method in methods:
         try:
-            family_rows = load_moments(src, MomentsRequest(metric=metric, method=method, by=by))
+            family_rows = load_moments(
+                src, MomentsRequest(metric=metric, method=method, by=by, population=population)
+            )
         except CodedError as exc:
             if exc.code not in SCALAR_COVARIATE_REFUSALS:
                 raise
@@ -128,13 +133,22 @@ def _scalar_method_rows(src, metric, methods, decision, *, by):
     if selected is not None:
         rows = list(selected)
     elif decision.variance_reduction != "cuped":
-        rows = list(load_moments(src, MomentsRequest(metric=metric, method=decision, by=by)))
+        rows = list(
+            load_moments(
+                src, MomentsRequest(metric=metric, method=decision, by=by, population=population)
+            )
+        )
     else:
         from increment.estimation.engine import Method
 
         assert any(name == decision.name for name, _spec, _context in refusals)
         rows = list(
-            load_moments(src, MomentsRequest(metric=metric, method=Method.unadjusted(), by=by))
+            load_moments(
+                src,
+                MomentsRequest(
+                    metric=metric, method=Method.unadjusted(), by=by, population=population
+                ),
+            )
         )
     return rows, tuple(families), tuple(refusals)
 
@@ -142,7 +156,7 @@ def _scalar_method_rows(src, metric, methods, decision, *, by):
 def _decision_unit_component(frame, method, acquired_columns):
     import narwhals as nw
 
-    from increment._source_types import unit_frame_covariate_columns
+    from increment._evidence_types import unit_frame_covariate_columns
 
     names = tuple(covariate.name for covariate in method.covariates)
     canonical = unit_frame_covariate_columns(names)
@@ -154,25 +168,51 @@ def _decision_unit_component(frame, method, acquired_columns):
     return ("unit_evidence_rows", *_frame_digest_and_arms(projected)[1:])
 
 
+def metric_evidence_scope(src: EvidenceSource, request: MetricEvidenceRequest) -> EvidenceScope:
+    """Build the provider scope needed to acquire one metric's evidence."""
+    snapshot = any(
+        getattr(method, "variance_reduction", None) in {"cuped", "cuped_multicovariate"}
+        for method in request.methods
+    )
+    configs = (
+        overlay_configs(
+            (request.metric,), src.context.configs, methods=list(request.methods), prior=None
+        )
+        if snapshot
+        else None
+    )
+    design = src.context.design
+    uptake_facts = (design.uptake.fact,) if isinstance(design, Encouragement) else ()
+    return EvidenceScope(
+        metrics=(request.metric,),
+        population=request.population,
+        configs=configs,
+        uptake_facts=uptake_facts,
+        breakouts=tuple(BreakoutIdentity(item, None) for item in request.by),
+        snapshot=snapshot,
+    )
+
+
 def load_metric_evidence(
-    src: MomentSource, request: MetricEvidenceRequest, *, scope_active: bool = False
+    src: EvidenceSource, request: MetricEvidenceRequest, *, scope_active: bool = False
 ) -> MetricEvidence:
     """Load one metric's rows once for a typed evidence request."""
     return _load_metric_evidence(src, request, _snapshot_active=scope_active)
 
 
 def _load_percentile_winsor_evidence(
-    src: MomentSource, metric: Metric, control_group: str
+    src: EvidenceSource,
+    metric: Metric,
+    control_group: str,
+    population: Literal["assigned", "triggered"],
 ) -> MetricEvidence:
     import narwhals as nw
 
-    from increment._evidence_refusals import require_evidence
     from increment.estimation.winsor import raw_state_from_frame, winsor_preflight
 
     context = src.context
     winsor_preflight(metric, context)
-    population, missingness = winsor_identity(src, metric)
-    require_evidence(src, unit_rows=True, raw_outcomes=True)
+    population, missingness = winsor_identity(src, metric, population=population)
     native = load_unit_rows(
         src,
         UnitRowsRequest(metric=metric, outcome_stage="raw", population=population),
@@ -227,7 +267,7 @@ def _load_percentile_winsor_evidence(
 
 
 def _load_metric_evidence(  # noqa: PLR0915
-    src: MomentSource,
+    src: EvidenceSource,
     request: MetricEvidenceRequest,
     *,
     _snapshot_active: bool = False,
@@ -236,7 +276,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     by = request.by
     from increment._evidence_refusals import require_evidence
 
-    require_evidence(src, by=by)
+    require_evidence(src, request=request)
     control_group = request.control_group
     methods = request.methods
     covariates = request.covariates
@@ -245,7 +285,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     )
     has_scalar = any(method.variance_reduction == "cuped" for method in methods)
     if (has_linear or has_scalar) and not _snapshot_active:
-        population = getattr(src, "population", "assigned")
+        population = request.population
         configs = overlay_configs((metric,), src.context.configs, methods=list(methods), prior=None)
         uptake_facts = (
             (src.context.design.uptake.fact,)
@@ -264,19 +304,17 @@ def _load_metric_evidence(  # noqa: PLR0915
         ) as pinned:
             return _load_metric_evidence(pinned, request, _snapshot_active=True)
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
-        return _load_percentile_winsor_evidence(src, metric, control_group)
+        return _load_percentile_winsor_evidence(src, metric, control_group, request.population)
     if getattr(metric, "type", None) == "quantile":
         import narwhals as nw
 
-        require_evidence(src, unit_rows=True)
+        require_evidence(src, request=request)
         design = src.context.design
         if getattr(design, "mechanism", None) == "observational":
             from increment.estimation._readout_refusals import refuse_observational_quantile
 
-            refuse_observational_quantile(
-                metric, authenticate=getattr(src, "validated_metric", None)
-            )
-        native = load_unit_rows(src, UnitRowsRequest(metric=metric))
+            refuse_observational_quantile(metric, authenticate=metric_authenticator(src))
+        native = load_unit_rows(src, UnitRowsRequest(metric=metric, population=request.population))
         frame = nw.from_native(native, eager_only=True)
         observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
         return MetricEvidence(
@@ -300,12 +338,24 @@ def _load_metric_evidence(  # noqa: PLR0915
     scalar = declared_evidence(src).scalar
     if scalar_methods:
         rows, method_rows, method_refusals = _scalar_method_rows(
-            src, metric, scalar_methods, methods[0], by=by
+            src, metric, scalar_methods, methods[0], by=by, population=request.population
         )
     elif methods and scalar is not None and scalar.method_evidence:
-        rows = list(load_moments(src, MomentsRequest(metric=metric, method=methods[0], by=by)))
+        rows = list(
+            load_moments(
+                src,
+                MomentsRequest(
+                    metric=metric, method=methods[0], by=by, population=request.population
+                ),
+            )
+        )
     else:
-        rows = list(load_moments(src, MomentsRequest(metric=metric, grain="total", by=by)))
+        rows = list(
+            load_moments(
+                src,
+                MomentsRequest(metric=metric, grain="total", by=by, population=request.population),
+            )
+        )
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
     ordinary_component = ("moments_rows", moments_sha256, moments_count)
     if has_linear:
@@ -356,7 +406,7 @@ def _load_metric_evidence(  # noqa: PLR0915
         )
 
     arm_order = (str(control_group), *sorted(observed - {str(control_group)}))
-    population = cast(Literal["assigned", "triggered"], getattr(src, "population", "assigned"))
+    population = request.population
     method_fit_requests = tuple(
         MethodFitRequest(
             metric=metric,
@@ -375,7 +425,7 @@ def _load_metric_evidence(  # noqa: PLR0915
     retained_answers = tuple(
         (method_fit_request.method.name, answer)
         for method_fit_request, answer in method_fit_answers
-        if answer.origin == "retained_categorical"
+        if answer.failure is None and answer.origin == "retained_categorical"
     )
     retained = tuple((name, cast(Any, answer.cells)) for name, answer in retained_answers)
     cell_arms = frozenset(
@@ -432,6 +482,12 @@ def _load_metric_evidence(  # noqa: PLR0915
         for _method_fit_request, answer in method_fit_answers
         if answer.origin in {"warehouse", "retained_fitted"} or answer.failure is not None
     ]
+    needs_local_units = (
+        is_custom_source(src)
+        and declared_evidence(src).unit_rows
+        and any(answer.origin == "unavailable" for _fit_request, answer in method_fit_answers)
+    )
+    fit_components = ()
     if warehouse_fits:
 
         def fit_evidence_record(identity, evidence):
@@ -478,52 +534,80 @@ def _load_metric_evidence(  # noqa: PLR0915
             )
             for (name, fit), identity in zip(warehouse_fits, warehouse_fit_identities, strict=True)
         )
-        evidence_components = (*categorical_components, *fit_components)
-        decision_method_name = methods[0].name if methods else None
-        return MetricEvidence(
-            cluster=src.context.cluster,
-            control_group=control_group,
-            rows=tuple(rows),
-            unit_frame=None,
-            observed_arms=observed | cell_arms,
-            n_treatment_arms=len((observed | cell_arms) - {control_group}),
-            evidence_kind="mixed_rows",
-            evidence_sha256="",
-            evidence_count=moments_count + len(evidence_components),
-            decision_evidence_components=(
-                decision_components
-                + tuple(
-                    item
-                    for item in evidence_components
-                    if item[0]
-                    in {
-                        f"warehouse_qr:{decision_method_name}",
-                        f"categorical_cells:{decision_method_name}",
-                    }
-                )
-            ),
-            evidence_components=(
-                ("moments_rows", moments_sha256, moments_count),
-                *evidence_components,
-                *method_components,
-            ),
-            method_rows=method_rows,
-            method_refusals=tuple(method_refusals),
-            method_fit_answers=method_fit_answers,
-        )
+        if not needs_local_units:
+            evidence_components = (*categorical_components, *fit_components)
+            decision_method_name = methods[0].name if methods else None
+            return MetricEvidence(
+                cluster=src.context.cluster,
+                control_group=control_group,
+                rows=tuple(rows),
+                unit_frame=None,
+                observed_arms=observed | cell_arms,
+                n_treatment_arms=len((observed | cell_arms) - {control_group}),
+                evidence_kind="mixed_rows",
+                evidence_sha256="",
+                evidence_count=moments_count + len(evidence_components),
+                decision_evidence_components=(
+                    decision_components
+                    + tuple(
+                        item
+                        for item in evidence_components
+                        if item[0]
+                        in {
+                            f"warehouse_qr:{decision_method_name}",
+                            f"categorical_cells:{decision_method_name}",
+                        }
+                    )
+                ),
+                evidence_components=(
+                    ("moments_rows", moments_sha256, moments_count),
+                    *evidence_components,
+                    *method_components,
+                ),
+                method_rows=method_rows,
+                method_refusals=tuple(method_refusals),
+                method_fit_answers=method_fit_answers,
+            )
 
     import narwhals as nw
 
-    from increment._source_types import unit_frame_covariate_columns
+    from increment._evidence_types import unit_frame_covariate_columns
 
     covariate_names = tuple(item.name for item in covariates)
     acquired_columns = unit_frame_covariate_columns(covariate_names)
     require_evidence(src, unit_rows=True, covariates=covariate_names)
-    native = load_unit_rows(src, UnitRowsRequest(metric=metric, covariates=covariate_names))
+    native = load_unit_rows(
+        src,
+        UnitRowsRequest(
+            metric=metric,
+            covariates=covariate_names,
+            population=request.population,
+        ),
+    )
     frame = nw.from_native(native, eager_only=True)
     unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
+    local_fit_components = (
+        (*categorical_components, *fit_components) if is_custom_source(src) else ()
+    )
+    decision_fitted_locally = bool(
+        methods
+        and any(
+            fit_request.method.name == methods[0].name and answer.origin == "unavailable"
+            for fit_request, answer in method_fit_answers
+        )
+    )
     if decision_is_linear:
-        decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
+        if decision_fitted_locally:
+            decision_components += (_decision_unit_component(frame, methods[0], acquired_columns),)
+        decision_components += tuple(
+            item
+            for item in local_fit_components
+            if item[0]
+            in {
+                f"categorical_cells:{methods[0].name}",
+                f"warehouse_qr:{methods[0].name}",
+            }
+        )
     return MetricEvidence(
         cluster=src.context.cluster,
         control_group=control_group,
@@ -538,88 +622,13 @@ def _load_metric_evidence(  # noqa: PLR0915
         evidence_components=(
             ("moments_rows", moments_sha256, moments_count),
             ("unit_evidence_rows", unit_sha256, unit_count),
+            *local_fit_components,
             *method_components,
         ),
         method_rows=method_rows,
         method_refusals=tuple(method_refusals),
         covariate_columns=tuple(acquired_columns.items()),
         method_fit_answers=method_fit_answers,
-    )
-
-
-def _acquire_method_fit(src, request: MethodFitRequest) -> MethodFitAnswer:
-    """Acquire retained or warehouse fit evidence without performing a local fit."""
-    if request.cell is None and isinstance(src, CategoricalEvidenceSource):
-        evidence = src.categorical_evidence(request.metric, request.method)
-        if evidence is not None:
-            return MethodFitAnswer(
-                origin="retained_categorical",
-                cells=cast(Any, evidence.cells),
-                evidence_sha256=evidence.payload_sha256,
-            )
-
-    fit_source = (
-        getattr(src, "_source", src)
-        if request.cell is not None
-        else src
-        if getattr(src, "cuped_relation", None) is not None
-        else getattr(src, "_source", None) or src
-    )
-    origin = (
-        "retained_fitted" if getattr(fit_source, "cuped_relation", None) is None else "warehouse"
-    )
-    fit = getattr(fit_source, "fit_cuped_multicovariate", None)
-    if fit is None:
-        return MethodFitAnswer(origin="unavailable")
-
-    request_identity: tuple[object, ...] = ()
-    if request.cell is None:
-        from increment._canonical import canonical_json_bytes
-        from increment._source_identity import source_identity
-
-        request_identity = (
-            "warehouse-cuped-fit-v1",
-            request.metric.name,
-            request.population,
-            source_identity(fit_source),
-            canonical_json_bytes(request.method.model_dump(mode="json", exclude={"name"})).decode(),
-            request.control,
-            request.arm_order,
-            None,
-            None,
-            None,
-            False,
-        )
-    kwargs = {
-        "control": request.control,
-        "arm_order": request.arm_order,
-        "population": request.population,
-    }
-    if request.cell is not None:
-        kwargs.update(
-            breakout_dimension=request.cell.breakout.property,
-            breakout_source=request.cell.breakout.source,
-            breakout_value=request.cell.value,
-            breakout_is_null=request.cell.is_null,
-        )
-    try:
-        identity, envelope = fit(request.metric, request.method, **kwargs)
-    except CodedError as exc:
-        return MethodFitAnswer(
-            origin=origin,
-            failure=exc,
-            fit_identity=request_identity,
-        )
-    if isinstance(envelope, CodedError):
-        return MethodFitAnswer(
-            origin=origin,
-            failure=envelope,
-            fit_identity=tuple(identity),
-        )
-    return MethodFitAnswer(
-        origin=origin,
-        envelope=envelope,
-        fit_identity=tuple(identity),
     )
 
 
@@ -728,14 +737,21 @@ def _load_breakout_metric_rows(
             ),
         ).rows
         if scalar is not None and scalar.breakout_evidence
-        else load_moments(src, MomentsRequest(metric=metric, grain="total", by=(dimension,)))
+        else load_moments(
+            src,
+            MomentsRequest(
+                metric=metric,
+                grain="total",
+                by=(dimension,),
+                population=population,
+            ),
+        )
     )
     breakout_fit_answers = []
     warehouse_components = []
-    fit_source = getattr(src, "_source", src)
     segment_values = (
         sorted({"__null__" if row.get(dimension) is None else str(row[dimension]) for row in base})
-        if getattr(fit_source, "fit_cuped_multicovariate", None) is not None
+        if fits_cuped_in_warehouse(src) or retains_cuped_relation(src)
         else ()
     )
     for method in methods:
@@ -777,9 +793,20 @@ def _load_breakout_metric_rows(
                 ),
             )
             answer = load_method_fit(src, method_fit_request)
-            if answer.origin == "unavailable":
-                continue
             breakout_fit_answers.append((method_fit_request, answer))
+            if answer.origin == "unavailable":
+                # Kept so the readout can acquire unit rows for this cell's local fit.
+                continue
+            if answer.origin == "retained_categorical" and answer.failure is None:
+                # Retained categorical cells carry no envelope; their evidence digest is the identity.
+                warehouse_components.append(
+                    (
+                        f"categorical_cells_breakout:{method.name}:{dimension}:{segment_value}",
+                        cast(str, answer.evidence_sha256),
+                        1,
+                    )
+                )
+                continue
             fit = answer.failure if answer.failure is not None else answer.envelope
             warehouse_components.append(
                 (

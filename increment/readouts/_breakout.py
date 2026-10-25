@@ -9,10 +9,11 @@ from increment._analysis_config import (
     overlay_configs,
     select_metrics,
 )
-from increment._evidence_types import BreakoutIdentity, BreakoutUnitRowsRequest
+from increment._evidence_types import BreakoutIdentity, BreakoutUnitRowsRequest, EvidenceScope
 from increment._frame_validation import SCALAR_COVARIATE_REFUSALS
 from increment._literals import Correction
 from increment._readout_request import ReadoutRequest, validate_request
+from increment._source_types import is_custom_source
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     BreakoutEstimate,
@@ -34,10 +35,16 @@ from increment.readouts._common import (
     _warn,
 )
 from increment.readouts._encouragement import _encouragement_cell_identities
-from increment.readouts._evidence import day_axis_route, load_breakout_evidence
+from increment.readouts._evidence import (
+    day_axis_route,
+    evidence_scope,
+    fits_uncovered_cells_locally,
+    load_breakout_evidence,
+    retains_cuped_relation,
+)
 from increment.readouts._metric_rows import _load_breakout_metric_rows
 from increment.readouts._passes import _append_lift_cell_failure
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -266,7 +273,7 @@ def _encouragement_breakout_rows(
 def _scoped_breakout_results(
     rows: Sequence[BreakoutEstimate],
     *,
-    src: MomentSource,
+    src: EvidenceSource,
     analysis_population: Literal["assigned", "triggered"],
     plan: Any,
     metrics: Sequence[Metric],
@@ -323,13 +330,14 @@ def _segment_unit_frames(frame: Any, column: str) -> dict[str, Any]:
 
 
 def _load_cuped_breakout_frames(
-    src: MomentSource,
+    src: EvidenceSource,
     configs: Sequence[Any],
     methods_by_metric: Mapping[str, list[Method]],
     dimension: str,
     *,
     population: Literal["assigned", "triggered"],
     source_name: str | None,
+    local_fit_metrics: frozenset[str] | None = None,
 ) -> tuple[
     dict[str, Mapping[str, Any]],
     dict[str, Sequence[Any]],
@@ -353,10 +361,9 @@ def _load_cuped_breakout_frames(
     }
     import narwhals as nw
 
-    from increment._source_types import breakout_dimension_column, unit_frame_covariate_columns
+    from increment._evidence_types import unit_frame_covariate_columns
+    from increment._source_types import breakout_dimension_column
     from increment.readouts._metric_rows import _frame_digest_and_arms
-
-    fit_source = getattr(src, "_source", src)
 
     for config in configs:
         name = config.metric.name
@@ -364,7 +371,10 @@ def _load_cuped_breakout_frames(
             method.variance_reduction == "cuped_multicovariate"
             for method in methods_by_metric[name]
         ):
-            if getattr(fit_source, "cuped_relation", None) is not None:
+            if local_fit_metrics is not None:
+                if name not in local_fit_metrics:
+                    continue
+            elif retains_cuped_relation(src):
                 continue
             names = tuple(item.name for item in config.covariates)
             column = breakout_dimension_column(names)
@@ -373,6 +383,7 @@ def _load_cuped_breakout_frames(
                 BreakoutUnitRowsRequest(
                     metric=config.metric,
                     breakout=BreakoutIdentity(dimension, source_name),
+                    population=population,
                     covariates=names,
                 ),
             )
@@ -404,8 +415,60 @@ def _load_cuped_breakout_frames(
     return frames, covariates, roles, evidence
 
 
-def breakout(
-    src: MomentSource,
+def _validated_breakout_request(
+    src: EvidenceSource,
+    dimension: str,
+    *,
+    decision_method: Method | _Unset,
+    sensitivity_methods: Sequence[Method] | _Unset,
+    prior: Prior | None | _Unset,
+    metrics: Sequence[str] | None,
+    correction: Correction | None,
+    q: float | None,
+    estimands: Sequence[str] | None,
+) -> tuple[ReadoutRequest, Correction, float]:
+    design = _require_design(src, "breakout")
+    plan = src.context.plan
+    policy = plan.view_policies.for_view(
+        "breakout",
+        mechanism=design.mechanism if design is not None else None,
+        segmented=True,
+    )
+    if correction is None:
+        correction = normalize_display_correction(policy.correction)
+    if q is None:
+        q = policy.q if policy.q is not None else plan.q
+    resolved_correction: Correction = "none" if correction is None else correction
+    selected = select_metrics(
+        cast("Sequence[Metric]", src.context.metrics), metrics, caller="breakout"
+    )
+    resolved_configs = overlay_configs(
+        selected,
+        src.context.configs,
+        methods=None,
+        prior=None,
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior_override=prior,
+    )
+    request = ReadoutRequest.from_source(
+        src,
+        metrics=selected,
+        configs=resolved_configs,
+        view="breakout",
+        grain="total",
+        by=(dimension,),
+        dimension=dimension,
+        estimands=estimands,
+        correction=resolved_correction,
+        q=q,
+    )
+    validate_request(request)
+    return request, resolved_correction, q
+
+
+def _breakout_impl(
+    src: EvidenceSource,
     dimension: str,
     *,
     source_name: str | None = None,
@@ -474,49 +537,24 @@ def breakout(
     metrics narrows the reported names; an unknown one raises before any
     moments run.
     """
-    design = _require_design(src, "breakout")
-    plan = src.context.plan
-    policy = plan.view_policies.for_view(
-        "breakout",
-        mechanism=design.mechanism if design is not None else None,
-        segmented=True,
-    )
-    if correction is None:
-        correction = normalize_display_correction(policy.correction)
-    if q is None:
-        # Omitted q always inherits the plan's, whether or not correction
-        # was passed explicitly -- an explicit correction with no q is
-        # NOT the same request as an explicit correction AND q.
-        q = policy.q if policy.q is not None else plan.q
-    correction = correction or "none"
-    alpha = plan.alpha
-    inference = _sequential_inference(plan)
-    selected = select_metrics(
-        cast("Sequence[Metric]", src.context.metrics), metrics, caller="breakout"
-    )
-    resolved_configs = overlay_configs(
-        selected,
-        src.context.configs,
-        methods=None,
-        prior=None,
+    request, correction, q = _validated_breakout_request(
+        src,
+        dimension,
         decision_method=decision_method,
         sensitivity_methods=sensitivity_methods,
-        prior_override=prior,
-    )
-    configs = {config.metric.name: config for config in resolved_configs}
-    request = ReadoutRequest.from_source(
-        src,
-        metrics=selected,
-        configs=resolved_configs,
-        view="breakout",
-        grain="total",
-        by=(dimension,),
-        dimension=dimension,
-        estimands=estimands,
+        prior=prior,
+        metrics=metrics,
         correction=correction,
         q=q,
+        estimands=estimands,
     )
-    validate_request(request)
+    design = _require_design(src, "breakout")
+    plan = src.context.plan
+    alpha = plan.alpha
+    inference = _sequential_inference(plan)
+    selected = request.metrics
+    resolved_configs = request.configs
+    configs = {config.metric.name: config for config in resolved_configs}
     from increment._source_identity import source_identity
     from increment.readouts._design_scope import _config_snapshot
 
@@ -570,11 +608,16 @@ def breakout(
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
-        from increment.sequential_source import source_snapshot
+        from increment.readouts._evidence import current_source_snapshot
         from increment.sequential_state import sequential_refuse
 
+        snapshot = current_source_snapshot(src)
         rows = sequential_readout(
-            src, metrics=selected, estimands=estimands, configs=resolved_configs
+            src,
+            metrics=selected,
+            estimands=estimands,
+            snapshot=snapshot,
+            configs=resolved_configs,
         )
         output = []
         for row in rows:
@@ -598,7 +641,7 @@ def breakout(
                     family_threshold=row.family_threshold,
                 )
             )
-        return scoped(stamp_multiplicity_status(output), sequential_snapshot=source_snapshot(src))
+        return scoped(stamp_multiplicity_status(output), sequential_snapshot=snapshot)
 
     method_evidence = {
         metric.name: _load_breakout_metric_rows(
@@ -612,11 +655,30 @@ def breakout(
         )
         for metric in selected
     }
+    if fits_uncovered_cells_locally(src):
+        # Cells without a retained or warehouse fit fall back to a local fit from unit rows.
+        local_fit_metrics = frozenset(
+            name
+            for name, evidence in method_evidence.items()
+            if any(answer.origin == "unavailable" for _, answer in evidence.method_fit_answers)
+        )
+        if local_fit_metrics:
+            local_frames, _, _, local_evidence = _load_cuped_breakout_frames(
+                src,
+                resolved_configs,
+                methods_by_metric,
+                dimension,
+                population=analysis_population,
+                source_name=source_name,
+                local_fit_metrics=local_fit_metrics,
+            )
+            unit_frames_by_metric.update(local_frames)
+            unit_evidence.extend(local_evidence)
     from increment.readouts._source_digest import component
 
     for metric_name, evidence in method_evidence.items():
         for name, sha256, count in evidence.evidence_components:
-            if not name.startswith("warehouse_qr_breakout:"):
+            if not name.startswith(("warehouse_qr_breakout:", "categorical_cells_breakout:")):
                 continue
             unit_evidence.append(
                 {
@@ -706,3 +768,68 @@ def breakout(
                 )
             )
     return scoped(stamp_multiplicity_status(results))
+
+
+def breakout(
+    src: EvidenceSource,
+    dimension: str,
+    *,
+    source_name: str | None = None,
+    decision_method: Method | _Unset = UNSET,
+    sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+    prior: Prior | None | _Unset = UNSET,
+    metrics: Sequence[str] | None = None,
+    correction: Correction | None = None,
+    q: float | None = None,
+    estimands: Sequence[str] | None = None,
+    analysis_population: Literal["assigned", "triggered"] = "assigned",
+) -> BreakoutEstimates:
+    """Run breakout on one pinned custom-provider snapshot."""
+    if not is_custom_source(src):
+        return _breakout_impl(
+            src,
+            dimension,
+            source_name=source_name,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
+            correction=correction,
+            q=q,
+            estimands=estimands,
+            analysis_population=analysis_population,
+        )
+
+    validated, _, _ = _validated_breakout_request(
+        src,
+        dimension,
+        decision_method=decision_method,
+        sensitivity_methods=sensitivity_methods,
+        prior=prior,
+        metrics=metrics,
+        correction=correction,
+        q=q,
+        estimands=estimands,
+    )
+    request = EvidenceScope(
+        metrics=validated.metrics,
+        population=analysis_population,
+        breakouts=(BreakoutIdentity(dimension, source_name),),
+        configs=validated.configs,
+        snapshot=True,
+        include_breakouts=True,
+    )
+    with evidence_scope(src, request) as pinned:
+        return _breakout_impl(
+            pinned,
+            dimension,
+            source_name=source_name,
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
+            correction=correction,
+            q=q,
+            estimands=estimands,
+            analysis_population=analysis_population,
+        )

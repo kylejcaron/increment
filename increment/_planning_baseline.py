@@ -28,18 +28,23 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import select_metrics
-from increment._evidence_refusals import require_evidence
 from increment._evidence_types import (
     ComplianceRequest,
     CountsRequest,
+    EvidenceScope,
     MomentsRequest,
     UnitRowsRequest,
 )
-from increment._source_operations import TriggeredPopulationOperation
-from increment._source_types import evidence_is_declared
 from increment.errors import CapabilityError, RefusalSpec, raiser, refusals
 from increment.query.integrity import validate_trigger_fires_in_every_arm
-from increment.readouts._evidence import load_compliance, load_counts, load_moments, load_unit_rows
+from increment.readouts._evidence import (
+    evidence_scope,
+    is_custom_provider,
+    load_compliance,
+    load_counts,
+    load_moments,
+    load_unit_rows,
+)
 from increment.sources import require_operation
 
 if TYPE_CHECKING:
@@ -49,7 +54,7 @@ if TYPE_CHECKING:
     from increment.power import Baseline
     from increment.semantics.design import Encouragement
     from increment.semantics.models import Metric, QuantileMetric
-    from increment.sources import MomentSource
+    from increment.sources import _BuiltinMomentSource
 
 
 _REFUSALS = refusals(
@@ -104,19 +109,6 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
-def _require_declared_evidence(source: object, request: object) -> None:
-    """Validate provider declarations without rejecting legacy method-only support."""
-    if not evidence_is_declared(source):
-        return
-    underlying = getattr(source, "_source", None)
-    if underlying is not None and not evidence_is_declared(underlying):
-        if isinstance(request, ComplianceRequest):
-            return
-        if isinstance(request, CountsRequest) and request.kind == "cluster":
-            request = CountsRequest(kind="unit", population=request.population)
-    require_evidence(source, request=request)
-
-
 # Source operations the triggered population needs, and the artifact
 # extension that supplies each.
 _TRIGGER_EVIDENCE = (
@@ -126,7 +118,7 @@ _TRIGGER_EVIDENCE = (
 
 
 def planning_baseline(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     metric: str,
     *,
     trigger: str | None,
@@ -146,9 +138,51 @@ def planning_baseline(
     if design is None:
         _raise("analysis.planning_baseline.design_unavailable", metric=metric)
     control_group = design.control_group
+    if trigger is not None:
+        if is_custom_provider(source):
+            trigger_rate = _provider_trigger_rate(
+                source, trigger=trigger, control_group=control_group
+            )
+            with evidence_scope(
+                source, EvidenceScope(metrics=(spec,), population="triggered")
+            ) as population_source:
+                return _baseline_from_population(
+                    source,
+                    population_source,
+                    spec=spec,
+                    control_group=control_group,
+                    trigger=trigger,
+                    population="triggered",
+                    trigger_rate=trigger_rate,
+                )
     population_source, population, trigger_rate = _analyzed_population(
         source, metric=metric, control_group=control_group, trigger=trigger, rates=trigger_rates
     )
+    return _baseline_from_population(
+        source,
+        population_source,
+        spec=spec,
+        control_group=control_group,
+        trigger=trigger,
+        population=population,
+        trigger_rate=trigger_rate,
+    )
+
+
+def _baseline_from_population(
+    source: Any,
+    population_source: Any,
+    *,
+    spec: Metric,
+    control_group: str,
+    trigger: str | None,
+    population: Literal["assigned", "triggered"],
+    trigger_rate: float,
+) -> Baseline:
+    context = source.context
+    design = context.design
+    if design is None:
+        _raise("analysis.planning_baseline.design_unavailable", metric=spec.name)
     if spec.type == "quantile":
         quantile = _quantile_baseline(population_source, spec, control_group, population=population)
         return _with_trigger_rate(quantile, trigger_rate)
@@ -161,7 +195,7 @@ def planning_baseline(
                 source,
                 population_source,
                 baseline,
-                metric=metric,
+                metric=spec.name,
                 control_group=control_group,
                 trigger_rate=trigger_rate,
             )
@@ -174,14 +208,14 @@ def planning_baseline(
             population_source, spec, control_group, wants_cuped=wants_cuped, population=population
         )
     if design.mechanism == "encouragement":
-        compliance = _compliance(population_source, design)
+        compliance = _compliance(population_source, design, population=population)
         baseline = baseline.model_copy(update={"compliance": compliance})
     return type(baseline).model_validate(_with_trigger_rate(baseline, trigger_rate).model_dump())
 
 
 def _with_cluster_participation(
-    assigned: MomentSource,
-    analyzed: MomentSource,
+    assigned: _BuiltinMomentSource,
+    analyzed: _BuiltinMomentSource,
     baseline: Baseline,
     *,
     metric: str,
@@ -195,13 +229,10 @@ def _with_cluster_participation(
     analyzed_clusters: int | None = None
     try:
         unit_request = CountsRequest(kind="unit", population="assigned")
-        _require_declared_evidence(assigned, unit_request)
         assigned_units = load_counts(assigned, unit_request).counts[control_group]
         assigned_cluster_request = CountsRequest(kind="cluster", population="assigned")
-        _require_declared_evidence(assigned, assigned_cluster_request)
         assigned_clusters = load_counts(assigned, assigned_cluster_request).counts[control_group]
         analyzed_cluster_request = CountsRequest(kind="cluster", population="triggered")
-        _require_declared_evidence(analyzed, analyzed_cluster_request)
         analyzed_clusters = load_counts(analyzed, analyzed_cluster_request).counts[control_group]
     except (AttributeError, CapabilityError, KeyError):
         _raise(
@@ -246,6 +277,23 @@ def _with_cluster_participation(
     )
 
 
+def _provider_trigger_rate(source: Any, *, trigger: str, control_group: str) -> float:
+    """Derive a custom provider's control trigger rate from unit counts."""
+    assigned = load_counts(source, CountsRequest(kind="unit"))
+    triggered = load_counts(source, CountsRequest(kind="triggered"))
+    from increment.readouts._design_scope import _is_accounting_label
+
+    observed = triggered.unit_counts if triggered.grain == "cluster" else triggered.counts
+    # Unassigned and mixed-assignment audit buckets are not arms.
+    rates = {
+        group: float(observed.get(group, 0)) / count
+        for group, count in assigned.counts.items()
+        if count > 0 and not _is_accounting_label(group)
+    }
+    validate_trigger_fires_in_every_arm(rates, trigger)
+    return rates[control_group]
+
+
 def _with_trigger_rate(baseline: Baseline, trigger_rate: float) -> Baseline:
     if trigger_rate == 1.0:
         return baseline
@@ -253,20 +301,20 @@ def _with_trigger_rate(baseline: Baseline, trigger_rate: float) -> Baseline:
 
 
 def _analyzed_population(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     *,
     metric: str,
     control_group: str,
     trigger: str | None,
     rates: Callable[[], dict[str, float]],
-) -> tuple[MomentSource, Literal["assigned", "triggered"], float]:
+) -> tuple[_BuiltinMomentSource, Literal["assigned", "triggered"], float]:
     """Return the pinned population source and control arm's trigger rate."""
     if trigger is None:
         return source, "assigned", 1.0
     missing = tuple(
         extension
         for operation, extension in _TRIGGER_EVIDENCE
-        if operation not in source.operations
+        if operation not in cast(Any, source).evidence.operations
     )
     if missing:
         _raise(
@@ -277,14 +325,12 @@ def _analyzed_population(
         )
     observed = rates()
     validate_trigger_fires_in_every_arm(observed, trigger)
-    triggered = require_operation(
-        source, "triggered_source", TriggeredPopulationOperation
-    ).triggered_source()
+    triggered = cast(Any, require_operation(source, "triggered_source")).triggered_source()
     return triggered, "triggered", observed[control_group]
 
 
 def _quantile_baseline(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     spec: QuantileMetric,
     control_group: str,
     *,
@@ -298,7 +344,6 @@ def _quantile_baseline(
 
     try:
         request = UnitRowsRequest(metric=spec, population=population)
-        _require_declared_evidence(source, request)
         rows = load_unit_rows(source, request)
     except CapabilityError as exc:
         if exc.code != "evidence.unit_rows_unavailable":
@@ -312,7 +357,7 @@ def _quantile_baseline(
 
 
 def _unit_baseline(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     spec: Metric,
     control_group: str,
     *,
@@ -325,7 +370,6 @@ def _unit_baseline(
     from increment.power import Baseline
 
     request = MomentsRequest(metric=spec, include_covariate=wants_cuped, population=population)
-    _require_declared_evidence(source, request)
     rows = cast("list[Mapping[str, Any]]", load_moments(source, request))
     arms = _df_to_arms(rows)
     control = next(a for a in arms if a.group_id == control_group)
@@ -413,7 +457,7 @@ def _cuped_rho(arms: list[ArmStats], control: ArmStats, *, ratio: bool, metric: 
 
 
 def _clustered_baseline(
-    source: MomentSource,
+    source: _BuiltinMomentSource,
     spec: Metric,
     control_group: str,
     *,
@@ -429,12 +473,10 @@ def _clustered_baseline(
     from increment.power import Baseline
 
     request = UnitRowsRequest(metric=spec, population=population)
-    _require_declared_evidence(source, request)
     frame = nw.from_native(load_unit_rows(source, request), eager_only=True)
     rows = frame.filter(nw.col("group_id") == control_group)
     if trigger is not None:
         count_request = CountsRequest(kind="unit", population="triggered")
-        _require_declared_evidence(source, count_request)
         eligible_units = load_counts(source, count_request).counts[control_group]
         if len(rows) != eligible_units:
             _raise(
@@ -475,12 +517,14 @@ def _clustered_baseline(
     return baseline.model_copy(update=fields)
 
 
-def _compliance(source: MomentSource, design: Encouragement) -> float:
-    """The first treatment arm's uptake rate minus control's, from the
-    source's design-level compliance state -- the same state the runtime's
-    compliance row reads, at unit grain under a cluster too."""
-    request = ComplianceRequest(design=design)
-    _require_declared_evidence(source, request)
+def _compliance(
+    source: _BuiltinMomentSource,
+    design: Encouragement,
+    *,
+    population: Literal["assigned", "triggered"],
+) -> float:
+    """Read design-level uptake from the baseline's analyzed population."""
+    request = ComplianceRequest(design=design, population=population)
     summary = load_compliance(source, request)
     rates = {arm.group_id: arm.uptake_total / arm.n_units for arm in summary.arms}
     control = rates.pop(design.control_group)

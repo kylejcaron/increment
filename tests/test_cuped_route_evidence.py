@@ -343,11 +343,55 @@ class _CaptureGuard:
     def __init__(self, source):
         self.source = source
 
+    @property
+    def evidence(self):
+        return self.source.evidence
+
     def __getattr__(self, name):
         return getattr(self.source, name)
 
-    def sequential_snapshot(self, *, previous=None):
+    def moments(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).moments(request)
+
+    def unit_rows(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).unit_rows(request)
+
+    def method_fit(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).method_fit(request)
+
+    def breakout_method_moments(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).breakout_method_moments(request)
+
+    def compliance(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).compliance(request)
+
+    def compliance_series(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).compliance_series(request)
+
+    def counts(self, request):
+        from increment.evidence import evidence_provider
+
+        return evidence_provider(self.source).counts(request)
+
+    def capture_sequential(self, request):
         pytest.fail("changed scalar inputs must refuse before checkpoint capture")
+
+    def scope(self, request):
+        from increment.evidence import EvidenceScopeResult
+
+        return EvidenceScopeResult(self, request)
 
 
 @pytest.mark.parametrize("change", ["column", "missing"])

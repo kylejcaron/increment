@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-import inspect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -25,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
+    from increment._source_types import _BuiltinMomentSource
     from increment.breakout.estimates import (
         BreakoutEstimates,
         DailyLiftEstimates,
@@ -54,7 +54,13 @@ from increment._day_axis import (
     DayAxisReadouts,
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
-from increment._evidence_types import CountsRequest, DayAxisRequest, EvidenceScope
+from increment._evidence_types import (
+    CountsRequest,
+    DayAxisRequest,
+    EvidenceScope,
+    SequentialCaptureRequest,
+    SourceContext,
+)
 from increment._literals import Backend, Correction, ValueScale
 from increment._source_operations import (
     AllocationHistoryOperation,
@@ -66,13 +72,10 @@ from increment._source_operations import (
     ExploratorySourceOperation,
     ExportMomentsOperation,
     MaterializeOperation,
-    ReadoutSnapshotOperation,
     SummarySqlOperation,
-    TriggeredCountsOperation,
     TriggeredHealthEvidenceOperation,
-    TriggeredPopulationOperation,
-    UnitCountsOperation,
 )
+from increment._source_types import declared_evidence, is_custom_source
 from increment._study import ParallelStudyEnvelope
 from increment._whole_window import (
     WholeWindowReadouts,
@@ -119,12 +122,7 @@ from increment.readouts._evidence import (
 from increment.semantics.models import Breakout, Definitions, Experiment
 from increment.semantics.unit_cycle import UnitCycleReference
 from increment.sequential_source import native_observation_mapping
-from increment.sources import (
-    MomentSource,
-    SourceContext,
-    SourceOperation,
-    _health_snapshot_id,
-)
+from increment.sources import EvidenceSource, _health_snapshot_id
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
 
@@ -306,18 +304,6 @@ def _declared_design(experiment: Experiment) -> Randomized | Encouragement | Obs
     return experiment.resolved_design()
 
 
-class _LegacyOperationSource:
-    """Compatibility view for sources predating operation declarations."""
-
-    operations: frozenset[SourceOperation] = frozenset()
-
-    def __init__(self, src: object) -> None:
-        self._src = src
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._src, name)
-
-
 @dataclass(frozen=True, slots=True)
 class _ArtifactOpenSpec:
     """Immutable reopen pin for an artifact-backed analysis, fixed at construction."""
@@ -437,7 +423,9 @@ def _stamp_exploratory_rows(rows):
     )
 
 
-def _cuped_recommendation_admitted(source: MomentSource, config: ResolvedMetricConfig) -> bool:
+def _cuped_recommendation_admitted(
+    source: _BuiltinMomentSource, config: ResolvedMetricConfig
+) -> bool:
     """Check the proposed CUPED method against the shared arm-support contract."""
     from increment.estimation.arm_contract import (
         MetricCapabilities,
@@ -605,7 +593,7 @@ class Analysis:
     def _build_state(
         cls,
         *,
-        src: MomentSource | ContrastSource,
+        src: EvidenceSource | ContrastSource,
         defs: Definitions | None,
         experiment: Experiment | None,
         con: SQLBackend | None,
@@ -625,14 +613,14 @@ class Analysis:
         study = None if design is None else ParallelStudyEnvelope(identification=design)
         if defs is None:
             return SeamArmAnalysisState(
-                source=cast("MomentSource", src),
+                source=cast("_BuiltinMomentSource", src),
                 study=study,
                 experiment_name=experiment_name,
             )
         if study is None:
             _raise("facade.analysis.definitions_state_requires_identification")
         return DefinitionsArmAnalysisState(
-            source=cast("MomentSource", src),
+            source=cast("_BuiltinMomentSource", src),
             study=study,
             definitions=defs,
             experiment=cast("Experiment", experiment),
@@ -653,7 +641,7 @@ class Analysis:
 
     def close(self) -> None:
         """Release this analysis's resources without closing caller connections."""
-        cast("MomentSource", self._state.source).close()
+        cast("_BuiltinMomentSource", self._state.source).close()
 
     def _require_arm_state(
         self, method: str, *, population: Literal["assigned", "triggered"] = "assigned"
@@ -675,8 +663,8 @@ class Analysis:
             _refuse(_CONTRAST_UNAVAILABLE, method=method)
         return self._state
 
-    def _ensure_artifact_source(self) -> MomentSource:
-        source = cast("MomentSource", self._state.source)
+    def _ensure_artifact_source(self) -> _BuiltinMomentSource:
+        source = cast("_BuiltinMomentSource", self._state.source)
         spec = self._artifact_open_spec
 
         if spec is not None and cast("ArtifactMomentSource", source).closed:
@@ -842,7 +830,7 @@ class Analysis:
             refuse_operation(
                 self._src,
                 "materialize",
-                tuple(sorted(self._src.operations)),
+                tuple(sorted(declared_evidence(self._src).operations)),
                 route="publish_unit_day_artifact() requires Analysis.from_definitions",
             )
         native = _require_analysis_operation(
@@ -922,7 +910,7 @@ class Analysis:
     @classmethod
     def _from_source(
         cls,
-        src: MomentSource | ContrastSource,
+        src: EvidenceSource | ContrastSource,
         design: Randomized | Encouragement | Observational | None = None,
         *,
         defs: Definitions | None = None,
@@ -940,13 +928,8 @@ class Analysis:
         if isinstance(context, ContrastContext):
             if design is not None and context.study.identification != design:
                 _raise("facade.analysis.source_context_design_disagrees_arm")
-        else:
-            try:
-                inspect.getattr_static(src, "operations")
-            except AttributeError:
-                src = cast("MomentSource", _LegacyOperationSource(src))
-            if design is not None and cast("SourceContext", src.context).design != design:
-                _raise("facade.analysis.source_context_design_disagrees_arm")
+        elif design is not None and context.design != design:
+            _raise("facade.analysis.source_context_design_disagrees_arm")
         self = super().__new__(cls)
         self._artifact_open_spec = artifact_open_spec
         self._state = cls._build_state(
@@ -1447,7 +1430,6 @@ class Analysis:
         _require_analysis_operation(
             self._src,
             "readout_snapshot",
-            ReadoutSnapshotOperation,
             message=(
                 "dashboard_snapshot() needs a native Analysis.from_definitions instance "
                 "with a warehouse-backed source."
@@ -1463,7 +1445,9 @@ class Analysis:
         with scoped.source as pinned:
             return self._with_pinned_source(pinned, operation)
 
-    def _with_pinned_source(self, pinned: MomentSource, operation: Callable[[Analysis], _T]) -> _T:
+    def _with_pinned_source(
+        self, pinned: _BuiltinMomentSource, operation: Callable[[Analysis], _T]
+    ) -> _T:
         isolated = copy.copy(self)
         isolated._state = replace(self._state, source=pinned)
         # The pinned snapshot must never be reopened over: drop any reopen pin
@@ -1506,7 +1490,7 @@ class Analysis:
             refuse_breakout(
                 self._src,
                 (breakout.property,),
-                tuple(self._src.breakouts),
+                tuple(declared_evidence(self._src).breakouts),
                 route="dashboard_breakout_reads() requires a definitions-backed breakout source",
             )
         declared = state.experiment.breakouts
@@ -1587,7 +1571,7 @@ class Analysis:
         ):
             return self._collect_health(expected_allocation)
 
-        def collect(pinned: MomentSource) -> ExperimentHealth:
+        def collect(pinned: _BuiltinMomentSource) -> ExperimentHealth:
             if pinned is self._src:
                 return self._collect_health(expected_allocation)
             return self._with_pinned_source(
@@ -2006,7 +1990,6 @@ class Analysis:
         source = _require_analysis_operation(
             self._src,
             "unit_counts",
-            UnitCountsOperation,
             message="unit_counts() requires a source with enrolled total-grain counts.",
         )
         request = CountsRequest(
@@ -2078,7 +2061,6 @@ class Analysis:
                 src = _require_analysis_operation(
                     src,
                     "triggered_counts",
-                    TriggeredCountsOperation,
                     message=(
                         "srm(population='triggered') needs a native "
                         "Analysis.from_definitions instance -- a frame/warehouse/"
@@ -2153,13 +2135,13 @@ class Analysis:
 
         source = self._src
         if is_artifact_route(source):
-            if "triggered_counts" not in source.operations:
+            if "triggered_counts" not in declared_evidence(source).operations:
                 from increment._evidence_refusals import refuse_operation
 
                 refuse_operation(
                     source,
                     "triggered_counts",
-                    tuple(sorted(source.operations)),
+                    tuple(sorted(declared_evidence(source).operations)),
                     route="trigger_rates() requires complete trigger evidence",
                 )
             return source.trigger_rates()
@@ -2179,17 +2161,14 @@ class Analysis:
 
         validate_trigger_fires_in_every_arm(self.trigger_rates(), self._experiment.trigger)
 
-    def _cate_source(self, method: str) -> MomentSource:
+    def _cate_source(self, method: str) -> _BuiltinMomentSource:
         self._require_arm_state(method)
         experiment = getattr(self, "_experiment", None)
         if experiment is None or experiment.trigger is None:
-            return cast("MomentSource", self._src)
-        if is_artifact_route(self._src):
-            return self._readout_source(population="triggered")
+            return cast("_BuiltinMomentSource", self._src)
         triggered = _require_analysis_operation(
             self._src,
             "triggered_source",
-            TriggeredPopulationOperation,
             message=(
                 f"{method}() needs a source-owned triggered unit view; this source "
                 "cannot reconstruct trigger membership."
@@ -2310,20 +2289,23 @@ class Analysis:
         self,
         *,
         population: Literal["assigned", "triggered"] = "assigned",
-    ) -> MomentSource:
-        """Keep source-owned evidence acquisition intact for the requested population."""
-        if population == "assigned":
-            return self._src
-        triggered = _require_analysis_operation(
-            self._src,
-            "triggered_source",
-            TriggeredPopulationOperation,
-            message=(
-                "A triggered readout requires a source retaining the raw event stream "
-                "and its declared trigger."
-            ),
-        )
-        return triggered.triggered_source()
+    ) -> _BuiltinMomentSource:
+        """Validate a requested population; the evidence request selects it."""
+        if population == "triggered":
+            if is_custom_source(self._src):
+                from increment._evidence_refusals import require_population
+
+                require_population(self._src, population)
+            else:
+                _require_analysis_operation(
+                    self._src,
+                    "triggered_source",
+                    message=(
+                        "A triggered readout requires a source retaining the raw event stream "
+                        "and its declared trigger."
+                    ),
+                )
+        return self._src
 
     # Properties
 
@@ -2346,7 +2328,7 @@ class Analysis:
             refuse_operation(
                 self._src,
                 "materialize",
-                tuple(sorted(self._src.operations)),
+                tuple(sorted(declared_evidence(self._src).operations)),
                 route="artifact_context requires Analysis.from_definitions",
             )
         return self._artifact_context(
@@ -2481,7 +2463,7 @@ class Analysis:
         """
         self._require_arm_state("summary_sql")
         src = self._src
-        if "summary_sql" not in src.operations:
+        if "summary_sql" not in declared_evidence(src).operations:
             return src.sql()
         summary = _require_analysis_operation(
             src,
@@ -2535,10 +2517,16 @@ class Analysis:
             spec = select_metrics(context.metrics, [metric], caller="planning_baseline")[0]
             return cast("ContrastSource", self._src).planning_baseline(spec)
         experiment = getattr(self, "_experiment", None)
+        trigger = getattr(experiment, "trigger", None)
+        if trigger is None:
+            from increment._source_types import is_custom_source
+
+            if is_custom_source(self._src):
+                trigger = getattr(self._context, "trigger_name", None)
         return planning_baseline(
-            cast("MomentSource", self._src),
+            cast("_BuiltinMomentSource", self._src),
             metric,
-            trigger=None if experiment is None else experiment.trigger,
+            trigger=trigger,
             trigger_rates=self.trigger_rates,
         )
 
@@ -2563,33 +2551,20 @@ class Analysis:
         results can reveal future triggered outcomes, including the same
         metric, and must not inform those decisions.
         """
-        from increment.sequential_source import adopt_source_snapshot, source_snapshot
-        from increment.sequential_state import declare_sequential_freeze, sequential_refuse
+        from increment.readouts._evidence import load_sequential_capture
 
-        source = self._state.source
-        capture = getattr(source, "capture_sequential", None)
-        if capture is None:
-            if not finalized or as_of is not None:
-                sequential_refuse(
-                    "source.invalid",
-                    "this source requires its construction-time finalized checkpoint",
-                )
-            snapshot = source_snapshot(source, previous=previous)
-        else:
-            if as_of is None:
-                sequential_refuse("source.invalid", "capture requires an explicit as_of horizon")
-            snapshot = capture(finalized=finalized, previous=previous, as_of=as_of)
-        if freeze:
-            snapshot = adopt_source_snapshot(
-                source, declare_sequential_freeze(snapshot, tuple(freeze))
-            )
-        return snapshot
+        return load_sequential_capture(
+            cast(Any, self._state.source),
+            SequentialCaptureRequest(
+                finalized=finalized, previous=previous, as_of=as_of, freeze=tuple(freeze)
+            ),
+        )
 
     def sequential_snapshot(self, *, previous=None):
         """Retrieve a current exact checkpoint, optionally proving its parent."""
-        from increment.sequential_source import source_snapshot
+        from increment.readouts._evidence import current_source_snapshot
 
-        return source_snapshot(self._state.source, previous=previous)
+        return current_source_snapshot(cast(Any, self._state.source), previous=previous)
 
     def __repr__(self) -> str:
         study = getattr(self._state, "study", None)
@@ -2815,7 +2790,7 @@ class Analysis:
                     override=overrides[setting],
                 )
 
-        config_sources: list[tuple[Any, MomentSource]] = []
+        config_sources: list[tuple[Any, _BuiltinMomentSource]] = []
         if selected:
             config_sources.extend(
                 (config, state.source)
@@ -2831,7 +2806,7 @@ class Analysis:
             )
         if added:
             exploratory = self._exploratory_analysis(added, caller="run")
-            exploratory_source = cast("MomentSource", exploratory._state.source)
+            exploratory_source = cast("_BuiltinMomentSource", exploratory._state.source)
             config_sources.extend(
                 (config, exploratory_source)
                 for config in overlay_configs(
@@ -2897,7 +2872,7 @@ class Analysis:
     def _whole_window(self) -> WholeWindowReadouts:
         self._require_arm_state("run")
         return WholeWindowReadouts(
-            src=cast("MomentSource", self._src),
+            src=cast("_BuiltinMomentSource", self._src),
             plan=self._plan,
             design=self._design,
             experiment=getattr(self, "_experiment", None),

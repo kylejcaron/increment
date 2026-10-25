@@ -8,7 +8,7 @@ from increment._readout_request import ReadoutRequest, validate_request
 from increment.estimation.engine import Method
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.semantics.design import Encouragement
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
-def _design_compliance_only(src: MomentSource, estimands: Sequence[str] | None) -> bool:
+def _design_compliance_only(src: EvidenceSource, estimands: Sequence[str] | None) -> bool:
     """Fixed-horizon compliance needs design state, not outcome configuration."""
     return (
         estimands is not None
@@ -29,7 +29,7 @@ def _design_compliance_only(src: MomentSource, estimands: Sequence[str] | None) 
 
 
 def _prepare_run_request(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     decision_method: Method | _Unset = UNSET,
     sensitivity_methods: Sequence[Method] | _Unset = UNSET,
@@ -71,7 +71,7 @@ def _prepare_run_request(
 
 
 def _validate_run_request(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     decision_method: Method | _Unset = UNSET,
     sensitivity_methods: Sequence[Method] | _Unset = UNSET,
@@ -96,7 +96,7 @@ def _validate_run_request(
 
 
 def _validate_breakout_request(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     metrics: Sequence[str | Metric] | None = None,
     decision_method: Method | _Unset = UNSET,

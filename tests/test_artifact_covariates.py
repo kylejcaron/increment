@@ -10,6 +10,7 @@ import pytest
 from increment.analysis import Analysis
 from increment.errors import CodedError
 from increment.semantics.artifact import UnitDayArtifactManifest
+from tests._evidence_requests import _unit_rows
 from tests._override_warnings import allow_declared_overrides
 from tests.analysis_factory import _moment_source
 from tests.covariate_cases import categorical_defs_and_con, covariate_defs_and_con
@@ -74,7 +75,7 @@ def test_artifact_serves_declared_unit_covariate_and_keeps_missing_null(tmp_path
     assert isinstance(source.context.design, Observational)
     assert source.context.design.adjustment.covariates == ("tenure",)
     table = nw.from_native(
-        source.unit_frame(source.context.metrics[0], covariates=["tenure"]), eager_only=True
+        _unit_rows(source, source.context.metrics[0], covariates=["tenure"]), eager_only=True
     ).to_arrow()
     rows = {row["unit_id"]: row["tenure"] for row in table.to_pylist()}
     assert rows.pop("u3") is None
@@ -90,7 +91,7 @@ def test_artifact_auto_publishes_declared_covariate_without_explicit_request(tmp
     analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
     source = _moment_source(analysis)
     table = nw.from_native(
-        source.unit_frame(source.context.metrics[0], covariates=["tenure"]), eager_only=True
+        _unit_rows(source, source.context.metrics[0], covariates=["tenure"]), eager_only=True
     ).to_arrow()
     rows = {row["unit_id"]: row["tenure"] for row in table.to_pylist()}
     assert rows == pytest.approx(tenure)
@@ -110,7 +111,7 @@ def test_metric_binding_does_not_shadow_observational_covariate_on_artifact(tmp_
     analysis, _ = _publish_categorical(defs_path, con)
     source = _moment_source(analysis)
     table = nw.from_native(
-        source.unit_frame(source.context.metrics[0], covariates=["tenure"]), eager_only=True
+        _unit_rows(source, source.context.metrics[0], covariates=["tenure"]), eager_only=True
     ).to_arrow()
     rows = {row["unit_id"]: row["tenure"] for row in table.to_pylist()}
 
@@ -134,12 +135,12 @@ def test_observational_property_wins_over_same_named_measure_binding_on_replay(t
     analysis, _ = _publish_and_reopen(defs_path, con, request_covariate=False)
     artifact = _moment_source(analysis)
     artifact_rows = nw.from_native(
-        artifact.unit_frame(artifact.context.metrics[0], covariates=["tenure"]),
+        _unit_rows(artifact, artifact.context.metrics[0], covariates=["tenure"]),
         eager_only=True,
     ).to_arrow()
     native = _moment_source(Analysis.from_definitions("cov_test", defs_path, con))
     native_rows = nw.from_native(
-        native.unit_frame(native.context.metrics[0], covariates=["tenure"]),
+        _unit_rows(native, native.context.metrics[0], covariates=["tenure"]),
         eager_only=True,
     ).to_arrow()
     expected = tenure
@@ -241,7 +242,7 @@ def test_artifact_serves_a_string_covariate_as_levels_and_keeps_missing_null(tmp
         "region": ("unit_covariate_level", "unit_covariate_level"),
     }
     table = nw.from_native(
-        source.unit_frame(source.context.metrics[0], covariates=["tenure", "region"]),
+        _unit_rows(source, source.context.metrics[0], covariates=["tenure", "region"]),
         eager_only=True,
     ).to_arrow()
     assert table.schema.field("region").type == pa.string()
@@ -281,7 +282,7 @@ def test_string_covariate_is_requestable_only_under_its_level_request(tmp_path):
     )
     source = _moment_source(analysis)
     table = nw.from_native(
-        source.unit_frame(source.context.metrics[0], covariates=["region"]), eager_only=True
+        _unit_rows(source, source.context.metrics[0], covariates=["region"]), eager_only=True
     ).to_arrow()
     assert {row["unit_id"]: row["region"] for row in table.to_pylist()} == {
         unit: truth["region"] for unit, truth in units.items()

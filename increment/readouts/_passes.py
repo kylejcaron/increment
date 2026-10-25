@@ -18,7 +18,7 @@ from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
 from increment.readouts._common import _raise, _runtime_method_roles, _warn
 from increment.semantics.design import Encouragement
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -400,7 +400,7 @@ def _raise_if_all_lift_cells_refused(
 
 
 def _estimate_pass(  # noqa: PLR0913
-    src: MomentSource,
+    src: EvidenceSource,
     metric: Metric,
     evidence: Any,
     test: Any,
@@ -484,7 +484,7 @@ def _estimate_pass(  # noqa: PLR0913
 
 
 def _estimate_available_pass(  # noqa: PLR0913, PLR0915
-    src: MomentSource,
+    src: EvidenceSource,
     metric: Metric,
     evidence: Any,
     test: Any,

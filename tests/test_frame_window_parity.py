@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from increment.errors import IncrementWarning, InvalidRequestError
+from increment.evidence import MomentRows, MomentsRequest, evidence_provider, request_evidence
 from increment.frame import MetricSpec, from_unit_panel
 from increment.semantics.models import (
     AnalysisPlan,
@@ -33,6 +34,17 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from tests.warning_codes import warning_codes
+
+
+def _moments(src, metric, *, grain="total", completed_windows_only=False):
+    return cast(
+        MomentRows,
+        request_evidence(
+            evidence_provider(src),
+            MomentsRequest(metric, grain=grain, completed_windows_only=completed_windows_only),
+        ),
+    )
+
 
 START = dt.datetime(2025, 1, 1)
 N_UNITS = 60
@@ -316,7 +328,7 @@ def frame_moments(case: Case, backend: str) -> dict[str, dict[str, float]]:
     metric = src.context.metrics[0]
 
     out: dict[str, dict[str, float]] = {}
-    for r in src.moments(metric):
+    for r in _moments(src, metric):
         entry = {"n": r["n"], "ref_y": r["ref_y"], "cy1": r["cy1"], "cy2": r["cy2"]}
         if case.spec.type == "ratio":
             entry["ref_den"] = r["ref_den"]
@@ -412,7 +424,7 @@ def frame_asof_moments(
     )
     metric = src.context.metrics[0]
     return _asof_rows_by_day(
-        src.moments(metric, grain="asof", completed_windows_only=completed_windows_only),
+        _moments(src, metric, grain="asof", completed_windows_only=completed_windows_only),
         ratio=case.spec.type == "ratio",
     )
 
@@ -666,9 +678,9 @@ def test_completed_window_gate_matches_frame_and_warehouse(backend: str) -> None
         metrics=[MetricSpec(name="revenue", window_days=3)],
     )
     frame_metric = source.context.metrics[0]
-    frame_provisional = _asof_rows_by_day(source.moments(frame_metric, grain="asof"), ratio=False)
+    frame_provisional = _asof_rows_by_day(_moments(source, frame_metric, grain="asof"), ratio=False)
     frame_decision = _asof_rows_by_day(
-        source.moments(frame_metric, grain="asof", completed_windows_only=True), ratio=False
+        _moments(source, frame_metric, grain="asof", completed_windows_only=True), ratio=False
     )
 
     # provisional: every exposed unit, every day, identically on both substrates.
@@ -861,7 +873,7 @@ def test_frame_exposure_gate_matches_builders_at_every_supported_grain() -> None
         exposure_date="exposed_on",
     )
     frame_rows = {
-        grain: src.moments(src.context.metrics[0], grain=cast(Any, grain)) for grain in expected
+        grain: _moments(src, src.context.metrics[0], grain=cast(Any, grain)) for grain in expected
     }
     for grain, query_rows in expected.items():
         query_values = {(row.get("ds"), row["group_id"]): _first_moment(row) for row in query_rows}
@@ -1032,7 +1044,7 @@ def test_frame_windowed_total_excludes_pre_exposure_rows() -> None:
         exposure_date="exposed_on",
     )
     frame_metric = src.context.metrics[0]
-    frame_by_group = {r["group_id"]: r for r in src.moments(frame_metric)}
+    frame_by_group = {r["group_id"]: r for r in _moments(src, frame_metric)}
 
     assert _first_moment(frame_by_group["control"]) == pytest.approx(10.0), (
         "windowed total must exclude u1's genuine pre-exposure event (100.0)"
@@ -1076,9 +1088,9 @@ def test_natural_day_axis_controls_inferred_maturity() -> None:
             metrics=[spec],
         )
         metric = source.context.metrics[0]
-        total = {row["group_id"]: row for row in source.moments(metric)}
+        total = {row["group_id"]: row for row in _moments(source, metric)}
         asof = sorted(
-            (row for row in source.moments(metric, grain="asof") if row["ds"] == "d10"),
+            (row for row in _moments(source, metric, grain="asof") if row["ds"] == "d10"),
             key=lambda row: row["group_id"],
         )
         return total, asof

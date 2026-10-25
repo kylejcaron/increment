@@ -1,8 +1,6 @@
-"""Narrow callable protocols for source-specific operations.
+"""Typed payloads and product-operation protocols for source adapters.
 
-These protocols deliberately stay out of the package root. ``MomentSource``
-remains the common statistical seam; operation protocols describe only the
-complete native operations that a caller may opt into.
+Evidence acquisition is described by `EvidenceProvider` declarations.
 """
 
 from __future__ import annotations
@@ -10,7 +8,6 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -20,7 +17,6 @@ from increment.errors import CodedError, _freeze
 if TYPE_CHECKING:
     import pyarrow as pa
 
-    from increment._analysis_config import ResolvedMetricConfig
     from increment.analysis import Analysis
     from increment.breakout.estimates import (
         BreakoutEstimates,
@@ -29,10 +25,9 @@ if TYPE_CHECKING:
     )
     from increment.estimation.diagnostics import SRMResult
     from increment.estimation.results import LiftEstimate
-    from increment.query.native_contract import DayEvidenceSource
     from increment.semantics.models import Breakout, Metric
     from increment.sequential_state import SequentialCheckpoint
-    from increment.sources import BreakoutMomentsSource, MomentSource
+    from increment.sources import EvidenceSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,11 +268,6 @@ class MaterializeOperation(Protocol):
 
 
 @runtime_checkable
-class TriggeredPopulationOperation(Protocol):
-    def triggered_source(self) -> MomentSource: ...
-
-
-@runtime_checkable
 class DashboardGroupDataOperation(Protocol):
     def dashboard_group_data(
         self,
@@ -289,34 +279,10 @@ class DashboardGroupDataOperation(Protocol):
 
 
 @runtime_checkable
-class TriggeredCountsOperation(Protocol):
-    def triggered_counts(
-        self,
-    ) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]: ...
-
-
-@runtime_checkable
-class UnitCountsOperation(Protocol):
-    def unit_counts(self) -> dict[str, int]: ...
-
-
-@runtime_checkable
 class SummarySqlOperation(Protocol):
     """Public summary SQL operation shared by SQL-backed sources."""
 
     def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
-
-
-@runtime_checkable
-class BreakoutSourcesOperation(Protocol):
-    def breakout_sources(
-        self,
-        breakouts: Sequence[Breakout],
-        *,
-        metrics: Sequence[Metric],
-        population: Literal["assigned", "triggered"] = "assigned",
-        configs: Sequence[ResolvedMetricConfig] | None = None,
-    ) -> Sequence[BreakoutMomentsSource]: ...
 
 
 @runtime_checkable
@@ -333,23 +299,6 @@ class SitewideEvidenceOperation(Protocol):
 @runtime_checkable
 class ExportMomentsOperation(Protocol):
     def export_moments(self, path: str | Path) -> None: ...
-
-
-@runtime_checkable
-class MomentsSourceOperation(Protocol):
-    def _moments_for_metrics(
-        self,
-        methods: list[Any] | None = None,
-        selected: Sequence[Any] | None = None,
-        prior: Any | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-        # Internal source option remains positional for protocol compatibility.
-        narrow_cuped: bool = False,  # noqa: FBT001, FBT002
-    ) -> Any: ...
-
-    def assignment_counts(
-        self, *, population: Literal["assigned", "triggered"] = "assigned"
-    ) -> dict[str, int]: ...
 
 
 @runtime_checkable
@@ -373,45 +322,8 @@ class SummarySQLOperation(Protocol):
 
 
 @runtime_checkable
-class ReadoutExecutionOperation(Protocol):
-    """Source-owned reduction lifetime shared by all cells in one readout."""
-
-    def readout_execution(self) -> AbstractContextManager[None]: ...
-
-
-@runtime_checkable
-class ReadoutSnapshotOperation(Protocol):
-    """Source-owned snapshot spanning one complete readout operation."""
-
-    def readout_snapshot(
-        self,
-        *,
-        metrics: Sequence[Metric],
-        population: Literal["assigned", "triggered"],
-        uptake_facts: Sequence[str] = (),
-        include_breakouts: bool = False,
-        configs: Sequence[ResolvedMetricConfig] | None = None,
-    ) -> AbstractContextManager[MomentSource]: ...
-
-
-@runtime_checkable
-class BreakoutSourceOperation(Protocol):
-    def breakout_source(self, breakout: Breakout, *, metrics: Sequence[Metric]) -> MomentSource: ...
-
-
-@runtime_checkable
-class DaySourceOperation(Protocol):
-    def day_source(
-        self,
-        *,
-        metrics: Sequence[Metric],
-        population: Literal["assigned", "triggered"] = "assigned",
-    ) -> DayEvidenceSource: ...
-
-
-@runtime_checkable
 class ExploratorySourceOperation(Protocol):
-    def exploratory_source(self, *, metrics: Sequence[Metric]) -> MomentSource: ...
+    def exploratory_source(self, *, metrics: Sequence[Metric]) -> EvidenceSource: ...
 
 
 __all__ = [
@@ -424,22 +336,14 @@ __all__ = [
     "AllocationHistoryOperation",
     "DashboardSnapshotHandler",
     "DashboardSnapshotPayload",
-    "BreakoutSourceOperation",
-    "BreakoutSourcesOperation",
-    "DaySourceOperation",
     "ExploratorySourceOperation",
     "ExportMomentsOperation",
     "MaterializeOperation",
-    "MomentsSourceOperation",
     "PanelSQLOperation",
     "SitewideEvidenceOperation",
     "SummarySQLOperation",
-    "ReadoutSnapshotOperation",
     "SummarySqlOperation",
     "TriggeredHealthEvidence",
     "TriggeredHealthEvidenceOperation",
     "TriggeredHealthFeed",
-    "TriggeredCountsOperation",
-    "UnitCountsOperation",
-    "TriggeredPopulationOperation",
 ]

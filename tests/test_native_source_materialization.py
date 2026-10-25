@@ -7,11 +7,20 @@ updated assignments remain valid.
 from __future__ import annotations
 
 import datetime as dt
+from typing import cast
 
 import ibis
 import pytest
 
 from increment import Analysis
+from increment.evidence import (
+    CountEvidence,
+    CountsRequest,
+    MomentRows,
+    MomentsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from tests.analysis_factory import _native_source
 
 
@@ -85,10 +94,15 @@ def test_materialized_panel_reflects_a_valid_exposure_and_fact_added_after_mater
     src = _native_source(analysis)
     metric = analysis.metrics[0]
 
-    baseline = src.moments(metric)[0]
+    baseline = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))[0]
     assert baseline["n"] == 1
     assert baseline["ref_y"] == pytest.approx(10.0)
-    assert src.unit_counts()["control"] == 1
+    assert (
+        cast(
+            CountEvidence, request_evidence(evidence_provider(src), CountsRequest(kind="unit"))
+        ).counts["control"]
+        == 1
+    )
 
     con.insert(
         "events",
@@ -112,7 +126,12 @@ def test_materialized_panel_reflects_a_valid_exposure_and_fact_added_after_mater
         ],
     )
 
-    assert src.unit_counts()["control"] == 2
-    updated = src.moments(metric)[0]
+    assert (
+        cast(
+            CountEvidence, request_evidence(evidence_provider(src), CountsRequest(kind="unit"))
+        ).counts["control"]
+        == 2
+    )
+    updated = cast(MomentRows, request_evidence(evidence_provider(src), MomentsRequest(metric)))[0]
     assert updated["n"] == 2
     assert updated["ref_y"] == pytest.approx(7.5)

@@ -32,9 +32,34 @@ from increment.estimation.armstats import ScoreStats
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal, infer_ate, infer_lift
 from increment.estimation.results import LiftEstimate
+from increment.evidence import (
+    MomentRows,
+    MomentsRequest,
+    UnitRows,
+    UnitRowsRequest,
+    evidence_provider,
+    request_evidence,
+)
 from increment.frame import MetricsArg, MetricSpec, from_unit_summary
 from increment.semantics.design import AdjustmentSet, Observational
 from tests.warning_codes import warning_codes
+
+
+def _moments(source, metric) -> MomentRows:
+    return cast(
+        MomentRows,
+        request_evidence(evidence_provider(source), MomentsRequest(metric)),
+    )
+
+
+def _unit_rows(source, metric, *, covariates=()) -> UnitRows:
+    return cast(
+        UnitRows,
+        request_evidence(
+            evidence_provider(source), UnitRowsRequest(metric, covariates=tuple(covariates))
+        ),
+    )
+
 
 _SEED_BASE = 20260811
 _TRUE_TAU = 0.3
@@ -56,8 +81,8 @@ def _kernel_call(kernel, source, metric, design, **kwargs):
     input_type = sys.modules["increment.estimation._adjust.common"].AdjustmentInputs
     return kernel(
         input_type(
-            source.unit_frame(metric, covariates=design.adjustment.covariates),
-            source.moments(metric),
+            _unit_rows(source, metric, covariates=design.adjustment.covariates),
+            _moments(source, metric),
             source.context.cluster,
         ),
         metric,
@@ -1206,7 +1231,7 @@ def test_informative_prior_denominator_guard_includes_four_se_boundary(sign, off
     source = _oracle_src(n=20)
     metric = source.context.metrics[0]
     request = AdjustedContrastRequest(
-        frame=nw.from_native(source.unit_frame(metric), eager_only=True),
+        frame=nw.from_native(_unit_rows(source, metric), eager_only=True),
         metric=metric,
         design=_DESIGN,
         control_group="C",

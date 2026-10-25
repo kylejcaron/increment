@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import narwhals as nw
 import numpy as np
 
+from increment._evidence_types import unit_frame_covariate_columns
 from increment._literals import PreferredDirection, ValueScale
-from increment._source_types import unit_frame_covariate_columns
 from increment.errors import (
     PACKAGE_FRAMES,
     IncrementWarning,

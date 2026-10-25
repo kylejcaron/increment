@@ -38,7 +38,7 @@ from increment.readouts._evidence import load_compliance_series, load_day_axis_r
 from increment.readouts._metric_rows import _rows_digest_and_arms
 from increment.readouts._passes import _estimate_pass
 from increment.semantics.design import Encouragement
-from increment.sources import MomentSource
+from increment.sources import EvidenceSource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -76,7 +76,7 @@ def _asof_metric_rows(rows, methods, control_group, cluster) -> MetricEvidence:
 
 
 def _load_asof_rows_by_metric(
-    src: MomentSource,
+    src: EvidenceSource,
     selected: Sequence[Metric],
     methods_by_metric: Mapping[str, list[Method]],
     *,
@@ -119,7 +119,7 @@ def _load_asof_rows_by_metric(
 
 @dataclass(frozen=True)
 class _AsofMetricContext:
-    source: MomentSource
+    source: EvidenceSource
     config: ResolvedMetricConfig
     procedure: Any
     design: Randomized | Encouragement
@@ -261,7 +261,7 @@ def _estimate_asof_metric_date(
 
 
 def _sequential_asof_rows(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     metrics: Sequence[Metric],
     estimands: Sequence[str] | None,
@@ -274,18 +274,18 @@ def _sequential_asof_rows(
     chain or an unsupported triggered uptake cell is reported, not omitted.
     """
     from increment._sequential_readouts import sequential_readout
+    from increment.readouts._evidence import current_source_snapshot
     from increment.readouts._sequential_scope import scope_sequential_results
-    from increment.sequential_source import source_snapshot
     from increment.sequential_state import sequential_refuse
 
-    snapshot = source_snapshot(src)
+    snapshot = current_source_snapshot(src)
     if snapshot.reveal_cursor is None:
         sequential_refuse(
             "route.unsupported", "as-of reporting requires a labeled finalized checkpoint"
         )
     rows = scope_sequential_results(
         src,
-        sequential_readout(src, _include_unrequested=True, configs=configs),
+        sequential_readout(src, snapshot=snapshot, _include_unrequested=True, configs=configs),
         snapshot,
         metrics=[metric.name for metric in metrics],
         estimands=estimands,
@@ -300,7 +300,7 @@ def _sequential_asof_rows(
 
 
 def asof_lift(
-    src: MomentSource,
+    src: EvidenceSource,
     *,
     estimands: Sequence[str] | None = None,
     metrics: Sequence[str] | None = None,
