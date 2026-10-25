@@ -329,3 +329,37 @@ def test_cached_templates_rebuild_case_sql(dialect):
         for placeholder, relation in table_roles:
             statement = statement.replace(case.table_names[relation], placeholder)
         assert statement == template
+
+
+def test_cache_key_changes_when_a_registered_adjustment_changes(tmp_path):
+    import shutil
+    from pathlib import Path
+
+    from tests._shared_cache import fixture_cache_key
+
+    adjustment = tmp_path / "increment" / "estimation" / "_adjust" / "iptw.py"
+    adjustment.parent.mkdir(parents=True)
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "increment"
+        / "estimation"
+        / "_adjust"
+        / "iptw.py"
+    )
+    shutil.copy2(source, adjustment)
+    (tmp_path / "uv.lock").write_text("")
+    modules = {"increment.estimation._adjust.iptw"}
+
+    original = fixture_cache_key(tmp_path, package_modules=modules)
+    adjustment.write_text(adjustment.read_text() + "\n# changed\n")
+    changed = fixture_cache_key(tmp_path, package_modules=modules)
+
+    assert changed != original
+
+
+def test_recorded_compile_dependencies_are_current():
+    from pathlib import Path
+
+    from scripts.trace_compile_dependencies import check
+
+    assert check(Path(__file__).resolve().parents[1]) == []
