@@ -5,7 +5,8 @@ import json
 import os
 import subprocess
 import sys
-from typing import NamedTuple, Sequence
+from collections.abc import Sequence
+from typing import NamedTuple
 
 
 class ReachRow(NamedTuple):
@@ -31,7 +32,7 @@ DEFAULT_ENTRY_POINTS = (
     "increment.estimators.registry",
 )
 
-_CHILD = r'''
+_CHILD = r"""
 import importlib
 import json
 import sys
@@ -47,12 +48,10 @@ else:
     elapsed = (time.perf_counter() - started) * 1000
     loaded = sorted(module for module in sys.modules if module.startswith("increment"))
     print(json.dumps({"modules": len(loaded), "milliseconds": elapsed, "loaded": loaded}))
-'''
+"""
 
 
-def measure(
-    entry_points: Sequence[str], python: str = sys.executable
-) -> list[ReachRow]:
+def measure(entry_points: Sequence[str], python: str = sys.executable) -> list[ReachRow]:
     rows = []
     for entry_point in entry_points:
         result = subprocess.run(
