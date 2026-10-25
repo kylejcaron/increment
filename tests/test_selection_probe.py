@@ -9,4 +9,7 @@ def test_probe_reports_one_row_per_module_in_order():
 
 
 def test_collected_line_is_parsed():
-    assert _parse_collected("13897/19527 tests collected (5630 deselected) in 11.94s") == (13897, 19527)
+    assert _parse_collected("13897/19527 tests collected (5630 deselected) in 11.94s") == (
+        13897,
+        19527,
+    )

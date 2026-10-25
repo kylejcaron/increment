@@ -22,11 +22,9 @@ class ProbeRow(NamedTuple):
     selected_items: int
     fast_items: int
     direct_files: int
-    tach_items: int
-    wall_seconds: float
+    tach_items: int = 0
+    wall_seconds: float = 0.0
 
-
-ProbeRow.__new__.__defaults__ = (0, 0)  # type: ignore[attr-defined]
 
 DEFAULT_MODULES = (
     "increment/estimation/engine.py",
@@ -60,7 +58,7 @@ def _collect(root: Path, arguments: Sequence[str]) -> list[str]:
     return [line for line in result.stdout.splitlines() if "::" in line]
 
 
-def _component_counts(root: Path, selection: Selection, base: str) -> tuple[int, int, int]:
+def _component_counts(root: Path, selection: Selection, base: str) -> tuple[int, int, int, int]:
     marker = ["-m", affected._changed_markers("fast", root)]
     direct_files = len(selection.test_files)
     tach_items = 0
@@ -77,15 +75,26 @@ def _component_counts(root: Path, selection: Selection, base: str) -> tuple[int,
 def _run_one(root: Path, module: str, *, timing: bool = True) -> ProbeRow:
     with tempfile.TemporaryDirectory(prefix="selection-probe-") as temporary:
         scratch = Path(temporary) / "checkout"
-        subprocess.run(["git", "worktree", "add", "--detach", str(scratch), "HEAD"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(scratch), "HEAD"], cwd=root, check=True
+        )
         try:
             target = scratch / module
             with target.open("a", encoding="utf-8") as stream:
                 stream.write("\n# selection probe\n")
             subprocess.run(["git", "add", module], cwd=scratch, check=True)
             subprocess.run(
-                ["git", "-c", "user.name=Selection Probe", "-c", "user.email=selection-probe@example.invalid",
-                 "commit", "--no-verify", "-m", "selection probe"],
+                [
+                    "git",
+                    "-c",
+                    "user.name=Selection Probe",
+                    "-c",
+                    "user.email=selection-probe@example.invalid",
+                    "commit",
+                    "--no-verify",
+                    "-m",
+                    "selection probe",
+                ],
                 cwd=scratch,
                 check=True,
                 capture_output=True,
@@ -96,9 +105,7 @@ def _run_one(root: Path, module: str, *, timing: bool = True) -> ProbeRow:
             wall_seconds = 0.0
             if timing:
                 started = time.perf_counter()
-                subprocess.run(
-                    ["make", "test-affected", "BASE=HEAD~1"], cwd=scratch, check=True
-                )
+                subprocess.run(["make", "test-affected", "BASE=HEAD~1"], cwd=scratch, check=True)
                 wall_seconds = time.perf_counter() - started
             return ProbeRow(module, selected, fast, direct, tach, wall_seconds)
         finally:
@@ -127,12 +134,19 @@ def _format(rows: Sequence[ProbeRow]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--summary", action="store_true", help="append the table to GitHub step summary")
+    parser.add_argument(
+        "--summary", action="store_true", help="append the table to GitHub step summary"
+    )
     parser.add_argument("--json", type=Path, metavar="PATH", help="write rows as JSON")
-    parser.add_argument("--no-timing", action="store_true", help="skip affected-test execution timing")
+    parser.add_argument(
+        "--no-timing", action="store_true", help="skip affected-test execution timing"
+    )
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parent.parent
-    runner = lambda checkout, module: _run_one(checkout, module, timing=not args.no_timing)
+
+    def runner(checkout: Path, module: str) -> ProbeRow:
+        return _run_one(checkout, module, timing=not args.no_timing)
+
     rows = probe(root, DEFAULT_MODULES, runner=runner)
     table = _format(rows)
     print(table)
@@ -141,7 +155,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         with summary.open("a", encoding="utf-8") as stream:
             stream.write(table + "\n")
     if args.json:
-        args.json.write_text(json.dumps([row._asdict() for row in rows], indent=2) + "\n", encoding="utf-8")
+        args.json.write_text(
+            json.dumps([row._asdict() for row in rows], indent=2) + "\n", encoding="utf-8"
+        )
     return 0
 
 
