@@ -797,6 +797,7 @@ def test_daily_readout_skips_custom_estimator_needs_but_run_checks_them():
 
 def test_direct_estimator_preflight_uses_provider_default_population():
     from dataclasses import replace
+    from typing import Any, cast
 
     from increment.declarations import CountsSpec, register_implementation, unregister_estimator
     from increment.estimation.adjust import estimate_ate
@@ -880,6 +881,10 @@ def test_direct_estimator_preflight_uses_provider_default_population():
         provider = TriggeredProvider()
         assert not hasattr(provider, "population")
         with pytest.raises(ReachedEstimator):
-            estimate_ate(provider, source.context.design, methods=[Method(name=selector)])
+            estimate_ate(
+                cast(Any, provider),
+                cast(Any, source.context.design),
+                methods=[Method(name=selector)],
+            )
     finally:
         unregister_estimator(estimator_id)
