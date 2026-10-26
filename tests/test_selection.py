@@ -146,9 +146,7 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
     return decisions
 
 
-def _real_tach_and_selector_kept(
-    root: Path, base: str
-) -> tuple[set[str], set[str]]:
+def _real_tach_and_selector_kept(root: Path, base: str) -> tuple[set[str], set[str]]:
     from tach.extension import TachPytestPluginHandler
     from tach.filesystem.git_ops import get_changed_files
     from tach.parsing import parse_project_config
