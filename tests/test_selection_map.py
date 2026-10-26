@@ -151,7 +151,7 @@ def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None
     env = dict(os.environ)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTHONPATH"] = str(repo_root)
-    subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             "-m",
@@ -170,11 +170,12 @@ def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None
         ],
         cwd=project,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=120,
     )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
     result = build(project / ".coverage", project, tier="fast", fixtures=fixtures)
     mapping = project / "selection_map.json"
@@ -295,8 +296,6 @@ def test_partial_prediction_is_incomplete_evidence(tmp_path: Path) -> None:
     assert "incomplete evidence" in result
 
 
-
-
 def test_junit_failure_without_a_prediction_decision_is_incomplete(
     tmp_path: Path,
 ) -> None:
@@ -383,6 +382,8 @@ def test_empty_decisions_with_collected_tests_is_incomplete(
     )
 
     assert "incomplete evidence" in result
+
+
 def test_missing_expected_junit_shard_is_incomplete_evidence(tmp_path: Path) -> None:
     from scripts.selection_map import misses
 
