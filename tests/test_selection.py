@@ -435,13 +435,11 @@ def test_dispatch_table_change_invalidates_map_and_keeps_whole_tier(tmp_path: Pa
     assert graph.keeps("tests/test_b.py") == ("map_unusable:stale",)
 
 
-def _real_tach_decision(
-    root: Path, base: str, test_path: str
-) -> dict[str, object]:
+def _real_tach_decision(root: Path, base: str, test_path: str) -> dict[str, object]:
     decisions = _run_scratch_tach(root, base, test_path)
     decision = decisions[test_path]
     assert isinstance(decision, dict)
-    return decision
+    return {str(key): value for key, value in decision.items()}
 
 
 @pytest.mark.slow
@@ -449,9 +447,7 @@ def test_real_tach_function_local_import_is_an_edge(scratch_worktree: Path) -> N
     base = _scratch_map(scratch_worktree)
     _scratch_change(scratch_worktree, "increment/estimation/adjust.py")
 
-    decision = _real_tach_decision(
-        scratch_worktree, base, "tests/estimation/test_engine.py"
-    )
+    decision = _real_tach_decision(scratch_worktree, base, "tests/estimation/test_engine.py")
 
     assert decision["tach_kept"] is True
     assert decision["kept"] is True
@@ -462,9 +458,7 @@ def test_real_tach_registration_consumer_is_kept(scratch_worktree: Path) -> None
     base = _scratch_map(scratch_worktree)
     _scratch_change(scratch_worktree, "increment/estimation/_adjust/iptw.py")
 
-    decision = _real_tach_decision(
-        scratch_worktree, base, "tests/test_refusal_uniqueness.py"
-    )
+    decision = _real_tach_decision(scratch_worktree, base, "tests/test_refusal_uniqueness.py")
 
     assert decision["tach_kept"] is True
     assert decision["kept"] is True
@@ -494,6 +488,6 @@ def test_redirected_function_local_import_is_seen_on_next_selection(
     )
 
     assert decision["kept"] is True
-    assert "dynamic_import" in decision["reasons"]
-
-
+    reasons = decision["reasons"]
+    assert isinstance(reasons, list)
+    assert "dynamic_import" in reasons
