@@ -72,6 +72,22 @@ def _component_counts(root: Path, selection: Selection, base: str) -> tuple[int,
     return len(node_ids), fast_items, direct_files, tach_items
 
 
+def _scratch_commit_command() -> list[str]:
+    return [
+        "git",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "user.name=Selection Probe",
+        "-c",
+        "user.email=selection-probe@example.invalid",
+        "commit",
+        "--no-verify",
+        "-m",
+        "selection probe",
+    ]
+
+
 def _run_one(root: Path, module: str, *, timing: bool = True) -> ProbeRow:
     with tempfile.TemporaryDirectory(prefix="selection-probe-") as temporary:
         scratch = Path(temporary) / "checkout"
@@ -84,17 +100,7 @@ def _run_one(root: Path, module: str, *, timing: bool = True) -> ProbeRow:
                 stream.write("\n# selection probe\n")
             subprocess.run(["git", "add", module], cwd=scratch, check=True)
             subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "user.name=Selection Probe",
-                    "-c",
-                    "user.email=selection-probe@example.invalid",
-                    "commit",
-                    "--no-verify",
-                    "-m",
-                    "selection probe",
-                ],
+                _scratch_commit_command(),
                 cwd=scratch,
                 check=True,
                 capture_output=True,

@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from scripts.selection_probe import ProbeRow, _parse_collected, probe
+from scripts.selection_probe import (
+    ProbeRow,
+    _parse_collected,
+    _scratch_commit_command,
+    probe,
+)
 
 
 def test_probe_reports_one_row_per_module_in_order():
@@ -13,3 +18,8 @@ def test_collected_line_is_parsed():
         13897,
         19527,
     )
+
+
+def test_scratch_commit_disables_hooks():
+    command = _scratch_commit_command()
+    assert command[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
