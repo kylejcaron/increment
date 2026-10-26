@@ -26,7 +26,7 @@ from increment.estimation.encouragement import (
     ESTIMATION_ENCOURAGEMENT_UNKNOWN_ESTIMAND_SUPPORTED,
     READOUT_ENCOURAGEMENT_VALUE_SCALE,
 )
-from increment.estimation.engine import Method
+from increment.declarations import Method
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,

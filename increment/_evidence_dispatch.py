@@ -17,7 +17,7 @@ from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.errors import refuse as _refuse
 from increment.estimation.contrast import compute_contrast
 from increment.estimation.contrast_results import ContrastResults
-from increment.estimation.engine import Method
+from increment.declarations import Method
 from increment.estimation.inference import Prior
 from increment.estimation.results import LiftEstimate
 from increment.semantics.models import Metric

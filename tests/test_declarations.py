@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from increment.errors import CodedError
+from increment.errors import CodedError, UnsupportedRequestError
 
 
 def test_engine_and_declarations_expose_the_same_method_class():
@@ -32,12 +32,17 @@ def test_method_invalid_variance_reduction_keeps_its_code():
 
     with pytest.raises(CodedError) as caught:
         Method(name="x", variance_reduction="nope")
+    assert isinstance(caught.value, UnsupportedRequestError)
     assert caught.value.code == "estimation.variance.registry.no_registered_available"
-
 
 @pytest.mark.integration
 def test_method_classifies_builtin_observational_names_before_adjust_import():
-    code = "from increment.declarations import Method; assert Method(name='iptw').is_observational; assert not any(n.startswith('increment.estimation') for n in __import__('sys').modules)"
+    code = (
+        "from increment.declarations import Method; "
+        "assert Method(name='iptw').is_observational; "
+        "assert not Method(name='cuped').is_observational; "
+        "assert not any(n.startswith('increment.estimation') for n in __import__('sys').modules)"
+    )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
@@ -45,10 +50,10 @@ def test_method_classifies_builtin_observational_names_before_adjust_import():
 def test_cell_key_hypothesis_conversion_for_each_cell_kind():
     from increment.declarations import CellKey
 
-    common = dict(metric="m", method=None, method_role=None, estimand=None, analysis_population="assigned")
+    common = dict(metric="m", method="unadjusted", method_role="decision", estimand="lift", analysis_population="assigned")
     arm = CellKey(kind="arm", group_id="t", **common)
     segment = CellKey(kind="segment", group_id="t", dimension="country", dimension_value="ca", **common)
-    contrast = CellKey(kind="contrast", control_group="c", treatment_group="t", **common)
+    contrast = CellKey(kind="contrast", control_group="c", treatment_group="t", aggregation="sum", **common)
     assert arm.hypothesis().group_id == "t"
     assert segment.hypothesis().dimension == "country"
     assert (contrast.hypothesis().control_group, contrast.hypothesis().treatment_group) == ("c", "t")
@@ -77,3 +82,44 @@ def test_cell_key_invalid_refusal_is_shared_with_readout_types():
         CellKey(kind="arm", metric="m", method=None, method_role=None, estimand=None,
                 analysis_population="assigned", control_group="c")
     assert caught.value.code == "readout.cell.key_invalid"
+
+
+def test_cell_key_and_hypothesis_read_base_pickles():
+    from pathlib import Path
+
+    fixture_dir = Path(__file__).parent / "fixtures"
+    cell = pickle.loads((fixture_dir / "cell_key_base.pickle").read_bytes())
+    hypothesis = pickle.loads((fixture_dir / "hypothesis_key_base.pickle").read_bytes())
+    assert cell.kind == "arm" and cell.group_id == "t"
+    assert hypothesis.metric == "m" and hypothesis.group_id == "t"
+
+
+@pytest.mark.integration
+def test_custom_adjustment_registration_classifies_after_import():
+    code = (
+        "from increment.declarations import ADJUSTMENTS, Method\n"
+        "ADJUSTMENTS.register('custom', lambda: [])\n"
+        "assert Method(name='custom').is_observational\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.integration
+def test_invalid_cell_key_refuses_without_loading_estimation():
+    code = (
+        "import sys\n"
+        "from increment.declarations import CellKey\n"
+        "from increment.errors import CodedError\n"
+        "try:\n"
+        "    CellKey(kind='arm', metric='m', method=None, method_role=None, estimand=None, "
+        "analysis_population='assigned')\n"
+        "except CodedError as exc:\n"
+        "    assert exc.code == 'readout.cell.key_invalid'\n"
+        "    assert exc.context['kind'] == 'arm'\n"
+        "else:\n"
+        "    raise AssertionError('invalid CellKey was accepted')\n"
+        "assert not any(name.startswith('increment.estimation') for name in sys.modules)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

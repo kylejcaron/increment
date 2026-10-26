@@ -132,7 +132,7 @@ depends_on = [
   "increment.errors", "increment.estimation._certified", "increment.estimation._sequential_likelihood",
   "increment.estimation.advisory",
   "increment.estimation.sequential_result", "increment.sequential_state",
-  "increment.semantics",
+  "increment.semantics", "increment.declarations",
 ]
 
 # Numerical state and inference policy leaves must not depend on estimator dispatch.
@@ -301,7 +301,7 @@ depends_on = [
   "increment._evidence_refusals",
   "increment._evidence_loaders",
   "increment.errors", "increment.estimation._certified", "increment.estimation.advisory", "increment.estimation.decision_types",
-  "increment._evidence_types",
+  "increment.declarations",
   "increment.estimation._sequential_likelihood",
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
@@ -781,3 +781,14 @@ expose = ["_FrozenMapping"]
 from = ["increment._multiplicity"]
 expose = ["MultiplicityFamily", "guarantee_for_correction"]
 
+
+[[modules]]
+path = "increment.declarations"
+depends_on = [
+  "increment.errors",
+  "increment.semantics",
+  "increment._finite_sample_refusals",
+  "increment._literals",
+  "increment._canonical",
+  "increment._immutable",
+]

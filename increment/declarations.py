@@ -6,36 +6,322 @@ method declarations without importing estimator machinery.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
+from enum import StrEnum
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
+from increment._canonical import canonical_digest_bytes
 from increment._finite_sample_refusals import refuse_finite_sample_cuped
+from increment._immutable import _FrozenMapping
 from increment._literals import ConversionInference
 from increment.errors import (
     CodedModel,
     InvalidRequestError,
     RefusalSpec,
+    UnsupportedRequestError,
     raiser,
     refusals,
 )
 from increment.semantics.models import CupedCovariate, CupedCovariateBinding
-from increment._finite_sample_refusals import refuse_finite_sample_cuped
+@dataclass(frozen=True, slots=True)
+class ArmHypothesisKey:
+    metric: str
+    group_id: str
+    estimand: str
 
 
-_DECLARATION_REFUSALS = refusals(
+@dataclass(frozen=True, slots=True)
+class SegmentHypothesisKey:
+    metric: str
+    group_id: str
+    estimand: str
+    dimension: str
+    dimension_value: str
+
+    @property
+    def segment(self):
+        return ((self.dimension, self.dimension_value),)
+
+
+@dataclass(frozen=True, slots=True)
+class ContrastHypothesisKey:
+    metric: str
+    control_group: str
+    treatment_group: str
+
+
+HypothesisKey = ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey
+Population = Literal["assigned", "triggered"]
+
+
+
+
+_CELL_KEY_INVALID_REFUSAL = RefusalSpec(
+    "readout.cell.key_invalid",
+    InvalidRequestError,
+    template="Invalid {kind} readout cell fields: {fields}",
+)
+_VARIANCE_REGISTRY_REFUSAL = RefusalSpec(
+    "estimation.variance.registry.no_registered_available",
+    UnsupportedRequestError,
+    template="No {registry_name} registered for '{key}'. Available keys: {available}",
+)
+
+_REFUSALS = refusals(
     InvalidRequestError,
     {
         "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
         "estimation.engine.method_covariates": "method {method!r} has an invalid CUPED covariate declaration for its variance-reduction procedure",
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
-        "estimation.variance.registry.no_registered_available": "{registry_name} {key!r} is not registered; available: {available}",
+        "estimation.variance.registry.no_registered_available": _VARIANCE_REGISTRY_REFUSAL,
+        "readout.cell.key_invalid": _CELL_KEY_INVALID_REFUSAL,
     },
 )
-_refuse_declaration = raiser(_DECLARATION_REFUSALS)
+_refuse = raiser(_REFUSALS)
 
 
+def freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _FrozenMapping({key: freeze(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(freeze(item) for item in value)
+    return value
+
+
+def thaw(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {key: thaw(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [thaw(item) for item in value]
+    return value
+
+
+class _ReadoutModel(CodedModel, BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
+
+    @model_validator(mode="after")
+    def _freeze_mappings(self):
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, Mapping):
+                canonical_digest_bytes(thaw(value))
+                object.__setattr__(self, name, freeze(value))
+        return self
+
+    @field_serializer("*", when_used="json")
+    def _serialize_values(self, value):
+        return thaw(value)
+
+
+class CellKey(_ReadoutModel):
+    kind: Literal["arm", "segment", "contrast"]
+    metric: str
+    method: str | None
+    method_role: Literal["decision", "sensitivity"] | None
+    estimand: str | None
+    aggregation: Literal["sum", "any"] | None = None
+    analysis_population: Population
+    value_scale: Literal["relative", "absolute"] | None = None
+    inference: Literal["fixed", "always_valid", "asymptotic_mean"] | None = None
+    alternative: Literal["two-sided", "greater", "less"] | None = None
+    group_id: str | None = None
+    control_group: str | None = None
+    treatment_group: str | None = None
+    dimension: str | None = None
+    dimension_value: str | None = None
+    source: str | None = None
+    ds: date | datetime | str | int | float | None = None
+    ds_basis: Literal["calendar", "cohort"] | None = None
+
+    @classmethod
+    def from_row(cls, row):
+        contrast = hasattr(row, "control_group")
+        segment = getattr(row, "dimension", None) is not None
+        values: dict[str, Any] = {name: getattr(row, name, None) for name in cls.model_fields}
+        values.update(
+            kind="contrast" if contrast else "segment" if segment else "arm",
+            analysis_population=getattr(row, "analysis_population", "assigned"),
+        )
+        return cls(**values)
+
+    def __hash__(self):
+        return hash(
+            (
+                self.kind,
+                self.metric,
+                self.method,
+                self.method_role,
+                self.estimand,
+                self.aggregation,
+                self.analysis_population,
+                self.value_scale,
+                self.inference,
+                self.alternative,
+                self.group_id,
+                self.control_group,
+                self.treatment_group,
+                self.dimension,
+                self.dimension_value,
+                self.source,
+                self.ds,
+                self.ds_basis,
+            )
+        )
+
+    @field_validator("ds", mode="before")
+    @classmethod
+    def _deserialize_day_axis(cls, value):
+        if isinstance(value, Mapping) and set(value) == {"label"}:
+            return value["label"]
+        if isinstance(value, Mapping) and set(value) == {"datetime"}:
+            return datetime.fromisoformat(value["datetime"])
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                pass
+        return value
+
+    @model_validator(mode="after")
+    def _identity_axes(self):
+        valid = (
+            self.kind == "arm"
+            and self.group_id is not None
+            and all(
+                value is None
+                for value in (
+                    self.control_group,
+                    self.treatment_group,
+                    self.dimension,
+                    self.dimension_value,
+                    self.aggregation,
+                )
+            )
+            or self.kind == "segment"
+            and self.group_id is not None
+            and self.dimension is not None
+            and self.dimension_value is not None
+            and all(
+                value is None
+                for value in (self.control_group, self.treatment_group, self.aggregation)
+            )
+            or self.kind == "contrast"
+            and self.control_group is not None
+            and self.treatment_group is not None
+            and self.aggregation is not None
+            and all(
+                value is None
+                for value in (
+                    self.group_id,
+                    self.dimension,
+                    self.dimension_value,
+                    self.source,
+                    self.ds,
+                    self.ds_basis,
+                    self.value_scale,
+                )
+            )
+        )
+        if self.ds_basis is not None and self.ds is None:
+            valid = False
+        if self.method is None:
+            valid = valid and self.method_role is None and self.estimand is None
+        else:
+            valid = valid and self.method_role is not None and self.estimand is not None
+        if self.kind == "contrast" and self.analysis_population != "assigned":
+            valid = False
+        if (self.dimension is None) != (self.dimension_value is None):
+            valid = False
+        if not valid:
+            _refuse(
+                "readout.cell.key_invalid",
+                kind=self.kind,
+                fields=tuple(
+                    name
+                    for name in (
+                        "group_id",
+                        "control_group",
+                        "treatment_group",
+                        "dimension",
+                        "dimension_value",
+                        "aggregation",
+                        "method",
+                        "method_role",
+                        "estimand",
+                    )
+                    if getattr(self, name) is None
+                ),
+            )
+        return self
+
+    @field_serializer("ds", when_used="json")
+    def _serialize_ds(self, value):
+        return serialize_day_axis(value)
+
+    def hypothesis(self) -> HypothesisKey:
+        if self.kind == "arm":
+            assert self.group_id is not None and self.estimand is not None
+            return ArmHypothesisKey(self.metric, self.group_id, self.estimand)
+        if self.kind == "segment":
+            assert (
+                self.group_id is not None
+                and self.estimand is not None
+                and self.dimension is not None
+                and self.dimension_value is not None
+            )
+            return SegmentHypothesisKey(
+                self.metric, self.group_id, self.estimand, self.dimension, self.dimension_value
+            )
+        assert self.control_group is not None and self.treatment_group is not None
+        return ContrastHypothesisKey(self.metric, self.control_group, self.treatment_group)
+
+
+def serialize_day_axis(value):
+    if isinstance(value, datetime):
+        return {"datetime": value.isoformat()}
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return {"label": value}
+    return value
+class IntegrityStatus(StrEnum):
+    FAILED = "failed"
+    NOT_REJECTED = "not_rejected"
+    NOT_CHECKED_MISSING_DECLARATION = "not_checked_missing_declaration"
+    NOT_CHECKED_MISSING_COUNTS = "not_checked_missing_counts"
+    UNSUPPORTED_ASSIGNMENT = "unsupported_assignment"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class IntegrityResult(_ReadoutModel):
+    status: IntegrityStatus
+    analysis_population: Population
+    construction: Literal["always_valid", "none"]
+    alpha: float | None
+    observed: Mapping[str, int] | None
+    expected: Mapping[str, float] | None
+    randomization_grain: str | None
+    code: str | None
+    context: Mapping[str, Any]
+class PopulationRoster(_ReadoutModel):
+    analysis_population: Population
+    arms: tuple[str, ...]
+    source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
+    complete: bool
+    control_group: str | None = None
 class Registry[T]:
     """Small registry for orthogonal dispatch axes."""
 
@@ -48,7 +334,7 @@ class Registry[T]:
 
     def get(self, key: str) -> T:
         if key not in self._entries:
-            _refuse_declaration(
+            _refuse(
                 "estimation.variance.registry.no_registered_available",
                 key=key,
                 registry_name=self._name,
@@ -131,9 +417,9 @@ class Method(CodedModel, BaseModel):
         ):
             refuse_finite_sample_cuped(self.name)
         if self.name == "cuped" and self.variance_reduction != "cuped":
-            _refuse_declaration("estimation.engine.method.name_without_variance", self=self.name)
+            _refuse("estimation.engine.method.name_without_variance", self=self.name)
         if self.name == "iptw" and (self.outcome_learner is not None or self.folds is not None):
-            _refuse_declaration("estimation.engine.method.name_iptw_does")
+            _refuse("estimation.engine.method.name_iptw_does")
         return self
 
     @property
@@ -179,14 +465,14 @@ class Method(CodedModel, BaseModel):
         values = method.covariates
         procedure = method.variance_reduction
         if procedure == "none" and values is not None:
-            _refuse_declaration("estimation.engine.method_covariates", method=method.name)
+            _refuse("estimation.engine.method_covariates", method=method.name)
         if procedure == "cuped" and values is not None:
             if len(values) != 1 or values[0].kind != "continuous":
-                _refuse_declaration("estimation.engine.method_covariates", method=method.name)
+                _refuse("estimation.engine.method_covariates", method=method.name)
             if values[0].missing not in ("impute", "zero", "refuse"):
-                _refuse_declaration("estimation.engine.method_covariates", method=method.name)
+                _refuse("estimation.engine.method_covariates", method=method.name)
         if procedure == "cuped_multicovariate":
             if not values or len({item.name for item in values}) != len(values):
-                _refuse_declaration("estimation.engine.method_covariates", method=method.name)
+                _refuse("estimation.engine.method_covariates", method=method.name)
             if any(item.missing not in ("refuse", "impute-indicator") for item in values):
-                _refuse_declaration("estimation.engine.method_covariates", method=method.name)
+                _refuse("estimation.engine.method_covariates", method=method.name)

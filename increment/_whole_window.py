@@ -38,7 +38,7 @@ from increment.sources import require_operation
 if TYPE_CHECKING:
     from increment.breakout.estimates import LiftEstimates
     from increment.decision import CompiledDecisionPlan
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
     from increment.estimation.inference import Prior
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import Encouragement, Observational, Randomized

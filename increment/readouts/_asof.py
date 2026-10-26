@@ -20,7 +20,7 @@ from increment.estimation.encouragement import (
     estimate_compliance,
     estimate_encouragement,
 )
-from increment.estimation.engine import Method
+from increment.declarations import Method
 from increment.estimation.readout_types import serialize_day_axis
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import SEQUENTIAL_POLICIES

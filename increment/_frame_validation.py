@@ -49,7 +49,7 @@ from increment.sources import (
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
 
 CAPABILITY_TABLE: dict[str, str] = {
     "window_days": (

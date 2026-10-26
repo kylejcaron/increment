@@ -99,7 +99,6 @@ from increment.estimation.variance import (
     RATIO_DENOMINATOR_PRECISION_THRESHOLD,
     RATIO_DENOMINATOR_SKEW_THRESHOLD,
     VARIANCE_MODELS,
-    VARIANCE_REDUCTION,
     MeanVarianceModel,
     check_positive_mean,
     ratio_denominator_mean_skewness,
@@ -118,11 +117,8 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from increment.declarations import (
-    ADJUSTMENTS,
     CovariateArg,
     Method,
-    OBSERVATIONAL_METHOD_NAMES,
-    Registry,
     VARIANCE_REDUCTION,
     _as_covariate,
     _normalize_method_covariates,

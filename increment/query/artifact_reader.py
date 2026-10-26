@@ -1980,7 +1980,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         from increment._cuped_evidence import method_key
         from increment._source_types import declared_evidence
-        from increment.estimation.engine import Method
+        from increment.declarations import Method
 
         selected = tuple(selected or self.context.metrics)
         configs = overlay_configs(selected, self.context.configs, methods=methods, prior=prior)

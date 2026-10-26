@@ -620,7 +620,7 @@ def _cells(evidence: Mapping[str, object], identity: tuple[object, ...]) -> Cate
 
 
 def _method_identity(method: object, kind: EvidenceKind) -> tuple[str, list[dict[str, object]]]:
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
 
     if not isinstance(method, dict):
         invalid_evidence("payload method must be a CUPED method identity")
@@ -1115,7 +1115,7 @@ def portable_cuped_rows(
     """Ordinary outcome rows plus portable scalar, cell and fitted evidence."""
     from increment._source_identity import source_identity
     from increment.errors import CodedError
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
 
     if identity is None:
         identity = source_identity(source)

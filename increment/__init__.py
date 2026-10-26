@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from increment.estimation.confounding import confounding_sensitivity
     from increment.estimation.decision_types import AsymptoticSequentialEvidence
     from increment.estimation.diagnostics import allocation_posterior_bands, sample_ratio_mismatch
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
     from increment.estimation.inference import Normal
     from increment.estimation.sequential import (
         AlwaysValid,

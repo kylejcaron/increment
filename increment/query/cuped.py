@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from increment.estimation.cuped.types import (
         CategoricalCells,
     )
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
 
 
 @dataclass(frozen=True, slots=True)

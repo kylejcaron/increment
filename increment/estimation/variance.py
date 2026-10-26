@@ -57,11 +57,6 @@ _REFUSALS = refusals(
         "estimation.variance.ratio_variance.variance_scale_not_representable": "var_log_r for metric={metric!r} group={group_id!r}: log-ratio variance is {value:.6g} of the terms' own scale (log scale {log_scale:.6g}), negative beyond their floating-point rounding (~{variance_slack:.3g}) -- the numerator and denominator moments are inconsistent (mis-aggregated upstream or not produced together), not merely cancelled.",
         "estimation.variance.ratio_variance.true_se_out_of_range": "var_log_r for metric={metric!r} group={group_id!r}: the true standard error is outside the float64 exponent range (log SE = {log_se:.6g}) -- it is not representable at this scale",
         "estimation.variance.ratio_variance.se_not_representable": "var_log_r for metric={metric!r} group={group_id!r} is {se!r} for a positive variance -- the true standard error is not representable in float64",
-        "estimation.variance.registry.no_registered_available": RefusalSpec(
-            "estimation.variance.registry.no_registered_available",
-            UnsupportedRequestError,
-            template="No {registry_name} registered for '{key}'. Available keys: {available}",
-        ),
     },
 )
 _raise = raiser(_REFUSALS)

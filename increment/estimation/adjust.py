@@ -1,7 +1,8 @@
 """Observational adjustment dispatch and orchestration policy.
 
 Estimator implementations live in the private ``_adjust`` modules; this
-module owns the registry, validation, and public orchestration seam.
+module owns observational validation and orchestration policy. The shared
+``ADJUSTMENTS`` registry lives in ``increment.declarations``.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from increment.estimation.inference import (
     Prior,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES, Registry
+from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,12 +58,10 @@ if TYPE_CHECKING:
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
 
-    AdjustmentFn = Callable[..., list[LiftEstimate]]
 
 
 
 
-_BUILTIN_ADJUSTMENTS = OBSERVATIONAL_METHOD_NAMES
 from increment.estimation._adjust import aipw as _aipw  # noqa: E402,F401
 from increment.estimation._adjust import dml as _dml  # noqa: E402,F401
 from increment.estimation._adjust import iptw as _iptw  # noqa: E402,F401
@@ -394,7 +393,7 @@ def _validate_global_prior_method_scales(
                 and metric_type != "quantile"
                 or not _is_unadjusted_method(method)
                 and not (
-                    method.name in _BUILTIN_ADJUSTMENTS and metric_type in ("quantile", "ratio")
+                    method.name in OBSERVATIONAL_METHOD_NAMES and metric_type in ("quantile", "ratio")
                 )
             )
         ]
@@ -1038,7 +1037,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                 dispatch_kwargs = adjust_kwargs
                 try:
                     moment_rows = evidence.metric_rows(metric)
-                    if method.name in _BUILTIN_ADJUSTMENTS:
+                    if method.name in OBSERVATIONAL_METHOD_NAMES:
                         from increment.estimation._adjust.common import (
                             AdjustmentInputs,
                             adjustment_preflight,
@@ -1066,7 +1065,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     frame = unit_frame_memo(metric, design.adjustment.covariates)
                     adjustment_args = (
                         (AdjustmentInputs(frame, moment_rows, cluster), metric, design)
-                        if method.name in _BUILTIN_ADJUSTMENTS
+                        if method.name in OBSERVATIONAL_METHOD_NAMES
                         else (frame, moment_rows, cluster, metric, design)
                     )
                     adjusted = adjust_fn(

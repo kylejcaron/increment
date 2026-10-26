@@ -107,7 +107,7 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     TestEvidence,
 )
-from increment.estimation.engine import Method
+from increment.declarations import Method
 from increment.estimation.inference import Prior
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,

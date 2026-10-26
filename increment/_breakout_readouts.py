@@ -36,7 +36,7 @@ from increment.readouts._requests import _validate_breakout_request
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.breakout.estimates import BreakoutEstimates
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
     from increment.estimation.inference import Prior
     from increment.semantics.models import Experiment, Metric
     from increment.sources import _BuiltinMomentSource
