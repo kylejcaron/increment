@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Iterator, Mapping
-from typing import Any, cast
+from typing import Any
 
-from increment._evidence_types import CountsRequest, MethodFitRequest, MomentsRequest, UnitRowsRequest
+from increment._evidence_types import (
+    CountsRequest,
+    MethodFitRequest,
+    MomentsRequest,
+    UnitRowsRequest,
+)
 from increment.declarations import (
     ADJUSTMENTS,
     BUILTIN_ESTIMATORS,
+    VARIANCE_REDUCTION,
     CountsSpec,
     EstimatorRef,
     Method,
     MethodFitSpec,
     MomentsSpec,
     UnitRowsSpec,
-    VARIANCE_REDUCTION,
     estimator_id_for_selector,
     estimator_refs,
     register,
@@ -61,7 +66,11 @@ def _implementation(estimator_id: str) -> Any | None:
 
 
 def estimator_id(method: Method) -> str:
-    return observational_estimator_id(method) if method.is_observational else randomized_estimator_id(method)
+    return (
+        observational_estimator_id(method)
+        if method.is_observational
+        else randomized_estimator_id(method)
+    )
 
 
 def observational_estimator_id(method: Method) -> str:
@@ -86,13 +95,18 @@ def uses_builtin_adjustment_preflight(method: Method) -> bool:
         "increment.estimation._adjust.dml",
         "increment.estimation._adjust.aipw",
     }
+
+
 def routes(ref: EstimatorRef, context: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
     """Build concrete acquisition requests from each declared alternative route."""
-    if any(
-        isinstance(spec, UnitRowsSpec) and spec.covariates == "design"
-        for route in ref.needs
-        for spec in route
-    ) and "design_covariates" not in context:
+    if (
+        any(
+            isinstance(spec, UnitRowsSpec) and spec.covariates == "design"
+            for route in ref.needs
+            for spec in route
+        )
+        and "design_covariates" not in context
+    ):
         raise CodedError(
             "observational routes need design covariates in their context",
             code="estimation.engine.method_covariates",
@@ -103,12 +117,15 @@ def routes(ref: EstimatorRef, context: Mapping[str, Any]) -> tuple[tuple[Any, ..
         requests: list[Any] = []
         for spec in route:
             if isinstance(spec, MomentsSpec):
-                requests.append(MomentsRequest(
-                    metric=context["metric"], grain=spec.grain,
-                    method=context.get("method") if spec.method_specific else None,
-                    include_covariate=spec.include_covariate,
-                    population=context.get("population", "assigned"),
-                ))
+                requests.append(
+                    MomentsRequest(
+                        metric=context["metric"],
+                        grain=spec.grain,
+                        method=context.get("method") if spec.method_specific else None,
+                        include_covariate=spec.include_covariate,
+                        population=context.get("population", "assigned"),
+                    )
+                )
             elif isinstance(spec, UnitRowsSpec):
                 if spec.covariates == "design":
                     covariates = context.get("design_covariates", ())
@@ -119,19 +136,28 @@ def routes(ref: EstimatorRef, context: Mapping[str, Any]) -> tuple[tuple[Any, ..
                         covariates = tuple(value.name for value in (method.covariates or ()))
                 else:
                     covariates = ()
-                requests.append(UnitRowsRequest(
-                    metric=context["metric"], covariates=tuple(covariates or ()),
-                    outcome_stage=spec.outcome_stage,
-                    population=context.get("population", "assigned"),
-                ))
+                requests.append(
+                    UnitRowsRequest(
+                        metric=context["metric"],
+                        covariates=tuple(covariates or ()),
+                        outcome_stage=spec.outcome_stage,
+                        population=context.get("population", "assigned"),
+                    )
+                )
             elif isinstance(spec, MethodFitSpec):
-                requests.append(MethodFitRequest(
-                    metric=context["metric"], method=context["method"],
-                    control=context["control"], arm_order=tuple(context["arm_order"]),
-                    population=context.get("population", "assigned"),
-                ))
+                requests.append(
+                    MethodFitRequest(
+                        metric=context["metric"],
+                        method=context["method"],
+                        control=context["control"],
+                        arm_order=tuple(context["arm_order"]),
+                        population=context.get("population", "assigned"),
+                    )
+                )
             elif isinstance(spec, CountsSpec):
-                requests.append(CountsRequest(kind=spec.kind, population=context.get("population", "assigned")))
+                requests.append(
+                    CountsRequest(kind=spec.kind, population=context.get("population", "assigned"))
+                )
             else:
                 raise TypeError(f"unsupported estimator need spec {type(spec).__name__}")
         built.append(tuple(requests))

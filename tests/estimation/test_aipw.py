@@ -455,12 +455,9 @@ class TestMethodRouting:
         registered names, not only the three built-ins."""
         from increment.estimation.engine import estimate_lift
         from increment.semantics.models import MeanMetric
-
         from tests.estimation.registry_helpers import registered_adjustment
 
-        with registered_adjustment(
-            "regression_probe_adjustment", lambda *a, **k: []
-        ):
+        with registered_adjustment("regression_probe_adjustment", lambda *a, **k: []):
             row = centered_row_from_raw_sums(
                 {
                     "experiment_id": "e1",

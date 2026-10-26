@@ -400,12 +400,60 @@ _DESIGN_ROWS = UnitRowsSpec(covariates="design")
 _METHOD_ROWS = UnitRowsSpec(covariates="method")
 _FIT = MethodFitSpec()
 BUILTIN_ESTIMATORS: tuple[EstimatorRef, ...] = (
-    EstimatorRef("observational.iptw", "increment.estimation._adjust.iptw", "iptw_estimate", "panel", "ate", "iptw", ((_TOTAL_MOMENTS, _DESIGN_ROWS),)),
-    EstimatorRef("observational.dml", "increment.estimation._adjust.dml", "dml_estimate", "panel", "plr_slope", "dml", ((_TOTAL_MOMENTS, _DESIGN_ROWS),)),
-    EstimatorRef("observational.aipw", "increment.estimation._adjust.aipw", "aipw_estimate", "panel", "ate", "aipw", ((_TOTAL_MOMENTS, _DESIGN_ROWS),)),
-    EstimatorRef("randomized.unadjusted", "increment.estimation.engine", "estimate_lift", "moments", "ate", None, ((_TOTAL_MOMENTS,),)),
-    EstimatorRef("randomized.cuped", "increment.estimation.engine", "estimate_lift", "moments", "ate", "cuped", ((MomentsSpec("total", method_specific=True),),)),
-    EstimatorRef("randomized.cuped_multicovariate", "increment.estimation.engine", "estimate_lift", "panel", "ate", "cuped_multicovariate", ((_FIT,), (_TOTAL_MOMENTS, _DESIGN_ROWS))),
+    EstimatorRef(
+        "observational.iptw",
+        "increment.estimation._adjust.iptw",
+        "iptw_estimate",
+        "panel",
+        "ate",
+        "iptw",
+        ((_TOTAL_MOMENTS, _DESIGN_ROWS),),
+    ),
+    EstimatorRef(
+        "observational.dml",
+        "increment.estimation._adjust.dml",
+        "dml_estimate",
+        "panel",
+        "plr_slope",
+        "dml",
+        ((_TOTAL_MOMENTS, _DESIGN_ROWS),),
+    ),
+    EstimatorRef(
+        "observational.aipw",
+        "increment.estimation._adjust.aipw",
+        "aipw_estimate",
+        "panel",
+        "ate",
+        "aipw",
+        ((_TOTAL_MOMENTS, _DESIGN_ROWS),),
+    ),
+    EstimatorRef(
+        "randomized.unadjusted",
+        "increment.estimation.engine",
+        "estimate_lift",
+        "moments",
+        "ate",
+        None,
+        ((_TOTAL_MOMENTS,),),
+    ),
+    EstimatorRef(
+        "randomized.cuped",
+        "increment.estimation.engine",
+        "estimate_lift",
+        "moments",
+        "ate",
+        "cuped",
+        ((MomentsSpec("total", method_specific=True),),),
+    ),
+    EstimatorRef(
+        "randomized.cuped_multicovariate",
+        "increment.estimation.engine",
+        "estimate_lift",
+        "panel",
+        "ate",
+        "cuped_multicovariate",
+        ((_FIT,), (_TOTAL_MOMENTS, _DESIGN_ROWS)),
+    ),
 )
 
 _ESTIMATORS: dict[str, EstimatorRef] = {ref.estimator_id: ref for ref in BUILTIN_ESTIMATORS}
@@ -420,7 +468,9 @@ def register(ref: EstimatorRef) -> None:
         and any(isinstance(spec, UnitRowsSpec) and spec.covariates == "design" for spec in route)
         for route in ref.needs
     ):
-        raise ValueError("observational estimators require a route with total moments and design rows")
+        raise ValueError(
+            "observational estimators require a route with total moments and design rows"
+        )
     existing = _ESTIMATORS.get(ref.estimator_id)
     if existing is not None and existing != ref:
         raise ValueError(f"estimator {ref.estimator_id!r} is already registered")
@@ -453,7 +503,11 @@ class AdjustmentRegistry(Registry[AdjustmentFn]):
     def register(self, key: str, value: AdjustmentFn) -> None:
         estimator_id = estimator_id_for_selector(key) or f"observational.{key}"
         if estimator_id not in _ESTIMATORS:
-            register(EstimatorRef(estimator_id, "", "", "panel", "ate", key, ((_TOTAL_MOMENTS, _DESIGN_ROWS),)))
+            register(
+                EstimatorRef(
+                    estimator_id, "", "", "panel", "ate", key, ((_TOTAL_MOMENTS, _DESIGN_ROWS),)
+                )
+            )
         register_implementation(estimator_id, value)
         self._entries[key] = value
 
@@ -512,7 +566,9 @@ def is_observational_name(name: str) -> bool:
 
 ADJUSTMENTS = AdjustmentRegistry()
 OBSERVATIONAL_METHOD_NAMES = frozenset(
-    ref.selector for ref in BUILTIN_ESTIMATORS if ref.estimator_id.startswith("observational.") and ref.selector is not None
+    ref.selector
+    for ref in BUILTIN_ESTIMATORS
+    if ref.estimator_id.startswith("observational.") and ref.selector is not None
 )
 
 CovariateArg = str | CupedCovariate | CupedCovariateBinding

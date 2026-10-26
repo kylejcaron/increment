@@ -17,8 +17,7 @@ from increment._evidence_types import MomentsRequest, UnitRowsRequest
 from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
-from increment.declarations import ADJUSTMENTS, is_observational_name
-from increment.estimators.registry import uses_builtin_adjustment_preflight
+from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -47,6 +46,7 @@ from increment.estimation.inference import (
     Prior,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimators.registry import uses_builtin_adjustment_preflight
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -389,7 +389,7 @@ def _validate_global_prior_method_scales(
                 and metric_type != "quantile"
                 or not _is_unadjusted_method(method)
                 and not (
-                    is_observational_name(method.name)
+                    method.name in OBSERVATIONAL_METHOD_NAMES
                     and metric_type in ("quantile", "ratio")
                 )
             )

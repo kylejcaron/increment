@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 
 from increment._literals import PreferredDirection, ValueScale
+from increment.declarations import ADJUSTMENTS
 from increment.estimation._adjust.common import (
     AdjustedContrastRequest,
     AdjustmentCohort,
@@ -61,7 +62,6 @@ from increment.estimation._adjust.overlap import (
 )
 from increment.estimation._adjust.value_scale import resolve_value_scale
 from increment.estimation._adjust.weight_diagnostics import _weight_summary
-from increment.declarations import ADJUSTMENTS
 from increment.estimation.inference import Prior
 
 if TYPE_CHECKING:

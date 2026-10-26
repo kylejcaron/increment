@@ -9,11 +9,25 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str) -> Any:
-    if name in {"ESTIMATORS", "estimator_id", "load", "observational_estimator_id", "randomized_estimator_id", "routes"}:
+    if name in {
+        "ESTIMATORS",
+        "estimator_id",
+        "load",
+        "observational_estimator_id",
+        "randomized_estimator_id",
+        "routes",
+    }:
         from increment.estimators import registry
 
         return getattr(registry, name)
     raise AttributeError(name)
 
 
-__all__ = ["ESTIMATORS", "estimator_id", "load", "observational_estimator_id", "randomized_estimator_id", "routes"]
+__all__ = [
+    "ESTIMATORS",
+    "estimator_id",
+    "load",
+    "observational_estimator_id",
+    "randomized_estimator_id",
+    "routes",
+]

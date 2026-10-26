@@ -5,10 +5,15 @@ import sys
 from pathlib import Path
 
 import pytest
-from increment._metric_specs import MetricSpec
 
-from increment._evidence_types import CountsRequest, MethodFitRequest, MomentsRequest, UnitRowsRequest
-from increment.declarations import ADJUSTMENTS, EstimatorRef, Method
+from increment._evidence_types import (
+    CountsRequest,
+    MethodFitRequest,
+    MomentsRequest,
+    UnitRowsRequest,
+)
+from increment._metric_specs import MetricSpec
+from increment.declarations import ADJUSTMENTS, EstimatorRef, Method, MomentsSpec, UnitRowsSpec
 from increment.errors import CodedError
 from increment.estimators.registry import (
     ESTIMATORS,
@@ -16,10 +21,9 @@ from increment.estimators.registry import (
     load,
     observational_estimator_id,
     randomized_estimator_id,
-    routes,
     register,
+    routes,
 )
-from increment.semantics.models import Metric
 
 
 def test_every_legacy_name_resolves_to_its_registered_adjustment():
@@ -30,7 +34,9 @@ def test_every_legacy_name_resolves_to_its_registered_adjustment():
 def test_custom_adjustment_registration_is_a_first_class_estimator():
     from tests.estimation.registry_helpers import registered_adjustment
 
-    fn = lambda *_args, **_kwargs: []
+    def fn(*_args, **_kwargs):
+        return []
+
     name = "registry_test_custom_adjustment"
     estimator = f"observational.{name}"
     with registered_adjustment(name, fn):
@@ -41,6 +47,7 @@ def test_custom_adjustment_registration_is_a_first_class_estimator():
     assert estimator not in ESTIMATORS
     with pytest.raises(CodedError):
         ADJUSTMENTS.get(name)
+
 
 def test_unknown_observational_name_is_refused_instead_of_becoming_unadjusted():
     with pytest.raises(CodedError):
@@ -73,9 +80,7 @@ def test_registry_routes_build_doorway_requests_with_population_and_covariates()
         for route in all_routes
         for request in route
     )
-    assert all(
-        request.population == "triggered" for route in all_routes for request in route
-    )
+    assert all(request.population == "triggered" for route in all_routes for request in route)
     row_requests = [
         request for route in all_routes for request in route if isinstance(request, UnitRowsRequest)
     ]
@@ -94,7 +99,6 @@ def test_routes_refuse_when_design_covariates_are_absent_from_context():
         )
 
 
-
 def test_custom_needs_keep_population_and_do_not_import_implementation():
     import sys
 
@@ -108,8 +112,12 @@ def test_custom_needs_keep_population_and_do_not_import_implementation():
         estimand="ate",
         selector="registry_population",
         needs=(
-            (MomentsSpec("total", method_specific=True, include_covariate=True),
-             UnitRowsSpec("raw", "method"), CountsSpec("triggered"), MethodFitSpec()),
+            (
+                MomentsSpec("total", method_specific=True, include_covariate=True),
+                UnitRowsSpec("raw", "method"),
+                CountsSpec("triggered"),
+                MethodFitSpec(),
+            ),
             (MomentsSpec("total"), UnitRowsSpec(covariates="design")),
         ),
     )
@@ -117,9 +125,7 @@ def test_custom_needs_keep_population_and_do_not_import_implementation():
     try:
         built = routes(ref, {**_context(), "population": "triggered"})
         assert "not_imported_registry_estimator" not in sys.modules
-        assert all(
-            request.population == "triggered" for route in built for request in route
-        )
+        assert all(request.population == "triggered" for route in built for request in route)
         assert isinstance(built[0][0], MomentsRequest)
         assert built[0][0].method is not None and built[0][0].include_covariate
         assert built[0][1].outcome_stage == "raw"
@@ -201,14 +207,14 @@ else:
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
+
 def test_each_observational_route_requires_total_moments_and_design_rows():
     for ref in ESTIMATORS.values():
         if ref.estimator_id.startswith("observational."):
             assert any(
-                any(type(spec).__name__ == "MomentsSpec" and spec.grain == "total" for spec in route)
+                any(isinstance(spec, MomentsSpec) and spec.grain == "total" for spec in route)
                 and any(
-                    type(spec).__name__ == "UnitRowsSpec" and spec.covariates == "design"
-                    for spec in route
+                    isinstance(spec, UnitRowsSpec) and spec.covariates == "design" for spec in route
                 )
                 for route in ref.needs
             )
@@ -293,11 +299,20 @@ def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
         (),
         {
             "evidence": EvidenceCapabilities(
-                kind="unit_summary", grains=frozenset({"total"}), breakouts=(),
-                shape="unit_summary", operations=frozenset(), unit_rows=False,
-                raw_outcomes=False, method_fit="warehouse", compliance_axis="none",
-                count_grains=frozenset(), populations=frozenset({"assigned"}),
-                sequential_capture="none", scalar=None, available_covariates=None,
+                kind="unit_summary",
+                grains=frozenset({"total"}),
+                breakouts=(),
+                shape="unit_summary",
+                operations=frozenset(),
+                unit_rows=False,
+                raw_outcomes=False,
+                method_fit="warehouse",
+                compliance_axis="none",
+                count_grains=frozenset(),
+                populations=frozenset({"assigned"}),
+                sequential_capture="none",
+                scalar=None,
+                available_covariates=None,
             )
         },
     )()
@@ -306,11 +321,20 @@ def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
         (),
         {
             "evidence": EvidenceCapabilities(
-                kind="unit_summary", grains=frozenset({"total"}), breakouts=(),
-                shape="unit_summary", operations=frozenset(), unit_rows=True,
-                raw_outcomes=False, method_fit="none", compliance_axis="none",
-                count_grains=frozenset(), populations=frozenset({"assigned"}),
-                sequential_capture="none", scalar=None, available_covariates=frozenset({"age"}),
+                kind="unit_summary",
+                grains=frozenset({"total"}),
+                breakouts=(),
+                shape="unit_summary",
+                operations=frozenset(),
+                unit_rows=True,
+                raw_outcomes=False,
+                method_fit="none",
+                compliance_axis="none",
+                count_grains=frozenset(),
+                populations=frozenset({"assigned"}),
+                sequential_capture="none",
+                scalar=None,
+                available_covariates=frozenset({"age"}),
             )
         },
     )()
@@ -325,19 +349,28 @@ def test_routes_preserve_triggered_population_as_an_acquisition_requirement():
     from increment._source_types import EvidenceCapabilities
     from increment.errors import CapabilityError
 
-    request = routes(
-        ESTIMATORS["randomized.cuped"], {**_context(), "population": "triggered"}
-    )[0][0]
+    request = routes(ESTIMATORS["randomized.cuped"], {**_context(), "population": "triggered"})[0][
+        0
+    ]
     source = type(
         "AssignedOnly",
         (),
         {
             "evidence": EvidenceCapabilities(
-                kind="moments", grains=frozenset({"total"}), breakouts=(), shape=None,
-                operations=frozenset(), unit_rows=False, raw_outcomes=False,
-                method_fit="none", compliance_axis="none", count_grains=frozenset(),
-                populations=frozenset({"assigned"}), sequential_capture="none",
-                scalar=None, available_covariates=None,
+                kind="moments",
+                grains=frozenset({"total"}),
+                breakouts=(),
+                shape=None,
+                operations=frozenset(),
+                unit_rows=False,
+                raw_outcomes=False,
+                method_fit="none",
+                compliance_axis="none",
+                count_grains=frozenset(),
+                populations=frozenset({"assigned"}),
+                sequential_capture="none",
+                scalar=None,
+                available_covariates=None,
             )
         },
     )()
@@ -362,7 +395,9 @@ def test_route_spec_literals_build_their_matching_request_values():
         ),
     )
     built = routes(ref, _context())
-    moments = [request for route in built for request in route if isinstance(request, MomentsRequest)]
+    moments = [
+        request for route in built for request in route if isinstance(request, MomentsRequest)
+    ]
     rows = [request for route in built for request in route if isinstance(request, UnitRowsRequest)]
     counts = [request for route in built for request in route if isinstance(request, CountsRequest)]
     assert [request.grain for request in moments] == ["daily", "asof"]
@@ -371,6 +406,7 @@ def test_route_spec_literals_build_their_matching_request_values():
         ("raw", ("pre",)),
     ]
     assert [request.kind for request in counts] == ["unit", "cluster", "assignment", "triggered"]
+
 
 def _context():
     return {
@@ -396,8 +432,8 @@ def test_cuped_declares_fit_or_local_routes_and_scalar_cuped_moments_only():
 
 
 def test_custom_estimator_needs_flow_to_routes_and_manifest():
-    from scripts import render_estimator_manifest
     from increment.declarations import CountsSpec, MomentsSpec, UnitRowsSpec
+    from scripts import render_estimator_manifest
 
     custom_id = "observational.registry_custom_needs"
     ref = EstimatorRef(
@@ -407,8 +443,7 @@ def test_custom_estimator_needs_flow_to_routes_and_manifest():
         contract="panel",
         estimand="ate",
         selector=None,
-        needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")),
-               (CountsSpec("cluster"),)),
+        needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")), (CountsSpec("cluster"),)),
     )
     register(ref)
     try:
@@ -421,6 +456,7 @@ def test_custom_estimator_needs_flow_to_routes_and_manifest():
         assert custom_id in manifest
     finally:
         from increment.declarations import unregister_estimator
+
         unregister_estimator(custom_id)
 
 
@@ -491,5 +527,7 @@ analysis = Analysis.from_unit_summary(frame, unit='unit', group='arm', metrics={
 rows = analysis.run(decision_method=Method(name='dummy'))
 assert any(row.note and 'registry-sentinel' in row.note for row in rows)
 """
-    result = subprocess.run([sys.executable, "-c", code, str(module)], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(module)], capture_output=True, text=True
+    )
     assert result.returncode == 0, result.stderr
