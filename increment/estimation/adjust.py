@@ -939,6 +939,16 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
+    if evidence is None:
+        from increment.estimators.registry import validate_observational_routes
+
+        validate_observational_routes(
+            src,
+            tuple(selected),
+            tuple(methods),
+            design,
+            getattr(src, "population", "assigned"),
+        )
     _validate_adjustment_methods(methods)
     if evidence is None:
         moment_metrics = selected

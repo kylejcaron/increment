@@ -86,9 +86,33 @@ _REFUSALS = refusals(
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.variance.registry.no_registered_available": _VARIANCE_REGISTRY_REFUSAL,
         "readout.cell.key_invalid": _CELL_KEY_INVALID_REFUSAL,
+        "estimation.estimator.ref.invalid_id": "Estimator id {estimator_id!r} must be a qualified identifier.",
+        "estimation.estimator.ref.observational_needs": "Observational estimator {estimator_id!r} needs a route with total moments and design rows.",
+        "estimation.estimator.ref.already_registered": "Estimator {estimator_id!r} is already registered with a different declaration.",
+        "estimation.estimator.implementation.missing_ref": "Implementation for estimator {estimator_id!r} has no declared estimator ref.",
     },
 )
 _refuse = raiser(_REFUSALS)
+
+
+
+
+def freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _FrozenMapping({key: freeze(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(freeze(item) for item in value)
+    return value
+
+
+def thaw(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {key: thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [thaw(item) for item in value]
+    return value
 
 
 def freeze(value: Any) -> Any:
@@ -462,18 +486,16 @@ _IMPLEMENTATIONS: dict[str, Callable[..., Any]] = {}
 
 def register(ref: EstimatorRef) -> None:
     if not ref.estimator_id or "." not in ref.estimator_id:
-        raise ValueError("estimator_id must be a non-empty qualified identifier")
+        _refuse("estimation.estimator.ref.invalid_id", estimator_id=ref.estimator_id)
     if ref.estimator_id.startswith("observational.") and not any(
         any(isinstance(spec, MomentsSpec) and spec.grain == "total" for spec in route)
         and any(isinstance(spec, UnitRowsSpec) and spec.covariates == "design" for spec in route)
         for route in ref.needs
     ):
-        raise ValueError(
-            "observational estimators require a route with total moments and design rows"
-        )
+        _refuse("estimation.estimator.ref.observational_needs", estimator_id=ref.estimator_id)
     existing = _ESTIMATORS.get(ref.estimator_id)
     if existing is not None and existing != ref:
-        raise ValueError(f"estimator {ref.estimator_id!r} is already registered")
+        _refuse("estimation.estimator.ref.already_registered", estimator_id=ref.estimator_id)
     _ESTIMATORS[ref.estimator_id] = ref
 
 
@@ -487,9 +509,12 @@ def unregister_estimator(estimator_id: str) -> None:
 
 
 def register_implementation(estimator_id: str, fn: Callable[..., Any]) -> None:
-    if estimator_id not in _ESTIMATORS:
-        raise ValueError(f"implementation has no declared estimator ref: {estimator_id!r}")
+    ref = _ESTIMATORS.get(estimator_id)
+    if ref is None:
+        _refuse("estimation.estimator.implementation.missing_ref", estimator_id=estimator_id)
     _IMPLEMENTATIONS[estimator_id] = fn
+    if ref.selector is not None:
+        ADJUSTMENTS._entries.pop(ref.selector, None)
 
 
 def estimator_refs() -> Mapping[str, EstimatorRef]:

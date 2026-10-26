@@ -159,8 +159,51 @@ def test_observational_estimator_registration_requires_total_moments_and_design_
         selector="missing_base_route",
         needs=((UnitRowsSpec(covariates="design"),),),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(CodedError) as exc:
         register(invalid)
+    assert exc.value.code == "estimation.estimator.ref.observational_needs"
+
+
+def test_unsupported_estimator_need_refuses_with_a_stable_code():
+    ref = EstimatorRef(
+        estimator_id="randomized.unsupported_need",
+        module="module",
+        attribute="estimate",
+        contract="moments",
+        estimand="ate",
+        selector=None,
+        needs=((object(),),),
+    )
+    with pytest.raises(CodedError) as exc:
+        routes(ref, _context())
+    assert exc.value.code == "estimation.estimator.need.unsupported"
+
+
+def test_replacing_registered_implementation_invalidates_adjustment_cache():
+    from increment.declarations import MomentsSpec, UnitRowsSpec, register_implementation, unregister_estimator
+
+    estimator_id = "observational.replace_cache_probe"
+    selector = "replace_cache_probe"
+    ref = EstimatorRef(
+        estimator_id=estimator_id,
+        module="module",
+        attribute="estimate",
+        contract="panel",
+        estimand="ate",
+        selector=selector,
+        needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")),),
+    )
+    first = lambda: None
+    second = lambda: None
+    register(ref)
+    try:
+        register_implementation(estimator_id, first)
+        assert ADJUSTMENTS.get(selector) is first
+        register_implementation(estimator_id, second)
+        assert load(estimator_id) is second
+        assert ADJUSTMENTS.get(selector) is second
+    finally:
+        unregister_estimator(estimator_id)
 
 
 def test_distinct_same_setting_sensitivity_methods_produce_distinct_rows():
@@ -600,3 +643,75 @@ assert any(row.note and 'registry-sentinel' in row.note for row in rows)
         [sys.executable, "-c", code, str(module)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_observational_dispatch_refuses_undeclared_cluster_counts_before_estimation():
+    from increment.declarations import CountsSpec, register_implementation, unregister_estimator
+
+    estimator_id = "observational.cluster_need_probe"
+    selector = "cluster_need_probe"
+    ref = EstimatorRef(
+        estimator_id=estimator_id,
+        module="test_module",
+        attribute="estimate",
+        contract="panel",
+        estimand="ate",
+        selector=selector,
+        needs=(
+            (
+                MomentsSpec("total"),
+                UnitRowsSpec(covariates="design"),
+                CountsSpec("cluster"),
+            ),
+        ),
+    )
+    register(ref)
+    register_implementation(estimator_id, lambda *_args, **_kwargs: [])
+    try:
+        analysis = Analysis.from_unit_summary(
+            pd.DataFrame(
+                {
+                    "unit": range(8),
+                    "arm": ["control"] * 4 + ["treatment"] * 4,
+                    "outcome": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
+                    "x": [0, 1, 0, 1, 0, 1, 0, 1],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            metrics={"outcome": "mean"},
+            design=Observational(
+                control_group="control",
+                adjustment=AdjustmentSet(covariates=("x",)),
+                gate=IdentificationGate(overlap="trim"),
+            ),
+        )
+        with pytest.raises(CodedError) as exc:
+            analysis.run(decision_method=Method(name=selector))
+        assert exc.value.code == "evidence.cluster_unavailable"
+    finally:
+        unregister_estimator(estimator_id)
+
+
+def test_registration_refusals_use_stable_codes_and_context():
+    from dataclasses import replace
+
+    from increment.declarations import register_implementation, unregister_estimator
+
+    invalid_id = EstimatorRef("bad", "", "", "moments", "ate", None)
+    with pytest.raises(CodedError) as exc:
+        register(invalid_id)
+    assert exc.value.code == "estimation.estimator.ref.invalid_id"
+    assert exc.value.context["estimator_id"] == "bad"
+
+    ref = EstimatorRef("randomized.duplicate_probe", "", "", "moments", "ate", None)
+    register(ref)
+    try:
+        with pytest.raises(CodedError) as duplicate:
+            register(replace(ref, module="different"))
+        assert duplicate.value.code == "estimation.estimator.ref.already_registered"
+        with pytest.raises(CodedError) as missing:
+            register_implementation("randomized.missing_probe", lambda: None)
+        assert missing.value.code == "estimation.estimator.implementation.missing_ref"
+    finally:
+        unregister_estimator(ref.estimator_id)

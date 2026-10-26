@@ -25,7 +25,16 @@ from increment.declarations import (
     register,
     register_implementation,
 )
-from increment.errors import CodedError
+from increment.errors import CodedError, InvalidRequestError, raiser, refusals
+
+
+_REFUSALS = refusals(
+    InvalidRequestError,
+    {
+        "estimation.estimator.need.unsupported": "Estimator {estimator_id!r} declares unsupported need spec {need_type!r}.",
+    },
+)
+_refuse = raiser(_REFUSALS)
 
 
 class _EstimatorMapping(Mapping[str, EstimatorRef]):
@@ -150,7 +159,7 @@ def routes(ref: EstimatorRef, context: Mapping[str, Any]) -> tuple[tuple[Any, ..
                         metric=context["metric"],
                         method=context["method"],
                         control=context["control"],
-                        arm_order=tuple(context["arm_order"]),
+                        arm_order=tuple(context.get("arm_order", ())),
                         population=context.get("population", "assigned"),
                     )
                 )
@@ -159,10 +168,63 @@ def routes(ref: EstimatorRef, context: Mapping[str, Any]) -> tuple[tuple[Any, ..
                     CountsRequest(kind=spec.kind, population=context.get("population", "assigned"))
                 )
             else:
-                raise TypeError(f"unsupported estimator need spec {type(spec).__name__}")
+                _refuse(
+                    "estimation.estimator.need.unsupported",
+                    estimator_id=ref.estimator_id,
+                    need_type=type(spec).__name__,
+                )
         built.append(tuple(requests))
     return tuple(built)
 
+
+def require_routes(source: object, ref: EstimatorRef, context: Mapping[str, Any]) -> None:
+    """Require one complete declared route to be supported by the source."""
+    from increment._evidence_refusals import require_evidence
+    from increment.errors import CapabilityError
+
+    failures: list[CapabilityError] = []
+    for route in routes(ref, context):
+        try:
+            for request in route:
+                require_evidence(source, request=request)
+        except CapabilityError as error:
+            failures.append(error)
+        else:
+            return
+    if failures:
+        raise failures[-1]
+
+
+
+def validate_observational_routes(
+    source: object,
+    metrics: tuple[Any, ...],
+    methods: tuple[Any, ...],
+    design: Any,
+    population: str = "assigned",
+) -> None:
+    """Validate each observational estimator's declared alternatives before acquisition."""
+    design_covariates = tuple(getattr(getattr(design, "adjustment", None), "covariates", ()))
+    for method in methods:
+        if not method.is_observational:
+            continue
+        ref = ESTIMATORS[observational_estimator_id(method)]
+        for metric in metrics:
+            require_routes(
+                source,
+                ref,
+                {
+                    "metric": metric,
+                    "method": method,
+                    "control": design.control_group,
+                    "arm_order": (),
+                    "population": population,
+                    "design_covariates": design_covariates,
+                    "method_covariates": tuple(
+                        value.name for value in (getattr(method, "covariates", None) or ())
+                    ),
+                },
+            )
 
 for _ref in BUILTIN_ESTIMATORS:
     register(_ref)
