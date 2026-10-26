@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -61,8 +61,19 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     coverage = _coverage()
     if coverage is not None:
         coverage.switch_context(f"{item.nodeid}|setup")
-    for fixture in _fixture_closures.get(item.nodeid, ()):
-        _fixture_setup.setdefault(fixture, [item.nodeid])
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_fixture_setup(fixturedef: Any, request: pytest.FixtureRequest) -> Any:
+    outcome = yield
+    if outcome.excinfo is not None:
+        return
+    node = getattr(request, "_pyfuncitem", request.node)
+    nodeid = getattr(node, "nodeid", None)
+    if isinstance(nodeid, str) and nodeid.split("::", 1)[0].startswith("tests/"):
+        producers = _fixture_setup.setdefault(fixturedef.argname, [])
+        if nodeid not in producers:
+            producers.append(nodeid)
 
 
 @pytest.hookimpl(trylast=True)

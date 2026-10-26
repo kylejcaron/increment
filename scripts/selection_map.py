@@ -80,6 +80,8 @@ def build(
                 nodeid, _, phase = context.partition("|")
                 test_file = nodeid.split("::", 1)[0]
                 if phase == "setup":
+                    if test_file.startswith("tests/"):
+                        modules[module].add(test_file)
                     for fixture, producers in fixture_setup.items():
                         if nodeid in producers:
                             modules[module].update(fixture_consumers.get(fixture, ()))

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import json
+import os
 import subprocess
-
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from coverage import CoverageData
 
 from scripts.selection_map import SelectionMap, build, is_stale
-
 
 pytestmark = pytest.mark.integration
 
@@ -52,6 +51,7 @@ def test_stale_map_detects_unrelated_base(tmp_path: Path) -> None:
         },
         root=tmp_path,
     )
+
 
 @pytest.mark.parametrize(
     ("path", "before", "after"),
@@ -110,38 +110,83 @@ def test_collection_dynamic_import_maps_to_its_test_file(tmp_path: Path) -> None
 
 
 def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None:
-    source = tmp_path / "increment/fixture_source.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n")
-    cov = CoverageData(basename=str(tmp_path / ".coverage"))
-    cov.set_context("tests/test_first.py::test_one|setup")
-    cov.add_lines({str(source): {1}})
-    cov.write()
-    fixtures = tmp_path / "fixtures"
-    fixtures.mkdir()
-    (fixtures / "fixtures.gw0.json").write_text(
-        json.dumps(
-            {
-                "closures": {"tests/test_first.py::test_one": ["db"]},
-                "setup": {"db": ["tests/test_first.py::test_one"]},
-            }
-        )
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (project / "increment").mkdir()
+    (project / "increment/__init__.py").write_text("")
+    (project / "increment/fixture_source.py").write_text(
+        "def touch():\n    return 'fixture dependency'\n"
     )
-    (fixtures / "fixtures.gw1.json").write_text(
-        json.dumps(
-            {
-                "closures": {"tests/test_second.py::test_two": ["db"]},
-                "setup": {},
-            }
+    (project / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n")
+    (project / "conftest.py").write_text(
+        "import pytest\n"
+        "@pytest.fixture\n"
+        "def shared(request):\n"
+        "    if 'test_second.py' in request.node.nodeid:\n"
+        "        from increment.fixture_source import touch\n"
+        "        touch()\n"
+    )
+    for name in ("first", "second"):
+        (tests / f"test_{name}.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.xdist_group('shared-fixture')\n"
+            f"def test_{name}(shared):\n"
+            "    pass\n"
         )
+    repo_root = Path(__file__).resolve().parents[1]
+    fixtures = project / "fixtures"
+    env = dict(os.environ)
+    env.pop("PYTEST_PLUGINS", None)
+    env["PYTHONPATH"] = str(repo_root)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "tests.conftest",
+            "-n",
+            "2",
+            "--dist=loadgroup",
+            "--cov=increment",
+            "--cov-context=test",
+            "--cov-report=",
+            "--selection-fixtures",
+            str(fixtures),
+            "tests",
+        ],
+        cwd=project,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
-    result = build(tmp_path / ".coverage", tmp_path, tier="fast", fixtures=fixtures)
+    result = build(project / ".coverage", project, tier="fast", fixtures=fixtures)
+    mapping = project / "selection_map.json"
+    from scripts.selection_map import write
 
-    assert result["modules"]["increment.fixture_source"] == [
-        "tests/test_first.py",
-        "tests/test_second.py",
-    ]
+    write(result, mapping)
+    loaded = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json,sys; from pathlib import Path; from scripts.selection_map import load; "
+            "print(json.dumps((load(Path(sys.argv[1])) or {}).get('modules', {}).get("
+            "'increment.fixture_source', [])))",
+            str(mapping),
+        ],
+        cwd=repo_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert json.loads(loaded.stdout) == ["tests/test_first.py", "tests/test_second.py"]
 
 
 def test_failed_test_excluded_from_prediction_is_reported_as_miss(tmp_path: Path) -> None:
