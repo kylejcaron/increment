@@ -112,3 +112,13 @@ def test_miss_report_uses_one_writer_and_preserves_metadata_in_summary() -> None
 
     assert "tee selection-misses.txt" not in run
     assert 'cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"' in run
+
+
+def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())
+    job = workflow["jobs"]["refresh-selection-map"]
+    run = next(step["run"] for step in job["steps"] if step.get("name") == "Open or update selection-map PR")
+
+    assert "git fetch --prune origin" in run
+    assert "--force-with-lease=refs/heads/bot/selection-map:" in run
+    assert "gh pr edit bot/selection-map" in run
