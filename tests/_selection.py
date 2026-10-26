@@ -63,12 +63,13 @@ def _lazy_tables(root: Path) -> dict[str, dict[str, str]]:
 
 def _imports(
     path: Path, module: str, known: set[str], tables: dict[str, dict[str, str]]
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str], set[tuple[str, str]]]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeError):
-        return set(), set()
+        return set(), set(), set()
     imports: set[str] = set()
+    supplemental: set[tuple[str, str]] = set()
     unresolved: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -87,6 +88,7 @@ def _imports(
                         unresolved.add(alias.name)
                     else:
                         imports.add(target)
+                        supplemental.add((target, f"lazy_export:{alias.name}"))
         elif isinstance(node, ast.Call):
             function = node.func
             if (isinstance(function, ast.Attribute) and function.attr == "import_module") or (
@@ -99,6 +101,7 @@ def _imports(
                 ):
                     name = node.args[0].value
                     if name == "increment" or name.startswith("increment."):
+                        supplemental.add((name, "dynamic_import"))
                         imports.add(name)
         elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute):
             if (
@@ -110,7 +113,8 @@ def _imports(
                     name = node.slice.value
                     if name == "increment" or name.startswith("increment."):
                         imports.add(name)
-    return imports, unresolved
+                        supplemental.add((name, "dynamic_import"))
+    return imports, unresolved, supplemental
 
 
 def _resolve_import(module: str, path: Path, node: ast.ImportFrom) -> str:
@@ -122,6 +126,18 @@ def _resolve_import(module: str, path: Path, node: ast.ImportFrom) -> str:
             parts = parts[: -(node.level - 1)]
         base = ".".join((*parts, *base.split("."))) if base else ".".join(parts)
     return base
+
+
+def _reachable(start: str, adjacency: dict[str, set[str]]) -> set[str]:
+    visited: set[str] = set()
+    pending = [start]
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(adjacency.get(current, set()) - visited)
+    return visited
 
 
 class SelectionGraph:
@@ -222,11 +238,12 @@ class SelectionGraph:
         all_paths = {**package_paths, **helper_paths}
         known = set(all_paths)
         adjacency: dict[str, set[str]] = {}
-        lazy_edges: dict[str, list[tuple[str, str]]] = {}
+        supplemental_edges: dict[str, set[tuple[str, str]]] = {}
         unresolved_by_module: dict[str, set[str]] = {}
         for module, path in all_paths.items():
-            imports, unresolved = _imports(path, module, known, tables)
+            imports, unresolved, supplemental = _imports(path, module, known, tables)
             adjacency[module] = imports
+            supplemental_edges[module] = supplemental
             unresolved_by_module[module] = unresolved
             if module in helper_paths:
                 try:
@@ -258,50 +275,16 @@ class SelectionGraph:
                             reasons.setdefault(path.relative_to(root).as_posix(), set()).add(
                                 "required"
                             )
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.ImportFrom):
-                        continue
-                    base = _resolve_import(module, path, node)
-                    if base in tables:
-                        for alias in node.names:
-                            target = tables[base].get(alias.name)
-                            if target is not None:
-                                lazy_edges.setdefault(module, []).append((alias.name, target))
-                            else:
-                                unresolved_by_module.setdefault(module, set()).add(alias.name)
 
         for test_path, module in names.items():
-            visited: set[str] = set()
-            pending = [module]
-            while pending:
-                current = pending.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
-                pending.extend(adjacency.get(current, set()) - visited)
+            visited = _reachable(module, adjacency)
+            test_file = test_path.relative_to(root).as_posix()
             if any(unresolved_by_module.get(imported) for imported in visited):
-                reasons.setdefault(test_path.relative_to(root).as_posix(), set()).add(
-                    "unresolved_lazy_name"
-                )
+                reasons.setdefault(test_file, set()).add("unresolved_lazy_name")
             for owner in visited:
-                for symbol, target in lazy_edges.get(owner, ()):
-                    target_seen = {target}
-                    target_pending = [target]
-                    while target_pending:
-                        current = target_pending.pop()
-                        for imported in adjacency.get(current, ()):
-                            if imported not in target_seen:
-                                target_seen.add(imported)
-                                target_pending.append(imported)
-                    if changed_modules.intersection(target_seen):
-                        reasons.setdefault(test_path.relative_to(root).as_posix(), set()).add(
-                            f"lazy_export:{symbol}"
-                        )
-            for target in adjacency.get(module, ()):
-                if target in changed_modules:
-                    reasons.setdefault(test_path.relative_to(root).as_posix(), set()).add(
-                        "dynamic_import"
-                    )
+                for target, reason in supplemental_edges.get(owner, ()):
+                    if changed_modules.intersection(_reachable(target, adjacency)):
+                        reasons.setdefault(test_file, set()).add(reason)
 
         return cls(root, changed_modules, tier, reasons)
 

@@ -195,6 +195,49 @@ def test_literal_dynamic_import_keeps_consumer(tmp_path: Path) -> None:
     assert "dynamic_import" in graph.keeps("tests/test_dynamic.py")
 
 
+def test_dynamic_import_in_transitive_helper_keeps_consumer(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/__init__.py": "",
+            "increment/leaf.py": "VALUE = 1\n",
+            "tests/helper.py": (
+                "import importlib\nmodule = importlib.import_module('increment.leaf')\n"
+            ),
+            "tests/test_a.py": "from tests.helper import module\n",
+        },
+    )
+    base = _commit(tmp_path)
+    mapping = _map(tmp_path, {}, base=base)
+    (tmp_path / "increment/leaf.py").write_text("VALUE = 2\n")
+    graph = SelectionGraph.from_tree(
+        tmp_path, {"increment.leaf"}, tier="fast", selection_map=mapping
+    )
+
+    assert "dynamic_import" in graph.keeps("tests/test_a.py")
+
+
+def test_package_lazy_import_in_transitive_closure_keeps_consumer(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/__init__.py": "",
+            "increment/dispatch.py": ("_LAZY_IMPORTS = {'Thing': ('increment.leaf', 'Thing')}\n"),
+            "increment/facade.py": "from increment.dispatch import Thing\n",
+            "increment/leaf.py": "class Thing: pass\n",
+            "tests/test_a.py": "import increment.facade\n",
+        },
+    )
+    base = _commit(tmp_path)
+    mapping = _map(tmp_path, {}, base=base)
+    (tmp_path / "increment/leaf.py").write_text("class Thing: pass\n# changed\n")
+    graph = SelectionGraph.from_tree(
+        tmp_path, {"increment.leaf"}, tier="fast", selection_map=mapping
+    )
+
+    assert "lazy_export:Thing" in graph.keeps("tests/test_a.py")
+
+
 def test_package_walk_keeps_test_on_the_required_floor(tmp_path: Path) -> None:
     _tree(
         tmp_path,
