@@ -72,8 +72,15 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
     assert _pytest_arguments(selection, base, "fast", ["-n", "2"]) == [
         "-m",
         "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
-        "--tach-base", base, "--affected-tier", "fast", "--affected-report",
-        ".affected-report-fast.json", "tests", "-n", "2",
+        "--tach-base",
+        base,
+        "--affected-tier",
+        "fast",
+        "--affected-report",
+        ".affected-report-fast.json",
+        "tests",
+        "-n",
+        "2",
     ]
 
 
@@ -92,7 +99,7 @@ def test_source_and_doc_change_runs_tach_scope_and_doc_page(tmp_path: Path) -> N
 
     assert selection.use_tach is True
     assert selection.doc_pages == ("docs/guides/cuped.md",)
-    invocation, = _pytest_invocations(selection, base, "fast", [])
+    (invocation,) = _pytest_invocations(selection, base, "fast", [])
     assert invocation[-2:] == ["tests", "docs/guides/cuped.md"]
 
 
@@ -112,7 +119,7 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
 
     assert selection.use_tach is True
     assert selection.test_files == ("tests/test_explicit.py",)
-    invocation, = _pytest_invocations(selection, base, "fast", [])
+    (invocation,) = _pytest_invocations(selection, base, "fast", [])
     assert invocation[-2:] == ["tests", "tests/test_explicit.py"]
 
 

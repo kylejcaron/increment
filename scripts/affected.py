@@ -24,6 +24,7 @@ class Selection:
     affected_report: str = ".affected-report-fast.json"
     tier: str = "fast"
 
+
 def _git(*arguments: str, root: Path) -> str:
     result = subprocess.run(
         ["git", *arguments], cwd=root, check=True, text=True, capture_output=True
