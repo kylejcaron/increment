@@ -25,6 +25,7 @@ jobs:
       - run: uv run python scripts/check_doc_references.py --check --collect
       - run: uv run python scripts/render_capability_table.py --check
       - run: make lint
+      - run: uv run --no-sync python scripts/import_reach.py --summary
       - run: uv run ty check
 
   test:

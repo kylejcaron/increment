@@ -109,6 +109,8 @@ Notebook examples use Marimo; the development environment does not include
 Jupyter Notebook, JupyterLab, or ipywidgets.
 
 ### Tests and quality checks
+
+CI measures import reach with `uv run --no-sync python scripts/import_reach.py --summary`; run the same command locally to inspect module counts and import times for each supported entry point. Pass explicit module names to measure a subset, or use `--json PATH` to save the results as JSON.
 Policy: see AGENTS.md › Tests.
 
 #### Test categories and runtime expectations
