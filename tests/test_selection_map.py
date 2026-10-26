@@ -53,16 +53,26 @@ def test_stale_map_detects_unrelated_base(tmp_path: Path) -> None:
     )
 
 
-def test_stale_map_detects_expiry(tmp_path: Path) -> None:
-    assert is_stale(
-        {
-            "generated_at": "2000-01-01T00:00:00+00:00",
-            "base_sha": "unknown",
-            "tier": "fast",
-            "modules": {},
-        },
-        root=tmp_path,
-    )
+def test_stale_map_detects_expiry_with_valid_ancestor(tmp_path: Path) -> None:
+    (tmp_path / "tracked.txt").write_text("base\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    current = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "base_sha": base,
+        "tier": "fast",
+        "modules": {},
+    }
+    expired = {**current, "generated_at": "2000-01-01T00:00:00+00:00"}
+
+    assert not is_stale(current, root=tmp_path)
+    assert is_stale(expired, root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -107,16 +117,16 @@ def test_dispatch_table_changes_invalidate_map(
     assert is_stale(mapping, root=root)
 
 
-def test_collection_dynamic_import_maps_to_its_test_file(tmp_path: Path) -> None:
-    source = tmp_path / "increment/dynamic.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n")
-    cov = CoverageData(basename=str(tmp_path / ".coverage"))
-    cov.set_context("collect:tests/test_dynamic.py")
-    cov.add_lines({str(source): {1}})
-    cov.write()
+def test_collection_import_inventory_maps_modules_to_test_file(tmp_path: Path) -> None:
+    coverage = CoverageData(basename=str(tmp_path / ".coverage"))
+    coverage.write()
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "fixtures.master.json").write_text(
+        json.dumps({"collected_imports": {"tests/test_dynamic.py": ["increment.dynamic"]}})
+    )
 
-    assert build(tmp_path / ".coverage", tmp_path, tier="fast")["modules"] == {
+    assert build(tmp_path / ".coverage", tmp_path, tier="fast", fixtures=fixtures)["modules"] == {
         "increment.dynamic": ["tests/test_dynamic.py"]
     }
 
@@ -131,13 +141,12 @@ def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None
         "def touch():\n    return 'fixture dependency'\n"
     )
     (project / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n")
-    (project / "conftest.py").write_text(
+    (tests / "conftest.py").write_text(
         "import pytest\n"
-        "@pytest.fixture\n"
-        "def shared(request):\n"
-        "    if 'test_second.py' in request.node.nodeid:\n"
-        "        from increment.fixture_source import touch\n"
-        "        touch()\n"
+        "@pytest.fixture(scope='session')\n"
+        "def shared():\n"
+        "    from increment.fixture_source import touch\n"
+        "    touch()\n"
     )
     for name in ("first", "second"):
         (tests / f"test_{name}.py").write_text(
@@ -204,6 +213,31 @@ def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None
     )
 
     assert json.loads(loaded.stdout) == ["tests/test_first.py", "tests/test_second.py"]
+
+
+def test_nested_test_added_after_map_is_kept(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_base.py").write_text("")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    mapping: SelectionMap = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "base_sha": base,
+        "tier": "fast",
+        "modules": {},
+    }
+    (tmp_path / "tests/estimation").mkdir()
+    (tmp_path / "tests/estimation/test_new.py").write_text("def test_new(): pass\n")
+
+    from scripts.selection_map import tests_changed_since
+
+    assert tests_changed_since(mapping, tmp_path) == {"tests/estimation/test_new.py"}
 
 
 def test_failed_test_excluded_from_prediction_is_reported_as_miss(tmp_path: Path) -> None:

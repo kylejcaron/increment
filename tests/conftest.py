@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
 
 _fixture_closures: dict[str, list[str]] = {}
 _fixture_setup: dict[str, list[str]] = {}
+_collection_imports: dict[str, list[str]] = {}
+_collection_before: dict[str, set[str]] = {}
+_current_item: pytest.Item | None = None
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -25,27 +29,30 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--selection-fixtures", default=None)
 
 
-def _coverage():
-    try:
-        from coverage import Coverage
-    except ImportError:
-        return None
-    return Coverage.current()
-
-
 @pytest.hookimpl(tryfirst=True)
 def pytest_collectstart(collector: pytest.Collector) -> None:
     if not isinstance(collector, pytest.Module):
-        return
-    coverage = _coverage()
-    if coverage is None:
         return
     try:
         relative = collector.path.resolve().relative_to(Path(collector.config.rootpath).resolve())
     except ValueError:
         return
-    if relative.as_posix().startswith("tests/"):
-        coverage.switch_context(f"collect:{relative.as_posix()}")
+    name = relative.as_posix()
+    if name.startswith("tests/"):
+        _collection_before[name] = set(sys.modules)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    name = report.nodeid.split("::", 1)[0]
+    if not name.startswith("tests/"):
+        return
+    before = _collection_before.pop(name, set())
+    _collection_imports[name] = sorted(
+        module
+        for module in set(sys.modules) - before
+        if module == "increment" or module.startswith("increment.")
+    )
 
 
 @pytest.hookimpl(trylast=True)
@@ -57,11 +64,15 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             _fixture_closures[item.nodeid] = sorted(set(item.fixturenames))
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_setup(item: pytest.Item) -> None:
-    coverage = _coverage()
-    if coverage is not None:
-        coverage.switch_context(f"{item.nodeid}|setup")
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> Any:
+    global _current_item
+    previous = _current_item
+    _current_item = item
+    try:
+        yield
+    finally:
+        _current_item = previous
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -69,7 +80,7 @@ def pytest_fixture_setup(fixturedef: Any, request: pytest.FixtureRequest) -> Any
     outcome = yield
     if outcome.excinfo is not None:
         return
-    node = getattr(request, "_pyfuncitem", request.node)
+    node = getattr(request, "_pyfuncitem", None) or _current_item or request.node
     nodeid = getattr(node, "nodeid", None)
     if isinstance(nodeid, str) and nodeid.split("::", 1)[0].startswith("tests/"):
         producers = _fixture_setup.setdefault(fixturedef.argname, [])
@@ -85,7 +96,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         output = Path(fixtures_dir) / f"fixtures.{worker}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
-            json.dumps({"closures": _fixture_closures, "setup": _fixture_setup}, sort_keys=True)
+            json.dumps(
+                {
+                    "closures": _fixture_closures,
+                    "setup": _fixture_setup,
+                    "collected_imports": _collection_imports,
+                },
+                sort_keys=True,
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -94,7 +112,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     state = session.config.stash.get(tach_state_key, None)
     if state is not None and isinstance(state.handler, AffectedHandlerWithReport):
         state.handler.pytest_sessionfinish(session, exitstatus)
-
 
 class AffectedHandlerWithReport(AffectedHandler):
     def __init__(
@@ -126,8 +143,9 @@ def pytest_configure(config: pytest.Config) -> None:
     if base is None:
         return
     root = Path(config.rootpath)
+    changed_paths = set(_changed_paths(base, root))
     changed_modules = set()
-    for name in _changed_paths(base, root):
+    for name in changed_paths:
         path = Path(name)
         if name.startswith("increment/") and path.suffix == ".py":
             parts = path.with_suffix("").parts
@@ -139,6 +157,7 @@ def pytest_configure(config: pytest.Config) -> None:
         changed_modules,
         tier=config.getoption("--affected-tier", default="fast"),
         selection_map=load(root / "tests/selection_map.json"),
+        changed_paths=changed_paths,
     )
     report_option = config.getoption("--affected-report", default=None)
     report = Path(report_option) if report_option else None

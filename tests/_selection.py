@@ -157,6 +157,7 @@ class SelectionGraph:
         *,
         tier: str,
         selection_map: SelectionMap | None,
+        changed_paths: set[str] | None = None,
     ) -> SelectionGraph:
         root = root.resolve()
         reasons: dict[str, set[str]] = {}
@@ -212,7 +213,7 @@ class SelectionGraph:
                 ):
                     reasons.setdefault(test, set()).add("manifest")
 
-        if changed_modules:
+        if changed_paths if changed_paths is not None else changed_modules:
             required = root / "tests/selection_required.txt"
             if required.is_file():
                 for test in required.read_text(encoding="utf-8").splitlines():

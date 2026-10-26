@@ -68,14 +68,21 @@ jobs:
           make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Predict selected files
         if: always()
+        continue-on-error: true
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           AFFECTED_SHARD_ID: ${{ matrix.python-version }}-${{ matrix.group }}
         run: |
-          uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
+          if [ -z "$BASE" ]; then
+            echo "incomplete evidence: no base" > affected-report.json
+            echo "incomplete evidence: no base" >> "$GITHUB_STEP_SUMMARY"
+          else
+            uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
+          fi
       - name: Retain selection prediction
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        continue-on-error: true
         with:
           name: affected-report-${{ matrix.python-version }}-${{ matrix.group }}-${{ github.run_attempt }}
           path: affected-report.json
@@ -121,9 +128,9 @@ jobs:
           retention-days: 30
 
   selection-misses:
-    name: report selection misses
     if: always()
     runs-on: ubuntu-latest
+    continue-on-error: true
     needs: test
     permissions:
       contents: read
@@ -143,12 +150,18 @@ jobs:
           path: selection-input/affected
       - name: Merge predictions and report misses
         if: always()
+        continue-on-error: true
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.sha }}
           EVENT_NAME: ${{ github.event_name }}
           EXPECTED_SHARDS: ${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.14-1,3.14-2' || '3.12-1,3.12-2,3.13-1,3.13-2,3.14-1,3.14-2' }}
         run: |
+          if [ -z "$BASE" ]; then
+            printf 'incomplete evidence: no base\n' > selection-misses.txt
+            cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           shopt -s globstar nullglob
           reports=(selection-input/affected/**/*.json)
           junit=(selection-input/junit/**/*.xml)

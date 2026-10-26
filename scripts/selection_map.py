@@ -49,6 +49,7 @@ def build(
 
     data = CoverageData(basename=str(coverage_path))
     data.read()
+    modules: dict[str, set[str]] = defaultdict(set)
     fixture_consumers: dict[str, set[str]] = defaultdict(set)
     fixture_setup: dict[str, set[str]] = defaultdict(set)
     if fixtures is not None and fixtures.is_dir():
@@ -61,10 +62,13 @@ def build(
                 test = nodeid.split("::", 1)[0]
                 for name in names:
                     fixture_consumers[name].add(test)
+            for test_file, names in worker.get("collected_imports", {}).items():
+                for name in names:
+                    if isinstance(test_file, str) and isinstance(name, str):
+                        modules[name].add(test_file)
             for name, nodeids in worker.get("setup", {}).items():
                 fixture_setup[name].update(nodeids)
 
-    modules: dict[str, set[str]] = defaultdict(set)
     for filename in data.measured_files():
         module = _module(filename, root)
         if module is None:
@@ -73,9 +77,6 @@ def build(
         for contexts in contexts_by_line.values():
             for context in contexts:
                 if not context:
-                    continue
-                if context.startswith("collect:"):
-                    modules[module].add(context.removeprefix("collect:").split("::", 1)[0])
                     continue
                 nodeid, _, phase = context.partition("|")
                 test_file = nodeid.split("::", 1)[0]
@@ -143,7 +144,13 @@ def tests_changed_since(selection_map: SelectionMap, root: Path) -> set[str]:
         paths.update(_git(root, "ls-files", "--others", "--exclude-standard").splitlines())
     except (OSError, subprocess.CalledProcessError):
         return set()
-    return {path for path in paths if path.startswith("tests/test_") and path.endswith(".py")}
+    return {
+        path
+        for path in paths
+        if path.startswith("tests/")
+        and Path(path).name.endswith(".py")
+        and (Path(path).name.startswith("test_") or Path(path).name.endswith("_test.py"))
+    }
 
 
 def _has_lazy_table(source: str) -> bool:

@@ -496,8 +496,9 @@ make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .git
 
 The generated `tests/selection_map.json` is an advisory fast-tier map from
 executed `increment` modules to test files. Refresh it with `make selection-map`;
-the target runs the full fast tier with per-test coverage contexts, records
-collection-time imports and fixture dependencies, and rebuilds the map. Nightly
+the target runs the full fast tier with per-test coverage contexts, snapshots
+imports during each test module's collection, records fixture dependencies, and
+rebuilds the map. Nightly
 CI proposes a refresh in a `selection-map` pull request. Maps older than 14 days,
 from another base or tier, or invalidated by a lazy-dispatch change disable
 narrowing: the affected-test handler keeps the entire requested tier rather

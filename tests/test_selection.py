@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -57,6 +58,16 @@ def scratch_worktree(tmp_path: Path) -> Iterator[Path]:
         text=True,
         capture_output=True,
     )
+    for name in (
+        "tests/_selection.py",
+        "tests/conftest.py",
+        "scripts/affected.py",
+        "scripts/selection_map.py",
+    ):
+        source = repo / name
+        destination = root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
     try:
         yield root
     finally:
@@ -122,7 +133,7 @@ def _scratch_change(root: Path, *paths: str) -> None:
 
 def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, object]:
     report = root / "affected-report.json"
-    subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             "-m",
@@ -137,10 +148,11 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
             *test_paths,
         ],
         cwd=root,
-        check=True,
+        check=False,
         text=True,
         capture_output=True,
     )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     decisions = json.loads(report.read_text())
     report.unlink()
     return decisions
@@ -302,6 +314,29 @@ def test_required_files_are_kept_for_package_change_with_valid_map(tmp_path: Pat
     assert graph.keeps("tests/test_a.py") == ("required",)
 
 
+
+
+def test_required_files_are_kept_for_test_data_change_with_valid_map(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/x.py": "VALUE = 1\n",
+            "tests/test_a.py": "",
+            "tests/selection_required.txt": "tests/test_a.py\n",
+            "tests/selection_data.json": "{}\n",
+        },
+    )
+    base = _commit(tmp_path)
+    mapping = _map(tmp_path, {}, base=base)
+    graph = SelectionGraph.from_tree(
+        tmp_path,
+        set(),
+        tier="fast",
+        selection_map=mapping,
+        changed_paths={"tests/selection_data.json"},
+    )
+
+    assert graph.keeps("tests/test_a.py") == ("required",)
 def test_test_added_after_map_is_kept(tmp_path: Path) -> None:
     _tree(tmp_path, {"increment/x.py": "", "tests/test_a.py": ""})
     base = _commit(tmp_path)
