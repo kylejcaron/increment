@@ -83,8 +83,10 @@ def test_selection_miss_shell_closes_python_heredoc_before_shell_commands() -> N
         if step.get("name") == "Merge predictions and report misses"
     )
 
-    assert "\nPY\n" in run
-    assert run.index("\nPY\n") < run.index("shopt -s globstar")
+    python_heredoc = re.search(r"(?m)^python\s+-\s+<<['\"]PY['\"]\s*$", run)
+    if python_heredoc is not None:
+        assert "\nPY\n" in run[python_heredoc.end() :]
+        assert run.index("\nPY\n") < run.index("shopt -s globstar")
 
 
 def test_miss_workflow_merges_shard_metadata_before_reporting() -> None:

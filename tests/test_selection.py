@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import json
-import subprocess
+from collections.abc import Iterator
 from datetime import UTC, datetime
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -42,6 +44,103 @@ def _commit(root: Path) -> str:
     git("add", ".")
     git("commit", "-qm", "base")
     return git("rev-parse", "HEAD")
+
+
+@pytest.fixture
+def scratch_worktree(tmp_path: Path) -> Iterator[Path]:
+    repo = Path(__file__).resolve().parents[1]
+    root = tmp_path / "scratch-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(root), "HEAD"],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    try:
+        yield root
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(root)],
+            cwd=repo,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+
+def _scratch_git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
+def _scratch_commit(root: Path, message: str) -> None:
+    _scratch_git(root, "add", "-A")
+    _scratch_git(
+        root,
+        "-c",
+        "user.email=tests@example.com",
+        "-c",
+        "user.name=Tests",
+        "commit",
+        "--no-verify",
+        "-qm",
+        message,
+    )
+
+
+def _scratch_map(root: Path) -> str:
+    base = _scratch_git(root, "rev-parse", "HEAD")
+    _tree(
+        root,
+        {
+            "tests/selection_map.json": json.dumps(
+                {
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "base_sha": base,
+                    "tier": "fast",
+                    "modules": {},
+                }
+            )
+        },
+    )
+    _scratch_commit(root, "install usable selection map")
+    return base
+
+
+def _scratch_change(root: Path, *paths: str) -> None:
+    for name in paths:
+        path = root / name
+        path.write_text(path.read_text() + "\n# scratch selection probe\n")
+    _scratch_commit(root, "change probe modules")
+
+
+def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, object]:
+    report = root / "affected-report.json"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "--tach-base",
+            base,
+            "--affected-report",
+            str(report),
+            *test_paths,
+        ],
+        cwd=root,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return json.loads(report.read_text())
 
 
 def _map(
@@ -276,19 +375,44 @@ def test_manifest_module_change_keeps_required_selection_floor(tmp_path: Path) -
     assert "manifest" in graph.keeps("tests/test_registry.py")
 
 
-def test_handler_keeps_a_superset_of_tach_on_the_probe_modules(tmp_path: Path) -> None:
-    test_files = {f"tests/test_probe_{index}.py": "" for index in range(7)}
-    _tree(tmp_path, {**test_files, **{f"increment/probe_{i}.py": "" for i in range(7)}})
-    tach_kept = {"tests/test_probe_0.py", "tests/test_probe_3.py"}
-    tach = _Tach({(tmp_path / name).as_posix() for name in set(test_files) - tach_kept})
+@pytest.mark.slow
+def test_handler_keeps_a_superset_of_tach_on_the_probe_modules(
+    scratch_worktree: Path,
+) -> None:
+    probe_modules = (
+        "increment/estimation/engine.py",
+        "increment/estimation/_adjust/iptw.py",
+        "increment/estimation/cuped/multicovariate.py",
+        "increment/power/_binomial.py",
+        "increment/query/_cuped_qr.py",
+        "increment/_lift_options.py",
+        "increment/semantics/models.py",
+    )
+    test_files = (
+        "tests/estimation/test_engine.py",
+        "tests/estimation/test_adjust.py",
+        "tests/estimation/cuped/test_prepare.py",
+        "tests/power/test_sequential_power.py",
+        "tests/test_warehouse_cuped_qr_edges.py",
+        "tests/test_imports.py",
+        "tests/semantics/test_models.py",
+    )
+    base = _scratch_map(scratch_worktree)
+    _scratch_change(scratch_worktree, *probe_modules)
+    decisions = _run_scratch_tach(scratch_worktree, base, *test_files)
 
-    for index in range(7):
-        graph = SelectionGraph.from_tree(
-            tmp_path, {f"increment.probe_{index}"}, tier="fast", selection_map=None
-        )
-        handler = AffectedHandler(tach, graph)
-        kept = {name for name in test_files if not handler.should_remove_items(tmp_path / name)}
-        assert tach_kept <= kept
+    tach_kept = {
+        path
+        for path, decision in decisions.items()
+        if isinstance(decision, dict) and decision.get("tach_kept") is True
+    }
+    kept = {
+        path
+        for path, decision in decisions.items()
+        if isinstance(decision, dict) and decision.get("kept") is True
+    }
+    assert tach_kept
+    assert tach_kept <= kept
 
 
 def test_dispatch_table_change_invalidates_map_and_keeps_whole_tier(tmp_path: Path) -> None:
@@ -309,3 +433,67 @@ def test_dispatch_table_change_invalidates_map_and_keeps_whole_tier(tmp_path: Pa
 
     assert graph.keeps("tests/test_a.py") == ("map_unusable:stale",)
     assert graph.keeps("tests/test_b.py") == ("map_unusable:stale",)
+
+
+def _real_tach_decision(
+    root: Path, base: str, test_path: str
+) -> dict[str, object]:
+    decisions = _run_scratch_tach(root, base, test_path)
+    decision = decisions[test_path]
+    assert isinstance(decision, dict)
+    return decision
+
+
+@pytest.mark.slow
+def test_real_tach_function_local_import_is_an_edge(scratch_worktree: Path) -> None:
+    base = _scratch_map(scratch_worktree)
+    _scratch_change(scratch_worktree, "increment/estimation/adjust.py")
+
+    decision = _real_tach_decision(
+        scratch_worktree, base, "tests/estimation/test_engine.py"
+    )
+
+    assert decision["tach_kept"] is True
+    assert decision["kept"] is True
+
+
+@pytest.mark.slow
+def test_real_tach_registration_consumer_is_kept(scratch_worktree: Path) -> None:
+    base = _scratch_map(scratch_worktree)
+    _scratch_change(scratch_worktree, "increment/estimation/_adjust/iptw.py")
+
+    decision = _real_tach_decision(
+        scratch_worktree, base, "tests/test_refusal_uniqueness.py"
+    )
+
+    assert decision["tach_kept"] is True
+    assert decision["kept"] is True
+
+
+@pytest.mark.slow
+def test_redirected_function_local_import_is_seen_on_next_selection(
+    scratch_worktree: Path,
+) -> None:
+    _tree(
+        scratch_worktree,
+        {
+            "tests/test_redirected_function_local.py": (
+                "import importlib\n\n"
+                "def test_redirected_import():\n"
+                "    importlib.import_module("
+                "'increment.estimation._adjust.iptw')\n"
+            )
+        },
+    )
+    _scratch_commit(scratch_worktree, "add redirected-import consumer")
+    base = _scratch_map(scratch_worktree)
+    _scratch_change(scratch_worktree, "increment/estimation/_adjust/iptw.py")
+
+    decision = _real_tach_decision(
+        scratch_worktree, base, "tests/test_redirected_function_local.py"
+    )
+
+    assert decision["kept"] is True
+    assert "dynamic_import" in decision["reasons"]
+
+
