@@ -193,3 +193,19 @@ def test_invalid_cell_key_refuses_without_loading_estimation():
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_engine_importer_inventory_reports_imported_names(tmp_path):
+    from scripts.engine_importers import importers
+
+    package = tmp_path / "increment"
+    package.mkdir()
+    (package / "consumer.py").write_text(
+        "from increment.estimation.engine import Method, estimate_lift\n"
+        "from increment.estimation.engine import _df_to_arms as convert\n"
+    )
+    (package / "unrelated.py").write_text("from increment.errors import CodedError\n")
+
+    assert importers(tmp_path) == {
+        "increment.consumer": ("Method", "estimate_lift", "_df_to_arms"),
+    }
