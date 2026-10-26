@@ -947,7 +947,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
             tuple(selected),
             tuple(methods),
             design,
-            getattr(src, "population", "assigned"),
+            view_population(src),
         )
     _validate_adjustment_methods(methods)
     if evidence is None:

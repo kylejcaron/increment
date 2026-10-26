@@ -725,3 +725,145 @@ def test_registration_refusals_use_stable_codes_and_context():
         assert missing.value.code == "estimation.estimator.implementation.missing_ref"
     finally:
         unregister_estimator(ref.estimator_id)
+
+
+def test_daily_readout_skips_custom_estimator_needs_but_run_checks_them():
+    from dataclasses import replace
+
+    from increment import readouts
+    from increment.declarations import CountsSpec, register_implementation, unregister_estimator
+    from increment.frame import from_unit_panel
+
+    estimator_id = "observational.daily_need_probe"
+    selector = "daily_need_probe"
+    register(
+        EstimatorRef(
+            estimator_id,
+            "test_module",
+            "estimate",
+            "panel",
+            "ate",
+            selector,
+            ((
+                MomentsSpec("total"),
+                UnitRowsSpec(covariates="design"),
+                CountsSpec("cluster"),
+            ),),
+        )
+    )
+    register_implementation(estimator_id, lambda *_args, **_kwargs: [])
+    try:
+        source = from_unit_panel(
+            pd.DataFrame(
+                {
+                    "unit": [f"u{i}" for i in range(8) for _day in (1, 2)],
+                    "arm": ["control"] * 8 + ["treatment"] * 8,
+                    "day": [1, 2] * 8,
+                    "outcome": [float(i + day) for i in range(8) for day in (1, 2)],
+                    "x": [float(i % 2) for i in range(8) for _day in (1, 2)],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"outcome": "mean"},
+            design=Observational(
+                control_group="control",
+                adjustment=AdjustmentSet(covariates=("x",)),
+                gate=IdentificationGate(overlap="trim"),
+            ),
+        )
+
+        source._context = replace(
+            source.context,
+            configs=(
+                replace(
+                    source.context.configs[0],
+                    decision_method=Method(name=selector),
+                    decision_defaulted=False,
+                ),
+            ),
+        )
+        assert readouts.daily(source)
+        with pytest.raises(CodedError) as exc:
+            readouts.run(source, decision_method=Method(name=selector))
+        assert exc.value.code == "evidence.cluster_unavailable"
+    finally:
+        unregister_estimator(estimator_id)
+
+
+def test_direct_estimator_preflight_uses_provider_default_population(monkeypatch):
+    from dataclasses import replace
+
+    from increment.declarations import CountsSpec, register_implementation, unregister_estimator
+    from increment.estimation import adjust
+    from increment.estimation.adjust import estimate_ate
+    from increment.frame import from_unit_panel
+
+    estimator_id = "observational.triggered_need_probe"
+    selector = "triggered_need_probe"
+    register(
+        EstimatorRef(
+            estimator_id,
+            "test_module",
+            "estimate",
+            "panel",
+            "ate",
+            selector,
+            ((
+                MomentsSpec("total"),
+                UnitRowsSpec(covariates="design"),
+                CountsSpec("triggered"),
+            ),),
+        )
+    )
+    register_implementation(estimator_id, lambda *_args, **_kwargs: [])
+    try:
+        source = from_unit_panel(
+            pd.DataFrame(
+                {
+                    "unit": [f"u{i}" for i in range(8) for _day in (1, 2)],
+                    "arm": ["control"] * 8 + ["treatment"] * 8,
+                    "day": [1, 2] * 8,
+                    "outcome": [float(i + day) for i in range(8) for day in (1, 2)],
+                    "x": [float(i % 2) for i in range(8) for _day in (1, 2)],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"outcome": "mean"},
+            design=Observational(
+                control_group="control",
+                adjustment=AdjustmentSet(covariates=("x",)),
+                gate=IdentificationGate(overlap="trim"),
+            ),
+        )
+        provider = type(
+            "TriggeredProvider",
+            (),
+            {
+                "context": source.context,
+                "cluster": None,
+                "evidence": replace(
+                    source.evidence,
+                    count_grains=frozenset({"triggered"}),
+                    populations=frozenset({"triggered"}),
+                ),
+            },
+        )()
+        assert not hasattr(provider, "population")
+
+        class ReachedEvidence(Exception):
+            pass
+
+        def stop_at_evidence(*_args, **_kwargs):
+            raise ReachedEvidence
+
+        monkeypatch.setattr(adjust, "observational_evidence", stop_at_evidence)
+        with pytest.raises(ReachedEvidence):
+            estimate_ate(provider, source.context.design, methods=[Method(name=selector)])
+    finally:
+        unregister_estimator(estimator_id)

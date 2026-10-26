@@ -345,7 +345,10 @@ class ReadoutRequest:
 
         for config, methods in zip(request.configs, request.estimation_methods, strict=True):
             check_method_covariates(source, config.metric.name, methods)
-        if getattr(request.design, "mechanism", None) == "observational":
+        if (
+            getattr(request.design, "mechanism", None) == "observational"
+            and request.view != "daily"
+        ):
             from increment.estimators.registry import validate_observational_routes
 
             for config, methods in zip(request.configs, request.estimation_methods, strict=True):
