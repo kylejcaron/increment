@@ -134,12 +134,11 @@ def test_cell_key_serialization_roundtrip_and_mapping_immutability():
         observed["t"] = 3
 
 
-def test_cell_key_invalid_refusal_is_shared_with_readout_types():
-    from increment.declarations import _CELL_KEY_INVALID_REFUSAL
-    from increment.estimation.readout_types import _REFUSALS
-
-    assert _REFUSALS["readout.cell.key_invalid"] is _CELL_KEY_INVALID_REFUSAL
+def test_cell_key_refuses_with_the_same_code_through_either_module():
     from increment.declarations import CellKey
+    from increment.estimation.readout_types import CellKey as ReadoutCellKey
+
+    assert ReadoutCellKey is CellKey
 
     with pytest.raises(CodedError) as caught:
         CellKey(
