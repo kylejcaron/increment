@@ -63,13 +63,13 @@ def test_stale_map_detects_expiry_with_valid_ancestor(tmp_path: Path) -> None:
     base = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
     ).stdout.strip()
-    current = {
+    current: SelectionMap = {
         "generated_at": datetime.now(UTC).isoformat(),
         "base_sha": base,
         "tier": "fast",
         "modules": {},
     }
-    expired = {**current, "generated_at": "2000-01-01T00:00:00+00:00"}
+    expired: SelectionMap = {**current, "generated_at": "2000-01-01T00:00:00+00:00"}
 
     assert not is_stale(current, root=tmp_path)
     assert is_stale(expired, root=tmp_path)
