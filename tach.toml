@@ -268,7 +268,7 @@ depends_on = [
   "increment._source_types",
   "increment.compatibility", "increment.errors", "increment.estimation",
   "increment.estimation.sequential", "increment.plan", "increment.semantics",
-  "increment.sequential_source", "increment.sources", "increment._evidence_refusals",
+  "increment.sequential_source", "increment.sources", "increment._evidence_refusals", "increment.estimators.registry",
 ]
 
 [[modules]]
@@ -807,4 +807,4 @@ depends_on = ["increment.estimators.registry"]
 
 [[modules]]
 path = "increment.estimators.registry"
-depends_on = ["increment.declarations", "increment._evidence_types", "increment.errors"]
+depends_on = ["increment.declarations", "increment._evidence_types", "increment._evidence_refusals", "increment.errors"]

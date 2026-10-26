@@ -180,7 +180,12 @@ def test_unsupported_estimator_need_refuses_with_a_stable_code():
 
 
 def test_replacing_registered_implementation_invalidates_adjustment_cache():
-    from increment.declarations import MomentsSpec, UnitRowsSpec, register_implementation, unregister_estimator
+    from increment.declarations import (
+        MomentsSpec,
+        UnitRowsSpec,
+        register_implementation,
+        unregister_estimator,
+    )
 
     estimator_id = "observational.replace_cache_probe"
     selector = "replace_cache_probe"
@@ -193,8 +198,13 @@ def test_replacing_registered_implementation_invalidates_adjustment_cache():
         selector=selector,
         needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")),),
     )
-    first = lambda: None
-    second = lambda: None
+
+    def first():
+        return None
+
+    def second():
+        return None
+
     register(ref)
     try:
         register_implementation(estimator_id, first)

@@ -348,9 +348,7 @@ class ReadoutRequest:
         if getattr(request.design, "mechanism", None) == "observational":
             from increment.estimators.registry import validate_observational_routes
 
-            for config, methods in zip(
-                request.configs, request.estimation_methods, strict=True
-            ):
+            for config, methods in zip(request.configs, request.estimation_methods, strict=True):
                 validate_observational_routes(
                     source,
                     (config.metric,),

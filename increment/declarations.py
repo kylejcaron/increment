@@ -95,26 +95,6 @@ _REFUSALS = refusals(
 _refuse = raiser(_REFUSALS)
 
 
-
-
-def freeze(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return _FrozenMapping({key: freeze(item) for key, item in value.items()})
-    if isinstance(value, (tuple, list)):
-        return tuple(freeze(item) for item in value)
-    return value
-
-
-def thaw(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, Mapping):
-        return {key: thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [thaw(item) for item in value]
-    return value
-
-
 def freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return _FrozenMapping({key: freeze(item) for key, item in value.items()})
