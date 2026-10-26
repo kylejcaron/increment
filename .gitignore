@@ -39,6 +39,9 @@ htmlcov/
 /mutation-results/
 .testmondata*
 /.test_durations
+/.selection-fixtures/
+/.affected-report*.json
+/.selection-misses.txt
 
 # Documentation and notebook outputs
 /site/

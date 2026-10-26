@@ -21,7 +21,8 @@ class Selection:
     use_tach: bool
     full_tier: bool
     uncovered: tuple[str, ...]
-
+    affected_report: str = ".affected-report-fast.json"
+    tier: str = "fast"
 
 def _git(*arguments: str, root: Path) -> str:
     result = subprocess.run(
@@ -87,12 +88,7 @@ def _type_checking_import_ids(tree: ast.Module) -> set[int]:
     return excluded
 
 
-def _module_imports(
-    path: Path,
-    module: str,
-    known_modules: set[str],
-    lazy_exports: dict[str, dict[str, str]] | None = None,
-) -> set[str]:
+def _module_imports(path: Path, module: str, known_modules: set[str]) -> set[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, SyntaxError):
@@ -124,107 +120,7 @@ def _module_imports(
             if alias.name != "*"
             if (candidate := f"{base}.{alias.name}") in known_modules
         )
-        if lazy_exports is not None and base in lazy_exports:
-            imports.update(
-                lazy_exports[base][alias.name]
-                for alias in node.names
-                if alias.name in lazy_exports[base]
-            )
     return imports
-
-
-def _module_paths(root: Path, package_dir: str) -> dict[str, Path]:
-    directory = root / package_dir
-    modules: dict[str, Path] = {}
-    if not directory.is_dir():
-        return modules
-    for path in directory.rglob("*.py"):
-        parts = path.relative_to(root).with_suffix("").parts
-        if parts[-1] == "__init__":
-            parts = parts[:-1]
-        modules[".".join(parts)] = path
-    return modules
-
-
-def _lazy_imports(path: Path) -> dict[str, str]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, SyntaxError):
-        return {}
-    for node in tree.body:
-        value: ast.expr | None = None
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS" for target in node.targets
-        ):
-            value = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.target.id == "_LAZY_IMPORTS":
-                value = node.value
-        if value is None:
-            continue
-        try:
-            entries = ast.literal_eval(value)
-        except (ValueError, TypeError):
-            return {}
-        if not isinstance(entries, dict):
-            return {}
-        return {
-            name: target[0]
-            for name, target in entries.items()
-            if isinstance(name, str)
-            and isinstance(target, tuple)
-            and len(target) == 2
-            and isinstance(target[0], str)
-        }
-    return {}
-
-
-def _lazy_export_importers(root: Path, changed_modules: set[str]) -> set[str]:
-    package_modules = _module_paths(root, "increment")
-    lazy_exports = {
-        module: exports
-        for module, path in package_modules.items()
-        if path.name == "__init__.py" and (exports := _lazy_imports(path))
-    }
-    if not package_modules or not lazy_exports:
-        return set()
-
-    test_root = root / "tests"
-    if not test_root.is_dir():
-        return set()
-    test_modules: dict[str, Path] = {}
-    for path in test_root.rglob("*.py"):
-        parts = path.relative_to(test_root).with_suffix("").parts
-        if parts[-1] == "__init__":
-            parts = parts[:-1]
-        test_modules[".".join(("tests", *parts))] = path
-
-    known_modules = set(package_modules) | set(test_modules) | changed_modules
-    imported_modules = {
-        module: _module_imports(path, module, known_modules, lazy_exports)
-        for module, path in package_modules.items()
-    }
-    imported_modules.update(
-        {
-            module: _module_imports(path, module, known_modules, lazy_exports)
-            for module, path in test_modules.items()
-        }
-    )
-    test_importers: set[str] = set()
-    for module, path in test_modules.items():
-        if not path.name.startswith("test_"):
-            continue
-        visited: set[str] = set()
-        pending = [module]
-        while pending:
-            current = pending.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            pending.extend(imported_modules.get(current, set()) - visited)
-        if changed_modules.intersection(visited):
-            test_importers.add(path.relative_to(root).as_posix())
-    return test_importers
 
 
 def _test_module_importers(root: Path, module_names: set[str]) -> set[str]:
@@ -291,7 +187,7 @@ def _changed_markers(tier: str, root: Path) -> str:
     raise RuntimeError("noxfile.py does not define TIER_MARKERS")
 
 
-def select(base: str, root: Path) -> Selection:
+def select(base: str, root: Path, *, tier: str = "fast") -> Selection:
     """Classify changed paths into locally runnable checks."""
     changed = _changed_paths(base, root)
     full_tier = any(path in _FULL_TIER_PATHS for path in changed) or (
@@ -301,7 +197,6 @@ def select(base: str, root: Path) -> Selection:
     doc_pages: set[str] = set()
     use_tach = False
     changed_test_modules: set[str] = set()
-    changed_increment_modules: set[str] = set()
     uncovered: set[str] = set()
 
     for path in changed:
@@ -322,17 +217,11 @@ def select(base: str, root: Path) -> Selection:
         elif path.startswith("tests/"):
             use_tach = True
         elif path.startswith("increment/") and path.endswith(".py"):
-            parts = Path(path).with_suffix("").parts
-            if parts[-1] == "__init__":
-                parts = parts[:-1]
-            changed_increment_modules.add(".".join(parts))
             use_tach = True
         else:
             uncovered.add(path)
     if changed_test_modules and not full_tier:
         test_files.update(_test_module_importers(root, changed_test_modules))
-    if changed_increment_modules and not full_tier:
-        test_files.update(_lazy_export_importers(root, changed_increment_modules))
 
     return Selection(
         () if full_tier else tuple(sorted(test_files)),
@@ -340,6 +229,8 @@ def select(base: str, root: Path) -> Selection:
         use_tach and not full_tier,
         full_tier,
         tuple(sorted(uncovered)),
+        f".affected-report-{tier}.json",
+        tier,
     )
 
 
@@ -369,28 +260,30 @@ def _pytest_invocations(
         return [markers + roots + list(selection.doc_pages) + list(extra_args)]
 
     if selection.use_tach:
-        tach_args = markers + ["--tach-base", base]
-        tach_args.extend(f"--ignore={path}" for path in selection.test_files)
-        if selection.test_files or selection.doc_pages:
-            tach_args.append("tests")
-        tach_args.extend(extra_args)
-        if not (selection.test_files or selection.doc_pages):
-            return [tach_args]
-        direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
-        direct_args.extend(extra_args)
-        return [tach_args, direct_args]
+        args = markers + [
+            "--tach-base",
+            base,
+            "--affected-tier",
+            tier,
+            "--affected-report",
+            selection.affected_report,
+            "tests",
+            *selection.test_files,
+            *selection.doc_pages,
+            *extra_args,
+        ]
+        return [args]
 
     direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
+    direct_args.extend(extra_args)
     if (
         selection.test_files
         and len(selection.test_files) <= 6
         and not selection.doc_pages
-        and not selection.use_tach
         and not selection.full_tier
     ):
+        direct_args = markers + list(selection.test_files) + list(selection.doc_pages)
         direct_args.extend(_without_xdist_worker_args(extra_args))
-    else:
-        direct_args.extend(extra_args)
     return [direct_args]
 
 
@@ -419,7 +312,7 @@ def main(argv: list[str]) -> int:
 
     root = Path.cwd()
     try:
-        selection = select(arguments.base, root)
+        selection = select(arguments.base, root, tier=arguments.tier)
     except ValueError as error:
         print(f"affected: {error}", file=sys.stderr)
         return 2

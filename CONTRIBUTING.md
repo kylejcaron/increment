@@ -494,6 +494,22 @@ Refresh them with the complete fast suite, preserving worker group suffixes:
 make test-fast WORKERS=auto PYTEST_ARGS="--store-durations --durations-path .github/fast-test-durations.json"
 ```
 
+The generated `tests/selection_map.json` is an advisory fast-tier map from
+executed `increment` modules to test files. Refresh it with `make selection-map`;
+the target runs the full fast tier with per-test coverage contexts, records
+collection-time imports and fixture dependencies, and rebuilds the map. Nightly
+CI proposes a refresh in a `selection-map` pull request. Maps older than 14 days,
+from another base or tier, or invalidated by a lazy-dispatch change disable
+narrowing: the affected-test handler keeps the entire requested tier rather
+than trusting the import graph alone. PR CI continues to run the full fast
+tier; the separate selection-miss report is evidence, not a test gate.
+
+The map is exact for observed execution and import statements, but advisory for
+dependencies with no import statement (for example, a cached module or a
+runtime redirect). Do not use this fast-tier map as a gating selector for
+another tier. Keep `tests/selection_required.txt` updated for dependencies
+which static imports and observed coverage cannot represent.
+
 Functional-slow CI uses four isolated shards and the certification job two,
 with workers inside each shard; `ci-ok` requires their aggregate success. Every
 case remains selected exactly once. Both split by the recorded weights in

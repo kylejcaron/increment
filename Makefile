@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := install
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate selection-map
 
 
 CHECK_ITEMS_TESTS ?= tests
@@ -109,6 +109,10 @@ endif
 
 test-changed:
 	$(SLOT) uv run --no-sync --with pytest-testmon==2.2.0 --extra demo --extra tables --extra dashboard python -m scripts.test_changed
+
+selection-map:
+	$(MAKE) test-fast WORKERS=4 PYTEST_ARGS="--cov=increment --cov-context=test --cov-report= --selection-fixtures .selection-fixtures"
+	uv run --no-sync python scripts/selection_map.py build --coverage .coverage --fixtures .selection-fixtures --tier fast --output tests/selection_map.json
 
 test-affected:
 	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow]' >&2; exit 2; }
