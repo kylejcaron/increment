@@ -449,7 +449,15 @@ def _captured_compile_cache_key(dialect):
 
     root = Path(__file__).resolve().parents[2]
     source_paths = (Path(__file__), root / "tests" / "warehouse_cuped_cases.py")
-    return f"{dialect}-{fixture_cache_key(root, *source_paths)}"
+    dependencies = root / "integration" / "warehouse_execution" / "_compile_dependencies.txt"
+    package_modules = None
+    if dependencies.is_file():
+        package_modules = {
+            line
+            for line in dependencies.read_text().splitlines()
+            if line and not line.startswith("#")
+        }
+    return f"{dialect}-{fixture_cache_key(root, *source_paths, package_modules=package_modules)}"
 
 
 @cache

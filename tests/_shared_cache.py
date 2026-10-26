@@ -9,7 +9,7 @@ import os
 import pickle
 import platform
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from types import MappingProxyType
 
@@ -17,12 +17,13 @@ from filelock import FileLock
 
 
 def _installed_environment() -> tuple[str, ...]:
-    """Return a deterministic identity for the complete installed environment."""
+    """Return a deterministic identity for the installed third-party environment."""
     distributions = sorted(
         (
             (distribution.metadata["Name"], distribution.version)
             for distribution in importlib.metadata.distributions()
             if distribution.metadata.get("Name")
+            and distribution.metadata["Name"].casefold() != "increment"
         ),
         key=lambda item: (item[0].casefold(), item[1]),
     )
@@ -40,11 +41,25 @@ def _register_mapping_proxy() -> None:
     )
 
 
-def fixture_cache_key(root: Path, *fixture_sources: Path) -> str:
+def fixture_cache_key(
+    root: Path,
+    *fixture_sources: Path,
+    package_modules: Collection[str] | None = None,
+) -> str:
     """Hash package code, fixture code, lockfile and the installed environment."""
     digest = hashlib.sha256()
     paths = {path.resolve() for path in fixture_sources}
-    paths.update(path.resolve() for path in (root / "increment").rglob("*.py"))
+    if package_modules is None:
+        paths.update(path.resolve() for path in (root / "increment").rglob("*.py"))
+    else:
+        for module in package_modules:
+            relative = Path(*module.split("."))
+            source = (root / relative).with_suffix(".py")
+            package_init = root / relative / "__init__.py"
+            if source.is_file():
+                paths.add(source.resolve())
+            if package_init.is_file():
+                paths.add(package_init.resolve())
     paths.add((root / "uv.lock").resolve())
     paths.add(Path(__file__).resolve())
     for path in sorted(paths):

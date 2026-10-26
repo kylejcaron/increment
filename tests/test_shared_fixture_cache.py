@@ -46,6 +46,52 @@ def test_fixture_cache_key_changes_when_installed_distribution_version_changes(
     assert first != second
 
 
+@pytest.mark.integration
+def test_key_ignores_a_package_file_outside_the_module_list(tmp_path):
+    package = tmp_path / "increment"
+    package.mkdir()
+    a_source = package / "a.py"
+    b_source = package / "b.py"
+    a_source.write_text("VALUE = 1\n")
+    b_source.write_text("VALUE = 1\n")
+    (tmp_path / "uv.lock").write_text("")
+
+    first = fixture_cache_key(tmp_path, package_modules={"increment.a"})
+    b_source.write_text("VALUE = 2\n")
+    unchanged = fixture_cache_key(tmp_path, package_modules={"increment.a"})
+    a_source.write_text("VALUE = 2\n")
+    changed = fixture_cache_key(tmp_path, package_modules={"increment.a"})
+
+    assert first == unchanged
+    assert changed != unchanged
+
+
+@pytest.mark.integration
+def test_key_excludes_increment_but_tracks_third_party_versions(tmp_path, monkeypatch):
+    from importlib import metadata
+
+    class Distribution:
+        def __init__(self, name, version):
+            self.metadata = {"Name": name}
+            self.version = version
+
+    versions = [
+        Distribution("increment", "0.1.dev5"),
+        Distribution("example", "1.0"),
+    ]
+    monkeypatch.setattr(metadata, "distributions", lambda: versions)
+    (tmp_path / "uv.lock").write_text("")
+
+    first = fixture_cache_key(tmp_path, package_modules={"increment.a"})
+    versions[0].version = "0.1.dev6"
+    increment_bumped = fixture_cache_key(tmp_path, package_modules={"increment.a"})
+    versions[1].version = "2.0"
+    third_party_bumped = fixture_cache_key(tmp_path, package_modules={"increment.a"})
+
+    assert first == increment_bumped
+    assert third_party_bumped != increment_bumped
+
+
 def test_get_or_build_reloads_cached_fixture_without_rebuilding(tmp_path):
     from types import MappingProxyType
 
