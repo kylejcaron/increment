@@ -153,6 +153,7 @@ jobs:
           if len(reports) != expected:
               merged["__incomplete__"] = True
           Path("affected-report.json").write_text(json.dumps(merged) + "\n")
+          PY
           shopt -s globstar nullglob
           junit=(selection-input/junit/**/*.xml)
           uv run --no-sync python scripts/selection_map.py misses --base "$BASE" --head "$HEAD" --junit "${junit[@]}" --report affected-report.json | tee selection-misses.txt

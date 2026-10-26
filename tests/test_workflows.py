@@ -72,3 +72,10 @@ def test_remote_reusable_workflow_still_requires_a_pin(tmp_path: Path) -> None:
     assert [ref for _line_no, ref in _unpinned_uses(workflow)] == [
         "other/repo/.github/workflows/ci.yml@v1"
     ]
+def test_selection_miss_shell_closes_python_heredoc_before_shell_commands() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["selection-misses"]
+    run = next(step["run"] for step in job["steps"] if step.get("name") == "Merge predictions and report misses")
+
+    assert "\nPY\n" in run
+    assert run.index("\nPY\n") < run.index("shopt -s globstar")
