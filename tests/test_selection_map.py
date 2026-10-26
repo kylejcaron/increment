@@ -295,6 +295,94 @@ def test_partial_prediction_is_incomplete_evidence(tmp_path: Path) -> None:
     assert "incomplete evidence" in result
 
 
+
+
+def test_junit_failure_without_a_prediction_decision_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    from scripts.selection_map import misses
+
+    shard_id = "3.12-1"
+    prediction = tmp_path / "affected-report.json"
+    prediction.write_text(
+        json.dumps(
+            {
+                "tests/test_a.py": {"kept": True, "reasons": [], "tach_kept": True},
+                "__metadata__": {
+                    "shards": {
+                        shard_id: {
+                            "collection_complete": True,
+                            "collected_tests": 2,
+                            "decision_files": ["tests/test_a.py"],
+                        }
+                    }
+                },
+            }
+        )
+    )
+    junit_dir = tmp_path / "fast-junit-3.12-shard-1-1"
+    junit_dir.mkdir()
+    junit = junit_dir / "junit.xml"
+    junit.write_text(
+        '<testsuite><testcase file="tests/test_a.py"/>'
+        '<testcase file="tests/test_b.py"><failure/></testcase></testsuite>'
+    )
+    junit_metadata = junit_dir / "junit-metadata.json"
+    junit_metadata.write_text(json.dumps({"shard_id": shard_id, "junit_present": True}))
+
+    result = misses(
+        {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
+        base="base",
+        head="head",
+        junit_reports=[junit],
+        junit_metadata=[junit_metadata],
+        expected_shards={shard_id},
+        report=prediction,
+    )
+
+    assert "incomplete evidence" in result
+
+
+def test_empty_decisions_with_collected_tests_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    from scripts.selection_map import misses
+
+    shard_id = "3.12-1"
+    prediction = tmp_path / "affected-report.json"
+    prediction.write_text(
+        json.dumps(
+            {
+                "__metadata__": {
+                    "shards": {
+                        shard_id: {
+                            "collection_complete": True,
+                            "collected_tests": 1,
+                            "decision_files": [],
+                        }
+                    }
+                }
+            }
+        )
+    )
+    junit_dir = tmp_path / "fast-junit-3.12-shard-1-1"
+    junit_dir.mkdir()
+    junit = junit_dir / "junit.xml"
+    junit.write_text("<testsuite/>")
+    junit_metadata = junit_dir / "junit-metadata.json"
+    junit_metadata.write_text(json.dumps({"shard_id": shard_id, "junit_present": True}))
+
+    result = misses(
+        {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
+        base="base",
+        head="head",
+        junit_reports=[junit],
+        junit_metadata=[junit_metadata],
+        expected_shards={shard_id},
+        report=prediction,
+    )
+
+    assert "incomplete evidence" in result
 def test_missing_expected_junit_shard_is_incomplete_evidence(tmp_path: Path) -> None:
     from scripts.selection_map import misses
 

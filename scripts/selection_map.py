@@ -233,6 +233,8 @@ def _load_decisions(
             or not all(isinstance(name, str) for name in decision_files)
         ):
             return {}, {}, False
+        if collected_tests > 0 and not decision_files:
+            incomplete = True
         expected_files.update(decision_files)
         shards[shard_id] = raw
 
@@ -274,6 +276,7 @@ def misses(
         if decision["tach_kept"] and not decision["kept"]
     )
     failures: set[str] = set()
+    junit_files: set[str] = set()
     incomplete = (
         not report_loaded
         or set(prediction_shards) != expected_shards
@@ -312,13 +315,20 @@ def misses(
             incomplete = True
             continue
         for case in root.iter("testcase"):
-            if not any(child.tag in {"failure", "error"} for child in case):
-                continue
+            failed = any(child.tag in {"failure", "error"} for child in case)
             file = case.get("file")
-            if file:
-                normalized = Path(file).as_posix()
-                marker = normalized.find("tests/")
-                failures.add(normalized[marker:] if marker >= 0 else normalized)
+            if not file:
+                if failed:
+                    incomplete = True
+                continue
+            normalized = Path(file).as_posix()
+            marker = normalized.find("tests/")
+            test_file = normalized[marker:] if marker >= 0 else normalized
+            junit_files.add(test_file)
+            if failed:
+                failures.add(test_file)
+    if not junit_files <= decisions.keys():
+        incomplete = True
     result = [f"miss: {path}" for path in sorted(failures & skipped)]
     result.extend(f"tach-alone-kept-but-skipped: {path}" for path in tach_skips)
     if incomplete:
