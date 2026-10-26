@@ -113,6 +113,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if state is not None and isinstance(state.handler, AffectedHandlerWithReport):
         state.handler.pytest_sessionfinish(session, exitstatus)
 
+
 class AffectedHandlerWithReport(AffectedHandler):
     def __init__(
         self, handler: "TachPytestPluginHandler", graph: SelectionGraph, report: Path | None

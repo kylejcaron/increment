@@ -133,17 +133,19 @@ def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
 def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
     test_job = workflow["jobs"]["test"]
-    prediction = next(step for step in test_job["steps"] if step.get("name") == "Predict selected files")
+    prediction = next(
+        step for step in test_job["steps"] if step.get("name") == "Predict selected files"
+    )
 
     assert prediction["continue-on-error"] is True
     assert "incomplete evidence: no base" in prediction["run"]
-    assert "if [ -z \"$BASE\" ]" in prediction["run"]
+    assert 'if [ -z "$BASE" ]' in prediction["run"]
 
     report_job = workflow["jobs"]["selection-misses"]
     assert report_job["continue-on-error"] is True
     report = next(
-        step for step in report_job["steps"] if step.get("name") == "Merge predictions and report misses"
+        step
+        for step in report_job["steps"]
+        if step.get("name") == "Merge predictions and report misses"
     )
     assert "incomplete evidence: no base" in report["run"]
-
-

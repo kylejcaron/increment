@@ -314,8 +314,6 @@ def test_required_files_are_kept_for_package_change_with_valid_map(tmp_path: Pat
     assert graph.keeps("tests/test_a.py") == ("required",)
 
 
-
-
 def test_required_files_are_kept_for_test_data_change_with_valid_map(tmp_path: Path) -> None:
     _tree(
         tmp_path,
@@ -335,8 +333,9 @@ def test_required_files_are_kept_for_test_data_change_with_valid_map(tmp_path: P
         selection_map=mapping,
         changed_paths={"tests/selection_data.json"},
     )
-
     assert graph.keeps("tests/test_a.py") == ("required",)
+
+
 def test_test_added_after_map_is_kept(tmp_path: Path) -> None:
     _tree(tmp_path, {"increment/x.py": "", "tests/test_a.py": ""})
     base = _commit(tmp_path)
