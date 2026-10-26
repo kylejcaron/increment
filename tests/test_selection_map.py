@@ -44,8 +44,20 @@ def test_empty_import_context_does_not_create_map_entry(tmp_path: Path) -> None:
 def test_stale_map_detects_unrelated_base(tmp_path: Path) -> None:
     assert is_stale(
         {
-            "generated_at": "2026-10-25T00:00:00+00:00",
+            "generated_at": datetime.now(UTC).isoformat(),
             "base_sha": "not-a-commit",
+            "tier": "fast",
+            "modules": {},
+        },
+        root=tmp_path,
+    )
+
+
+def test_stale_map_detects_expiry(tmp_path: Path) -> None:
+    assert is_stale(
+        {
+            "generated_at": "2000-01-01T00:00:00+00:00",
+            "base_sha": "unknown",
             "tier": "fast",
             "modules": {},
         },

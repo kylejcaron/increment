@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from scripts.selection_map import SelectionMap
+from scripts.selection_map import SelectionMap, is_stale
 from tests._selection import AffectedHandler, SelectionGraph
 
 pytestmark = pytest.mark.integration
@@ -47,7 +48,7 @@ def _map(
     root: Path, modules: dict[str, list[str]], *, base: str, tier: str = "fast"
 ) -> SelectionMap:
     payload: SelectionMap = {
-        "generated_at": "2026-10-25T00:00:00+00:00",
+        "generated_at": datetime.now(UTC).isoformat(),
         "base_sha": base,
         "tier": tier,
         "modules": modules,
@@ -56,6 +57,14 @@ def _map(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload))
     return payload
+
+
+def test_map_helper_builds_a_fresh_map(tmp_path: Path) -> None:
+    _tree(tmp_path, {"increment/x.py": "", "tests/test_a.py": ""})
+    base = _commit(tmp_path)
+    mapping = _map(tmp_path, {}, base=base)
+
+    assert not is_stale(mapping, root=tmp_path)
 
 
 def test_handler_keeps_whatever_tach_keeps(tmp_path: Path) -> None:
