@@ -744,11 +744,13 @@ def test_daily_readout_skips_custom_estimator_needs_but_run_checks_them():
             "panel",
             "ate",
             selector,
-            ((
-                MomentsSpec("total"),
-                UnitRowsSpec(covariates="design"),
-                CountsSpec("cluster"),
-            ),),
+            (
+                (
+                    MomentsSpec("total"),
+                    UnitRowsSpec(covariates="design"),
+                    CountsSpec("cluster"),
+                ),
+            ),
         )
     )
     register_implementation(estimator_id, lambda *_args, **_kwargs: [])
@@ -816,11 +818,13 @@ def test_direct_estimator_preflight_uses_provider_default_population():
             "panel",
             "ate",
             selector,
-            ((
-                MomentsSpec("total"),
-                UnitRowsSpec(covariates="design"),
-                CountsSpec("triggered"),
-            ),),
+            (
+                (
+                    MomentsSpec("total"),
+                    UnitRowsSpec(covariates="design"),
+                    CountsSpec("triggered"),
+                ),
+            ),
         )
     )
     register_implementation(estimator_id, estimate)
