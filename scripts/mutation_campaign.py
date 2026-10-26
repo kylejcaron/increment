@@ -401,7 +401,6 @@ def campaign(name: str, output: Path, *, kill_matrix: bool = False) -> None:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env.pop("PYTEST_ADDOPTS", None)
-    env.pop("PYTEST_PLUGINS", None)
     env["MUTANT_UNDER_TEST"] = ""
     for key in (
         "OPENBLAS_NUM_THREADS",
