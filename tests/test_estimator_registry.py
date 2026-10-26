@@ -793,13 +793,18 @@ def test_daily_readout_skips_custom_estimator_needs_but_run_checks_them():
         unregister_estimator(estimator_id)
 
 
-def test_direct_estimator_preflight_uses_provider_default_population(monkeypatch):
+def test_direct_estimator_preflight_uses_provider_default_population():
     from dataclasses import replace
 
     from increment.declarations import CountsSpec, register_implementation, unregister_estimator
-    from increment.estimation import adjust
     from increment.estimation.adjust import estimate_ate
     from increment.frame import from_unit_panel
+
+    class ReachedEstimator(Exception):
+        pass
+
+    def estimate(*_args, **_kwargs):
+        raise ReachedEstimator
 
     estimator_id = "observational.triggered_need_probe"
     selector = "triggered_need_probe"
@@ -818,7 +823,7 @@ def test_direct_estimator_preflight_uses_provider_default_population(monkeypatch
             ),),
         )
     )
-    register_implementation(estimator_id, lambda *_args, **_kwargs: [])
+    register_implementation(estimator_id, estimate)
     try:
         source = from_unit_panel(
             pd.DataFrame(
@@ -841,29 +846,36 @@ def test_direct_estimator_preflight_uses_provider_default_population(monkeypatch
                 gate=IdentificationGate(overlap="trim"),
             ),
         )
-        provider = type(
-            "TriggeredProvider",
-            (),
-            {
-                "context": source.context,
-                "cluster": None,
-                "evidence": replace(
-                    source.evidence,
-                    count_grains=frozenset({"triggered"}),
-                    populations=frozenset({"triggered"}),
-                ),
-            },
-        )()
+
+        def unsupported(*_args, **_kwargs):
+            raise AssertionError("unexpected provider request")
+
+        class TriggeredProvider:
+            context = source.context
+            cluster = None
+            evidence = replace(
+                source.evidence,
+                count_grains=frozenset({"triggered"}),
+                populations=frozenset({"triggered"}),
+            )
+
+            def moments(self, _request):
+                return ()
+
+            def unit_rows(self, _request):
+                return pd.DataFrame()
+
+            breakout_method_moments = unsupported
+            method_fit = unsupported
+            compliance = unsupported
+            compliance_series = unsupported
+            counts = unsupported
+            capture_sequential = unsupported
+            scope = unsupported
+
+        provider = TriggeredProvider()
         assert not hasattr(provider, "population")
-
-        class ReachedEvidence(Exception):
-            pass
-
-        def stop_at_evidence(*_args, **_kwargs):
-            raise ReachedEvidence
-
-        monkeypatch.setattr(adjust, "observational_evidence", stop_at_evidence)
-        with pytest.raises(ReachedEvidence):
+        with pytest.raises(ReachedEstimator):
             estimate_ate(provider, source.context.design, methods=[Method(name=selector)])
     finally:
         unregister_estimator(estimator_id)
