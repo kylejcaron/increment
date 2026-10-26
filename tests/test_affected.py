@@ -490,3 +490,80 @@ def test_changed_lazy_export_dependency_selects_root_importing_test(tmp_path: Pa
     )
 
     assert selection.test_files == ("tests/test_public_api.py",)
+
+
+@pytest.mark.parametrize(
+    ("changed_module", "test_file"),
+    [
+        (
+            "increment/estimation/cuped/multicovariate.py",
+            "tests/estimation/test_cuped_linear.py",
+        ),
+        (
+            "increment/estimation/cuped/prepare.py",
+            "tests/estimation/cuped/test_prepare.py",
+        ),
+    ],
+)
+def test_changed_cuped_lazy_export_selects_its_importers(
+    tmp_path: Path, changed_module: str, test_file: str
+) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/__init__.py": "",
+            "increment/estimation/__init__.py": "",
+            "increment/estimation/cuped/__init__.py": (
+                "import importlib\n"
+                "_LAZY_IMPORTS = {\n"
+                "    'fit_cuped_multicovariate': "
+                "('increment.estimation.cuped.multicovariate', 'fit_cuped_multicovariate'),\n"
+                "    'prepare_multicovariate_fit': "
+                "('increment.estimation.cuped.prepare', 'prepare_multicovariate_fit'),\n"
+                "}\n"
+                "def __getattr__(name):\n"
+                "    module, attr = _LAZY_IMPORTS[name]\n"
+                "    return getattr(importlib.import_module(module), attr)\n"
+            ),
+            "increment/estimation/cuped/multicovariate.py": "VALUE = 1\n",
+            "increment/estimation/cuped/prepare.py": "VALUE = 1\n",
+            test_file: (
+                "from increment.estimation.cuped import "
+                f"{'fit_cuped_multicovariate' if 'multicovariate' in changed_module else 'prepare_multicovariate_fit'}\n"
+            ),
+        },
+    )
+
+    selection = _change(root, base, changed_module, "VALUE = 2\n")
+
+    assert test_file in selection.test_files
+
+
+def test_lazy_export_edges_join_the_transitive_test_import_walk(tmp_path: Path) -> None:
+    root, base = _repo(
+        tmp_path,
+        {
+            "increment/__init__.py": "",
+            "increment/estimation/__init__.py": "",
+            "increment/estimation/cuped/__init__.py": (
+                "import importlib\n"
+                "_LAZY_IMPORTS = {'prepare_multicovariate_fit': "
+                "('increment.estimation.cuped.prepare', 'prepare_multicovariate_fit')}\n"
+                "def __getattr__(name):\n"
+                "    module, attr = _LAZY_IMPORTS[name]\n"
+                "    return getattr(importlib.import_module(module), attr)\n"
+            ),
+            "increment/estimation/cuped/prepare.py": "VALUE = 1\n",
+            "tests/cuped_support.py": (
+                "from increment.estimation.cuped import prepare_multicovariate_fit\n"
+            ),
+            "tests/test_cuped_covariates.py": (
+                "from tests.cuped_support import prepare_multicovariate_fit\n"
+                "def test_cuped_covariates(): assert prepare_multicovariate_fit\n"
+            ),
+        },
+    )
+
+    selection = _change(root, base, "increment/estimation/cuped/prepare.py", "VALUE = 2\n")
+
+    assert selection.test_files == ("tests/test_cuped_covariates.py",)

@@ -367,3 +367,63 @@ def test_evidence_types_import_is_light():
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_estimation_package_import_is_light():
+    code = (
+        "import sys\n"
+        "import increment.estimation\n"
+        "loaded = {name for name in sys.modules if name.startswith('increment.')}\n"
+        "assert len(loaded) <= 5, len(loaded)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cuped_package_import_is_light():
+    code = (
+        "import sys\n"
+        "import increment.estimation.cuped\n"
+        "loaded = {name for name in sys.modules if name.startswith('increment.')}\n"
+        "assert len(loaded) <= 5, len(loaded)\n"
+        "from increment.estimation.cuped import fit_cuped\n"
+        "assert fit_cuped\n"
+        "for name in ('multicovariate', 'prepare', 'encoding'):\n"
+        "    assert f'increment.estimation.cuped.{name}' not in sys.modules, name\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_every_estimation_export_resolves_to_its_recorded_binding():
+    import importlib
+    import json
+    from pathlib import Path
+
+    fixture = Path(__file__).parent / "fixtures" / "estimation_exports.json"
+    expected = json.loads(fixture.read_text())
+    for package_name, exports in expected.items():
+        package = importlib.import_module(package_name)
+        assert set(package.__all__) == set(exports)
+        for name, binding in exports.items():
+            module_name, attribute = binding.split(":")
+            module = importlib.import_module(module_name)
+            assert getattr(package, name) is getattr(module, attribute), (
+                package_name,
+                name,
+                binding,
+            )
+
+    from increment.estimation import binomial_rr
+
+    assert binomial_rr.__name__ == "increment.estimation.binomial_rr"

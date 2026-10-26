@@ -91,7 +91,7 @@ def _module_imports(
     path: Path,
     module: str,
     known_modules: set[str],
-    lazy_exports: dict[str, str] | None = None,
+    lazy_exports: dict[str, dict[str, str]] | None = None,
 ) -> set[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -124,9 +124,11 @@ def _module_imports(
             if alias.name != "*"
             if (candidate := f"{base}.{alias.name}") in known_modules
         )
-        if base == "increment" and lazy_exports is not None:
+        if lazy_exports is not None and base in lazy_exports:
             imports.update(
-                lazy_exports[alias.name] for alias in node.names if alias.name in lazy_exports
+                lazy_exports[base][alias.name]
+                for alias in node.names
+                if alias.name in lazy_exports[base]
             )
     return imports
 
@@ -179,51 +181,48 @@ def _lazy_imports(path: Path) -> dict[str, str]:
 
 def _lazy_export_importers(root: Path, changed_modules: set[str]) -> set[str]:
     package_modules = _module_paths(root, "increment")
-    lazy_exports = _lazy_imports(root / "increment/__init__.py")
+    lazy_exports = {
+        module: exports
+        for module, path in package_modules.items()
+        if path.name == "__init__.py" and (exports := _lazy_imports(path))
+    }
     if not package_modules or not lazy_exports:
         return set()
-
-    known_modules = set(package_modules) | changed_modules
-    imported_modules = {
-        module: _module_imports(path, module, known_modules, lazy_exports)
-        for module, path in package_modules.items()
-    }
-    closures: dict[str, set[str]] = {}
-    for target in set(lazy_exports.values()):
-        visited: set[str] = set()
-        pending = [target]
-        while pending:
-            module = pending.pop()
-            if module in visited:
-                continue
-            visited.add(module)
-            if module in imported_modules:
-                pending.extend(imported_modules[module] - visited)
-        closures[target] = visited
 
     test_root = root / "tests"
     if not test_root.is_dir():
         return set()
-    test_importers: set[str] = set()
-    for path in test_root.rglob("test_*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, SyntaxError):
-            continue
-        type_only_imports = _type_checking_import_ids(tree)
-        imported_names = {
-            alias.name
-            for node in ast.walk(tree)
-            if id(node) not in type_only_imports
-            and isinstance(node, ast.ImportFrom)
-            and node.module == "increment"
-            for alias in node.names
+    test_modules: dict[str, Path] = {}
+    for path in test_root.rglob("*.py"):
+        parts = path.relative_to(test_root).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        test_modules[".".join(("tests", *parts))] = path
+
+    known_modules = set(package_modules) | set(test_modules) | changed_modules
+    imported_modules = {
+        module: _module_imports(path, module, known_modules, lazy_exports)
+        for module, path in package_modules.items()
+    }
+    imported_modules.update(
+        {
+            module: _module_imports(path, module, known_modules, lazy_exports)
+            for module, path in test_modules.items()
         }
-        if any(
-            changed_modules.intersection(closures.get(lazy_exports[name], set()))
-            for name in imported_names
-            if name in lazy_exports
-        ):
+    )
+    test_importers: set[str] = set()
+    for module, path in test_modules.items():
+        if not path.name.startswith("test_"):
+            continue
+        visited: set[str] = set()
+        pending = [module]
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(imported_modules.get(current, set()) - visited)
+        if changed_modules.intersection(visited):
             test_importers.add(path.relative_to(root).as_posix())
     return test_importers
 
