@@ -290,8 +290,11 @@ def test_scalar_cuped_route_is_supported_by_moments_only_evidence():
 
 
 def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
+    from dataclasses import replace
+
     from increment._evidence_refusals import require_evidence
     from increment._source_types import EvidenceCapabilities
+    from increment.errors import CapabilityError
 
     all_requests = routes(ESTIMATORS["randomized.cuped_multicovariate"], _context())
     fit_source = type(
@@ -334,7 +337,7 @@ def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
                 populations=frozenset({"assigned"}),
                 sequential_capture="none",
                 scalar=None,
-                available_covariates=frozenset({"age"}),
+                available_covariates=frozenset({"pre"}),
             )
         },
     )()
@@ -342,6 +345,24 @@ def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
     require_evidence(fit_source, request=all_requests[0][0])
     for request in all_requests[1]:
         require_evidence(local_source, request=request)
+    assert all(
+        request.covariates == ("pre",)
+        for request in all_requests[1]
+        if isinstance(request, UnitRowsRequest)
+    )
+    unavailable = type(
+        "LocalSource",
+        (),
+        {
+            "evidence": replace(
+                local_source.evidence,
+                available_covariates=frozenset({"age"}),
+            )
+        },
+    )()
+    with pytest.raises(CapabilityError):
+        for request in all_requests[1]:
+            require_evidence(unavailable, request=request)
 
 
 def test_routes_preserve_triggered_population_as_an_acquisition_requirement():
@@ -429,6 +450,37 @@ def test_cuped_declares_fit_or_local_routes_and_scalar_cuped_moments_only():
     assert len(scalar) == 1
     assert len(scalar[0]) == 1 and isinstance(scalar[0][0], MomentsRequest)
     assert scalar[0][0].method is not None
+
+
+def test_multicovariate_load_resolves_to_its_fit_callable():
+    from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
+
+    assert load("randomized.cuped_multicovariate") is fit_cuped_multicovariate
+
+
+def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import():
+    from increment.declarations import MomentsSpec, UnitRowsSpec, unregister_estimator
+    from increment.estimation.adjust import _validate_adjustment_methods
+
+    estimator_id = "observational.lazy_validation_probe"
+    selector = "lazy_validation_probe"
+    register(
+        EstimatorRef(
+            estimator_id=estimator_id,
+            module="increment._missing_lazy_validation_plugin",
+            attribute="estimate",
+            contract="panel",
+            estimand="ate",
+            selector=selector,
+            needs=((MomentsSpec("total"), UnitRowsSpec(covariates="design")),),
+        )
+    )
+    try:
+        with pytest.raises(CodedError) as exc:
+            _validate_adjustment_methods([Method(name=selector, variance_reduction="cuped")])
+        assert exc.value.code == "adjust.variance_reduction.unsupported"
+    finally:
+        unregister_estimator(estimator_id)
 
 
 def test_custom_estimator_needs_flow_to_routes_and_manifest():

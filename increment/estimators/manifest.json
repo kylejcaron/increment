@@ -105,11 +105,11 @@
     "selector": "cuped"
   },
   {
-    "attribute": "estimate_lift",
+    "attribute": "fit_cuped_multicovariate",
     "contract": "panel",
     "estimand": "ate",
     "estimator_id": "randomized.cuped_multicovariate",
-    "module": "increment.estimation.engine",
+    "module": "increment.estimation.cuped.multicovariate",
     "needs": [
       [
         {
@@ -124,7 +124,7 @@
           "method_specific": false
         },
         {
-          "covariates": "design",
+          "covariates": "method",
           "kind": "UnitRows",
           "outcome_stage": "transformed"
         }

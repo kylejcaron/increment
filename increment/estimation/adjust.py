@@ -17,7 +17,8 @@ from increment._evidence_types import MomentsRequest, UnitRowsRequest
 from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
-from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
+from increment.declarations import ADJUSTMENTS as ADJUSTMENTS
+from increment.declarations import OBSERVATIONAL_METHOD_NAMES
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -848,7 +849,7 @@ def _validate_adjustment_methods(methods: Sequence[Method]) -> None:
     for method in methods:
         if _is_unadjusted_method(method):
             continue
-        ADJUSTMENTS.get(method.name)
+        observational_estimator_id(method)
         if method.variance_reduction != "none":
             _refuse(
                 "adjust.variance_reduction.unsupported",

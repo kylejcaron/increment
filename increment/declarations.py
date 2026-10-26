@@ -447,12 +447,12 @@ BUILTIN_ESTIMATORS: tuple[EstimatorRef, ...] = (
     ),
     EstimatorRef(
         "randomized.cuped_multicovariate",
-        "increment.estimation.engine",
-        "estimate_lift",
+        "increment.estimation.cuped.multicovariate",
+        "fit_cuped_multicovariate",
         "panel",
         "ate",
         "cuped_multicovariate",
-        ((_FIT,), (_TOTAL_MOMENTS, _DESIGN_ROWS)),
+        ((_FIT,), (_TOTAL_MOMENTS, _METHOD_ROWS)),
     ),
 )
 
