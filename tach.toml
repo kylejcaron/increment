@@ -808,3 +808,15 @@ depends_on = ["increment.estimators.registry"]
 [[modules]]
 path = "increment.estimators.registry"
 depends_on = ["increment.declarations", "increment._evidence_types", "increment._evidence_refusals", "increment.errors"]
+
+[[modules]]
+path = "increment.estimation._adjust.iptw"
+depends_on = ["increment._literals", "increment.declarations", "increment.estimation"]
+
+[[modules]]
+path = "increment.estimation._adjust.aipw"
+depends_on = ["increment._literals", "increment.declarations", "increment.estimation"]
+
+[[modules]]
+path = "increment.estimation._adjust.dml"
+depends_on = ["increment._literals", "increment.declarations", "increment.errors", "increment.estimation"]

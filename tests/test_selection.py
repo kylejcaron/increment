@@ -271,6 +271,25 @@ def test_unresolvable_lazy_export_keeps_importing_test(tmp_path: Path) -> None:
     assert "unresolved_lazy_name" in graph.keeps("tests/test_api.py")
 
 
+def test_eagerly_bound_name_and_submodule_of_a_lazy_package_are_resolved(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/__init__.py": (
+                "from increment.errors import CodedError\n"
+                "VERSION = '1'\n"
+                "_LAZY_IMPORTS = {'Known': ('increment.impl', 'Known')}\n"
+            ),
+            "increment/errors.py": "class CodedError(Exception): pass\n",
+            "increment/impl.py": "class Known: pass\n",
+            "tests/test_api.py": "from increment import VERSION, CodedError, errors\n",
+        },
+    )
+    graph = SelectionGraph.from_tree(tmp_path, {"increment.impl"}, tier="fast", selection_map=None)
+
+    assert "unresolved_lazy_name" not in graph.keeps("tests/test_api.py")
+
+
 def test_unusable_map_keeps_the_whole_tier_even_without_estimators(tmp_path: Path) -> None:
     _tree(tmp_path, {"tests/test_a.py": "", "tests/test_b.py": "", "increment/x.py": ""})
     graph = SelectionGraph.from_tree(tmp_path, {"increment.x"}, tier="fast", selection_map=None)
@@ -587,7 +606,9 @@ def test_real_tach_registration_consumer_is_kept(scratch_worktree: Path) -> None
 
     decision = _real_tach_decision(scratch_worktree, base, "tests/test_refusal_uniqueness.py")
 
-    assert decision["tach_kept"] is True
+    # Estimator modules have their own import-graph boundary, so the package
+    # walker is kept by the always-run floor rather than by tach.
+    assert "required" in cast("list[str]", decision["reasons"])
     assert decision["kept"] is True
 
 

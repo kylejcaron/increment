@@ -417,7 +417,9 @@ def test_failed_test_excluded_from_prediction_is_reported_as_miss(tmp_path: Path
         '<testsuite><testcase file="tests/test_skipped.py"><failure/></testcase></testsuite>'
     )
     junit_metadata = junit_dir / "junit-metadata.json"
-    junit_metadata.write_text(json.dumps({"shard_id": shard_id, "junit_present": True}))
+    junit_metadata.write_text(
+        json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "success"})
+    )
 
     result = misses(
         {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
@@ -435,6 +437,51 @@ def test_failed_test_excluded_from_prediction_is_reported_as_miss(tmp_path: Path
     assert "head: head" in output
     assert "map generated_at: now" in output
     assert "map base_sha: base" in output
+
+
+def test_shard_stopped_by_a_failure_is_incomplete_but_keeps_its_misses(tmp_path: Path) -> None:
+    from scripts.selection_map import misses
+
+    shard_id = "3.12-1"
+    prediction = tmp_path / "affected-report.json"
+    prediction.write_text(
+        json.dumps(
+            {
+                "tests/test_skipped.py": {"kept": False, "reasons": [], "tach_kept": False},
+                "__metadata__": {
+                    "shards": {
+                        shard_id: {
+                            "collection_complete": True,
+                            "collected_tests": 1,
+                            "decision_files": ["tests/test_skipped.py"],
+                        }
+                    }
+                },
+            }
+        )
+    )
+    junit_dir = tmp_path / "fast-junit-3.12-shard-1-1"
+    junit_dir.mkdir()
+    junit = junit_dir / "junit.xml"
+    junit.write_text(
+        '<testsuite><testcase file="tests/test_skipped.py"><failure/></testcase></testsuite>'
+    )
+    junit_metadata = junit_dir / "junit-metadata.json"
+    junit_metadata.write_text(
+        json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "failure"})
+    )
+
+    result = misses(
+        None,
+        base="base",
+        head="head",
+        junit_reports=[junit],
+        junit_metadata=[junit_metadata],
+        expected_shards={shard_id},
+        report=prediction,
+    )
+
+    assert result == ["incomplete evidence", "miss: tests/test_skipped.py"]
 
 
 def test_partial_prediction_is_incomplete_evidence(tmp_path: Path) -> None:
@@ -463,7 +510,9 @@ def test_partial_prediction_is_incomplete_evidence(tmp_path: Path) -> None:
         '<testsuite><testcase file="tests/test_skipped.py"><failure/></testcase></testsuite>'
     )
     junit_metadata = junit / "junit-metadata.json"
-    junit_metadata.write_text(json.dumps({"shard_id": shard_id, "junit_present": True}))
+    junit_metadata.write_text(
+        json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "success"})
+    )
 
     result = misses(
         {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
@@ -509,7 +558,9 @@ def test_junit_failure_without_a_prediction_decision_is_incomplete(
         '<testcase file="tests/test_b.py"><failure/></testcase></testsuite>'
     )
     junit_metadata = junit_dir / "junit-metadata.json"
-    junit_metadata.write_text(json.dumps({"shard_id": shard_id, "junit_present": True}))
+    junit_metadata.write_text(
+        json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "success"})
+    )
 
     result = misses(
         {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
@@ -551,7 +602,9 @@ def test_empty_decisions_with_collected_tests_is_incomplete(
     junit = junit_dir / "junit.xml"
     junit.write_text("<testsuite/>")
     junit_metadata = junit_dir / "junit-metadata.json"
-    junit_metadata.write_text(json.dumps({"shard_id": shard_id, "junit_present": True}))
+    junit_metadata.write_text(
+        json.dumps({"shard_id": shard_id, "junit_present": True, "outcome": "success"})
+    )
 
     result = misses(
         {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
@@ -592,7 +645,9 @@ def test_missing_expected_junit_shard_is_incomplete_evidence(tmp_path: Path) -> 
     junit = junit_dir / "junit.xml"
     junit.write_text("<testsuite/>")
     junit_metadata = junit_dir / "junit-metadata.json"
-    junit_metadata.write_text(json.dumps({"shard_id": "3.12-1", "junit_present": True}))
+    junit_metadata.write_text(
+        json.dumps({"shard_id": "3.12-1", "junit_present": True, "outcome": "success"})
+    )
 
     result = misses(
         {"generated_at": "now", "base_sha": "base", "tier": "fast", "modules": {}},
