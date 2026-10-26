@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from datetime import UTC, datetime
 import json
-from pathlib import Path
 import subprocess
 import sys
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
