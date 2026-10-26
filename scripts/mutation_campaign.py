@@ -416,6 +416,7 @@ def campaign(name: str, output: Path, *, kill_matrix: bool = False) -> None:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix=f"increment-mutation-{name}-") as directory:
         work = Path(directory)
+
         config_text = (ROOT / "pyproject.toml").read_text()
         config = tomllib.loads(config_text)["tool"]["mutmut"]
         config.update(only_mutate=[source], pytest_add_cli_args_test_selection=[selection])

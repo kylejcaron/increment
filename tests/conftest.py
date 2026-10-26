@@ -1,57 +1,173 @@
 """Shared session-scoped DuckDB fixtures for the test suite."""
 
+import json
+import os
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from scripts.affected import _changed_paths
+from scripts.selection_map import load
+from tests._selection import AffectedHandler, SelectionGraph
 from tests._unit_boundary import backend_fixture
 
 if TYPE_CHECKING:
     from tach.extension import TachPytestPluginHandler
 
+_fixture_closures: dict[str, list[str]] = {}
+_fixture_setup: dict[str, list[str]] = {}
+_collection_imports: dict[str, list[str]] = {}
+_collection_before: dict[str, set[str]] = {}
+_current_item: pytest.Item | None = None
 
-class _FilesystemGuardHandler:
-    """Preserve filesystem guards that an import graph cannot track."""
 
-    def __init__(self, handler: "TachPytestPluginHandler") -> None:
-        self._handler = handler
-        self._guard_paths = {
-            Path(__file__).with_name("test_refusal_gate.py").resolve(),
-            Path(__file__).with_name("test_test_hygiene.py").resolve(),
-        }
-        self._decisions: dict[Path, bool] = {}
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--affected-report", default=None)
+    parser.addoption("--affected-tier", default="fast")
+    parser.addoption("--selection-fixtures", default=None)
 
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._handler, name)
 
-    def should_remove_items(self, file_path: Path) -> bool:
-        # Asked once per test item; the answer depends only on the file.
-        resolved = file_path.resolve()
-        if resolved not in self._decisions:
-            self._decisions[resolved] = (
-                resolved not in self._guard_paths
-                and self._handler.should_remove_items(file_path=file_path)
+@pytest.hookimpl(tryfirst=True)
+def pytest_collectstart(collector: pytest.Collector) -> None:
+    if not isinstance(collector, pytest.Module):
+        return
+    try:
+        relative = collector.path.resolve().relative_to(Path(collector.config.rootpath).resolve())
+    except ValueError:
+        return
+    name = relative.as_posix()
+    if name.startswith("tests/"):
+        _collection_before[name] = set(sys.modules)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    name = report.nodeid
+    if "::" in name or name not in _collection_before:
+        return
+    before = _collection_before.pop(name)
+    _collection_imports[name] = sorted(
+        module
+        for module in set(sys.modules) - before
+        if module == "increment" or module.startswith("increment.")
+    )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        if isinstance(item, pytest.Function) and item.path.is_relative_to(
+            Path(item.config.rootpath) / "tests"
+        ):
+            _fixture_closures[item.nodeid] = sorted(set(item.fixturenames))
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> Any:
+    global _current_item
+    previous = _current_item
+    _current_item = item
+    try:
+        yield
+    finally:
+        _current_item = previous
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_fixture_setup(fixturedef: Any, request: pytest.FixtureRequest) -> Any:
+    outcome = yield
+    # Function-scoped fixtures run again for every consumer, whose own setup
+    # context records them; only cached (wider-scope) setups need propagation.
+    if outcome.excinfo is not None or getattr(request, "scope", fixturedef.scope) == "function":
+        return
+    node = getattr(request, "_pyfuncitem", None) or _current_item or request.node
+    nodeid = getattr(node, "nodeid", None)
+    if isinstance(nodeid, str) and nodeid.split("::", 1)[0].startswith("tests/"):
+        producers = _fixture_setup.setdefault(fixturedef.argname, [])
+        if nodeid not in producers:
+            producers.append(nodeid)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    fixtures_dir = session.config.getoption("--selection-fixtures", default=None)
+    if fixtures_dir:
+        worker = getattr(session.config, "workerinput", {}).get("workerid", "master")
+        output = Path(fixtures_dir) / f"fixtures.{worker}.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(
+                {
+                    "closures": _fixture_closures,
+                    "setup": _fixture_setup,
+                    "collected_imports": _collection_imports,
+                },
+                sort_keys=True,
             )
-        return self._decisions[resolved]
+            + "\n",
+            encoding="utf-8",
+        )
+    from tach.pytest_plugin import tach_state_key
+
+    state = session.config.stash.get(tach_state_key, None)
+    if state is not None and isinstance(state.handler, AffectedHandlerWithReport):
+        state.handler.pytest_sessionfinish(session, exitstatus)
+
+
+class AffectedHandlerWithReport(AffectedHandler):
+    def __init__(
+        self, handler: "TachPytestPluginHandler", graph: SelectionGraph, report: Path | None
+    ) -> None:
+        super().__init__(handler, graph)
+        self._report_path = report
+
+    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
+        if self._report_path is not None:
+            self.write_report(
+                self._report_path,
+                metadata={
+                    "shard_id": os.environ.get("AFFECTED_SHARD_ID", ""),
+                    "collection_complete": exitstatus == 0 and session.testscollected > 0,
+                    "collected_tests": session.testscollected,
+                },
+            )
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    if config.getoption("--tach", default=None) is None:
-        return
-
     from tach.pytest_plugin import tach_state_key
 
     state = config.stash.get(tach_state_key, None)
-    if state is None:
+    if state is None or not state.skip_enabled:
         return
-    if not state.skip_enabled:
-        # Without --tach the plugin only prints a would-skip hint, yet scans
-        # every item for it: seconds of collection on every xdist worker.
-        del config.stash[tach_state_key]
+    base = config.getoption("--tach-base", default=None)
+    if base is None:
         return
-    state.handler = cast("TachPytestPluginHandler", _FilesystemGuardHandler(state.handler))
+    root = Path(config.rootpath)
+    changed_paths = set(_changed_paths(base, root))
+    changed_modules = set()
+    for name in changed_paths:
+        path = Path(name)
+        if name.startswith("increment/") and path.suffix == ".py":
+            parts = path.with_suffix("").parts
+            if parts[-1] == "__init__":
+                parts = parts[:-1]
+            changed_modules.add(".".join(parts))
+    graph = SelectionGraph.from_tree(
+        root,
+        changed_modules,
+        tier=config.getoption("--affected-tier", default="fast"),
+        selection_map=load(root / "tests/selection_map.json"),
+        changed_paths=changed_paths,
+    )
+    report_option = config.getoption("--affected-report", default=None)
+    report = Path(report_option) if report_option else None
+    state.handler = cast(
+        "TachPytestPluginHandler",
+        AffectedHandlerWithReport(state.handler, graph, report),
+    )
 
 
 @backend_fixture(scope="session")

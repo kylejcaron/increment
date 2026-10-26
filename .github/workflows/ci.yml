@@ -42,6 +42,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     strategy:
       fail-fast: false
       # Pull requests run Python 3.14 in two shards, like 3.12: one shard holds the
@@ -65,6 +66,28 @@ jobs:
             coverage_args="--cov=increment --cov-report=json:coverage.json"
           fi
           make test-fast WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
+      - name: Predict selected files
+        if: always()
+        continue-on-error: true
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFFECTED_SHARD_ID: ${{ matrix.python-version }}-${{ matrix.group }}
+        run: |
+          if [ -z "$BASE" ]; then
+            echo "incomplete evidence: no base" > affected-report.json
+            echo "incomplete evidence: no base" >> "$GITHUB_STEP_SUMMARY"
+          else
+            uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
+          fi
+      - name: Retain selection prediction
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        continue-on-error: true
+        with:
+          name: affected-report-${{ matrix.python-version }}-${{ matrix.group }}-${{ github.run_attempt }}
+          path: affected-report.json
+          if-no-files-found: warn
+          retention-days: 90
       - name: Record fast coverage shard metadata
         if: always() && matrix.python-version == '3.12'
         env:
@@ -86,15 +109,74 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
+      - name: Record fast JUnit shard metadata
+        if: always()
+        env:
+          SHARD_ID: ${{ matrix.python-version }}-${{ matrix.group }}
+          TEST_OUTCOME: ${{ steps.fast-tests.outcome }}
+        run: |
+          python -c 'import json, os; from pathlib import Path; Path("junit-metadata.json").write_text(json.dumps({"shard_id": os.environ["SHARD_ID"], "junit_present": Path("junit.xml").is_file(), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
       - name: Retain fast JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fast-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}
-          path: junit.xml
+          path: |
+            junit.xml
+            junit-metadata.json
           if-no-files-found: warn
           retention-days: 30
 
+  selection-misses:
+    if: always()
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: test
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fast-junit-*
+          path: selection-input/junit
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: affected-report-*
+          path: selection-input/affected
+      - name: Merge predictions and report misses
+        if: always()
+        continue-on-error: true
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHARDS: ${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.14-1,3.14-2' || '3.12-1,3.12-2,3.13-1,3.13-2,3.14-1,3.14-2' }}
+        run: |
+          if [ -z "$BASE" ]; then
+            printf 'incomplete evidence: no base\n' > selection-misses.txt
+            cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          shopt -s globstar nullglob
+          reports=(selection-input/affected/**/*.json)
+          junit=(selection-input/junit/**/*.xml)
+          junit_metadata=(selection-input/junit/**/junit-metadata.json)
+          uv run --no-sync python scripts/selection_map.py merge --reports "${reports[@]}" --expected-shards "$EXPECTED_SHARDS" --output affected-report.json
+          uv run --no-sync python scripts/selection_map.py misses --base "$BASE" --head "$HEAD" --junit "${junit[@]}" --junit-metadata "${junit_metadata[@]}" --expected-shards "$EXPECTED_SHARDS" --report affected-report.json
+          cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain selection miss report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: selection-misses-${{ github.run_attempt }}
+          path: selection-misses.txt
+          if-no-files-found: warn
+          retention-days: 90
   slow:
     name: functional slow (3.12, shard ${{ matrix.group }}/6)
     runs-on: ubuntu-latest

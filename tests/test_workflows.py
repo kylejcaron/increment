@@ -72,3 +72,80 @@ def test_remote_reusable_workflow_still_requires_a_pin(tmp_path: Path) -> None:
     assert [ref for _line_no, ref in _unpinned_uses(workflow)] == [
         "other/repo/.github/workflows/ci.yml@v1"
     ]
+
+
+def test_selection_miss_shell_closes_python_heredoc_before_shell_commands() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["selection-misses"]
+    run = next(
+        step["run"]
+        for step in job["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+
+    python_heredoc = re.search(r"(?m)^python\s+-\s+<<['\"]PY['\"]\s*$", run)
+    if python_heredoc is not None:
+        assert "\nPY\n" in run[python_heredoc.end() :]
+        assert run.index("\nPY\n") < run.index("shopt -s globstar")
+
+
+def test_miss_workflow_merges_shard_metadata_before_reporting() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["selection-misses"]
+    run = next(
+        step["run"]
+        for step in job["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+
+    assert "scripts/selection_map.py merge" in run
+    assert "--expected-shards" in run
+    assert "junit-metadata.json" in run
+
+
+def test_miss_report_uses_one_writer_and_preserves_metadata_in_summary() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["selection-misses"]
+    run = next(
+        step["run"]
+        for step in job["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+
+    assert "tee selection-misses.txt" not in run
+    assert 'cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"' in run
+
+
+def test_nightly_selection_map_updates_bot_branch_with_lease() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/nightly.yml").read_text())
+    job = workflow["jobs"]["refresh-selection-map"]
+    run = next(
+        step["run"]
+        for step in job["steps"]
+        if step.get("name") == "Open or update selection-map PR"
+    )
+
+    assert "git fetch --prune origin" in run
+    assert "--force-with-lease=refs/heads/bot/selection-map:" in run
+    assert "gh pr edit bot/selection-map" in run
+
+
+def test_dispatch_without_base_reports_incomplete_evidence_advisory() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    test_job = workflow["jobs"]["test"]
+    prediction = next(
+        step for step in test_job["steps"] if step.get("name") == "Predict selected files"
+    )
+
+    assert prediction["continue-on-error"] is True
+    assert "incomplete evidence: no base" in prediction["run"]
+    assert 'if [ -z "$BASE" ]' in prediction["run"]
+
+    report_job = workflow["jobs"]["selection-misses"]
+    assert report_job["continue-on-error"] is True
+    report = next(
+        step
+        for step in report_job["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+    assert "incomplete evidence: no base" in report["run"]

@@ -56,6 +56,48 @@ jobs:
             junit-numerical.xml
           if-no-files-found: warn
           retention-days: 30
+  refresh-selection-map:
+    name: refresh fast selection map
+    if: ${{ needs.test-all.result == 'success' }}
+    needs: test-all
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Build selection map
+        run: make selection-map
+      - name: Open or update selection-map PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- tests/selection_map.json; then
+            echo "Selection map is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --prune origin +refs/heads/bot/selection-map:refs/remotes/origin/bot/selection-map || true
+          remote_tip="$(git rev-parse --verify refs/remotes/origin/bot/selection-map 2>/dev/null || true)"
+          git checkout -B bot/selection-map
+          git add tests/selection_map.json
+          git commit -m "Refresh fast selection map"
+          if [ -n "$remote_tip" ]; then
+            git push --force-with-lease=refs/heads/bot/selection-map:"$remote_tip" origin HEAD:refs/heads/bot/selection-map
+          else
+            git push --force-with-lease=refs/heads/bot/selection-map: origin HEAD:refs/heads/bot/selection-map
+          fi
+          gh label create selection-map --color 1d76db --description "Generated test selection map" 2>/dev/null || true
+          if gh pr view bot/selection-map >/dev/null 2>&1; then
+            gh pr edit bot/selection-map --title "Refresh fast selection map" --body "Regenerate \`tests/selection_map.json\` from the nightly fast-tier coverage run." --add-label selection-map
+          else
+            gh pr create --base main --head bot/selection-map --title "Refresh fast selection map" --body "Regenerate \`tests/selection_map.json\` from the nightly fast-tier coverage run." --label selection-map
+          fi
 
   test-scientific:
     name: scientific tiers, shard ${{ matrix.group }}/4

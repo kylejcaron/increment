@@ -74,6 +74,11 @@ def test_source_change_uses_tach(tmp_path: Path) -> None:
         "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
         "--tach-base",
         base,
+        "--affected-tier",
+        "fast",
+        "--affected-report",
+        ".affected-report-fast.json",
+        "tests",
         "-n",
         "2",
     ]
@@ -94,20 +99,8 @@ def test_source_and_doc_change_runs_tach_scope_and_doc_page(tmp_path: Path) -> N
 
     assert selection.use_tach is True
     assert selection.doc_pages == ("docs/guides/cuped.md",)
-    assert _pytest_invocations(selection, base, "fast", []) == [
-        [
-            "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
-            "--tach-base",
-            base,
-            "tests",
-        ],
-        [
-            "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
-            "docs/guides/cuped.md",
-        ],
-    ]
+    (invocation,) = _pytest_invocations(selection, base, "fast", [])
+    assert invocation[-2:] == ["tests", "docs/guides/cuped.md"]
 
 
 def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path) -> None:
@@ -126,21 +119,8 @@ def test_source_and_test_change_runs_tach_scope_and_explicit_test(tmp_path: Path
 
     assert selection.use_tach is True
     assert selection.test_files == ("tests/test_explicit.py",)
-    assert _pytest_invocations(selection, base, "fast", []) == [
-        [
-            "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
-            "--tach-base",
-            base,
-            "--ignore=tests/test_explicit.py",
-            "tests",
-        ],
-        [
-            "-m",
-            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
-            "tests/test_explicit.py",
-        ],
-    ]
+    (invocation,) = _pytest_invocations(selection, base, "fast", [])
+    assert invocation[-2:] == ["tests", "tests/test_explicit.py"]
 
 
 def test_changed_test_module_selects_its_test_importers(tmp_path: Path) -> None:
@@ -237,9 +217,9 @@ def test_empty_subrun_is_ignored_when_combining_mixed_selection(
 
     assert main(["--base", base]) == 0
 
-    assert len(pytest_commands) == 2
+    assert len(pytest_commands) == 1
     assert "--tach-base" in pytest_commands[0]
-    assert pytest_commands[1][-1] == "docs/guides/cuped.md"
+    assert pytest_commands[0][-1] == "docs/guides/cuped.md"
     assert capsys.readouterr().out == expected_stdout
 
 
@@ -489,7 +469,7 @@ def test_changed_lazy_export_dependency_selects_root_importing_test(tmp_path: Pa
         "class PublicThing:\n    VALUE = 1\n",
     )
 
-    assert selection.test_files == ("tests/test_public_api.py",)
+    assert selection.test_files == ()
 
 
 @pytest.mark.parametrize(
@@ -505,7 +485,7 @@ def test_changed_lazy_export_dependency_selects_root_importing_test(tmp_path: Pa
         ),
     ],
 )
-def test_changed_cuped_lazy_export_selects_its_importers(
+def test_changed_cuped_lazy_export_is_delegated_to_handler(
     tmp_path: Path, changed_module: str, test_file: str
 ) -> None:
     root, base = _repo(
@@ -536,10 +516,10 @@ def test_changed_cuped_lazy_export_selects_its_importers(
 
     selection = _change(root, base, changed_module, "VALUE = 2\n")
 
-    assert test_file in selection.test_files
+    assert selection.test_files == ()
 
 
-def test_lazy_export_edges_join_the_transitive_test_import_walk(tmp_path: Path) -> None:
+def test_lazy_export_graph_is_delegated_to_handler(tmp_path: Path) -> None:
     root, base = _repo(
         tmp_path,
         {
@@ -566,4 +546,4 @@ def test_lazy_export_edges_join_the_transitive_test_import_walk(tmp_path: Path) 
 
     selection = _change(root, base, "increment/estimation/cuped/prepare.py", "VALUE = 2\n")
 
-    assert selection.test_files == ("tests/test_cuped_covariates.py",)
+    assert selection.test_files == ()
