@@ -1,6 +1,6 @@
 {
-  "base_sha": "caa03926362a47ab53da94a3eaaef57d59931373",
-  "generated_at": "2026-10-26T05:23:25.533022+00:00",
+  "base_sha": "eab31662c426f07d0aee9aabcccebb35e2942281",
+  "generated_at": "2026-10-26T05:46:09.774808+00:00",
   "modules": {
     "increment": [
       "tests/test_analysis_frame_sources.py",
@@ -3425,7 +3425,6 @@
       "tests/test_parity_harness.py",
       "tests/test_readouts_switchback.py",
       "tests/test_switchback_smoke.py",
-      "tests/test_triggered_auxiliary_ingress_contracts.py",
       "tests/test_unit_cycle_numerics.py"
     ],
     "increment._whole_window": [
@@ -3829,6 +3828,7 @@
       "tests/test_source_capabilities.py",
       "tests/test_source_conformance.py",
       "tests/test_switchback_smoke.py",
+      "tests/test_test_slots.py",
       "tests/test_triggered_auxiliary_ingress_contracts.py",
       "tests/test_triggered_sequential.py",
       "tests/test_triggered_sitewide.py",
@@ -5382,8 +5382,7 @@
       "tests/test_readouts_observational.py",
       "tests/test_readouts_plan.py",
       "tests/test_tables.py",
-      "tests/test_unit_day_artifact_facade.py",
-      "tests/test_unit_day_artifact_production.py"
+      "tests/test_unit_day_artifact_facade.py"
     ],
     "increment.estimation._certified": [
       "tests/breakout/test_daily.py",
@@ -5474,7 +5473,8 @@
     ],
     "increment.estimation._rank_bands": [
       "tests/test_consumer_standard.py",
-      "tests/test_docs_refusal_guidance.py"
+      "tests/test_docs_refusal_guidance.py",
+      "tests/test_refusal_uniqueness.py"
     ],
     "increment.estimation._readout_refusals": [
       "tests/estimation/test_abs_scale.py",
@@ -10080,27 +10080,28 @@
       "tests/test_warehouse_cuped_qr_regressions.py"
     ],
     "increment.query.artifact_contract": [
-      "tests/breakout/test_to_frame.py",
-      "tests/estimation/test_mixture_prior.py",
+      "tests/estimation/test_sequential_deployed_validity.py",
+      "tests/property/test_sitewide_combination.py",
       "tests/query/test_artifact_contract.py",
       "tests/query/test_builders.py",
       "tests/query/test_fact_resolution.py",
       "tests/query/test_session.py",
       "tests/test_analysis_asof.py",
-      "tests/test_analysis_cluster.py",
       "tests/test_analysis_facade.py",
       "tests/test_analysis_planning_baseline.py",
       "tests/test_analysis_quantile.py",
       "tests/test_analysis_trigger.py",
       "tests/test_artifact_covariates.py",
+      "tests/test_check_collect_count.py",
       "tests/test_composition_matrix.py",
       "tests/test_cuped_covariate_sources.py",
+      "tests/test_cuped_evidence.py",
+      "tests/test_cuped_warehouse_cells.py",
       "tests/test_dashboard_population.py",
       "tests/test_errors.py",
       "tests/test_evidence_capabilities.py",
       "tests/test_evidence_provider.py",
       "tests/test_experiment_health.py",
-      "tests/test_frame_window_parity.py",
       "tests/test_native_encouragement_declaration.py",
       "tests/test_parity_harness.py",
       "tests/test_provider_forwarding_parity.py",
@@ -10112,7 +10113,6 @@
       "tests/test_readouts_observational.py",
       "tests/test_readouts_switchback.py",
       "tests/test_refusal_uniqueness.py",
-      "tests/test_reporting.py",
       "tests/test_sequential_public_sources.py",
       "tests/test_source_capabilities.py",
       "tests/test_triggered_sequential.py",
@@ -10690,6 +10690,7 @@
       "tests/test_sequential_registration_contract.py",
       "tests/test_source_capabilities.py",
       "tests/test_source_conformance.py",
+      "tests/test_test_slots.py",
       "tests/test_triggered_sequential.py",
       "tests/test_triggered_sitewide.py",
       "tests/test_unit_day_artifact_adoption.py",
@@ -10716,10 +10717,11 @@
       "tests/test_unit_day_artifact_parity.py"
     ],
     "increment.query.session": [
-      "tests/breakout/test_to_frame.py",
       "tests/estimation/test_adjust_cluster.py",
       "tests/estimation/test_encouragement_calibration.py",
       "tests/estimation/test_late_cluster.py",
+      "tests/estimation/test_sequential_deployed_validity.py",
+      "tests/property/test_sitewide_combination.py",
       "tests/query/test_builders.py",
       "tests/query/test_fact_resolution.py",
       "tests/query/test_native_exposure.py",
@@ -10745,6 +10747,7 @@
       "tests/test_analysis_trigger.py",
       "tests/test_artifact_covariates.py",
       "tests/test_assignment_integrity.py",
+      "tests/test_check_collect_count.py",
       "tests/test_composition_matrix.py",
       "tests/test_constructor_refusal_matrix.py",
       "tests/test_cuped_breakout_review.py",
@@ -10752,6 +10755,7 @@
       "tests/test_cuped_cross_route_consistency.py",
       "tests/test_cuped_route_admission.py",
       "tests/test_cuped_route_evidence.py",
+      "tests/test_cuped_warehouse_cells.py",
       "tests/test_daily_regressions.py",
       "tests/test_dashboard.py",
       "tests/test_dashboard_overview.py",
@@ -10763,7 +10767,6 @@
       "tests/test_evidence_provider.py",
       "tests/test_experiment_health.py",
       "tests/test_exploratory_metrics.py",
-      "tests/test_frame_window_parity.py",
       "tests/test_metric_evidence.py",
       "tests/test_native_contracts.py",
       "tests/test_native_core_operations.py",
@@ -10789,6 +10792,7 @@
       "tests/test_sequential_registration_contract.py",
       "tests/test_source_capabilities.py",
       "tests/test_source_conformance.py",
+      "tests/test_test_slots.py",
       "tests/test_triggered_sequential.py",
       "tests/test_triggered_sitewide.py",
       "tests/test_unit_day_artifact_adoption.py",
@@ -11349,7 +11353,6 @@
       "tests/test_triggered_sequential.py",
       "tests/test_triggered_sitewide.py",
       "tests/test_unit_day_artifact_adoption.py",
-      "tests/test_unit_day_artifact_digest_v2.py",
       "tests/test_unit_day_artifact_facade.py",
       "tests/test_unit_day_artifact_production.py",
       "tests/test_warehouse_cuped_export_replay.py",
@@ -13621,11 +13624,13 @@
     ],
     "increment.simulate.__main__": [
       "tests/test_consumer_standard.py",
-      "tests/test_docs_refusal_guidance.py"
+      "tests/test_docs_refusal_guidance.py",
+      "tests/test_refusal_uniqueness.py"
     ],
     "increment.simulate._cluster_reconstruction": [
       "tests/simulate/test_clustered_cate.py",
-      "tests/test_docs_refusal_guidance.py"
+      "tests/test_consumer_standard.py",
+      "tests/test_refusal_uniqueness.py"
     ],
     "increment.simulate.bandit_loggers": [
       "tests/calibration/test_logged_policy_adaptive.py",
