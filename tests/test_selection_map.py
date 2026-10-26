@@ -215,6 +215,59 @@ def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None
     assert json.loads(loaded.stdout) == ["tests/test_first.py", "tests/test_second.py"]
 
 
+def test_class_module_collection_records_only_its_own_new_imports(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (project / "increment").mkdir()
+    (project / "increment/__init__.py").write_text("")
+    (project / "increment/first_only.py").write_text("")
+    (project / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n")
+    (tests / "test_a_first.py").write_text(
+        "import increment.first_only\n\ndef test_first():\n    pass\n"
+    )
+    (tests / "test_b_classes.py").write_text(
+        "class TestOne:\n    def test_one(self):\n        pass\n\n"
+        "class TestTwo:\n    def test_two(self):\n        pass\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    fixtures = project / "fixtures"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("COV_CORE_", "COVERAGE_", "PYTEST_XDIST_"))
+        and key not in {"PYTEST_PLUGINS", "PYTEST_ADDOPTS"}
+    }
+    env["PYTHONPATH"] = str(repo_root)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "no:cacheprovider",
+            "--collect-only",
+            "-q",
+            "--selection-fixtures",
+            str(fixtures),
+            "tests",
+        ],
+        cwd=project,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    recorded = json.loads((fixtures / "fixtures.master.json").read_text())["collected_imports"]
+    assert recorded["tests/test_a_first.py"] == ["increment", "increment.first_only"]
+    assert recorded["tests/test_b_classes.py"] == []
+
+
 def test_nested_test_added_after_map_is_kept(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests/test_base.py").write_text("")

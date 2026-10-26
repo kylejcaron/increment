@@ -44,10 +44,10 @@ def pytest_collectstart(collector: pytest.Collector) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_collectreport(report: pytest.CollectReport) -> None:
-    name = report.nodeid.split("::", 1)[0]
-    if not name.startswith("tests/"):
+    name = report.nodeid
+    if "::" in name or name not in _collection_before:
         return
-    before = _collection_before.pop(name, set())
+    before = _collection_before.pop(name)
     _collection_imports[name] = sorted(
         module
         for module in set(sys.modules) - before
