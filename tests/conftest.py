@@ -1,9 +1,8 @@
 """Shared session-scoped DuckDB fixtures for the test suite."""
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-
-import json
 
 import pytest
 
@@ -51,7 +50,9 @@ def pytest_collectstart(collector: pytest.Collector) -> None:
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
-        if item.path.is_relative_to(Path(item.config.rootpath) / "tests"):
+        if isinstance(item, pytest.Function) and item.path.is_relative_to(
+            Path(item.config.rootpath) / "tests"
+        ):
             _fixture_closures[item.nodeid] = sorted(set(item.fixturenames))
 
 
@@ -63,6 +64,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     for fixture in _fixture_closures.get(item.nodeid, ()):
         _fixture_setup.setdefault(fixture, [item.nodeid])
 
+
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     fixtures_dir = session.config.getoption("--selection-fixtures", default=None)
@@ -71,7 +73,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         output = Path(fixtures_dir) / f"fixtures.{worker}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
-            json.dumps({"closures": _fixture_closures, "setup": _fixture_setup}, sort_keys=True) + "\n",
+            json.dumps({"closures": _fixture_closures, "setup": _fixture_setup}, sort_keys=True)
+            + "\n",
             encoding="utf-8",
         )
     from tach.pytest_plugin import tach_state_key
@@ -113,7 +116,9 @@ def pytest_configure(config: pytest.Config) -> None:
                 parts = parts[:-1]
             changed_modules.add(".".join(parts))
     graph = SelectionGraph.from_tree(
-        root, changed_modules, tier=config.getoption("--affected-tier", default="fast"),
+        root,
+        changed_modules,
+        tier=config.getoption("--affected-tier", default="fast"),
         selection_map=load(root / "tests/selection_map.json"),
     )
     report_option = config.getoption("--affected-report", default=None)

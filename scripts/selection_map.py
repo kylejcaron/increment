@@ -7,7 +7,7 @@ import subprocess
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 
 class SelectionMap(TypedDict):
@@ -17,8 +17,16 @@ class SelectionMap(TypedDict):
     modules: dict[str, list[str]]
 
 
+class SelectionDecision(TypedDict, total=False):
+    kept: bool
+    reasons: list[str]
+    tach_kept: bool
+
+
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, check=True, text=True, capture_output=True).stdout.strip()
+    return subprocess.run(
+        ["git", *args], cwd=root, check=True, text=True, capture_output=True
+    ).stdout.strip()
 
 
 def _module(path: str, root: Path) -> str | None:
@@ -32,7 +40,11 @@ def _module(path: str, root: Path) -> str | None:
     if parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts)
-def build(coverage_path: Path, root: Path, *, tier: str, fixtures: Path | None = None) -> SelectionMap:
+
+
+def build(
+    coverage_path: Path, root: Path, *, tier: str, fixtures: Path | None = None
+) -> SelectionMap:
     from coverage import CoverageData
 
     data = CoverageData(basename=str(coverage_path))
@@ -77,8 +89,15 @@ def build(coverage_path: Path, root: Path, *, tier: str, fixtures: Path | None =
         base_sha = _git(root, "rev-parse", "HEAD")
     except (OSError, subprocess.CalledProcessError):
         base_sha = "unknown"
-    return {"generated_at": datetime.now(UTC).isoformat(), "base_sha": base_sha,
-            "tier": tier, "modules": {name: sorted(files) for name, files in sorted(modules.items())}}
+    selection_map: SelectionMap = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "base_sha": base_sha,
+        "tier": tier,
+        "modules": {name: sorted(files) for name, files in sorted(modules.items())},
+    }
+    return selection_map
+
+
 def write(selection_map: SelectionMap, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(selection_map, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -89,16 +108,31 @@ def load(path: Path) -> SelectionMap | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("modules"), dict):
+    if not isinstance(payload, dict):
         return None
-    if not all(key in payload for key in ("generated_at", "base_sha", "tier")):
+    if not all(isinstance(payload.get(key), str) for key in ("generated_at", "base_sha", "tier")):
         return None
-    return payload
+    raw_modules = payload.get("modules")
+    if not isinstance(raw_modules, dict):
+        return None
+    modules: dict[str, list[str]] = {}
+    for name, files in raw_modules.items():
+        if not isinstance(name, str) or not isinstance(files, list):
+            return None
+        if not all(isinstance(file, str) for file in files):
+            return None
+        modules[name] = files
+    return {
+        "generated_at": payload["generated_at"],
+        "base_sha": payload["base_sha"],
+        "tier": payload["tier"],
+        "modules": modules,
+    }
 
 
-def tests_changed_since(selection_map: dict, root: Path) -> set[str]:
-    base = selection_map.get("base_sha")
-    if not isinstance(base, str) or not base or base == "unknown":
+def tests_changed_since(selection_map: SelectionMap, root: Path) -> set[str]:
+    base = selection_map["base_sha"]
+    if not base or base == "unknown":
         return set()
     try:
         paths = set(_git(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
@@ -110,7 +144,7 @@ def tests_changed_since(selection_map: dict, root: Path) -> set[str]:
     return {path for path in paths if path.startswith("tests/test_") and path.endswith(".py")}
 
 
-def is_stale(selection_map: dict, *, max_age_days: int = 14, root: Path) -> bool:
+def is_stale(selection_map: SelectionMap, *, max_age_days: int = 14, root: Path) -> bool:
     try:
         generated = datetime.fromisoformat(selection_map["generated_at"])
         if generated.tzinfo is None:
@@ -118,7 +152,7 @@ def is_stale(selection_map: dict, *, max_age_days: int = 14, root: Path) -> bool
         if datetime.now(UTC) - generated > timedelta(days=max_age_days):
             return True
         base = selection_map["base_sha"]
-        _git(root, "merge-base", "--is-ancestor", str(base), "HEAD")
+        _git(root, "merge-base", "--is-ancestor", base, "HEAD")
         changed = set(_git(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
         changed.update(_git(root, "diff", "--name-only").splitlines())
         changed.update(_git(root, "diff", "--name-only", "--cached").splitlines())
@@ -135,37 +169,68 @@ def is_stale(selection_map: dict, *, max_age_days: int = 14, root: Path) -> bool
         except (OSError, UnicodeError, SyntaxError):
             continue
         if any(
-            (isinstance(node, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS" for target in node.targets
-            )) or (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "_LAZY_IMPORTS")
+            (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS"
+                    for target in node.targets
+                )
+            )
+            or (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "_LAZY_IMPORTS"
+            )
             for node in tree.body
         ):
             return True
     return False
 
 
+def _load_decisions(path: Path) -> tuple[dict[str, SelectionDecision], bool]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}, False
+    if not isinstance(payload, dict):
+        return {}, False
+    incomplete = payload.get("__incomplete__", False)
+    if not isinstance(incomplete, bool):
+        return {}, False
+    decisions: dict[str, SelectionDecision] = {}
+    for name, raw in payload.items():
+        if name == "__incomplete__":
+            continue
+        if not isinstance(name, str) or not isinstance(raw, dict):
+            return {}, False
+        kept = raw.get("kept")
+        tach_kept = raw.get("tach_kept")
+        reasons = raw.get("reasons")
+        if not isinstance(kept, bool) or not isinstance(tach_kept, bool):
+            return {}, False
+        if not isinstance(reasons, list) or not all(isinstance(reason, str) for reason in reasons):
+            return {}, False
+        decisions[name] = {"kept": kept, "tach_kept": tach_kept, "reasons": reasons}
+    return decisions, not incomplete
+
+
 def misses(
-    selection_map: dict | None, *, base: str, head: str,
-    junit_reports: list[Path], report: Path
+    selection_map: SelectionMap | None,
+    *,
+    base: str,
+    head: str,
+    junit_reports: list[Path],
+    report: Path,
 ) -> list[str]:
     import xml.etree.ElementTree as ET
 
-    skipped: set[str] = set()
-    tach_skips: list[str] = []
-    try:
-        payload = json.loads(report.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            skipped = {
-                name for name, decision in payload.items()
-                if isinstance(decision, dict) and not decision.get("kept", False)
-            }
-            tach_skips = sorted(
-                name for name, decision in payload.items()
-                if isinstance(decision, dict) and decision.get("tach_kept") and not decision.get("kept", False)
-            )
-            report_loaded = not payload.get("__incomplete__", False)
-    except (OSError, ValueError):
-        pass
+    decisions, report_loaded = _load_decisions(report)
+    skipped = {name for name, decision in decisions.items() if not decision["kept"]}
+    tach_skips = sorted(
+        name
+        for name, decision in decisions.items()
+        if decision["tach_kept"] and not decision["kept"]
+    )
     failures: set[str] = set()
     incomplete = not junit_reports or not report_loaded
     for junit in junit_reports:
@@ -188,7 +253,9 @@ def misses(
         result.insert(0, "incomplete evidence")
     report.with_name("selection-misses.txt").write_text(
         f"base: {base}\nhead: {head}\nmap generated_at: {(selection_map or {}).get('generated_at', 'missing')}\n"
-        f"map base_sha: {(selection_map or {}).get('base_sha', 'missing')}\n" + "\n".join(result) + "\n",
+        f"map base_sha: {(selection_map or {}).get('base_sha', 'missing')}\n"
+        + "\n".join(result)
+        + "\n",
         encoding="utf-8",
     )
     return result
@@ -212,7 +279,14 @@ def main() -> int:
         write(build(args.coverage, Path.cwd(), tier=args.tier, fixtures=args.fixtures), args.output)
     else:
         selection_map = load(Path("tests/selection_map.json"))
-        for item in misses(selection_map, base=args.base, head=args.head, junit_reports=args.junit, report=args.report):
+        junit_reports = cast(list[Path], args.junit)
+        for item in misses(
+            selection_map,
+            base=args.base,
+            head=args.head,
+            junit_reports=junit_reports,
+            report=args.report,
+        ):
             print(item)
     return 0
 
