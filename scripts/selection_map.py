@@ -301,6 +301,9 @@ def misses(
         junit_present = (
             raw_metadata.get("junit_present") if isinstance(raw_metadata, dict) else None
         )
+        # The fast tier stops at the first failure (-x), so an unsuccessful
+        # shard leaves tests unexecuted; its observed misses still count.
+        outcome = raw_metadata.get("outcome") if isinstance(raw_metadata, dict) else None
         junit_path = metadata_path.parent / "junit.xml"
         if (
             not isinstance(shard_id, str)
@@ -310,6 +313,8 @@ def misses(
         ):
             incomplete = True
             continue
+        if outcome != "success":
+            incomplete = True
         junit_shards[shard_id] = junit_path
     if set(junit_shards) != expected_shards or {path.resolve() for path in junit_reports} != {
         path.resolve() for path in junit_shards.values()
