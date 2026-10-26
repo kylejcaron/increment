@@ -323,8 +323,8 @@ class AffectedHandler:
         kept, _ = self.decisions[resolved]
         return not kept
 
-    def write_report(self, path: Path) -> None:
-        payload = {
+    def write_report(self, path: Path, *, metadata: dict[str, object] | None = None) -> None:
+        payload: dict[str, object] = {
             str(file.relative_to(self.graph.root)) if file.is_absolute() else file.as_posix(): {
                 "kept": kept,
                 "reasons": list(reasons),
@@ -334,5 +334,7 @@ class AffectedHandler:
                 self.decisions.items(), key=lambda item: str(item[0])
             )
         }
+        if metadata is not None:
+            payload["__metadata__"] = {**metadata, "decision_files": sorted(payload)}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

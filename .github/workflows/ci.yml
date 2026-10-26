@@ -70,6 +70,7 @@ jobs:
         if: always()
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFFECTED_SHARD_ID: ${{ matrix.python-version }}-${{ matrix.group }}
         run: |
           uv run --no-sync python -m pytest -m "not slow and not parameter_recovery and not numerical_certification and not examples and not stress" --co -q --tach-base "$BASE" --affected-tier fast --affected-report affected-report.json --splits ${{ matrix.splits }} --group ${{ matrix.group }} --splitting-algorithm least_duration tests
       - name: Retain selection prediction
@@ -101,12 +102,21 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
+      - name: Record fast JUnit shard metadata
+        if: always()
+        env:
+          SHARD_ID: ${{ matrix.python-version }}-${{ matrix.group }}
+          TEST_OUTCOME: ${{ steps.fast-tests.outcome }}
+        run: |
+          python -c 'import json, os; from pathlib import Path; Path("junit-metadata.json").write_text(json.dumps({"shard_id": os.environ["SHARD_ID"], "junit_present": Path("junit.xml").is_file(), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
       - name: Retain fast JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fast-junit-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}
-          path: junit.xml
+          path: |
+            junit.xml
+            junit-metadata.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -137,26 +147,14 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.sha }}
           EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHARDS: ${{ github.event_name == 'pull_request' && '3.12-1,3.12-2,3.14-1,3.14-2' || '3.12-1,3.12-2,3.13-1,3.13-2,3.14-1,3.14-2' }}
         run: |
-          python - <<'PY'
-          import os
-          import json
-          from pathlib import Path
-          reports = sorted(Path("selection-input/affected").rglob("*.json"))
-          merged = {}
-          for report in reports:
-              try:
-                  merged.update(json.loads(report.read_text()))
-              except (OSError, ValueError):
-                  pass
-          expected = 4 if os.environ["EVENT_NAME"] == "pull_request" else 6
-          if len(reports) != expected:
-              merged["__incomplete__"] = True
-          Path("affected-report.json").write_text(json.dumps(merged) + "\n")
-          PY
           shopt -s globstar nullglob
+          reports=(selection-input/affected/**/*.json)
           junit=(selection-input/junit/**/*.xml)
-          uv run --no-sync python scripts/selection_map.py misses --base "$BASE" --head "$HEAD" --junit "${junit[@]}" --report affected-report.json | tee selection-misses.txt
+          junit_metadata=(selection-input/junit/**/junit-metadata.json)
+          uv run --no-sync python scripts/selection_map.py merge --reports "${reports[@]}" --expected-shards "$EXPECTED_SHARDS" --output affected-report.json
+          uv run --no-sync python scripts/selection_map.py misses --base "$BASE" --head "$HEAD" --junit "${junit[@]}" --junit-metadata "${junit_metadata[@]}" --expected-shards "$EXPECTED_SHARDS" --report affected-report.json | tee selection-misses.txt
           cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Retain selection miss report
         if: always()

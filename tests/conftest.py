@@ -1,6 +1,7 @@
 """Shared session-scoped DuckDB fixtures for the test suite."""
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -104,7 +105,14 @@ class AffectedHandlerWithReport(AffectedHandler):
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
         if self._report_path is not None:
-            self.write_report(self._report_path)
+            self.write_report(
+                self._report_path,
+                metadata={
+                    "shard_id": os.environ.get("AFFECTED_SHARD_ID", ""),
+                    "collection_complete": exitstatus == 0 and session.testscollected > 0,
+                    "collected_tests": session.testscollected,
+                },
+            )
 
 
 @pytest.hookimpl(trylast=True)
