@@ -78,7 +78,9 @@ def pytest_runtest_setup(item: pytest.Item) -> Any:
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_fixture_setup(fixturedef: Any, request: pytest.FixtureRequest) -> Any:
     outcome = yield
-    if outcome.excinfo is not None:
+    # Function-scoped fixtures run again for every consumer, whose own setup
+    # context records them; only cached (wider-scope) setups need propagation.
+    if outcome.excinfo is not None or fixturedef.scope == "function":
         return
     node = getattr(request, "_pyfuncitem", None) or _current_item or request.node
     nodeid = getattr(node, "nodeid", None)
