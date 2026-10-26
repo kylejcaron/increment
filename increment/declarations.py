@@ -34,6 +34,8 @@ from increment.errors import (
     refusals,
 )
 from increment.semantics.models import CupedCovariate, CupedCovariateBinding
+
+
 @dataclass(frozen=True, slots=True)
 class ArmHypothesisKey:
     metric: str
@@ -63,8 +65,6 @@ class ContrastHypothesisKey:
 
 HypothesisKey = ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey
 Population = Literal["assigned", "triggered"]
-
-
 
 
 _CELL_KEY_INVALID_REFUSAL = RefusalSpec(
@@ -297,6 +297,8 @@ def serialize_day_axis(value):
     if isinstance(value, str):
         return {"label": value}
     return value
+
+
 class IntegrityStatus(StrEnum):
     FAILED = "failed"
     NOT_REJECTED = "not_rejected"
@@ -316,12 +318,16 @@ class IntegrityResult(_ReadoutModel):
     randomization_grain: str | None
     code: str | None
     context: Mapping[str, Any]
+
+
 class PopulationRoster(_ReadoutModel):
     analysis_population: Population
     arms: tuple[str, ...]
     source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
     complete: bool
     control_group: str | None = None
+
+
 class Registry[T]:
     """Small registry for orthogonal dispatch axes."""
 

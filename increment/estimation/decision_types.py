@@ -46,6 +46,7 @@ from increment.declarations import (
     SegmentHypothesisKey,
 )
 
+
 def exact_fraction(value: Fraction | float) -> Fraction:
     """Bind a declared alpha/q to the decimal it was typed as.
 
@@ -107,11 +108,6 @@ class ContrastDecisionProcedure(CodedModel, BaseModel):
         return self
 
 
-    @property
-    def segment(self):
-        return ((self.dimension, self.dimension_value),)
-
-
 def sequential_hypothesis_key(cell: SequentialCell) -> ArmHypothesisKey | SegmentHypothesisKey:
     """Construct the decision key for a registered arm or segment cell."""
     from increment.sequential_state import sequential_refuse
@@ -123,7 +119,6 @@ def sequential_hypothesis_key(cell: SequentialCell) -> ArmHypothesisKey | Segmen
             )
         return SegmentHypothesisKey(cell.metric, cell.group_id, cell.estimand, *cell.segment[0])
     return ArmHypothesisKey(cell.metric, cell.group_id, cell.estimand)
-
 
 
 @dataclass(frozen=True, slots=True)

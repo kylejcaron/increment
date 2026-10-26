@@ -35,12 +35,13 @@ def test_method_invalid_variance_reduction_keeps_its_code():
     assert isinstance(caught.value, UnsupportedRequestError)
     assert caught.value.code == "estimation.variance.registry.no_registered_available"
 
+
 @pytest.mark.integration
 def test_method_classifies_builtin_observational_names_before_adjust_import():
     code = (
         "from increment.declarations import Method; "
         "assert Method(name='iptw').is_observational; "
-        "assert not Method(name='cuped').is_observational; "
+        "assert not Method.cuped(covariates=['x']).is_observational; "
         "assert not any(n.startswith('increment.estimation') for n in __import__('sys').modules)"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
@@ -48,28 +49,89 @@ def test_method_classifies_builtin_observational_names_before_adjust_import():
 
 
 def test_cell_key_hypothesis_conversion_for_each_cell_kind():
-    from increment.declarations import CellKey
+    from increment.declarations import (
+        ArmHypothesisKey,
+        CellKey,
+        ContrastHypothesisKey,
+        SegmentHypothesisKey,
+    )
 
-    common = dict(metric="m", method="unadjusted", method_role="decision", estimand="lift", analysis_population="assigned")
-    arm = CellKey(kind="arm", group_id="t", **common)
-    segment = CellKey(kind="segment", group_id="t", dimension="country", dimension_value="ca", **common)
-    contrast = CellKey(kind="contrast", control_group="c", treatment_group="t", aggregation="sum", **common)
-    assert arm.hypothesis().group_id == "t"
-    assert segment.hypothesis().dimension == "country"
-    assert (contrast.hypothesis().control_group, contrast.hypothesis().treatment_group) == ("c", "t")
+    arm = CellKey(
+        kind="arm",
+        metric="m",
+        method="unadjusted",
+        method_role="decision",
+        estimand="lift",
+        analysis_population="assigned",
+        group_id="t",
+    )
+    segment = CellKey(
+        kind="segment",
+        metric="m",
+        method="unadjusted",
+        method_role="decision",
+        estimand="lift",
+        analysis_population="assigned",
+        group_id="t",
+        dimension="country",
+        dimension_value="ca",
+    )
+    contrast = CellKey(
+        kind="contrast",
+        metric="m",
+        method="unadjusted",
+        method_role="decision",
+        estimand="lift",
+        analysis_population="assigned",
+        control_group="c",
+        treatment_group="t",
+        aggregation="sum",
+    )
+    arm_hypothesis = arm.hypothesis()
+    segment_hypothesis = segment.hypothesis()
+    contrast_hypothesis = contrast.hypothesis()
+    assert isinstance(arm_hypothesis, ArmHypothesisKey) and arm_hypothesis.group_id == "t"
+    assert (
+        isinstance(segment_hypothesis, SegmentHypothesisKey)
+        and segment_hypothesis.dimension == "country"
+    )
+    assert isinstance(contrast_hypothesis, ContrastHypothesisKey) and (
+        contrast_hypothesis.control_group,
+        contrast_hypothesis.treatment_group,
+    ) == ("c", "t")
 
 
 def test_cell_key_serialization_roundtrip_and_mapping_immutability():
+    from collections.abc import MutableMapping
+    from typing import cast
+
     from increment.declarations import CellKey, IntegrityResult, IntegrityStatus
 
-    key = CellKey(kind="arm", metric="m", method=None, method_role=None, estimand=None,
-                  analysis_population="assigned", group_id="t")
+    key = CellKey(
+        kind="arm",
+        metric="m",
+        method=None,
+        method_role=None,
+        estimand=None,
+        analysis_population="assigned",
+        group_id="t",
+    )
     assert CellKey.model_validate_json(key.model_dump_json()) == key
-    result = IntegrityResult(status=IntegrityStatus.FAILED, analysis_population="assigned",
-        construction="none", alpha=None, observed={"t": 2}, expected=None,
-        randomization_grain=None, code=None, context={})
+    result = IntegrityResult(
+        status=IntegrityStatus.FAILED,
+        analysis_population="assigned",
+        construction="none",
+        alpha=None,
+        observed={"t": 2},
+        expected=None,
+        randomization_grain=None,
+        code=None,
+        context={},
+    )
+    assert result.observed is not None
+    observed = cast(MutableMapping[str, int], result.observed)
     with pytest.raises(TypeError):
-        result.observed["t"] = 3
+        observed["t"] = 3
 
 
 def test_cell_key_invalid_refusal_is_shared_with_readout_types():
@@ -78,9 +140,17 @@ def test_cell_key_invalid_refusal_is_shared_with_readout_types():
 
     assert _REFUSALS["readout.cell.key_invalid"] is _CELL_KEY_INVALID_REFUSAL
     from increment.declarations import CellKey
+
     with pytest.raises(CodedError) as caught:
-        CellKey(kind="arm", metric="m", method=None, method_role=None, estimand=None,
-                analysis_population="assigned", control_group="c")
+        CellKey(
+            kind="arm",
+            metric="m",
+            method=None,
+            method_role=None,
+            estimand=None,
+            analysis_population="assigned",
+            control_group="c",
+        )
     assert caught.value.code == "readout.cell.key_invalid"
 
 

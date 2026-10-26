@@ -20,20 +20,54 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel as BaseModel,
+)
+from pydantic import (
+    ConfigDict as ConfigDict,
+)
+from pydantic import (
+    Field as Field,
+)
+from pydantic import (
+    field_validator as field_validator,
+)
+from pydantic import (
+    model_validator as model_validator,
+)
 
 from increment._evidence_types import unit_frame_covariate_columns
 from increment._finite_sample_refusals import (
-    refuse_finite_sample_cuped,
+    refuse_finite_sample_cuped as refuse_finite_sample_cuped,
+)
+from increment._finite_sample_refusals import (
     refuse_finite_sample_metric_type,
 )
-from increment._literals import Alternative, ConversionInference, PreferredDirection
+from increment._literals import Alternative, PreferredDirection
+from increment._literals import ConversionInference as ConversionInference
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
+from increment.declarations import (
+    VARIANCE_REDUCTION as VARIANCE_REDUCTION,
+)
+from increment.declarations import (
+    CovariateArg as CovariateArg,
+)
+from increment.declarations import (
+    Method,
+)
+from increment.declarations import (
+    _as_covariate as _as_covariate,
+)
+from increment.declarations import (
+    _normalize_method_covariates as _normalize_method_covariates,
+)
+from increment.declarations import (
+    _normalize_method_covariates_input as _normalize_method_covariates_input,
+)
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
     CodedError,
-    CodedModel,
     IncrementRuntimeWarning,
     IncrementWarning,
     InvalidRequestError,
@@ -44,6 +78,9 @@ from increment.errors import (
     refusals,
     refuse,
     warn,
+)
+from increment.errors import (
+    CodedModel as CodedModel,
 )
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
@@ -111,18 +148,14 @@ from increment.estimation.variance import (
 )
 from increment.estimation.variance import ratio_abs_diff_se as variance_ratio_abs_diff_se
 from increment.semantics.models import (
-    CupedCovariate,
-    CupedCovariateBinding,
+    CupedCovariate as CupedCovariate,
+)
+from increment.semantics.models import (
+    CupedCovariateBinding as CupedCovariateBinding,
+)
+from increment.semantics.models import (
     Metric,
     RetentionMetric,
-)
-from increment.declarations import (
-    CovariateArg,
-    Method,
-    VARIANCE_REDUCTION,
-    _as_covariate,
-    _normalize_method_covariates,
-    _normalize_method_covariates_input,
 )
 from increment.sequential_state import SequentialSnapshot, sequential_refuse
 
@@ -320,7 +353,6 @@ def check_total_clusters(
             floor=_WARN_TOTAL_CLUSTERS,
             skip_file_prefixes=PACKAGE_FRAMES,
         )
-
 
 
 # ---------------------------------------------------------------------------

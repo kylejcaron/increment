@@ -46,8 +46,8 @@ from increment.decision import (
     NoFamily,
     RelativeArmDecisionProcedure,
 )
-from increment.errors import CodedError, CodedModel, WireFormatError
 from increment.declarations import Method
+from increment.errors import CodedError, CodedModel, WireFormatError
 from increment.estimation.inference import Normal
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,

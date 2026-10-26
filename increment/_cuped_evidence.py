@@ -1114,8 +1114,8 @@ def portable_cuped_rows(
 ) -> list[dict[str, object]]:
     """Ordinary outcome rows plus portable scalar, cell and fitted evidence."""
     from increment._source_identity import source_identity
-    from increment.errors import CodedError
     from increment.declarations import Method
+    from increment.errors import CodedError
 
     if identity is None:
         identity = source_identity(source)

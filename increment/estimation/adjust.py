@@ -17,6 +17,7 @@ from increment._evidence_types import MomentsRequest, UnitRowsRequest
 from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
+from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -45,7 +46,6 @@ from increment.estimation.inference import (
     Prior,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,12 +59,9 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
-
-
-
-from increment.estimation._adjust import aipw as _aipw  # noqa: E402,F401
-from increment.estimation._adjust import dml as _dml  # noqa: E402,F401
-from increment.estimation._adjust import iptw as _iptw  # noqa: E402,F401
+from increment.estimation._adjust import aipw as _aipw  # noqa: F401
+from increment.estimation._adjust import dml as _dml  # noqa: F401
+from increment.estimation._adjust import iptw as _iptw  # noqa: F401
 
 _REFUSALS = (
     refusals(
@@ -393,7 +390,8 @@ def _validate_global_prior_method_scales(
                 and metric_type != "quantile"
                 or not _is_unadjusted_method(method)
                 and not (
-                    method.name in OBSERVATIONAL_METHOD_NAMES and metric_type in ("quantile", "ratio")
+                    method.name in OBSERVATIONAL_METHOD_NAMES
+                    and metric_type in ("quantile", "ratio")
                 )
             )
         ]

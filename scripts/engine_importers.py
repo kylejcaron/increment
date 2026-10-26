@@ -14,8 +14,7 @@ def main() -> None:
     for path in sorted((ROOT / "increment").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         if any(
-            isinstance(node, ast.ImportFrom)
-            and node.module == "increment.estimation.engine"
+            isinstance(node, ast.ImportFrom) and node.module == "increment.estimation.engine"
             for node in ast.walk(tree)
         ):
             importers.append(path.relative_to(ROOT).as_posix())

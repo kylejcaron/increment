@@ -13,20 +13,15 @@ import sys
 from typing import Protocol
 
 from increment._moment_plan import X_ROLE_VARIABLES, X_SLOT_ROLES
-from increment.errors import (
-    InvalidRequestError,
-    RefusalSpec,
-    UnsupportedRequestError,
-    raiser,
-    refusals,
-)
+from increment.declarations import VARIANCE_REDUCTION as VARIANCE_REDUCTION
+from increment.declarations import Registry
+from increment.errors import InvalidRequestError, raiser, refusals
 from increment.estimation.armstats import (
     _EPS,
     ArmStats,
     clamp_negative_variance,
     variance_slack,
 )
-from increment.declarations import Registry, VARIANCE_REDUCTION
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -690,7 +685,6 @@ class ClusterVarianceModel(RatioVarianceModel):
     consumes = "moments"
 
 
-
 # Pre-built registries
 
 # Metric-type -> VarianceModel dispatch
@@ -701,4 +695,3 @@ VARIANCE_MODELS.register("retention", MeanVarianceModel())
 VARIANCE_MODELS.register("ratio", RatioVarianceModel())
 # Selected via the declared cluster (never a metric type on the wire).
 VARIANCE_MODELS.register("cluster", ClusterVarianceModel())
-

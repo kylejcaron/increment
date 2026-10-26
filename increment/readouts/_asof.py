@@ -15,12 +15,12 @@ from increment._policy_alpha import resolve_cell_alpha
 from increment._readout_request import ReadoutRequest, validate_request
 from increment._readout_request import _raise as _raise_readout_request
 from increment.breakout.estimates import _asof_monitoring_note
+from increment.declarations import Method
 from increment.estimation.encouragement import (
     ESTIMANDS,
     estimate_compliance,
     estimate_encouragement,
 )
-from increment.declarations import Method
 from increment.estimation.readout_types import serialize_day_axis
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import SEQUENTIAL_POLICIES

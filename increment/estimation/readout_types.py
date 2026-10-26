@@ -9,24 +9,39 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
-from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Literal, NoReturn
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_serializer,
-    field_validator,
-    model_validator,
-)
+from pydantic import Field, field_serializer, field_validator, model_validator
 
 from increment._canonical import _jcs_float, canonical_digest_bytes, canonical_json_bytes
 from increment._immutable import _FrozenMapping
 from increment._multiplicity import MultiplicityFamily
+from increment.declarations import (
+    _CELL_KEY_INVALID_REFUSAL,
+    CellKey,
+    HypothesisKey,
+    IntegrityResult,
+    Population,
+    PopulationRoster,
+    _ReadoutModel,
+    freeze,
+    serialize_day_axis,
+    thaw,
+)
+from increment.declarations import (
+    ArmHypothesisKey as ArmHypothesisKey,
+)
+from increment.declarations import (
+    ContrastHypothesisKey as ContrastHypothesisKey,
+)
+from increment.declarations import (
+    IntegrityStatus as IntegrityStatus,
+)
+from increment.declarations import (
+    SegmentHypothesisKey as SegmentHypothesisKey,
+)
 from increment.errors import (
-    CodedModel,
     InvalidRequestError,
     UnsupportedRequestError,
     WireFormatError,
@@ -44,22 +59,6 @@ from increment.estimation.inference import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.sequential_state import SequentialCheckpoint
-from increment.declarations import (
-    ArmHypothesisKey,
-    CellKey,
-    ContrastHypothesisKey,
-    HypothesisKey,
-    IntegrityResult,
-    IntegrityStatus,
-    Population,
-    PopulationRoster,
-    SegmentHypothesisKey,
-    _CELL_KEY_INVALID_REFUSAL,
-    _ReadoutModel,
-    freeze,
-    serialize_day_axis,
-    thaw,
-)
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -117,8 +116,6 @@ SamplingEvidence = PValueEvidence | EValueEvidence | AsymptoticSequentialEvidenc
 Prior = Normal | StudentTPrior | MixturePrior
 
 
-
-
 class CellFailure(_ReadoutModel):
     hypothesis: HypothesisKey
     code: str
@@ -174,8 +171,6 @@ class PosteriorInference(_ReadoutModel):
     reason_context: Mapping[str, Any] | None = None
 
 
-
-
 class CellRecord(_ReadoutModel):
     cell: CellKey
     source_snapshot_id: str
@@ -199,8 +194,6 @@ class CellRecord(_ReadoutModel):
         )
         object.__setattr__(self, "advisories", ordered)
         return self
-
-
 
 
 class FamilyScope(_ReadoutModel):

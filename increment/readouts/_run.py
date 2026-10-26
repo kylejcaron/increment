@@ -9,8 +9,8 @@ from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
 from increment._source_types import is_custom_source
 from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
-from increment.estimation.adjust import bind_unit_frame_memo, observational_evidence
 from increment.declarations import Method
+from increment.estimation.adjust import bind_unit_frame_memo, observational_evidence
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
