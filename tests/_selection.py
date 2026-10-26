@@ -61,8 +61,30 @@ def _lazy_tables(root: Path) -> dict[str, dict[str, str]]:
     return tables
 
 
+def _top_level_names(path: Path) -> set[str]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeError):
+        return set()
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.Assign):
+            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
 def _imports(
-    path: Path, module: str, known: set[str], tables: dict[str, dict[str, str]]
+    path: Path,
+    module: str,
+    known: set[str],
+    tables: dict[str, dict[str, str]],
+    eager: dict[str, set[str]] | None = None,
 ) -> tuple[set[str], set[str], set[tuple[str, str]]]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -85,7 +107,14 @@ def _imports(
                 if base in tables:
                     target = tables[base].get(alias.name)
                     if target is None:
-                        unresolved.add(alias.name)
+                        # Names bound when the module runs, and its submodules,
+                        # resolve through the import graph, not the lazy table.
+                        if (
+                            alias.name != "*"
+                            and alias.name not in (eager or {}).get(base, set())
+                            and f"{base}.{alias.name}" not in known
+                        ):
+                            unresolved.add(alias.name)
                     else:
                         imports.add(target)
                         supplemental.add((target, f"lazy_export:{alias.name}"))
@@ -241,8 +270,11 @@ class SelectionGraph:
         adjacency: dict[str, set[str]] = {}
         supplemental_edges: dict[str, set[tuple[str, str]]] = {}
         unresolved_by_module: dict[str, set[str]] = {}
+        eager = {
+            module: _top_level_names(all_paths[module]) for module in tables if module in all_paths
+        }
         for module, path in all_paths.items():
-            imports, unresolved, supplemental = _imports(path, module, known, tables)
+            imports, unresolved, supplemental = _imports(path, module, known, tables, eager)
             adjacency[module] = imports
             supplemental_edges[module] = supplemental
             unresolved_by_module[module] = unresolved
