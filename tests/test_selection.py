@@ -606,7 +606,9 @@ def test_real_tach_registration_consumer_is_kept(scratch_worktree: Path) -> None
 
     decision = _real_tach_decision(scratch_worktree, base, "tests/test_refusal_uniqueness.py")
 
-    assert decision["tach_kept"] is True
+    # Estimator modules have their own import-graph boundary, so the package
+    # walker is kept by the always-run floor rather than by tach.
+    assert "required" in cast("list[str]", decision["reasons"])
     assert decision["kept"] is True
 
 
