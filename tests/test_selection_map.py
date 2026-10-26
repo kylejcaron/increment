@@ -268,26 +268,14 @@ def test_class_module_collection_records_only_its_own_new_imports(tmp_path: Path
     assert recorded["tests/test_b_classes.py"] == []
 
 
-def test_function_scoped_fixture_setup_maps_only_to_the_test_that_ran_it(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    tests = project / "tests"
-    tests.mkdir(parents=True)
-    (project / "increment").mkdir()
+def _nested_map_modules(project: Path, files: dict[str, str]) -> dict[str, list[str]]:
+    (project / "increment").mkdir(parents=True)
     (project / "increment/__init__.py").write_text("")
     (project / "increment/special.py").write_text("def touch():\n    return 1\n")
     (project / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n")
-    (tests / "conftest.py").write_text(
-        "import pytest\n"
-        "@pytest.fixture\n"
-        "def common():\n"
-        "    return 0\n"
-        "@pytest.fixture\n"
-        "def special():\n"
-        "    from increment.special import touch\n"
-        "    return touch()\n"
-    )
-    (tests / "test_x.py").write_text("def test_x(common, special):\n    pass\n")
-    (tests / "test_y.py").write_text("def test_y(common):\n    pass\n")
+    for relative, text in files.items():
+        (project / relative).parent.mkdir(parents=True, exist_ok=True)
+        (project / relative).write_text(text)
     repo_root = Path(__file__).resolve().parents[1]
     fixtures = project / "fixtures"
     env = {
@@ -321,9 +309,54 @@ def test_function_scoped_fixture_setup_maps_only_to_the_test_that_ran_it(tmp_pat
         timeout=60,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    return build(project / ".coverage", project, tier="fast", fixtures=fixtures)["modules"]
 
-    modules = build(project / ".coverage", project, tier="fast", fixtures=fixtures)["modules"]
+
+def test_function_scoped_fixture_setup_maps_only_to_the_test_that_ran_it(tmp_path: Path) -> None:
+    modules = _nested_map_modules(
+        tmp_path / "project",
+        {
+            "tests/conftest.py": (
+                "import pytest\n"
+                "@pytest.fixture\n"
+                "def common():\n"
+                "    return 0\n"
+                "@pytest.fixture\n"
+                "def special():\n"
+                "    from increment.special import touch\n"
+                "    return touch()\n"
+            ),
+            "tests/test_x.py": "def test_x(common, special):\n    pass\n",
+            "tests/test_y.py": "def test_y(common):\n    pass\n",
+        },
+    )
+
     assert modules["increment.special"] == ["tests/test_x.py"]
+
+
+def test_indirect_session_parametrized_fixture_maps_to_every_consumer(tmp_path: Path) -> None:
+    consumer = (
+        "import pytest\n"
+        "@pytest.mark.parametrize('shared', [1], indirect=True, scope='session')\n"
+        "def test_it(shared):\n"
+        "    pass\n"
+    )
+    modules = _nested_map_modules(
+        tmp_path / "project",
+        {
+            "tests/conftest.py": (
+                "import pytest\n"
+                "@pytest.fixture\n"
+                "def shared(request):\n"
+                "    from increment.special import touch\n"
+                "    return touch() + request.param\n"
+            ),
+            "tests/test_x.py": consumer,
+            "tests/test_y.py": consumer,
+        },
+    )
+
+    assert modules["increment.special"] == ["tests/test_x.py", "tests/test_y.py"]
 
 
 def test_nested_test_added_after_map_is_kept(tmp_path: Path) -> None:

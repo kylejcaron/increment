@@ -80,7 +80,7 @@ def pytest_fixture_setup(fixturedef: Any, request: pytest.FixtureRequest) -> Any
     outcome = yield
     # Function-scoped fixtures run again for every consumer, whose own setup
     # context records them; only cached (wider-scope) setups need propagation.
-    if outcome.excinfo is not None or fixturedef.scope == "function":
+    if outcome.excinfo is not None or getattr(request, "scope", fixturedef.scope) == "function":
         return
     node = getattr(request, "_pyfuncitem", None) or _current_item or request.node
     nodeid = getattr(node, "nodeid", None)
