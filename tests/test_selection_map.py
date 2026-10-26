@@ -148,8 +148,12 @@ def test_fixture_dependencies_survive_xdist_worker_merge(tmp_path: Path) -> None
         )
     repo_root = Path(__file__).resolve().parents[1]
     fixtures = project / "fixtures"
-    env = dict(os.environ)
-    env.pop("PYTEST_PLUGINS", None)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("COV_CORE_", "COVERAGE_", "PYTEST_XDIST_"))
+        and key not in {"PYTEST_PLUGINS", "PYTEST_ADDOPTS"}
+    }
     env["PYTHONPATH"] = str(repo_root)
     completed = subprocess.run(
         [
