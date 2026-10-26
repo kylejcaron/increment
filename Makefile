@@ -111,7 +111,7 @@ test-changed:
 	$(SLOT) uv run --no-sync --with pytest-testmon==2.2.0 --extra demo --extra tables --extra dashboard python -m scripts.test_changed
 
 selection-map:
-	$(MAKE) test-fast WORKERS=4 PYTEST_ARGS="--cov=increment --cov-context=test --cov-report= --selection-fixtures .selection-fixtures"
+	$(MAKE) test-fast WORKERS=4 PYTEST_ARGS="--cov=increment --cov-context=test --cov-report= --selection-fixtures .selection-fixtures tests"
 	uv run --no-sync python scripts/selection_map.py build --coverage .coverage --fixtures .selection-fixtures --tier fast --output tests/selection_map.json
 
 test-affected:
