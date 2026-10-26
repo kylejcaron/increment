@@ -1,4 +1,4 @@
-# Traced on commit: 7bb0dac98a35f41acfc68ca999a97fd705595292
+# Traced on commit: c2783dc7029f21164804f5884f937ae5a11d417f
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -55,14 +55,11 @@ increment.estimation._adjust.value_scale
 increment.estimation._adjust.weight_diagnostics
 increment.estimation._binomial_support
 increment.estimation._certified
-increment.estimation._deployment
 increment.estimation._readout_refusals
-increment.estimation._score_design
 increment.estimation._sequential_inversion
 increment.estimation._sequential_likelihood
 increment.estimation._student_t
 increment.estimation._tails
-increment.estimation.absorption
 increment.estimation.adjust
 increment.estimation.advisory
 increment.estimation.arm_contract
@@ -71,7 +68,6 @@ increment.estimation.assignment_integrity
 increment.estimation.asymptotic_joint
 increment.estimation.asymptotic_mean
 increment.estimation.binomial_rr
-increment.estimation.cate
 increment.estimation.contrast
 increment.estimation.contrast_results
 increment.estimation.conversion_route
@@ -98,10 +94,8 @@ increment.estimation.priors
 increment.estimation.quantile
 increment.estimation.readout_types
 increment.estimation.results
-increment.estimation.rollout
 increment.estimation.sequential
 increment.estimation.sequential_result
-increment.estimation.targeting
 increment.estimation.variance
 increment.evidence
 increment.frame
