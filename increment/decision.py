@@ -80,6 +80,7 @@ from increment._plan_compatibility import (
 from increment._source_types import _BuiltinMomentSource
 from increment._study import ParallelStudyEnvelope, SwitchbackStudyEnvelope
 from increment.compatibility import _conservative_divide
+from increment.declarations import Method
 from increment.errors import (
     CapabilityError,
     CodedModel,
@@ -107,7 +108,6 @@ from increment.estimation.decision_types import (
     SegmentHypothesisKey,
     TestEvidence,
 )
-from increment.estimation.engine import Method
 from increment.estimation.inference import Prior
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,

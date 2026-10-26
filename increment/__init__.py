@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from increment.breakout.projection import to_frame
     from increment.breakout.rollout import segment_rollout_recommendation
     from increment.cate import estimate_cate, select_targeting_rule, targeting_rule, validate_cate
+    from increment.declarations import Method
     from increment.errors import (
         CapabilityError,
         CodedError,
@@ -33,7 +34,6 @@ if TYPE_CHECKING:
     from increment.estimation.confounding import confounding_sensitivity
     from increment.estimation.decision_types import AsymptoticSequentialEvidence
     from increment.estimation.diagnostics import allocation_posterior_bands, sample_ratio_mismatch
-    from increment.estimation.engine import Method
     from increment.estimation.inference import Normal
     from increment.estimation.sequential import (
         AlwaysValid,

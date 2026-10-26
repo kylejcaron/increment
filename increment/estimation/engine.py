@@ -20,20 +20,54 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel as BaseModel,
+)
+from pydantic import (
+    ConfigDict as ConfigDict,
+)
+from pydantic import (
+    Field as Field,
+)
+from pydantic import (
+    field_validator as field_validator,
+)
+from pydantic import (
+    model_validator as model_validator,
+)
 
 from increment._evidence_types import unit_frame_covariate_columns
 from increment._finite_sample_refusals import (
-    refuse_finite_sample_cuped,
+    refuse_finite_sample_cuped as refuse_finite_sample_cuped,
+)
+from increment._finite_sample_refusals import (
     refuse_finite_sample_metric_type,
 )
-from increment._literals import Alternative, ConversionInference, PreferredDirection
+from increment._literals import Alternative, PreferredDirection
+from increment._literals import ConversionInference as ConversionInference
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
+from increment.declarations import (
+    VARIANCE_REDUCTION as VARIANCE_REDUCTION,
+)
+from increment.declarations import (
+    CovariateArg as CovariateArg,
+)
+from increment.declarations import (
+    Method,
+)
+from increment.declarations import (
+    _as_covariate as _as_covariate,
+)
+from increment.declarations import (
+    _normalize_method_covariates as _normalize_method_covariates,
+)
+from increment.declarations import (
+    _normalize_method_covariates_input as _normalize_method_covariates_input,
+)
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
     CodedError,
-    CodedModel,
     IncrementRuntimeWarning,
     IncrementWarning,
     InvalidRequestError,
@@ -44,6 +78,9 @@ from increment.errors import (
     refusals,
     refuse,
     warn,
+)
+from increment.errors import (
+    CodedModel as CodedModel,
 )
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
@@ -99,7 +136,6 @@ from increment.estimation.variance import (
     RATIO_DENOMINATOR_PRECISION_THRESHOLD,
     RATIO_DENOMINATOR_SKEW_THRESHOLD,
     VARIANCE_MODELS,
-    VARIANCE_REDUCTION,
     MeanVarianceModel,
     check_positive_mean,
     ratio_denominator_mean_skewness,
@@ -112,8 +148,12 @@ from increment.estimation.variance import (
 )
 from increment.estimation.variance import ratio_abs_diff_se as variance_ratio_abs_diff_se
 from increment.semantics.models import (
-    CupedCovariate,
-    CupedCovariateBinding,
+    CupedCovariate as CupedCovariate,
+)
+from increment.semantics.models import (
+    CupedCovariateBinding as CupedCovariateBinding,
+)
+from increment.semantics.models import (
     Metric,
     RetentionMetric,
 )
@@ -146,8 +186,6 @@ _REFUSALS = refusals(
         "estimation.engine.arm.duplicate_rows": "group_summary carries more than one row for (metric, group_id) {keys} -- an unchecked duplicate control row silently overwrites an earlier one in the lookup dict, and an unchecked duplicate treatment row is silently iterated as if it were a second arm, either way returning an arbitrary lift instead of a refusal. Deduplicate group_summary to exactly one row per (metric, group_id) before calling estimate_lift.",
         "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
         "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
-        "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
-        "estimation.engine.method_covariates": "method {method!r} has an invalid CUPED covariate declaration for its variance-reduction procedure",
         "estimation.engine.cuped_linear_unit_evidence": RefusalSpec(
             "estimation.engine.cuped_linear_unit_evidence",
             UnsupportedRequestError,
@@ -184,7 +222,6 @@ _REFUSALS = refusals(
             template="multicovariate CUPED is not available for encouragement design metric {metric!r}; use an encouragement-supported method without CUPED.",
             keys=frozenset({"metric"}),
         ),
-        "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.engine.carries_format_moments": "{what} carries format-1 moments (raw additive sums: 'sum_y2' present, 'cy2' absent). increment consumes CENTERED moments -- ref_y/cy1/cy2 and the c-form families -- because raw second moments lose the variance signal to floating-point cancellation once the mean dwarfs the spread, so they are never reinterpreted here. Two ways in: Analysis.from_moments(...), which adapts stamped or unstamped format-1 rows automatically, or ArmStats.from_raw_sums(...) for hand-built rows.",
         "estimation.engine.carries_unsupported_weighted": "{what} carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
         "estimation.engine.x_role_declared": "x_role must be declared when the x family is present; an explicit null x_role is not a legacy declaration",
@@ -316,173 +353,6 @@ def check_total_clusters(
             floor=_WARN_TOTAL_CLUSTERS,
             skip_file_prefixes=PACKAGE_FRAMES,
         )
-
-
-CovariateArg = str | CupedCovariate | CupedCovariateBinding
-
-
-def _as_covariate(value: CovariateArg) -> CupedCovariate | CupedCovariateBinding:
-    """A bare column name is one numeric covariate; categorical ones are declared explicitly."""
-    if isinstance(value, str):
-        return CupedCovariate(name=value, kind="continuous")
-    return value
-
-
-def _normalize_method_covariates(
-    covariates: CovariateArg | Sequence[CovariateArg] | None,
-) -> tuple[CupedCovariate | CupedCovariateBinding, ...] | None:
-    if covariates is None:
-        return None
-    if isinstance(covariates, (str, CupedCovariate)):
-        return (_as_covariate(covariates),)
-    return tuple(_as_covariate(covariate) for covariate in covariates)
-
-
-def _normalize_method_covariates_input(value: object) -> object:
-    if value is None or isinstance(value, (str, CupedCovariate)):
-        return _normalize_method_covariates(value)
-    if isinstance(value, Sequence) and not isinstance(value, bytes):
-        return tuple(
-            _as_covariate(item) if isinstance(item, str) else item
-            for item in cast(Sequence[object], value)
-        )
-    return value
-
-
-class Method(CodedModel, BaseModel):
-    """An estimation configuration: named method with optional adjustments.
-
-    ``name`` is a free-form label stamped onto every ``LiftEstimate`` this
-    Method produces, except it must not contradict its own configuration:
-    ``name="cuped"`` without ``variance_reduction="cuped"``, or an
-    unregistered ``variance_reduction``, are both refused at construction.
-    The reserved observational names (``"iptw"``/``"dml"``/``"aipw"``) are
-    valid here - ``estimate_ate`` dispatches on them - but refused per-call
-    by ``_validate_methods`` on the randomized path.
-
-    ``conversion_inference`` chooses the sampling route for eligible
-    unadjusted, unit-grain, fixed-horizon conversion or retention contrasts
-    (it has no effect on other contrasts):
-
-    * ``"auto"`` (the default): rows whose four per-arm success and failure
-      counts are all dense for the requested tail take the delta-method
-      route (``reference_kind="t"``, ``scale="log"``); every other row
-      takes the finite-sample route. The prior-free route is selected from
-      counts before any interval is computed, whether or not a prior was
-      declared. A supported posterior is stored separately; a posterior
-      working-likelihood guard does not discard valid exact sampling
-      inference.
-    * ``"finite_sample"``: every row takes the finite-sample independent-
-      binomial route (``reference_kind="binomial"``), valid at any count and
-      validated to ``binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`` units per arm.
-      It is refused with ``variance_reduction="cuped"`` at construction and
-      with an informative prior, clustered units, or sequential inference
-      when the request is made.
-
-    ``propensity_learner``/``outcome_learner``/``folds`` are the
-    pluggable-nuisance seam for ``estimate_ate``'s adjustments (ignored by
-    the randomized ``estimate_lift``):
-
-    * ``"dml"``/``"aipw"``: both factories pass straight through, each
-      cross-fitting a propensity model plus the method's own outcome
-      model(s).
-    * ``"iptw"``: fits one propensity model with no cross-fitting;
-      ``outcome_learner``/``folds`` are refused since IPTW has neither.
-    * ``AdjustmentSet(missing="allow")`` requires explicitly supplied
-      NaN-native learner(s) here, since the package defaults silently
-      emit non-finite predictions under NaN input.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    name: str  # label carried on the LiftEstimate
-    variance_reduction: str = "none"  # "none" | "cuped" | "cuped_multicovariate"
-    conversion_inference: ConversionInference = "auto"
-    covariates: tuple[CupedCovariateBinding | CupedCovariate, ...] | None = None
-    procedure: Literal["unadjusted"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
-    propensity_learner: Callable[[], Any] | None = None
-    outcome_learner: Callable[[], Any] | None = None
-    folds: int | None = None
-
-    @field_validator("covariates", mode="before")
-    @classmethod
-    def _normalize_covariates(cls, value: object) -> object:
-        return _normalize_method_covariates_input(value)
-
-    @model_validator(mode="after")
-    def _check_label_matches_configuration(self) -> Method:
-        VARIANCE_REDUCTION.get(self.variance_reduction)
-        self._validate_method_configuration(self)
-        if self.conversion_inference == "finite_sample" and self.variance_reduction in (
-            "cuped",
-            "cuped_multicovariate",
-        ):
-            refuse_finite_sample_cuped(self.name)
-        if self.name == "cuped" and self.variance_reduction != "cuped":
-            _refuse("estimation.engine.method.name_without_variance", self=self.name)
-        if self.name == "iptw" and (self.outcome_learner is not None or self.folds is not None):
-            _refuse("estimation.engine.method.name_iptw_does")
-        return self
-
-    @property
-    def is_observational(self) -> bool:
-        """Whether the name selects a registered observational adjustment."""
-        from increment.estimation.adjust import ADJUSTMENTS
-
-        return self.name in ADJUSTMENTS
-
-    @classmethod
-    def unadjusted(
-        cls, *, name: str = "naive", conversion_inference: ConversionInference = "auto"
-    ) -> Method:
-        return cls(
-            name=name,
-            variance_reduction="none",
-            conversion_inference=conversion_inference,
-            procedure="unadjusted" if name not in {"naive", "unadjusted"} else None,
-        )
-
-    @classmethod
-    def cuped(
-        cls,
-        *,
-        covariates: CovariateArg | Sequence[CovariateArg] | None = None,
-        name: str = "cuped",
-    ) -> Method:
-        """CUPED with one numeric covariate; a column name such as ``"pre"`` is enough."""
-        values = _normalize_method_covariates(covariates)
-        return cls(name=name, variance_reduction="cuped", covariates=values)
-
-    @classmethod
-    def cuped_multicovariate(
-        cls,
-        *,
-        covariates: CovariateArg | Sequence[CovariateArg],
-        name: str = "cuped_multicovariate",
-    ) -> Method:
-        """CUPED with several covariates; a bare column name is a numeric covariate and a
-        categorical one is declared with ``CupedCovariate(name=..., kind="categorical")``."""
-        values = _normalize_method_covariates(covariates)
-        return cls(name=name, variance_reduction="cuped_multicovariate", covariates=values)
-
-    @classmethod
-    def _validate_method_configuration(cls, method: Method) -> None:
-        values = method.covariates
-        procedure = method.variance_reduction
-        if procedure == "none" and values is not None:
-            _refuse("estimation.engine.method_covariates", method=method.name)
-        if procedure == "cuped" and values is not None:
-            if len(values) != 1 or values[0].kind != "continuous":
-                _refuse("estimation.engine.method_covariates", method=method.name)
-            if values[0].missing not in ("impute", "zero", "refuse"):
-                _refuse("estimation.engine.method_covariates", method=method.name)
-        if procedure == "cuped_multicovariate":
-            if not values or len({item.name for item in values}) != len(values):
-                _refuse("estimation.engine.method_covariates", method=method.name)
-            if any(item.missing not in ("refuse", "impute-indicator") for item in values):
-                _refuse("estimation.engine.method_covariates", method=method.name)
 
 
 # ---------------------------------------------------------------------------

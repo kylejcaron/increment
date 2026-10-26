@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from increment._analysis_config import UNSET, _Unset, overlay_configs, select_metrics
 from increment._literals import Correction, ValueScale
 from increment._readout_request import ReadoutRequest, validate_request
-from increment.estimation.engine import Method
+from increment.declarations import Method
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.semantics.design import Encouragement
 from increment.sources import EvidenceSource

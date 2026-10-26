@@ -9,24 +9,39 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
-from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Literal, NoReturn
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_serializer,
-    field_validator,
-    model_validator,
-)
+from pydantic import Field, field_serializer, field_validator, model_validator
 
 from increment._canonical import _jcs_float, canonical_digest_bytes, canonical_json_bytes
 from increment._immutable import _FrozenMapping
 from increment._multiplicity import MultiplicityFamily
+from increment.declarations import (
+    _CELL_KEY_INVALID_REFUSAL,
+    CellKey,
+    HypothesisKey,
+    IntegrityResult,
+    Population,
+    PopulationRoster,
+    _ReadoutModel,
+    freeze,
+    serialize_day_axis,
+    thaw,
+)
+from increment.declarations import (
+    ArmHypothesisKey as ArmHypothesisKey,
+)
+from increment.declarations import (
+    ContrastHypothesisKey as ContrastHypothesisKey,
+)
+from increment.declarations import (
+    IntegrityStatus as IntegrityStatus,
+)
+from increment.declarations import (
+    SegmentHypothesisKey as SegmentHypothesisKey,
+)
 from increment.errors import (
-    CodedModel,
     InvalidRequestError,
     UnsupportedRequestError,
     WireFormatError,
@@ -36,12 +51,9 @@ from increment.errors import (
 from increment.estimation._sequential_likelihood import LikelihoodCertificate
 from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
-    ArmHypothesisKey,
     AsymptoticSequentialEvidence,
-    ContrastHypothesisKey,
     EValueEvidence,
     PValueEvidence,
-    SegmentHypothesisKey,
 )
 from increment.estimation.inference import Normal
 from increment.estimation.priors import MixturePrior, StudentTPrior
@@ -51,7 +63,7 @@ from increment.sequential_state import SequentialCheckpoint
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "readout.cell.key_invalid": "Invalid {kind} readout cell fields: {fields}",
+        "readout.cell.key_invalid": _CELL_KEY_INVALID_REFUSAL,
         "readout.collection.mutation_unsupported": "Collection mutation {operation} is unsupported for {model}",
         "readout.collection.concat_type_mismatch": "Cannot concatenate {left} and {right}",
         "readout.collection.concat_cell_collision": "Conflicting cell {cell_key} across snapshots {snapshot_ids}",
@@ -100,218 +112,8 @@ _WIRE_REFUSALS = refusals(
     },
 )
 
-Population = Literal["assigned", "triggered"]
-HypothesisKey = ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey
 SamplingEvidence = PValueEvidence | EValueEvidence | AsymptoticSequentialEvidence
 Prior = Normal | StudentTPrior | MixturePrior
-
-
-def freeze(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return _FrozenMapping({key: freeze(item) for key, item in value.items()})
-    if isinstance(value, (tuple, list)):
-        return tuple(freeze(item) for item in value)
-    return value
-
-
-def thaw(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, Mapping):
-        return {key: thaw(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [thaw(item) for item in value]
-    return value
-
-
-class _ReadoutModel(CodedModel, BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
-
-    @model_validator(mode="after")
-    def _freeze_mappings(self):
-        for name in type(self).model_fields:
-            value = getattr(self, name)
-            if isinstance(value, Mapping):
-                canonical_digest_bytes(thaw(value))
-                object.__setattr__(self, name, freeze(value))
-        return self
-
-    @field_serializer("*", when_used="json")
-    def _serialize_values(self, value):
-        return thaw(value)
-
-
-class CellKey(_ReadoutModel):
-    kind: Literal["arm", "segment", "contrast"]
-    metric: str
-    method: str | None
-    method_role: Literal["decision", "sensitivity"] | None
-    estimand: str | None
-    aggregation: Literal["sum", "any"] | None = None
-    analysis_population: Population
-    value_scale: Literal["relative", "absolute"] | None = None
-    inference: Literal["fixed", "always_valid", "asymptotic_mean"] | None = None
-    alternative: Literal["two-sided", "greater", "less"] | None = None
-    group_id: str | None = None
-    control_group: str | None = None
-    treatment_group: str | None = None
-    dimension: str | None = None
-    dimension_value: str | None = None
-    source: str | None = None
-    ds: date | datetime | str | int | float | None = None
-    ds_basis: Literal["calendar", "cohort"] | None = None
-
-    @classmethod
-    def from_row(cls, row):
-        contrast = hasattr(row, "control_group")
-        segment = getattr(row, "dimension", None) is not None
-        values: dict[str, Any] = {name: getattr(row, name, None) for name in cls.model_fields}
-        values.update(
-            kind="contrast" if contrast else "segment" if segment else "arm",
-            analysis_population=getattr(row, "analysis_population", "assigned"),
-        )
-        return cls(**values)
-
-    def __hash__(self):
-        return hash(
-            (
-                self.kind,
-                self.metric,
-                self.method,
-                self.method_role,
-                self.estimand,
-                self.aggregation,
-                self.analysis_population,
-                self.value_scale,
-                self.inference,
-                self.alternative,
-                self.group_id,
-                self.control_group,
-                self.treatment_group,
-                self.dimension,
-                self.dimension_value,
-                self.source,
-                self.ds,
-                self.ds_basis,
-            )
-        )
-
-    @field_validator("ds", mode="before")
-    @classmethod
-    def _deserialize_day_axis(cls, value):
-        if isinstance(value, Mapping) and set(value) == {"label"}:
-            return value["label"]
-        if isinstance(value, Mapping) and set(value) == {"datetime"}:
-            return datetime.fromisoformat(value["datetime"])
-        if isinstance(value, str):
-            try:
-                return date.fromisoformat(value)
-            except ValueError:
-                pass
-        return value
-
-    @model_validator(mode="after")
-    def _identity_axes(self):
-        valid = (
-            self.kind == "arm"
-            and self.group_id is not None
-            and all(
-                value is None
-                for value in (
-                    self.control_group,
-                    self.treatment_group,
-                    self.dimension,
-                    self.dimension_value,
-                    self.aggregation,
-                )
-            )
-            or self.kind == "segment"
-            and self.group_id is not None
-            and self.dimension is not None
-            and self.dimension_value is not None
-            and all(
-                value is None
-                for value in (self.control_group, self.treatment_group, self.aggregation)
-            )
-            or self.kind == "contrast"
-            and self.control_group is not None
-            and self.treatment_group is not None
-            and self.aggregation is not None
-            and all(
-                value is None
-                for value in (
-                    self.group_id,
-                    self.dimension,
-                    self.dimension_value,
-                    self.source,
-                    self.ds,
-                    self.ds_basis,
-                    self.value_scale,
-                )
-            )
-        )
-        if self.ds_basis is not None and self.ds is None:
-            valid = False
-        if self.method is None:
-            valid = valid and self.method_role is None and self.estimand is None
-        else:
-            valid = valid and self.method_role is not None and self.estimand is not None
-        if self.kind == "contrast" and self.analysis_population != "assigned":
-            valid = False
-        if (self.dimension is None) != (self.dimension_value is None):
-            valid = False
-        if not valid:
-            refuse_readout(
-                "readout.cell.key_invalid",
-                kind=self.kind,
-                fields=tuple(
-                    name
-                    for name in (
-                        "group_id",
-                        "control_group",
-                        "treatment_group",
-                        "dimension",
-                        "dimension_value",
-                        "aggregation",
-                        "method",
-                        "method_role",
-                        "estimand",
-                    )
-                    if getattr(self, name) is None
-                ),
-            )
-        return self
-
-    @field_serializer("ds", when_used="json")
-    def _serialize_ds(self, value):
-        return serialize_day_axis(value)
-
-    def hypothesis(self) -> HypothesisKey:
-        if self.kind == "arm":
-            assert self.group_id is not None and self.estimand is not None
-            return ArmHypothesisKey(self.metric, self.group_id, self.estimand)
-        if self.kind == "segment":
-            assert (
-                self.group_id is not None
-                and self.estimand is not None
-                and self.dimension is not None
-                and self.dimension_value is not None
-            )
-            return SegmentHypothesisKey(
-                self.metric, self.group_id, self.estimand, self.dimension, self.dimension_value
-            )
-        assert self.control_group is not None and self.treatment_group is not None
-        return ContrastHypothesisKey(self.metric, self.control_group, self.treatment_group)
-
-
-def serialize_day_axis(value):
-    if isinstance(value, datetime):
-        return {"datetime": value.isoformat()}
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, str):
-        return {"label": value}
-    return value
 
 
 class CellFailure(_ReadoutModel):
@@ -369,27 +171,6 @@ class PosteriorInference(_ReadoutModel):
     reason_context: Mapping[str, Any] | None = None
 
 
-class IntegrityStatus(StrEnum):
-    FAILED = "failed"
-    NOT_REJECTED = "not_rejected"
-    NOT_CHECKED_MISSING_DECLARATION = "not_checked_missing_declaration"
-    NOT_CHECKED_MISSING_COUNTS = "not_checked_missing_counts"
-    UNSUPPORTED_ASSIGNMENT = "unsupported_assignment"
-    NOT_APPLICABLE = "not_applicable"
-
-
-class IntegrityResult(_ReadoutModel):
-    status: IntegrityStatus
-    analysis_population: Population
-    construction: Literal["always_valid", "none"]
-    alpha: float | None
-    observed: Mapping[str, int] | None
-    expected: Mapping[str, float] | None
-    randomization_grain: str | None
-    code: str | None
-    context: Mapping[str, Any]
-
-
 class CellRecord(_ReadoutModel):
     cell: CellKey
     source_snapshot_id: str
@@ -413,14 +194,6 @@ class CellRecord(_ReadoutModel):
         )
         object.__setattr__(self, "advisories", ordered)
         return self
-
-
-class PopulationRoster(_ReadoutModel):
-    analysis_population: Population
-    arms: tuple[str, ...]
-    source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
-    complete: bool
-    control_group: str | None = None
 
 
 class FamilyScope(_ReadoutModel):

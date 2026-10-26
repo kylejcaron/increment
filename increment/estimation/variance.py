@@ -13,13 +13,9 @@ import sys
 from typing import Protocol
 
 from increment._moment_plan import X_ROLE_VARIABLES, X_SLOT_ROLES
-from increment.errors import (
-    InvalidRequestError,
-    RefusalSpec,
-    UnsupportedRequestError,
-    raiser,
-    refusals,
-)
+from increment.declarations import VARIANCE_REDUCTION as VARIANCE_REDUCTION
+from increment.declarations import Registry
+from increment.errors import InvalidRequestError, raiser, refusals
 from increment.estimation.armstats import (
     _EPS,
     ArmStats,
@@ -56,11 +52,6 @@ _REFUSALS = refusals(
         "estimation.variance.ratio_variance.variance_scale_not_representable": "var_log_r for metric={metric!r} group={group_id!r}: log-ratio variance is {value:.6g} of the terms' own scale (log scale {log_scale:.6g}), negative beyond their floating-point rounding (~{variance_slack:.3g}) -- the numerator and denominator moments are inconsistent (mis-aggregated upstream or not produced together), not merely cancelled.",
         "estimation.variance.ratio_variance.true_se_out_of_range": "var_log_r for metric={metric!r} group={group_id!r}: the true standard error is outside the float64 exponent range (log SE = {log_se:.6g}) -- it is not representable at this scale",
         "estimation.variance.ratio_variance.se_not_representable": "var_log_r for metric={metric!r} group={group_id!r} is {se!r} for a positive variance -- the true standard error is not representable in float64",
-        "estimation.variance.registry.no_registered_available": RefusalSpec(
-            "estimation.variance.registry.no_registered_available",
-            UnsupportedRequestError,
-            template="No {registry_name} registered for '{key}'. Available keys: {available}",
-        ),
     },
 )
 _raise = raiser(_REFUSALS)
@@ -694,39 +685,6 @@ class ClusterVarianceModel(RatioVarianceModel):
     consumes = "moments"
 
 
-# Generic registry for orthogonal dispatch axes
-
-
-class Registry[T]:
-    """A small generic registry for orthogonal dispatch axes.
-
-    ``register(key, value)`` — store a value under a string key.
-    ``get(key)`` — retrieve; raises ``NotImplementedError`` naming the
-    missing key and all registered keys (helpful debugging).
-    """
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-        self._entries: dict[str, T] = {}
-
-    def register(self, key: str, value: T) -> None:
-        self._entries[key] = value
-
-    def get(self, key: str) -> T:
-        if key not in self._entries:
-            available = sorted(self._entries)
-            _raise(
-                "estimation.variance.registry.no_registered_available",
-                key=key,
-                registry_name=self._name,
-                available=available,
-            )
-        return self._entries[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self._entries
-
-
 # Pre-built registries
 
 # Metric-type -> VarianceModel dispatch
@@ -737,9 +695,3 @@ VARIANCE_MODELS.register("retention", MeanVarianceModel())
 VARIANCE_MODELS.register("ratio", RatioVarianceModel())
 # Selected via the declared cluster (never a metric type on the wire).
 VARIANCE_MODELS.register("cluster", ClusterVarianceModel())
-
-# Method.variance_reduction dispatch
-VARIANCE_REDUCTION: Registry[str] = Registry("variance reduction")
-VARIANCE_REDUCTION.register("none", "none")
-VARIANCE_REDUCTION.register("cuped", "cuped")
-VARIANCE_REDUCTION.register("cuped_multicovariate", "cuped_multicovariate")

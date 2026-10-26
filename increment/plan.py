@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment._readout_request import ReadoutRequest
     from increment.decision import ArmDecisionProcedure, CompiledDecisionPlan
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
     from increment.estimation.inference import Prior
 
 

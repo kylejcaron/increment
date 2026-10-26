@@ -139,7 +139,7 @@ def _scalar_method_rows(src, metric, methods, decision, *, by, population):
             )
         )
     else:
-        from increment.estimation.engine import Method
+        from increment.declarations import Method
 
         assert any(name == decision.name for name, _spec, _context in refusals)
         rows = list(
@@ -724,7 +724,7 @@ def _load_breakout_metric_rows(
             representation="implicit",
             design=src.context.design,
         )
-    from increment.estimation.engine import Method
+    from increment.declarations import Method
 
     base = (
         load_breakout_method_moments(

@@ -7,6 +7,7 @@ from increment._analysis_config import effective_methods
 from increment._readout_request import _raise as _raise_readout_request
 from increment._window import resolve_window_days
 from increment.compatibility import Unsupported, refuse_unsupported
+from increment.declarations import Method
 from increment.errors import (
     IncrementWarning,
     InvalidRequestError,
@@ -26,7 +27,6 @@ from increment.estimation.encouragement import (
     ESTIMATION_ENCOURAGEMENT_UNKNOWN_ESTIMAND_SUPPORTED,
     READOUT_ENCOURAGEMENT_VALUE_SCALE,
 )
-from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,

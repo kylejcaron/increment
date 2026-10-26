@@ -427,3 +427,26 @@ def test_every_estimation_export_resolves_to_its_recorded_binding():
     from increment.estimation import binomial_rr
 
     assert binomial_rr.__name__ == "increment.estimation.binomial_rr"
+
+
+def test_declarations_import_is_light():
+    code = (
+        "import sys\n"
+        "import increment.declarations\n"
+        "loaded = {name for name in sys.modules if name.startswith('increment.')}\n"
+        "assert len(loaded) <= 16, len(loaded)\n"
+        "assert not any(name.startswith('increment.estimation') for name in loaded), loaded\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_method_construction_leaves_estimation_unloaded():
+    code = (
+        "import sys\n"
+        "from increment.declarations import Method\n"
+        "Method(name='cuped', variance_reduction='cuped', covariates=['x'])\n"
+        "assert not any(name.startswith('increment.estimation') for name in sys.modules)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

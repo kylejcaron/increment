@@ -21,10 +21,10 @@ from increment.query._cuped_cells import (
 )
 
 if TYPE_CHECKING:
+    from increment.declarations import Method
     from increment.estimation.cuped.types import (
         CategoricalCells,
     )
-    from increment.estimation.engine import Method
 
 
 @dataclass(frozen=True, slots=True)

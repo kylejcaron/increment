@@ -1,4 +1,4 @@
-# Traced on commit: c2783dc7029f21164804f5884f937ae5a11d417f
+# Traced on commit: 01842d263637f455a627076677189918a3b511b9
 increment
 increment._analysis_config
 increment._artifact_identity
@@ -40,6 +40,7 @@ increment.breakout
 increment.breakout.estimates
 increment.compatibility
 increment.decision
+increment.declarations
 increment.errors
 increment.estimation
 increment.estimation._adjust
