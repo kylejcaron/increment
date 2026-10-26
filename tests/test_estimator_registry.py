@@ -4,15 +4,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-from increment._evidence_types import (
+from increment import (
+    AdjustmentSet,
+    Analysis,
     CountsRequest,
+    EvidenceCapabilities,
+    IdentificationGate,
     MethodFitRequest,
+    MetricSpec,
     MomentsRequest,
+    Observational,
     UnitRowsRequest,
+    require_evidence,
 )
-from increment._metric_specs import MetricSpec
 from increment.declarations import ADJUSTMENTS, EstimatorRef, Method, MomentsSpec, UnitRowsSpec
 from increment.errors import CodedError
 from increment.estimators.registry import (
@@ -221,8 +228,6 @@ def test_each_observational_route_requires_total_moments_and_design_rows():
 
 
 def test_observational_routes_require_total_moments_and_unit_rows_for_acquisition():
-    from increment._evidence_refusals import require_evidence
-    from increment._source_types import EvidenceCapabilities
     from increment.errors import CapabilityError
 
     route = routes(ESTIMATORS["observational.iptw"], _context())[0]
@@ -260,8 +265,6 @@ def test_observational_routes_require_total_moments_and_unit_rows_for_acquisitio
 
 
 def test_scalar_cuped_route_is_supported_by_moments_only_evidence():
-    from increment._evidence_refusals import require_evidence
-    from increment._source_types import EvidenceCapabilities
 
     request = routes(ESTIMATORS["randomized.cuped"], _context())[0][0]
     source = type(
@@ -292,8 +295,6 @@ def test_scalar_cuped_route_is_supported_by_moments_only_evidence():
 def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
     from dataclasses import replace
 
-    from increment._evidence_refusals import require_evidence
-    from increment._source_types import EvidenceCapabilities
     from increment.errors import CapabilityError
 
     all_requests = routes(ESTIMATORS["randomized.cuped_multicovariate"], _context())
@@ -366,8 +367,6 @@ def test_cuped_alternative_routes_match_provider_fit_and_local_capabilities():
 
 
 def test_routes_preserve_triggered_population_as_an_acquisition_requirement():
-    from increment._evidence_refusals import require_evidence
-    from increment._source_types import EvidenceCapabilities
     from increment.errors import CapabilityError
 
     request = routes(ESTIMATORS["randomized.cuped"], {**_context(), "population": "triggered"})[0][
@@ -453,21 +452,20 @@ def test_cuped_declares_fit_or_local_routes_and_scalar_cuped_moments_only():
 
 
 def test_multicovariate_load_resolves_to_its_fit_callable():
-    from increment.estimation.cuped.multicovariate import fit_cuped_multicovariate
+    from increment.estimation.cuped import fit_cuped_multicovariate
 
     assert load("randomized.cuped_multicovariate") is fit_cuped_multicovariate
 
 
 def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import():
     from increment.declarations import MomentsSpec, UnitRowsSpec, unregister_estimator
-    from increment.estimation.adjust import _validate_adjustment_methods
 
     estimator_id = "observational.lazy_validation_probe"
     selector = "lazy_validation_probe"
     register(
         EstimatorRef(
             estimator_id=estimator_id,
-            module="increment._missing_lazy_validation_plugin",
+            module="missing_lazy_validation_plugin",
             attribute="estimate",
             contract="panel",
             estimand="ate",
@@ -476,8 +474,27 @@ def test_lazy_plugin_with_unsupported_variance_reduction_refuses_before_import()
         )
     )
     try:
+        frame = pd.DataFrame(
+            {
+                "unit": range(8),
+                "arm": ["control"] * 4 + ["treatment"] * 4,
+                "outcome": [1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0],
+                "x": [0, 1, 0, 1, 0, 1, 0, 1],
+            }
+        )
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            metrics={"outcome": "mean"},
+            design=Observational(
+                control_group="control",
+                adjustment=AdjustmentSet(covariates=("x",)),
+                gate=IdentificationGate(overlap="trim"),
+            ),
+        )
         with pytest.raises(CodedError) as exc:
-            _validate_adjustment_methods([Method(name=selector, variance_reduction="cuped")])
+            analysis.run(decision_method=Method(name=selector, variance_reduction="cuped"))
         assert exc.value.code == "adjust.variance_reduction.unsupported"
     finally:
         unregister_estimator(estimator_id)
