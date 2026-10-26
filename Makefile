@@ -1,6 +1,14 @@
 .DEFAULT_GOAL := install
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate selection-map
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-unit test-integration-fast test-tier test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-changed test-affected check-items mutate selection-map benchmark
 
+BENCHMARK_BASELINE ?=
+benchmark:
+	uv run python -m scripts.check_benchmark_names tests/fixtures/benchmarks/step4-pre-kernel.json
+ifeq ($(strip $(BENCHMARK_BASELINE)),)
+	uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-save=local-baseline
+else
+	uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-compare="$(BENCHMARK_BASELINE)" --benchmark-compare-fail=mean:25%
+endif
 
 CHECK_ITEMS_TESTS ?= tests
 CHECK_ITEMS_REPO ?= .
@@ -61,7 +69,7 @@ test-integration-fast:
 	$(MAKE) test-tier TIER=integration-fast
 # Fast tiers stop at the first failure; long tiers report every failure.
 test-tier:
-	$(SLOT) $(PYTEST) -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(UNIT_CPU_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
+	$(SLOT) $(PYTEST) --benchmark-skip -m '$(TIER_MARKER)' $(if $(filter unit fast integration-fast,$(TIER)),-x) -q $(PYTEST_XDIST_ARGS) $(UNIT_CPU_ARGS) $(PYTEST_ARGS) $(SHARD_ARGS)
 # Functional tests exclude Monte-Carlo calibration and notebook subprocesses.
 test-slow:
 	$(MAKE) test-tier TIER=slow
@@ -98,9 +106,9 @@ prek:
 test:
 ifneq ($(strip $(TESTS)),)
 ifeq ($(words $(TESTS))$(findstring ::,$(TESTS)),1::)
-	$(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_ARGS)
+	$(PYTEST) --benchmark-skip $(TESTS) -x -q -m "" $(PYTEST_ARGS)
 else
-	$(SLOT) $(PYTEST) $(TESTS) -x -q -m "" $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(SLOT) $(PYTEST) --benchmark-skip $(TESTS) -x -q -m "" $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
 endif
 else
 	$(MAKE) test-unit
@@ -116,7 +124,7 @@ selection-map:
 
 test-affected:
 	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow]' >&2; exit 2; }
-	$(SLOT) uv run --extra demo --extra tables --extra dashboard python -m scripts.affected --base $(BASE) --tier $(or $(TIER),fast) -- $(PYTEST_XDIST_ARGS) $(PYTEST_ARGS)
+	$(SLOT) uv run --extra demo --extra tables --extra dashboard python -m scripts.affected --base $(BASE) --tier $(or $(TIER),fast) -- $(PYTEST_XDIST_ARGS) --benchmark-skip $(PYTEST_ARGS)
 sim:
 	uv run --extra demo python -m increment.simulate --replications 200
 demo:

@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "0 6 * * *" # Daily, 06:00 UTC
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -13,7 +15,44 @@ env:
   INCREMENT_PARITY_MATRIX: full
 
 jobs:
+  benchmark:
+    name: representative analysis benchmarks
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - name: Check for CI benchmark baseline
+        id: baseline
+        run: |
+          if test -f tests/fixtures/benchmarks/ci-baseline.json; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "no CI baseline" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Run benchmark suite
+        run: |
+          if [ "${{ steps.baseline.outputs.present }}" = true ]; then
+            uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-compare=tests/fixtures/benchmarks/ci-baseline.json --benchmark-compare-fail=mean:25% --benchmark-save=nightly
+          else
+            uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-save=nightly
+          fi
+      - name: Retain nightly benchmark data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .benchmarks/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
   test-all:
+    if: github.event_name != 'pull_request'
     name: full suite (locked dependencies, slow + examples, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -57,8 +96,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
   refresh-selection-map:
+    if: ${{ github.event_name != 'pull_request' && needs.test-all.result == 'success' }}
     name: refresh fast selection map
-    if: ${{ needs.test-all.result == 'success' }}
     needs: test-all
     runs-on: ubuntu-latest
     permissions:
@@ -100,6 +139,7 @@ jobs:
           fi
 
   test-scientific:
+    if: github.event_name != 'pull_request'
     name: scientific tiers, shard ${{ matrix.group }}/4
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -123,6 +163,7 @@ jobs:
           retention-days: 30
 
   randomized-fast:
+    if: github.event_name != 'pull_request'
     name: randomized-order fast tier
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -145,6 +186,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
   warehouse-postgres:
+    if: github.event_name != 'pull_request'
     name: warehouse PostgreSQL suite
     permissions:
       contents: read
@@ -154,6 +196,7 @@ jobs:
       postgres_shards: 1
 
   mutation-evidence:
+    if: github.event_name != 'pull_request'
     name: mutation evidence (${{ matrix.campaign }})
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -184,8 +227,8 @@ jobs:
   report-failure:
     name: report a failed nightly gate
     runs-on: ubuntu-latest
-    needs: [test-all, test-scientific, randomized-fast, mutation-evidence, warehouse-postgres]
-    if: failure()
+    needs: [test-all, test-scientific, randomized-fast, mutation-evidence, warehouse-postgres, benchmark]
+    if: github.event_name != 'pull_request' && failure()
     timeout-minutes: 10
     permissions:
       issues: write

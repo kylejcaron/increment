@@ -522,10 +522,10 @@ def _replay_metrics(cell: Cell) -> Any:
 
 
 def switchback_frame() -> pd.DataFrame:
-    """A complete switchback schedule: eight units, two cycles, two periods, a washout
-    step then one observed step, carrying every column the cell's metric may read."""
+    """A complete switchback schedule at the selected matrix scale, with two cycles and a
+    washout step then one observed step, carrying every column the cell's metric may read."""
     rows: list[dict[str, Any]] = []
-    for u in range(8):
+    for u in range(md.scaled_units_per_arm(base=8)):
         for cycle in range(2):
             order = ("control", "treatment") if (u + cycle) % 2 == 0 else ("treatment", "control")
             for period, arm in enumerate(order):

@@ -69,7 +69,7 @@ def test_unit_marker_filter_rejects_integration_item() -> None:
 
     assert _marker_expression("unit") == (
         "not slow and not integration and not parameter_recovery and "
-        "not numerical_certification and not examples and not stress"
+        "not numerical_certification and not examples and not stress and not benchmark"
     )
 
 

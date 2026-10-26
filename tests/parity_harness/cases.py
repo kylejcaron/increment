@@ -9611,7 +9611,104 @@ def _cuped_covariate_name_frame_case() -> ParityCase:
     )
 
 
+def _edge_unit_summary_case(
+    *, id: str, rows: list[dict[str, Any]], metric: MetricSpec, refusal_only: bool = True
+) -> ParityCase:
+    def build() -> Analysis:
+        import pyarrow as pa
+
+        return Analysis.from_unit_summary(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[metric],
+        )
+
+    return ParityCase(
+        id=id,
+        build={"from_unit_summary": build},
+        refusal_only=refusal_only,
+        waive=dict.fromkeys(
+            (
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_unit_panel",
+                "from_switchback_panel",
+                "from_moments",
+            ),
+            "SOURCE: this edge scenario is exercised through the unit-summary public constructor.",
+        ),
+    )
+
+
+def _edge_cases() -> tuple[ParityCase, ...]:
+    empty_arm = [
+        {"unit": f"c{i}", "arm": "control", "revenue": float(i), "sessions": 1.0} for i in range(4)
+    ]
+    zero_variance = [
+        {"unit": f"{arm}{i}", "arm": arm, "revenue": 1.0, "sessions": 1.0}
+        for arm in ("control", "treatment")
+        for i in range(4)
+    ]
+    ratio_rows = [
+        {
+            "unit": f"{arm}{i}",
+            "arm": arm,
+            "revenue": float(i + 1),
+            "sessions": 0.0 if arm == "control" else 1.0,
+        }
+        for arm in ("control", "treatment")
+        for i in range(4)
+    ]
+    near_zero_positive_ratio_rows = [
+        {
+            "unit": f"{arm}{i}",
+            "arm": arm,
+            "sessions": 1e-12 if arm == "control" else 1.0,
+            "revenue": (1e-12 if arm == "control" else 1.0) * float(i + 1),
+        }
+        for arm in ("control", "treatment")
+        for i in range(4)
+    ]
+    nonfinite_ratio_rows = [
+        {
+            "unit": f"{arm}{i}",
+            "arm": arm,
+            "revenue": float(i + 1),
+            "sessions": float("inf") if arm == "control" else 1.0,
+        }
+        for arm in ("control", "treatment")
+        for i in range(4)
+    ]
+    return (
+        _edge_unit_summary_case(
+            id="edge-empty-arm", rows=empty_arm, metric=MetricSpec(name="revenue")
+        ),
+        _edge_unit_summary_case(
+            id="edge-zero-variance-arm", rows=zero_variance, metric=MetricSpec(name="revenue")
+        ),
+        _edge_unit_summary_case(
+            id="edge-near-zero-ratio-denominator",
+            rows=ratio_rows,
+            metric=MetricSpec(name="r", type="ratio", numerator="revenue", denominator="sessions"),
+        ),
+        _edge_unit_summary_case(
+            id="edge-near-zero-positive-ratio-denominator",
+            rows=near_zero_positive_ratio_rows,
+            metric=MetricSpec(name="r", type="ratio", numerator="revenue", denominator="sessions"),
+            refusal_only=False,
+        ),
+        _edge_unit_summary_case(
+            id="edge-nonfinite-ratio-denominator",
+            rows=nonfinite_ratio_rows,
+            metric=MetricSpec(name="r", type="ratio", numerator="revenue", denominator="sessions"),
+        ),
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
+    *_edge_cases(),
     _arm_facts_parity_case(),
     _categorical_cuped_moments_case(),
     _bare_metric_name_frame_case(),

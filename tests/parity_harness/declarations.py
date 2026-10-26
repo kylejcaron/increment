@@ -1988,6 +1988,52 @@ _merged_declarations.update(
         ),
     }
 )
+_EDGE_NON_TARGET_WAIVERS = (
+    *(
+        (ingress, "SOURCE: fixed unit-summary edge fixture; this ingress is not under test.")
+        for ingress in (
+            "from_definitions",
+            "from_unit_day_artifact",
+            "from_unit_panel",
+            "from_switchback_panel",
+            "from_moments",
+        )
+    ),
+)
+_EDGE_SOURCE_WAIVERS = (
+    ("from_unit_summary", "SCENARIO: this public unit-summary constructor exercises the edge."),
+    *_EDGE_NON_TARGET_WAIVERS,
+)
+_merged_declarations.update(
+    {
+        "edge-empty-arm": ParityDeclaration(
+            attempted=("from_unit_summary",),
+            waive=_EDGE_SOURCE_WAIVERS,
+            refusals=(("from_unit_summary", "readout.arms.no_treatment"),),
+        ),
+        "edge-zero-variance-arm": ParityDeclaration(
+            attempted=("from_unit_summary",),
+            waive=_EDGE_SOURCE_WAIVERS,
+            refusals=(("from_unit_summary", "readout.estimate_lift_every"),),
+            warnings=(("from_unit_summary", ("readouts.run.cell_refused",)),),
+        ),
+        "edge-near-zero-ratio-denominator": ParityDeclaration(
+            attempted=("from_unit_summary",),
+            waive=_EDGE_SOURCE_WAIVERS,
+            refusals=(("from_unit_summary", "readout.estimate_lift_every"),),
+            warnings=(("from_unit_summary", ("readouts.run.cell_refused",)),),
+        ),
+        "edge-near-zero-positive-ratio-denominator": ParityDeclaration(
+            attempted=("from_unit_summary",),
+            waive=_EDGE_NON_TARGET_WAIVERS,
+        ),
+        "edge-nonfinite-ratio-denominator": ParityDeclaration(
+            attempted=("from_unit_summary",),
+            waive=_EDGE_SOURCE_WAIVERS,
+            refusals=(("from_unit_summary", "source.frame.non_finite"),),
+        ),
+    }
+)
 for _consumer_declarations in (_SCALAR_DECLARATIONS, _AUXILIARY_DECLARATIONS):
     _duplicate_ids = _merged_declarations.keys() & _consumer_declarations.keys()
     if _duplicate_ids:

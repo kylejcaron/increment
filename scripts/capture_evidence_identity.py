@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import gzip
+import hashlib
 import json
 import tempfile
 import warnings
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from io import BytesIO
+from itertools import count
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from unittest.mock import patch
+from uuid import UUID
 
 import ibis
 import pandas as pd
@@ -40,10 +49,175 @@ def _connect_single_thread(**kwargs):
     return _DUCKDB_CONNECT(**kwargs)
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return dict(value)
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if isoformat is not None else str(value)
+
+
 def _json_bytes(value: Any) -> bytes:
     return (
-        json.dumps(value, indent=2, sort_keys=True, allow_nan=False, default=str) + "\n"
+        json.dumps(value, indent=2, sort_keys=True, allow_nan=False, default=_json_default) + "\n"
     ).encode()
+
+
+def _stable_capture_value(value: Any) -> Any:
+    """Normalize floating-point noise to precision within the oracle tolerance."""
+    if isinstance(value, float):
+        return value if value == 0.0 else float(format(value, ".10g"))
+    if isinstance(value, Mapping):
+        return {key: _stable_capture_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_stable_capture_value(item) for item in value]
+    return value
+
+
+def _canonical_json_bytes(value: Any, *, normalize: bool = True) -> bytes:
+    canonical = _stable_capture_value(value) if normalize else value
+    return json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+        default=_json_default,
+    ).encode("utf-8")
+
+
+def _payload_reference(
+    payloads: dict[str, Any],
+    value: Any,
+    *,
+    exact: bool = False,
+    exact_payload_hashes: set[str] | None = None,
+) -> dict[str, Any]:
+    payload = value
+    reference: dict[str, Any] = {}
+    if isinstance(value, dict) and "provenance" in value and "identity" in value:
+        payload = {key: item for key, item in value.items() if key != "provenance"}
+        reference["provenance"] = value["provenance"]
+    digest = hashlib.sha256(_canonical_json_bytes(payload, normalize=not exact)).hexdigest()
+    payloads.setdefault(digest, payload)
+    if exact and exact_payload_hashes is not None:
+        exact_payload_hashes.add(digest)
+    return {"payload_hash": digest, **reference}
+
+
+def load_operations_capture(path: Path) -> dict[str, Any]:
+    raw = path.read_bytes()
+    data = json.loads(gzip.decompress(raw) if path.suffix == ".gz" else raw)
+    payloads = data.pop("payloads")
+    for digest, payload in payloads.items():
+        stable_digest = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+        exact_digest = hashlib.sha256(_canonical_json_bytes(payload, normalize=False)).hexdigest()
+        if digest not in {stable_digest, exact_digest}:
+            raise ValueError(f"content-addressed payload hash mismatch: {digest}")
+
+    def expand(value: Any) -> Any:
+        if isinstance(value, dict):
+            if "payload_hash" in value:
+                raw_payload = payloads[value["payload_hash"]]
+                payload = dict(raw_payload) if isinstance(raw_payload, dict) else raw_payload
+                if "provenance" in value:
+                    assert isinstance(payload, dict)
+                    payload["provenance"] = value["provenance"]
+                extras = {
+                    key: expand(item)
+                    for key, item in value.items()
+                    if key not in {"payload_hash", "provenance"}
+                }
+                if "operations" in extras:
+                    return {"result_cell": payload, **extras}
+                if "status" in extras:
+                    return {"status": extras["status"], "result_cell": payload}
+                return payload
+            return {key: expand(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        return value
+
+    data["scenarios"] = expand(data["scenarios"])
+    return data
+
+
+def _population_identity(analysis: Analysis, case: Any, cells: Sequence[Any]) -> dict[str, Any]:
+    import narwhals as nw
+
+    from increment.errors import CodedError, InvalidRequestError
+
+    populations = {cell.identity.key.analysis_population for cell in cells} or {case.population}
+    by_population: dict[str, dict[str, set[str]]] = {}
+    for population in sorted(populations):
+        try:
+            source = analysis._readout_source(population=population)
+            if population == "triggered":
+                source = analysis._cate_source("capture population identity")
+        except (CodedError, InvalidRequestError):
+            continue
+        if not hasattr(source, "unit_frame"):
+            continue
+        cell_metrics = {cell.identity.key.metric for cell in cells}
+        if not cell_metrics:
+            cell_metrics = {config.metric.name for config in source.context.configs}
+        by_arm: dict[str, set[str]] = {}
+        for config in source.context.configs:
+            metric = config.metric
+            if metric.name not in cell_metrics:
+                continue
+            try:
+                frame = nw.from_native(source.unit_frame(metric), eager_only=True)
+                for row in frame.select("unit_id", "group_id").iter_rows(named=True):
+                    by_arm.setdefault(str(row["group_id"]), set()).add(str(row["unit_id"]))
+            except (CodedError, InvalidRequestError, KeyError, ValueError, TypeError):
+                continue
+        if by_arm:
+            by_population[population] = by_arm
+    if not by_population:
+        return {"status": "unavailable", "reason": "source retains aggregate moments only"}
+    return population_identity_from_ids(
+        {
+            population: {arm: tuple(unit_ids) for arm, unit_ids in by_arm.items()}
+            for population, by_arm in by_population.items()
+        }
+    )
+
+
+def population_digest(unit_ids: Iterable[object], *, population: str, arm: str) -> tuple[str, int]:
+    """Hash canonical sorted identity ids without delimiter ambiguity."""
+    del population, arm
+    normalized = sorted(str(unit_id) for unit_id in unit_ids)
+    payload = json.dumps(
+        normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest(), len(normalized)
+
+
+def population_identity_from_ids(
+    units: Mapping[str, Mapping[str, Sequence[str]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    return {
+        population: {
+            arm: {
+                "digest": population_digest(ids, population=population, arm=arm)[0],
+                "unit_count": len(ids),
+            }
+            for arm, ids in sorted(arms.items())
+        }
+        for population, arms in sorted(units.items())
+    }
+
+
+def iter_capture_keys() -> tuple[tuple[str, str], ...]:
+    """Enumerate parity cases and refusal owners at their declared ingresses."""
+    from tests.capability_contracts import CONSTRUCTORS
+    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.refusal_cases import REFUSAL_SCENARIOS
+
+    return (
+        *((case.id, ingress) for case in PARITY_CASES for ingress in CONSTRUCTORS),
+        *((code, "refusal") for code in REFUSAL_SCENARIOS),
+    )
 
 
 def _identity(results, row) -> dict[str, Any]:
@@ -244,7 +418,269 @@ def build_analyses() -> dict[str, Analysis]:
         }
 
 
-def capture(out: Path) -> None:
+def _aggregate_evidence(
+    payloads: dict[str, Any],
+    rows: Sequence[Mapping[str, object]],
+    *,
+    exact_payload_hashes: set[str] | None = None,
+) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    versions = {row.get("moments_format") for row in rows}
+    if len(versions) != 1:
+        raise ValueError(f"aggregate moments have inconsistent format versions: {versions}")
+    from increment.sources import source_sha256
+
+    for row in rows:
+        evidence = row.get("cuped_evidence")
+        if isinstance(evidence, str):
+            evidence = json.loads(evidence)
+        supplied_digest = evidence.get("source_sha256") if isinstance(evidence, Mapping) else None
+        if supplied_digest is None:
+            continue
+        source_identity = row.get("source_identity")
+        identity = (
+            json.loads(source_identity) if isinstance(source_identity, str) else source_identity
+        )
+        if (
+            not isinstance(identity, Mapping)
+            or source_sha256(cast(Mapping[str, object], identity)) != supplied_digest
+        ):
+            raise ValueError("aggregate evidence source digest mismatch")
+    return {
+        "status": "available",
+        "moments_format": next(iter(versions)),
+        "moments": _payload_reference(
+            payloads,
+            [dict(row) for row in rows],
+            exact=True,
+            exact_payload_hashes=exact_payload_hashes,
+        ),
+    }
+
+
+def _capture_operations(cutover: str) -> dict[str, Any]:  # noqa: PLR0915
+    from increment.errors import CodedError, InvalidRequestError
+    from increment.result_envelope import AnalysisEnvelope, relevel
+    from tests.parity_harness.cases import PARITY_CASES
+    from tests.parity_harness.refusal_cases import REFUSAL_SCENARIOS, Unreachable
+    from tests.parity_harness.runner import _read
+
+    cases = {case.id: case for case in PARITY_CASES}
+    scenarios: dict[str, Any] = {}
+    payloads: dict[str, Any] = {}
+    exact_payload_hashes: set[str] = set()
+    for scenario_id, ingress in iter_capture_keys():
+        record = scenarios.setdefault(scenario_id, {})
+        if ingress == "refusal":
+            scenario = REFUSAL_SCENARIOS[scenario_id]
+            if isinstance(scenario, Unreachable):
+                record[ingress] = {"kind": "absent", "reason": scenario.reason}
+                continue
+            try:
+                scenario()
+            except CodedError as error:
+                record[ingress] = {
+                    "kind": "refusal",
+                    "code": error.code,
+                    "stage": "run",
+                    "context": dict(error.context),
+                }
+            else:
+                raise AssertionError(f"refusal scenario did not refuse: {scenario_id}")
+            continue
+        case = cases[scenario_id]
+        if ingress not in case.build:
+            record[ingress] = {
+                "kind": "absent",
+                "reason": case.waive.get(ingress, "constructor ingress is not declared"),
+            }
+            continue
+        aggregate_rows: list[dict[str, object]] = []
+        try:
+            if ingress == "from_moments":
+                original_from_moments = Analysis.from_moments
+
+                def capture_moments(
+                    cls,
+                    rows: Sequence[Mapping[str, object]],
+                    _aggregate_rows=aggregate_rows,
+                    _original=original_from_moments,
+                    **kwargs,
+                ) -> Analysis:
+                    _aggregate_rows.extend(copy.deepcopy(dict(row)) for row in rows)
+                    return _original(rows, **kwargs)
+
+                with patch.object(Analysis, "from_moments", classmethod(capture_moments)):
+                    analysis = case.build[ingress]()
+            else:
+                analysis = case.build[ingress]()
+        except CodedError as error:
+            record[ingress] = {
+                "kind": "refusal",
+                "code": error.code,
+                "stage": "construct",
+                "context": dict(error.context),
+            }
+            if aggregate := _aggregate_evidence(
+                payloads, aggregate_rows, exact_payload_hashes=exact_payload_hashes
+            ):
+                record[ingress]["aggregate_evidence"] = aggregate
+            continue
+        try:
+            if case.sequential:
+                as_of = getattr(analysis, "_sequential_as_of", None)
+                snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
+                analysis.capture_sequential(finalized=True, **snapshot_kwargs)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                results = _read(analysis, case)
+            metadata_value = getattr(results, "metadata", None)
+            daily_values = []
+            cells = []
+            for row in results:
+                if hasattr(row, "as_cells"):
+                    # A fixed stamp keeps the capture byte-stable; provenance is
+                    # recorded, never compared.
+                    cells.extend(
+                        row.as_cells(
+                            metadata_value,
+                            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                        )
+                    )
+                else:
+                    daily_values.append(row.model_dump(mode="json"))
+            population_identity = _population_identity(analysis, case, cells)
+        except CodedError as error:
+            record[ingress] = {
+                "kind": "refusal",
+                "code": error.code,
+                "stage": "run",
+                "context": dict(error.context),
+            }
+            if aggregate := _aggregate_evidence(
+                payloads, aggregate_rows, exact_payload_hashes=exact_payload_hashes
+            ):
+                record[ingress]["aggregate_evidence"] = aggregate
+            continue
+        finally:
+            close = getattr(analysis, "close", None)
+            if close is not None:
+                close()
+        by_hash: dict[str, Any] = {}
+        for cell in cells:
+            key = cell.identity.hash()
+            if key in by_hash:
+                raise ValueError(f"duplicate cell identity hash {key} for {scenario_id}/{ingress}")
+            by_hash[key] = _payload_reference(
+                payloads,
+                cell.to_payload(),
+                exact=True,
+                exact_payload_hashes=exact_payload_hashes,
+            )
+            by_hash[key] = {
+                **by_hash[key],
+                "operations": {
+                    "relevel": {
+                        str(alpha): _operation_result(
+                            payloads,
+                            lambda cell=cell, alpha=alpha: relevel(cell, alpha=alpha),
+                            exact_payload_hashes,
+                        )
+                        for alpha in (0.01, 0.05)
+                    },
+                },
+            }
+        family_selection = {"status": "unavailable"}
+        if cells:
+            try:
+                from increment.estimation.family import select_exploratory_family
+
+                selected = select_exploratory_family(list(results), q=0.05)
+                family_selection = {
+                    "status": "available",
+                    "q": 0.05,
+                    "results": [row.model_dump(mode="json") for row in selected],
+                }
+            except (CodedError, InvalidRequestError) as error:
+                family_selection = {
+                    "status": "refusal",
+                    "code": error.code,
+                    "context": dict(error.context),
+                }
+        record[ingress] = {
+            "kind": "cells",
+            "status": "captured",
+            "cells": by_hash,
+            "daily_values": _payload_reference(payloads, daily_values) if daily_values else [],
+            "family_selection": _payload_reference(payloads, family_selection),
+            "metadata": _payload_reference(
+                payloads,
+                AnalysisEnvelope(tuple(cells), getattr(results, "metadata", None)).to_payload()[
+                    "metadata"
+                ],
+            ),
+            "population_identity": population_identity,
+        }
+        if aggregate := _aggregate_evidence(
+            payloads, aggregate_rows, exact_payload_hashes=exact_payload_hashes
+        ):
+            record[ingress]["aggregate_evidence"] = aggregate
+    return {
+        "schema_version": 1,
+        "cutover": cutover,
+        "scenarios": scenarios,
+        "payloads": payloads,
+        "_exact_payload_hashes": sorted(exact_payload_hashes),
+    }
+
+
+def _operation_result(
+    payloads: dict[str, Any], operation, exact_payload_hashes: set[str]
+) -> dict[str, Any]:
+    from increment.errors import CodedError
+
+    try:
+        cell = operation()
+    except CodedError as error:
+        return {"status": "refusal", "code": error.code, "context": dict(error.context)}
+    return {
+        "status": "available",
+        **_payload_reference(
+            payloads,
+            cell.to_payload(),
+            exact=True,
+            exact_payload_hashes=exact_payload_hashes,
+        ),
+    }
+
+
+@contextmanager
+def _deterministic_capture_runtime() -> Iterator[None]:
+    counter = count(1)
+    fixed_stamp = datetime(2026, 1, 1, tzinfo=UTC)
+    with (
+        patch("uuid.uuid4", side_effect=lambda: UUID(int=next(counter), version=4)),
+        patch("increment.query.artifact_publish._utc_now", return_value=fixed_stamp),
+    ):
+        yield
+
+
+def capture(out: Path, *, cutover: str | None = None) -> None:
+    if cutover is not None:
+        target = out / cutover / "operations.json.gz"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with _single_thread_duckdb(), _deterministic_capture_runtime():
+            operations = _capture_operations(cutover)
+        compressed = BytesIO()
+        exact_hashes = operations.pop("_exact_payload_hashes", ())
+        normalized = _stable_capture_value(operations)
+        for digest in exact_hashes:
+            normalized["payloads"][digest] = operations["payloads"][digest]
+        with gzip.GzipFile(filename="", mode="wb", fileobj=compressed, mtime=0) as stream:
+            stream.write(_json_bytes(normalized))
+        target.write_bytes(compressed.getvalue())
+        return
     out.mkdir(parents=True, exist_ok=True)
     exports = out / "exports"
     exports.mkdir(exist_ok=True)
@@ -391,8 +827,9 @@ def _write_checkpoint(path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--cutover")
     args = parser.parse_args()
-    capture(args.out)
+    capture(args.out, cutover=args.cutover)
 
 
 if __name__ == "__main__":

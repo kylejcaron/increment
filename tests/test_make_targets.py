@@ -59,4 +59,4 @@ def test_test_affected_forwards_user_pytest_args() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "-- -n " in result.stdout
-    assert "--dist loadgroup -k selected" in result.stdout
+    assert "--dist loadgroup --benchmark-skip -k selected" in result.stdout

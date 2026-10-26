@@ -15,6 +15,7 @@ boundary, and a route that buckets in UTC instead fails on exactly them.
 from __future__ import annotations
 
 import datetime as dt
+import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -24,9 +25,22 @@ import pyarrow as pa
 from . import dataset as ds
 
 DayBoundary = Literal["utc", "fixed_offset"]
-Missing = Literal["error", "zero", "drop", "impute"]
-
 N_PER_ARM = 60
+
+
+def scaled_units_per_arm(*, scale: int | None = None, base: int = N_PER_ARM) -> int:
+    """Return matrix units per arm, honoring the explicit weekly scale switch."""
+    if scale is None:
+        raw_scale = os.environ.get("INCREMENT_PARITY_DATA_SCALE", "1")
+        try:
+            scale = int(raw_scale)
+        except ValueError as exc:
+            raise ValueError("INCREMENT_PARITY_DATA_SCALE must be 1 or 10") from exc
+    if scale not in (1, 10):
+        raise ValueError("INCREMENT_PARITY_DATA_SCALE must be 1 or 10")
+    return base * scale
+
+
 OFFSETS: dict[str, dt.timedelta] = {"utc": dt.timedelta(0), "fixed_offset": dt.timedelta(hours=-5)}
 BOUNDARY_SPELLING = {"utc": "UTC", "fixed_offset": "UTC-05:00"}
 WINDOW_START = "2025-01-10T00:00:00Z"
@@ -89,7 +103,7 @@ def units(*, positive: bool = False) -> list[Unit]:
     out: list[Unit] = []
     for arm, prefix in _ARMS:
         treated = arm == "treatment"
-        for i in range(N_PER_ARM):
+        for i in range(scaled_units_per_arm()):
             exposed = _EDGE_EXPOSED_AT if is_edge(i) else _EXPOSED_AT
             pre = 2.0 + (i % 5) if i % 5 != 0 else 0.0
             purchases: list[tuple[dt.datetime, float]] = []

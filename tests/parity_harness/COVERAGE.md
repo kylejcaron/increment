@@ -4,35 +4,21 @@ Counts and trackers only. Every per-ingress outcome, reason and authority lives 
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs
 the PR covering scope by default and all cells when `INCREMENT_PARITY_MATRIX=full`.
 
-Every count below describes the full grid, computed from `matrix.classify` over
-`matrix.iter_cells()`; no test enforces the aggregate numbers. Tests enforce each
-selected cell's disposition and that the PR scope preserves every full-grid disposition.
+Every count below is generated from `matrix.iter_cells()` and `matrix.classify()`.
 
 ## Axes
 
 | Axis | Values |
 |---|---|
-| metric | 14: mean, conversion, ratio, retention, quantile, total, active and `windowed_<base>` for each |
-| view | run, breakout, daily, asof (`daily` = `run_daily` + `run_daily_lift`; `asof` = `run_asof` + `run_asof_lift`) |
+| metric | 14: mean, conversion, ratio, retention, quantile, total, active, windowed_mean, windowed_conversion, windowed_ratio, windowed_retention, windowed_quantile, windowed_total, windowed_active |
+| view | run, breakout, daily, asof |
 | option | none, cuped, winsor_fixed, winsor_percentile, cluster, sequential, observational, ni_margin |
-| day_boundary | utc, fixed_offset (`UTC-05:00`) |
+| day_boundary | utc, fixed_offset |
 | missing | error, zero, drop, impute |
 
-Cells: 3,584. Ingress-cells (six constructors each): 21,504. Full scope executes every cell; none is collapsed.
-
-## PR and nightly scopes
-
-PRs run a deterministic strength-3 covering array plus one sentinel for each distinct
-disposition (verdict statuses, refusal codes, and waived-ingress set). The current PR
-scope is 584 cells: 448 covering cells plus 136 additional sentinels, covering all
-145 dispositions. Only combinations present in the full grid are required for
-three-way coverage. Set `INCREMENT_PARITY_MATRIX=full` for the exhaustive 3,584-cell
-grid used by the nightly gate. The 64 asymptotic-retention variants and the 11
-non-parametrized tests always run in either scope.
+Cells: 3,584. Ingress-cells (6 constructors each): 21,504.
 
 ## Cells per disposition
-
-A cell's status is its most significant per-ingress verdict (`Disposition.status`).
 
 | Status | Cells |
 |---|---|
@@ -46,7 +32,7 @@ A cell's status is its most significant per-ingress verdict (`Disposition.status
 
 ## Ingress verdicts per status
 
-Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse independently, so 5,376 legs carry 32,256 verdicts.
+Verdicts are per leg: 5,376 legs carry 32,256 ingress verdicts.
 
 | Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
 |---|---|---|---|---|---|---|
@@ -57,7 +43,9 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 | from_switchback_panel | 4 | 1,736 | 1,428 | 1,920 | 288 | 0 |
 | from_moments | 144 | 1,582 | 1,628 | 1,728 | 294 | 0 |
 
-Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 522.
+## Cells where one ingress runs and another does not
+
+Cells with a mixed run/refusal verdict across ingresses: 522.
 
 ## Unfinished cells and trackers
 
