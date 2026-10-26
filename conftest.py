@@ -5,7 +5,6 @@ directory. Sybil items are grouped by markdown file so xdist executes their
 blocks in order on one worker.
 """
 
-import atexit
 import contextlib
 import difflib
 import doctest
@@ -13,11 +12,12 @@ import io
 import json
 import os
 import re
-import shutil
 import tempfile
 import time as _time
 from functools import cache
 from pathlib import Path
+
+from tests._duckdb_resources import bound_duckdb_resources as _bound_duckdb_resources
 
 for _thread_limit in (
     "OPENBLAS_NUM_THREADS",
@@ -33,39 +33,6 @@ from hypothesis import HealthCheck, settings  # noqa: E402
 settings.register_profile("dev", deadline=None, suppress_health_check=[HealthCheck.too_slow])
 settings.register_profile("ci", deadline=200, suppress_health_check=[])
 settings.load_profile("ci" if "CI" in os.environ else "dev")
-
-_DUCKDB_SPILL_ROOT: str | None = None
-
-
-def _bound_duckdb_resources() -> None:
-    """Bound test DuckDB connections and give each one an isolated spill path."""
-
-    from ibis.backends.duckdb import Backend
-
-    original_connect = Backend.do_connect
-
-    def bounded_connect(self, *args, **kwargs):
-        global _DUCKDB_SPILL_ROOT
-        if kwargs.setdefault("threads", 1) is None:
-            del kwargs["threads"]
-        if "memory_limit" in kwargs:
-            if kwargs["memory_limit"] is None:
-                del kwargs["memory_limit"]
-        else:
-            kwargs["memory_limit"] = os.environ.get("INCREMENT_TEST_DUCKDB_MEMORY", "1GB")
-        if "temp_directory" in kwargs:
-            if kwargs["temp_directory"] is None:
-                del kwargs["temp_directory"]
-        else:
-            if _DUCKDB_SPILL_ROOT is None:
-                _DUCKDB_SPILL_ROOT = tempfile.mkdtemp(prefix="increment-duckdb-spill-")
-                atexit.register(shutil.rmtree, _DUCKDB_SPILL_ROOT, ignore_errors=True)
-            kwargs["temp_directory"] = tempfile.mkdtemp(
-                prefix="connection-", dir=_DUCKDB_SPILL_ROOT
-            )
-        return original_connect(self, *args, **kwargs)
-
-    Backend.do_connect = bounded_connect
 
 
 _bound_duckdb_resources()

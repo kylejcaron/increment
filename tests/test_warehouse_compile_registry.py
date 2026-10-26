@@ -388,3 +388,111 @@ def test_recorded_compile_dependencies_are_current():
     from scripts.trace_compile_dependencies import check
 
     assert check(Path(__file__).resolve().parents[1]) == []
+
+
+def test_cached_compile_dependency_record_reports_missing_and_stale_modules(tmp_path, monkeypatch):
+    import json
+
+    from scripts import trace_compile_dependencies as dependency_trace
+
+    monkeypatch.setattr(
+        "integration.warehouse_execution._compile._captured_compile_cache_key",
+        lambda dialect, root=None: "current-key",
+    )
+    dependency_file = tmp_path / dependency_trace.DEPENDENCIES_PATH
+    dependency_file.parent.mkdir(parents=True)
+    dependency_file.write_text("increment.recorded\nincrement.stale\n")
+    record = dependency_trace._dependency_record_path(tmp_path, "current-key")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(["increment.recorded", "increment.imported"]))
+    monkeypatch.setattr(
+        dependency_trace,
+        "trace",
+        lambda root, dialect: pytest.fail("cached dependency recording should be reused"),
+    )
+
+    assert dependency_trace.check(tmp_path) == [
+        "missing: increment.imported",
+        "stale: increment.stale",
+    ]
+
+
+def test_compile_dependency_record_from_another_cache_key_is_ignored(tmp_path, monkeypatch):
+    import json
+
+    from scripts import trace_compile_dependencies as dependency_trace
+
+    monkeypatch.setattr(
+        "integration.warehouse_execution._compile._captured_compile_cache_key",
+        lambda dialect, root=None: "current-key",
+    )
+    dependency_file = tmp_path / dependency_trace.DEPENDENCIES_PATH
+    dependency_file.parent.mkdir(parents=True)
+    dependency_file.write_text("increment.current\n")
+    other_record = dependency_trace._dependency_record_path(tmp_path, "other-key")
+    other_record.parent.mkdir(parents=True, exist_ok=True)
+    other_record.write_text(json.dumps(["increment.current", "increment.stale"]))
+    traces = []
+
+    def trace(root, dialect):
+        traces.append((root, dialect))
+        return ["increment.current"]
+
+    monkeypatch.setattr(dependency_trace, "trace", trace)
+
+    assert dependency_trace.check(tmp_path) == []
+    assert traces == [(tmp_path, "snowflake")]
+
+
+def test_compile_dependency_check_uses_the_requested_root_cache_key(tmp_path, monkeypatch):
+    import json
+
+    from integration.warehouse_execution import _compile
+    from scripts import trace_compile_dependencies as dependency_trace
+
+    dependency_file = tmp_path / dependency_trace.DEPENDENCIES_PATH
+    dependency_file.parent.mkdir(parents=True)
+    dependency_file.write_text("increment.current\n")
+    record = dependency_trace._dependency_record_path(tmp_path, "requested-root-key")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(["increment.current"]))
+    keys = []
+
+    def cache_key(dialect, root=None):
+        keys.append((dialect, root))
+        return "requested-root-key" if root == tmp_path else "importing-root-key"
+
+    monkeypatch.setattr(_compile, "_captured_compile_cache_key", cache_key)
+    monkeypatch.setattr(
+        dependency_trace,
+        "trace",
+        lambda root, dialect: pytest.fail("the requested-root record should be reused"),
+    )
+
+    assert dependency_trace.check(tmp_path) == []
+    assert keys == [("snowflake", tmp_path)]
+
+
+def test_invalid_compile_dependency_record_falls_back_to_trace(tmp_path, monkeypatch):
+    from integration.warehouse_execution import _compile
+    from scripts import trace_compile_dependencies as dependency_trace
+
+    monkeypatch.setattr(
+        _compile, "_captured_compile_cache_key", lambda dialect, root=None: "current-key"
+    )
+    dependency_file = tmp_path / dependency_trace.DEPENDENCIES_PATH
+    dependency_file.parent.mkdir(parents=True)
+    dependency_file.write_text("increment.current\n")
+    record = dependency_trace._dependency_record_path(tmp_path, "current-key")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{invalid json")
+    traces = []
+
+    def trace(root, dialect):
+        traces.append((root, dialect))
+        return ["increment.current"]
+
+    monkeypatch.setattr(dependency_trace, "trace", trace)
+
+    assert dependency_trace.check(tmp_path) == []
+    assert traces == [(tmp_path, "snowflake")]
