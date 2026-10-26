@@ -283,6 +283,14 @@ Tier intent:
 - `numerical_certification` runs on PRs only when certified modules change;
   `parameter_recovery` is nightly. Neither moves into `fast` or `slow` to
   see it on a PR.
+
+To inspect the fast-tier test items selected by representative one-file changes,
+run `uv run --no-sync python scripts/selection_probe.py`. The probe reports the
+selected items, fast-tier total, direct-file and Tach components, and end-to-end
+`make test-affected` time for each module. Use `--json PATH` to save the rows,
+`--summary` to append the table to a GitHub Actions step summary, or
+`--no-timing` to collect selection counts without running the affected tier.
+
 - `integration/warehouse_execution/` is weekly or on touch and never
   collected from `testpaths`.
 
