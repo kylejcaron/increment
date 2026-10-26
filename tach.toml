@@ -304,6 +304,7 @@ depends_on = [
   "increment._evidence_refusals",
   "increment._evidence_loaders",
   "increment.errors", "increment.estimation._certified", "increment.estimation.advisory", "increment.estimation.decision_types",
+  "increment.estimators.registry",
   "increment._evidence_types",
   "increment.declarations",
   "increment.estimation._sequential_likelihood",
@@ -799,3 +800,11 @@ depends_on = [
   "increment._canonical",
   "increment._immutable",
 ]
+
+[[modules]]
+path = "increment.estimators"
+depends_on = ["increment.estimators.registry"]
+
+[[modules]]
+path = "increment.estimators.registry"
+depends_on = ["increment.declarations", "increment._evidence_types", "increment.errors"]

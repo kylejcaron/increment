@@ -33,7 +33,7 @@ from increment.estimation._adjust.common import (
 )
 from increment.estimation._adjust.learners import Learner, LogisticPropensity, RidgeOutcome
 from increment.estimation._adjust.value_scale import resolve_value_scale
-from increment.estimation.adjust import ADJUSTMENTS
+from increment.declarations import ADJUSTMENTS
 from increment.estimation.armstats import ScoreStats
 from increment.estimation.inference import Prior
 
@@ -340,4 +340,7 @@ def dml_estimate(  # noqa: PLR0913
     return _dml_cohort(AdjustmentCohort(tuple(requests)), spec, folds)
 
 
+ESTIMATOR_ID = "observational.dml"
+CONTRACT = "panel"
+ESTIMAND = "plr_slope"
 ADJUSTMENTS.register("dml", dml_estimate)

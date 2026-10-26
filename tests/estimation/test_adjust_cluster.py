@@ -629,7 +629,6 @@ def test_integer_cluster_weights_keep_fractional_concentration_summary():
 
 
 def test_registered_adjustment_preserves_producer_weight_diagnostics():
-    from increment.estimation.adjust import ADJUSTMENTS
 
     method_name = "test_weight_diagnostics_passthrough"
 
@@ -642,9 +641,9 @@ def test_registered_adjustment_preserves_producer_weight_diagnostics():
         rows = _iptw_kernel(inputs, metric, design, learner=ConstantPropensity, **kwargs)
         return [row.model_copy(update={"method": method_name}) for row in rows]
 
-    original_entries = dict(ADJUSTMENTS._entries)
-    try:
-        ADJUSTMENTS.register(method_name, plugin)
+    from tests.estimation.registry_helpers import registered_adjustment
+
+    with registered_adjustment(method_name, plugin):
         source = _source(_table(k_per_arm=20, m=2, seed=19), cluster=None)
         computation = estimate_ate(source, DESIGN, methods=[Method(name=method_name)])
         assert computation.results
@@ -654,9 +653,6 @@ def test_registered_adjustment_preserves_producer_weight_diagnostics():
         assert all(
             row.control_weight_n == row.treatment_weight_n == 40 for row in computation.results
         )
-    finally:
-        ADJUSTMENTS._entries.clear()
-        ADJUSTMENTS._entries.update(original_entries)
 
 
 def test_overlap_trim_recounts_clusters():

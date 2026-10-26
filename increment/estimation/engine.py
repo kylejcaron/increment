@@ -716,7 +716,7 @@ def _validate_methods(methods: Sequence[Method]) -> None:
     whose ``estimands=("late",)`` calls never reach ``estimate_lift``.
     """
     _validate_unique_method_names(methods, caller="estimate_lift")
-    from increment.estimation.adjust import ADJUSTMENTS
+    from increment.declarations import ADJUSTMENTS
 
     for m in methods:
         if m.name in ADJUSTMENTS:

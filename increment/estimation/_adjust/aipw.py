@@ -32,7 +32,7 @@ from increment.estimation._adjust.common import (
 from increment.estimation._adjust.learners import Learner, LogisticPropensity, RidgeOutcome
 from increment.estimation._adjust.value_scale import resolve_value_scale
 from increment.estimation._adjust.weight_diagnostics import _weight_summary
-from increment.estimation.adjust import ADJUSTMENTS
+from increment.declarations import ADJUSTMENTS
 from increment.estimation.inference import Prior
 
 if TYPE_CHECKING:
@@ -270,4 +270,7 @@ def aipw_estimate(  # noqa: PLR0913
     return _aipw_cohort(AdjustmentCohort(tuple(requests)), spec, folds)
 
 
+ESTIMATOR_ID = "observational.aipw"
+CONTRACT = "panel"
+ESTIMAND = "ate"
 ADJUSTMENTS.register("aipw", aipw_estimate)

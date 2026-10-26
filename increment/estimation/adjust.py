@@ -17,7 +17,8 @@ from increment._evidence_types import MomentsRequest, UnitRowsRequest
 from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
-from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
+from increment.declarations import ADJUSTMENTS, is_observational_name
+from increment.estimators.registry import uses_builtin_adjustment_preflight
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -59,9 +60,7 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
-from increment.estimation._adjust import aipw as _aipw  # noqa: F401
-from increment.estimation._adjust import dml as _dml  # noqa: F401
-from increment.estimation._adjust import iptw as _iptw  # noqa: F401
+from increment.estimators.registry import load, observational_estimator_id
 
 _REFUSALS = (
     refusals(
@@ -390,7 +389,7 @@ def _validate_global_prior_method_scales(
                 and metric_type != "quantile"
                 or not _is_unadjusted_method(method)
                 and not (
-                    method.name in OBSERVATIONAL_METHOD_NAMES
+                    is_observational_name(method.name)
                     and metric_type in ("quantile", "ratio")
                 )
             )
@@ -1029,13 +1028,13 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     for r in unadj
                 )
         else:
-            adjust_fn = ADJUSTMENTS.get(method.name)
+            adjust_fn = load(observational_estimator_id(method))
             adjust_kwargs = _adjust_kwargs(method)
             for metric in selected:
                 dispatch_kwargs = adjust_kwargs
                 try:
                     moment_rows = evidence.metric_rows(metric)
-                    if method.name in OBSERVATIONAL_METHOD_NAMES:
+                    if uses_builtin_adjustment_preflight(method):
                         from increment.estimation._adjust.common import (
                             AdjustmentInputs,
                             adjustment_preflight,
@@ -1063,7 +1062,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     frame = unit_frame_memo(metric, design.adjustment.covariates)
                     adjustment_args = (
                         (AdjustmentInputs(frame, moment_rows, cluster), metric, design)
-                        if method.name in OBSERVATIONAL_METHOD_NAMES
+                        if uses_builtin_adjustment_preflight(method)
                         else (frame, moment_rows, cluster, metric, design)
                     )
                     adjusted = adjust_fn(

@@ -1319,7 +1319,6 @@ def test_ratio_unsupported_sensitivity_does_not_refuse_supported_decision_method
 def test_global_prior_counts_custom_ratio_adjustment(monkeypatch):
     """Custom ratio adjustments may emit linear-relative rows and must count."""
     from increment import readouts as ro
-    from increment.estimation.adjust import ADJUSTMENTS
     from increment.estimation.inference import Normal
     from increment.frame import MetricSpec, from_unit_summary
 
@@ -1344,14 +1343,15 @@ def test_global_prior_counts_custom_ratio_adjustment(monkeypatch):
         ],
         design=_OBS_TRIM,
     )
-    monkeypatch.setitem(ADJUSTMENTS._entries, "custom_ratio", lambda *_args, **_kwargs: [])
+    from tests.estimation.registry_helpers import registered_adjustment
 
     def fail(*_args, **_kwargs):
         raise AssertionError("source accessed before global-prior validation")
 
     monkeypatch.setattr(source, "moments", fail)
-    with pytest.raises(InvalidRequestError) as exc:
-        ro.run(source, prior=Normal(mu=0.0, sigma=0.1))
+    with registered_adjustment("custom_ratio", lambda *_args, **_kwargs: []):
+        with pytest.raises(InvalidRequestError) as exc:
+            ro.run(source, prior=Normal(mu=0.0, sigma=0.1))
     assert exc.value.code == "estimation.adjust.prior.method_scale"
 
 

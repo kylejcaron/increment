@@ -453,13 +453,14 @@ class TestMethodRouting:
         """Any registered adjustment name is an observational dispatch key the
         randomized moments path never applies; the mislabel guard must cover
         registered names, not only the three built-ins."""
-        from increment.estimation.adjust import ADJUSTMENTS
         from increment.estimation.engine import estimate_lift
         from increment.semantics.models import MeanMetric
 
-        original = dict(ADJUSTMENTS._entries)
-        ADJUSTMENTS.register("regression_probe_adjustment", lambda *a, **k: [])
-        try:
+        from tests.estimation.registry_helpers import registered_adjustment
+
+        with registered_adjustment(
+            "regression_probe_adjustment", lambda *a, **k: []
+        ):
             row = centered_row_from_raw_sums(
                 {
                     "experiment_id": "e1",
@@ -478,9 +479,6 @@ class TestMethodRouting:
                     methods=[Method(name="regression_probe_adjustment")],
                 )
             assert exc_info.value.code == "estimation.engine.method_name_observational"
-        finally:
-            ADJUSTMENTS._entries.clear()
-            ADJUSTMENTS._entries.update(original)
 
     def test_iptw_rejects_outcome_learner(self):
         with pytest.raises(InvalidRequestError) as exc_info:
