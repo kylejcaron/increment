@@ -99,3 +99,16 @@ def test_miss_workflow_merges_shard_metadata_before_reporting() -> None:
     assert "scripts/selection_map.py merge" in run
     assert "--expected-shards" in run
     assert "junit-metadata.json" in run
+
+
+def test_miss_report_uses_one_writer_and_preserves_metadata_in_summary() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["selection-misses"]
+    run = next(
+        step["run"]
+        for step in job["steps"]
+        if step.get("name") == "Merge predictions and report misses"
+    )
+
+    assert "tee selection-misses.txt" not in run
+    assert 'cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"' in run

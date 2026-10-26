@@ -154,7 +154,7 @@ jobs:
           junit=(selection-input/junit/**/*.xml)
           junit_metadata=(selection-input/junit/**/junit-metadata.json)
           uv run --no-sync python scripts/selection_map.py merge --reports "${reports[@]}" --expected-shards "$EXPECTED_SHARDS" --output affected-report.json
-          uv run --no-sync python scripts/selection_map.py misses --base "$BASE" --head "$HEAD" --junit "${junit[@]}" --junit-metadata "${junit_metadata[@]}" --expected-shards "$EXPECTED_SHARDS" --report affected-report.json | tee selection-misses.txt
+          uv run --no-sync python scripts/selection_map.py misses --base "$BASE" --head "$HEAD" --junit "${junit[@]}" --junit-metadata "${junit_metadata[@]}" --expected-shards "$EXPECTED_SHARDS" --report affected-report.json
           cat selection-misses.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Retain selection miss report
         if: always()

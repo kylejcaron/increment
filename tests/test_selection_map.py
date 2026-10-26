@@ -236,6 +236,10 @@ def test_failed_test_excluded_from_prediction_is_reported_as_miss(tmp_path: Path
 
     assert result == ["miss: tests/test_skipped.py"]
     assert "base: base" in (tmp_path / "selection-misses.txt").read_text()
+    output = (tmp_path / "selection-misses.txt").read_text()
+    assert "head: head" in output
+    assert "map generated_at: now" in output
+    assert "map base_sha: base" in output
 
 
 def test_partial_prediction_is_incomplete_evidence(tmp_path: Path) -> None:
