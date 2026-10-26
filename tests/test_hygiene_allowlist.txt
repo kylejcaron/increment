@@ -59,13 +59,12 @@ tests/test_cuped_warehouse_cells.py 4
 tests/test_dashboard.py 3
 tests/test_dashboard_capture.py 2
 tests/test_dashboard_overview.py 1
-tests/test_decision_wire.py 1
 tests/test_exploratory_metrics.py 1
 tests/test_frame_panel.py 8
 tests/test_frame_switchback.py 3
 tests/test_readout_public_scope.py 1
 tests/test_readouts.py 1
-tests/test_readouts_observational.py 5
+tests/test_readouts_observational.py 4
 tests/test_readouts_plan.py 2
 tests/test_readouts_switchback.py 2
 tests/test_sequential_public_sources.py 2

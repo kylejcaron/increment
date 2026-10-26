@@ -7,6 +7,7 @@ import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -450,7 +451,7 @@ def test_manifest_module_change_keeps_required_selection_floor(tmp_path: Path) -
     _tree(
         tmp_path,
         {
-            "increment/estimators/manifest.json": '{"modules":["increment.impl"]}',
+            "increment/estimators/manifest.json": '[{"module":"increment.impl","attribute":"run"}]',
             "increment/impl.py": "",
             "tests/test_registry.py": "",
             "tests/selection_required.txt": "tests/test_registry.py\n",
@@ -459,6 +460,65 @@ def test_manifest_module_change_keeps_required_selection_floor(tmp_path: Path) -
     graph = SelectionGraph.from_tree(tmp_path, {"increment.impl"}, tier="fast", selection_map=None)
 
     assert "manifest" in graph.keeps("tests/test_registry.py")
+
+
+def test_change_to_a_manifest_module_selects_required_tests(tmp_path: Path) -> None:
+    required = ("tests/test_registry.py", "tests/test_refusal_gate.py")
+    _tree(
+        tmp_path,
+        {
+            "increment/estimators/manifest.json": (
+                '[{"module":"increment.impl","attribute":"run"}]'
+            ),
+            "increment/impl.py": "",
+            **dict.fromkeys(required, ""),
+            "tests/selection_required.txt": "\n".join(required) + "\n",
+        },
+    )
+    graph = SelectionGraph.from_tree(tmp_path, {"increment.impl"}, tier="fast", selection_map=None)
+
+    for test in required:
+        assert "manifest" in graph.keeps(test)
+
+
+def test_malformed_estimator_manifest_is_ignored(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        {
+            "increment/estimators/manifest.json": "{not-json",
+            "increment/impl.py": "",
+            "tests/test_registry.py": "",
+            "tests/selection_required.txt": "tests/test_registry.py\n",
+        },
+    )
+    graph = SelectionGraph.from_tree(tmp_path, {"increment.impl"}, tier="fast", selection_map=None)
+
+    assert "manifest" not in graph.keeps("tests/test_registry.py")
+
+
+def test_estimator_change_keeps_registry_consumers_when_the_map_is_unusable(
+    tmp_path: Path,
+) -> None:
+    test_file = "tests/estimation/test_adjust.py"
+    _tree(
+        tmp_path,
+        {
+            "increment/estimation/_adjust/iptw.py": "",
+            test_file: "",
+        },
+    )
+    invalid_map = cast(SelectionMap, {"tier": "fast"})
+    graph = SelectionGraph.from_tree(
+        tmp_path,
+        {"increment.estimation._adjust.iptw"},
+        tier="fast",
+        selection_map=invalid_map,
+    )
+    path = tmp_path / test_file
+    handler = AffectedHandler(_Tach(removed={path.as_posix()}), graph)
+
+    assert handler.should_remove_items(path) is False
+    assert any(reason.startswith("map_unusable:") for reason in graph.keeps(path))
 
 
 @pytest.mark.slow

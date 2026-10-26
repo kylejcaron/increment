@@ -17,7 +17,8 @@ from increment._evidence_types import MomentsRequest, UnitRowsRequest
 from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
-from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES
+from increment.declarations import ADJUSTMENTS as ADJUSTMENTS
+from increment.declarations import OBSERVATIONAL_METHOD_NAMES
 from increment.errors import (
     PACKAGE_FRAMES,
     CapabilityError,
@@ -46,6 +47,7 @@ from increment.estimation.inference import (
     Prior,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimators.registry import uses_builtin_adjustment_preflight
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,9 +61,7 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
-from increment.estimation._adjust import aipw as _aipw  # noqa: F401
-from increment.estimation._adjust import dml as _dml  # noqa: F401
-from increment.estimation._adjust import iptw as _iptw  # noqa: F401
+from increment.estimators.registry import load, observational_estimator_id
 
 _REFUSALS = (
     refusals(
@@ -849,7 +849,7 @@ def _validate_adjustment_methods(methods: Sequence[Method]) -> None:
     for method in methods:
         if _is_unadjusted_method(method):
             continue
-        ADJUSTMENTS.get(method.name)
+        observational_estimator_id(method)
         if method.variance_reduction != "none":
             _refuse(
                 "adjust.variance_reduction.unsupported",
@@ -939,6 +939,16 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
+    if evidence is None:
+        from increment.estimators.registry import validate_observational_routes
+
+        validate_observational_routes(
+            src,
+            tuple(selected),
+            tuple(methods),
+            design,
+            view_population(src),
+        )
     _validate_adjustment_methods(methods)
     if evidence is None:
         moment_metrics = selected
@@ -1029,13 +1039,13 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     for r in unadj
                 )
         else:
-            adjust_fn = ADJUSTMENTS.get(method.name)
+            adjust_fn = load(observational_estimator_id(method))
             adjust_kwargs = _adjust_kwargs(method)
             for metric in selected:
                 dispatch_kwargs = adjust_kwargs
                 try:
                     moment_rows = evidence.metric_rows(metric)
-                    if method.name in OBSERVATIONAL_METHOD_NAMES:
+                    if uses_builtin_adjustment_preflight(method):
                         from increment.estimation._adjust.common import (
                             AdjustmentInputs,
                             adjustment_preflight,
@@ -1063,7 +1073,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     frame = unit_frame_memo(metric, design.adjustment.covariates)
                     adjustment_args = (
                         (AdjustmentInputs(frame, moment_rows, cluster), metric, design)
-                        if method.name in OBSERVATIONAL_METHOD_NAMES
+                        if uses_builtin_adjustment_preflight(method)
                         else (frame, moment_rows, cluster, metric, design)
                     )
                     adjusted = adjust_fn(

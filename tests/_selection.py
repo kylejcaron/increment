@@ -188,21 +188,21 @@ class SelectionGraph:
                     f"map_unusable:{why_unusable}"
                 )
 
-        # A missing estimator package or manifest is an absent source, not a
-        # reason to reject an otherwise usable map.
+        # A missing, malformed, or unreadable estimator manifest is an absent
+        # source, not a reason to reject an otherwise usable map.
         manifest = root / "increment/estimators/manifest.json"
         if manifest.is_file():
             try:
                 manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
-                raw_modules = (
-                    manifest_data.get("modules") if isinstance(manifest_data, dict) else None
-                )
-                listed = (
-                    set(raw_modules)
-                    if isinstance(raw_modules, list)
-                    and all(isinstance(module, str) for module in raw_modules)
-                    else set()
-                )
+                if isinstance(manifest_data, list) and all(
+                    isinstance(record, dict)
+                    and isinstance(record.get("module"), str)
+                    and record["module"]
+                    for record in manifest_data
+                ):
+                    listed = {record["module"] for record in manifest_data}
+                else:
+                    listed = set()
             except (OSError, ValueError, TypeError):
                 listed = set()
             if changed_modules & listed:

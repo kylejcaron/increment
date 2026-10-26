@@ -86,6 +86,10 @@ _REFUSALS = refusals(
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.variance.registry.no_registered_available": _VARIANCE_REGISTRY_REFUSAL,
         "readout.cell.key_invalid": _CELL_KEY_INVALID_REFUSAL,
+        "estimation.estimator.ref.invalid_id": "Estimator id {estimator_id!r} must be a qualified identifier.",
+        "estimation.estimator.ref.observational_needs": "Observational estimator {estimator_id!r} needs a route with total moments and design rows.",
+        "estimation.estimator.ref.already_registered": "Estimator {estimator_id!r} is already registered with a different declaration.",
+        "estimation.estimator.implementation.missing_ref": "Implementation for estimator {estimator_id!r} has no declared estimator ref.",
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -353,13 +357,224 @@ class Registry[T]:
 
 
 VARIANCE_REDUCTION: Registry[str] = Registry("variance reduction")
-VARIANCE_REDUCTION.register("none", "none")
-VARIANCE_REDUCTION.register("cuped", "cuped")
-VARIANCE_REDUCTION.register("cuped_multicovariate", "cuped_multicovariate")
+VARIANCE_REDUCTION.register("none", "randomized.unadjusted")
+VARIANCE_REDUCTION.register("cuped", "randomized.cuped")
+VARIANCE_REDUCTION.register("cuped_multicovariate", "randomized.cuped_multicovariate")
 
 AdjustmentFn = Callable[..., list[Any]]
-ADJUSTMENTS: Registry[AdjustmentFn] = Registry("adjustment")
-OBSERVATIONAL_METHOD_NAMES = frozenset({"iptw", "dml", "aipw"})
+Route = tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MomentsSpec:
+    grain: Literal["total", "daily", "asof"] = "total"
+    method_specific: bool = False
+    include_covariate: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class UnitRowsSpec:
+    outcome_stage: Literal["transformed", "raw"] = "transformed"
+    covariates: Literal["design", "method", "none"] = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class CountsSpec:
+    kind: Literal["unit", "cluster", "assignment", "triggered"] = "unit"
+
+
+@dataclass(frozen=True, slots=True)
+class MethodFitSpec:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class EstimatorRef:
+    estimator_id: str
+    module: str
+    attribute: str
+    contract: Literal["moments", "panel"]
+    estimand: str
+    selector: str | None
+    needs: tuple[Route, ...] = ()
+
+
+_TOTAL_MOMENTS = MomentsSpec("total")
+_DESIGN_ROWS = UnitRowsSpec(covariates="design")
+_METHOD_ROWS = UnitRowsSpec(covariates="method")
+_FIT = MethodFitSpec()
+BUILTIN_ESTIMATORS: tuple[EstimatorRef, ...] = (
+    EstimatorRef(
+        "observational.iptw",
+        "increment.estimation._adjust.iptw",
+        "iptw_estimate",
+        "panel",
+        "ate",
+        "iptw",
+        ((_TOTAL_MOMENTS, _DESIGN_ROWS),),
+    ),
+    EstimatorRef(
+        "observational.dml",
+        "increment.estimation._adjust.dml",
+        "dml_estimate",
+        "panel",
+        "plr_slope",
+        "dml",
+        ((_TOTAL_MOMENTS, _DESIGN_ROWS),),
+    ),
+    EstimatorRef(
+        "observational.aipw",
+        "increment.estimation._adjust.aipw",
+        "aipw_estimate",
+        "panel",
+        "ate",
+        "aipw",
+        ((_TOTAL_MOMENTS, _DESIGN_ROWS),),
+    ),
+    EstimatorRef(
+        "randomized.unadjusted",
+        "increment.estimation.engine",
+        "estimate_lift",
+        "moments",
+        "ate",
+        None,
+        ((_TOTAL_MOMENTS,),),
+    ),
+    EstimatorRef(
+        "randomized.cuped",
+        "increment.estimation.engine",
+        "estimate_lift",
+        "moments",
+        "ate",
+        "cuped",
+        ((MomentsSpec("total", method_specific=True),),),
+    ),
+    EstimatorRef(
+        "randomized.cuped_multicovariate",
+        "increment.estimation.cuped.multicovariate",
+        "fit_cuped_multicovariate",
+        "panel",
+        "ate",
+        "cuped_multicovariate",
+        ((_FIT,), (_TOTAL_MOMENTS, _METHOD_ROWS)),
+    ),
+)
+
+_ESTIMATORS: dict[str, EstimatorRef] = {ref.estimator_id: ref for ref in BUILTIN_ESTIMATORS}
+_IMPLEMENTATIONS: dict[str, Callable[..., Any]] = {}
+
+
+def register(ref: EstimatorRef) -> None:
+    if not ref.estimator_id or "." not in ref.estimator_id:
+        _refuse("estimation.estimator.ref.invalid_id", estimator_id=ref.estimator_id)
+    if ref.estimator_id.startswith("observational.") and not any(
+        any(isinstance(spec, MomentsSpec) and spec.grain == "total" for spec in route)
+        and any(isinstance(spec, UnitRowsSpec) and spec.covariates == "design" for spec in route)
+        for route in ref.needs
+    ):
+        _refuse("estimation.estimator.ref.observational_needs", estimator_id=ref.estimator_id)
+    existing = _ESTIMATORS.get(ref.estimator_id)
+    if existing is not None and existing != ref:
+        _refuse("estimation.estimator.ref.already_registered", estimator_id=ref.estimator_id)
+    _ESTIMATORS[ref.estimator_id] = ref
+
+
+def unregister_estimator(estimator_id: str) -> None:
+    if estimator_id in {ref.estimator_id for ref in BUILTIN_ESTIMATORS}:
+        return
+    ref = _ESTIMATORS.pop(estimator_id, None)
+    _IMPLEMENTATIONS.pop(estimator_id, None)
+    if ref is not None and ref.selector is not None:
+        ADJUSTMENTS._entries.pop(ref.selector, None)
+
+
+def register_implementation(estimator_id: str, fn: Callable[..., Any]) -> None:
+    ref = _ESTIMATORS.get(estimator_id)
+    if ref is None:
+        _refuse("estimation.estimator.implementation.missing_ref", estimator_id=estimator_id)
+    _IMPLEMENTATIONS[estimator_id] = fn
+    if ref.selector is not None:
+        ADJUSTMENTS._entries.pop(ref.selector, None)
+
+
+def estimator_refs() -> Mapping[str, EstimatorRef]:
+    return _ESTIMATORS
+
+
+class AdjustmentRegistry(Registry[AdjustmentFn]):
+    def __init__(self) -> None:
+        super().__init__("adjustment")
+
+    def register(self, key: str, value: AdjustmentFn) -> None:
+        estimator_id = estimator_id_for_selector(key) or f"observational.{key}"
+        if estimator_id not in _ESTIMATORS:
+            register(
+                EstimatorRef(
+                    estimator_id, "", "", "panel", "ate", key, ((_TOTAL_MOMENTS, _DESIGN_ROWS),)
+                )
+            )
+        register_implementation(estimator_id, value)
+        self._entries[key] = value
+
+    def get(self, key: str) -> AdjustmentFn:
+        if key in self._entries:
+            return self._entries[key]
+        estimator_id = estimator_id_for_selector(key)
+        if estimator_id is not None:
+            from importlib import import_module
+
+            ref = _ESTIMATORS[estimator_id]
+            implementation = _IMPLEMENTATIONS.get(estimator_id)
+            if implementation is None:
+                implementation = getattr(import_module(ref.module), ref.attribute)
+                register_implementation(estimator_id, implementation)
+            self._entries[key] = implementation
+            return cast(AdjustmentFn, implementation)
+        available = sorted(
+            ref.selector
+            for ref in _ESTIMATORS.values()
+            if ref.estimator_id.startswith("observational.") and ref.selector is not None
+        )
+        _refuse(
+            "estimation.variance.registry.no_registered_available",
+            key=key,
+            registry_name=self._name,
+            available=available,
+        )
+
+    def __contains__(self, key: str) -> bool:
+        return estimator_id_for_selector(key) is not None
+
+    def unregister(self, key: str) -> None:
+        estimator_id = estimator_id_for_selector(key)
+        self._entries.pop(key, None)
+        if estimator_id is not None and estimator_id not in {
+            ref.estimator_id for ref in BUILTIN_ESTIMATORS
+        }:
+            unregister_estimator(estimator_id)
+
+
+def estimator_id_for_selector(name: str) -> str | None:
+    return next(
+        (
+            ref.estimator_id
+            for ref in _ESTIMATORS.values()
+            if ref.estimator_id.startswith("observational.") and ref.selector == name
+        ),
+        None,
+    )
+
+
+def is_observational_name(name: str) -> bool:
+    return estimator_id_for_selector(name) is not None
+
+
+ADJUSTMENTS = AdjustmentRegistry()
+OBSERVATIONAL_METHOD_NAMES = frozenset(
+    ref.selector
+    for ref in BUILTIN_ESTIMATORS
+    if ref.estimator_id.startswith("observational.") and ref.selector is not None
+)
 
 CovariateArg = str | CupedCovariate | CupedCovariateBinding
 
@@ -431,7 +646,7 @@ class Method(CodedModel, BaseModel):
     @property
     def is_observational(self) -> bool:
         """Whether the method name selects an observational adjustment."""
-        return self.name in OBSERVATIONAL_METHOD_NAMES or self.name in ADJUSTMENTS
+        return is_observational_name(self.name)
 
     @classmethod
     def unadjusted(

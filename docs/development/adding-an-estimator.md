@@ -4,9 +4,9 @@ This guide follows two completed changes: refining exact conversion-interval end
 
 ## First locate the owner and the boundary
 
-For randomized lift, `increment/declarations.py` owns the lightweight `Method` configuration and the variance-reduction registry; `increment/estimation/engine.py` owns `estimate_lift` dispatch and per-contrast routes. `increment/estimation/adjust.py` owns observational `estimate_ate` and registers adjustment implementations in the shared `ADJUSTMENTS` registry; built-ins register from `increment/estimation/_adjust/{iptw,dml,aipw}.py`. Keep these boundaries separate: don't add observational adjustments to randomized lift or warehouse queries to the estimator. Sources and reductions obtain evidence; estimators consume `ArmStats` or the per-unit data their construction requires.
+For randomized lift, `increment/declarations.py` owns the lightweight `Method`, variance-reduction ids, and static estimator declarations; `increment/estimation/engine.py` owns `estimate_lift` dispatch. Observational estimator identities and lazy implementation lookup also live in `increment/declarations.py` and `increment/estimators/registry.py`; `increment/estimation/adjust.py` owns observational `estimate_ate` orchestration. Built-in implementations are declared by module path rather than eagerly imported. Keep these boundaries separate: don't add observational adjustments to randomized lift or warehouse queries to the estimator. Sources and reductions obtain evidence; estimators consume `ArmStats` or the per-unit data their construction requires.
 
-`Method.name` labels results and identifies the requested method; it does not select an algorithm alone. Randomized lift uses `variance_reduction` and inference settings, while observational dispatch looks up its name in the shared `ADJUSTMENTS` registry. Validation checks these separately. Do not infer a method from display text or add aliases.
+`Method.name` is a selector for observational estimator refs and a result label; randomized lift uses `variance_reduction` to choose its estimator id. Observational plugins can use `ADJUSTMENTS.register(name, fn)` as the compatibility registration API, or register an `EstimatorRef` and its implementation directly. Do not infer a method from display text or add aliases.
 
 `increment/_moment_plan.py` distinguishes counts, references, centered first moments, and centered second/cross moments. These cannot replace unit records or reconstruct membership and arbitrary distributions. Evidence is distinct too: reasons, guarantees, diagnostics, and source availability answer different questions from numeric moments. Preserve these distinctions through source, estimator, result, serialization, and presentation.
 
@@ -84,11 +84,11 @@ shared refusal path.
 
 
 
-## Registering an observational adjustment
-
 `ADJUSTMENTS` callbacks receive materialized inputs, not a source: `(frame, moment_rows, cluster, metric, design, **kwargs)`. `frame` is the unit-level data for that metric and the design's adjustment covariates; `moment_rows` are the metric's already-reduced arm summaries; `cluster` is the declared cluster column or `None`. Keep kernels data-only and derive cluster behavior from this explicit evidence.
 
-`estimate_ate` runs the built-in adjustment preflight before reading unit rows. For a non-built-in registration, the facade reads the metric frame with `design.adjustment.covariates` immediately before invoking the callback. A readout shares a memoized frame read across its estimates and identity calculation; plugin code should use the supplied frame and never reach back to a source.
+Every estimator ref carries alternative evidence routes as grouped request specs in `EstimatorRef.needs`. Observational registrations must declare at least one route containing total moments and design-covariate unit rows; the registry converts those specs to the typed evidence requests and checks source capabilities before a run. Extra requests gate runnability, but dispatch does not yet deliver them to callbacks. Add a ref and implementation registration in one plugin module; built-in entries are maintained in `increment/declarations.py`.
+
+`increment/estimators/manifest.json` is generated from the built-in refs. Update it with `uv run --no-sync python scripts/render_estimator_manifest.py`; check it in CI with the same command plus `--check`. The affected-test selector reads the manifest to retain the required tests when an estimator implementation module changes.
 
 ## Set up before running the focused commands
 

@@ -1,0 +1,135 @@
+[
+  {
+    "attribute": "iptw_estimate",
+    "contract": "panel",
+    "estimand": "ate",
+    "estimator_id": "observational.iptw",
+    "module": "increment.estimation._adjust.iptw",
+    "needs": [
+      [
+        {
+          "grain": "total",
+          "include_covariate": false,
+          "kind": "Moments",
+          "method_specific": false
+        },
+        {
+          "covariates": "design",
+          "kind": "UnitRows",
+          "outcome_stage": "transformed"
+        }
+      ]
+    ],
+    "selector": "iptw"
+  },
+  {
+    "attribute": "dml_estimate",
+    "contract": "panel",
+    "estimand": "plr_slope",
+    "estimator_id": "observational.dml",
+    "module": "increment.estimation._adjust.dml",
+    "needs": [
+      [
+        {
+          "grain": "total",
+          "include_covariate": false,
+          "kind": "Moments",
+          "method_specific": false
+        },
+        {
+          "covariates": "design",
+          "kind": "UnitRows",
+          "outcome_stage": "transformed"
+        }
+      ]
+    ],
+    "selector": "dml"
+  },
+  {
+    "attribute": "aipw_estimate",
+    "contract": "panel",
+    "estimand": "ate",
+    "estimator_id": "observational.aipw",
+    "module": "increment.estimation._adjust.aipw",
+    "needs": [
+      [
+        {
+          "grain": "total",
+          "include_covariate": false,
+          "kind": "Moments",
+          "method_specific": false
+        },
+        {
+          "covariates": "design",
+          "kind": "UnitRows",
+          "outcome_stage": "transformed"
+        }
+      ]
+    ],
+    "selector": "aipw"
+  },
+  {
+    "attribute": "estimate_lift",
+    "contract": "moments",
+    "estimand": "ate",
+    "estimator_id": "randomized.unadjusted",
+    "module": "increment.estimation.engine",
+    "needs": [
+      [
+        {
+          "grain": "total",
+          "include_covariate": false,
+          "kind": "Moments",
+          "method_specific": false
+        }
+      ]
+    ],
+    "selector": null
+  },
+  {
+    "attribute": "estimate_lift",
+    "contract": "moments",
+    "estimand": "ate",
+    "estimator_id": "randomized.cuped",
+    "module": "increment.estimation.engine",
+    "needs": [
+      [
+        {
+          "grain": "total",
+          "include_covariate": false,
+          "kind": "Moments",
+          "method_specific": true
+        }
+      ]
+    ],
+    "selector": "cuped"
+  },
+  {
+    "attribute": "fit_cuped_multicovariate",
+    "contract": "panel",
+    "estimand": "ate",
+    "estimator_id": "randomized.cuped_multicovariate",
+    "module": "increment.estimation.cuped.multicovariate",
+    "needs": [
+      [
+        {
+          "kind": "MethodFit"
+        }
+      ],
+      [
+        {
+          "grain": "total",
+          "include_covariate": false,
+          "kind": "Moments",
+          "method_specific": false
+        },
+        {
+          "covariates": "method",
+          "kind": "UnitRows",
+          "outcome_stage": "transformed"
+        }
+      ]
+    ],
+    "selector": "cuped_multicovariate"
+  }
+]
