@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import json
+import subprocess
+
 from pathlib import Path
 
 import pytest
 from coverage import CoverageData
 
-from scripts.selection_map import build, is_stale
+from scripts.selection_map import SelectionMap, build, is_stale
+
 
 pytestmark = pytest.mark.integration
 
@@ -47,6 +52,47 @@ def test_stale_map_detects_unrelated_base(tmp_path: Path) -> None:
         },
         root=tmp_path,
     )
+
+@pytest.mark.parametrize(
+    ("path", "before", "after"),
+    [
+        ("increment/declarations.py", "REGISTRY = {}\n", "REGISTRY = {'new': 1}\n"),
+        ("increment/estimators/registry.py", "REGISTRY = {}\n", "REGISTRY = {'new': 1}\n"),
+        (
+            "increment/results.py",
+            "_LAZY_IMPORTS = {'Name': ('increment.impl', 'Name')}\n",
+            "VALUE = 1\n",
+        ),
+    ],
+)
+def test_dispatch_table_changes_invalidate_map(
+    tmp_path: Path, path: str, before: str, after: str
+) -> None:
+    root = tmp_path / "repo"
+    source = root / path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(before)
+    source = root / "increment/__init__.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    mapping: SelectionMap = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "base_sha": base,
+        "tier": "fast",
+        "modules": {},
+    }
+
+    (root / path).write_text(after)
+
+    assert is_stale(mapping, root=root)
 
 
 def test_collection_dynamic_import_maps_to_its_test_file(tmp_path: Path) -> None:

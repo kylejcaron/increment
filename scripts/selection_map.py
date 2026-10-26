@@ -144,6 +144,28 @@ def tests_changed_since(selection_map: SelectionMap, root: Path) -> set[str]:
     return {path for path in paths if path.startswith("tests/test_") and path.endswith(".py")}
 
 
+def _has_lazy_table(source: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(
+        (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS"
+                for target in node.targets
+            )
+        )
+        or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_LAZY_IMPORTS"
+        )
+        for node in tree.body
+    )
+
+
 def is_stale(selection_map: SelectionMap, *, max_age_days: int = 14, root: Path) -> bool:
     try:
         generated = datetime.fromisoformat(selection_map["generated_at"])
@@ -160,29 +182,19 @@ def is_stale(selection_map: SelectionMap, *, max_age_days: int = 14, root: Path)
     except (KeyError, ValueError, OSError, subprocess.CalledProcessError):
         return True
     for path in changed:
-        if path == "increment/estimators/manifest.json":
+        if path == "increment/declarations.py" or path.startswith("increment/estimators/"):
             return True
         if not path.startswith("increment/") or not path.endswith(".py"):
             continue
         try:
-            tree = ast.parse((root / path).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, SyntaxError):
-            continue
-        if any(
-            (
-                isinstance(node, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "_LAZY_IMPORTS"
-                    for target in node.targets
-                )
-            )
-            or (
-                isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and node.target.id == "_LAZY_IMPORTS"
-            )
-            for node in tree.body
-        ):
+            current = (root / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            current = ""
+        try:
+            previous = _git(root, "show", f"{base}:{path}")
+        except (OSError, subprocess.CalledProcessError):
+            previous = ""
+        if _has_lazy_table(current) or _has_lazy_table(previous):
             return True
     return False
 
