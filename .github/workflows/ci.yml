@@ -178,16 +178,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   slow:
-    name: functional slow (3.12, shard ${{ matrix.group }}/6)
+    name: functional slow (3.12, shard ${{ matrix.group }}/8)
     runs-on: ubuntu-latest
-    needs: lint
+    # Starts beside lint rather than after it: this job sets the PR wall clock,
+    # and ci-ok still requires lint.
     timeout-minutes: 60
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -196,7 +197,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
+      - run: make test-slow WORKERS=auto PYTEST_ARGS="--durations=25 --junitxml=junit.xml --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/slow-test-durations.json"
       - name: Retain slow JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -207,12 +208,17 @@ jobs:
           retention-days: 30
 
   compile-registry:
-    name: warehouse compile registry
+    name: warehouse compile registry (${{ matrix.dialect }})
     runs-on: ubuntu-latest
-    needs: lint
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each dialect builds its own captured registry, so a cold cache costs
+        # one build per runner instead of two side by side.
+        dialect: [snowflake, bigquery]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -226,11 +232,25 @@ jobs:
           value=$(uv run --no-sync python -c 'from integration.warehouse_execution._compile import _captured_compile_cache_key; print(_captured_compile_cache_key("snowflake").removeprefix("snowflake-"))')
           echo "value=$value" >> "$GITHUB_OUTPUT"
       - name: Restore or save compiled warehouse registry
+        id: registry-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .pytest_cache/warehouse_compile_registry
-          key: compile-registry-${{ steps.key.outputs.value }}
-      - run: make test-tier TIER=compile-registry WORKERS=auto PYTEST_ARGS="--durations=25"
+          key: compile-registry-${{ matrix.dialect }}-${{ steps.key.outputs.value }}
+      - name: Compile registered statements
+        env:
+          DIALECT: ${{ matrix.dialect }}
+          CACHE_HIT: ${{ steps.registry-cache.outputs.cache-hit }}
+        run: |
+          # Tests without a dialect parameter run on the snowflake runner.
+          if [ "$DIALECT" = snowflake ]; then selection="not bigquery"; else selection="bigquery"; fi
+          args=(-k "$selection")
+          # The key covers every recorded module, and a cache entry is saved only
+          # by a passing job, so an exact hit means this trace already passed.
+          if [ "$CACHE_HIT" = true ]; then
+            args+=(--deselect tests/test_warehouse_compile_registry.py::test_recorded_compile_dependencies_are_current)
+          fi
+          make test-tier TIER=compile-registry WORKERS=auto PYTEST_ARGS="--durations=25 ${args[*]@Q}"
 
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.

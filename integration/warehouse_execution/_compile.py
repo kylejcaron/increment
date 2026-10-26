@@ -448,8 +448,15 @@ def _captured_compile_cache_key(dialect):
     from tests._shared_cache import fixture_cache_key
 
     root = Path(__file__).resolve().parents[2]
-    source_paths = (Path(__file__), root / "tests" / "warehouse_cuped_cases.py")
     dependencies = root / "integration" / "warehouse_execution" / "_compile_dependencies.txt"
+    # The recorded list and its checker are inputs too: CI skips the dependency
+    # trace on an exact cache hit, so any change to either must miss the cache.
+    source_paths = (
+        Path(__file__),
+        root / "tests" / "warehouse_cuped_cases.py",
+        dependencies,
+        root / "scripts" / "trace_compile_dependencies.py",
+    )
     package_modules = None
     if dependencies.is_file():
         package_modules = {
