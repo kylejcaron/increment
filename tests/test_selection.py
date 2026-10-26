@@ -127,7 +127,8 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
             sys.executable,
             "-m",
             "pytest",
-            "--collect-only",
+            "-m",
+            "not slow and not parameter_recovery and not numerical_certification and not examples and not stress",
             "-q",
             "--tach-base",
             base,
@@ -140,7 +141,60 @@ def _run_scratch_tach(root: Path, base: str, *test_paths: str) -> dict[str, obje
         text=True,
         capture_output=True,
     )
-    return json.loads(report.read_text())
+    decisions = json.loads(report.read_text())
+    report.unlink()
+    return decisions
+
+
+def _real_tach_and_selector_kept(
+    root: Path, base: str
+) -> tuple[set[str], set[str]]:
+    from tach.extension import TachPytestPluginHandler
+    from tach.filesystem.git_ops import get_changed_files
+    from tach.parsing import parse_project_config
+
+    from scripts.selection_map import load
+
+    changed_files = get_changed_files(project_root=root, base=base)
+    project_config = parse_project_config(root=root)
+    assert project_config is not None
+    tach = TachPytestPluginHandler(
+        project_root=root,
+        project_config=project_config,
+        changed_files=changed_files,
+        all_affected_modules={path.resolve() for path in changed_files},
+    )
+    changed_modules = {
+        ".".join(path.relative_to(root).with_suffix("").parts)
+        for path in changed_files
+        if path.suffix == ".py" and path.name != "__init__.py"
+    }
+    mapping = load(root / "tests/selection_map.json")
+    assert mapping is not None and not is_stale(mapping, root=root)
+    graph = SelectionGraph.from_tree(
+        root,
+        changed_modules,
+        tier="fast",
+        selection_map=mapping,
+    )
+    handler = AffectedHandler(tach, graph)
+    test_paths = sorted(
+        {
+            *root.joinpath("tests").rglob("test_*.py"),
+            *root.joinpath("tests").rglob("*_test.py"),
+        }
+    )
+    tach_kept = {
+        path.relative_to(root).as_posix()
+        for path in test_paths
+        if not tach.should_remove_items(path)
+    }
+    kept = {
+        path.relative_to(root).as_posix()
+        for path in test_paths
+        if not handler.should_remove_items(path)
+    }
+    return tach_kept, kept
 
 
 def _map(
@@ -388,31 +442,12 @@ def test_handler_keeps_a_superset_of_tach_on_the_probe_modules(
         "increment/_lift_options.py",
         "increment/semantics/models.py",
     )
-    test_files = (
-        "tests/estimation/test_engine.py",
-        "tests/estimation/test_adjust.py",
-        "tests/estimation/cuped/test_prepare.py",
-        "tests/power/test_sequential_power.py",
-        "tests/test_warehouse_cuped_qr_edges.py",
-        "tests/test_imports.py",
-        "tests/semantics/test_models.py",
-    )
-    base = _scratch_map(scratch_worktree)
-    _scratch_change(scratch_worktree, *probe_modules)
-    decisions = _run_scratch_tach(scratch_worktree, base, *test_files)
-
-    tach_kept = {
-        path
-        for path, decision in decisions.items()
-        if isinstance(decision, dict) and decision.get("tach_kept") is True
-    }
-    kept = {
-        path
-        for path, decision in decisions.items()
-        if isinstance(decision, dict) and decision.get("kept") is True
-    }
-    assert tach_kept
-    assert tach_kept <= kept
+    for module in probe_modules:
+        base = _scratch_map(scratch_worktree)
+        _scratch_change(scratch_worktree, module)
+        tach_kept, kept = _real_tach_and_selector_kept(scratch_worktree, base)
+        assert tach_kept, module
+        assert tach_kept <= kept, module
 
 
 def test_dispatch_table_change_invalidates_map_and_keeps_whole_tier(tmp_path: Path) -> None:
@@ -468,25 +503,42 @@ def test_real_tach_registration_consumer_is_kept(scratch_worktree: Path) -> None
 def test_redirected_function_local_import_is_seen_on_next_selection(
     scratch_worktree: Path,
 ) -> None:
+    consumer = "tests/test_redirected_function_local.py"
     _tree(
         scratch_worktree,
         {
-            "tests/test_redirected_function_local.py": (
+            consumer: (
                 "import importlib\n\n"
                 "def test_redirected_import():\n"
                 "    importlib.import_module("
-                "'increment.estimation._adjust.iptw')\n"
+                "'increment.semantics.models')\n"
             )
         },
     )
     _scratch_commit(scratch_worktree, "add redirected-import consumer")
     base = _scratch_map(scratch_worktree)
-    _scratch_change(scratch_worktree, "increment/estimation/_adjust/iptw.py")
+    _scratch_change(scratch_worktree, "increment/semantics/models.py")
 
-    decision = _real_tach_decision(
-        scratch_worktree, base, "tests/test_redirected_function_local.py"
+    baseline = _real_tach_decision(scratch_worktree, base, consumer)
+    assert baseline["kept"] is True
+    baseline_reasons = baseline["reasons"]
+    assert isinstance(baseline_reasons, list)
+    assert "dynamic_import" in baseline_reasons
+
+    consumer_path = scratch_worktree / consumer
+    original = consumer_path.read_text()
+    assert "'increment.semantics.models'" in original
+    consumer_path.write_text(
+        original.replace(
+            "'increment.semantics.models'",
+            "'increment.power._binomial'",
+        )
     )
+    _scratch_commit(scratch_worktree, "redirect function-local import")
+    base = _scratch_map(scratch_worktree)
+    _scratch_change(scratch_worktree, "increment/power/_binomial.py")
 
+    decision = _real_tach_decision(scratch_worktree, base, consumer)
     assert decision["kept"] is True
     reasons = decision["reasons"]
     assert isinstance(reasons, list)
