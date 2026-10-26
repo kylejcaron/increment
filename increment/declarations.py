@@ -88,6 +88,7 @@ _REFUSALS = refusals(
         "readout.cell.key_invalid": _CELL_KEY_INVALID_REFUSAL,
         "estimation.estimator.ref.invalid_id": "Estimator id {estimator_id!r} must be a qualified identifier.",
         "estimation.estimator.ref.observational_needs": "Observational estimator {estimator_id!r} needs a route with total moments and design rows.",
+        "estimation.estimator.ref.raw_rows_unsupported": "Observational estimator {estimator_id!r} declares raw unit rows, but observational estimators receive transformed rows; declare UnitRowsSpec(outcome_stage='transformed').",
         "estimation.estimator.ref.already_registered": "Estimator {estimator_id!r} is already registered with a different declaration.",
         "estimation.estimator.implementation.missing_ref": "Implementation for estimator {estimator_id!r} has no declared estimator ref.",
     },
@@ -467,7 +468,14 @@ _IMPLEMENTATIONS: dict[str, Callable[..., Any]] = {}
 def register(ref: EstimatorRef) -> None:
     if not ref.estimator_id or "." not in ref.estimator_id:
         _refuse("estimation.estimator.ref.invalid_id", estimator_id=ref.estimator_id)
-    if ref.estimator_id.startswith("observational.") and not any(
+    observational = ref.estimator_id.startswith("observational.")
+    if observational and any(
+        isinstance(spec, UnitRowsSpec) and spec.outcome_stage != "transformed"
+        for route in ref.needs
+        for spec in route
+    ):
+        _refuse("estimation.estimator.ref.raw_rows_unsupported", estimator_id=ref.estimator_id)
+    if observational and not any(
         any(isinstance(spec, MomentsSpec) and spec.grain == "total" for spec in route)
         and any(isinstance(spec, UnitRowsSpec) and spec.covariates == "design" for spec in route)
         for route in ref.needs

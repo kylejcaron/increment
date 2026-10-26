@@ -112,12 +112,12 @@ def test_custom_needs_keep_population_and_do_not_import_implementation():
     from increment.declarations import CountsSpec, MethodFitSpec, MomentsSpec, UnitRowsSpec
 
     ref = EstimatorRef(
-        estimator_id="observational.registry_population",
+        estimator_id="randomized.registry_population",
         module="not_imported_registry_estimator",
         attribute="estimate",
         contract="panel",
         estimand="ate",
-        selector="registry_population",
+        selector=None,
         needs=(
             (
                 MomentsSpec("total", method_specific=True, include_covariate=True),
@@ -162,6 +162,22 @@ def test_observational_estimator_registration_requires_total_moments_and_design_
     with pytest.raises(CodedError) as exc:
         register(invalid)
     assert exc.value.code == "estimation.estimator.ref.observational_needs"
+
+
+def test_observational_estimator_declaring_raw_rows_is_refused_at_registration():
+    raw = EstimatorRef(
+        estimator_id="observational.raw_rows",
+        module="module",
+        attribute="estimate",
+        contract="panel",
+        estimand="ate",
+        selector="raw_rows",
+        needs=((MomentsSpec("total"), UnitRowsSpec(outcome_stage="raw", covariates="design")),),
+    )
+    with pytest.raises(CodedError) as exc:
+        register(raw)
+    assert exc.value.code == "estimation.estimator.ref.raw_rows_unsupported"
+    assert "observational.raw_rows" not in ESTIMATORS
 
 
 def test_unsupported_estimator_need_refuses_with_a_stable_code():
