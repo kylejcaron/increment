@@ -26,6 +26,7 @@ from increment.estimation.armstats import (
     clamp_negative_variance,
     variance_slack,
 )
+from increment.declarations import Registry, VARIANCE_REDUCTION
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -694,38 +695,6 @@ class ClusterVarianceModel(RatioVarianceModel):
     consumes = "moments"
 
 
-# Generic registry for orthogonal dispatch axes
-
-
-class Registry[T]:
-    """A small generic registry for orthogonal dispatch axes.
-
-    ``register(key, value)`` — store a value under a string key.
-    ``get(key)`` — retrieve; raises ``NotImplementedError`` naming the
-    missing key and all registered keys (helpful debugging).
-    """
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-        self._entries: dict[str, T] = {}
-
-    def register(self, key: str, value: T) -> None:
-        self._entries[key] = value
-
-    def get(self, key: str) -> T:
-        if key not in self._entries:
-            available = sorted(self._entries)
-            _raise(
-                "estimation.variance.registry.no_registered_available",
-                key=key,
-                registry_name=self._name,
-                available=available,
-            )
-        return self._entries[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self._entries
-
 
 # Pre-built registries
 
@@ -738,8 +707,3 @@ VARIANCE_MODELS.register("ratio", RatioVarianceModel())
 # Selected via the declared cluster (never a metric type on the wire).
 VARIANCE_MODELS.register("cluster", ClusterVarianceModel())
 
-# Method.variance_reduction dispatch
-VARIANCE_REDUCTION: Registry[str] = Registry("variance reduction")
-VARIANCE_REDUCTION.register("none", "none")
-VARIANCE_REDUCTION.register("cuped", "cuped")
-VARIANCE_REDUCTION.register("cuped_multicovariate", "cuped_multicovariate")

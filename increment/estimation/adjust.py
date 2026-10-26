@@ -44,7 +44,7 @@ from increment.estimation.inference import (
     Prior,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
-from increment.estimation.variance import Registry
+from increment.declarations import ADJUSTMENTS, OBSERVATIONAL_METHOD_NAMES, Registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -60,12 +60,9 @@ if TYPE_CHECKING:
     AdjustmentFn = Callable[..., list[LiftEstimate]]
 
 
-# Registry dispatch modules register their estimator functions as import side effects.
-ADJUSTMENTS: Registry[AdjustmentFn] = Registry("adjustment")
-
-_BUILTIN_ADJUSTMENTS = frozenset(("iptw", "dml", "aipw"))
 
 
+_BUILTIN_ADJUSTMENTS = OBSERVATIONAL_METHOD_NAMES
 from increment.estimation._adjust import aipw as _aipw  # noqa: E402,F401
 from increment.estimation._adjust import dml as _dml  # noqa: E402,F401
 from increment.estimation._adjust import iptw as _iptw  # noqa: E402,F401
