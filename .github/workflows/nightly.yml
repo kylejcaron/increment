@@ -38,7 +38,7 @@ jobs:
       - name: Run benchmark suite
         run: |
           if [ "${{ steps.baseline.outputs.present }}" = true ]; then
-            uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-compare=tests/fixtures/benchmarks/ci-baseline.json --benchmark-compare-fail=mean:25% --benchmark-save=nightly
+            uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-compare=tests/fixtures/benchmarks/ci-baseline.json --benchmark-compare-fail=mean:25% --benchmark-save=nightly -W "ignore::pytest_benchmark.logger.PytestBenchmarkWarning"
           else
             uv run pytest tests/benchmarks/test_analysis_benchmark.py -m benchmark -n 0 --benchmark-only --benchmark-save=nightly
           fi
