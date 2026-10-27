@@ -140,12 +140,12 @@ def _frame(
     )
 
 
-def _source(*, design=None, **kwargs):
+def _source(*, design=None, control="control", **kwargs):
     return from_unit_summary(
         _frame(**kwargs),
         unit="user_id",
         group="variant",
-        control="control",
+        control=control,
         metrics=[MetricSpec(name="revenue")],
         design=design,
     )
@@ -386,6 +386,92 @@ def test_inner_population_serializes_independently_from_the_outer_rule():
     assert cell.identity.key.estimand == "ate"
     assert cell.row_payload is not None
     assert cell.row_payload["data"]["population"] == "overlap_trimmed"
+
+
+def test_empty_targeting_selection_reason_survives_cell_and_table_round_trip():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
+    from increment.tables import readout_table
+
+    selection = select_targeting_rule(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        fractions=(0.0,),
+        n_folds=2,
+        seed=0,
+    )
+    cell = ResultCell.from_payload(json.loads(json.dumps(selection.as_cell().to_payload())))
+    assert cell.summary is not None
+    assert cell.summary.reason == "estimation.targeting.empty_group"
+    html = readout_table(AnalysisEnvelope((cell,), None))._repr_html_()
+    assert "estimation.targeting.empty_group" in html
+
+
+def test_targeting_policy_fraction_changes_identity_and_summary_qualification():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    first = targeting_rule(
+        _source(), "revenue", control="control", interact=["spend"], fraction=0.25
+    ).as_cell()
+    second = targeting_rule(
+        _source(), "revenue", control="control", interact=["spend"], fraction=0.75
+    ).as_cell()
+    assert first.identity.method_config_hash != second.identity.method_config_hash
+    first = ResultCell.from_payload(json.loads(json.dumps(first.to_payload())))
+    assert first.summary is not None
+    assert first.summary.qualification is not None
+    assert "0.25" in first.summary.qualification
+    assert "0.25" in render(AnalysisEnvelope((first,), None), "brief")
+
+
+def test_cate_control_is_bound_to_identity_and_reopened_rendering():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    control_a = estimate_cate(
+        _source(arms=("control_A", "treatment"), control="control_A"),
+        "revenue",
+        control="control_A",
+        interact=["spend"],
+    ).as_cell()
+    control_b = estimate_cate(
+        _source(arms=("control_B", "treatment"), control="control_B"),
+        "revenue",
+        control="control_B",
+        interact=["spend"],
+    ).as_cell()
+    assert control_a.identity.method_config_hash != control_b.identity.method_config_hash
+    restored = ResultCell.from_payload(json.loads(json.dumps(control_a.to_payload())))
+    text = render(AnalysisEnvelope((restored,), None), "full")
+    assert "control=control_A" in text
+
+
+def test_cate_validation_alpha_survives_json_and_arrow_reopening():
+    import json
+
+    from increment.result_envelope import AnalysisEnvelope, ResultCell, render
+
+    validation = validate_cate(
+        _source(),
+        "revenue",
+        control="control",
+        interact=["spend"],
+        n_groups=2,
+        alpha=0.1,
+    )
+    cell = validation.as_cell()
+    json_restored = ResultCell.from_payload(json.loads(json.dumps(cell.to_payload())))
+    (arrow_restored,) = ResultCell.from_arrow(ResultCell.to_arrow([cell]))
+    for restored in (json_restored, arrow_restored):
+        assert restored.summary is not None
+        assert restored.summary.alpha == pytest.approx(0.1)
+        assert "90.0% confidence" in render(AnalysisEnvelope((restored,), None), "brief")
 
 
 def test_honest_cate_and_targeting_reports_have_report_only_cells():

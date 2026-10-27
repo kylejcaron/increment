@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
@@ -48,7 +48,17 @@ def _safe_projection_fields(row: LiftEstimate) -> dict[str, Any]:
 
 def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
     if hasattr(row, "lift"):
-        return project_effect(row)
+        effect = project_effect(row)
+        reason = next(
+            (
+                str(getattr(row, name))
+                for name in ("excluded", "unavailable", "unavailable_reason")
+                if getattr(row, name, None) is not None
+            ),
+            None,
+        )
+        return replace(effect, reason=reason) if effect.reason is None and reason else effect
+    rule = getattr(row, "rule", None)
     estimate = next(
         (
             getattr(row, name)
@@ -57,8 +67,8 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
         ),
         None,
     )
-    if estimate is None and hasattr(row, "rule"):
-        estimate = getattr(row.rule, "policy_value", None)
+    if estimate is None and rule is not None:
+        estimate = getattr(rule, "policy_value", None)
     if hasattr(row, "observed_risk_ratio"):
         sensitivity = cast(Any, row)
         point = sensitivity.observed_risk_ratio - 1.0
@@ -77,20 +87,39 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
         point = getattr(estimate, "value", getattr(row, "ate", None))
         lower = getattr(estimate, "lb", getattr(row, "lb", None))
         upper = getattr(estimate, "ub", getattr(row, "ub", None))
-        alpha = getattr(estimate, "alpha", getattr(row, "alpha", None))
+        alpha = getattr(estimate, "alpha", None)
+        if alpha is None:
+            alpha = getattr(row, "alpha", None)
+        if alpha is None:
+            level = getattr(estimate, "level", None)
+            if level is None:
+                level = getattr(row, "interval_level", None)
+            alpha = None if level is None else 1.0 - level
+    reason_sources = (rule, row) if rule is not None else (row,)
     reason = next(
         (
-            str(getattr(row, name))
+            str(getattr(source, name))
+            for source in reason_sources
+            if source is not None
             for name in (
                 "unavailable",
                 "excluded",
                 "unavailable_reason",
                 "interval_unavailable_reason",
             )
-            if getattr(row, name, None) is not None
+            if getattr(source, name, None) is not None
         ),
         None if point is not None else "reported estimate is unavailable",
     )
+    qualification = None
+    policy = rule if rule is not None else row
+    if identity.key.method in {"targeting", "targeting_selection"}:
+        fraction = getattr(row, "selected_fraction", getattr(policy, "fraction", None))
+        achieved = getattr(policy, "achieved_fraction", None)
+        if fraction is not None:
+            qualification = f"selected population: fraction={fraction:g}"
+            if achieved is not None:
+                qualification += f", achieved_fraction={achieved:g}"
     return EffectEstimate(
         point=cast(float | None, point),
         lower=lower,
@@ -99,7 +128,7 @@ def _report_summary(row: BaseModel, identity: CellIdentity) -> EffectEstimate:
         value_scale=identity.key.value_scale or "relative",
         reason=reason,
         geometry="interval" if lower is not None or upper is not None else None,
-        intervals=() if lower is None and upper is None else ((lower, upper),),
+        qualification=qualification,
     )
 
 
@@ -129,6 +158,7 @@ class _ReportProjection:
     lift: _ProjectionEstimate | None
     unavailable: str | None
     relative_unavailable_reason: str | None
+    note: str | None
 
 
 def _json(value: object) -> str:
@@ -558,6 +588,26 @@ class ResultCell:
                 None,
             )
         estimand = "overlap_subpopulation_ate" if effective_population is not None else "ate"
+        policy = rule if rule is not None else row
+        method_config: dict[str, Any] = {"control": identity_context["control"]}
+        if row_kind in {"targeting", "targeting_selection"}:
+            method_config.update(
+                fraction=getattr(row, "selected_fraction", getattr(policy, "fraction", None)),
+                achieved_fraction=getattr(policy, "achieved_fraction", None),
+                cost_per_treated=getattr(row, "cost_per_treated", 0.0),
+                cluster_weight=getattr(policy, "cluster_weight", None),
+                intervention_grain=getattr(policy, "intervention_grain", None),
+                deploy_grain=getattr(policy, "deploy_grain", None),
+                budget_rule=getattr(policy, "budget_rule", None),
+                required_columns=getattr(policy, "required_columns", ()),
+            )
+            if row_kind == "targeting_selection":
+                method_config.update(
+                    fractions=getattr(row, "fractions", ()),
+                    n_folds=getattr(row, "n_folds", None),
+                    seed=getattr(row, "seed", None),
+                )
+        method_config_hash = contracts.contract_hash("report_method_config", method_config)
         identity = contracts.CellIdentity(
             key=CellKey(
                 kind="arm",
@@ -571,6 +621,7 @@ class ResultCell:
                 alternative="two-sided",
                 group_id=identity_context["treatment"],
             ),
+            method_config_hash=method_config_hash,
             source_snapshot_id=identity_context["source_snapshot_id"],
             experiment_id=source_identity.get("study_id")
             if isinstance(source_identity, Mapping)
@@ -677,6 +728,7 @@ class ResultCell:
                 lift=report_estimate,
                 unavailable=unavailable if report_estimate is None else None,
                 relative_unavailable_reason=unavailable,
+                note=None if summary is None else summary.qualification,
             )
         status = self.components["sampling"][0]
         key = self.identity.key
@@ -1233,12 +1285,18 @@ def _report_detail(cell: ResultCell) -> str | None:
         "targeting_selection": ("increment.estimation.targeting", "TargetingSelection"),
         "sensitivity": ("increment.estimation.confounding", "ConfoundingSensitivity"),
     }
-    if cell.row_payload is None or cell.row_kind not in model_paths:
+    if cell.row_payload is None:
+        return None
+    identity_context = cell.row_payload.get("identity_context")
+    control = identity_context.get("control") if isinstance(identity_context, Mapping) else None
+    if cell.row_kind == "cate":
+        return f"CATE report; control={control}" if control is not None else "CATE report"
+    if cell.row_kind not in model_paths:
         return None
     module_name, model_name = model_paths[cell.row_kind]
     model = getattr(import_module(module_name), model_name)
     report = model.model_validate_json(_json(_plain(cell.row_payload["data"])))
-    return str(report)
+    return f"{report}; control={control}" if control is not None else str(report)
 
 
 def render(envelope: AnalysisEnvelope, audience: Literal["brief", "full"] = "brief") -> str:

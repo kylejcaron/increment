@@ -375,6 +375,7 @@ def contrast_results_to_readout(
 def _report_projection_to_readout(est: Any) -> dict[str, Any]:
     from increment._interpretation import project_effect
 
+    qualification = None
     if isinstance(est, DailyMetricValue):
         value = est.value
         point = None if value is None else value.value
@@ -386,7 +387,11 @@ def _report_projection_to_readout(est: Any) -> dict[str, Any]:
     else:
         effect = project_effect(est)
         point, lower, upper, alpha = effect.point, effect.lower, effect.upper, effect.alpha
-        scale, reason = effect.value_scale, effect.reason
+        scale = effect.value_scale
+        reason = (
+            effect.reason or getattr(est, "excluded", None) or getattr(est, "unavailable", None)
+        )
+        qualification = effect.qualification
     return {
         "metric": est.metric,
         "method": getattr(est, "method", None) or "report",
@@ -407,7 +412,7 @@ def _report_projection_to_readout(est: Any) -> dict[str, Any]:
         "segment": getattr(est, "dimension_value", None),
         "dimension": getattr(est, "dimension", None),
         "source": getattr(est, "source", None),
-        "note": getattr(est, "note", None),
+        "note": getattr(est, "note", None) or reason or qualification,
         "unavailable": reason,
         "relative_unavailable_reason": reason,
         "sampling_available": False,
@@ -463,6 +468,10 @@ def estimates_to_readout(
             if ds is not None:
                 row["ds"] = ds
             row.update(_decision_stat_columns(est))
+        if row.get("note") is None:
+            reason = row.get("excluded") or row.get("unavailable")
+            if reason is not None:
+                row["note"] = str(reason)
         if interpretation is not None:
             row.update(
                 readout_evidence_columns(
@@ -1352,6 +1361,12 @@ def _readout_labels(
         f"{metric} ({estimand})" if isinstance(estimand, str) and estimand != "itt" else metric
         for metric, estimand in zip(metrics, estimands, strict=True)
     ]
+    if "ds" in frame.columns:
+        dates = frame["ds"].to_list()
+        labels = [
+            f"{label} ({day})" if not _is_missing(day) else label
+            for label, day in zip(labels, dates, strict=True)
+        ]
     nests = frame[nest_column].to_list()
     splits = frame[split_column].to_list() if split_columns else [None] * len(labels)
     keys = list(zip(labels, nests, splits, strict=True))

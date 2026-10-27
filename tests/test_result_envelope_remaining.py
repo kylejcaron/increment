@@ -127,6 +127,30 @@ def test_row_kind_must_match_retained_payload_kind():
     assert raised.value.code == "results.cell.schema_unsupported"
 
 
+def test_unavailable_breakout_reason_survives_cell_and_table_round_trip():
+    from increment.breakout.estimates import BreakoutEstimate, BreakoutEstimates
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
+    from increment.tables import readout_table
+
+    row = BreakoutEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        dimension="country",
+        dimension_value="US",
+        source=None,
+        lift=None,
+        excluded="few_units",
+    )
+    (cell,) = BreakoutEstimates([row]).as_cells()
+    restored = ResultCell.from_payload(json.loads(json.dumps(cell.to_payload())))
+    assert restored.summary is not None
+    assert restored.summary.reason == "few_units"
+    html = readout_table(AnalysisEnvelope((restored,), None))._repr_html_()
+    assert "few_units" in html
+
+
 @pytest.mark.integration
 def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seeded_defs):
     import gc
@@ -134,7 +158,6 @@ def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seed
     from increment import Analysis
     from increment.declarations import CellKey
     from increment.result_envelope import AnalysisEnvelope, ResultCell
-    from increment.tables import readout_table
 
     analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     try:
@@ -196,9 +219,31 @@ def test_breakout_and_day_axis_producers_round_trip_tagged_rows(seeded_con, seed
                 AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload()))).cells
                 == envelope.cells
             )
-            if row_kind == "daily_metric":
-                html = readout_table(AnalysisEnvelope((restored[0],), None))._repr_html_()
-                assert "purchase_rate" in html
+    finally:
+        analysis.close()
+
+
+@pytest.mark.integration
+def test_reopened_daily_cells_use_dates_as_table_identity(seeded_con, seeded_defs):
+    from increment import Analysis
+    from increment.result_envelope import AnalysisEnvelope, ResultCell
+    from increment.tables import readout_table
+
+    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    try:
+        rows = analysis.run_daily()
+        cells = [
+            cell
+            for cell in rows.as_cells()
+            if cell.identity.key.metric == "purchase_rate"
+            and cell.identity.key.group_id == "control"
+        ]
+        assert len(cells) >= 2
+        first, second = ResultCell.from_arrow(ResultCell.to_arrow(cells[:2]))
+        assert first.identity.key.ds != second.identity.key.ds
+        html = readout_table(AnalysisEnvelope((first, second), None))._repr_html_()
+        assert str(first.identity.key.ds) in html
+        assert str(second.identity.key.ds) in html
     finally:
         analysis.close()
 

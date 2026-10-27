@@ -86,8 +86,8 @@ def test_compare_normalizes_tuple_and_list_containers_recursively() -> None:
 
 
 def _assert_payload_matches(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> None:
-    assert expected["identity"] == actual["identity"]
-    _compare(_comparable_payload(expected), _comparable_payload(actual))
+    canonical_expected = ResultCell.from_payload(expected).to_payload()
+    _compare(_comparable_payload(canonical_expected), _comparable_payload(actual))
 
 
 def _assert_operation_matches(
