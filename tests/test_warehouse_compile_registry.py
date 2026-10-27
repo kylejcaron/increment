@@ -459,6 +459,39 @@ def test_compile_dependency_build_forwards_child_error_before_raising(
     assert "child build exploded" in capsys.readouterr().err
 
 
+def test_cold_compile_build_records_dependencies_for_check(tmp_path, monkeypatch):
+    from integration.warehouse_execution import _compile
+    from scripts import trace_compile_dependencies as dependency_trace
+
+    dependency_file = tmp_path / dependency_trace.DEPENDENCIES_PATH
+    dependency_file.parent.mkdir(parents=True)
+    dependency_file.write_text("increment.synthetic\n")
+    monkeypatch.setattr(
+        _compile,
+        "__file__",
+        str(tmp_path / "integration" / "warehouse_execution" / "_compile.py"),
+    )
+    monkeypatch.setattr(
+        _compile, "_captured_compile_cache_key", lambda dialect, root=None: "synthetic-key"
+    )
+    monkeypatch.setattr(
+        dependency_trace,
+        "_build_and_record",
+        lambda root, dialect: ((), ["increment.synthetic"]),
+    )
+    monkeypatch.setattr(
+        dependency_trace,
+        "trace",
+        lambda root, dialect: pytest.fail("a successful cold build must record dependencies"),
+    )
+    _compile._captured_compile_data.cache_clear()
+    try:
+        assert _compile._captured_compile_data("snowflake") == ()
+        assert dependency_trace.check(tmp_path) == []
+    finally:
+        _compile._captured_compile_data.cache_clear()
+
+
 def test_compile_dependency_check_uses_the_requested_root_cache_key(tmp_path, monkeypatch):
     import json
 
