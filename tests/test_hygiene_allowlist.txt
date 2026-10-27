@@ -11,7 +11,6 @@ tests/estimation/test_asymptotic_mean.py 1
 tests/estimation/test_binomial_grid_calibration.py 3
 tests/estimation/test_binomial_rr.py 5
 tests/estimation/test_certified.py 2
-tests/estimation/test_conversion_composite.py 1
 tests/estimation/test_conversion_route_calibration.py 1
 tests/estimation/test_cuped_compact.py 2
 tests/estimation/test_decision_bundle.py 2
