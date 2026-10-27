@@ -3135,11 +3135,56 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
         context = source.context
         artifact_experiment = experiment
 
+        def __init__(self):
+            self.active_scope: EvidenceScope | None = None
+            self.rows_by_source = {
+                "events": (
+                    {
+                        "ds": dt.date(2026, 1, 1),
+                        "country": "US",
+                        "device": "mobile",
+                        "group_id": "control",
+                        "revenue": 11.0,
+                        "source": "events",
+                    },
+                    {
+                        "ds": dt.date(2026, 1, 2),
+                        "country": "US",
+                        "device": "mobile",
+                        "group_id": "treatment",
+                        "revenue": 12.0,
+                        "source": "events",
+                    },
+                ),
+                "app": (
+                    {
+                        "ds": dt.date(2026, 1, 1),
+                        "country": "CA",
+                        "device": "tablet",
+                        "group_id": "control",
+                        "revenue": 21.0,
+                        "source": "app",
+                    },
+                    {
+                        "ds": dt.date(2026, 1, 2),
+                        "country": "CA",
+                        "device": "tablet",
+                        "group_id": "treatment",
+                        "revenue": 22.0,
+                        "source": "app",
+                    },
+                ),
+            }
+
         def moments(self, request):
-            # Keep this source's acquisition deterministic; source partitioning
-            # is the behavior under test, while the real DuckDB daily run above
-            # verifies the end-to-end rows.
-            return ()
+            assert self.active_scope is not None
+            sources = {identity.source for identity in self.active_scope.breakouts}
+            if len(sources) != 1:
+                return ()
+            source_name = next(iter(sources))
+            if source_name is None:
+                return ()
+            return self.rows_by_source[source_name]
 
         def unit_rows(self, request):
             return builtin.unit_rows(request)
@@ -3162,19 +3207,34 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
         def capture_sequential(self, request):
             return builtin.capture_sequential(request)
 
-        def scope(self, request):
+        def scope(self, request: EvidenceScope):
             from contextlib import contextmanager
 
             from increment.evidence import EvidenceScopeResult
 
+            delegated = builtin.scope(request)
+
             @contextmanager
             def scoped():
-                yield self
+                with delegated.source:
+                    self.active_scope = request
+                    try:
+                        yield self
+                    finally:
+                        self.active_scope = None
 
             return EvidenceScopeResult(scoped(), request)
 
     provider = Provider()
-    actual = analysis.run_daily(dimension="country")
+    forwarding = _forwarding_provider(source, scope=builtin.scope, artifact_experiment=experiment)
+    forwarding_analysis = Analysis._from_source(forwarding)
+    actual = forwarding_analysis.run_daily(dimension="country")
+    identities = [
+        (row.source, row.ds, row.dimension, row.dimension_value, row.group_id) for row in actual
+    ]
+    assert actual
+    assert {row.source for row in actual} == {"events", "app"}
+    assert len(identities) == len(set(identities))
     from increment.readouts._evidence import load_breakout_evidence, load_day_axis_rows
 
     declared = tuple(experiment.breakouts)
@@ -3204,6 +3264,33 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
         ) == expected[0].source.moments(source.context.metrics[0], by=(identity.property,))
 
     metric = source.context.metrics[0]
+
+    custom_request = DayAxisRequest(
+        caller="run_daily",
+        grain="daily",
+        metrics=(metric,),
+        dimension=None,
+        by=("country", "device"),
+        experiment=experiment,
+    )
+    custom_slices = tuple(load_day_axis_rows(provider, custom_request).slices)
+    custom_rows = tuple(row for item in custom_slices for row in item.rows)
+    expected_custom_rows = provider.rows_by_source["events"] + provider.rows_by_source["app"]
+    assert [item.source_name for item in custom_slices] == ["events", "app"]
+    assert custom_rows == expected_custom_rows
+    custom_cell_ids = tuple(
+        (row["source"], row["ds"], row["country"], row["device"], row["group_id"])
+        for row in custom_rows
+    )
+    assert len(custom_cell_ids) == len(set(custom_cell_ids))
+    assert [
+        tuple((item.property, item.source) for item in day_slice.experiment.breakouts)
+        for day_slice in custom_slices
+    ] == [
+        (("country", "events"), ("device", "events")),
+        (("country", "app"), ("device", "app")),
+    ]
+
     for grain, caller in (("daily", "run_daily"), ("asof", "run_asof")):
         day_request = DayAxisRequest(
             caller=caller,
@@ -3229,7 +3316,6 @@ def test_builtin_scoped_daily_breakout_returns_each_source_row_once(tmp_path) ->
             assert len(acquired) == len(expected) == 1
             assert acquired[0].rows == expected[0].rows
 
-    assert {row.source for row in actual} == {"events", "app"}
     analysis.close()
 
 
