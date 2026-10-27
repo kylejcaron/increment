@@ -192,7 +192,7 @@ class CellKey(_ReadoutModel):
         if isinstance(value, Mapping) and set(value) == {"label"}:
             label = value["label"]
             if not isinstance(label, str):
-                raise ValueError("day-axis labels must be strings")
+                _refuse("readout.cell.key_invalid", kind="day_axis", fields=("ds",))
             return label
         if isinstance(value, Mapping) and set(value) == {"datetime"}:
             return datetime.fromisoformat(value["datetime"])
@@ -203,7 +203,7 @@ class CellKey(_ReadoutModel):
                 return value
         if value is None or isinstance(value, (date, datetime, int, float)):
             return value
-        raise ValueError("day-axis values must be typed dates, labels, or numbers")
+        _refuse("readout.cell.key_invalid", kind="day_axis", fields=("ds",))
 
     @model_validator(mode="after")
     def _identity_axes(self):
