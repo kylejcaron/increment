@@ -131,12 +131,13 @@ live analysis or fit object.
 
 `relevel(cell, alpha=...)` can rebuild supported retained `t` intervals only
 at the same or a lower alpha than the interval already stored; it can preserve
-or widen the interval, but cannot narrow it. Requests that would narrow the
-interval refuse with `results.operation.alpha_above_allocation`. This portable
-cell operation is separate from `LiftEstimate.reintervalize(alpha)`, which
-keeps its existing row-level reissue behavior. For multiplicity correction,
-pass the retained rows to `select_exploratory_family()`; it derives the family
-cutoff and returns corrected estimates.
+or widen the interval, but cannot narrow it. Directional intervals with an open
+endpoint are not relevelable. Requests that would narrow a supported interval
+refuse with `results.operation.alpha_above_allocation`. This portable cell
+operation is separate from `LiftEstimate.reintervalize(alpha)`, which keeps its
+existing row-level reissue behavior. For multiplicity correction, pass the
+retained rows to `select_exploratory_family()`; it derives the family cutoff and
+returns corrected estimates.
 The envelope supports the 3a result types: fixed-horizon mean, ratio and CUPED
 lift rows, plus asymptotic sequential lift rows. After reopening, only the
 operations listed as available for a cell can be applied. The envelope is not

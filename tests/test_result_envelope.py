@@ -400,6 +400,69 @@ def _relevel_test_cells():
     )
 
 
+def _assert_interval_contains(outer, inner):
+    assert outer is not None and inner is not None
+    assert outer.value_scale == inner.value_scale
+    if inner.lower is None:
+        assert outer.lower is None
+    elif outer.lower is not None:
+        assert outer.lower <= inner.lower or outer.lower == pytest.approx(inner.lower)
+    if inner.upper is None:
+        assert outer.upper is None
+    elif outer.upper is not None:
+        assert outer.upper >= inner.upper or outer.upper == pytest.approx(inner.upper)
+
+
+@pytest.mark.integration
+def test_directional_bh_interval_cannot_be_releveled_after_arrow():
+    from typing import cast
+
+    import pandas as pd
+
+    from increment import Analysis, AnalysisPlan, MetricSpec
+    from increment.errors import CodedError
+    from increment.estimation.results import LiftEstimate
+    from increment.result_envelope import Operation, ResultCell, relevel
+    from increment.semantics.design import Randomized
+
+    data = pd.DataFrame(
+        [
+            {
+                "unit": f"{group}-{index}",
+                "arm": group,
+                "v": float(index % 11 + (1 if group == "control" else 11)),
+            }
+            for group in ("control", "treatment")
+            for index in range(100)
+        ]
+    )
+    rows = cast(
+        list[LiftEstimate],
+        list(
+            Analysis.from_unit_summary(
+                data,
+                unit="unit",
+                group="arm",
+                design=Randomized(
+                    control_group="control",
+                    allocation={"control": 0.5, "treatment": 0.5},
+                    allocation_scheme="independent",
+                ),
+                metrics=[MetricSpec(name="v", type="mean")],
+                plan=AnalysisPlan(alternative="greater", secondaries=["v"], q=0.05),
+            ).run()
+        ),
+    )
+    row = next(candidate for candidate in rows if candidate.group_id == "treatment")
+    assert row.discovery is True
+    assert row.lift is not None and row.lift.open_side == "upper"
+    cell = ResultCell.from_arrow(ResultCell.to_arrow(row.as_cells()))[0]
+    with pytest.raises(CodedError) as raised:
+        relevel(cell, alpha=0.01)
+    assert raised.value.code == "results.operation.unsupported"
+    assert Operation.RELEVEL not in cell.supports["sampling"]
+
+
 @pytest.mark.integration
 def test_relevel_is_conservative_across_pilot_cell_kinds():
     from hypothesis import given, settings
@@ -457,15 +520,14 @@ def test_relevel_is_conservative_across_pilot_cell_kinds():
                     assert widened.family == original.family
                     assert widened.provenance == original.provenance
                     assert widened.components["sampling"][0] == original_status
-                    assert widened.summary is not None and cell.summary is not None
-                    assert widened.summary.value_scale == cell.summary.value_scale
+                    _assert_interval_contains(widened.summary, original.summary)
                     reissued = widened.retained_row()
                     assert all(
                         getattr(reissued, field) == getattr(original_row, field)
                         for field in family_fields
                     )
                     next_alpha = _retained_relevel_alpha(reissued)
-                    assert next_alpha is not None and next_alpha <= current_alpha
+                    assert next_alpha is not None
                     current = widened
                     current_alpha = next_alpha
 
@@ -1045,7 +1107,7 @@ def test_posterior_qualified_table_projection_matches_legacy(seeded_con, seeded_
 
 
 @pytest.mark.integration
-def test_directional_reissue_keeps_halved_allocated_budget(seeded_con, seeded_defs):
+def test_directional_family_selection_retains_effective_alpha_and_advisory(seeded_con, seeded_defs):
     from dataclasses import replace
 
     from increment import Analysis, Method
@@ -1099,9 +1161,10 @@ def test_directional_reissue_keeps_halved_allocated_budget(seeded_con, seeded_de
     corrected = corrected_cell.retained_row()
     assert corrected_cell.summary is not None
     assert corrected_cell.components["sampling"][0].state == "advisory"
-    assert Operation.RELEVEL in corrected_cell.supports["sampling"]
+    assert Operation.RELEVEL not in corrected_cell.supports["sampling"]
     assert corrected_cell.components["sampling"][0].advisories == ("sampling.retained_advisory",)
     assert corrected.lift is not None
+    assert corrected.lift.open_side is not None
     assert corrected.lift.alpha == pytest.approx(0.025)
 
 

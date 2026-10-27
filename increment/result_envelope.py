@@ -673,6 +673,7 @@ def _can_reconstruct_relevel(row: LiftEstimate) -> bool:
         and row.lift is not None
         and row.lift.log_mean is not None
         and row.lift.log_se is not None
+        and row.lift.open_side is None
     )
     additive = (
         row.estimand == "itt"
