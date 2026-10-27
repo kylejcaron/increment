@@ -1,0 +1,16 @@
+{
+  "schema_version": {"type": "int32", "nullable": true},
+  "row_kind": {"type": "string", "nullable": true},
+  "identity": {"type": "string", "nullable": true},
+  "label": {"type": "string", "nullable": true},
+  "family": {"type": "string", "nullable": true},
+  "source_snapshot_id": {"type": "string", "nullable": true},
+  "provenance": {"type": "string", "nullable": true},
+  "summary": {"type": "string", "nullable": true},
+  "retained_row": {"type": "string", "nullable": true},
+  "row_payload": {"type": "string", "nullable": true},
+  "projection_fields": {"type": "string", "nullable": true},
+  "sampling": {"type": "struct<status: string, code: string, reason: string, context: string, advisories: list<item: string>, construction: string, kind: string, state_reason: string, supports: list<item: string>>", "nullable": true},
+  "posterior": {"type": "struct<status: string, code: string, reason: string, context: string, advisories: list<item: string>, construction: string, kind: string, state_reason: string, supports: list<item: string>>", "nullable": true},
+  "sequential": {"type": "struct<status: string, code: string, reason: string, context: string, advisories: list<item: string>, construction: string, kind: string, state_reason: string, supports: list<item: string>>", "nullable": true}
+}

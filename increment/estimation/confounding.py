@@ -103,6 +103,38 @@ class ConfoundingSensitivity(CodedModel, BaseModel):
     assumptions: tuple[str, ...]
     robustness_not_identification: Literal[True] = True
 
+    def as_cell(self, *, created_at=None):
+        from datetime import UTC, datetime
+        from importlib import import_module
+
+        declarations = import_module("increment.declarations")
+        contracts = import_module("increment.kernel.contracts")
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        identity = contracts.CellIdentity(
+            key=declarations.CellKey(
+                kind="arm",
+                metric=self.metric,
+                method=self.method,
+                method_role="sensitivity",
+                estimand=self.estimand,
+                analysis_population=self.analysis_population,
+                value_scale="relative",
+                inference="fixed",
+                alternative="two-sided",
+                group_id=self.group_id,
+            ),
+            source_snapshot_id=self.source_snapshot_id,
+        )
+        return ResultCell.from_report_payload(
+            row_kind="sensitivity",
+            identity=identity,
+            label=self.method,
+            row=self,
+            source_snapshot_id=self.source_snapshot_id,
+            created_at=created_at or datetime.now(UTC),
+        )
+
 
 def e_value(bias_factor: float) -> float:
     """Invert B(m, m) for a finite bias factor at least one, not an observed RR."""

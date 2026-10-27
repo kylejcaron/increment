@@ -1076,6 +1076,8 @@ class EstimateList[M: BaseModel](list[M]):
         source=None,
         sequential_snapshot=None,
         default_backend: Backend | None = None,
+        envelope_view: Literal["daily", "asof"] | None = None,
+        completion_policy: bool = False,
     ):
         from increment.estimation.readout_types import validate_collection
 
@@ -1084,6 +1086,8 @@ class EstimateList[M: BaseModel](list[M]):
         self.source = source
         self.sequential_snapshot = sequential_snapshot
         self._default_backend = default_backend
+        self._envelope_view = envelope_view
+        self._envelope_completion_policy = completion_policy
         validate_collection(self, metadata)
 
     @property
@@ -1108,6 +1112,8 @@ class EstimateList[M: BaseModel](list[M]):
             self.source,
             self.sequential_snapshot,
             self._default_backend,
+            self._envelope_view,
+            self._envelope_completion_policy,
         )
 
     def model_dump_json(self):
@@ -1125,6 +1131,8 @@ class EstimateList[M: BaseModel](list[M]):
             source=self.source,
             sequential_snapshot=self.sequential_snapshot,
             default_backend=self._default_backend,
+            envelope_view=self._envelope_view,
+            completion_policy=self._envelope_completion_policy,
         )
 
     def concat(self, other):
@@ -1299,6 +1307,8 @@ class EstimateList[M: BaseModel](list[M]):
                 source=self.source,
                 sequential_snapshot=self.sequential_snapshot,
                 default_backend=self._default_backend,
+                envelope_view=self._envelope_view,
+                completion_policy=self._envelope_completion_policy,
             )
         return cast("M", result)
 
@@ -1815,6 +1825,52 @@ class LiftEstimates(EstimateList[LiftEstimate]):
         return [cell for row in self for cell in row.as_cells(self.metadata, created_at=stamp)]
 
 
+def _collection_envelope_view(collection) -> Literal["daily", "asof"]:
+    view = getattr(collection, "_envelope_view", None)
+    if view in {"daily", "asof"}:
+        return view
+    metadata = getattr(collection, "metadata", None)
+    if metadata is not None:
+        views = {family.view for family in metadata.scope.families}
+        if len(views) == 1:
+            inferred = next(iter(views))
+            if inferred in {"daily", "asof"}:
+                return inferred
+    return "daily"
+
+
+def _envelope_identity(
+    row: BaseModel,
+    view: Literal["breakout", "daily", "asof"],
+    *,
+    completed_windows_only: bool = False,
+):
+    from importlib import import_module
+
+    contracts = import_module("increment.kernel.contracts")
+
+    key = contracts.CellIdentity.from_row(row)
+    dimension = getattr(row, "dimension", None)
+    source = getattr(row, "source", None)
+    segment = (BreakoutIdentity(dimension, source),) if dimension is not None else ()
+    ds = getattr(row, "ds", None)
+    through_day = ds.date() if isinstance(ds, datetime) else ds
+    updates = {
+        "scope": contracts.Scope(
+            view=view,
+            grain="total" if view == "breakout" else view,
+            through_day=through_day if view == "asof" and isinstance(through_day, date) else None,
+            population=getattr(row, "analysis_population", "assigned"),
+            time_basis=getattr(row, "ds_basis", "calendar"),
+            completion_policy=completed_windows_only,
+            segment=segment,
+        )
+    }
+    if isinstance(row, DailyMetricValue):
+        updates["key"] = key.key.model_copy(update={"value_scale": "absolute"})
+    return key.model_copy(update=updates)
+
+
 class BreakoutEstimates(EstimateList[BreakoutEstimate]):
     """``list[BreakoutEstimate]`` with ``.to_frame()`` - :func:`run_breakout`'s
     (and :meth:`~increment.analysis.Analysis.run_breakout`'s)
@@ -1854,6 +1910,31 @@ class BreakoutEstimates(EstimateList[BreakoutEstimate]):
         "failure_code",
     )
 
+    def as_cells(self, *, created_at: datetime | None = None):
+        from importlib import import_module
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        stamp = created_at or datetime.now().astimezone()
+        return [
+            ResultCell.from_report_payload(
+                row_kind="breakout",
+                identity=_envelope_identity(row, "breakout"),
+                label=row.method,
+                row=row,
+                family=(
+                    None
+                    if self.metadata is None
+                    else self.metadata.family_of(
+                        row.source_snapshot_id, _envelope_identity(row, "breakout").key
+                    )
+                ),
+                source_snapshot_id=row.source_snapshot_id,
+                created_at=stamp,
+            )
+            for row in self
+        ]
+
 
 class DailyMetricValues(EstimateList[DailyMetricValue]):
     """``list[DailyMetricValue]`` with ``.to_frame()`` - :func:`run_daily`'s
@@ -1861,6 +1942,30 @@ class DailyMetricValues(EstimateList[DailyMetricValue]):
     ``run_asof``'s) return type."""
 
     _model = DailyMetricValue
+    _envelope_view: Literal["daily", "asof"] | None = None
+
+    def as_cells(self, *, created_at: datetime | None = None):
+        from importlib import import_module
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        view = _collection_envelope_view(self)
+        stamp = created_at or datetime.now().astimezone()
+        return [
+            ResultCell.from_report_payload(
+                row_kind=f"{view}_metric",
+                identity=_envelope_identity(
+                    row,
+                    view,
+                    completed_windows_only=getattr(self, "_envelope_completion_policy", False),
+                ),
+                label="daily metric value",
+                row=row,
+                source_snapshot_id=row.source_snapshot_id,
+                created_at=stamp,
+            )
+            for row in self
+        ]
 
 
 class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
@@ -1869,6 +1974,7 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     ``run_asof_lift``'s) return type."""
 
     _model = DailyLiftEstimate
+    _envelope_view: Literal["daily", "asof"] | None = None
     _summary_columns = (
         "metric",
         "group_id",
@@ -1902,6 +2008,37 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
         "relative_unavailable_reason",
         "failure_code",
     )
+
+    def as_cells(self, *, created_at: datetime | None = None):
+        from importlib import import_module
+
+        ResultCell = import_module("increment.result_envelope").ResultCell
+
+        view = _collection_envelope_view(self)
+        stamp = created_at or datetime.now().astimezone()
+        return [
+            ResultCell.from_report_payload(
+                row_kind=f"{view}_lift",
+                identity=identity,
+                label=row.method,
+                row=row,
+                family=(
+                    None
+                    if self.metadata is None
+                    else self.metadata.family_of(row.source_snapshot_id, identity.key)
+                ),
+                source_snapshot_id=row.source_snapshot_id,
+                created_at=stamp,
+            )
+            for row in self
+            for identity in (
+                _envelope_identity(
+                    row,
+                    view,
+                    completed_windows_only=getattr(self, "_envelope_completion_policy", False),
+                ),
+            )
+        ]
 
 
 def daily_sequential_projection(

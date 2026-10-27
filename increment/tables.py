@@ -27,7 +27,7 @@ from increment._interpretation import (
     render_effect_interpretation,
     render_readout_qualifications,
 )
-from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, DailyMetricValue
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_stat_sig
@@ -372,6 +372,60 @@ def contrast_results_to_readout(
     return rows
 
 
+def _report_projection_to_readout(est: Any) -> dict[str, Any]:
+    from increment._interpretation import project_effect
+
+    qualification = None
+    if isinstance(est, DailyMetricValue):
+        value = est.value
+        point = None if value is None else value.value
+        lower = None if value is None else value.lb
+        upper = None if value is None else value.ub
+        alpha = None if value is None else value.alpha
+        scale = "absolute"
+        reason = est.unavailable
+    else:
+        effect = project_effect(est)
+        point, lower, upper, alpha = effect.point, effect.lower, effect.upper, effect.alpha
+        scale = effect.value_scale
+        reason = (
+            effect.reason or getattr(est, "excluded", None) or getattr(est, "unavailable", None)
+        )
+        qualification = effect.qualification
+    return {
+        "metric": est.metric,
+        "method": getattr(est, "method", None) or "report",
+        "method_role": getattr(est, "method_role", "decision"),
+        "lift": point,
+        "lower": lower,
+        "higher": upper,
+        "level": None if alpha is None else 1.0 - alpha,
+        "stat_sig": None,
+        "decision_scale": scale,
+        "decision_available": point is not None,
+        "estimand": getattr(est, "estimand", "itt"),
+        "value_scale": scale,
+        "analysis_population": getattr(est, "analysis_population", "assigned"),
+        "group_id": getattr(est, "group_id", None) or "reported",
+        "ds": getattr(est, "ds", None),
+        "ds_basis": getattr(est, "ds_basis", None),
+        "segment": getattr(est, "dimension_value", None),
+        "dimension": getattr(est, "dimension", None),
+        "source": getattr(est, "source", None),
+        "note": getattr(est, "note", None) or reason or qualification,
+        "unavailable": reason,
+        "relative_unavailable_reason": reason,
+        "sampling_available": False,
+        "sampling_reason_code": None,
+        "sampling_reason_context": None,
+        "posterior_available": None,
+        "posterior_chance_to_beat": None,
+        "posterior_risk_if_shipped": None,
+        "posterior_prob_favorable": None,
+        "posterior_prob_favorable_reason_code": None,
+    }
+
+
 def estimates_to_readout(
     estimates: Sequence[LiftEstimate | BreakoutEstimate | DailyLiftEstimate | ContrastResult],
 ) -> list[dict[str, Any]]:
@@ -393,6 +447,9 @@ def estimates_to_readout(
             row["posterior_risk_if_shipped"] = None
             row["posterior_prob_favorable"] = None
             row["posterior_prob_favorable_reason_code"] = None
+        elif isinstance(est, DailyMetricValue) or not hasattr(est, "stat_sig"):
+            row = _report_projection_to_readout(est)
+            row["view_partial"] = view_partial
         else:
             row = _liftestimate_to_row(est)
             row["view_partial"] = view_partial
@@ -411,6 +468,10 @@ def estimates_to_readout(
             if ds is not None:
                 row["ds"] = ds
             row.update(_decision_stat_columns(est))
+        if row.get("note") is None:
+            reason = row.get("excluded") or row.get("unavailable")
+            if reason is not None:
+                row["note"] = str(reason)
         if interpretation is not None:
             row.update(
                 readout_evidence_columns(
@@ -1300,6 +1361,12 @@ def _readout_labels(
         f"{metric} ({estimand})" if isinstance(estimand, str) and estimand != "itt" else metric
         for metric, estimand in zip(metrics, estimands, strict=True)
     ]
+    if "ds" in frame.columns:
+        dates = frame["ds"].to_list()
+        labels = [
+            f"{label} ({day})" if not _is_missing(day) else label
+            for label, day in zip(labels, dates, strict=True)
+        ]
     nests = frame[nest_column].to_list()
     splits = frame[split_column].to_list() if split_columns else [None] * len(labels)
     keys = list(zip(labels, nests, splits, strict=True))

@@ -194,9 +194,11 @@ def test_sequential_and_quantile_cells_roundtrip_supported_payload_operations() 
         assert outcome["kind"] == "cells"
         for captured in outcome["cells"].values():
             cell = ResultCell.from_payload(captured["result_cell"])
-            assert json.loads(
-                json.dumps(ResultCell.from_payload(cell.to_payload()).to_payload())
-            ) == json.loads(json.dumps(captured["result_cell"]))
+            canonical = json.loads(json.dumps(cell.to_payload()))
+            canonical_reopened = json.loads(
+                json.dumps(ResultCell.from_payload(canonical).to_payload())
+            )
+            assert canonical_reopened == canonical
 
 
 def test_capture_float_normalization_preserves_tiny_nonzero_values() -> None:

@@ -979,6 +979,7 @@ def test_result_cell_schema_is_versioned_and_structured():
     schema = ResultCell.to_arrow([]).schema
     assert schema.names == [
         "schema_version",
+        "row_kind",
         "identity",
         "label",
         "family",
@@ -986,6 +987,7 @@ def test_result_cell_schema_is_versioned_and_structured():
         "provenance",
         "summary",
         "retained_row",
+        "row_payload",
         "projection_fields",
         "sampling",
         "posterior",
@@ -999,11 +1001,13 @@ def test_result_cell_schema_is_versioned_and_structured():
         "context",
         "advisories",
         "construction",
+        "kind",
+        "state_reason",
         "supports",
     ]
     golden = json.loads(
         (
-            Path(__file__).parent / "goldens" / "decision_wire" / "result_envelope_v1.schema.json"
+            Path(__file__).parent / "goldens" / "decision_wire" / "result_envelope_v2.schema.json"
         ).read_text()
     )
     actual = {field.name: {"type": str(field.type), "nullable": field.nullable} for field in schema}
@@ -1498,11 +1502,14 @@ def test_arrow_ipc_bytes_are_stable_across_fresh_processes(seeded_con, seeded_de
     from increment.breakout.estimates import LiftEstimates
     from increment.result_envelope import AnalysisEnvelope
 
-    rows = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con).run(
-        decision_method=Method(name="unadjusted")
-    )
+    analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    rows = analysis.run(decision_method=Method(name="unadjusted"))
     assert isinstance(rows, LiftEstimates)
-    envelope = AnalysisEnvelope(cells=tuple(rows.as_cells()), metadata=rows.metadata)
+    breakout_rows = analysis.run_breakout()
+    envelope = AnalysisEnvelope(
+        cells=(*rows.as_cells(), *breakout_rows.as_cells()),
+        metadata=None,
+    )
     source = """
 import json, sys
 import pyarrow as pa
