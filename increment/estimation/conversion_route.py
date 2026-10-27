@@ -266,21 +266,22 @@ def dense_level(x_c: int, n_c: int, x_t: int, n_t: int, *, alternative: str) -> 
 def dense_level_holds(
     x_c: int, n_c: int, x_t: int, n_t: int, *, level: float, alternative: str
 ) -> bool:
-    """Whether ``level`` is the rule's own dense level for the four counts under
-    ``alternative`` (`dense_level`), read from two evaluations of the rule rather than a fresh
-    inversion: the counts are dense at the level's tail and not one float below it; a level of
-    zero holds from ``_DENSE_CEILING`` on. A row persisted under a build whose normal quantile
-    differs by one float at its count fails this check; re-running the analysis is the remedy."""
+    """Whether a persisted level matches the count rule's level under ``alternative``.
+
+    The exact boundary check is the fast path. When it misses, the normal inverse may differ
+    by a few floating-point units between SciPy builds, so compare the independently inverted
+    level with a consistency tolerance (not a statistical tolerance).
+    """
     smallest = min(x_c, n_c - x_c, x_t, n_t - x_t)
-    if level == 0.0:
-        return smallest >= _dense_ceiling()
+    if level == 0.0 and smallest >= _dense_ceiling():
+        return True
     tail = level / 2.0 if alternative == "two-sided" else level
-    if not 0.0 < tail < 0.5 or smallest >= _dense_ceiling():
-        return False
-    if dense_min_count(tail) > smallest:
-        return False
-    below = math.nextafter(tail, 0.0)
-    return below == 0.0 or dense_min_count(below) > smallest
+    if 0.0 < tail < 0.5 and smallest < _dense_ceiling() and dense_min_count(tail) <= smallest:
+        below = math.nextafter(tail, 0.0)
+        if below == 0.0 or dense_min_count(below) > smallest:
+            return True
+    expected = dense_level(x_c, n_c, x_t, n_t, alternative=alternative)
+    return expected is not None and math.isclose(level, expected, rel_tol=1e-12, abs_tol=1e-15)
 
 
 def composite_p_value(p_delta: float, dense_level: float, escalated_p_value: float | None) -> float:

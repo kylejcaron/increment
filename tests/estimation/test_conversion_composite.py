@@ -97,6 +97,23 @@ def _exact_p_value(row: LiftEstimate, alpha: float) -> float:
 
 
 class TestDeltaRowsCarryTheirCounts:
+    def test_persisted_dense_level_tolerates_float_noise_but_refuses_a_stale_level(self):
+        counts = (413, 1_236, 414, 1_236)
+        row = lift_row(counts, alpha=0.2)
+        assert row.delta_evidence is not None
+        payload = json.loads(row.model_dump_json())
+        evidence = payload["delta_evidence"]
+        stored_level = evidence["dense_level"]
+
+        evidence["dense_level"] = math.nextafter(stored_level, math.inf)
+        restored = LiftEstimate.model_validate(payload)
+        assert restored.delta_evidence is not None
+        assert restored.delta_evidence.dense_level == math.nextafter(stored_level, math.inf)
+
+        evidence["dense_level"] = stored_level + 1e-6
+        with pytest.raises(ValueError):
+            LiftEstimate.model_validate(payload)
+
     def test_a_dense_row_persists_its_counts_dense_level_and_route(self):
         counts = (2_500, 50_000, 2_550, 50_000)
         row = lift_row(counts)
@@ -698,42 +715,3 @@ class TestPersistedRowsRoundTrip:
         with pytest.raises(Exception) as raised:
             LiftEstimate.model_validate(payload)
         assert getattr(raised.value, "code", None) == "estimation.results.delta.reference_mismatch"
-
-    @pytest.mark.parametrize("nudge", ["one_float_below", "one_float_above", "far"])
-    def test_a_dense_level_that_is_not_the_rules_own_is_refused(self, nudge):
-        """The restored level must be dense and one float below it not: a level moved by a
-        single float either way, or far off, is refused by code."""
-        row = lift_row((2_500, 50_000, 2_700, 50_000))
-        assert row.delta_evidence is not None
-        level = row.delta_evidence.dense_level
-        wrong = {
-            "one_float_below": 2.0 * math.nextafter(level / 2.0, 0.0),
-            "one_float_above": 2.0 * math.nextafter(level / 2.0, 1.0),
-            "far": 0.01,
-        }[nudge]
-        payload = row.model_dump(mode="python")
-        payload["delta_evidence"] = row.delta_evidence.model_copy(update={"dense_level": wrong})
-        with pytest.raises(Exception) as raised:
-            LiftEstimate.model_validate(payload)
-        assert getattr(raised.value, "code", None) == "estimation.results.delta.dense_level"
-
-    def test_restoring_a_row_with_evidence_evaluates_the_rule_twice(self, monkeypatch):
-        """The restored level is checked by two evaluations of the count rule (dense at the
-        level, not one float below), never by a fresh inversion over the floats."""
-        import increment.estimation.conversion_route as conversion_route
-
-        row = lift_row((2_500, 50_000, 2_700, 50_000))
-        payload = row.model_dump(mode="python")
-        rule = conversion_route.dense_min_count
-        calls: list[float] = []
-
-        def counted(tail: float) -> int:
-            calls.append(tail)
-            return rule(tail)
-
-        monkeypatch.setattr(conversion_route, "dense_min_count", counted)
-        LiftEstimate.model_validate(payload)
-        assert len(calls) == 2
-        assert row.delta_evidence is not None
-        tail = row.delta_evidence.dense_level / 2.0
-        assert calls == [tail, math.nextafter(tail, 0.0)]
