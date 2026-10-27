@@ -947,19 +947,20 @@ def quantile_source_factory(tmp_path):
     return _make
 
 
-def test_quantile_run_loads_unit_frame_once_per_metric(quantile_source_factory):
+def test_quantile_run_loads_unit_frame_once_per_metric(quantile_source_factory, monkeypatch):
     from tests.analysis_factory import _native_source
 
     analysis = quantile_source_factory()
     source: Any = _native_source(analysis)
     calls = {"unit_frame": 0}
-    real_unit_frame = source.unit_frame
+    source_type = type(source)
+    real_unit_frame = source_type.unit_frame
 
-    def counting_unit_frame(metric, **kwargs):
+    def counting_unit_frame(self, metric, **kwargs):
         calls["unit_frame"] += 1
-        return real_unit_frame(metric, **kwargs)
+        return real_unit_frame(self, metric, **kwargs)
 
-    source.unit_frame = counting_unit_frame
+    monkeypatch.setattr(source_type, "unit_frame", counting_unit_frame)
     try:
         estimates = analysis.run()
         assert calls["unit_frame"] == 1

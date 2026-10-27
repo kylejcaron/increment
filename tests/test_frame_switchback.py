@@ -1920,6 +1920,7 @@ def test_order_counts_reach_public_surfaces_independent_of_row_order(shared, bac
         for evidence in (source.diagnostics, stats, result, restored_stats, restored_result):
             assert (evidence.ct_cycles, evidence.tc_cycles) == expected
         frame = nw.from_native(ContrastResults([result]).to_frame(backend=backend), eager_only=True)
+        assert frame["provider_owned"].to_list() == [False] * len(frame)
         row = estimates_to_readout([result])[0]
         assert (frame["ct_cycles"][0], frame["tc_cycles"][0]) == expected
         assert (row["ct_cycles"], row["tc_cycles"]) == expected

@@ -11,10 +11,74 @@ from typing import Any, cast
 import pytest
 
 from increment.result_envelope import ResultCell
+from tests.analysis_factory import held_source
 from tests.parity_harness.comparison import TOLERANCE
 
-# Cutover name → explicitly registered (scenario_id, ingress) pairs.
-REGISTERED: Mapping[str, frozenset[tuple[str, str]]] = {}
+# Line-one owns whole-window parity pairs not assigned to lines 2–7.
+_LINE1_SCENARIOS = frozenset(
+    {
+        "edge-empty-arm",
+        "edge-zero-variance-arm",
+        "edge-near-zero-ratio-denominator",
+        "edge-near-zero-positive-ratio-denominator",
+        "edge-nonfinite-ratio-denominator",
+        "arm-facts-parity",
+        "categorical-cuped-moments-format-13",
+        "bare_metric_name_summary_panel",
+        "cuped_covariate_name_summary_panel",
+        "exact_counts_conversion_window_boundary_export_from_definitions",
+        "exact_counts_conversion_window_boundary_export_from_unit_panel",
+        "exact_counts_retention_cohort_boundary_export_from_definitions",
+        "exact_counts_retention_cohort_boundary_export_from_unit_panel",
+        "audit-panel-missing-zero-inferred",
+        "mean_ratio_conversion_cuped_fixed_horizon",
+        "artifact_context_format_two",
+        "artifact_context_format_one_refusal",
+        "dashboard-group-data",
+        "audit-prior-reset-family",
+        "portable_subset_with_winsorized_sibling",
+        "audit-artifact-rounded-aggregates",
+        "audit-cuped-covariate-rescaling",
+        "audit-ratio-neighboring-means",
+        "lift_prior_normal_mean_ratio_conversion_cuped",
+        "lift_prior_student_t_mean_ratio_conversion_cuped",
+        "lift_prior_mixture_mean_ratio_conversion_cuped",
+        "exploratory-metrics",
+        "window_spelling_zulu_vs_offset",
+        "window_spelling_offset_vs_offset",
+        "audit-panel-component-horizon",
+        "audit-pinned-dimension-freshness",
+        "audit-panel-component-horizon-ratio",
+        "audit-panel-component-horizon-ratio-complete",
+        "multiplicity_primary_secondaries_guardrail",
+        "nonpositive_mean_additive_row_matches_across_sources",
+        "clustered_negative_control_mean_produces_a_fieller_set",
+        "clustered_assignment_integrity_scope",
+        "clustered_zero_relative_variance_preserves_point_and_additive_interval",
+        "audit-cluster-export-refusal",
+        "conversion_route_straddles_the_dense_threshold",
+        "audit-uptake-timestamp-boundaries",
+        "audit-compliance-only-outcome-missingness",
+        "audit-compliance-only-empty-catalog",
+        "quantile_tied_rounded_outcomes",
+        "audit-quantile-family",
+        "audit-panel-pre-exposure-and-selection",
+        "winsor-percentile-three-arm",
+        "winsor-percentile-zero-inclusive-2-arm",
+        "winsor-percentile-size-routed-analytic",
+        "mixed-cuped-multicovariate-fixed-horizon",
+    }
+)
+_LINE1_INGRESSES = (
+    "from_definitions",
+    "from_moments",
+    "from_unit_panel",
+    "from_unit_summary",
+)
+_LINE1_PAIRS = frozenset(
+    (scenario_id, ingress) for scenario_id in _LINE1_SCENARIOS for ingress in _LINE1_INGRESSES
+)
+REGISTERED: Mapping[str, frozenset[tuple[str, str]]] = {"line1": _LINE1_PAIRS}
 NEW_PATH_ADAPTERS: Mapping[tuple[str, str], Callable[[str, str], Mapping[str, object]]] = {}
 SEEDED_RESAMPLING_FIELD_PATHS = frozenset(
     {
@@ -22,6 +86,30 @@ SEEDED_RESAMPLING_FIELD_PATHS = frozenset(
         "retained_row.confidence_set.raw.permutation_p_value",
     }
 )
+_MODE_METADATA_FIELDS = frozenset({"coherence", "effective_modes"})
+
+
+def _mode_metadata(metadata: object) -> Mapping[str, object]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    metadata_by_key = cast(Mapping[str, object], metadata)
+    return {key: metadata_by_key[key] for key in _MODE_METADATA_FIELDS if key in metadata_by_key}
+
+
+def _metadata_without_modes(metadata: object) -> object:
+    if not isinstance(metadata, Mapping):
+        return metadata
+    return {key: value for key, value in metadata.items() if key not in _MODE_METADATA_FIELDS}
+
+
+def _json_compatible(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
 _SKIP_COUNT = 0
 
 
@@ -130,7 +218,9 @@ def _assert_cell_matches(expected: Mapping[str, Any], actual: object) -> None:
         )
 
 
-def _assert_outcome_matches(expected: Mapping[str, Any], actual: Mapping[str, object]) -> None:
+def _assert_outcome_matches(
+    expected: Mapping[str, Any], actual: Mapping[str, object]
+) -> Mapping[str, object]:
     assert expected["kind"] == actual["kind"]
     if expected["kind"] == "refusal":
         assert expected["code"] == actual["code"]
@@ -149,7 +239,10 @@ def _assert_outcome_matches(expected: Mapping[str, Any], actual: Mapping[str, ob
         for key, expected_cell in expected_cells.items():
             assert isinstance(expected_cell, Mapping)
             _assert_cell_matches(expected_cell, actual_cells[key])
-        _compare(expected["metadata"], actual["metadata"])
+        _compare(
+            _metadata_without_modes(expected["metadata"]),
+            _metadata_without_modes(actual["metadata"]),
+        )
         for field in (
             "population_identity",
             "daily_values",
@@ -161,6 +254,202 @@ def _assert_outcome_matches(expected: Mapping[str, Any], actual: Mapping[str, ob
                     assert expected[field] == actual[field]
                 else:
                     _compare(expected[field], actual[field])
+        return _mode_metadata(actual["metadata"])
+    return {}
+
+
+def _line1_read(analysis: Any, case: Any) -> Any:
+    metrics = None if case.metrics is None else list(case.metrics)
+    return analysis.run(
+        estimands=case.estimands,
+        prior=case.prior,
+        metrics=metrics,
+        decision_method=case.decision_method,
+    )
+
+
+def _enter_patch(stack: Any, target: Any, name: str, replacement: Any) -> None:
+    from unittest.mock import patch
+
+    stack.enter_context(patch.object(target, name, replacement))
+
+
+def _run_with_read_counter(analysis: Any, case: Any) -> tuple[Any, Mapping[str, int]]:
+    from collections import Counter
+    from contextlib import ExitStack
+
+    source = held_source(analysis)
+    source_type = type(source)
+    names = (
+        ("unit_frame",)
+        if callable(getattr(source, "unit_frame", None))
+        else (
+            ("readout_snapshot",)
+            if callable(getattr(source, "readout_snapshot", None))
+            else tuple(
+                name
+                for name in ("moments", "moments_for_method")
+                if callable(getattr(source, name, None))
+            )
+        )
+    )
+    counts: Counter[str] = Counter()
+    depth = 0
+    with ExitStack() as stack:
+        for name in names:
+            original = getattr(source_type, name)
+
+            def counted(this, *args, _original=original, _name=name, **kwargs):
+                nonlocal depth
+                if depth == 0:
+                    metrics = kwargs.get("metrics") if _name == "readout_snapshot" else None
+                    if metrics is not None:
+                        for metric in metrics:
+                            counts[str(getattr(metric, "name", metric))] += 1
+                    else:
+                        metric = args[0] if args else kwargs.get("metric")
+                        key = getattr(metric, "name", str(metric)) if metric is not None else _name
+                        counts[str(key)] += 1
+                depth += 1
+                try:
+                    return _original(this, *args, **kwargs)
+                finally:
+                    depth -= 1
+
+            _enter_patch(stack, source_type, name, counted)
+        return _line1_read(analysis, case), counts
+
+
+def _line1_actual_outcome(scenario_id: str, ingress: str) -> Mapping[str, object]:  # noqa: PLR0915
+    import json
+    import warnings
+    from contextlib import ExitStack
+    from datetime import UTC, datetime
+
+    from increment import Analysis
+    from increment.errors import CodedError, InvalidRequestError
+    from increment.result_envelope import AnalysisEnvelope
+    from scripts.capture_evidence_identity import (
+        _aggregate_evidence,
+        _population_identity,
+    )
+    from tests.parity_harness.cases import PARITY_CASES, _close_parity_analysis
+
+    cases = {case.id: case for case in PARITY_CASES}
+    case = cases[scenario_id]
+    if ingress not in case.build:
+        return {
+            "kind": "absent",
+            "reason": case.waive.get(ingress, "constructor ingress is not declared"),
+        }
+
+    aggregate_rows: list[dict[str, object]] = []
+    payloads: dict[str, object] = {}
+    try:
+        if ingress == "from_moments":
+            original_from_moments = Analysis.from_moments
+
+            def capture_moments(cls, rows, **kwargs):
+                aggregate_rows.extend(copy.deepcopy(dict(row)) for row in rows)
+                return original_from_moments(rows, **kwargs)
+
+            with ExitStack() as stack:
+                _enter_patch(stack, Analysis, "from_moments", classmethod(capture_moments))
+                analysis = case.build[ingress]()
+        else:
+            analysis = case.build[ingress]()
+    except CodedError as error:
+        outcome = {
+            "kind": "refusal",
+            "code": error.code,
+            "stage": "construct",
+            "context": dict(error.context),
+        }
+        aggregate = _aggregate_evidence(payloads, aggregate_rows)
+        if aggregate is not None:
+            payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+            aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+            outcome["aggregate_evidence"] = aggregate
+        return outcome
+
+    try:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                results, read_count = _run_with_read_counter(analysis, case)
+            assert all(count == 1 for count in read_count.values()), (
+                f"{scenario_id}/{ingress} performed repeated captured reads: {read_count}"
+            )
+            metadata_value = getattr(results, "metadata", None)
+            cells = []
+            for row in results:
+                cells.extend(
+                    row.as_cells(
+                        metadata_value,
+                        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    )
+                )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                population_identity = _population_identity(analysis, case, cells)
+        except CodedError as error:
+            outcome: dict[str, object] = {
+                "kind": "refusal",
+                "code": error.code,
+                "stage": "run",
+                "context": dict(error.context),
+            }
+            aggregate = _aggregate_evidence(payloads, aggregate_rows)
+            if aggregate is not None:
+                payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+                aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+                outcome["aggregate_evidence"] = aggregate
+            return outcome
+
+        family_selection: dict[str, object] = {"status": "unavailable"}
+        if cells:
+            try:
+                from increment.estimation.family import select_exploratory_family
+
+                selected = select_exploratory_family(list(results), q=0.05)
+                family_selection = {
+                    "status": "available",
+                    "q": 0.05,
+                    "results": json.loads(
+                        json.dumps([row.model_dump(mode="json") for row in selected])
+                    ),
+                }
+            except (CodedError, InvalidRequestError) as error:
+                family_selection = {
+                    "status": "refusal",
+                    "code": error.code,
+                    "context": dict(error.context),
+                }
+        family_selection = cast(dict[str, object], _json_compatible(family_selection))
+        cells_by_hash: dict[str, object] = {}
+        for cell in cells:
+            cell_hash = cell.identity.hash()
+            assert cell_hash not in cells_by_hash
+            cells_by_hash[cell_hash] = cell
+        outcome = {
+            "kind": "cells",
+            "cells": cells_by_hash,
+            "daily_values": [],
+            "family_selection": family_selection,
+            "metadata": AnalysisEnvelope(tuple(cells), metadata_value).to_payload()["metadata"],
+            "population_identity": population_identity,
+        }
+        aggregate = _aggregate_evidence(payloads, aggregate_rows)
+        if aggregate is not None:
+            payload_ref = cast(Mapping[str, Any], aggregate["moments"])
+            aggregate["moments"] = payloads[payload_ref["payload_hash"]]
+            outcome["aggregate_evidence"] = aggregate
+        return outcome
+    finally:
+        _close_parity_analysis(analysis)
+
+
+NEW_PATH_ADAPTERS = dict.fromkeys(_LINE1_PAIRS, _line1_actual_outcome)
 
 
 def _offset_payload(cell: Mapping[str, Any], fraction: float) -> dict[str, Any]:
@@ -185,6 +474,23 @@ def test_capture_scenario_inventory_matches_fixture() -> None:
     assert actual == expected
 
 
+def test_line1_registration_inventory_matches_frozen_capture() -> None:
+    captured = _capture()["scenarios"]
+    fixture_pairs = {
+        (scenario_id, ingress) for scenario_id, outcomes in captured.items() for ingress in outcomes
+    }
+    assert _LINE1_PAIRS <= fixture_pairs
+    assert set(NEW_PATH_ADAPTERS) == _LINE1_PAIRS
+    counts = {
+        kind: sum(
+            captured[scenario_id][ingress]["kind"] == kind for scenario_id, ingress in _LINE1_PAIRS
+        )
+        for kind in ("cells", "refusal", "absent")
+    }
+    assert counts == {"cells": 144, "refusal": 19, "absent": 37}
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("scenario_id", "ingress", "expected"),
     sorted(
@@ -198,7 +504,8 @@ def test_frozen_capture_outcome(
 ) -> None:
     global _SKIP_COUNT
     key = (scenario_id, ingress)
-    if key not in REGISTERED.get("pre-kernel", frozenset()):
+    registered = {pair for pairs in REGISTERED.values() for pair in pairs}
+    if key not in registered:
         _SKIP_COUNT += 1
         if os.getenv("INCREMENT_REQUIRE_ALL_REGISTERED") == "1":
             pytest.fail(f"new path not registered for {scenario_id}/{ingress}")
@@ -216,7 +523,13 @@ def test_frozen_capture_outcome(
             f"registered adapter skipped for {scenario_id}/{ingress}: {error}",
             pytrace=False,
         )
-    _assert_outcome_matches(expected, actual)
+    modes = _assert_outcome_matches(expected, actual)
+    if key in _LINE1_PAIRS and expected["kind"] == "cells":
+        assert modes["coherence"] == "captured"
+        effective_modes = modes["effective_modes"]
+        assert isinstance(effective_modes, Mapping)
+        assert effective_modes
+        assert set(effective_modes.values()) == {"captured"}
 
 
 def test_frozen_capture_replays_every_outcome_against_itself() -> None:
@@ -305,10 +618,38 @@ def test_frozen_capture_rejects_refusal_context_mismatch(context: dict[str, obje
         _assert_outcome_matches(expected, actual)
 
 
+def test_frozen_capture_rejects_captured_refusal_context_mutation() -> None:
+    expected = next(
+        outcome
+        for scenario in _capture()["scenarios"].values()
+        for outcome in scenario.values()
+        if outcome["kind"] == "refusal"
+    )
+    _assert_unchanged_capture_matches(expected)
+    actual = copy.deepcopy(expected)
+    actual["context"] = {**expected["context"], "unexpected": "changed"}
+    with pytest.raises(AssertionError):
+        _assert_outcome_matches(expected, actual)
+
+
 def test_frozen_capture_rejects_absence_reason_mismatch() -> None:
     expected = {"kind": "absent", "reason": "constructor not declared"}
     _assert_outcome_matches(expected, expected)
     actual = {"kind": "absent", "reason": "different absence reason"}
+    with pytest.raises(AssertionError):
+        _assert_outcome_matches(expected, actual)
+
+
+def test_frozen_capture_rejects_captured_absence_reason_mutation() -> None:
+    expected = next(
+        outcome
+        for scenario in _capture()["scenarios"].values()
+        for outcome in scenario.values()
+        if outcome["kind"] == "absent"
+    )
+    _assert_unchanged_capture_matches(expected)
+    actual = dict(expected)
+    actual["reason"] = "different absence reason"
     with pytest.raises(AssertionError):
         _assert_outcome_matches(expected, actual)
 
@@ -385,7 +726,7 @@ def test_registered_adapter_skip_fails(monkeypatch) -> None:
     scenario_id, scenario = next(iter(_capture()["scenarios"].items()))
     ingress, expected = next(iter(scenario.items()))
     key = (scenario_id, ingress)
-    monkeypatch.setattr(parity, "REGISTERED", {"pre-kernel": frozenset({key})})
+    monkeypatch.setattr(parity, "REGISTERED", {"line1": frozenset({key})})
     monkeypatch.setattr(
         parity,
         "NEW_PATH_ADAPTERS",

@@ -355,6 +355,7 @@ def definitions_source(
     store: Literal["auto", "always", "none"] = "none",
     partial_trigger: bool = False,
     cluster: bool = False,
+    sql_exposures: bool = False,
     return_analysis: bool = False,
 ) -> tuple[Any, Any]:
     """Build an in-memory definitions source with one breakout.
@@ -464,6 +465,16 @@ def definitions_source(
         defs["fact_sources"][0]["facts"].append({"name": "trigger", "column": None})
         defs["exposures"].append({"name": "trigger", "fact": "trigger"})
         defs["experiments"][0]["trigger"] = "trigger"
+    if sql_exposures:
+        defs["exposures"][0] = {
+            "name": "assignment",
+            "sql": "SELECT user_id AS unit_id, ts, group_id FROM raw_events WHERE event = 'assignment'",
+        }
+        if trigger:
+            defs["exposures"][1] = {
+                "name": "trigger",
+                "sql": "SELECT user_id AS unit_id, ts, group_id FROM raw_events WHERE event = 'trigger'",
+            }
     if cluster:
         defs["experiments"][0]["cluster"] = "store_id"
     defs_path = tmp_path / "conformance.yaml"

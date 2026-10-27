@@ -75,10 +75,11 @@ depends_on = ["increment.errors"]
 path = "increment._health"
 depends_on = [
   "increment._evidence_types",
+  "increment._source_types",
   "increment.estimation",
   "increment.evidence",
+  "increment.readouts",
 ]
-
 [[modules]]
 path = "increment._plan_compatibility"
 depends_on = ["increment._literals", "increment.errors"]
@@ -116,6 +117,10 @@ depends_on = ["increment._evidence_types", "increment.errors"]
 [[modules]]
 path = "increment._evidence_refusals"
 depends_on = ["increment._source_types", "increment._evidence_types", "increment.errors"]
+
+[[modules]]
+path = "increment._trigger_integrity"
+depends_on = ["increment.errors"]
 
 
 [[modules]]
@@ -492,10 +497,9 @@ depends_on = [
 [[modules]]
 path = "increment._whole_window"
 depends_on = [
-  "increment._literals",
   "increment._analysis_config", "increment._day_axis", "increment._evidence_types", "increment._readout_request",
   "increment.breakout.estimates",
-  "increment.errors", "increment.readouts", "increment.sources",
+  "increment.errors", "increment.kernel", "increment.readouts", "increment.sources",
   "increment._evidence_refusals",
 ]
 
@@ -526,7 +530,8 @@ depends_on = [
   "increment._analysis_config", "increment._evidence_types",
   "increment.errors",
   "increment.estimation", "increment.power",
-  "increment.power.core", "increment.query", "increment.readouts", "increment.sources",
+  "increment.power.core", "increment.readouts", "increment.sources",
+  "increment._trigger_integrity",
 ]
 
 [[modules]]
@@ -559,14 +564,16 @@ depends_on = [
   "increment._literals",
   "increment._frame_panel",
   "increment._frame_validation",
-  "increment._source_types", "increment._labels", "increment._canonical",
+  "increment._source_types", "increment._labels", "increment._canonical", "increment._immutable",
   "increment._evidence_refusals",
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
   "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
   "increment._source_identity", "increment.estimation", "increment.estimation.advisory", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
-  "increment._evidence_types",
+  "increment._evidence_types", "increment._trigger_integrity",
   "increment._evidence_loaders",
+  "increment._evidence_scopes", "increment.kernel",
+  "increment.kernel.contracts",
   "increment._sequential_readouts", "increment.estimation.sequential",
   "increment.declarations",
   "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result",
@@ -637,10 +644,14 @@ depends_on = [
 ]
 
 [[modules]]
+path = "increment._evidence_scopes"
+depends_on = ["increment._evidence_loaders", "increment._evidence_types", "increment._source_types"]
+
+[[modules]]
 path = "increment.evidence"
 depends_on = [
-  "increment._evidence_refusals", "increment._evidence_types", "increment._source_types",
-  "increment.readouts",
+  "increment._evidence_refusals", "increment._evidence_types",
+  "increment._source_types", "increment.readouts",
 ]
 
 [[interfaces]]
@@ -732,7 +743,7 @@ expose = [
 from = ["increment._evidence_types"]
 expose = [
   "EvidenceSource",
-  "EvidenceScope", "BreakoutIdentity", "BreakoutCell", "BreakoutMethodMomentsRequest",
+  "EvidenceScope", "EvidenceStream", "BreakoutIdentity", "BreakoutCell", "BreakoutMethodMomentsRequest",
   "MethodFitRequest", "MethodFitAnswer", "ScalarBreakoutRows",
   "PreparedMulticovariateFit",
   "BreakoutSlicesRequest", "BreakoutSlice", "BreakoutSlices",
@@ -834,6 +845,10 @@ depends_on = ["increment._literals", "increment.declarations", "increment.estima
 [[modules]]
 path = "increment.estimation._adjust.dml"
 depends_on = ["increment._literals", "increment.declarations", "increment.errors", "increment.estimation"]
+
+[[modules]]
+path = "increment.kernel"
+depends_on = ["increment._evidence_types", "increment._source_types", "increment.kernel.contracts"]
 
 [[modules]]
 path = "increment.kernel.contracts"

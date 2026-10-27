@@ -19,28 +19,34 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED, DayAxisRoute
-from increment._evidence_types import SourceContext
-from increment._literals import ValueScale
+from increment._evidence_types import EvidenceScope, SourceContext
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.readouts._evidence import (
     ARTIFACT_ROUTE,
     NATIVE_ROUTE,
+    _builtin_source,
     day_axis_route,
     is_custom_source,
     validate_populations,
     validates_populations,
 )
-from increment.readouts._requests import _design_compliance_only, _validate_run_request
+from increment.readouts._requests import (
+    _design_compliance_only,
+    _prepare_run_request,
+    _validate_run_request,
+)
 from increment.sources import require_operation
 
 if TYPE_CHECKING:
+    from increment._literals import ValueScale
     from increment.breakout.estimates import LiftEstimates
     from increment.decision import CompiledDecisionPlan
     from increment.declarations import Method
     from increment.estimation.inference import Prior
     from increment.estimation.results import LiftEstimate
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import Experiment, Metric
     from increment.sources import SourceOperation, _BuiltinMomentSource
@@ -122,6 +128,7 @@ class WholeWindowRequest:
     estimands: tuple[str, ...] | None
     value_scale: Mapping[str, ValueScale] | None
     population: Literal["assigned", "triggered"] | None
+    coherence: Literal["captured", "live"]
     decision_method: Method | _Unset
     sensitivity_methods: Sequence[Method] | _Unset
     prior: Prior | None | _Unset
@@ -195,7 +202,7 @@ class WholeWindowReadouts:
         design: Randomized | Encouragement | Observational | None,
         experiment: Experiment | None,
         readout_source: Callable[..., _BuiltinMomentSource],
-        validate_trigger: Callable[[], None],
+        validate_trigger: Callable[[object], None],
         arm_moments: Callable[..., list[LiftEstimate]],
     ) -> None:
         self._src = src
@@ -227,6 +234,7 @@ class WholeWindowReadouts:
                     prior=req.prior,
                     value_scale=req.value_scale,
                     _population="assigned",
+                    coherence=req.coherence,
                 )
             )
             return _select_population(result, req.population)
@@ -256,15 +264,59 @@ class WholeWindowReadouts:
             return LiftEstimates()
         if (
             not is_custom_source(self._src)
-            and route in (NATIVE_ROUTE, ARTIFACT_ROUTE)
+            and req.population in (None, "triggered")
             and self._experiment is not None
             and self._experiment.trigger is not None
-            and req.population in (None, "triggered")
+            and getattr(self._plan.inference, "registration", None) is None
+            and (req.metrics or design_summary_only)
         ):
-            self._validate_trigger()
+            from uuid import uuid4
+
+            from increment.kernel.context import EvidenceExecutionContext
+            from increment.readouts._design_scope import _config_snapshot
+            from increment.readouts._provider import native_scope_provider
+
+            design = self._design
+            selected, configs = _prepare_run_request(
+                self._src,
+                decision_method=req.decision_method,
+                sensitivity_methods=req.sensitivity_methods,
+                prior=req.prior,
+                metrics=[metric.name for metric in req.metrics],
+                estimands=req.estimands,
+                value_scale=req.value_scale,
+                population="triggered" if req.population == "triggered" else "assigned",
+            )
+            for config in configs:
+                _config_snapshot(config, design)
+            uptake = getattr(design, "uptake", None)
+            provider = (
+                self._src if is_custom_source(self._src) else native_scope_provider(self._src)
+            )
+            context = EvidenceExecutionContext(
+                provider,
+                EvidenceScope(
+                    metrics=tuple(selected),
+                    population="triggered" if req.population == "triggered" else "assigned",
+                    configs=tuple(configs),
+                    uptake_facts=() if uptake is None else (uptake.fact,),
+                    snapshot=True,
+                    execution=True,
+                    include_breakouts=True,
+                ),
+                run_id=uuid4().hex,
+                coherence=req.coherence,
+            )
+            with context.evidence_scope() as scoped:
+                self._validate_trigger(_builtin_source(scoped))
+                return self._run_seam_family(req, context)
         return self._run_seam_family(req)
 
-    def _run_seam_family(self, req: WholeWindowRequest) -> LiftEstimates:
+    def _run_seam_family(
+        self,
+        req: WholeWindowRequest,
+        execution_context: EvidenceExecutionContext | None = None,
+    ) -> LiftEstimates:
         metric_names = [m.name for m in req.metrics]
 
         def _read(population: Literal["assigned", "triggered"]) -> LiftEstimates:
@@ -290,6 +342,8 @@ class WholeWindowReadouts:
                     estimands=req.estimands,
                     value_scale=req.value_scale,
                     population=population,
+                    coherence=req.coherence,
+                    execution_context=execution_context,
                 )
             )
 

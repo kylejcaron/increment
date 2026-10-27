@@ -192,7 +192,13 @@ def test_compliance_only_control_source_refuses_no_treatment():
 
 
 def _warehouse_compliance_analysis(
-    outcome, *, clustered=False, breakout=False, unusable_outcome=False, triggered=False
+    outcome,
+    *,
+    clustered=False,
+    breakout=False,
+    unusable_outcome=False,
+    triggered=False,
+    separate_outcome_source=False,
 ):
     from increment import AnalysisPlan
     from increment.semantics.models import Definitions
@@ -214,8 +220,15 @@ def _warehouse_compliance_analysis(
     if unusable_outcome:
         definitions["fact_sources"][0]["sql"] = (
             "SELECT * EXCLUDE (revenue), "
-            "CASE WHEN event = 'purchase' THEN error('unexpected outcome reduction') "
+            "CASE WHEN event = 'purchase' THEN 'unexpected outcome reduction' "
             "ELSE NULL END AS revenue FROM events"
+        )
+    if separate_outcome_source:
+        source = definitions["fact_sources"][0]
+        outcome_fact = next(fact for fact in source["facts"] if fact["name"] == "purchase")
+        source["facts"] = [fact for fact in source["facts"] if fact["name"] != "purchase"]
+        definitions["fact_sources"].append(
+            {**source, "name": "outcome_events", "facts": [outcome_fact]}
         )
     definitions["fact_sources"][0]["properties"] = [
         {"name": "cohort", "column": "cohort", "dtype": "string", "as_of": "static"}
@@ -337,6 +350,22 @@ def test_public_compliance_does_not_reduce_unusable_outcomes(triggered, outcome,
         oracle.close()
         con.disconnect()
         oracle_con.disconnect()
+
+
+@pytest.mark.slow
+def test_compliance_only_ignores_unusable_outcome_in_separate_shared_sql_source():
+    from tests.analysis_factory import lift_rows
+
+    analysis, con = _warehouse_compliance_analysis(
+        "mean", unusable_outcome=True, separate_outcome_source=True
+    )
+    try:
+        rows = lift_rows(analysis.run(metrics=["revenue"], estimands=("compliance",)))
+        assert [(row.metric, row.estimand) for row in rows] == [("uptake", "compliance")]
+        assert rows[0].require_lift().value == pytest.approx(0.5)
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 @pytest.mark.slow

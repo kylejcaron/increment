@@ -1760,19 +1760,14 @@ class WarehouseSession:
         extra_relations: Mapping[str, Table] = MappingProxyType({}),
     ) -> WarehouseSession:
         """Capture all requested streams in one execution, preserving their types.
-        `column_hints` maps a query's exact SQL text (the same key `source_sql`
-        uses) to `(unit_column, timestamp_column)`: either or both may be `None`
-        when that predicate does not apply to this stream (e.g. a dimension
-        source has no timestamp axis; an exposure/trigger stream is deliberately
-        never scoped -- see `_pinned_source`'s own module docs). With
-        `scope=None` (the default), no predicate is pushed. `extra_relations`
-        adds Ibis relations under lookup keys; unlike SQL queries, these are
-        already expressed in the executing backend's native relation model.
+        `column_hints` maps exact query text to `(unit_column, timestamp_column)`; either or both
+        may be `None` when that predicate does not apply to this stream. `scope=None` pushes no
+        predicates. `extra_relations` adds Ibis relations under lookup keys; unlike SQL queries,
+        these are already expressed in the executing backend's native relation model.
 
-        Each stream occupies distinct typed columns of a tagged UNION ALL.
-        The tagged relation stays in a warehouse TEMP table. Subsequent
-        validation and reductions read only that table; raw rows never cross
-        the client boundary. The returned session owns its cleanup.
+        Each stream occupies distinct typed columns of a tagged UNION ALL. The tagged relation
+        stays in a warehouse TEMP table. Subsequent validation and reductions read only that
+        table; raw rows never cross the client boundary. The returned session owns its cleanup.
         """
         queries = tuple(dict.fromkeys(queries))
         tables = []

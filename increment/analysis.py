@@ -323,7 +323,6 @@ def _stamp_exploratory_rows(rows):
     from increment.estimation.readout_types import (
         CellKey,
         FamilyScope,
-        ReadoutMetadata,
         ReadoutScope,
         cell_order,
         family_identity,
@@ -408,12 +407,7 @@ def _stamp_exploratory_rows(rows):
         ),
         by_source=metadata.scope.by_source,
     )
-    metadata = ReadoutMetadata(
-        scope=scope,
-        cells=metadata.cells,
-        partial=metadata.partial,
-        partial_reason=metadata.partial_reason,
-    )
+    metadata = metadata.model_copy(update={"scope": scope})
     return LiftEstimates(
         updated,
         metadata=metadata,
@@ -1443,7 +1437,9 @@ class Analysis:
             )
         )
         with scoped.source as pinned:
-            return self._with_pinned_source(pinned, operation)
+            from increment.readouts._evidence import _builtin_source
+
+            return self._with_pinned_source(_builtin_source(pinned), operation)
 
     def _with_pinned_source(
         self, pinned: _BuiltinMomentSource, operation: Callable[[Analysis], _T]
@@ -2156,10 +2152,13 @@ class Analysis:
         )
         return src.trigger_rates()
 
-    def _validate_trigger_fires_in_every_arm(self) -> None:
-        from increment.query.integrity import validate_trigger_fires_in_every_arm
+    def _validate_trigger_fires_in_every_arm(self, source: object | None = None) -> None:
+        from increment.readouts._evidence import validate_trigger_fires_in_every_arm
 
-        validate_trigger_fires_in_every_arm(self.trigger_rates(), self._experiment.trigger)
+        validate_trigger_fires_in_every_arm(
+            cast(Any, self._src if source is None else source),
+            self._experiment.trigger,
+        )
 
     def _cate_source(self, method: str) -> _BuiltinMomentSource:
         self._require_arm_state(method)
@@ -2594,6 +2593,7 @@ class Analysis:
         value_scale: Mapping[str, ValueScale] | None = None,
         exploratory_metrics: Sequence[str] | None = None,
         population: Literal["assigned", "triggered"] | None = None,
+        coherence: Literal["captured", "live"] = "captured",
     ) -> LiftEstimates | ContrastResults:
         """Run the full A/B test analysis pipeline.
 
@@ -2635,6 +2635,11 @@ class Analysis:
             Source population for the arm readout. When omitted, return each captured population
             as separate result rows; an explicit value selects only that population. Triggered
             reads require a declared trigger and sufficient source evidence.
+        coherence : Literal["captured", "live"]
+            Arm-readout source consistency. ``"captured"`` (default) requests one
+            source-owned snapshot; warehouse sources require TEMP materialization
+            and refuse if it is unavailable. ``"live"`` opts out of that guarantee
+            and marks results as live-qualified.
 
         Returns
         -------
@@ -2673,6 +2678,7 @@ class Analysis:
                 estimands=tuple(estimands) if estimands is not None else None,
                 value_scale=value_scale,
                 population=population,
+                coherence=coherence,
                 decision_method=decision_method,
                 sensitivity_methods=sensitivity_methods,
                 prior=prior,

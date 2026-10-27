@@ -29,6 +29,8 @@ _REFUSALS = refusals(
         "kernel.request.unportable": "Request kind {kind!r} field {field!r} is not portable",
         "kernel.request.scope_mismatch": "Request kind {kind!r} field {field!r} disagrees with scope",
         "kernel.method.duplicate_instance": "Method instance id {method_instance_id!r} is duplicated",
+        "kernel.context.closed": "Execution context is closed",
+        "kernel.context.undeclared_stream": "Execution context does not declare stream {stream!r}",
     },
 )
 _refuse = raiser(_REFUSALS)

@@ -238,6 +238,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             breakouts=tuple(self.breakouts),
             shape=self.shape,
             operations=self.operations,
+            capture="snapshot",
             unit_rows=True,
             raw_outcomes=True,
             method_fit="warehouse",
@@ -547,6 +548,97 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         events = self._build_events_table_for_exposure(self._experiment.exposure, dim_joined=False)
         return events.select("unit_id", "experiment_id").distinct()
 
+    def evidence_scope_streams(self, scope: Any) -> Mapping[str, str]:
+        tables = self._session._source_tables
+        fact_names = set(scope.uptake_facts)
+        for metric in scope.metrics:
+            numerator = getattr(metric, "numerator", None)
+            denominator = getattr(metric, "denominator", None)
+            if numerator is not None and denominator is not None:
+                fact_names.update((numerator.fact, denominator.fact))
+            else:
+                fact_names.add(metric.fact)
+
+        sources: dict[str, FactSource] = {}
+        for config in scope.configs or ():
+            for method in effective_methods(config, design=self.context.design):
+                for covariate in method.covariates or ():
+                    covariate = self._resolve_covariate_binding(covariate, config.metric)
+                    if isinstance(covariate, CupedCovariateBinding) and covariate.measure:
+                        fact_names.add(covariate.measure.fact)
+                    else:
+                        property_name = getattr(covariate, "property", None) or covariate.name
+                        source = self._resolve_unit_covariate_source(
+                            property_name,
+                            declared_source=getattr(covariate, "source", None),
+                            kind=getattr(covariate, "kind", None),
+                        )
+                        sources[source.name] = source
+        for breakout in scope.breakouts:
+            try:
+                source = _resolve_breakout_fact_source(
+                    self._defs,
+                    self._experiment,
+                    Breakout(property=breakout.property, source=breakout.source),
+                )
+            except CodedError:
+                continue
+            sources[source.name] = source
+        if isinstance(self._experiment.design, ObservationalDeclaration):
+            for covariate in self._experiment.design.covariates:
+                source = self._resolve_unit_covariate_source(
+                    covariate.property,
+                    declared_source=covariate.source,
+                    kind=getattr(covariate, "kind", None),
+                )
+                sources[source.name] = source
+
+        streams: dict[str, str] = {}
+        for fact in fact_names:
+            source, _ = _find_fact_source(self._defs, fact)
+            sources[source.name] = source
+        dimensions: set[str] = set()
+        for source in sources.values():
+            streams[source.name] = source.name
+            dimensions.update(source.dims)
+        streams.update({f"dimension:{name}": f"dimension:{name}" for name in dimensions})
+
+        for name in (self._experiment.exposure, self._experiment.trigger):
+            if name is None:
+                continue
+            exposure = self._exp_lookup_exposures[name]
+            if exposure.sql is not None:
+                streams[f"exposure:{name}"] = f"exposure:{name}"
+            elif exposure.fact is not None:
+                source, _ = _find_fact_source(self._defs, exposure.fact)
+                streams[source.name] = source.name
+                streams.update(
+                    {
+                        f"dimension:{dimension}": f"dimension:{dimension}"
+                        for dimension in source.dims
+                    }
+                )
+
+        if tables is None:
+            return dict(sorted(streams.items()))
+
+        labels: dict[str, set[str]] = {}
+        for source in self._defs.fact_sources:
+            labels.setdefault(source.sql, set()).add(source.name)
+        for dimension in self._defs.dim_sources:
+            labels.setdefault(dimension.sql, set()).add(f"dimension:{dimension.name}")
+        for exposure in self._defs.exposures:
+            if exposure.sql is not None:
+                labels.setdefault(exposure.sql, set()).add(f"exposure:{exposure.name}")
+        captured_streams: dict[str, str] = {}
+        for query in tables:
+            identities = labels.get(query)
+            if identities is None:
+                captured_streams[f"source:{query}"] = query
+            else:
+                captured_streams.update({identity: identity for identity in identities})
+        return dict(sorted(captured_streams.items()))
+
     def _pinned_source(  # noqa: PLR0915
         self,
         *,
@@ -604,6 +696,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 add_fact(uptake.fact)
         for fact in uptake_facts:
             add_fact(fact)
+
         # Sources read only for a breakout/factor/covariate property lookup:
         # `_build_breakout_properties_table` takes the latest value over the
         # whole source (static) or strictly before exposure (pre_exposure),
@@ -616,6 +709,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # breakout property is (see below): pin them unconditionally, since
         # every readout of this design needs `unit_frame`'s covariate join
         # to resolve, not only an explicit publish request.
+
         self._add_observational_covariate_sources(sources, property_source_names)
         requested_configs = self._context.configs if configs is None else configs
         for config in requested_configs:
@@ -646,6 +740,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     )
                     sources[fact_source.name] = fact_source
                     property_source_names.add(fact_source.name)
+
         site_volume_source_names, site_volume_dim_names = self._site_volume_scope_names(
             site_volume_metrics, sources
         )

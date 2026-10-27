@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import date, datetime
@@ -412,11 +412,25 @@ SequentialCapture = Any
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceStream:
+    """One logical evidence stream and the physical stream pinned to answer it."""
+
+    identity: str
+    physical: str
+
+
+CaptureStatus = Literal["captured", "live"]
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceScopeResult:
-    """A source view kept open for the lifetime of one analysis."""
+    """A source view, physical stream inventory, and effective capture status."""
 
     source: Any
     scope: EvidenceScope
+    streams: tuple[EvidenceStream, ...] = ()
+    stream_resolver: Callable[[Any], tuple[EvidenceStream, ...]] | None = None
+    capture_status: CaptureStatus | None = None
 
 
 # Columns a unit frame serves in its own right; a covariate declared under one

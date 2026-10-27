@@ -904,10 +904,12 @@ def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
     unassigned_row = dict(assignments[1])
     unassigned_row["group_id"] = None
     rows.extend((mixed_row, unassigned_row))
-
     analysis = _analysis(tmp_path, pa.Table.from_pylist(rows), on_mixed_assignment="exclude")
+
     try:
         assert analysis.trigger_rates() == pytest.approx({"C": 0.20270270270270271, "T": 0.1925})
+        assert analysis.run()
+        assert analysis.run(population="triggered")
     finally:
         analysis.close()
 

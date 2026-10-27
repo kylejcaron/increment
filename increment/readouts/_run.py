@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment._source_types import _BuiltinMomentSource
     from increment.estimation.inference import Prior
+    from increment.kernel.context import EvidenceExecutionContext
     from increment.semantics.models import Metric
 
 
@@ -60,7 +61,9 @@ def run(
     estimands: Sequence[str] | None = None,
     value_scale: Mapping[str, ValueScale] | None = None,
     _population: Literal["assigned", "triggered"] = "assigned",
-) -> list[LiftEstimate]:
+    coherence: Literal["captured", "live"] = "captured",
+    execution_context: EvidenceExecutionContext | None = None,
+) -> LiftEstimates:
     """Whole-window relative lift, one row per (metric, method, non-control arm).
 
     Design and statistical plan are both read off *src* (``src.design``,
@@ -140,13 +143,14 @@ def run(
     # Raw frames and method-scoped covariates share one capture across the
     # selected metrics, including their common observation horizon. An empty
     # selection reads nothing. Request validation is complete before capture.
-    needs_live_evidence = bool(selected) and not isinstance(
+    design_summary_only = _design_compliance_only(src, estimands)
+    needs_live_evidence = (bool(selected) or design_summary_only) and not isinstance(
         src.context.plan.inference, SEQUENTIAL_POLICIES
     )
     needs_snapshot = needs_live_evidence and (
         design.mechanism == "observational"
         or (
-            not _design_compliance_only(src, estimands)
+            not design_summary_only
             and any(
                 method.variance_reduction in ("cuped", "cuped_multicovariate")
                 for config in configs
@@ -159,19 +163,37 @@ def run(
         )
     )
     uptake = getattr(design, "uptake", None)
-    with evidence_scope(
-        src,
-        EvidenceScope(
-            metrics=tuple(selected),
-            population=_population,
-            configs=tuple(configs),
-            uptake_facts=() if uptake is None else (uptake.fact,),
-            snapshot=needs_snapshot,
-            execution=needs_live_evidence,
-        ),
-    ) as scoped:
+    scope = EvidenceScope(
+        metrics=tuple(selected),
+        population=_population,
+        configs=tuple(configs),
+        uptake_facts=() if uptake is None else (uptake.fact,),
+        snapshot=needs_snapshot,
+        execution=needs_live_evidence,
+    )
+    if execution_context is not None and isinstance(
+        src.context.plan.inference, SEQUENTIAL_POLICIES
+    ):
+        from increment.kernel.contracts import _refuse
+
+        _refuse("kernel.request.invalid", field="execution_context")
+    if not selected and not design_summary_only:
         return _as_collection(
             _run_prepared(
+                _builtin_source(src),
+                selected,
+                configs,
+                prior=prior,
+                by=by,
+                estimands=estimands,
+                value_scale=value_scale,
+                population=_population,
+                scope_active=False,
+            )
+        )
+    if isinstance(src.context.plan.inference, SEQUENTIAL_POLICIES):
+        with evidence_scope(src, scope) as scoped:
+            rows = _run_prepared(
                 _builtin_source(scoped),
                 selected,
                 configs,
@@ -180,9 +202,54 @@ def run(
                 estimands=estimands,
                 value_scale=value_scale,
                 population=_population,
-                scope_active=needs_snapshot or is_custom_source(src),
+                scope_active=is_custom_source(src),
+                snapshot_source=src,
             )
+        return _as_collection(rows)
+    from uuid import uuid4
+
+    from increment.kernel.context import EvidenceExecutionContext
+    from increment.kernel.contracts import _refuse
+    from increment.readouts._provider import native_scope_provider
+
+    if execution_context is None:
+        context = EvidenceExecutionContext(
+            src if is_custom_source(src) else native_scope_provider(src),
+            scope,
+            run_id=uuid4().hex,
+            coherence=coherence,
         )
+        manager = context.evidence_scope()
+    else:
+        context = execution_context
+        if context.requested_coherence != coherence:
+            _refuse("kernel.request.invalid", field="coherence")
+        context.validate_request(src, selected, configs)
+        manager = context.borrow()
+    with manager as scoped:
+        rows = _run_prepared(
+            _builtin_source(scoped),
+            selected,
+            configs,
+            prior=prior,
+            by=by,
+            estimands=estimands,
+            value_scale=value_scale,
+            population=_population,
+            scope_active=True,
+            snapshot_source=src,
+        )
+    result = _as_collection(rows)
+    if result.metadata is not None:
+        from increment._immutable import _FrozenMapping
+
+        result._metadata = result.metadata.model_copy(
+            update={
+                "coherence": context.coherence,
+                "effective_modes": _FrozenMapping(context.effective_modes),
+            }
+        )
+    return result
 
 
 def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
@@ -320,6 +387,7 @@ def _run_prepared(  # noqa: PLR0915
     value_scale: Mapping[str, ValueScale] | None,
     population: Literal["assigned", "triggered"],
     scope_active: bool = False,
+    snapshot_source: Any = None,
 ) -> list[LiftEstimate]:
     """Estimate a validated request inside its source-owned snapshot lifetime."""
     design = _require_design(src, "run")
@@ -331,7 +399,7 @@ def _run_prepared(  # noqa: PLR0915
         from increment.readouts._sequential_scope import scope_sequential_results
 
         _refuse_segmented_registration(plan.inference)
-        snapshot = current_source_snapshot(src)
+        snapshot = current_source_snapshot(src if snapshot_source is None else snapshot_source)
         rows = sequential_readout(
             src,
             metrics=selected,
@@ -596,6 +664,8 @@ def arm_moments(
     estimands: Sequence[str] | None = None,
     value_scale: Mapping[str, ValueScale] | None = None,
     population: Literal["assigned", "triggered"] = "assigned",
+    coherence: Literal["captured", "live"] = "captured",
+    execution_context: EvidenceExecutionContext | None = None,
 ) -> list[LiftEstimate]:
     """Run the existing parallel arm-moment readout implementation."""
     return run(
@@ -608,4 +678,6 @@ def arm_moments(
         estimands=estimands,
         value_scale=value_scale,
         _population=population,
+        coherence=coherence,
+        execution_context=execution_context,
     )

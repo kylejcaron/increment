@@ -184,6 +184,9 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
     assert {row.multiplicity_status for row in added} == {"exploratory_unadjusted"}
     assert all(row.family_id is not None for row in added)
     assert added.metadata is not None
+    assert added.metadata.coherence == "captured"
+    assert added.metadata.effective_modes
+    assert set(added.metadata.effective_modes.values()) == {"captured"}
     assert {family.name for family in added.metadata.scope.families} == {"exploratory"}
     assert {cell.metric for family in added.metadata.scope.families for cell in family.members} == {
         name

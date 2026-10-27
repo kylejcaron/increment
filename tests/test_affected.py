@@ -321,6 +321,7 @@ def test_environment_ignore_excludes_module_from_source_change_collection(
     )
     selection = _change(root, base, "increment/frame.py", "VALUE = 2\n")
     monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=tests/test_excluded.py")
+    monkeypatch.setenv("AFFECTED_TEST_FILES", "[]")
     (invocation,) = _pytest_invocations(
         selection, base, "fast", [], kept=("tests/test_allowed.py", "tests/test_excluded.py")
     )
@@ -332,13 +333,16 @@ def test_environment_ignore_excludes_module_from_source_change_collection(
         else:
             pytest_args.append(argument)
 
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    environment.pop("AFFECTED_TEST_FILES", None)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", *pytest_args],
         cwd=root,
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        env=environment,
     )
 
     assert result.returncode == 0, result.stderr

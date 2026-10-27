@@ -17,7 +17,8 @@ censoring.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from copy import copy
 from dataclasses import replace
 from pathlib import Path
@@ -265,12 +266,15 @@ class FrameTotalsSource(SequentialSourceMixin):
     ``"total"`` grain: this shape carries no day axis.
 
     Construction snapshots moment rows, metric metadata and raw percentile
-    outcomes. Other dataframe reads retain their existing backend view.
+    outcomes. A readout scope snapshots the mutable dataframe before exposing
+    it; direct reads retain their existing backend view.
     """
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_summary"
     capabilities: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
+    operations: frozenset[SourceOperation] = frozenset(
+        {"export_moments", "unit_counts", "readout_snapshot"}
+    )
     breakouts: tuple[str, ...] = ()
 
     @property
@@ -309,7 +313,38 @@ class FrameTotalsSource(SequentialSourceMixin):
                 covariate_grains=None,
             ),
             available_covariates=frozenset(self._frame.columns),
+            capture="snapshot",
         )
+
+    def readout_snapshot(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"],
+        uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
+        configs: Sequence[Any] | None = None,
+    ):
+        """Pin the caller-owned dataframe as it exists at scope entry."""
+        del metrics, population, uptake_facts, include_breakouts, configs
+        frame = self._frame.to_native()
+        clone = getattr(frame, "clone", None)
+        if callable(clone):
+            frame = clone()
+        else:
+            frame_copy = getattr(frame, "copy", None)
+            if callable(frame_copy):
+                try:
+                    frame = frame_copy(deep=True)
+                except TypeError:
+                    frame = frame_copy()
+            else:
+                from copy import deepcopy
+
+                frame = deepcopy(frame)
+        pinned = copy(self)
+        pinned._frame = nw.from_native(frame, eager_only=True)
+        return nullcontext(pinned)
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913
@@ -1250,6 +1285,25 @@ class _RestrictedSummaryBreakoutSource:
     def available_covariates(self) -> frozenset[str]:
         return self._source.available_covariates | self._covariate_columns.keys()
 
+    @contextmanager
+    def readout_snapshot(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"],
+        uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
+        configs: Sequence[Any] | None = None,
+    ) -> Iterator[_RestrictedSummaryBreakoutSource]:
+        with self._source.readout_snapshot(
+            metrics=metrics,
+            population=population,
+            uptake_facts=uptake_facts,
+            include_breakouts=include_breakouts,
+            configs=configs,
+        ) as source:
+            yield _RestrictedSummaryBreakoutSource(source, self._covariate_columns)
+
     def moments(
         self,
         metric: Metric,
@@ -1358,14 +1412,17 @@ class FramePanelSource(SequentialSourceMixin):
     cumulative ``"asof"`` moments.
 
     Construction snapshots metric metadata, group counts, and fact dates.
-    Dataframes remain zero-copy; returned moments and counts are defensive
+    Captured readout scopes copy mutable pandas frames at scope entry; immutable
+    Polars and Arrow frames stay zero-copy. Returned moments and counts are defensive
     copies.
     """
 
     shape: Literal["unit_summary", "unit_panel"] | None = "unit_panel"
     capabilities: frozenset[Grain] = frozenset({"total", "daily", "asof"})
     scalar_covariate_grains: frozenset[Grain] = frozenset({"total"})
-    operations: frozenset[SourceOperation] = frozenset({"export_moments", "unit_counts"})
+    operations: frozenset[SourceOperation] = frozenset(
+        {"export_moments", "unit_counts", "readout_snapshot"}
+    )
     #: `from_unit_panel` takes no `cluster=` argument, so this shape never
     #: carries a randomization-cluster column (see `cluster_counts` below).
 
@@ -1378,6 +1435,7 @@ class FramePanelSource(SequentialSourceMixin):
             breakouts=tuple(self.breakouts),
             shape=self.shape,
             operations=self.operations,
+            capture="snapshot",
             unit_rows=True,
             raw_outcomes=False,
             method_fit="local",
@@ -1397,6 +1455,36 @@ class FramePanelSource(SequentialSourceMixin):
             ),
             available_covariates=frozenset(frame.columns),
         )
+
+    def readout_snapshot(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"],
+        uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
+        configs: Sequence[Any] | None = None,
+    ):
+        """Snapshot mutable pandas panel evidence at the start of a readout."""
+        del metrics, population, uptake_facts, include_breakouts, configs
+        pinned = copy(self)
+        for attribute in (
+            "_sparse_panel",
+            "_source_frame",
+            "_first_exposure",
+            "_exposure",
+        ):
+            frame = getattr(self, attribute)
+            if frame is None:
+                continue
+            if frame.implementation.value == "pandas":
+                frame = nw.from_native(frame.to_native().copy(deep=True), eager_only=True)
+            setattr(pinned, attribute, frame)
+        pinned._identity = None
+        pinned._moment_rows_cache = {}
+        pinned._moment_failures_cache = {}
+        pinned._scalar_cell_failures = None
+        return nullcontext(pinned)
 
     # Public constructor signature is the API for frame-backed sources.
     def __init__(  # noqa: PLR0913

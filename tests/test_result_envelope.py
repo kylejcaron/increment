@@ -631,7 +631,27 @@ def test_result_envelope_arrow_round_trip_preserves_cell_and_readout_metadata(
     arrow = envelope.to_arrow()
     restored = AnalysisEnvelope.from_arrow(arrow)
     assert restored == AnalysisEnvelope.from_payload(json.loads(json.dumps(envelope.to_payload())))
+    metadata = rows.metadata
+    assert metadata is not None
+    live_metadata = type(metadata).model_validate(
+        {
+            "scope": metadata.scope,
+            "cells": metadata.cells,
+            "partial": metadata.partial,
+            "partial_reason": metadata.partial_reason,
+            "coherence": "live",
+            "effective_modes": {"fact": "live"},
+        }
+    )
+    live_envelope = AnalysisEnvelope(cells=tuple(cells), metadata=live_metadata)
+    restored_live = AnalysisEnvelope.from_arrow(live_envelope.to_arrow())
+    restored_metadata = restored_live.metadata
+    assert restored_metadata is not None
+    assert restored_metadata.coherence == "live"
+    assert restored_metadata.effective_modes == {"fact": "live"}
     from increment.result_envelope import render
+
+    assert "Coherence: live" in render(restored_live, "brief")
 
     assert render(restored, "brief") == render(envelope, "brief")
     unscoped = AnalysisEnvelope(cells=tuple(cells), metadata=None)

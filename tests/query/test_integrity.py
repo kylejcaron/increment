@@ -8,6 +8,7 @@ import warnings
 import pyarrow as pa
 import pytest
 
+from increment._trigger_integrity import validate_trigger_fires_in_every_arm
 from increment.errors import InvalidRequestError
 from increment.query.integrity import (
     arm_counts,
@@ -15,7 +16,6 @@ from increment.query.integrity import (
     mixed_assignment_count,
     mixed_assignment_snapshot,
     validate_cluster_labels,
-    validate_trigger_fires_in_every_arm,
 )
 from tests.warning_codes import warning_codes
 

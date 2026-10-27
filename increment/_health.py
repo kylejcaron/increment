@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from increment._evidence_types import EvidenceScope
+from increment._source_types import is_builtin_source
 from increment.estimation.health import ExperimentHealth
 from increment.evidence import evidence_provider
 
@@ -33,6 +34,10 @@ def check_health(
         )
     )
     with scoped.source as pinned:
+        if is_builtin_source(source):
+            from increment.readouts._evidence import _builtin_source
+
+            pinned = _builtin_source(pinned)
         return collect(pinned)
 
 

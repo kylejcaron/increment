@@ -762,7 +762,7 @@ def test_readout_snapshot_pins_declared_observational_covariate_source(tmp_path)
                 {
                     "user_id": ["u1", "u2"],
                     "updated_at": [datetime(2024, 12, 1, 0, 0)] * 2,
-                    "tenure_days": [30.0, 45.0],
+                    "tenure_days": [30.0, 30.0],
                 }
             ),
         )
@@ -845,6 +845,14 @@ experiments:
         assert set(pinned_frame.get_column("unit_id").to_list()) == set(
             unpinned.get_column("unit_id").to_list()
         )
+
+        from increment.readouts import run
+
+        rows = run(native, coherence="live")
+        assert rows
+        metadata = rows.metadata
+        assert metadata is not None
+        assert metadata.effective_modes["users"] == "live"
     finally:
         con.disconnect()
 
