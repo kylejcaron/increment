@@ -444,6 +444,21 @@ def test_compile_dependency_record_from_another_cache_key_is_ignored(tmp_path, m
     assert traces == [(tmp_path, "snowflake")]
 
 
+def test_compile_dependency_build_forwards_child_error_before_raising(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import trace_compile_dependencies as dependency_trace
+
+    monkeypatch.setattr(
+        dependency_trace, "_BUILD_CAPTURE", "raise RuntimeError('child build exploded')"
+    )
+
+    with pytest.raises(dependency_trace.subprocess.CalledProcessError):
+        dependency_trace._build_and_record(tmp_path, "snowflake")
+
+    assert "child build exploded" in capsys.readouterr().err
+
+
 def test_compile_dependency_check_uses_the_requested_root_cache_key(tmp_path, monkeypatch):
     import json
 

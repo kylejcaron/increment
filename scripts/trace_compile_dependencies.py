@@ -43,11 +43,12 @@ def _build_and_record(root: Path, dialect: str) -> tuple[object, list[str]]:
     result = subprocess.run(
         [sys.executable, "-c", _BUILD_CAPTURE, dialect],
         cwd=root,
-        check=True,
+        check=False,
         capture_output=True,
     )
     if result.stderr:
         sys.stderr.buffer.write(result.stderr)
+    result.check_returncode()
     return pickle.loads(result.stdout)
 
 
